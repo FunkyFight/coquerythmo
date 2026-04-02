@@ -1,0 +1,19 @@
+[package]
+name = "coquerythmo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winit = "0.29"
+pollster = "0.3"
+env_logger = "0.11"
+log = "0.4"
+wgpu = "29.0.1"
+glyphon = { git = "https://github.com/RuairidhWilliamson/glyphon", branch = "wgpu-29" }
+bytemuck = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "6"
+resvg = "0.44"
+rfd = "0.15"
+rodio = "0.20"
