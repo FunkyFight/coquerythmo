@@ -1,4 +1,6 @@
-#[derive(Clone)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RythmoLine {
     pub id: u64,
     pub start_frame: i64,
@@ -15,7 +17,7 @@ impl RythmoLine {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum MarkerKind {
     Boucle,
     Out,
@@ -24,7 +26,7 @@ pub enum MarkerKind {
     LiaisonRight,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RythmoMarker {
     pub kind: MarkerKind,
     pub frame: i64,

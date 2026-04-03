@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
-static INSTANCE: OnceLock<Config> = OnceLock::new();
+static INSTANCE: OnceLock<RwLock<Config>> = OnceLock::new();
 
 const APP_NAME: &str = "coquerythmo";
 const CONFIG_FILE: &str = "config.toml";
@@ -14,6 +14,7 @@ pub struct Config {
     pub window: WindowConfig,
     pub ui: UiConfig,
     pub lang: String,
+    pub network: NetworkConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +31,27 @@ pub struct WindowConfig {
 pub struct UiConfig {
     pub font_size: f32,
     pub border_radius: f32,
+    pub rythmo_font: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkConfig {
+    pub server_ip: String,
+    pub server_port: u16,
+    pub password: String,
+    pub username: String,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            server_ip: "127.0.0.1".into(),
+            server_port: 9050,
+            password: String::new(),
+            username: "User".into(),
+        }
+    }
 }
 
 impl Default for Config {
@@ -38,6 +60,7 @@ impl Default for Config {
             window: WindowConfig::default(),
             ui: UiConfig::default(),
             lang: "fr-fr".into(),
+            network: NetworkConfig::default(),
         }
     }
 }
@@ -58,6 +81,7 @@ impl Default for UiConfig {
         Self {
             font_size: 18.0,
             border_radius: 8.0,
+            rythmo_font: None,
         }
     }
 }
@@ -114,11 +138,21 @@ impl Config {
 }
 
 pub fn init() {
-    INSTANCE.get_or_init(Config::load);
+    INSTANCE.get_or_init(|| RwLock::new(Config::load()));
 }
 
-pub fn get() -> &'static Config {
+pub fn save_settings(lang: String, rythmo_font: Option<String>) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    cfg.lang = lang;
+    cfg.ui.rythmo_font = rythmo_font;
+    cfg.save();
+}
+
+pub fn get() -> std::sync::RwLockReadGuard<'static, Config> {
     INSTANCE
         .get()
         .expect("config not initialized, call config::init() first")
+        .read()
+        .unwrap()
 }

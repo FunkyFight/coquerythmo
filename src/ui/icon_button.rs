@@ -56,7 +56,7 @@ impl Widget for IconButton {
             color: bg, color_bottom: bg,
             border_color: [0.0; 4], border_width: 0.0, border_radius: theme::BORDER_RADIUS_SMALL,
             shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-            _padding: [0.0; 3],
+            rotation: 0.0, _padding: [0.0; 2],
         }]
     }
 

@@ -72,19 +72,19 @@ impl Widget for Slider {
                 rect: [track.x, track.y, track.width, track.height],
                 color: theme::SLIDER_TRACK_BG, color_bottom: theme::SLIDER_TRACK_BG,
                 border_color: [0.0; 4], border_width: 0.0, border_radius: 2.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0, _padding: [0.0; 3],
+                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0, rotation: 0.0, _padding: [0.0; 2],
             },
             QuadInstance { // Track fill
                 rect: [track.x, track.y, fill_w, track.height],
                 color: theme::SLIDER_TRACK_FILL, color_bottom: theme::SLIDER_TRACK_FILL,
                 border_color: [0.0; 4], border_width: 0.0, border_radius: 2.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0, _padding: [0.0; 3],
+                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0, rotation: 0.0, _padding: [0.0; 2],
             },
             QuadInstance { // Thumb
                 rect: [cx - theme::SLIDER_THUMB_R, self.bounds.y + self.bounds.height / 2.0 - theme::SLIDER_THUMB_R, theme::SLIDER_THUMB_R * 2.0, theme::SLIDER_THUMB_R * 2.0],
                 color: thumb_color, color_bottom: thumb_color,
                 border_color: [0.0; 4], border_width: 0.0, border_radius: theme::SLIDER_THUMB_R,
-                shadow_offset: [0.0, 1.0], shadow_color: [0.0, 0.0, 0.0, 0.3], shadow_blur: 3.0, _padding: [0.0; 3],
+                shadow_offset: [0.0, 1.0], shadow_color: [0.0, 0.0, 0.0, 0.3], shadow_blur: 3.0, rotation: 0.0, _padding: [0.0; 2],
             },
         ]
     }

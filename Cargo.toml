@@ -12,8 +12,15 @@ wgpu = "29.0.1"
 glyphon = { git = "https://github.com/RuairidhWilliamson/glyphon", branch = "wgpu-29" }
 bytemuck = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 dirs = "6"
 resvg = "0.44"
 rfd = "0.15"
 rodio = "0.20"
+rust_socketio = "0.6"
+rand = "0.8"
+base64 = "0.22"
+
+[build-dependencies]
+winres = "0.1"

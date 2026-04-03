@@ -40,6 +40,7 @@ pub struct UiRenderer {
     uniform_bind_group_for_icons: wgpu::BindGroup,
 
     pub icon_atlas: IconAtlas,
+    nearest_sampler: wgpu::Sampler,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -112,7 +113,8 @@ impl UiRenderer {
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 64, shader_location: 4 },
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 72, shader_location: 5 },
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 80, shader_location: 6 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 96, shader_location: 7 },
+                        // shadow_blur + rotation packed as vec2
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 96, shader_location: 7 },
                     ],
                 }],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -199,6 +201,13 @@ impl UiRenderer {
             cache: None,
         });
 
+        // Nearest sampler for sharp stretched text
+        let nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
         // == Text ==
         let font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
@@ -215,6 +224,7 @@ impl UiRenderer {
             uniform_bind_group,
             uniform_bind_group_for_icons,
             icon_atlas,
+            nearest_sampler,
             font_system,
             swash_cache,
             text_atlas,
@@ -250,7 +260,8 @@ impl UiRenderer {
         queue: &wgpu::Queue,
         stretched: &[StretchedText],
     ) -> Vec<(IconInstance, u64)> {
-        let font_size = crate::config::get().ui.font_size;
+        // Rasterize at 2x font size for sharper stretched text
+        let font_size = crate::config::get().ui.font_size * 2.0;
         let mut result = Vec::new();
 
         for st in stretched {
@@ -300,7 +311,7 @@ impl UiRenderer {
                     layout: &self.icon_atlas.bind_group_layout,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.icon_atlas.sampler) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.nearest_sampler) },
                     ],
                 });
 
@@ -335,11 +346,31 @@ impl UiRenderer {
         hasher.finish()
     }
 
+    pub fn clear_text_cache(&mut self) {
+        self.text_texture_cache.clear();
+    }
+
+    pub fn enumerate_font_families(&self) -> Vec<String> {
+        let db = self.font_system.db();
+        let mut families = std::collections::BTreeSet::new();
+        for face in db.faces() {
+            for (name, _) in face.families.iter() {
+                families.insert(name.clone());
+            }
+        }
+        families.into_iter().collect()
+    }
+
     fn rasterize_text(&mut self, text: &str, font_size: f32) -> (Vec<u8>, u32, u32, Vec<f32>) {
+        let rythmo_family = crate::config::get().ui.rythmo_font.clone();
+        let family = match &rythmo_family {
+            Some(name) => Family::Name(name),
+            None => Family::SansSerif,
+        };
         let line_height = (font_size * 1.4).ceil();
         let mut buffer = GlyphonBuffer::new(&mut self.font_system, Metrics::new(font_size, line_height));
         buffer.set_size(&mut self.font_system, Some(10000.0), Some(line_height));
-        buffer.set_text(&mut self.font_system, text, &Attrs::new().family(Family::SansSerif), Shaping::Advanced, None);
+        buffer.set_text(&mut self.font_system, text, &Attrs::new().family(family), Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         // Measure text width and collect glyph boundaries
@@ -424,12 +455,14 @@ impl UiRenderer {
         view: &wgpu::TextureView,
         screen_width: u32,
         screen_height: u32,
-        quads: &[QuadInstance],
+        quads: &[QuadInstance],          // base layer (behind video)
+        overlay_quads: &[QuadInstance],  // overlay layer (on top of video)
         icons: &[IconInstance],
         labels: &[LabelInfo],
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         stretched_quads: &[(IconInstance, u64)],
         extra_textured: &[(IconInstance, &wgpu::BindGroup)],
+        post_texture_quads: &[QuadInstance], // drawn after textured quads (e.g. color picker indicators)
     ) {
         let uniforms = Uniforms {
             screen_size: [screen_width as f32, screen_height as f32],
@@ -480,10 +513,14 @@ impl UiRenderer {
                 }
             }
 
+            let label_family = match label.font_family_override {
+                Some(name) => Family::Name(name),
+                None => Family::SansSerif,
+            };
             buffer.set_text(
                 &mut self.font_system,
                 label.text,
-                &Attrs::new().family(Family::SansSerif),
+                &Attrs::new().family(label_family),
                 Shaping::Advanced,
                 None,
             );
@@ -635,7 +672,20 @@ impl UiRenderer {
                 }
             }
 
-            // Draw extra textured quads (color picker etc.)
+            // Draw overlay quads (on top of video, icons, stretched text)
+            if !overlay_quads.is_empty() {
+                let overlay_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Overlay Quad Buffer"),
+                    contents: bytemuck::cast_slice(overlay_quads),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                pass.set_pipeline(&self.quad_pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_vertex_buffer(0, overlay_buf.slice(..));
+                pass.draw(0..6, 0..overlay_quads.len() as u32);
+            }
+
+            // Draw extra textured quads (color picker gradients — after overlay background)
             for (instance, bind_group) in extra_textured {
                 let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Extra Textured Quad"),
@@ -647,6 +697,19 @@ impl UiRenderer {
                 pass.set_bind_group(1, *bind_group, &[]);
                 pass.set_vertex_buffer(0, buf.slice(..));
                 pass.draw(0..6, 0..1);
+            }
+
+            // Draw post-texture quads (color picker indicators on top of gradients)
+            if !post_texture_quads.is_empty() {
+                let pt_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Post-Texture Quad Buffer"),
+                    contents: bytemuck::cast_slice(post_texture_quads),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                pass.set_pipeline(&self.quad_pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_vertex_buffer(0, pt_buf.slice(..));
+                pass.draw(0..6, 0..post_texture_quads.len() as u32);
             }
 
             // Draw text

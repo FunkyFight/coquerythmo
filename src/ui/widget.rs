@@ -45,6 +45,7 @@ pub struct LabelInfo<'a> {
     pub padding: f32,
     pub font_size_override: Option<f32>,
     pub color_override: Option<[u8; 3]>,
+    pub font_family_override: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,20 +53,28 @@ pub enum UiEvent {
     MouseMove { x: f32, y: f32 },
     MousePress { x: f32, y: f32 },
     MouseRelease { x: f32, y: f32 },
-    Scroll { x: f32, y: f32, delta: f32 },
+    Scroll { x: f32, y: f32, delta: f32, fast: bool },
     KeyInput { text: String },
     CursorLeft,
     CursorRight,
     CursorUp,
     CursorDown,
+    Delete,
     CtrlClick { x: f32, y: f32 },
     DoubleClick { x: f32, y: f32 },
+    MiddlePress { x: f32, y: f32 },
+    MiddleRelease { x: f32, y: f32 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiAction {
     CloseApp,
     AddVideo,
+    ImportProject,
+    ExportProject,
+    ExportMp4,
+    QuickSave,
+    CancelExport,
     TogglePlayPause,
     SetVolume(f32),
     PrevFrame,
@@ -79,10 +88,19 @@ pub enum UiAction {
     SetCharacterColor { line_id: u64, color: [f32; 4] },
     UpdateCharacterName { line_id: u64, name: String },
     FinalizeCharacter { line_id: u64 },
+    DeleteSelected,
+    MoveMarker { index: usize, frame: i64 },
     AddMarker(crate::rythmo_line::MarkerKind),
     AddQuickLine { text: String },
     OpenDropdown(ToolbarDropdown),
     StopEditing,
+    // Network
+    OpenConnectModal { join: bool },
+    NetworkConnect { ip: String, port: u16, password: String, username: String, room_code: Option<String> },
+    NetworkDisconnect,
+    // Settings
+    OpenSettings,
+    SaveSettings { lang: String, rythmo_font: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -130,5 +148,6 @@ pub struct QuadInstance {
     pub shadow_offset: [f32; 2], // shadow dx, dy
     pub shadow_color: [f32; 4],  // shadow color + alpha
     pub shadow_blur: f32,
-    pub _padding: [f32; 3],
+    pub rotation: f32,        // radians, rotation around quad center
+    pub _padding: [f32; 2],
 }

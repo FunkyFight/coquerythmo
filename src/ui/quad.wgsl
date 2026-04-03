@@ -27,13 +27,18 @@ struct QuadInstance {
     @location(4) border_width_radius: vec2<f32>,
     @location(5) shadow_offset: vec2<f32>,
     @location(6) shadow_color: vec4<f32>,
-    @location(7) shadow_blur: f32,
+    @location(7) shadow_blur_rotation: vec2<f32>,
 };
 
-// Signed distance to a rounded rectangle centered at origin
 fn sdf_rounded_rect(p: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
     let q = abs(p) - half_size + vec2<f32>(radius);
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+}
+
+fn rotate2d(p: vec2<f32>, angle: f32) -> vec2<f32> {
+    let c = cos(angle);
+    let s = sin(angle);
+    return vec2<f32>(p.x * c - p.y * s, p.x * s + p.y * c);
 }
 
 @vertex
@@ -50,28 +55,33 @@ fn vs_main(
     let indices = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
     let corner = corners[indices[vertex_index]];
 
-    // Expand the quad to accommodate shadow + blur
-    let expand = max(instance.shadow_blur * 2.0, 0.0) + abs(max(instance.shadow_offset.x, instance.shadow_offset.y));
-    let expanded_rect = vec4<f32>(
-        instance.rect.x - expand,
-        instance.rect.y - expand,
-        instance.rect.z + expand * 2.0,
-        instance.rect.w + expand * 2.0,
-    );
+    let shadow_blur = instance.shadow_blur_rotation.x;
+    let rotation = instance.shadow_blur_rotation.y;
 
-    let pos_px = expanded_rect.xy + corner * expanded_rect.zw;
+    let expand = max(shadow_blur * 2.0, 0.0) + abs(max(instance.shadow_offset.x, instance.shadow_offset.y));
+    let expanded_size = instance.rect.zw + vec2<f32>(expand * 2.0);
+
+    // Local position relative to center, before rotation
+    let local_unrotated = (corner - 0.5) * expanded_size;
+
+    // Apply rotation around center
+    let local_rotated = rotate2d(local_unrotated, rotation);
+
+    // World position = center + rotated offset
+    let center = instance.rect.xy + instance.rect.zw * 0.5;
+    let pos_px = center + local_rotated;
+
     let ndc = vec2<f32>(
         (pos_px.x / uniforms.screen_size.x) * 2.0 - 1.0,
         1.0 - (pos_px.y / uniforms.screen_size.y) * 2.0,
     );
 
-    // Local position relative to the original rect center
-    let center = instance.rect.xy + instance.rect.zw * 0.5;
-    let local = pos_px - center;
+    // Pass un-rotated local for SDF (SDF operates in local space)
+    let local_for_sdf = local_unrotated;
 
     var out: VertexOutput;
     out.position = vec4<f32>(ndc, 0.0, 1.0);
-    out.local_pos = local;
+    out.local_pos = local_for_sdf;
     out.color_top = instance.color;
     out.color_bottom = instance.color_bottom;
     out.border_color = instance.border_color;
@@ -80,7 +90,7 @@ fn vs_main(
     out.rect_size = instance.rect.zw;
     out.shadow_color = instance.shadow_color;
     out.shadow_offset = instance.shadow_offset;
-    out.shadow_blur = instance.shadow_blur;
+    out.shadow_blur = shadow_blur;
     return out;
 }
 
@@ -89,7 +99,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let half_size = in.rect_size * 0.5;
     let radius = min(in.border_radius, min(half_size.x, half_size.y));
 
-    // Shadow
     var shadow = vec4<f32>(0.0);
     if in.shadow_color.a > 0.0 {
         let shadow_pos = in.local_pos - in.shadow_offset;
@@ -98,27 +107,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         shadow = vec4<f32>(in.shadow_color.rgb, in.shadow_color.a * shadow_alpha);
     }
 
-    // Main shape
     let dist = sdf_rounded_rect(in.local_pos, half_size, radius);
 
-    // Outside the shape — only show shadow
     if dist > 0.5 {
         return shadow;
     }
 
-    // Vertical gradient: interpolate between top and bottom color
     let t = (in.local_pos.y + half_size.y) / in.rect_size.y;
     let bg = mix(in.color_top, in.color_bottom, vec4<f32>(t));
 
-    // Border via SDF
     let inner_dist = sdf_rounded_rect(in.local_pos, half_size - vec2<f32>(in.border_width), max(radius - in.border_width, 0.0));
     let border_mask = smoothstep(-0.5, 0.5, inner_dist);
     let color = mix(bg, in.border_color, vec4<f32>(border_mask));
 
-    // Anti-aliasing on outer edge
     let aa = 1.0 - smoothstep(-0.5, 0.5, dist);
 
-    // Composite: shadow behind, shape on top
     let shape = vec4<f32>(color.rgb, color.a * aa);
     return vec4<f32>(
         mix(shadow.rgb, shape.rgb, shape.a),

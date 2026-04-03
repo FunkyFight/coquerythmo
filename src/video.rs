@@ -1,7 +1,9 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -22,9 +24,12 @@ pub struct VideoPlayer {
     height: u32,
     fps: f64,
     playing: bool,
-    last_frame_time: Option<Instant>,
+    playback_start_time: Option<Instant>,
+    playback_start_frame: i64,
+    last_toggle: Option<Instant>,
     receiver: Option<Receiver<VideoFrame>>,
     decoder_handle: Option<JoinHandle<()>>,
+    kill_signal: Arc<AtomicBool>,
     path: Option<PathBuf>,
     finished: bool,
     current_frame: i64,
@@ -47,9 +52,12 @@ impl VideoPlayer {
             height: 0,
             fps: 30.0,
             playing: false,
-            last_frame_time: None,
+            playback_start_time: None,
+            playback_start_frame: 0,
+            last_toggle: None,
             receiver: None,
             decoder_handle: None,
+            kill_signal: Arc::new(AtomicBool::new(false)),
             path: None,
             finished: false,
             current_frame: 0,
@@ -103,13 +111,25 @@ impl VideoPlayer {
         if self.finished {
             return;
         }
+
+        // Debounce: ignore toggles within 200ms of each other
+        let now = Instant::now();
+        if let Some(last) = self.last_toggle {
+            if now.duration_since(last).as_millis() < 50 {
+                return;
+            }
+        }
+        self.last_toggle = Some(now);
+
         self.playing = !self.playing;
         if self.playing {
-            self.last_frame_time = None;
-            // Always resync decoders to current position on play
-            let ts = self.current_frame as f64 / self.fps;
             self.stop_decoders();
+            let ts = self.current_frame as f64 / self.fps;
             self.start_decoders_at(ts);
+
+            self.playback_start_time = Some(now);
+            self.playback_start_frame = self.current_frame;
+
             if let Some(sink) = &self.audio_sink {
                 sink.play();
             }
@@ -203,36 +223,47 @@ impl VideoPlayer {
             return;
         }
 
-        let frame_duration = Duration::from_secs_f64(1.0 / self.fps);
-        let now = Instant::now();
-
-        let should_advance = match self.last_frame_time {
-            Some(last) => now.duration_since(last) >= frame_duration,
-            None => true,
+        // Wall-clock sync: compute which frame we SHOULD be on
+        let start_time = match self.playback_start_time {
+            Some(t) => t,
+            None => return,
         };
+        let elapsed = Instant::now().duration_since(start_time).as_secs_f64();
+        let target_frame = self.playback_start_frame + (elapsed * self.fps) as i64;
 
-        if !should_advance {
+        // Already at or ahead of target — nothing to do
+        if self.current_frame >= target_frame {
             return;
         }
 
-        let recv_frame = self.receiver.as_ref().and_then(|rx| rx.try_recv().ok());
-        if let Some(frame) = recv_frame {
-            self.upload_frame(&frame, device, queue, bind_group_layout, sampler);
-            self.last_frame_time = Some(now);
-            self.current_frame += 1;
-        } else {
-            let disconnected = self.receiver.as_ref().map_or(false, |rx| {
-                matches!(rx.try_recv(), Err(mpsc::TryRecvError::Disconnected))
-            });
-            if disconnected {
-                self.playing = false;
-                self.finished = true;
-                self.receiver = None;
-                if let Some(sink) = &self.audio_sink {
-                    sink.pause();
+        // Consume frames from channel to catch up
+        let mut last_frame = None;
+        let frames_behind = (target_frame - self.current_frame) as usize;
+        if let Some(rx) = &self.receiver {
+            for _ in 0..frames_behind {
+                match rx.try_recv() {
+                    Ok(frame) => {
+                        last_frame = Some(frame);
+                        self.current_frame += 1;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break, // decoder hasn't caught up
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        self.playing = false;
+                        self.finished = true;
+                        self.receiver = None;
+                        if let Some(sink) = &self.audio_sink {
+                            sink.pause();
+                        }
+                        log::info!("Video playback finished");
+                        return;
+                    }
                 }
-                log::info!("Video playback finished");
             }
+        }
+
+        // Upload only the last consumed frame (skip intermediate ones for performance)
+        if let Some(frame) = last_frame {
+            self.upload_frame(&frame, device, queue, bind_group_layout, sampler);
         }
     }
 
@@ -242,6 +273,10 @@ impl VideoPlayer {
 
     pub fn fps(&self) -> f64 {
         self.fps
+    }
+
+    pub fn path(&self) -> Option<std::path::PathBuf> {
+        self.path.clone()
     }
 
     pub fn total_frames(&self) -> i64 {
@@ -262,13 +297,17 @@ impl VideoPlayer {
             None => return,
         };
 
+        // Fresh kill signal for new decoders
+        self.kill_signal = Arc::new(AtomicBool::new(false));
+
         // Video decoder
         let (tx, rx) = mpsc::sync_channel::<VideoFrame>(3);
         let path_clone = path.clone();
         let w = self.width;
         let h = self.height;
+        let kill = self.kill_signal.clone();
         let vid_handle = thread::spawn(move || {
-            decode_video_stream_from(path_clone, w, h, timestamp, tx);
+            decode_video_stream_from(path_clone, w, h, timestamp, tx, kill);
         });
         self.receiver = Some(rx);
         self.decoder_handle = Some(vid_handle);
@@ -359,6 +398,9 @@ impl VideoPlayer {
     }
 
     fn stop_decoders(&mut self) {
+        // Signal threads to kill their ffmpeg processes and exit
+        self.kill_signal.store(true, Ordering::Relaxed);
+
         if let Some(sink) = &self.audio_sink {
             sink.stop();
         }
@@ -437,14 +479,26 @@ fn probe_video(path: &Path) -> Result<(u32, u32, f64, i64), String> {
         .map_err(|e| format!("ffprobe failed: {e}"))?;
 
     if !output.status.success() {
-        return Err(format!("ffprobe error: {}", String::from_utf8_lossy(&output.stderr)));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "ffprobe error (code {:?}):\nstderr: {}\nstdout: {}",
+            output.status.code(), stderr.trim(), stdout.trim()
+        ));
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
     let text = text.trim();
+    if text.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "ffprobe returned empty output for '{}'\nstderr: {}",
+            path.display(), stderr.trim()
+        ));
+    }
     let parts: Vec<&str> = text.split(',').collect();
     if parts.len() < 3 {
-        return Err(format!("Unexpected ffprobe output: {text}"));
+        return Err(format!("Unexpected ffprobe output: '{text}' for '{}'", path.display()));
     }
 
     let width: u32 = parts[0].parse().map_err(|e| format!("Bad width: {e}"))?;
@@ -489,7 +543,7 @@ fn decode_frame_at(path: &Path, width: u32, height: u32, timestamp: f64) -> Resu
     Ok(VideoFrame { data: output.stdout, width, height })
 }
 
-fn decode_video_stream_from(path: PathBuf, width: u32, height: u32, timestamp: f64, tx: SyncSender<VideoFrame>) {
+fn decode_video_stream_from(path: PathBuf, width: u32, height: u32, timestamp: f64, tx: SyncSender<VideoFrame>, kill: Arc<AtomicBool>) {
     let ts = format!("{:.6}", timestamp);
     let mut child = match Command::new("ffmpeg")
         .args(["-ss", &ts])
@@ -510,11 +564,18 @@ fn decode_video_stream_from(path: PathBuf, width: u32, height: u32, timestamp: f
 
     // Skip first frame (already shown by decode_frame_at)
     if reader.read_exact(&mut buf).is_err() {
+        let _ = child.kill();
         let _ = child.wait();
         return;
     }
 
     loop {
+        // Check kill signal
+        if kill.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
         match reader.read_exact(&mut buf) {
             Ok(()) => {
                 let frame = VideoFrame { data: buf.clone(), width, height };
@@ -524,6 +585,7 @@ fn decode_video_stream_from(path: PathBuf, width: u32, height: u32, timestamp: f
         }
     }
 
+    let _ = child.kill();
     let _ = child.wait();
 }
 
@@ -565,5 +627,6 @@ fn decode_audio_stream_from(path: PathBuf, timestamp: f64, tx: SyncSender<Vec<f3
         }
     }
 
+    let _ = child.kill();
     let _ = child.wait();
 }

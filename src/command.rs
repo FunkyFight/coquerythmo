@@ -47,9 +47,8 @@ pub enum Command {
 impl Command {
     fn apply(&self, project: &mut Project) {
         match self {
-            Command::CreateLine { line_id } => {
-                // Line was already added by project.add_line — nothing to re-apply
-                // For redo: re-insert if deleted
+            Command::CreateLine { line_id: _ } => {
+                // Line was already added — nothing to re-apply for redo
             }
             Command::DeleteLine { snapshot, .. } => {
                 project.lines.retain(|l| l.id != snapshot.id);
@@ -184,6 +183,10 @@ impl CommandHistory {
             (Command::SetCharacterColor { line_id: id, .. }, CommandKind::SetCharacterColor) => *id == line_id,
             _ => false,
         })
+    }
+
+    pub fn last(&self) -> Option<&Command> {
+        self.undo_stack.last()
     }
 
     pub fn undo(&mut self, project: &mut Project) {

@@ -11,6 +11,9 @@ const DEFAULT_COLORS: &[[f32; 4]] = &[
     [0.85, 0.45, 0.65, 1.0], // pink
 ];
 
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Character {
     pub name: String,
     pub color: [f32; 4],
@@ -35,15 +38,37 @@ impl Project {
         }
     }
 
+    pub fn snapshot(&self) -> Self {
+        Self {
+            lines: self.lines.clone(),
+            markers: self.markers.clone(),
+            known_characters: self.known_characters.clone(),
+            next_id: self.next_id,
+            color_index: self.color_index,
+        }
+    }
+
     pub fn add_line(&mut self, start_frame: i64, duration_frames: i64, y_slot: f32) -> u64 {
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = rand::random::<u64>() % 9_007_199_254_740_991; // JS safe integer max
         let color = self.next_color();
-        let (char_name, char_color) = if let Some(first) = self.known_characters.first() {
-            (first.name.clone(), first.color)
-        } else {
-            ("Character".to_string(), color)
-        };
+
+        // Find the last line on the same track (y_slot) that ends before this one starts
+        let (char_name, char_color) = self.lines.iter()
+            .filter(|l| (l.y_slot - y_slot).abs() < 0.01 && l.end_frame() <= start_frame)
+            .max_by_key(|l| l.end_frame())
+            .map(|l| (l.character_name.clone(), l.character_color))
+            .or_else(|| {
+                // Fallback: any line on the same track
+                self.lines.iter()
+                    .filter(|l| (l.y_slot - y_slot).abs() < 0.01)
+                    .last()
+                    .map(|l| (l.character_name.clone(), l.character_color))
+            })
+            .or_else(|| {
+                // Fallback: first known character
+                self.known_characters.first().map(|c| (c.name.clone(), c.color))
+            })
+            .unwrap_or_else(|| ("Character".to_string(), color));
 
         self.lines.push(RythmoLine {
             id,
@@ -55,6 +80,17 @@ impl Project {
             character_color: char_color,
         });
         id
+    }
+
+    pub fn add_line_full(&mut self, start_frame: i64, duration_frames: i64, y_slot: f32, text: String, character_name: String, character_color: [f32; 4]) -> u64 {
+        let id = rand::random::<u64>() % 9_007_199_254_740_991; // JS safe integer max
+        self.lines.push(RythmoLine { id, start_frame, duration_frames, y_slot, text, character_name, character_color });
+        id
+    }
+
+    /// Insert a line with a pre-existing ID (for network sync).
+    pub fn insert_line(&mut self, line: RythmoLine) {
+        self.lines.push(line);
     }
 
     pub fn get_line(&self, id: u64) -> Option<&RythmoLine> {

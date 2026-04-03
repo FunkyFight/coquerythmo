@@ -37,7 +37,7 @@ impl TooltipState {
             shadow_offset: [0.0, 2.0],
             shadow_color: [0.0, 0.0, 0.0, 0.4],
             shadow_blur: 6.0,
-            _padding: [0.0; 3],
+            rotation: 0.0, _padding: [0.0; 2],
         }]
     }
 
@@ -50,7 +50,7 @@ impl TooltipState {
             h_align: HAlign::Center,
             v_align: VAlign::Center,
             overflow: Overflow::Visible,
-            padding: TOOLTIP_PADDING_H, font_size_override: None, color_override: None,
+            padding: TOOLTIP_PADDING_H, font_size_override: None, color_override: None, font_family_override: None,
         }]
     }
 }

@@ -126,7 +126,16 @@ impl ColorPickerState {
         }
     }
 
-    pub fn render<'a>(&'a self, quads: &mut Vec<QuadInstance>, icons: &mut Vec<(IconInstance, &'a wgpu::BindGroup)>) {
+    /// Render the color picker in three layers:
+    /// - `bg_quads`: background panel (drawn before gradient textures)
+    /// - `textures`: SV and hue gradient textures
+    /// - `fg_quads`: indicators and preview swatch (drawn after gradient textures)
+    pub fn render<'a>(
+        &'a self,
+        bg_quads: &mut Vec<QuadInstance>,
+        textures: &mut Vec<(IconInstance, &'a wgpu::BindGroup)>,
+        fg_quads: &mut Vec<QuadInstance>,
+    ) {
         if !self.active {
             return;
         }
@@ -136,7 +145,7 @@ impl ColorPickerState {
         let hue = self.hue_rect();
 
         // Background
-        quads.push(QuadInstance {
+        bg_quads.push(QuadInstance {
             rect: [total.x, total.y, total.width, total.height],
             color: [0.12, 0.12, 0.14, 0.95],
             color_bottom: [0.10, 0.10, 0.12, 0.95],
@@ -146,14 +155,26 @@ impl ColorPickerState {
             shadow_offset: [0.0, 4.0],
             shadow_color: [0.0, 0.0, 0.0, 0.5],
             shadow_blur: 10.0,
-            _padding: [0.0; 3],
+            rotation: 0.0, _padding: [0.0; 2],
         });
 
         // SV gradient quad
         if let Some(bg) = &self.sv_bind_group {
-            icons.push((
+            textures.push((
                 IconInstance {
                     rect: [sv.x, sv.y, sv.width, sv.height],
+                    uv_rect: [0.0, 0.0, 1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0, 1.0],
+                },
+                bg,
+            ));
+        }
+
+        // Hue bar quad
+        if let Some(bg) = &self.hue_bind_group {
+            textures.push((
+                IconInstance {
+                    rect: [hue.x, hue.y, hue.width, hue.height],
                     uv_rect: [0.0, 0.0, 1.0, 1.0],
                     tint: [1.0, 1.0, 1.0, 1.0],
                 },
@@ -164,7 +185,7 @@ impl ColorPickerState {
         // SV indicator
         let sv_ix = sv.x + self.sat * sv.width - INDICATOR_SIZE / 2.0;
         let sv_iy = sv.y + (1.0 - self.val) * sv.height - INDICATOR_SIZE / 2.0;
-        quads.push(QuadInstance {
+        fg_quads.push(QuadInstance {
             rect: [sv_ix, sv_iy, INDICATOR_SIZE, INDICATOR_SIZE],
             color: [1.0, 1.0, 1.0, 0.9],
             color_bottom: [1.0, 1.0, 1.0, 0.9],
@@ -172,24 +193,12 @@ impl ColorPickerState {
             border_width: 1.5,
             border_radius: INDICATOR_SIZE / 2.0,
             shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-            _padding: [0.0; 3],
+            rotation: 0.0, _padding: [0.0; 2],
         });
-
-        // Hue bar quad
-        if let Some(bg) = &self.hue_bind_group {
-            icons.push((
-                IconInstance {
-                    rect: [hue.x, hue.y, hue.width, hue.height],
-                    uv_rect: [0.0, 0.0, 1.0, 1.0],
-                    tint: [1.0, 1.0, 1.0, 1.0],
-                },
-                bg,
-            ));
-        }
 
         // Hue indicator
         let hue_ix = hue.x + (self.hue / 360.0) * hue.width - 2.0;
-        quads.push(QuadInstance {
+        fg_quads.push(QuadInstance {
             rect: [hue_ix, hue.y - 1.0, 4.0, hue.height + 2.0],
             color: [1.0, 1.0, 1.0, 0.9],
             color_bottom: [1.0, 1.0, 1.0, 0.9],
@@ -197,7 +206,7 @@ impl ColorPickerState {
             border_width: 1.0,
             border_radius: 2.0,
             shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-            _padding: [0.0; 3],
+            rotation: 0.0, _padding: [0.0; 2],
         });
 
         // Preview swatch
@@ -205,14 +214,14 @@ impl ColorPickerState {
         let preview_size = 20.0;
         let px = total.x + total.width - PICKER_PADDING - preview_size;
         let py = hue.y + hue.height + GAP;
-        quads.push(QuadInstance {
+        fg_quads.push(QuadInstance {
             rect: [px, py - GAP, preview_size, preview_size],
             color, color_bottom: color,
             border_color: [0.5, 0.5, 0.55, 0.5],
             border_width: 1.0,
             border_radius: 3.0,
             shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-            _padding: [0.0; 3],
+            rotation: 0.0, _padding: [0.0; 2],
         });
     }
 

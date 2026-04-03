@@ -25,6 +25,7 @@ pub struct Dropdown {
     show_trigger_bg: bool,
     trigger_label: Option<String>,
     panel_width: Option<f32>,
+    disabled_items: Vec<bool>,
 }
 
 impl Dropdown {
@@ -45,6 +46,7 @@ impl Dropdown {
             show_trigger_bg: true,
             trigger_label: None,
             panel_width: None,
+            disabled_items: Vec::new(),
         }
     }
 
@@ -66,6 +68,15 @@ impl Dropdown {
     pub fn with_panel_width(mut self, width: f32) -> Self {
         self.panel_width = Some(width);
         self
+    }
+
+    pub fn with_disabled_items(mut self, disabled: Vec<bool>) -> Self {
+        self.disabled_items = disabled;
+        self
+    }
+
+    fn is_disabled(&self, index: usize) -> bool {
+        self.disabled_items.get(index).copied().unwrap_or(false)
     }
 
     fn panel_rect(&self) -> Rect {
@@ -203,6 +214,9 @@ impl Widget for Dropdown {
             UiEvent::MouseRelease { x, y } => {
                 if self.open {
                     if let Some(index) = self.hit_option(*x, *y) {
+                        if self.is_disabled(index) {
+                            return EventResponse::Consumed;
+                        }
                         self.selected = index;
                         self.open = false;
                         self.hovered_option = None;
@@ -261,7 +275,7 @@ impl Widget for Dropdown {
                 shadow_offset: [0.0, 2.0],
                 shadow_color: [0.0, 0.0, 0.0, 0.35],
                 shadow_blur: 6.0,
-                _padding: [0.0; 3],
+                rotation: 0.0, _padding: [0.0; 2],
             });
         }
 
@@ -279,11 +293,12 @@ impl Widget for Dropdown {
                 shadow_offset: [0.0, 4.0],
                 shadow_color: [0.0, 0.0, 0.0, 0.5],
                 shadow_blur: 12.0,
-                _padding: [0.0; 3],
+                rotation: 0.0, _padding: [0.0; 2],
             });
 
             // Option highlights
             for i in 0..self.options.len() {
+                if self.is_disabled(i) { continue; }
                 let is_hovered = self.hovered_option == Some(i);
                 let is_selected = self.selected == i;
 
@@ -309,7 +324,7 @@ impl Widget for Dropdown {
                         shadow_offset: [0.0, 0.0],
                         shadow_color: [0.0, 0.0, 0.0, 0.0],
                         shadow_blur: 0.0,
-                        _padding: [0.0; 3],
+                        rotation: 0.0, _padding: [0.0; 2],
                     });
                 }
             }
@@ -339,7 +354,7 @@ impl Widget for Dropdown {
             h_align: HAlign::Left,
             v_align: VAlign::Center,
             overflow: Overflow::Ellipsis,
-            padding: 12.0, font_size_override: None, color_override: None,
+            padding: 12.0, font_size_override: None, color_override: None, font_family_override: None,
         });
 
         // Arrow indicator
@@ -356,7 +371,7 @@ impl Widget for Dropdown {
                 h_align: HAlign::Center,
                 v_align: VAlign::Center,
                 overflow: Overflow::Clip,
-                padding: 0.0, font_size_override: None, color_override: None,
+                padding: 0.0, font_size_override: None, color_override: None, font_family_override: None,
             });
         }
 
@@ -364,13 +379,18 @@ impl Widget for Dropdown {
         if self.open {
             for (i, option) in self.options.iter().enumerate() {
                 let r = self.option_rect(i);
+                let color_override = if self.is_disabled(i) {
+                    Some([100, 100, 100]) // dimmed
+                } else {
+                    None
+                };
                 result.push(LabelInfo {
                     text: option,
                     bounds: r,
                     h_align: HAlign::Left,
                     v_align: VAlign::Center,
                     overflow: Overflow::Ellipsis,
-                    padding: 12.0, font_size_override: None, color_override: None,
+                    padding: 12.0, font_size_override: None, color_override, font_family_override: None,
                 });
             }
         }
