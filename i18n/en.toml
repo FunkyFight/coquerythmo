@@ -1,0 +1,73 @@
+# Coquerythmo — English translations
+
+# Topbar menus
+"menu.project" = "Project"
+"menu.project.add_video" = "Add a video"
+"menu.project.import" = "Import a rythmo band"
+"menu.project.export" = "Export a rythmo band"
+
+"menu.export" = "Export"
+"menu.export.mp4" = "Export project as MP4"
+
+"menu.connect" = "Connect"
+"menu.connect.create_room" = "Create a room"
+"menu.connect.join_room" = "Join a room"
+"menu.connect.disconnect" = "Disconnect"
+
+# File pickers
+"picker.video.title" = "Choose a video"
+"picker.import.title" = "Import a project"
+"picker.export.title" = "Export the project"
+"picker.export_mp4.title" = "Save MP4 video"
+
+# Zones
+"zone.video_preview" = "Video preview"
+"zone.rythmo" = "Rythmo band"
+"zone.properties" = "Properties"
+
+# Toolbar
+"toolbar.play" = "Play"
+"toolbar.stop" = "Pause"
+"toolbar.volume" = "Volume"
+"toolbar.prev_frame" = "Previous frame"
+"toolbar.next_frame" = "Next frame"
+"toolbar.boucle" = "Add a loop"
+"toolbar.out" = "Add an out"
+"toolbar.scene" = "Scene change"
+"toolbar.respirations" = "Breathing"
+"toolbar.reactions" = "Reactions"
+"toolbar.liaison_left" = "Left liaison"
+"toolbar.liaison_right" = "Right liaison"
+
+# Respirations
+"resp.up" = "Inhale"
+"resp.down" = "Exhale"
+"resp.h" = "Mouth open, inhale"
+"resp.hh" = "Mouth open, exhale"
+"resp.mh" = "Mouth closed, inhale"
+"resp.mhh" = "Mouth closed, exhale"
+
+# Reactions
+"react.x" = "Mouth noise"
+"react.mts" = "Tongue click on opening"
+"react.tsc" = "Mouth click, mouth open"
+"react.ah" = "Surprise"
+"react.oh" = "Astonishment"
+"react.ih" = "Disgust"
+"react.mhm" = "Agreement"
+"react.hm" = "Hesitation"
+"react.ptt" = "Contempt"
+"react.pff" = "Exasperation"
+"react.unh" = "Effort"
+"react.hun" = "Questioning"
+"react.psst" = "Getting attention"
+
+# Settings
+"settings.title" = "Settings"
+"settings.language" = "Language"
+"settings.rythmo_font" = "Rythmo band font"
+"settings.save" = "Save"
+"settings.default_font" = "Default font"
+"settings.preview" = "Preview"
+"settings.restart_required" = "(restart required)"
+"settings.tooltip" = "Settings"

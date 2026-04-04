@@ -1,5 +1,6 @@
 mod command;
 mod config;
+mod constants;
 mod export;
 mod graphics;
 mod network;
@@ -50,6 +51,7 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                     log::error!("Export failed: {e}");
                 } else {
                     state.project_path = Some(path);
+                    state.dirty = false;
                 }
             }
         }
@@ -80,6 +82,7 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                     log::error!("Quick save failed: {e}");
                 } else {
                     log::info!("Quick saved to {}", path.display());
+                    state.dirty = false;
                 }
             } else {
                 // No path yet — fall back to save dialog
@@ -94,6 +97,7 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                         log::error!("Export failed: {e}");
                     } else {
                         state.project_path = Some(path);
+                        state.dirty = false;
                     }
                 }
             }
@@ -327,7 +331,7 @@ fn main() {
 
     let cfg = config::get().clone();
 
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoop::new().expect("Failed to create event loop");
 
     let window_icon = {
         let ico_data = include_bytes!("icons/app.ico");
@@ -340,7 +344,7 @@ fn main() {
             .with_inner_size(LogicalSize::new(cfg.window.width, cfg.window.height))
             .with_window_icon(window_icon)
             .build(&event_loop)
-            .unwrap(),
+            .expect("Failed to create window"),
     );
 
     let mut state = pollster::block_on(State::new(window.clone()));
@@ -488,5 +492,5 @@ fn main() {
             },
             _ => {}
         })
-        .unwrap();
+        .expect("Event loop error");
 }

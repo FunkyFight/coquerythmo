@@ -15,6 +15,21 @@ impl RythmoLine {
     pub fn end_frame(&self) -> i64 {
         self.start_frame + self.duration_frames
     }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.duration_frames <= 0 {
+            return Err(format!("Line {}: duration must be positive (got {})", self.id, self.duration_frames));
+        }
+        if self.y_slot < 0.0 || self.y_slot > 1.0 {
+            return Err(format!("Line {}: y_slot must be 0.0-1.0 (got {})", self.id, self.y_slot));
+        }
+        for (i, &c) in self.character_color.iter().enumerate() {
+            if c < 0.0 || c > 1.0 {
+                return Err(format!("Line {}: color channel {} out of range (got {})", self.id, i, c));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

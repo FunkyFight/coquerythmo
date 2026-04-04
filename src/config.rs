@@ -39,6 +39,7 @@ pub struct UiConfig {
 pub struct NetworkConfig {
     pub server_ip: String,
     pub server_port: u16,
+    #[serde(skip)]
     pub password: String,
     pub username: String,
 }

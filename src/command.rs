@@ -51,7 +51,7 @@ impl Command {
                 // Line was already added — nothing to re-apply for redo
             }
             Command::DeleteLine { snapshot, .. } => {
-                project.lines.retain(|l| l.id != snapshot.id);
+                project.remove_line(snapshot.id);
             }
             Command::MoveLine { line_id, new_start, new_y_slot, .. } => {
                 if let Some(l) = project.get_line_mut(*line_id) {
@@ -95,19 +95,10 @@ impl Command {
     fn unapply(&self, project: &mut Project) {
         match self {
             Command::CreateLine { line_id } => {
-                project.lines.retain(|l| l.id != *line_id);
+                project.remove_line(*line_id);
             }
             Command::DeleteLine { snapshot, index } => {
-                let idx = (*index).min(project.lines.len());
-                project.lines.insert(idx, RythmoLine {
-                    id: snapshot.id,
-                    start_frame: snapshot.start_frame,
-                    duration_frames: snapshot.duration_frames,
-                    y_slot: snapshot.y_slot,
-                    text: snapshot.text.clone(),
-                    character_name: snapshot.character_name.clone(),
-                    character_color: snapshot.character_color,
-                });
+                project.insert_line_at(*index, snapshot.clone());
             }
             Command::MoveLine { line_id, old_start, old_y_slot, .. } => {
                 if let Some(l) = project.get_line_mut(*line_id) {
@@ -211,4 +202,107 @@ pub enum CommandKind {
     ResizeLine,
     SetCharacter,
     SetCharacterColor,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_project_with_line() -> (Project, u64) {
+        let mut p = Project::new();
+        let id = p.add_line_full(0, 48, 0.5, "test".into(), "Char".into(), [1.0; 4]);
+        (p, id)
+    }
+
+    #[test]
+    fn test_undo_redo_move() {
+        let (mut project, id) = make_project_with_line();
+        let mut history = CommandHistory::new();
+
+        // Move
+        project.get_line_mut(id).unwrap().start_frame = 100;
+        project.get_line_mut(id).unwrap().y_slot = 0.75;
+        history.push(Command::MoveLine {
+            line_id: id, old_start: 0, old_y_slot: 0.5,
+            new_start: 100, new_y_slot: 0.75,
+        });
+
+        assert_eq!(project.get_line(id).unwrap().start_frame, 100);
+
+        // Undo
+        history.undo(&mut project);
+        assert_eq!(project.get_line(id).unwrap().start_frame, 0);
+        assert_eq!(project.get_line(id).unwrap().y_slot, 0.5);
+
+        // Redo
+        history.redo(&mut project);
+        assert_eq!(project.get_line(id).unwrap().start_frame, 100);
+    }
+
+    #[test]
+    fn test_undo_redo_delete() {
+        let (mut project, id) = make_project_with_line();
+        let mut history = CommandHistory::new();
+
+        let (snapshot, index) = project.remove_line(id).unwrap();
+        history.push(Command::DeleteLine { snapshot, index });
+        assert_eq!(project.line_count(), 0);
+
+        // Undo restores the line
+        history.undo(&mut project);
+        assert_eq!(project.line_count(), 1);
+        assert_eq!(project.get_line(id).unwrap().text, "test");
+
+        // Redo removes it again
+        history.redo(&mut project);
+        assert_eq!(project.line_count(), 0);
+    }
+
+    #[test]
+    fn test_undo_redo_text() {
+        let (mut project, id) = make_project_with_line();
+        let mut history = CommandHistory::new();
+
+        project.get_line_mut(id).unwrap().text = "modified".into();
+        history.push(Command::UpdateLineText {
+            line_id: id, old_text: "test".into(), new_text: "modified".into(),
+        });
+
+        history.undo(&mut project);
+        assert_eq!(project.get_line(id).unwrap().text, "test");
+    }
+
+    #[test]
+    fn test_coalescing() {
+        let (_, id) = make_project_with_line();
+        let mut history = CommandHistory::new();
+
+        history.push(Command::UpdateLineText {
+            line_id: id, old_text: "a".into(), new_text: "ab".into(),
+        });
+        assert!(history.last_matches(id, CommandKind::UpdateLineText));
+        assert!(!history.last_matches(id, CommandKind::MoveLine));
+        assert!(!history.last_matches(id + 1, CommandKind::UpdateLineText));
+    }
+
+    #[test]
+    fn test_push_clears_redo() {
+        let (mut project, id) = make_project_with_line();
+        let mut history = CommandHistory::new();
+
+        project.get_line_mut(id).unwrap().text = "v1".into();
+        history.push(Command::UpdateLineText {
+            line_id: id, old_text: "test".into(), new_text: "v1".into(),
+        });
+        history.undo(&mut project);
+
+        // New command clears redo stack
+        project.get_line_mut(id).unwrap().text = "v2".into();
+        history.push(Command::UpdateLineText {
+            line_id: id, old_text: "test".into(), new_text: "v2".into(),
+        });
+        // Redo should do nothing (stack cleared)
+        history.redo(&mut project);
+        assert_eq!(project.get_line(id).unwrap().text, "v2");
+    }
 }

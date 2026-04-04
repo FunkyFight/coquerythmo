@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use crate::constants::JS_MAX_SAFE_INTEGER;
 use crate::rythmo_line::{RythmoLine, RythmoMarker};
 
 const DEFAULT_COLORS: &[[f32; 4]] = &[
@@ -20,46 +22,72 @@ pub struct Character {
 }
 
 pub struct Project {
-    pub lines: Vec<RythmoLine>,
+    line_map: HashMap<u64, RythmoLine>,
+    line_order: Vec<u64>,
     pub markers: Vec<RythmoMarker>,
     pub known_characters: Vec<Character>,
-    next_id: u64,
     color_index: usize,
 }
 
 impl Project {
     pub fn new() -> Self {
         Self {
-            lines: Vec::new(),
+            line_map: HashMap::new(),
+            line_order: Vec::new(),
             markers: Vec::new(),
             known_characters: Vec::new(),
-            next_id: 1,
             color_index: 0,
         }
     }
 
     pub fn snapshot(&self) -> Self {
         Self {
-            lines: self.lines.clone(),
+            line_map: self.line_map.clone(),
+            line_order: self.line_order.clone(),
             markers: self.markers.clone(),
             known_characters: self.known_characters.clone(),
-            next_id: self.next_id,
             color_index: self.color_index,
         }
     }
 
+    // -- Line access (O(1) via HashMap) --
+
+    pub fn get_line(&self, id: u64) -> Option<&RythmoLine> {
+        self.line_map.get(&id)
+    }
+
+    pub fn get_line_mut(&mut self, id: u64) -> Option<&mut RythmoLine> {
+        self.line_map.get_mut(&id)
+    }
+
+    /// Iterate over lines in insertion order.
+    pub fn lines(&self) -> impl Iterator<Item = &RythmoLine> {
+        self.line_order.iter().filter_map(move |id| self.line_map.get(id))
+    }
+
+    /// Collect all lines as a Vec (for serialization or cloning).
+    pub fn lines_vec(&self) -> Vec<RythmoLine> {
+        self.lines().cloned().collect()
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.line_map.len()
+    }
+
+    // -- Line mutation --
+
     pub fn add_line(&mut self, start_frame: i64, duration_frames: i64, y_slot: f32) -> u64 {
-        let id = rand::random::<u64>() % 9_007_199_254_740_991; // JS safe integer max
+        let id = rand::random::<u64>() % JS_MAX_SAFE_INTEGER;
         let color = self.next_color();
 
         // Find the last line on the same track (y_slot) that ends before this one starts
-        let (char_name, char_color) = self.lines.iter()
+        let (char_name, char_color) = self.lines()
             .filter(|l| (l.y_slot - y_slot).abs() < 0.01 && l.end_frame() <= start_frame)
             .max_by_key(|l| l.end_frame())
             .map(|l| (l.character_name.clone(), l.character_color))
             .or_else(|| {
                 // Fallback: any line on the same track
-                self.lines.iter()
+                self.lines()
                     .filter(|l| (l.y_slot - y_slot).abs() < 0.01)
                     .last()
                     .map(|l| (l.character_name.clone(), l.character_color))
@@ -70,7 +98,7 @@ impl Project {
             })
             .unwrap_or_else(|| ("Character".to_string(), color));
 
-        self.lines.push(RythmoLine {
+        let line = RythmoLine {
             id,
             start_frame,
             duration_frames,
@@ -78,28 +106,65 @@ impl Project {
             text: String::new(),
             character_name: char_name,
             character_color: char_color,
-        });
+        };
+        self.line_map.insert(id, line);
+        self.line_order.push(id);
         id
     }
 
     pub fn add_line_full(&mut self, start_frame: i64, duration_frames: i64, y_slot: f32, text: String, character_name: String, character_color: [f32; 4]) -> u64 {
-        let id = rand::random::<u64>() % 9_007_199_254_740_991; // JS safe integer max
-        self.lines.push(RythmoLine { id, start_frame, duration_frames, y_slot, text, character_name, character_color });
+        let id = rand::random::<u64>() % JS_MAX_SAFE_INTEGER;
+        let line = RythmoLine { id, start_frame, duration_frames, y_slot, text, character_name, character_color };
+        self.line_map.insert(id, line);
+        self.line_order.push(id);
         id
     }
 
     /// Insert a line with a pre-existing ID (for network sync).
     pub fn insert_line(&mut self, line: RythmoLine) {
-        self.lines.push(line);
+        let id = line.id;
+        self.line_map.insert(id, line);
+        if !self.line_order.contains(&id) {
+            self.line_order.push(id);
+        }
     }
 
-    pub fn get_line(&self, id: u64) -> Option<&RythmoLine> {
-        self.lines.iter().find(|l| l.id == id)
+    /// Insert a line at a specific position (for undo).
+    pub fn insert_line_at(&mut self, index: usize, line: RythmoLine) {
+        let id = line.id;
+        self.line_map.insert(id, line);
+        let idx = index.min(self.line_order.len());
+        self.line_order.insert(idx, id);
     }
 
-    pub fn get_line_mut(&mut self, id: u64) -> Option<&mut RythmoLine> {
-        self.lines.iter_mut().find(|l| l.id == id)
+    /// Remove a line by ID. Returns the line and its index if found.
+    pub fn remove_line(&mut self, id: u64) -> Option<(RythmoLine, usize)> {
+        let line = self.line_map.remove(&id)?;
+        let index = self.line_order.iter().position(|&i| i == id).unwrap_or(0);
+        self.line_order.remove(index);
+        Some((line, index))
     }
+
+    /// Remove lines that don't match a predicate.
+    pub fn retain_lines<F: Fn(&RythmoLine) -> bool>(&mut self, f: F) {
+        self.line_order.retain(|id| {
+            if let Some(line) = self.line_map.get(id) {
+                if f(line) {
+                    return true;
+                }
+            }
+            false
+        });
+        self.line_map.retain(|_, line| f(line));
+    }
+
+    /// Clear all lines.
+    pub fn clear_lines(&mut self) {
+        self.line_map.clear();
+        self.line_order.clear();
+    }
+
+    // -- Character management --
 
     pub fn set_character(&mut self, line_id: u64, name: String, color: [f32; 4]) {
         // Update or add to known characters
@@ -142,5 +207,124 @@ impl Project {
 
     pub fn snap_y(y_ratio: f32) -> f32 {
         (y_ratio * 4.0).round() / 4.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_line() {
+        let mut p = Project::new();
+        let id = p.add_line(0, 48, 0.5);
+        assert_eq!(p.line_count(), 1);
+        let line = p.get_line(id).unwrap();
+        assert_eq!(line.start_frame, 0);
+        assert_eq!(line.duration_frames, 48);
+        assert_eq!(line.y_slot, 0.5);
+    }
+
+    #[test]
+    fn test_add_line_full() {
+        let mut p = Project::new();
+        let id = p.add_line_full(10, 20, 0.25, "hello".into(), "Alice".into(), [1.0, 0.0, 0.0, 1.0]);
+        let line = p.get_line(id).unwrap();
+        assert_eq!(line.text, "hello");
+        assert_eq!(line.character_name, "Alice");
+    }
+
+    #[test]
+    fn test_remove_line() {
+        let mut p = Project::new();
+        let id = p.add_line(0, 48, 0.5);
+        assert_eq!(p.line_count(), 1);
+        let (removed, index) = p.remove_line(id).unwrap();
+        assert_eq!(removed.id, id);
+        assert_eq!(index, 0);
+        assert_eq!(p.line_count(), 0);
+    }
+
+    #[test]
+    fn test_remove_nonexistent() {
+        let mut p = Project::new();
+        assert!(p.remove_line(999).is_none());
+    }
+
+    #[test]
+    fn test_insert_line_at() {
+        let mut p = Project::new();
+        let id1 = p.add_line(0, 10, 0.25);
+        let id2 = p.add_line(20, 10, 0.5);
+        // Insert at position 1 (between id1 and id2)
+        let line = crate::rythmo_line::RythmoLine {
+            id: 42, start_frame: 10, duration_frames: 10, y_slot: 0.75,
+            text: String::new(), character_name: String::new(), character_color: [1.0; 4],
+        };
+        p.insert_line_at(1, line);
+        let ids: Vec<u64> = p.lines().map(|l| l.id).collect();
+        assert_eq!(ids[0], id1);
+        assert_eq!(ids[1], 42);
+        assert_eq!(ids[2], id2);
+    }
+
+    #[test]
+    fn test_retain_lines() {
+        let mut p = Project::new();
+        p.add_line_full(0, 10, 0.25, "keep".into(), "A".into(), [1.0; 4]);
+        p.add_line_full(10, 10, 0.5, "drop".into(), "B".into(), [0.0; 4]);
+        p.add_line_full(20, 10, 0.75, "keep".into(), "C".into(), [1.0; 4]);
+        p.retain_lines(|l| l.text == "keep");
+        assert_eq!(p.line_count(), 2);
+    }
+
+    #[test]
+    fn test_get_line_mut() {
+        let mut p = Project::new();
+        let id = p.add_line(0, 48, 0.5);
+        p.get_line_mut(id).unwrap().text = "modified".into();
+        assert_eq!(p.get_line(id).unwrap().text, "modified");
+    }
+
+    #[test]
+    fn test_snapshot() {
+        let mut p = Project::new();
+        p.add_line(0, 10, 0.25);
+        let snap = p.snapshot();
+        assert_eq!(snap.line_count(), 1);
+        // Modifying original doesn't affect snapshot
+        p.add_line(10, 10, 0.5);
+        assert_eq!(snap.line_count(), 1);
+        assert_eq!(p.line_count(), 2);
+    }
+
+    #[test]
+    fn test_set_character() {
+        let mut p = Project::new();
+        let id = p.add_line(0, 48, 0.5);
+        p.set_character(id, "Alice".into(), [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(p.get_line(id).unwrap().character_name, "Alice");
+        assert_eq!(p.known_characters.len(), 1);
+        assert_eq!(p.known_characters[0].name, "Alice");
+    }
+
+    #[test]
+    fn test_autocomplete() {
+        let mut p = Project::new();
+        let id = p.add_line(0, 48, 0.5);
+        p.set_character(id, "Alice".into(), [1.0; 4]);
+        let results = p.autocomplete("al");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "Alice");
+        // Exact match excluded
+        assert!(p.autocomplete("alice").is_empty());
+    }
+
+    #[test]
+    fn test_snap_y() {
+        assert_eq!(Project::snap_y(0.0), 0.0);
+        assert_eq!(Project::snap_y(0.3), 0.25);
+        assert_eq!(Project::snap_y(0.6), 0.5);
+        assert_eq!(Project::snap_y(0.9), 1.0);
     }
 }

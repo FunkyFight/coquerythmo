@@ -68,6 +68,7 @@ impl NetworkClient {
         let (in_tx, in_rx) = mpsc::channel::<IncomingMessage>();
         let (out_tx, out_rx) = mpsc::channel::<OutgoingMessage>();
         let url = format!("http://{}:{}", ip, port);
+        log::info!("Connecting to {url}");
 
         let tx_connect = in_tx.clone();
         let tx_disconnect = in_tx.clone();
@@ -239,6 +240,7 @@ impl NetworkClient {
 
     /// Send a raw event via the sender thread.
     pub fn send_raw(&self, event: &str, payload: serde_json::Value) {
+        log::debug!("Sending event: {event}");
         if let Some(tx) = &self.out_tx {
             let _ = tx.send(OutgoingMessage(event.to_string(), payload));
         }
@@ -249,6 +251,7 @@ impl NetworkClient {
     }
 
     pub fn disconnect(&mut self) {
+        log::info!("Disconnecting from server");
         // Drop out_tx first to stop sender thread
         self.out_tx = None;
         if let Some(client) = self._client.take() {

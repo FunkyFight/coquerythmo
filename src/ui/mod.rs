@@ -1,3 +1,4 @@
+pub mod connect_modal;
 pub mod dropdown;
 pub mod color_picker;
 pub mod icon_button;
@@ -5,6 +6,7 @@ pub mod icons;
 pub mod interactive;
 pub mod layout;
 pub mod rythmo;
+pub mod settings_modal;
 pub mod slider;
 pub mod text_input;
 pub mod theme;
@@ -28,101 +30,6 @@ use self::slider::Slider;
 
 use theme::*;
 
-struct ConnectModal {
-    join: bool, // false = create room, true = join room
-    fields: [String; 5], // ip, port, password, username, room_code
-    input: text_input::TextInputState,
-    focused: usize, // 0=ip, 1=port, 2=password, 3=username, 4=room_code (join only)
-}
-
-impl ConnectModal {
-    const IP: usize = 0;
-    const PORT: usize = 1;
-    const PASSWORD: usize = 2;
-    const USERNAME: usize = 3;
-    const ROOM_CODE: usize = 4;
-
-    fn new(join: bool) -> Self {
-        let cfg = crate::config::get();
-        let net = &cfg.network;
-        let mut modal = Self {
-            join,
-            fields: [
-                net.server_ip.clone(),
-                net.server_port.to_string(),
-                net.password.clone(),
-                net.username.clone(),
-                String::new(),
-            ],
-            input: text_input::TextInputState::new(),
-            focused: 0,
-        };
-        modal.input.activate(&modal.fields[0]);
-        modal
-    }
-
-    fn field_count(&self) -> usize {
-        if self.join { 5 } else { 4 }
-    }
-
-    fn field_label(&self, i: usize) -> &str {
-        match i {
-            0 => "IP",
-            1 => "Port",
-            2 => "Mot de passe",
-            3 => "Pseudo",
-            4 => "Code du salon",
-            _ => "",
-        }
-    }
-
-    fn focus_next(&mut self) {
-        self.focused = (self.focused + 1) % self.field_count();
-        self.input.activate(&self.fields[self.focused]);
-    }
-
-    fn focus_prev(&mut self) {
-        self.focused = if self.focused == 0 { self.field_count() - 1 } else { self.focused - 1 };
-        self.input.activate(&self.fields[self.focused]);
-    }
-}
-
-struct SettingsModal {
-    lang: String,
-    rythmo_font: Option<String>,
-    available_fonts: Vec<String>,
-    font_scroll_offset: f32,
-    selected_font_index: Option<usize>,
-    hovered_font_index: Option<usize>,
-}
-
-impl SettingsModal {
-    fn new(fonts: Vec<String>) -> Self {
-        let cfg = crate::config::get();
-        let current_font = cfg.ui.rythmo_font.clone();
-        let selected_font_index = current_font.as_ref().and_then(|name| {
-            fonts.iter().position(|f| f == name)
-        });
-        Self {
-            lang: cfg.lang.clone(),
-            rythmo_font: current_font,
-            available_fonts: fonts,
-            font_scroll_offset: 0.0,
-            selected_font_index,
-            hovered_font_index: None,
-        }
-    }
-}
-
-fn settings_card_rect(screen_w: f32, screen_h: f32) -> Rect {
-    Rect {
-        x: (screen_w - Ui::SETTINGS_W) / 2.0,
-        y: (screen_h - Ui::SETTINGS_H) / 2.0,
-        width: Ui::SETTINGS_W,
-        height: Ui::SETTINGS_H,
-    }
-}
-
 pub struct Ui {
     topbar_widgets: Vec<Box<dyn Widget>>,
     toolbar_widgets: Vec<Box<dyn Widget>>,
@@ -141,8 +48,8 @@ pub struct Ui {
     active_dropdown: Option<widget::ToolbarDropdown>,
     pub export_progress: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
     export_label: String,
-    connect_modal: Option<ConnectModal>,
-    settings_modal: Option<SettingsModal>,
+    connect_modal: Option<connect_modal::ConnectModal>,
+    settings_modal: Option<settings_modal::SettingsModal>,
     network_in_room: bool,
     pub network_status: String,
     pub sync_overlay: Option<String>,
@@ -597,225 +504,43 @@ impl Ui {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
-        match event {
-            UiEvent::KeyInput { text } => {
-                if text == "\x1b" {
-                    self.connect_modal = None;
-                    return EventResponse::Consumed;
-                }
-                if text == "\t" {
-                    modal.focus_next();
-                    return EventResponse::Consumed;
-                }
-                if text == "\r" || text == "\n" {
-                    // Submit
-                    let ip = modal.fields[ConnectModal::IP].trim().to_string();
-                    let port: u16 = modal.fields[ConnectModal::PORT].trim().parse().unwrap_or(9050);
-                    let password = modal.fields[ConnectModal::PASSWORD].clone();
-                    let username = modal.fields[ConnectModal::USERNAME].trim().to_string();
-                    let room_code = if modal.join {
-                        let c = modal.fields[ConnectModal::ROOM_CODE].trim().to_uppercase();
-                        if c.is_empty() { return EventResponse::Consumed; }
-                        Some(c)
-                    } else {
-                        None
-                    };
-                    self.connect_modal = None;
-                    if ip.is_empty() || username.is_empty() {
-                        return EventResponse::Consumed;
-                    }
-                    return EventResponse::Action(UiAction::NetworkConnect {
-                        ip, port, password, username, room_code,
-                    });
-                }
-                let focused = modal.focused;
-                if let Some(action) = modal.input.handle_key(text, &modal.fields[focused]) {
-                    if let text_input::TextInputAction::Changed(new_text) = action {
-                        modal.fields[focused] = new_text;
-                    }
-                }
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            connect_modal::ConnectModalResult::Consumed => EventResponse::Consumed,
+            connect_modal::ConnectModalResult::Close => {
+                self.connect_modal = None;
                 EventResponse::Consumed
             }
-            UiEvent::CursorLeft => {
-                if let Some(m) = &mut self.connect_modal { m.input.move_left(); }
-                EventResponse::Consumed
+            connect_modal::ConnectModalResult::Connect { ip, port, password, username, room_code } => {
+                self.connect_modal = None;
+                EventResponse::Action(UiAction::NetworkConnect { ip, port, password, username, room_code })
             }
-            UiEvent::CursorRight => {
-                if let Some(m) = &mut self.connect_modal {
-                    let f = m.focused;
-                    m.input.move_right(&m.fields[f]);
-                }
-                EventResponse::Consumed
-            }
-            UiEvent::CursorUp => {
-                if let Some(m) = &mut self.connect_modal { m.focus_prev(); }
-                EventResponse::Consumed
-            }
-            UiEvent::CursorDown => {
-                if let Some(m) = &mut self.connect_modal { m.focus_next(); }
-                EventResponse::Consumed
-            }
-            UiEvent::MousePress { x, y } => {
-                if let Some(modal) = &mut self.connect_modal {
-                    let field_count = modal.field_count();
-                    let label_h = 16.0;
-                    let field_h = 28.0;
-                    let field_gap = 8.0;
-                    let row_h = label_h + field_h + field_gap;
-                    let dw = 380.0;
-                    let dh = 40.0 + row_h * field_count as f32 + 10.0;
-                    let dx = (self.screen_w - dw) / 2.0;
-                    let dy = (self.screen_h - dh) / 2.0;
-                    let fx = dx + 24.0;
-                    let fw = dw - 48.0;
-                    let base_y = dy + 38.0;
-
-                    // Check if click is on a field
-                    let mut hit = false;
-                    for i in 0..field_count {
-                        let fy = base_y + i as f32 * row_h + label_h;
-                        let field_rect = Rect { x: fx, y: fy, width: fw, height: field_h };
-                        if field_rect.contains(*x, *y) {
-                            modal.focused = i;
-                            modal.input.activate(&modal.fields[i]);
-                            hit = true;
-                            break;
-                        }
-                    }
-                    // Click outside card → close
-                    if !hit {
-                        let card = Rect { x: dx, y: dy, width: dw, height: dh };
-                        if !card.contains(*x, *y) {
-                            self.connect_modal = None;
-                        }
-                    }
-                }
-                EventResponse::Consumed
-            }
-            _ => EventResponse::Consumed,
         }
     }
 
-    // --- Settings modal constants ---
-    const SETTINGS_W: f32 = 450.0;
-    const SETTINGS_H: f32 = 490.0;
-    const SETTINGS_FONT_ITEM_H: f32 = 26.0;
-    const SETTINGS_FONT_LIST_H: f32 = 220.0;
-
     fn handle_settings_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        if self.settings_modal.is_none() {
-            return EventResponse::Ignored;
-        }
-        let card = settings_card_rect(self.screen_w, self.screen_h);
-
-        match event {
-            UiEvent::KeyInput { text } if text == "\x1b" => {
+        let modal = match &mut self.settings_modal {
+            Some(m) => m,
+            None => return EventResponse::Ignored,
+        };
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            settings_modal::SettingsModalResult::Consumed => EventResponse::Consumed,
+            settings_modal::SettingsModalResult::Close => {
                 self.settings_modal = None;
                 EventResponse::Consumed
             }
-            UiEvent::MouseMove { x, y } => {
-                let modal = self.settings_modal.as_mut().unwrap();
-                let list_x = card.x + 20.0;
-                let list_y = card.y + 126.0;
-                let list_w = card.width - 40.0;
-                let list_rect = Rect { x: list_x, y: list_y, width: list_w, height: Self::SETTINGS_FONT_LIST_H };
-                if list_rect.contains(*x, *y) {
-                    let rel_y = *y - list_y + modal.font_scroll_offset;
-                    let idx = (rel_y / Self::SETTINGS_FONT_ITEM_H) as usize;
-                    if idx < modal.available_fonts.len() {
-                        modal.hovered_font_index = Some(idx);
-                    } else {
-                        modal.hovered_font_index = None;
-                    }
-                } else {
-                    modal.hovered_font_index = None;
-                }
-                EventResponse::Consumed
+            settings_modal::SettingsModalResult::Save { lang, rythmo_font } => {
+                self.settings_modal = None;
+                EventResponse::Action(UiAction::SaveSettings { lang, rythmo_font })
             }
-            UiEvent::Scroll { x, y, delta, .. } => {
-                let modal = self.settings_modal.as_mut().unwrap();
-                let list_x = card.x + 20.0;
-                let list_y = card.y + 126.0;
-                let list_w = card.width - 40.0;
-                let list_rect = Rect { x: list_x, y: list_y, width: list_w, height: Self::SETTINGS_FONT_LIST_H };
-                if list_rect.contains(*x, *y) {
-                    let max_scroll = (modal.available_fonts.len() as f32 * Self::SETTINGS_FONT_ITEM_H - Self::SETTINGS_FONT_LIST_H).max(0.0);
-                    modal.font_scroll_offset = (modal.font_scroll_offset - delta * 30.0).clamp(0.0, max_scroll);
-                }
-                EventResponse::Consumed
-            }
-            UiEvent::MousePress { x, y } => {
-                if !card.contains(*x, *y) {
-                    self.settings_modal = None;
-                    return EventResponse::Consumed;
-                }
-
-                let modal = self.settings_modal.as_mut().unwrap();
-
-                // Language buttons
-                let lang_y = card.y + 62.0;
-                let btn_w = 120.0;
-                let btn_h = 30.0;
-                let fr_rect = Rect { x: card.x + 20.0, y: lang_y, width: btn_w, height: btn_h };
-                let en_rect = Rect { x: card.x + 20.0 + btn_w + 10.0, y: lang_y, width: btn_w, height: btn_h };
-
-                if fr_rect.contains(*x, *y) {
-                    modal.lang = "fr-fr".to_string();
-                    return EventResponse::Consumed;
-                }
-                if en_rect.contains(*x, *y) {
-                    modal.lang = "en-us".to_string();
-                    return EventResponse::Consumed;
-                }
-
-                // Font list click
-                let list_x = card.x + 20.0;
-                let list_y = card.y + 126.0;
-                let list_w = card.width - 40.0;
-                let list_rect = Rect { x: list_x, y: list_y, width: list_w, height: Self::SETTINGS_FONT_LIST_H };
-                if list_rect.contains(*x, *y) {
-                    let rel_y = *y - list_y + modal.font_scroll_offset;
-                    let idx = (rel_y / Self::SETTINGS_FONT_ITEM_H) as usize;
-                    if idx < modal.available_fonts.len() {
-                        modal.selected_font_index = Some(idx);
-                        modal.rythmo_font = Some(modal.available_fonts[idx].clone());
-                    }
-                    return EventResponse::Consumed;
-                }
-
-                // "Default font" button (reset to None)
-                let default_btn_y = card.y + 126.0 + Self::SETTINGS_FONT_LIST_H + 6.0;
-                let default_btn_rect = Rect { x: list_x, y: default_btn_y, width: 180.0, height: 26.0 };
-                if default_btn_rect.contains(*x, *y) {
-                    modal.selected_font_index = None;
-                    modal.rythmo_font = None;
-                    return EventResponse::Consumed;
-                }
-
-                // Save button
-                let save_y = card.y + Self::SETTINGS_H - 50.0;
-                let save_w = 140.0;
-                let save_x = card.x + (card.width - save_w) / 2.0;
-                let save_rect = Rect { x: save_x, y: save_y, width: save_w, height: 36.0 };
-                if save_rect.contains(*x, *y) {
-                    let lang = modal.lang.clone();
-                    let rythmo_font = modal.rythmo_font.clone();
-                    self.settings_modal = None;
-                    return EventResponse::Action(UiAction::SaveSettings { lang, rythmo_font });
-                }
-
-                EventResponse::Consumed
-            }
-            _ => EventResponse::Consumed,
         }
     }
 
     pub fn open_connect_modal(&mut self, join: bool) {
-        self.connect_modal = Some(ConnectModal::new(join));
+        self.connect_modal = Some(connect_modal::ConnectModal::new(join));
     }
 
     pub fn open_settings_modal(&mut self, fonts: Vec<String>) {
-        self.settings_modal = Some(SettingsModal::new(fonts));
+        self.settings_modal = Some(settings_modal::SettingsModal::new(fonts));
     }
 
     pub fn close_settings_modal(&mut self) {
@@ -1098,313 +823,12 @@ impl Ui {
 
         // Settings modal
         if let Some(modal) = &self.settings_modal {
-            let card = settings_card_rect(self.screen_w, self.screen_h);
-
-            // Dim background
-            overlay_quads.push(QuadInstance {
-                rect: [0.0, 0.0, self.screen_w, self.screen_h],
-                color: [0.0, 0.0, 0.0, 0.75], color_bottom: [0.0, 0.0, 0.0, 0.75],
-                border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
-            // Card
-            overlay_quads.push(QuadInstance {
-                rect: [card.x, card.y, card.width, card.height],
-                color: [0.22, 0.22, 0.26, 1.0], color_bottom: [0.16, 0.16, 0.19, 1.0],
-                border_color: [0.45, 0.45, 0.52, 0.8],
-                border_width: 1.5, border_radius: 14.0,
-                shadow_offset: [0.0, 4.0], shadow_color: [0.0, 0.0, 0.0, 0.5], shadow_blur: 10.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
-
-            // Title
-            labels.push(LabelInfo {
-                text: t("settings.title"),
-                bounds: Rect { x: card.x, y: card.y + 8.0, width: card.width, height: 28.0 },
-                h_align: HAlign::Center, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(16.0), color_override: None, font_family_override: None,
-            });
-
-            // --- Language section ---
-            labels.push(LabelInfo {
-                text: t("settings.language"),
-                bounds: Rect { x: card.x + 20.0, y: card.y + 42.0, width: 200.0, height: 18.0 },
-                h_align: HAlign::Left, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(12.0), color_override: Some([180, 180, 195]), font_family_override: None,
-            });
-
-            let lang_y = card.y + 62.0;
-            let btn_w = 120.0;
-            let btn_h = 30.0;
-            let is_fr = modal.lang.starts_with("fr");
-            let is_en = !is_fr;
-
-            // Français button
-            let fr_bg = if is_fr { [0.30, 0.28, 0.60, 1.0] } else { [0.15, 0.15, 0.18, 1.0] };
-            let fr_border = if is_fr { [0.50, 0.45, 0.85, 0.9] } else { [0.30, 0.30, 0.36, 0.5] };
-            overlay_quads.push(QuadInstance {
-                rect: [card.x + 20.0, lang_y, btn_w, btn_h],
-                color: fr_bg, color_bottom: fr_bg,
-                border_color: fr_border, border_width: 1.0, border_radius: 6.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
-            labels.push(LabelInfo {
-                text: "Français",
-                bounds: Rect { x: card.x + 20.0, y: lang_y, width: btn_w, height: btn_h },
-                h_align: HAlign::Center, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(13.0), color_override: None, font_family_override: None,
-            });
-
-            // English button
-            let en_bg = if is_en { [0.30, 0.28, 0.60, 1.0] } else { [0.15, 0.15, 0.18, 1.0] };
-            let en_border = if is_en { [0.50, 0.45, 0.85, 0.9] } else { [0.30, 0.30, 0.36, 0.5] };
-            overlay_quads.push(QuadInstance {
-                rect: [card.x + 20.0 + btn_w + 10.0, lang_y, btn_w, btn_h],
-                color: en_bg, color_bottom: en_bg,
-                border_color: en_border, border_width: 1.0, border_radius: 6.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
-            labels.push(LabelInfo {
-                text: "English",
-                bounds: Rect { x: card.x + 20.0 + btn_w + 10.0, y: lang_y, width: btn_w, height: btn_h },
-                h_align: HAlign::Center, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(13.0), color_override: None, font_family_override: None,
-            });
-
-            // Restart required note
-            labels.push(LabelInfo {
-                text: t("settings.restart_required"),
-                bounds: Rect { x: card.x + 20.0 + btn_w * 2.0 + 20.0, y: lang_y, width: 180.0, height: btn_h },
-                h_align: HAlign::Left, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(10.0), color_override: Some([130, 130, 145]), font_family_override: None,
-            });
-
-            // --- Font section ---
-            labels.push(LabelInfo {
-                text: t("settings.rythmo_font"),
-                bounds: Rect { x: card.x + 20.0, y: card.y + 102.0, width: 300.0, height: 18.0 },
-                h_align: HAlign::Left, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(12.0), color_override: Some([180, 180, 195]), font_family_override: None,
-            });
-
-            // Font list background
-            let list_x = card.x + 20.0;
-            let list_y = card.y + 126.0;
-            let list_w = card.width - 40.0;
-            let list_h = Self::SETTINGS_FONT_LIST_H;
-            overlay_quads.push(QuadInstance {
-                rect: [list_x, list_y, list_w, list_h],
-                color: [0.08, 0.08, 0.10, 1.0], color_bottom: [0.08, 0.08, 0.10, 1.0],
-                border_color: [0.30, 0.30, 0.36, 0.5], border_width: 1.0, border_radius: 4.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
-
-            // Font list items (virtual scroll)
-            let item_h = Self::SETTINGS_FONT_ITEM_H;
-            let first_visible = (modal.font_scroll_offset / item_h) as usize;
-            let visible_count = (list_h / item_h) as usize + 2;
-            for i in first_visible..modal.available_fonts.len().min(first_visible + visible_count) {
-                let iy = list_y + (i as f32 * item_h) - modal.font_scroll_offset;
-                if iy + item_h < list_y || iy > list_y + list_h { continue; }
-
-                // Highlight selected or hovered
-                if modal.selected_font_index == Some(i) {
-                    overlay_quads.push(QuadInstance {
-                        rect: [list_x + 2.0, iy.max(list_y), list_w - 4.0, item_h.min(list_y + list_h - iy)],
-                        color: [0.30, 0.28, 0.55, 0.8], color_bottom: [0.30, 0.28, 0.55, 0.8],
-                        border_color: [0.0; 4], border_width: 0.0, border_radius: 3.0,
-                        shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                        rotation: 0.0, _padding: [0.0; 2],
-                    });
-                } else if modal.hovered_font_index == Some(i) {
-                    overlay_quads.push(QuadInstance {
-                        rect: [list_x + 2.0, iy.max(list_y), list_w - 4.0, item_h.min(list_y + list_h - iy)],
-                        color: [1.0, 1.0, 1.0, 0.06], color_bottom: [1.0, 1.0, 1.0, 0.06],
-                        border_color: [0.0; 4], border_width: 0.0, border_radius: 3.0,
-                        shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                        rotation: 0.0, _padding: [0.0; 2],
-                    });
-                }
-
-                // Clip: only show label if it's within the list bounds
-                if iy >= list_y - item_h && iy < list_y + list_h {
-                    labels.push(LabelInfo {
-                        text: &modal.available_fonts[i],
-                        bounds: Rect { x: list_x + 8.0, y: iy, width: list_w - 16.0, height: item_h },
-                        h_align: HAlign::Left, v_align: VAlign::Center,
-                        overflow: Overflow::Ellipsis, padding: 0.0,
-                        font_size_override: Some(12.0), color_override: None, font_family_override: None,
-                    });
-                }
-            }
-
-            // Default font button
-            let default_btn_y = list_y + list_h + 6.0;
-            let default_selected = modal.rythmo_font.is_none();
-            let default_bg = if default_selected { [0.30, 0.28, 0.60, 1.0] } else { [0.15, 0.15, 0.18, 1.0] };
-            let default_border = if default_selected { [0.50, 0.45, 0.85, 0.9] } else { [0.30, 0.30, 0.36, 0.5] };
-            overlay_quads.push(QuadInstance {
-                rect: [list_x, default_btn_y, 180.0, 26.0],
-                color: default_bg, color_bottom: default_bg,
-                border_color: default_border, border_width: 1.0, border_radius: 4.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
-            labels.push(LabelInfo {
-                text: t("settings.default_font"),
-                bounds: Rect { x: list_x, y: default_btn_y, width: 180.0, height: 26.0 },
-                h_align: HAlign::Center, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(11.0), color_override: None, font_family_override: None,
-            });
-
-            // Preview area
-            let preview_y = default_btn_y + 32.0;
-            let preview_h = 36.0;
-            overlay_quads.push(QuadInstance {
-                rect: [list_x, preview_y, list_w, preview_h],
-                color: [0.12, 0.12, 0.15, 1.0], color_bottom: [0.12, 0.12, 0.15, 1.0],
-                border_color: [0.30, 0.30, 0.36, 0.3], border_width: 1.0, border_radius: 4.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
-            labels.push(LabelInfo {
-                text: "Abc 123 Àéîôù — The quick brown fox",
-                bounds: Rect { x: list_x + 8.0, y: preview_y, width: list_w - 16.0, height: preview_h },
-                h_align: HAlign::Left, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(16.0), color_override: None,
-                font_family_override: modal.rythmo_font.as_deref(),
-            });
-
-            // Save button
-            let save_w = 140.0;
-            let save_h = 36.0;
-            let save_x = card.x + (card.width - save_w) / 2.0;
-            let save_y = card.y + Self::SETTINGS_H - 50.0;
-            overlay_quads.push(QuadInstance {
-                rect: [save_x, save_y, save_w, save_h],
-                color: [0.30, 0.55, 0.30, 1.0], color_bottom: [0.22, 0.45, 0.22, 1.0],
-                border_color: [0.40, 0.65, 0.40, 0.8],
-                border_width: 1.0, border_radius: 8.0,
-                shadow_offset: [0.0, 2.0], shadow_color: [0.0, 0.0, 0.0, 0.3], shadow_blur: 4.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
-            labels.push(LabelInfo {
-                text: t("settings.save"),
-                bounds: Rect { x: save_x, y: save_y, width: save_w, height: save_h },
-                h_align: HAlign::Center, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(14.0), color_override: None, font_family_override: None,
-            });
+            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
         }
 
         // Connect modal
         if let Some(modal) = &self.connect_modal {
-            let field_count = modal.field_count();
-            let field_h = 28.0;
-            let field_gap = 8.0;
-            let label_h = 16.0;
-            let row_h = label_h + field_h + field_gap;
-            let dw = 380.0;
-            let dh = 40.0 + row_h * field_count as f32 + 10.0;
-            let dx = (self.screen_w - dw) / 2.0;
-            let dy = (self.screen_h - dh) / 2.0;
-
-            // Dim background
-            overlay_quads.push(QuadInstance {
-                rect: [0.0, 0.0, self.screen_w, self.screen_h],
-                color: [0.0, 0.0, 0.0, 0.75], color_bottom: [0.0, 0.0, 0.0, 0.75],
-                border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
-            // Card
-            overlay_quads.push(QuadInstance {
-                rect: [dx, dy, dw, dh],
-                color: [0.22, 0.22, 0.26, 1.0], color_bottom: [0.16, 0.16, 0.19, 1.0],
-                border_color: [0.45, 0.45, 0.52, 0.8],
-                border_width: 1.5, border_radius: 14.0,
-                shadow_offset: [0.0, 4.0], shadow_color: [0.0, 0.0, 0.0, 0.5], shadow_blur: 10.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
-            // Title
-            let title = if modal.join { t("menu.connect.join_room") } else { t("menu.connect.create_room") };
-            labels.push(LabelInfo {
-                text: title,
-                bounds: Rect { x: dx, y: dy + 8.0, width: dw, height: 24.0 },
-                h_align: HAlign::Center, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(15.0), color_override: None, font_family_override: None,
-            });
-
-            // Fields
-            let fx = dx + 24.0;
-            let fw = dw - 48.0;
-            let base_y = dy + 38.0;
-            for i in 0..field_count {
-                let fy = base_y + i as f32 * row_h;
-                let is_focused = modal.focused == i;
-
-                // Label
-                labels.push(LabelInfo {
-                    text: modal.field_label(i),
-                    bounds: Rect { x: fx, y: fy, width: fw, height: label_h },
-                    h_align: HAlign::Left, v_align: VAlign::Center,
-                    overflow: Overflow::Clip, padding: 0.0,
-                    font_size_override: Some(11.0),
-                    color_override: Some(if is_focused { [200, 200, 220] } else { [140, 140, 155] }),
-                    font_family_override: None,
-                });
-
-                // Input bg
-                let iy = fy + label_h;
-                let border = if is_focused {
-                    [0.40, 0.37, 0.80, 0.8]
-                } else {
-                    [0.30, 0.30, 0.36, 0.5]
-                };
-                overlay_quads.push(QuadInstance {
-                    rect: [fx, iy, fw, field_h],
-                    color: [0.08, 0.08, 0.10, 1.0], color_bottom: [0.08, 0.08, 0.10, 1.0],
-                    border_color: border, border_width: 1.0, border_radius: 4.0,
-                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                    rotation: 0.0, _padding: [0.0; 2],
-                });
-
-                // Field text (password shown as-is — masking requires owned string storage)
-                if !modal.fields[i].is_empty() {
-                    labels.push(LabelInfo {
-                        text: &modal.fields[i],
-                        bounds: Rect { x: fx, y: iy, width: fw, height: field_h },
-                        h_align: HAlign::Left, v_align: VAlign::Center,
-                        overflow: Overflow::Clip, padding: 8.0,
-                        font_size_override: Some(13.0), color_override: None, font_family_override: None,
-                    });
-                }
-
-                // Cursor
-                if is_focused && modal.input.cursor_visible() {
-                    let cursor_x = fx + 8.0 + modal.input.cursor_pos as f32 * 7.8;
-                    overlay_quads.push(QuadInstance {
-                        rect: [cursor_x, iy + 4.0, 1.5, field_h - 8.0],
-                        color: [0.9, 0.9, 0.95, 1.0], color_bottom: [0.9, 0.9, 0.95, 1.0],
-                        border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-                        shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                        rotation: 0.0, _padding: [0.0; 2],
-                    });
-                }
-            }
+            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
         }
 
         renderer.render(

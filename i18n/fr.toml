@@ -1,0 +1,73 @@
+# Coquerythmo — Traductions françaises
+
+# Topbar menus
+"menu.project" = "Projet"
+"menu.project.add_video" = "Ajouter une vidéo"
+"menu.project.import" = "Importer une bande rythmo"
+"menu.project.export" = "Exporter une bande rythmo"
+
+"menu.export" = "Export"
+"menu.export.mp4" = "Exporter le projet en MP4"
+
+"menu.connect" = "Connexion"
+"menu.connect.create_room" = "Créer un salon"
+"menu.connect.join_room" = "Rejoindre un salon"
+"menu.connect.disconnect" = "Se déconnecter"
+
+# File pickers
+"picker.video.title" = "Choisir une vidéo"
+"picker.import.title" = "Importer un projet"
+"picker.export.title" = "Exporter le projet"
+"picker.export_mp4.title" = "Enregistrer la vidéo MP4"
+
+# Zones
+"zone.video_preview" = "Aperçu vidéo"
+"zone.rythmo" = "Bande rythmo"
+"zone.properties" = "Propriétés"
+
+# Toolbar
+"toolbar.play" = "Lecture"
+"toolbar.stop" = "Pause"
+"toolbar.volume" = "Volume"
+"toolbar.prev_frame" = "Image précédente"
+"toolbar.next_frame" = "Image suivante"
+"toolbar.boucle" = "Ajouter une boucle"
+"toolbar.out" = "Ajouter un out"
+"toolbar.scene" = "Changement de scène"
+"toolbar.respirations" = "Respirations"
+"toolbar.reactions" = "Réactions"
+"toolbar.liaison_left" = "Liaison à gauche"
+"toolbar.liaison_right" = "Liaison à droite"
+
+# Respirations
+"resp.up" = "Inspiration"
+"resp.down" = "Expiration"
+"resp.h" = "Bouche ouverte, inspiration"
+"resp.hh" = "Bouche ouverte, expiration"
+"resp.mh" = "Bouche fermée, inspiration"
+"resp.mhh" = "Bouche fermée, expiration"
+
+# Réactions
+"react.x" = "Bruit de bouche"
+"react.mts" = "Claquement de langue à l'ouverture"
+"react.tsc" = "Claquement de bouche, bouche ouverte"
+"react.ah" = "Surprise"
+"react.oh" = "Étonnement"
+"react.ih" = "Dégoût"
+"react.mhm" = "Acquiescement"
+"react.hm" = "Hésitation"
+"react.ptt" = "Dédain"
+"react.pff" = "Exaspération"
+"react.unh" = "Effort"
+"react.hun" = "Interrogation"
+"react.psst" = "Interpellation"
+
+# Settings
+"settings.title" = "Paramètres"
+"settings.language" = "Langue"
+"settings.rythmo_font" = "Police de la bande rythmo"
+"settings.save" = "Enregistrer"
+"settings.default_font" = "Police par défaut"
+"settings.preview" = "Aperçu"
+"settings.restart_required" = "(redémarrage nécessaire)"
+"settings.tooltip" = "Paramètres"

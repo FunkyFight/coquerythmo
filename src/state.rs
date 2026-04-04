@@ -9,15 +9,14 @@ use crate::command::{Command, CommandHistory, CommandKind};
 use crate::graphics::GraphicsContext;
 use crate::network::{ConnectionState, IncomingMessage, NetworkClient};
 use crate::observer::{TimelineBus, TimelineEvent};
-use crate::packet::{CommandPayload, Packetable, Packet, ProjectData};
+use crate::packet::{CommandPayload, Packet, ProjectData};
 use crate::project::Project;
 use crate::ui::renderer::UiRenderer;
-use crate::ui::theme;
 use crate::ui::widget::{EventResponse, UiEvent};
 use crate::ui::Ui;
 use crate::video::VideoPlayer;
 
-const SCROLL_DECODE_DELAY_MS: u128 = 100;
+use crate::constants;
 
 fn parse_color(v: &serde_json::Value) -> [f32; 4] {
     if let Some(arr) = v.as_array() {
@@ -39,6 +38,7 @@ pub struct State {
     video_player: Option<VideoPlayer>,
     pub project: Project,
     pub project_path: Option<std::path::PathBuf>,
+    pub dirty: bool,
     history: CommandHistory,
     pub timeline: TimelineBus,
     pub network: NetworkClient,
@@ -55,7 +55,7 @@ impl State {
 
         Self {
             gfx, ui, ui_renderer, video_player: None, project: Project::new(),
-            project_path: None,
+            project_path: None, dirty: false,
             history: CommandHistory::new(), timeline: TimelineBus::new(),
             network: NetworkClient::new(),
             last_scroll_time: None, scroll_needs_decode: false,
@@ -195,7 +195,7 @@ impl State {
     fn tick_scroll_decode(&mut self) {
         if !self.scroll_needs_decode { return; }
         if let Some(t) = self.last_scroll_time {
-            if t.elapsed().as_millis() >= SCROLL_DECODE_DELAY_MS {
+            if t.elapsed().as_millis() >= constants::SCROLL_DECODE_DELAY_MS {
                 self.scroll_needs_decode = false;
                 let bgl = self.ui_renderer.texture_bind_group_layout();
                 let sampler = self.ui_renderer.texture_sampler();
@@ -310,43 +310,53 @@ impl State {
     fn apply_remote_command(&mut self, payload: CommandPayload) {
         match payload {
             CommandPayload::CreateLine { line } => {
+                log::debug!("Remote: create line {}", line.id);
                 self.project.insert_line(line);
             }
             CommandPayload::DeleteLine { line_id } => {
-                self.project.lines.retain(|l| l.id != line_id);
+                log::debug!("Remote: delete line {}", line_id);
+                self.project.remove_line(line_id);
             }
             CommandPayload::MoveLine { line_id, start_frame, y_slot } => {
+                log::debug!("Remote: move line {}", line_id);
                 if let Some(l) = self.project.get_line_mut(line_id) {
                     l.start_frame = start_frame;
                     l.y_slot = y_slot;
                 }
             }
             CommandPayload::ResizeLine { line_id, start_frame, duration_frames } => {
+                log::debug!("Remote: resize line {}", line_id);
                 if let Some(l) = self.project.get_line_mut(line_id) {
                     l.start_frame = start_frame;
                     l.duration_frames = duration_frames;
                 }
             }
             CommandPayload::UpdateLineText { line_id, text } => {
+                log::debug!("Remote: update text for line {}", line_id);
                 if let Some(l) = self.project.get_line_mut(line_id) {
                     l.text = text;
                 }
             }
             CommandPayload::SetCharacter { line_id, name, color } => {
+                log::debug!("Remote: set character for line {}", line_id);
                 self.project.set_character(line_id, name, color);
             }
             CommandPayload::SetCharacterColor { line_id, color } => {
+                log::debug!("Remote: set character color for line {}", line_id);
                 if let Some(l) = self.project.get_line_mut(line_id) {
                     l.character_color = color;
                 }
             }
             CommandPayload::AddMarker { kind, frame } => {
+                log::debug!("Remote: add marker at frame {}", frame);
                 self.project.markers.push(crate::rythmo_line::RythmoMarker { kind, frame });
             }
             CommandPayload::RemoveMarker { kind, frame } => {
+                log::debug!("Remote: remove marker at frame {}", frame);
                 self.project.markers.retain(|m| !(m.kind == kind && m.frame == frame));
             }
             CommandPayload::LoadVideo { .. } => {
+                log::debug!("Remote: load video (ignored, using chunked transfer)");
                 // Video transfer now uses chunked video_start/chunk/end events
             }
         }
@@ -357,11 +367,11 @@ impl State {
         let remote_ids: std::collections::HashSet<u64> = data.lines.iter().map(|l| l.id).collect();
 
         // Remove lines that no longer exist remotely
-        self.project.lines.retain(|l| remote_ids.contains(&l.id));
+        self.project.retain_lines(|l| remote_ids.contains(&l.id));
 
         // Update existing or add new
         for remote_line in data.lines {
-            if let Some(local) = self.project.lines.iter_mut().find(|l| l.id == remote_line.id) {
+            if let Some(local) = self.project.get_line_mut(remote_line.id) {
                 local.start_frame = remote_line.start_frame;
                 local.duration_frames = remote_line.duration_frames;
                 local.y_slot = remote_line.y_slot;
@@ -369,7 +379,7 @@ impl State {
                 local.character_name = remote_line.character_name;
                 local.character_color = remote_line.character_color;
             } else {
-                self.project.lines.push(remote_line);
+                self.project.insert_line(remote_line);
             }
         }
 
@@ -385,6 +395,7 @@ impl State {
     }
 
     fn apply_delta(&mut self, data: serde_json::Value) {
+        log::debug!("Applying delta: {}", data["action"].as_str().unwrap_or("unknown"));
         let action = data["action"].as_str().unwrap_or("");
         match action {
             "create_line" => {
@@ -397,7 +408,7 @@ impl State {
             }
             "delete_line" => {
                 if let Some(id) = data["line_id"].as_u64() {
-                    self.project.lines.retain(|l| l.id != id);
+                    self.project.remove_line(id);
                 }
             }
             "move_line" => {
@@ -469,6 +480,7 @@ impl State {
     fn push_and_broadcast(&mut self, cmd: Command) {
         self.broadcast_delta(&cmd);
         self.history.push(cmd);
+        self.dirty = true;
     }
 
     /// Broadcast a single command as a delta via the "delta" event.
@@ -555,8 +567,7 @@ impl State {
         if let Some(sel) = self.ui.rythmo_state().selected {
             match sel {
                 Selection::Line(id) => {
-                    if let Some(index) = self.project.lines.iter().position(|l| l.id == id) {
-                        let snapshot = self.project.lines.remove(index);
+                    if let Some((snapshot, index)) = self.project.remove_line(id) {
                         self.push_and_broadcast(Command::DeleteLine { snapshot, index });
                     }
                 }
@@ -595,7 +606,7 @@ impl State {
     }
 
     pub fn create_line(&mut self, frame: i64, y_slot: f32) -> u64 {
-        let dur = (self.fps() * theme::DEFAULT_LINE_DURATION_SEC) as i64;
+        let dur = (self.fps() * constants::DEFAULT_LINE_DURATION_SEC) as i64;
         let line_id = self.project.add_line(frame, dur, y_slot);
         self.push_and_broadcast(Command::CreateLine { line_id });
         line_id

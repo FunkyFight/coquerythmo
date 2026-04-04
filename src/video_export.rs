@@ -2,10 +2,34 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::constants::DEFAULT_EXPORT_FPS;
 use crate::project::Project;
 use crate::rythmo_cpu_renderer;
 
-const OUTPUT_FPS: u32 = 240;
+/// Check if ffmpeg and ffprobe are available in PATH.
+pub fn check_ffmpeg() -> bool {
+    let ffmpeg_ok = std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let ffprobe_ok = std::process::Command::new("ffprobe")
+        .arg("-version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ffmpeg_ok {
+        log::error!("ffmpeg not found in PATH — video features unavailable");
+    }
+    if !ffprobe_ok {
+        log::error!("ffprobe not found in PATH — video features unavailable");
+    }
+    ffmpeg_ok && ffprobe_ok
+}
 
 struct VideoInfo {
     width: u32,
@@ -54,11 +78,14 @@ pub fn export_mp4(
     fps: f64,
     mut progress_cb: impl FnMut(f32) + Send,
 ) -> Result<(), String> {
+    if !check_ffmpeg() {
+        return Err("ffmpeg/ffprobe not found in PATH".into());
+    }
     let info = probe(source_video)?;
     let out_w = info.width;
     let br_h = rythmo_cpu_renderer::br_height(project, out_w);
     let vid_h = info.height;
-    let total_frames = (info.duration_secs * OUTPUT_FPS as f64) as u64;
+    let total_frames = (info.duration_secs * DEFAULT_EXPORT_FPS as f64) as u64;
 
     if total_frames == 0 {
         return Err("Video has no duration".into());
@@ -70,12 +97,12 @@ pub fn export_mp4(
     log::info!("Using {} encoding", codec);
 
     log::info!("Export: {}x{} video + {}px BR, {} frames at {}fps, codec={}",
-        out_w, vid_h, br_h, total_frames, OUTPUT_FPS, codec);
+        out_w, vid_h, br_h, total_frames, DEFAULT_EXPORT_FPS, codec);
 
     // Video on top, BR on bottom
     let filter = format!(
         "[0:v]scale={}:{},fps={}[v];[v][1:v]vstack=inputs=2[out]",
-        out_w, vid_h, OUTPUT_FPS
+        out_w, vid_h, DEFAULT_EXPORT_FPS
     );
 
     let mut encoder = Command::new("ffmpeg")
@@ -83,7 +110,7 @@ pub fn export_mp4(
         .args([
             "-f", "rawvideo", "-pix_fmt", "rgba",
             "-s", &format!("{}x{}", out_w, br_h),
-            "-r", &OUTPUT_FPS.to_string(),
+            "-r", &DEFAULT_EXPORT_FPS.to_string(),
             "-i", "pipe:0",
         ])
         .args(["-filter_complex", &filter, "-map", "[out]", "-map", "0:a?"])
@@ -92,7 +119,7 @@ pub fn export_mp4(
         } else {
             vec!["-c:v", codec, "-preset", "ultrafast", "-crf", "20"]
         })
-        .args(["-pix_fmt", "yuv420p", "-r", &OUTPUT_FPS.to_string(), "-c:a", "copy", "-shortest", "-v", "error", "-y"])
+        .args(["-pix_fmt", "yuv420p", "-r", &DEFAULT_EXPORT_FPS.to_string(), "-c:a", "copy", "-shortest", "-v", "error", "-y"])
         .arg(output)
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
@@ -110,7 +137,7 @@ pub fn export_mp4(
     let mut cached_source_frame: i64 = -1;
 
     for frame_num in 0..total_frames {
-        let source_frame = (frame_num as f64 / OUTPUT_FPS as f64 * fps) as i64;
+        let source_frame = (frame_num as f64 / DEFAULT_EXPORT_FPS as f64 * fps) as i64;
 
         // Only re-render BR when source frame changes
         if source_frame != cached_source_frame {
@@ -123,7 +150,7 @@ pub fn export_mp4(
         }
 
         // Progress every second of output
-        if frame_num % (OUTPUT_FPS as u64) == 0 {
+        if frame_num % (DEFAULT_EXPORT_FPS as u64) == 0 {
             progress_cb(frame_num as f32 / total_frames as f32);
         }
     }

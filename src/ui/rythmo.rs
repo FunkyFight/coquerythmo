@@ -1,21 +1,16 @@
 use super::renderer::StretchedText;
 use super::widget::{EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction, UiEvent, VAlign};
+use crate::constants;
 use crate::project::Project;
 use crate::rythmo_line::MarkerKind;
 
 const TICK_WIDTH: f32 = 1.0;
-const TICK_LONG: f32 = 12.0;
-const TICK_SHORT: f32 = 6.0;
 const TICK_GAP: f32 = 8.0;
 const TICK_COLOR: [f32; 4] = [0.40, 0.40, 0.45, 0.5];
 
 const PLAYHEAD_WIDTH: f32 = 2.0;
 const PLAYHEAD_COLOR: [f32; 4] = [0.85, 0.15, 0.15, 1.0];
 
-const RULER_HEIGHT: f32 = 14.0;
-const PIXELS_PER_FRAME: f32 = 6.0;
-const NUM_SLOTS: f32 = 4.0;
-const HANDLE_WIDTH: f32 = 6.0;
 const HANDLE_COLOR: [f32; 4] = [0.9, 0.9, 0.95, 0.8];
 const LINE_BORDER: [f32; 4] = [0.5, 0.5, 0.55, 0.3];
 const LINE_BORDER_HOVER: [f32; 4] = [0.6, 0.6, 0.65, 0.5];
@@ -125,34 +120,34 @@ impl RythmoState {
 
 fn frame_to_x(frame: i64, current_frame: i64, zone: &Rect) -> f32 {
     let center_x = zone.x + zone.width / 2.0;
-    center_x + (frame - current_frame) as f32 * PIXELS_PER_FRAME
+    center_x + (frame - current_frame) as f32 * constants::PIXELS_PER_FRAME
 }
 
 fn x_to_frame(x: f32, current_frame: i64, zone: &Rect) -> i64 {
     let center_x = zone.x + zone.width / 2.0;
-    current_frame + ((x - center_x) / PIXELS_PER_FRAME) as i64
+    current_frame + ((x - center_x) / constants::PIXELS_PER_FRAME) as i64
 }
 
 fn y_to_slot(y: f32, zone: &Rect) -> f32 {
     let (total_slot_h, _) = slot_metrics(zone);
-    let relative_y = y - zone.y - RULER_HEIGHT;
-    let slot_index = (relative_y / total_slot_h).floor().clamp(0.0, NUM_SLOTS - 1.0);
-    (slot_index / NUM_SLOTS).clamp(0.0, 0.75)
+    let relative_y = y - zone.y - constants::RULER_HEIGHT;
+    let slot_index = (relative_y / total_slot_h).floor().clamp(0.0, constants::NUM_SLOTS - 1.0);
+    (slot_index / constants::NUM_SLOTS).clamp(0.0, 0.75)
 }
 
 fn badge_rect_for_line(line: &crate::rythmo_line::RythmoLine, current_frame: i64, zone: &Rect) -> Rect {
     let x1 = frame_to_x(line.start_frame, current_frame, zone);
     let (total_slot_h, _) = slot_metrics(zone);
-    let slot_index = (line.y_slot * NUM_SLOTS).round() as usize;
-    let y_base = zone.y + RULER_HEIGHT + slot_index as f32 * total_slot_h;
+    let slot_index = (line.y_slot * constants::NUM_SLOTS).round() as usize;
+    let y_base = zone.y + constants::RULER_HEIGHT + slot_index as f32 * total_slot_h;
     let w = badge_width(&line.character_name);
     Rect { x: x1, y: y_base, width: w, height: BADGE_HEIGHT }
 }
 
 fn slot_metrics(zone: &Rect) -> (f32, f32) {
     // Each slot = badge + gap + line body. 4 slots fit in the usable area.
-    let usable_h = zone.height - RULER_HEIGHT;
-    let total_slot_h = usable_h / NUM_SLOTS;
+    let usable_h = zone.height - constants::RULER_HEIGHT;
+    let total_slot_h = usable_h / constants::NUM_SLOTS;
     let line_h = (total_slot_h - BADGE_HEIGHT - BADGE_GAP).max(8.0);
     (total_slot_h, line_h)
 }
@@ -162,8 +157,8 @@ fn line_rect(line: &crate::rythmo_line::RythmoLine, current_frame: i64, zone: &R
     let x2 = frame_to_x(line.end_frame(), current_frame, zone);
     let (total_slot_h, line_h) = slot_metrics(zone);
     // y_slot is 0.0, 0.25, 0.5, 0.75 → maps to slot index 0,1,2,3
-    let slot_index = (line.y_slot * NUM_SLOTS).round() as usize;
-    let y_base = zone.y + RULER_HEIGHT + slot_index as f32 * total_slot_h;
+    let slot_index = (line.y_slot * constants::NUM_SLOTS).round() as usize;
+    let y_base = zone.y + constants::RULER_HEIGHT + slot_index as f32 * total_slot_h;
     let y = y_base + BADGE_HEIGHT + BADGE_GAP;
     Rect { x: x1, y, width: (x2 - x1).max(2.0), height: line_h }
 }
@@ -179,7 +174,7 @@ pub fn render_rythmo_base(zone: &Rect, current_frame: i64) -> Vec<QuadInstance> 
     // Ticks anchored to absolute frame positions via frame_to_x (DRY)
     const FRAMES_PER_TICK: i64 = 2;
 
-    let visible_frames = (zone.width / PIXELS_PER_FRAME) as i64 + 4;
+    let visible_frames = (zone.width / constants::PIXELS_PER_FRAME) as i64 + 4;
     let first_tick = ((current_frame - visible_frames / 2) / FRAMES_PER_TICK) * FRAMES_PER_TICK;
 
     let mut tick_frame = first_tick;
@@ -188,7 +183,7 @@ pub fn render_rythmo_base(zone: &Rect, current_frame: i64) -> Vec<QuadInstance> 
         if x > zone.x + zone.width { break; }
         if x >= zone.x {
             let tick_index = tick_frame / FRAMES_PER_TICK;
-            let h = if tick_index % 2 == 0 { TICK_LONG } else { TICK_SHORT };
+            let h = if tick_index % 2 == 0 { constants::TICK_LONG } else { constants::TICK_SHORT };
             quads.push(QuadInstance {
                 rect: [x, zone.y, TICK_WIDTH, h],
                 color: TICK_COLOR, color_bottom: TICK_COLOR,
@@ -233,7 +228,7 @@ pub fn render_lines<'a>(
     stretched: &mut Vec<StretchedText>,
 ) -> Option<(u64, usize, f32, f32, f32, f32)> {
     let mut cursor_info = None;
-    for line in &project.lines {
+    for line in project.lines() {
         let r = line_rect(line, current_frame, zone);
 
         if r.x + r.width < zone.x || r.x > zone.x + zone.width {
@@ -283,14 +278,14 @@ pub fn render_lines<'a>(
         // Handles (only on hover/editing)
         if is_hovered || is_editing {
             quads.push(QuadInstance {
-                rect: [r.x, r.y, HANDLE_WIDTH, r.height],
+                rect: [r.x, r.y, constants::HANDLE_WIDTH, r.height],
                 color: HANDLE_COLOR, color_bottom: HANDLE_COLOR,
                 border_color: [0.0; 4], border_width: 0.0, border_radius: LINE_RADIUS,
                 shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
                 rotation: 0.0, _padding: [0.0; 2],
             });
             quads.push(QuadInstance {
-                rect: [r.x + r.width - HANDLE_WIDTH, r.y, HANDLE_WIDTH, r.height],
+                rect: [r.x + r.width - constants::HANDLE_WIDTH, r.y, constants::HANDLE_WIDTH, r.height],
                 color: HANDLE_COLOR, color_bottom: HANDLE_COLOR,
                 border_color: [0.0; 4], border_width: 0.0, border_radius: LINE_RADIUS,
                 shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
@@ -359,8 +354,8 @@ pub fn render_lines<'a>(
     // Ghost preview line when holding click on empty space
     if let Some(ghost) = &state.ghost_preview {
         let (total_slot_h, line_h) = slot_metrics(zone);
-        let slot_index = (ghost.y_slot * NUM_SLOTS).round() as usize;
-        let y_base = zone.y + RULER_HEIGHT + slot_index as f32 * total_slot_h;
+        let slot_index = (ghost.y_slot * constants::NUM_SLOTS).round() as usize;
+        let y_base = zone.y + constants::RULER_HEIGHT + slot_index as f32 * total_slot_h;
         let ghost_y = y_base + BADGE_HEIGHT + BADGE_GAP;
         let ghost_rect_x = frame_to_x(ghost.frame, current_frame, zone);
         // Fixed preview width (~2s at 25fps)
@@ -617,7 +612,7 @@ pub fn render_markers<'a>(
             MarkerKind::LiaisonLeft => {
                 let uv = liaison_left_uv;
                 liaison_icons.push(IconInstance {
-                    rect: [x - 8.0, zone.y, 16.0, RULER_HEIGHT],
+                    rect: [x - 8.0, zone.y, 16.0, constants::RULER_HEIGHT],
                     uv_rect: uv,
                     tint: [0.7, 0.7, 0.75, 0.9],
                 });
@@ -625,7 +620,7 @@ pub fn render_markers<'a>(
             MarkerKind::LiaisonRight => {
                 let uv = liaison_right_uv;
                 liaison_icons.push(IconInstance {
-                    rect: [x - 8.0, zone.y, 16.0, RULER_HEIGHT],
+                    rect: [x - 8.0, zone.y, 16.0, constants::RULER_HEIGHT],
                     uv_rect: uv,
                     tint: [0.7, 0.7, 0.75, 0.9],
                 });
@@ -643,7 +638,7 @@ pub fn autocomplete_hit(
     click_y: f32,
 ) -> Option<(String, [f32; 4])> {
     if let Some(line_id) = state.editing_character {
-        if let Some(line) = project.lines.iter().find(|l| l.id == line_id) {
+        if let Some(line) = project.lines().find(|l| l.id == line_id) {
             let br = badge_rect_for_line(line, current_frame, zone);
             let lr = line_rect(line, current_frame, zone);
             let suggestions = project.autocomplete(&line.character_name);
@@ -723,9 +718,9 @@ pub fn handle_rythmo_event(
             let dx = *x - state.pan_last_x;
             state.pan_last_x = *x;
             state.pan_accum -= dx;
-            let frames = (state.pan_accum / PIXELS_PER_FRAME) as i32;
+            let frames = (state.pan_accum / constants::PIXELS_PER_FRAME) as i32;
             if frames != 0 {
-                state.pan_accum -= frames as f32 * PIXELS_PER_FRAME;
+                state.pan_accum -= frames as f32 * constants::PIXELS_PER_FRAME;
                 return EventResponse::Action(UiAction::SeekRelative(frames));
             }
             return EventResponse::Consumed;
@@ -792,7 +787,7 @@ fn handle_mouse_move(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -
     }
 
     if let Some(drag) = &state.dragging {
-        let dx_frames = ((x - drag.drag_start_x) / PIXELS_PER_FRAME) as i64;
+        let dx_frames = ((x - drag.drag_start_x) / constants::PIXELS_PER_FRAME) as i64;
         return match &drag.target {
             DragTarget::Marker(idx) => {
                 let new_frame = drag.original_frame + dx_frames;
@@ -813,8 +808,8 @@ fn handle_mouse_move(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -
                         let candidate = y_to_slot(y, ctx.zone);
                         let new_y_slot = if candidate != drag.original_y_slot {
                             let (total_slot_h, _) = slot_metrics(ctx.zone);
-                            let orig_slot_idx = (drag.original_y_slot * NUM_SLOTS).round();
-                            let orig_center = ctx.zone.y + RULER_HEIGHT + orig_slot_idx * total_slot_h + total_slot_h / 2.0;
+                            let orig_slot_idx = (drag.original_y_slot * constants::NUM_SLOTS).round();
+                            let orig_center = ctx.zone.y + constants::RULER_HEIGHT + orig_slot_idx * total_slot_h + total_slot_h / 2.0;
                             if (y - orig_center).abs() > total_slot_h * 0.6 { candidate } else { drag.original_y_slot }
                         } else {
                             drag.original_y_slot
@@ -828,7 +823,7 @@ fn handle_mouse_move(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -
 
     // Ghost preview when CTRL held and hovering empty BR space
     if state.ctrl_held && ctx.zone.contains(x, y) {
-        let on_line = ctx.project.lines.iter()
+        let on_line = ctx.project.lines()
             .any(|l| line_rect(l, ctx.current_frame, ctx.zone).contains(x, y));
         if !on_line {
             state.ghost_preview = Some(GhostPreview {
@@ -848,7 +843,7 @@ fn handle_mouse_move(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -
         return EventResponse::Ignored;
     }
 
-    let found = ctx.project.lines.iter()
+    let found = ctx.project.lines()
         .find(|l| line_rect(l, ctx.current_frame, ctx.zone).contains(x, y))
         .map(|l| l.id);
     if found != state.hovered_line {
@@ -896,14 +891,14 @@ fn handle_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) 
     }
 
     // Check lines
-    for line in &ctx.project.lines {
+    for line in ctx.project.lines() {
         let r = line_rect(line, ctx.current_frame, ctx.zone);
         if !r.contains(x, y) { continue; }
 
         state.selected = Some(Selection::Line(line.id));
 
-        let handle = if x < r.x + HANDLE_WIDTH { DragHandle::Left }
-            else if x > r.x + r.width - HANDLE_WIDTH { DragHandle::Right }
+        let handle = if x < r.x + constants::HANDLE_WIDTH { DragHandle::Left }
+            else if x > r.x + r.width - constants::HANDLE_WIDTH { DragHandle::Right }
             else { DragHandle::Body };
 
         state.dragging = Some(DragState {
@@ -949,7 +944,7 @@ fn handle_double_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32)
     let finalize_line_id = state.editing_character;
 
     // Badge → character editing
-    for line in &ctx.project.lines {
+    for line in ctx.project.lines() {
         let br = badge_rect_for_line(line, ctx.current_frame, ctx.zone);
         if br.contains(x, y) {
             if let Some(old_id) = finalize_line_id {
@@ -971,7 +966,7 @@ fn handle_double_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32)
         }
     }
     // Line body → text editing
-    for line in &ctx.project.lines {
+    for line in ctx.project.lines() {
         let r = line_rect(line, ctx.current_frame, ctx.zone);
         if r.contains(x, y) {
             state.editing_line = Some(line.id);

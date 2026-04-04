@@ -58,7 +58,7 @@ impl ProjectData {
     pub fn from_project(project: &Project, fps: f64) -> Self {
         Self {
             source_fps: fps,
-            lines: project.lines.iter().map(|l| LineData {
+            lines: project.lines().map(|l| LineData {
                 start_frame: l.start_frame,
                 duration_frames: l.duration_frames,
                 y_slot: l.y_slot,
@@ -89,7 +89,11 @@ impl ProjectData {
         } else {
             1.0
         };
-        project.lines.clear();
+        if fps_ratio <= 0.0 {
+            log::error!("Invalid fps_ratio {} (source_fps={}, target_fps={}), aborting import", fps_ratio, self.source_fps, target_fps);
+            return;
+        }
+        project.clear_lines();
         project.markers.clear();
         project.known_characters.clear();
 
@@ -98,9 +102,19 @@ impl ProjectData {
         }
 
         for l in &self.lines {
+            let adjusted_start = (l.start_frame as f64 * fps_ratio) as i64;
+            let adjusted_duration = (l.duration_frames as f64 * fps_ratio) as i64;
+            if adjusted_duration <= 0 {
+                log::warn!("Skipping line '{}': duration must be positive (got {})", l.text, adjusted_duration);
+                continue;
+            }
+            if l.y_slot < 0.0 || l.y_slot > 1.0 {
+                log::warn!("Skipping line '{}': y_slot out of range (got {})", l.text, l.y_slot);
+                continue;
+            }
             project.add_line_full(
-                (l.start_frame as f64 * fps_ratio) as i64,
-                (l.duration_frames as f64 * fps_ratio) as i64,
+                adjusted_start,
+                adjusted_duration,
                 l.y_slot,
                 l.text.clone(), l.character_name.clone(), l.character_color,
             );
@@ -113,7 +127,10 @@ impl ProjectData {
                 "scene_change" => MarkerKind::SceneChange,
                 "liaison_left" => MarkerKind::LiaisonLeft,
                 "liaison_right" => MarkerKind::LiaisonRight,
-                _ => continue,
+                _ => {
+                    log::warn!("Skipping unknown marker kind: {}", m.kind);
+                    continue;
+                }
             };
             project.markers.push(RythmoMarker { kind, frame: (m.frame as f64 * fps_ratio) as i64 });
         }
@@ -152,5 +169,85 @@ impl ProjectImporter for JsonImporter {
             .map_err(|e| format!("JSON parse error: {e}"))?;
         log::info!("Project imported from {}", path.display());
         Ok(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_roundtrip_json() {
+        let mut project = Project::new();
+        project.add_line_full(0, 48, 0.5, "hello".into(), "Alice".into(), [1.0, 0.0, 0.0, 1.0]);
+        project.markers.push(crate::rythmo_line::RythmoMarker {
+            kind: crate::rythmo_line::MarkerKind::Boucle, frame: 100,
+        });
+
+        let data = ProjectData::from_project(&project, 24.0);
+        let json = serde_json::to_string(&data).unwrap();
+        let restored: ProjectData = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.lines.len(), 1);
+        assert_eq!(restored.lines[0].text, "hello");
+        assert_eq!(restored.markers.len(), 1);
+        assert_eq!(restored.source_fps, 24.0);
+    }
+
+    #[test]
+    fn test_fps_conversion() {
+        let data = ProjectData {
+            source_fps: 24.0,
+            lines: vec![LineData {
+                start_frame: 24, duration_frames: 48, y_slot: 0.5,
+                text: "test".into(), character_name: "A".into(),
+                character_color: [1.0; 4],
+            }],
+            markers: vec![],
+            characters: vec![],
+        };
+
+        let mut project = Project::new();
+        data.apply_to_project(&mut project, 30.0);
+
+        let line = project.lines().next().unwrap();
+        // 24 frames at 24fps -> 1 second -> 30 frames at 30fps
+        assert_eq!(line.start_frame, 30);
+        // 48 frames at 24fps -> 2 seconds -> 60 frames at 30fps
+        assert_eq!(line.duration_frames, 60);
+    }
+
+    #[test]
+    fn test_apply_clears_existing() {
+        let mut project = Project::new();
+        project.add_line(0, 10, 0.25);
+        project.add_line(10, 10, 0.5);
+        assert_eq!(project.line_count(), 2);
+
+        let data = ProjectData {
+            source_fps: 24.0,
+            lines: vec![LineData {
+                start_frame: 0, duration_frames: 10, y_slot: 0.25,
+                text: "new".into(), character_name: "X".into(),
+                character_color: [1.0; 4],
+            }],
+            markers: vec![],
+            characters: vec![],
+        };
+        data.apply_to_project(&mut project, 24.0);
+        assert_eq!(project.line_count(), 1);
+    }
+
+    #[test]
+    fn test_unknown_marker_skipped() {
+        let data = ProjectData {
+            source_fps: 24.0,
+            lines: vec![],
+            markers: vec![MarkerData { kind: "unknown_kind".into(), frame: 50 }],
+            characters: vec![],
+        };
+        let mut project = Project::new();
+        data.apply_to_project(&mut project, 24.0);
+        assert_eq!(project.markers.len(), 0);
     }
 }

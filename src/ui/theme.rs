@@ -116,7 +116,6 @@ pub const DOUBLE_CLICK_MS: u128 = 400;
 pub const CURSOR_BLINK_MS: u128 = 1000;
 pub const CURSOR_BLINK_ON_MS: u128 = 500;
 pub const SCROLL_MULTIPLIER: f32 = 30.0;
-pub const DEFAULT_LINE_DURATION_SEC: f64 = 2.0;
 
 // -- Audio --
 pub const AUDIO_SAMPLE_RATE: u32 = 44100;

@@ -178,11 +178,59 @@ impl Packetable for Command {
 impl ProjectData {
     pub fn from_project(project: &Project) -> Self {
         Self {
-            lines: project.lines.clone(),
+            lines: project.lines_vec(),
             markers: project.markers.clone(),
             known_characters: project.known_characters.iter()
                 .map(|c| CharacterData { name: c.name.clone(), color: c.color })
                 .collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_command_payload_roundtrip() {
+        let payload = CommandPayload::CreateLine {
+            line: RythmoLine {
+                id: 42, start_frame: 10, duration_frames: 20, y_slot: 0.5,
+                text: "test".into(), character_name: "Alice".into(),
+                character_color: [1.0, 0.0, 0.0, 1.0],
+            },
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let restored: CommandPayload = serde_json::from_str(&json).unwrap();
+        match restored {
+            CommandPayload::CreateLine { line } => {
+                assert_eq!(line.id, 42);
+                assert_eq!(line.text, "test");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_project_data_roundtrip() {
+        let mut project = Project::new();
+        project.add_line_full(0, 48, 0.5, "hello".into(), "Bob".into(), [0.0, 1.0, 0.0, 1.0]);
+        let data = ProjectData::from_project(&project);
+        let json = serde_json::to_string(&data).unwrap();
+        let restored: ProjectData = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.lines.len(), 1);
+        assert_eq!(restored.lines[0].text, "hello");
+    }
+
+    #[test]
+    fn test_packet_serde() {
+        let packet = Packet::RoomCreated { code: "ABC123".into() };
+        let json = serde_json::to_string(&packet).unwrap();
+        assert!(json.contains("ABC123"));
+        let restored: Packet = serde_json::from_str(&json).unwrap();
+        match restored {
+            Packet::RoomCreated { code } => assert_eq!(code, "ABC123"),
+            _ => panic!("wrong variant"),
         }
     }
 }

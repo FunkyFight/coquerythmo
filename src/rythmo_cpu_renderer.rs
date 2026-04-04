@@ -1,24 +1,12 @@
 use resvg::tiny_skia::{self, Pixmap, Paint, Rect as SkRect, Transform, PathBuilder};
 use glyphon::{Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent};
+use crate::constants;
 use crate::project::Project;
 use crate::rythmo_line::MarkerKind;
 
-// Base values at reference width 800px. Scaled up for export resolution.
-const REF_WIDTH: f32 = 800.0;
-const BASE_PIXELS_PER_FRAME: f32 = 6.0;
-const BASE_TICK_LONG: f32 = 12.0;
-const BASE_TICK_SHORT: f32 = 6.0;
+// Local constants not shared with the UI
 const BASE_TICK_WIDTH: f32 = 1.0;
 const BASE_PLAYHEAD_WIDTH: f32 = 2.0;
-const BASE_BADGE_HEIGHT: f32 = 14.0;
-const BASE_BADGE_GAP: f32 = 2.0;
-const BASE_SLOT_H: f32 = 40.0;
-const BASE_RULER_H: f32 = 14.0;
-const BASE_FONT_SIZE: f32 = 16.0;
-const BASE_BADGE_FONT: f32 = 9.0;
-const BASE_BADGE_CHAR_W: f32 = 6.0;
-const BASE_HANDLE_WIDTH: f32 = 6.0;
-const TICK_GAP_FRAMES: i64 = 2;
 
 /// Persistent state for CPU text rasterization (reused across frames).
 pub struct CpuRenderer {
@@ -150,21 +138,21 @@ impl CpuRenderer {
 
     /// Render the bande rythmo for a given frame. All sizes scale with width.
     pub fn render_br(&mut self, project: &Project, current_frame: i64, width: u32, _fps: f64) -> Vec<u8> {
-        let s = width as f32 / REF_WIDTH; // scale factor
+        let s = width as f32 / constants::REF_WIDTH; // scale factor
         let used_slots = count_used_slots(project);
         let slot_count = used_slots.max(1) as f32;
-        let slot_h = BASE_SLOT_H * s;
-        let ruler_h = BASE_RULER_H * s;
-        let ppf = BASE_PIXELS_PER_FRAME * s;
-        let tick_long = BASE_TICK_LONG * s;
-        let tick_short = BASE_TICK_SHORT * s;
+        let slot_h = constants::SLOT_HEIGHT * s;
+        let ruler_h = constants::RULER_HEIGHT * s;
+        let ppf = constants::PIXELS_PER_FRAME * s;
+        let tick_long = constants::TICK_LONG * s;
+        let tick_short = constants::TICK_SHORT * s;
         let tick_w = BASE_TICK_WIDTH * s;
         let playhead_w = BASE_PLAYHEAD_WIDTH * s;
-        let badge_h = BASE_BADGE_HEIGHT * s;
-        let badge_gap = BASE_BADGE_GAP * s;
-        let font_size = BASE_FONT_SIZE * s;
-        let badge_font = BASE_BADGE_FONT * s;
-        let badge_char_w = BASE_BADGE_CHAR_W * s;
+        let badge_h = constants::BADGE_HEIGHT * s;
+        let badge_gap = constants::BADGE_GAP * s;
+        let font_size = constants::RYTHMO_FONT_SIZE * s;
+        let badge_font = constants::BADGE_FONT_SIZE * s;
+        let badge_char_w = constants::BADGE_CHAR_W * s;
         let height = (ruler_h + slot_count * (slot_h + badge_h + badge_gap)).ceil() as u32;
 
         let mut pixmap = Pixmap::new(width, height).unwrap();
@@ -178,19 +166,19 @@ impl CpuRenderer {
         let mut tick_paint = Paint::default();
         tick_paint.set_color_rgba8(100, 100, 115, 128);
         let visible_frames = (w / ppf) as i64 + 4;
-        let first_tick = ((current_frame - visible_frames / 2) / TICK_GAP_FRAMES) * TICK_GAP_FRAMES;
+        let first_tick = ((current_frame - visible_frames / 2) / constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
         let mut tf = first_tick;
         loop {
             let x = center_x + (tf - current_frame) as f32 * ppf;
             if x > w { break; }
             if x >= 0.0 {
-                let tick_idx = tf / TICK_GAP_FRAMES;
+                let tick_idx = tf / constants::TICK_GAP_FRAMES;
                 let th = if tick_idx % 2 == 0 { tick_long } else { tick_short };
                 if let Some(rect) = SkRect::from_xywh(x, 0.0, tick_w, th) {
                     pixmap.fill_rect(rect, &tick_paint, Transform::identity(), None);
                 }
             }
-            tf += TICK_GAP_FRAMES;
+            tf += constants::TICK_GAP_FRAMES;
         }
 
         // -- Playhead --
@@ -203,7 +191,7 @@ impl CpuRenderer {
         // -- Lines (no handles, no border — clean export) --
         let total_slot_h = slot_h + badge_h + badge_gap;
 
-        for line in &project.lines {
+        for line in project.lines() {
             let x1 = center_x + (line.start_frame - current_frame) as f32 * ppf;
             let x2 = center_x + (line.end_frame() - current_frame) as f32 * ppf;
             let lw = (x2 - x1).max(2.0);
@@ -356,15 +344,15 @@ impl CpuRenderer {
 
 /// Calculate the BR height in pixels based on used slots.
 pub fn br_height(project: &Project, width: u32) -> u32 {
-    let s = width as f32 / REF_WIDTH;
+    let s = width as f32 / constants::REF_WIDTH;
     let used = count_used_slots(project);
     let slot_count = used.max(1) as f32;
-    (BASE_RULER_H * s + slot_count * (BASE_SLOT_H * s + BASE_BADGE_HEIGHT * s + BASE_BADGE_GAP * s)).ceil() as u32
+    (constants::RULER_HEIGHT * s + slot_count * (constants::SLOT_HEIGHT * s + constants::BADGE_HEIGHT * s + constants::BADGE_GAP * s)).ceil() as u32
 }
 
 fn count_used_slots(project: &Project) -> usize {
     let mut slots = std::collections::HashSet::new();
-    for line in &project.lines {
+    for line in project.lines() {
         let idx = (line.y_slot * 4.0).round() as i32;
         slots.insert(idx);
     }
