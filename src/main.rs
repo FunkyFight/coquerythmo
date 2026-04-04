@@ -30,10 +30,18 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
     match action {
         UiAction::CloseApp => return true,
         UiAction::AddVideo => {
-            let file = rfd::FileDialog::new()
+            let mut dialog = rfd::FileDialog::new()
                 .set_title(i18n::t("picker.video.title"))
-                .add_filter("Video", &["mp4", "mov", "avi", "mkv", "webm"])
-                .pick_file();
+                .add_filter("Video", &["mp4", "mov", "avi", "mkv", "webm"]);
+            // Start in the last used directory, or the user's home
+            if let Some(ref prev) = state.project_path {
+                if let Some(parent) = prev.parent() {
+                    dialog = dialog.set_directory(parent);
+                }
+            } else if let Some(home) = dirs::home_dir() {
+                dialog = dialog.set_directory(home);
+            }
+            let file = dialog.pick_file();
             if let Some(path) = file {
                 state.load_video(&path);
             }
