@@ -2,7 +2,6 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::constants::DEFAULT_EXPORT_FPS;
 use crate::project::Project;
 use crate::rythmo_cpu_renderer;
 
@@ -68,9 +67,19 @@ fn has_nvenc() -> bool {
         .unwrap_or(false)
 }
 
-/// Export MP4 with BR strip.
-/// - BR frames cached (only re-rendered when source frame changes) → ~10x faster
-/// - NVENC hardware encoding if available
+/// Check if CUDA hardware-accelerated decoding is available
+fn has_cuda_hwaccel() -> bool {
+    Command::new("ffmpeg")
+        .args(["-hide_banner", "-hwaccels"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("cuda"))
+        .unwrap_or(false)
+}
+
+/// Export MP4 with BR strip (two-pass).
+/// - Pass 1: render BR frames → encode to temp video (pipe only carries BR, no source decoding)
+/// - Pass 2: combine source + BR temp file (both file inputs, no pipe bottleneck)
+/// - CUDA hwaccel + NVENC when available
 pub fn export_mp4(
     project: &Project,
     source_video: &Path,
@@ -85,82 +94,210 @@ pub fn export_mp4(
     let out_w = info.width;
     let br_h = rythmo_cpu_renderer::br_height(project, out_w);
     let vid_h = info.height;
-    let total_frames = (info.duration_secs * DEFAULT_EXPORT_FPS as f64) as u64;
+    let total_frames = (info.duration_secs * fps) as u64;
 
     if total_frames == 0 {
         return Err("Video has no duration".into());
     }
 
-    // Pick encoder: nvenc (GPU) or libx264 (CPU fallback)
     let use_nvenc = has_nvenc();
+    let use_cuda = use_nvenc && has_cuda_hwaccel();
     let codec = if use_nvenc { "h264_nvenc" } else { "libx264" };
-    log::info!("Using {} encoding", codec);
-
+    log::info!("Using {} encoding, CUDA hwaccel={}", codec, use_cuda);
     log::info!("Export: {}x{} video + {}px BR, {} frames at {}fps, codec={}",
-        out_w, vid_h, br_h, total_frames, DEFAULT_EXPORT_FPS, codec);
+        out_w, vid_h, br_h, total_frames, fps, codec);
 
-    // Video on top, BR on bottom
-    let filter = format!(
-        "[0:v]scale={}:{},fps={}[v];[v][1:v]vstack=inputs=2[out]",
-        out_w, vid_h, DEFAULT_EXPORT_FPS
-    );
+    // === Pass 1: Render BR strip → temp video file ===
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| format!("cannot locate exe: {e}"))?
+        .parent()
+        .ok_or("cannot get exe directory")?
+        .to_path_buf();
+    let temp_dir = exe_dir.join("temp");
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let temp_br = temp_dir.join("br_temp.mp4");
+    log::info!("Pass 1: encoding {} BR frames at {}fps to {}", total_frames, fps, temp_br.display());
 
-    let mut encoder = Command::new("ffmpeg")
-        .arg("-i").arg(source_video)
+    // Ensure even dimensions for YUV420p (chroma subsampling requires 2x2 blocks)
+    let br_h_even = (br_h + 1) & !1;
+    let w = out_w as usize;
+    let h = br_h_even as usize;
+    let yuv_frame_size = w * h * 3 / 2; // Y: w*h, U: w/2*h/2, V: w/2*h/2
+
+    let mut br_encoder = Command::new("ffmpeg")
         .args([
-            "-f", "rawvideo", "-pix_fmt", "rgba",
-            "-s", &format!("{}x{}", out_w, br_h),
-            "-r", &DEFAULT_EXPORT_FPS.to_string(),
+            "-f", "rawvideo", "-pix_fmt", "yuv420p",
+            "-s", &format!("{}x{}", w, h),
+            "-r", &fps.to_string(),
             "-i", "pipe:0",
         ])
+        .args(if use_nvenc {
+            vec!["-c:v", "hevc_nvenc", "-preset", "p1", "-tune", "lossless"]
+        } else {
+            vec!["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0"]
+        })
+        .args(["-v", "error", "-y"])
+        .arg(&temp_br)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("ffmpeg pass 1: {e}"))?;
+
+    {
+        let br_stdin = br_encoder.stdin.take().unwrap();
+        let mut writer = std::io::BufWriter::with_capacity(yuv_frame_size * 8, br_stdin);
+
+        let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        log::info!("Parallel BR render: {} threads", n_threads);
+
+        // Create renderers ONCE — FontSystem::new() scans all system fonts,
+        // so creating one per frame was the real bottleneck.
+        let mut renderers: Vec<rythmo_cpu_renderer::CpuRenderer> = (0..n_threads)
+            .map(|_| rythmo_cpu_renderer::CpuRenderer::new())
+            .collect();
+
+        let frame_indices: Vec<i64> = (0..total_frames as i64).collect();
+        let mut yuv_buf = vec![0u8; yuv_frame_size];
+        let hw = w / 2;
+        let u_off = w * h;
+        let v_off = u_off + hw * (h / 2);
+
+        for batch in frame_indices.chunks(n_threads) {
+            // Render batch in parallel — each thread reuses its own persistent CpuRenderer
+            let rendered: Vec<Vec<u8>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = batch.iter()
+                    .zip(renderers.iter_mut())
+                    .map(|(&frame, renderer)| {
+                        scope.spawn(move || {
+                            renderer.render_br(project, frame, out_w, fps)
+                        })
+                    }).collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+
+            // Convert RGBA → YUV420p and write in order
+            for (i, rgba) in rendered.iter().enumerate() {
+                let frame = batch[i];
+
+                let y_plane = &mut yuv_buf[..w * h];
+                for y in 0..br_h as usize {
+                    for x in 0..w {
+                        let si = (y * w + x) * 4;
+                        let (r, g, b) = (rgba[si] as i32, rgba[si + 1] as i32, rgba[si + 2] as i32);
+                        y_plane[y * w + x] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(16, 235) as u8;
+                    }
+                }
+                for y in br_h as usize..h {
+                    for x in 0..w {
+                        yuv_buf[y * w + x] = 16;
+                    }
+                }
+                for cy in 0..h / 2 {
+                    for cx in 0..hw {
+                        let mut r_sum = 0i32;
+                        let mut g_sum = 0i32;
+                        let mut b_sum = 0i32;
+                        for dy in 0..2usize {
+                            for dx in 0..2usize {
+                                let py = cy * 2 + dy;
+                                let px = cx * 2 + dx;
+                                let si = (py * w + px) * 4;
+                                if py < br_h as usize {
+                                    r_sum += rgba[si] as i32;
+                                    g_sum += rgba[si + 1] as i32;
+                                    b_sum += rgba[si + 2] as i32;
+                                }
+                            }
+                        }
+                        let r = r_sum >> 2;
+                        let g = g_sum >> 2;
+                        let b = b_sum >> 2;
+                        yuv_buf[u_off + cy * hw + cx] = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128).clamp(16, 240) as u8;
+                        yuv_buf[v_off + cy * hw + cx] = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(16, 240) as u8;
+                    }
+                }
+
+                if writer.write_all(&yuv_buf).is_err() {
+                    break;
+                }
+
+                if frame as u64 % fps as u64 == 0 {
+                    progress_cb(frame as f32 / total_frames as f32 * 0.9);
+                }
+            }
+        }
+
+        let _ = writer.flush();
+    }
+
+    let result = br_encoder.wait_with_output().map_err(|e| format!("ffmpeg pass 1: {e}"))?;
+    if !result.status.success() {
+        let _ = std::fs::remove_file(&temp_br);
+        return Err(format!("ffmpeg pass 1: {}", String::from_utf8_lossy(&result.stderr)));
+    }
+    log::info!("Pass 1 complete, BR temp: {}", temp_br.display());
+
+    // === Pass 2: Combine source video + BR temp file (no pipe) ===
+    log::info!("Pass 2: combining source + BR strip");
+    progress_cb(0.9);
+
+    // Both source video and BR temp are at source fps — no fps conversion needed, just vstack.
+    // Ensure both streams have matching pixel format before vstack.
+    let filter = if use_cuda {
+        format!(
+            "[0:v]scale_cuda={}:{},hwdownload,format=nv12[v];[1:v]format=nv12[br];[v][br]vstack=inputs=2[out]",
+            out_w, vid_h
+        )
+    } else {
+        format!(
+            "[0:v]scale={}:{},format=yuv420p[v];[1:v]format=yuv420p[br];[v][br]vstack=inputs=2[out]",
+            out_w, vid_h
+        )
+    };
+
+    // CUDA hwaccel only on the first input (source video), not the BR temp
+    let mut cmd = Command::new("ffmpeg");
+    if use_cuda {
+        cmd.args(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]);
+    }
+    let mut combine = cmd
+        .arg("-i").arg(source_video)
+        .arg("-i").arg(&temp_br)
         .args(["-filter_complex", &filter, "-map", "[out]", "-map", "0:a?"])
         .args(if use_nvenc {
             vec!["-c:v", codec, "-preset", "p1", "-rc", "constqp", "-qp", "20", "-b:v", "0"]
         } else {
             vec!["-c:v", codec, "-preset", "ultrafast", "-crf", "20"]
         })
-        .args(["-pix_fmt", "yuv420p", "-r", &DEFAULT_EXPORT_FPS.to_string(), "-c:a", "copy", "-shortest", "-v", "error", "-y"])
+        .args(["-pix_fmt", "yuv420p", "-r", &fps.to_string(), "-c:a", "copy", "-shortest", "-v", "warning", "-y"])
+        .args(["-progress", "pipe:1"])
         .arg(output)
-        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("ffmpeg: {e}"))?;
+        .map_err(|e| format!("ffmpeg pass 2: {e}"))?;
 
-    let encoder_stdin = encoder.stdin.take().unwrap();
-    let mut writer = std::io::BufWriter::with_capacity((out_w * br_h * 4) as usize * 2, encoder_stdin);
-
-    // Stateful renderer (reuses font system across frames)
-    let mut cpu_renderer = rythmo_cpu_renderer::CpuRenderer::new();
-
-    // BR frame cache: only re-render when source frame changes
-    let mut cached_br: Vec<u8> = Vec::new();
-    let mut cached_source_frame: i64 = -1;
-
-    for frame_num in 0..total_frames {
-        let source_frame = (frame_num as f64 / DEFAULT_EXPORT_FPS as f64 * fps) as i64;
-
-        // Only re-render BR when source frame changes
-        if source_frame != cached_source_frame {
-            cached_br = cpu_renderer.render_br(project, source_frame, out_w, fps);
-            cached_source_frame = source_frame;
-        }
-
-        if writer.write_all(&cached_br).is_err() {
-            break;
-        }
-
-        // Progress every second of output
-        if frame_num % (DEFAULT_EXPORT_FPS as u64) == 0 {
-            progress_cb(frame_num as f32 / total_frames as f32);
+    // Parse ffmpeg progress output for pass 2 (90% → 100%)
+    let duration_us = (info.duration_secs * 1_000_000.0) as u64;
+    if let Some(stdout) = combine.stdout.take() {
+        let reader = std::io::BufReader::new(stdout);
+        use std::io::BufRead;
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if let Some(time_str) = line.strip_prefix("out_time_us=") {
+                if let Ok(us) = time_str.trim().parse::<u64>() {
+                    let p2 = if duration_us > 0 { us as f32 / duration_us as f32 } else { 0.0 };
+                    progress_cb(0.9 + p2.min(1.0) * 0.1);
+                }
+            }
         }
     }
 
-    let _ = writer.flush();
-    drop(writer);
+    let result = combine.wait_with_output().map_err(|e| format!("ffmpeg pass 2: {e}"))?;
+    let _ = std::fs::remove_file(&temp_br);
 
-    let result = encoder.wait_with_output().map_err(|e| format!("ffmpeg: {e}"))?;
     if !result.status.success() {
-        return Err(format!("ffmpeg: {}", String::from_utf8_lossy(&result.stderr)));
+        return Err(format!("ffmpeg pass 2: {}", String::from_utf8_lossy(&result.stderr)));
     }
 
     progress_cb(1.0);
