@@ -2,13 +2,15 @@ use crate::i18n::t;
 use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 
 pub const SETTINGS_W: f32 = 450.0;
-pub const SETTINGS_H: f32 = 490.0;
+pub const SETTINGS_H: f32 = 540.0;
 pub const FONT_ITEM_H: f32 = 26.0;
 pub const FONT_LIST_H: f32 = 220.0;
 
 pub struct SettingsModal {
     pub lang: String,
     pub rythmo_font: Option<String>,
+    pub scroll_speed: f32,
+    pub scroll_speed_text: String,
     pub available_fonts: Vec<String>,
     pub font_scroll_offset: f32,
     pub selected_font_index: Option<usize>,
@@ -27,7 +29,7 @@ pub fn card_rect(screen_w: f32, screen_h: f32) -> Rect {
 pub enum SettingsModalResult {
     Consumed,
     Close,
-    Save { lang: String, rythmo_font: Option<String> },
+    Save { lang: String, rythmo_font: Option<String>, scroll_speed: f32 },
 }
 
 impl SettingsModal {
@@ -37,9 +39,12 @@ impl SettingsModal {
         let selected_font_index = current_font.as_ref().and_then(|name| {
             fonts.iter().position(|f| f == name)
         });
+        let scroll_speed = cfg.ui.scroll_speed;
         Self {
             lang: cfg.lang.clone(),
             rythmo_font: current_font,
+            scroll_speed,
+            scroll_speed_text: format!("×{:.2}", scroll_speed),
             available_fonts: fonts,
             font_scroll_offset: 0.0,
             selected_font_index,
@@ -128,6 +133,23 @@ impl SettingsModal {
                     return SettingsModalResult::Consumed;
                 }
 
+                // Scroll speed buttons
+                // list_y=card.y+126, default_btn_y=list_y+FONT_LIST_H+6, preview_y=default_btn_y+32
+                // speed_label_y=preview_y+36+8, speed_y=speed_label_y+20
+                let speed_y = card.y + 126.0 + FONT_LIST_H + 6.0 + 32.0 + 36.0 + 8.0 + 20.0;
+                let minus_rect = Rect { x: card.x + 20.0, y: speed_y, width: 30.0, height: 26.0 };
+                let plus_rect = Rect { x: card.x + 20.0 + 30.0 + 80.0, y: speed_y, width: 30.0, height: 26.0 };
+                if minus_rect.contains(*x, *y) {
+                    self.scroll_speed = (self.scroll_speed - 0.25).max(0.25);
+                    self.scroll_speed_text = format!("×{:.2}", self.scroll_speed);
+                    return SettingsModalResult::Consumed;
+                }
+                if plus_rect.contains(*x, *y) {
+                    self.scroll_speed = (self.scroll_speed + 0.25).min(4.0);
+                    self.scroll_speed_text = format!("×{:.2}", self.scroll_speed);
+                    return SettingsModalResult::Consumed;
+                }
+
                 // Save button
                 let save_y = card.y + SETTINGS_H - 50.0;
                 let save_w = 140.0;
@@ -136,7 +158,8 @@ impl SettingsModal {
                 if save_rect.contains(*x, *y) {
                     let lang = self.lang.clone();
                     let rythmo_font = self.rythmo_font.clone();
-                    return SettingsModalResult::Save { lang, rythmo_font };
+                    let scroll_speed = self.scroll_speed;
+                    return SettingsModalResult::Save { lang, rythmo_font, scroll_speed };
                 }
 
                 SettingsModalResult::Consumed
@@ -333,6 +356,68 @@ impl SettingsModal {
             overflow: Overflow::Clip, padding: 0.0,
             font_size_override: Some(16.0), color_override: None,
             font_family_override: self.rythmo_font.as_deref(),
+        });
+
+        // --- Scroll speed section ---
+        let speed_label_y = preview_y + preview_h + 8.0;
+        labels.push(LabelInfo {
+            text: t("settings.scroll_speed"),
+            bounds: Rect { x: card.x + 20.0, y: speed_label_y, width: 300.0, height: 18.0 },
+            h_align: HAlign::Left, v_align: VAlign::Center,
+            overflow: Overflow::Clip, padding: 0.0,
+            font_size_override: Some(12.0), color_override: Some([180, 180, 195]), font_family_override: None,
+        });
+
+        let speed_y = speed_label_y + 20.0;
+        let btn_size = 30.0;
+        let value_w = 80.0;
+
+        // Minus button
+        overlay_quads.push(QuadInstance {
+            rect: [card.x + 20.0, speed_y, btn_size, 26.0],
+            color: [0.15, 0.15, 0.18, 1.0], color_bottom: [0.15, 0.15, 0.18, 1.0],
+            border_color: [0.30, 0.30, 0.36, 0.5], border_width: 1.0, border_radius: 4.0,
+            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+            rotation: 0.0, _padding: [0.0; 2],
+        });
+        labels.push(LabelInfo {
+            text: "−",
+            bounds: Rect { x: card.x + 20.0, y: speed_y, width: btn_size, height: 26.0 },
+            h_align: HAlign::Center, v_align: VAlign::Center,
+            overflow: Overflow::Clip, padding: 0.0,
+            font_size_override: Some(14.0), color_override: None, font_family_override: None,
+        });
+
+        // Value display
+        overlay_quads.push(QuadInstance {
+            rect: [card.x + 20.0 + btn_size, speed_y, value_w, 26.0],
+            color: [0.08, 0.08, 0.10, 1.0], color_bottom: [0.08, 0.08, 0.10, 1.0],
+            border_color: [0.30, 0.30, 0.36, 0.3], border_width: 1.0, border_radius: 0.0,
+            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+            rotation: 0.0, _padding: [0.0; 2],
+        });
+        labels.push(LabelInfo {
+            text: &self.scroll_speed_text,
+            bounds: Rect { x: card.x + 20.0 + btn_size, y: speed_y, width: value_w, height: 26.0 },
+            h_align: HAlign::Center, v_align: VAlign::Center,
+            overflow: Overflow::Clip, padding: 0.0,
+            font_size_override: Some(12.0), color_override: None, font_family_override: None,
+        });
+
+        // Plus button
+        overlay_quads.push(QuadInstance {
+            rect: [card.x + 20.0 + btn_size + value_w, speed_y, btn_size, 26.0],
+            color: [0.15, 0.15, 0.18, 1.0], color_bottom: [0.15, 0.15, 0.18, 1.0],
+            border_color: [0.30, 0.30, 0.36, 0.5], border_width: 1.0, border_radius: 4.0,
+            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+            rotation: 0.0, _padding: [0.0; 2],
+        });
+        labels.push(LabelInfo {
+            text: "+",
+            bounds: Rect { x: card.x + 20.0 + btn_size + value_w, y: speed_y, width: btn_size, height: 26.0 },
+            h_align: HAlign::Center, v_align: VAlign::Center,
+            overflow: Overflow::Clip, padding: 0.0,
+            font_size_override: Some(14.0), color_override: None, font_family_override: None,
         });
 
         // Save button

@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 
 use crate::project::Project;
 use crate::rythmo_cpu_renderer;
+use crate::rythmo_gpu_renderer;
 
 /// Check if ffmpeg and ffprobe are available in PATH.
 pub fn check_ffmpeg() -> bool {
@@ -85,6 +86,7 @@ pub fn export_mp4(
     source_video: &Path,
     output: &Path,
     fps: f64,
+    source_fps: f64,
     mut progress_cb: impl FnMut(f32) + Send,
 ) -> Result<(), String> {
     if !check_ffmpeg() {
@@ -147,82 +149,68 @@ pub fn export_mp4(
         let br_stdin = br_encoder.stdin.take().unwrap();
         let mut writer = std::io::BufWriter::with_capacity(yuv_frame_size * 8, br_stdin);
 
-        let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-        log::info!("Parallel BR render: {} threads", n_threads);
-
-        // Create renderers ONCE — FontSystem::new() scans all system fonts,
-        // so creating one per frame was the real bottleneck.
-        let mut renderers: Vec<rythmo_cpu_renderer::CpuRenderer> = (0..n_threads)
-            .map(|_| rythmo_cpu_renderer::CpuRenderer::new())
-            .collect();
-
-        let frame_indices: Vec<i64> = (0..total_frames as i64).collect();
         let mut yuv_buf = vec![0u8; yuv_frame_size];
         let hw = w / 2;
         let u_off = w * h;
         let v_off = u_off + hw * (h / 2);
 
-        for batch in frame_indices.chunks(n_threads) {
-            // Render batch in parallel — each thread reuses its own persistent CpuRenderer
-            let rendered: Vec<Vec<u8>> = std::thread::scope(|scope| {
-                let handles: Vec<_> = batch.iter()
-                    .zip(renderers.iter_mut())
-                    .map(|(&frame, renderer)| {
-                        scope.spawn(move || {
-                            renderer.render_br(project, frame, out_w, fps)
-                        })
-                    }).collect();
-                handles.into_iter().map(|h| h.join().unwrap()).collect()
-            });
+        // Ratio to convert export frame index → video source frame position
+        let frame_ratio = source_fps / fps;
+        log::info!("Frame ratio: source {:.2}fps / export {:.2}fps = {:.4}", source_fps, fps, frame_ratio);
 
-            // Convert RGBA → YUV420p and write in order
-            for (i, rgba) in rendered.iter().enumerate() {
-                let frame = batch[i];
+        match rythmo_gpu_renderer::GpuRenderer::new() {
+            Ok(mut gpu) => {
+                log::info!("Pass 1: GPU pipelined");
 
-                let y_plane = &mut yuv_buf[..w * h];
-                for y in 0..br_h as usize {
-                    for x in 0..w {
-                        let si = (y * w + x) * 4;
-                        let (r, g, b) = (rgba[si] as i32, rgba[si + 1] as i32, rgba[si + 2] as i32);
-                        y_plane[y * w + x] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(16, 235) as u8;
+                gpu.submit_render(project, 0.0, out_w, fps);
+
+                for frame in 1..total_frames as i64 {
+                    let rgba = gpu.finish_render(out_w, br_h);
+                    let video_pos = frame as f64 * frame_ratio;
+                    gpu.submit_render(project, video_pos, out_w, fps);
+
+                    rgba_to_yuv420p(&rgba, &mut yuv_buf, w, h, br_h as usize, hw, u_off, v_off);
+
+                    if writer.write_all(&yuv_buf).is_err() { break; }
+
+                    if frame as u64 % fps as u64 == 0 {
+                        progress_cb((frame - 1) as f32 / total_frames as f32 * 0.9);
                     }
                 }
-                for y in br_h as usize..h {
-                    for x in 0..w {
-                        yuv_buf[y * w + x] = 16;
-                    }
-                }
-                for cy in 0..h / 2 {
-                    for cx in 0..hw {
-                        let mut r_sum = 0i32;
-                        let mut g_sum = 0i32;
-                        let mut b_sum = 0i32;
-                        for dy in 0..2usize {
-                            for dx in 0..2usize {
-                                let py = cy * 2 + dy;
-                                let px = cx * 2 + dx;
-                                let si = (py * w + px) * 4;
-                                if py < br_h as usize {
-                                    r_sum += rgba[si] as i32;
-                                    g_sum += rgba[si + 1] as i32;
-                                    b_sum += rgba[si + 2] as i32;
-                                }
-                            }
+
+                let rgba = gpu.finish_render(out_w, br_h);
+                rgba_to_yuv420p(&rgba, &mut yuv_buf, w, h, br_h as usize, hw, u_off, v_off);
+                let _ = writer.write_all(&yuv_buf);
+            }
+            Err(e) => {
+                log::warn!("GPU unavailable ({}), CPU fallback", e);
+                let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+                log::info!("CPU render: {} threads", n_threads);
+
+                let mut renderers: Vec<rythmo_cpu_renderer::CpuRenderer> = (0..n_threads)
+                    .map(|_| rythmo_cpu_renderer::CpuRenderer::new())
+                    .collect();
+                let frame_indices: Vec<i64> = (0..total_frames as i64).collect();
+
+                for batch in frame_indices.chunks(n_threads) {
+                    let rendered: Vec<Vec<u8>> = std::thread::scope(|scope| {
+                        let handles: Vec<_> = batch.iter()
+                            .zip(renderers.iter_mut())
+                            .map(|(&frame, renderer)| {
+                                let vf = (frame as f64 * frame_ratio) as i64;
+                                scope.spawn(move || renderer.render_br(project, vf, out_w, source_fps))
+                            }).collect();
+                        handles.into_iter().map(|h| h.join().unwrap()).collect()
+                    });
+
+                    for (i, rgba) in rendered.iter().enumerate() {
+                        let frame = batch[i];
+                        rgba_to_yuv420p(rgba, &mut yuv_buf, w, h, br_h as usize, hw, u_off, v_off);
+                        if writer.write_all(&yuv_buf).is_err() { break; }
+                        if frame as u64 % fps as u64 == 0 {
+                            progress_cb(frame as f32 / total_frames as f32 * 0.9);
                         }
-                        let r = r_sum >> 2;
-                        let g = g_sum >> 2;
-                        let b = b_sum >> 2;
-                        yuv_buf[u_off + cy * hw + cx] = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128).clamp(16, 240) as u8;
-                        yuv_buf[v_off + cy * hw + cx] = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(16, 240) as u8;
                     }
-                }
-
-                if writer.write_all(&yuv_buf).is_err() {
-                    break;
-                }
-
-                if frame as u64 % fps as u64 == 0 {
-                    progress_cb(frame as f32 / total_frames as f32 * 0.9);
                 }
             }
         }
@@ -303,4 +291,53 @@ pub fn export_mp4(
     progress_cb(1.0);
     log::info!("Export complete: {}", output.display());
     Ok(())
+}
+
+/// Convert RGBA pixels to YUV420p.
+fn rgba_to_yuv420p(
+    rgba: &[u8],
+    yuv_buf: &mut [u8],
+    w: usize,
+    h: usize,
+    br_h: usize,
+    hw: usize,
+    u_off: usize,
+    v_off: usize,
+) {
+    for y in 0..br_h {
+        for x in 0..w {
+            let si = (y * w + x) * 4;
+            let (r, g, b) = (rgba[si] as i32, rgba[si + 1] as i32, rgba[si + 2] as i32);
+            yuv_buf[y * w + x] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(16, 235) as u8;
+        }
+    }
+    for y in br_h..h {
+        for x in 0..w {
+            yuv_buf[y * w + x] = 16;
+        }
+    }
+    for cy in 0..h / 2 {
+        for cx in 0..hw {
+            let mut rs = 0i32;
+            let mut gs = 0i32;
+            let mut bs = 0i32;
+            for dy in 0..2usize {
+                for dx in 0..2usize {
+                    let py = cy * 2 + dy;
+                    let px = cx * 2 + dx;
+                    if py < br_h {
+                        let si = (py * w + px) * 4;
+                        rs += rgba[si] as i32;
+                        gs += rgba[si + 1] as i32;
+                        bs += rgba[si + 2] as i32;
+                    }
+                }
+            }
+            let r = rs >> 2;
+            let g = gs >> 2;
+            let b = bs >> 2;
+            yuv_buf[u_off + cy * hw + cx] = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128).clamp(16, 240) as u8;
+            yuv_buf[v_off + cy * hw + cx] = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(16, 240) as u8;
+        }
+    }
 }

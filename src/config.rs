@@ -32,6 +32,7 @@ pub struct UiConfig {
     pub font_size: f32,
     pub border_radius: f32,
     pub rythmo_font: Option<String>,
+    pub scroll_speed: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +84,7 @@ impl Default for UiConfig {
             font_size: 18.0,
             border_radius: 8.0,
             rythmo_font: None,
+            scroll_speed: 1.0,
         }
     }
 }
@@ -142,12 +144,17 @@ pub fn init() {
     INSTANCE.get_or_init(|| RwLock::new(Config::load()));
 }
 
-pub fn save_settings(lang: String, rythmo_font: Option<String>) {
+pub fn save_settings(lang: String, rythmo_font: Option<String>, scroll_speed: f32) {
     let lock = INSTANCE.get().expect("config not initialized");
     let mut cfg = lock.write().unwrap();
     cfg.lang = lang;
     cfg.ui.rythmo_font = rythmo_font;
+    cfg.ui.scroll_speed = scroll_speed;
     cfg.save();
+}
+
+pub fn scroll_speed() -> f32 {
+    get().ui.scroll_speed
 }
 
 pub fn get() -> std::sync::RwLockReadGuard<'static, Config> {

@@ -72,7 +72,8 @@ pub enum UiAction {
     AddVideo,
     ImportProject,
     ExportProject,
-    ExportMp4,
+    OpenExportModal,
+    StartExport { filename: String, fps: f64 },
     QuickSave,
     CancelExport,
     TogglePlayPause,
@@ -100,7 +101,7 @@ pub enum UiAction {
     NetworkDisconnect,
     // Settings
     OpenSettings,
-    SaveSettings { lang: String, rythmo_font: Option<String> },
+    SaveSettings { lang: String, rythmo_font: Option<String>, scroll_speed: f32 },
 }
 
 #[derive(Debug, Clone, PartialEq)]

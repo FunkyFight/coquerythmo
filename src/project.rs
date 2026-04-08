@@ -106,6 +106,7 @@ impl Project {
             text: String::new(),
             character_name: char_name,
             character_color: char_color,
+            syllable_ratios: Vec::new(),
         };
         self.line_map.insert(id, line);
         self.line_order.push(id);
@@ -114,7 +115,7 @@ impl Project {
 
     pub fn add_line_full(&mut self, start_frame: i64, duration_frames: i64, y_slot: f32, text: String, character_name: String, character_color: [f32; 4]) -> u64 {
         let id = rand::random::<u64>() % JS_MAX_SAFE_INTEGER;
-        let line = RythmoLine { id, start_frame, duration_frames, y_slot, text, character_name, character_color };
+        let line = RythmoLine { id, start_frame, duration_frames, y_slot, text, character_name, character_color, syllable_ratios: Vec::new() };
         self.line_map.insert(id, line);
         self.line_order.push(id);
         id
@@ -260,6 +261,7 @@ mod tests {
         let line = crate::rythmo_line::RythmoLine {
             id: 42, start_frame: 10, duration_frames: 10, y_slot: 0.75,
             text: String::new(), character_name: String::new(), character_color: [1.0; 4],
+            syllable_ratios: Vec::new(),
         };
         p.insert_line_at(1, line);
         let ids: Vec<u64> = p.lines().map(|l| l.id).collect();

@@ -1,6 +1,7 @@
 pub mod connect_modal;
 pub mod dropdown;
 pub mod color_picker;
+pub mod export_modal;
 pub mod icon_button;
 pub mod icons;
 pub mod interactive;
@@ -50,6 +51,7 @@ pub struct Ui {
     export_label: String,
     connect_modal: Option<connect_modal::ConnectModal>,
     settings_modal: Option<settings_modal::SettingsModal>,
+    export_modal: Option<export_modal::ExportModal>,
     network_in_room: bool,
     pub network_status: String,
     pub sync_overlay: Option<String>,
@@ -89,6 +91,7 @@ impl Ui {
             export_label: String::new(),
             connect_modal: None,
             settings_modal: None,
+            export_modal: None,
             network_in_room: false,
             network_status: String::new(),
             sync_overlay: None,
@@ -129,7 +132,7 @@ impl Ui {
                 t("menu.export.mp4").into(),
             ],
             |index, _label| match index {
-                0 => EventResponse::Action(UiAction::ExportMp4),
+                0 => EventResponse::Action(UiAction::OpenExportModal),
                 _ => EventResponse::Consumed,
             },
         )
@@ -263,6 +266,11 @@ impl Ui {
         // Settings modal intercepts all input
         if self.settings_modal.is_some() {
             return self.handle_settings_modal_event(event);
+        }
+
+        // Export modal intercepts all input
+        if self.export_modal.is_some() {
+            return self.handle_export_modal_event(event);
         }
 
         // Connect modal intercepts all input
@@ -496,7 +504,7 @@ impl Ui {
     }
 
     pub fn is_editing_text(&self) -> bool {
-        self.rythmo_state.is_editing() || self.connect_modal.is_some()
+        self.rythmo_state.is_editing() || self.connect_modal.is_some() || self.export_modal.is_some()
     }
 
     fn handle_connect_modal_event(&mut self, event: &UiEvent) -> EventResponse {
@@ -528,11 +536,33 @@ impl Ui {
                 self.settings_modal = None;
                 EventResponse::Consumed
             }
-            settings_modal::SettingsModalResult::Save { lang, rythmo_font } => {
+            settings_modal::SettingsModalResult::Save { lang, rythmo_font, scroll_speed } => {
                 self.settings_modal = None;
-                EventResponse::Action(UiAction::SaveSettings { lang, rythmo_font })
+                EventResponse::Action(UiAction::SaveSettings { lang, rythmo_font, scroll_speed })
             }
         }
+    }
+
+    fn handle_export_modal_event(&mut self, event: &UiEvent) -> EventResponse {
+        let modal = match &mut self.export_modal {
+            Some(m) => m,
+            None => return EventResponse::Ignored,
+        };
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            export_modal::ExportModalResult::Consumed => EventResponse::Consumed,
+            export_modal::ExportModalResult::Close => {
+                self.export_modal = None;
+                EventResponse::Consumed
+            }
+            export_modal::ExportModalResult::Export { filename, fps } => {
+                self.export_modal = None;
+                EventResponse::Action(UiAction::StartExport { filename, fps })
+            }
+        }
+    }
+
+    pub fn open_export_modal(&mut self) {
+        self.export_modal = Some(export_modal::ExportModal::new());
     }
 
     pub fn open_connect_modal(&mut self, join: bool) {
@@ -703,11 +733,12 @@ impl Ui {
             labels.extend(tooltip.render_labels(self.screen_w));
         }
 
-        // Export progress modal
-        if self.export_progress.is_some() {
-            let progress = self.export_progress.as_ref().map(|p| {
-                f32::from_bits(p.load(std::sync::atomic::Ordering::Relaxed))
-            }).unwrap_or(0.0);
+        // Export progress modal (only shown once export actually started, progress > 0)
+        let export_progress_val = self.export_progress.as_ref().map(|p| {
+            f32::from_bits(p.load(std::sync::atomic::Ordering::Relaxed))
+        }).unwrap_or(0.0);
+        if self.export_progress.is_some() && export_progress_val > 0.0 {
+            let progress = export_progress_val;
 
             let dw = 420.0;
             let dh = 120.0;
@@ -828,6 +859,11 @@ impl Ui {
 
         // Connect modal
         if let Some(modal) = &self.connect_modal {
+            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+        }
+
+        // Export modal
+        if let Some(modal) = &self.export_modal {
             modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
         }
 

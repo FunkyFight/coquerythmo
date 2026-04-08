@@ -703,6 +703,7 @@ dependencies = [
  "dirs",
  "env_logger",
  "glyphon",
+ "hypher",
  "log",
  "pollster 0.3.0",
  "rand 0.8.5",
@@ -1680,6 +1681,12 @@ dependencies = [
  "tracing",
  "windows-registry",
 ]
+
+[[package]]
+name = "hypher"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef68590049bab63a464eee1a1158ac04c6f6613a546d8d90f78636b8b94f171"
 
 [[package]]
 name = "icrate"

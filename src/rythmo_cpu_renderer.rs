@@ -143,7 +143,7 @@ impl CpuRenderer {
         let slot_count = used_slots.max(1) as f32;
         let slot_h = constants::SLOT_HEIGHT * s;
         let ruler_h = constants::RULER_HEIGHT * s;
-        let ppf = constants::PIXELS_PER_FRAME * s;
+        let ppf = constants::PIXELS_PER_FRAME * s * crate::config::scroll_speed();
         let tick_long = constants::TICK_LONG * s;
         let tick_short = constants::TICK_SHORT * s;
         let tick_w = BASE_TICK_WIDTH * s;

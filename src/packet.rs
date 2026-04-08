@@ -198,6 +198,7 @@ mod tests {
                 id: 42, start_frame: 10, duration_frames: 20, y_slot: 0.5,
                 text: "test".into(), character_name: "Alice".into(),
                 character_color: [1.0, 0.0, 0.0, 1.0],
+                syllable_ratios: Vec::new(),
             },
         };
         let json = serde_json::to_string(&payload).unwrap();

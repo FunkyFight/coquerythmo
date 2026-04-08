@@ -592,7 +592,7 @@ impl GpuRenderer {
     pub fn submit_render(
         &mut self,
         project: &Project,
-        current_frame: i64,
+        current_frame: f64,
         width: u32,
         fps: f64,
     ) {
@@ -602,7 +602,7 @@ impl GpuRenderer {
         let slot_count = used_slots.max(1) as f32;
         let slot_h = constants::SLOT_HEIGHT * s;
         let ruler_h = constants::RULER_HEIGHT * s;
-        let ppf = constants::PIXELS_PER_FRAME * s;
+        let ppf = constants::PIXELS_PER_FRAME * s * crate::config::scroll_speed();
         let tick_long = constants::TICK_LONG * s;
         let tick_short = constants::TICK_SHORT * s;
         let tick_w = BASE_TICK_WIDTH * s;
@@ -627,10 +627,11 @@ impl GpuRenderer {
 
         // ── Ruler ticks ──
         let visible_frames = (w / ppf) as i64 + 4;
-        let first_tick = ((current_frame - visible_frames / 2) / constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
+        let cf_i64 = current_frame as i64;
+        let first_tick = ((cf_i64 - visible_frames / 2) / constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
         let mut tf = first_tick;
         loop {
-            let x = center_x + (tf - current_frame) as f32 * ppf;
+            let x = center_x + (tf as f64 - current_frame) as f32 * ppf;
             if x > w { break; }
             if x >= 0.0 {
                 let tick_idx = tf / constants::TICK_GAP_FRAMES;
@@ -645,8 +646,8 @@ impl GpuRenderer {
 
         // ── Lines ──
         for line in project.lines() {
-            let x1 = center_x + (line.start_frame - current_frame) as f32 * ppf;
-            let x2 = center_x + (line.end_frame() - current_frame) as f32 * ppf;
+            let x1 = center_x + (line.start_frame as f64 - current_frame) as f32 * ppf;
+            let x2 = center_x + (line.end_frame() as f64 - current_frame) as f32 * ppf;
             let lw = (x2 - x1).max(2.0);
             if x1 + lw < 0.0 || x1 > w { continue; }
 
@@ -732,7 +733,7 @@ impl GpuRenderer {
 
         // ── Markers ──
         for marker in &project.markers {
-            let mx = center_x + (marker.frame - current_frame) as f32 * ppf;
+            let mx = center_x + (marker.frame as f64 - current_frame) as f32 * ppf;
             if mx < -10.0 * s || mx > w + 10.0 * s { continue; }
             match &marker.kind {
                 MarkerKind::Boucle => {

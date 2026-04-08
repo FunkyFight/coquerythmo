@@ -62,6 +62,12 @@
 "react.hun" = "Interrogation"
 "react.psst" = "Interpellation"
 
+# Export modal
+"export_modal.title" = "Export MP4"
+"export_modal.filename" = "Nom du fichier"
+"export_modal.fps" = "FPS de la bande rythmo"
+"export_modal.export" = "Exporter"
+
 # Settings
 "settings.title" = "Paramètres"
 "settings.language" = "Langue"
@@ -70,4 +76,5 @@
 "settings.default_font" = "Police par défaut"
 "settings.preview" = "Aperçu"
 "settings.restart_required" = "(redémarrage nécessaire)"
+"settings.scroll_speed" = "Vitesse de défilement"
 "settings.tooltip" = "Paramètres"

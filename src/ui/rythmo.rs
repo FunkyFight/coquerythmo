@@ -118,14 +118,18 @@ impl RythmoState {
     }
 }
 
+fn ppf() -> f32 {
+    constants::PIXELS_PER_FRAME * crate::config::scroll_speed()
+}
+
 fn frame_to_x(frame: i64, current_frame: i64, zone: &Rect) -> f32 {
     let center_x = zone.x + zone.width / 2.0;
-    center_x + (frame - current_frame) as f32 * constants::PIXELS_PER_FRAME
+    center_x + (frame - current_frame) as f32 * ppf()
 }
 
 fn x_to_frame(x: f32, current_frame: i64, zone: &Rect) -> i64 {
     let center_x = zone.x + zone.width / 2.0;
-    current_frame + ((x - center_x) / constants::PIXELS_PER_FRAME) as i64
+    current_frame + ((x - center_x) / ppf()) as i64
 }
 
 fn y_to_slot(y: f32, zone: &Rect) -> f32 {
@@ -174,7 +178,7 @@ pub fn render_rythmo_base(zone: &Rect, current_frame: i64) -> Vec<QuadInstance> 
     // Ticks anchored to absolute frame positions via frame_to_x (DRY)
     const FRAMES_PER_TICK: i64 = 2;
 
-    let visible_frames = (zone.width / constants::PIXELS_PER_FRAME) as i64 + 4;
+    let visible_frames = (zone.width / ppf()) as i64 + 4;
     let first_tick = ((current_frame - visible_frames / 2) / FRAMES_PER_TICK) * FRAMES_PER_TICK;
 
     let mut tick_frame = first_tick;
@@ -718,9 +722,9 @@ pub fn handle_rythmo_event(
             let dx = *x - state.pan_last_x;
             state.pan_last_x = *x;
             state.pan_accum -= dx;
-            let frames = (state.pan_accum / constants::PIXELS_PER_FRAME) as i32;
+            let frames = (state.pan_accum / ppf()) as i32;
             if frames != 0 {
-                state.pan_accum -= frames as f32 * constants::PIXELS_PER_FRAME;
+                state.pan_accum -= frames as f32 * ppf();
                 return EventResponse::Action(UiAction::SeekRelative(frames));
             }
             return EventResponse::Consumed;
@@ -787,7 +791,7 @@ fn handle_mouse_move(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -
     }
 
     if let Some(drag) = &state.dragging {
-        let dx_frames = ((x - drag.drag_start_x) / constants::PIXELS_PER_FRAME) as i64;
+        let dx_frames = ((x - drag.drag_start_x) / ppf()) as i64;
         return match &drag.target {
             DragTarget::Marker(idx) => {
                 let new_frame = drag.original_frame + dx_frames;

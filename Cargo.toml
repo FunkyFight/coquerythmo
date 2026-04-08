@@ -21,6 +21,7 @@ rodio = "0.20"
 rust_socketio = "0.6"
 rand = "0.8"
 base64 = "0.22"
+hypher = "0.1"
 
 [build-dependencies]
 winres = "0.1"

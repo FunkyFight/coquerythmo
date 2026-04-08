@@ -9,6 +9,8 @@ pub struct RythmoLine {
     pub text: String,
     pub character_name: String,
     pub character_color: [f32; 4],
+    #[serde(default)]
+    pub syllable_ratios: Vec<f32>,
 }
 
 impl RythmoLine {

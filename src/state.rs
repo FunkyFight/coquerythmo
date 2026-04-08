@@ -103,6 +103,10 @@ impl State {
         self.ui.open_settings_modal(fonts);
     }
 
+    pub fn open_export_modal(&mut self) {
+        self.ui.open_export_modal();
+    }
+
     pub fn close_settings_modal(&mut self) {
         self.ui.close_settings_modal();
         self.ui_renderer.clear_text_cache();

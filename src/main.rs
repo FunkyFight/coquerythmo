@@ -7,6 +7,8 @@ mod network;
 mod observer;
 mod packet;
 mod rythmo_cpu_renderer;
+mod rythmo_gpu_renderer;
+mod syllable;
 mod video_export;
 mod i18n;
 mod project;
@@ -156,26 +158,40 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         UiAction::AddQuickLine { text } => {
             state.add_quick_line(text);
         }
-        UiAction::ExportMp4 => {
+        UiAction::OpenExportModal => {
+            if state.video_path().is_some() {
+                state.open_export_modal();
+            } else {
+                log::warn!("No video loaded — cannot export MP4");
+            }
+        }
+        UiAction::StartExport { filename, fps } => {
             if let Some(source) = state.video_path() {
-                let fps = state.fps();
+                let source_fps = state.fps();
                 let project_snap = state.project.snapshot();
                 let progress = std::sync::Arc::new(
                     std::sync::atomic::AtomicU32::new(0.0_f32.to_bits())
                 );
-                state.set_export_progress(Some(progress.clone()));
+                let progress_for_ui = progress.clone();
 
-                // File picker + export entirely in a background thread
                 let title = i18n::t("picker.export_mp4.title").to_string();
+                let default_filename = if filename.ends_with(".mp4") {
+                    filename
+                } else {
+                    format!("{}.mp4", filename)
+                };
                 std::thread::spawn(move || {
                     let file = rfd::FileDialog::new()
                         .set_title(&title)
+                        .set_file_name(&default_filename)
                         .add_filter("MP4 Video", &["mp4"])
                         .save_file();
                     if let Some(output) = file {
+                        // Signal that export is starting (progress overlay appears now)
+                        progress.store(0.01_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
                         let p = progress.clone();
                         let result = video_export::export_mp4(
-                            &project_snap, &source, &output, fps,
+                            &project_snap, &source, &output, fps, source_fps,
                             move |v| {
                                 p.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
                             },
@@ -184,9 +200,10 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                             log::error!("MP4 export failed: {e}");
                         }
                     }
-                    // Signal done
                     progress.store(2.0_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
                 });
+                // Set progress tracker — overlay only visible once progress > 0
+                state.set_export_progress(Some(progress_for_ui));
             } else {
                 log::warn!("No video loaded — cannot export MP4");
             }
@@ -233,8 +250,8 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         UiAction::OpenSettings => {
             state.open_settings_modal();
         }
-        UiAction::SaveSettings { lang, rythmo_font } => {
-            crate::config::save_settings(lang, rythmo_font);
+        UiAction::SaveSettings { lang, rythmo_font, scroll_speed } => {
+            crate::config::save_settings(lang, rythmo_font, scroll_speed);
             state.close_settings_modal();
         }
     }
