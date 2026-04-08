@@ -224,6 +224,14 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         UiAction::StopEditing => {
             state.broadcast_finalize();
         }
+        UiAction::ToggleSyllableMode => {
+            state.toggle_syllable_mode();
+        }
+        UiAction::SetSyllableRatios { line_id, ratios } => {
+            if let Some(line) = state.project.get_line_mut(line_id) {
+                line.syllable_ratios = ratios;
+            }
+        }
         UiAction::OpenConnectModal { join } => {
             state.open_connect_modal(join);
         }

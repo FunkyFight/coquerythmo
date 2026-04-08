@@ -65,7 +65,7 @@ impl Ui {
         let layout = Layout::compute(sw, sh, false, PROPS_DEFAULT_W);
 
         let icon_names = ["resume", "pause", "prev_frame", "next_frame",
-            "boucle", "out", "scene", "respirations", "reactions", "liaison_left", "liaison_right", "settings"];
+            "boucle", "out", "scene", "respirations", "reactions", "liaison_left", "liaison_right", "settings", "stretcher", "br-edit"];
         let icon_uvs: std::collections::HashMap<String, [f32; 4]> = icon_names.iter()
             .map(|&name| (name.to_string(), icon_atlas.get_uv(name).unwrap_or([0.0; 4])))
             .collect();
@@ -182,6 +182,10 @@ impl Ui {
         self.topbar_widgets = Self::build_topbar(in_room, self.screen_w, self.uv("settings"));
     }
 
+    pub fn rebuild_toolbar(&mut self) {
+        self.toolbar_widgets = self.build_toolbar();
+    }
+
     fn uv(&self, name: &str) -> [f32; 4] {
         self.icon_uvs.get(name).copied().unwrap_or([0.0; 4])
     }
@@ -238,6 +242,13 @@ impl Ui {
         // Liaisons: left | right
         btn!("liaison_left", || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonLeft)), "toolbar.liaison_left");
         btn!("liaison_right", || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonRight)), "toolbar.liaison_right");
+
+        x += gap * 2.0; // separator
+
+        // Syllable stretcher (toggles between stretcher and br-edit icons)
+        let stretcher_icon = if self.rythmo_state.syllable_mode { "br-edit" } else { "stretcher" };
+        let stretcher_tip = if self.rythmo_state.syllable_mode { "toolbar.back_to_edit" } else { "toolbar.stretcher" };
+        btn!(stretcher_icon, || EventResponse::Action(UiAction::ToggleSyllableMode), stretcher_tip);
 
         // Right side: volume slider
         let slider_w = SLIDER_W;

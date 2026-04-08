@@ -34,6 +34,8 @@ impl IconAtlas {
             SvgEntry { name: "liaison_left", data: include_bytes!("../icons/liason.svg"), flip_h: false },
             SvgEntry { name: "liaison_right", data: include_bytes!("../icons/liason.svg"), flip_h: true },
             SvgEntry { name: "settings", data: include_bytes!("../icons/settings.svg"), flip_h: false },
+            SvgEntry { name: "stretcher", data: include_bytes!("../icons/stretcher.svg"), flip_h: false },
+            SvgEntry { name: "br-edit", data: include_bytes!("../icons/br-edit.svg"), flip_h: false },
         ];
 
         let count = svgs.len() as u32;

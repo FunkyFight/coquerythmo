@@ -38,6 +38,8 @@
 "toolbar.reactions" = "Reactions"
 "toolbar.liaison_left" = "Left liaison"
 "toolbar.liaison_right" = "Right liaison"
+"toolbar.stretcher" = "Syllable stretcher"
+"toolbar.back_to_edit" = "Back to editing"
 
 # Respirations
 "resp.up" = "Inhale"

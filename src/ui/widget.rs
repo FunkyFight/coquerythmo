@@ -95,6 +95,8 @@ pub enum UiAction {
     AddQuickLine { text: String },
     OpenDropdown(ToolbarDropdown),
     StopEditing,
+    ToggleSyllableMode,
+    SetSyllableRatios { line_id: u64, ratios: Vec<f32> },
     // Network
     OpenConnectModal { join: bool },
     NetworkConnect { ip: String, port: u16, password: String, username: String, room_code: Option<String> },

@@ -103,6 +103,12 @@ impl State {
         self.ui.open_settings_modal(fonts);
     }
 
+    pub fn toggle_syllable_mode(&mut self) {
+        self.ui.rythmo_state.syllable_mode = !self.ui.rythmo_state.syllable_mode;
+        self.ui.rebuild_toolbar();
+        log::info!("Syllable mode: {}", self.ui.rythmo_state.syllable_mode);
+    }
+
     pub fn open_export_modal(&mut self) {
         self.ui.open_export_modal();
     }
