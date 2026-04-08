@@ -133,6 +133,9 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         UiAction::SeekRelative(delta) => {
             state.seek_relative(delta);
         }
+        UiAction::SeekAbsolute(frame) => {
+            state.seek_absolute(frame);
+        }
         UiAction::CreateLine { frame, y_slot } => {
             let line_id = state.create_line(frame, y_slot);
             state.start_editing_line(line_id);

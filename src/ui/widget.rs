@@ -81,6 +81,7 @@ pub enum UiAction {
     PrevFrame,
     NextFrame,
     SeekRelative(i32),
+    SeekAbsolute(i64),
     CreateLine { frame: i64, y_slot: f32 },
     ResizeLine { id: u64, start_frame: i64, duration_frames: i64 },
     MoveLine { id: u64, start_frame: i64, y_slot: f32 },

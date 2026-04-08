@@ -56,6 +56,9 @@ pub struct Ui {
     network_in_room: bool,
     pub network_status: String,
     pub has_video: bool,
+    pub current_frame: i64,
+    pub total_frames: i64,
+    pub scrubbing: bool,
     pub sync_overlay: Option<String>,
     pub sync_progress: f32,
     pub toasts: toast::ToastManager,
@@ -100,6 +103,9 @@ impl Ui {
             sync_overlay: None,
             sync_progress: 0.0,
             has_video: false,
+            current_frame: 0,
+            total_frames: 0,
+            scrubbing: false,
             toasts: toast::ToastManager::new(),
         };
         ui.toolbar_widgets = ui.build_toolbar();
@@ -212,6 +218,25 @@ impl Ui {
         self.topbar_widgets = Self::build_topbar(in_room, self.has_video, self.screen_w, self.uv("settings"));
     }
 
+    fn progress_bar_rect(&self) -> Rect {
+        let tb = &self.layout.toolbar;
+        let s = TOOLBAR_BTN_SIZE;
+        let gap = 4.0;
+        // 12 buttons + 3 double-gaps + 1 trailing gap
+        let buttons_end = tb.x + 8.0 + 12.0 * (s + gap) + 3.0 * gap * 2.0 + gap;
+        let slider_start = tb.x + tb.width - SLIDER_W - 8.0;
+        let left = buttons_end + 8.0;
+        let right = slider_start - 8.0;
+        let w = (right - left).max(40.0);
+        let h = 6.0;
+        Rect { x: left, y: tb.y + (TOOLBAR_HEIGHT - h) / 2.0, width: w, height: h }
+    }
+
+    fn progress_bar_hit_rect(&self) -> Rect {
+        let r = self.progress_bar_rect();
+        Rect { x: r.x, y: r.y - 8.0, width: r.width, height: r.height + 16.0 }
+    }
+
     pub fn rebuild_toolbar(&mut self) {
         self.toolbar_widgets = self.build_toolbar();
     }
@@ -302,6 +327,29 @@ impl Ui {
         // Toast click to dismiss
         if self.toasts.handle_event(event, self.screen_w, self.screen_h) {
             return EventResponse::Consumed;
+        }
+
+        // Progress bar scrubbing
+        if self.total_frames > 0 {
+            let hit = self.progress_bar_hit_rect();
+            match event {
+                UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } if hit.contains(*x, *y) => {
+                    self.scrubbing = true;
+                    let t = ((*x - hit.x) / hit.width).clamp(0.0, 1.0);
+                    let frame = (t * self.total_frames as f32) as i64;
+                    return EventResponse::Action(UiAction::SeekAbsolute(frame));
+                }
+                UiEvent::MouseMove { x, .. } if self.scrubbing => {
+                    let t = ((*x - hit.x) / hit.width).clamp(0.0, 1.0);
+                    let frame = (t * self.total_frames as f32) as i64;
+                    return EventResponse::Action(UiAction::SeekAbsolute(frame));
+                }
+                UiEvent::MouseRelease { .. } if self.scrubbing => {
+                    self.scrubbing = false;
+                    return EventResponse::Consumed;
+                }
+                _ => {}
+            }
         }
 
         // Sync overlay blocks all input
@@ -662,7 +710,11 @@ impl Ui {
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         project: &Project,
         current_frame: i64,
+        waveform: &[f32],
     ) {
+        // Update frame info for progress bar
+        self.current_frame = current_frame;
+
         // Tick toasts (needs &mut self, before labels borrow self)
         self.toasts.tick();
 
@@ -691,7 +743,7 @@ impl Ui {
         let mut labels: Vec<LabelInfo> = Vec::new();
 
         // Zone backgrounds
-        self.render_zones(&mut quads, &mut labels, current_frame);
+        self.render_zones(&mut quads, &mut labels, current_frame, waveform);
 
         // Network status in topbar (right-aligned)
         if !self.network_status.is_empty() {
@@ -930,7 +982,7 @@ impl Ui {
         );
     }
 
-    fn render_zones<'a>(&'a self, quads: &mut Vec<QuadInstance>, labels: &mut Vec<LabelInfo<'a>>, current_frame: i64) {
+    fn render_zones<'a>(&'a self, quads: &mut Vec<QuadInstance>, labels: &mut Vec<LabelInfo<'a>>, current_frame: i64, waveform: &[f32]) {
         let l = &self.layout;
 
         // Topbar
@@ -960,6 +1012,42 @@ impl Ui {
             rotation: 0.0, _padding: [0.0; 2],
         });
 
+        // Progress bar (in toolbar)
+        if self.total_frames > 0 {
+            let pb = self.progress_bar_rect();
+            let progress = (self.current_frame as f32 / self.total_frames as f32).clamp(0.0, 1.0);
+            // Track
+            quads.push(QuadInstance {
+                rect: [pb.x, pb.y, pb.width, pb.height],
+                color: [0.10, 0.10, 0.13, 1.0], color_bottom: [0.10, 0.10, 0.13, 1.0],
+                border_color: [0.25, 0.25, 0.30, 0.5], border_width: 0.5, border_radius: 3.0,
+                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                rotation: 0.0, _padding: [0.0; 2],
+            });
+            // Fill
+            let fill_w = (pb.width - 2.0) * progress;
+            if fill_w > 1.0 {
+                quads.push(QuadInstance {
+                    rect: [pb.x + 1.0, pb.y + 1.0, fill_w, pb.height - 2.0],
+                    color: [0.35, 0.45, 0.85, 0.9], color_bottom: [0.25, 0.35, 0.70, 0.9],
+                    border_color: [0.0; 4], border_width: 0.0, border_radius: 2.0,
+                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                    rotation: 0.0, _padding: [0.0; 2],
+                });
+            }
+            // Knob
+            let knob_r = 5.0;
+            let knob_x = pb.x + fill_w + 1.0;
+            let knob_y = pb.y + pb.height / 2.0 - knob_r;
+            quads.push(QuadInstance {
+                rect: [knob_x - knob_r, knob_y, knob_r * 2.0, knob_r * 2.0],
+                color: [0.85, 0.85, 0.92, 1.0], color_bottom: [0.70, 0.70, 0.78, 1.0],
+                border_color: [0.0; 4], border_width: 0.0, border_radius: knob_r,
+                shadow_offset: [0.0, 1.0], shadow_color: [0.0, 0.0, 0.0, 0.3], shadow_blur: 3.0,
+                rotation: 0.0, _padding: [0.0; 2],
+            });
+        }
+
         // Bande rythmo — fond noir + perforations + playhead
         quads.push(QuadInstance {
             rect: [l.rythmo.x, l.rythmo.y, l.rythmo.width, l.rythmo.height],
@@ -968,7 +1056,7 @@ impl Ui {
             shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
             rotation: 0.0, _padding: [0.0; 2],
         });
-        quads.extend(rythmo::render_rythmo_base(&l.rythmo, current_frame));
+        quads.extend(rythmo::render_rythmo_base(&l.rythmo, current_frame, waveform));
 
         // Properties panel
         if let Some(props) = &l.properties {

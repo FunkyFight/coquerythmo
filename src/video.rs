@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -40,6 +40,7 @@ pub struct VideoPlayer {
     _audio_handle: Option<OutputStreamHandle>,
     audio_sink: Option<Sink>,
     audio_thread: Option<JoinHandle<()>>,
+    pub waveform: Arc<RwLock<Vec<f32>>>,
 }
 
 impl VideoPlayer {
@@ -67,6 +68,7 @@ impl VideoPlayer {
             _audio_handle: None,
             audio_sink: None,
             audio_thread: None,
+            waveform: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -95,6 +97,20 @@ impl VideoPlayer {
         self.upload_frame(&first_frame, device, queue, bind_group_layout, sampler);
 
         self.start_decoders_at(0.0);
+
+        // Decode waveform in background (peak amplitude per video frame)
+        let waveform = self.waveform.clone();
+        let wave_path = path.to_path_buf();
+        let wave_fps = fps;
+        let wave_total = total_frames;
+        thread::spawn(move || {
+            if let Ok(data) = decode_waveform_peaks(&wave_path, wave_fps, wave_total as usize) {
+                if let Ok(mut w) = waveform.write() {
+                    *w = data;
+                }
+                log::info!("Waveform decoded: {} peaks", wave_total);
+            }
+        });
 
         Ok(())
     }
@@ -629,4 +645,45 @@ fn decode_audio_stream_from(path: PathBuf, timestamp: f64, tx: SyncSender<Vec<f3
 
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Decode entire audio track and compute peak amplitude per video frame.
+fn decode_waveform_peaks(path: &Path, fps: f64, total_frames: usize) -> Result<Vec<f32>, String> {
+    let sr = 22050u32;
+    let mut child = Command::new("ffmpeg")
+        .arg("-i").arg(path)
+        .args(["-vn", "-f", "f32le", "-acodec", "pcm_f32le",
+            "-ar", &sr.to_string(),
+            "-ac", "1",
+            "-v", "error", "pipe:1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("ffmpeg waveform: {e}"))?;
+
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = std::io::BufReader::with_capacity(65536, stdout);
+
+    let samples_per_frame = (sr as f64 / fps) as usize;
+    let mut peaks = Vec::with_capacity(total_frames);
+    let mut frame_buf = vec![0u8; samples_per_frame * 4];
+
+    for _ in 0..total_frames {
+        match reader.read_exact(&mut frame_buf) {
+            Ok(()) => {
+                let peak = frame_buf.chunks_exact(4)
+                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs())
+                    .fold(0.0_f32, f32::max);
+                peaks.push(peak);
+            }
+            Err(_) => {
+                peaks.resize(total_frames, 0.0);
+                break;
+            }
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(peaks)
 }

@@ -23,7 +23,7 @@ pub const DEFAULT_LINE_DURATION_SEC: f64 = 2.0;
 
 // -- Rythmo rendering constants (shared between GPU UI and CPU export) --
 
-pub const RULER_HEIGHT: f32 = 14.0;
+pub const RULER_HEIGHT: f32 = 28.0;
 pub const TICK_LONG: f32 = 12.0;
 pub const TICK_SHORT: f32 = 6.0;
 pub const TICK_GAP_FRAMES: i64 = 2;

@@ -184,32 +184,48 @@ fn badge_width(name: &str) -> f32 {
     (chars * BADGE_CHAR_W + BADGE_PADDING_H * 2.0).max(BADGE_MIN_W)
 }
 
-pub fn render_rythmo_base(zone: &Rect, current_frame: i64) -> Vec<QuadInstance> {
+pub fn render_rythmo_base(zone: &Rect, current_frame: i64, waveform: &[f32]) -> Vec<QuadInstance> {
     let mut quads = Vec::new();
 
-    // Ticks anchored to absolute frame positions via frame_to_x (DRY)
-    const FRAMES_PER_TICK: i64 = 2;
+    // Waveform (rendered first, behind playhead)
+    if !waveform.is_empty() {
+        let ruler_h = constants::RULER_HEIGHT;
+        let bar_w = 1.5_f32; // thin bars for smooth waveform
+        let step = (bar_w / ppf()).max(0.5); // sub-frame step for precision
+        let visible_frames = (zone.width / ppf()) as f64 + 4.0;
+        let first = current_frame as f64 - visible_frames / 2.0;
+        let last = current_frame as f64 + visible_frames / 2.0;
 
-    let visible_frames = (zone.width / ppf()) as i64 + 4;
-    let first_tick = ((current_frame - visible_frames / 2) / FRAMES_PER_TICK) * FRAMES_PER_TICK;
+        let mut t = first;
+        while t <= last {
+            let fi = t.floor() as i64;
+            if fi >= 0 && (fi as usize) < waveform.len() {
+                // Interpolate between frames for smoothness
+                let frac = (t - fi as f64) as f32;
+                let a0 = waveform[fi as usize];
+                let a1 = if (fi + 1) < waveform.len() as i64 { waveform[(fi + 1) as usize] } else { a0 };
+                let amp = (a0 + (a1 - a0) * frac).min(1.0);
 
-    let mut tick_frame = first_tick;
-    loop {
-        let x = frame_to_x(tick_frame, current_frame, zone);
-        if x > zone.x + zone.width { break; }
-        if x >= zone.x {
-            let tick_index = tick_frame / FRAMES_PER_TICK;
-            let h = if tick_index % 2 == 0 { constants::TICK_LONG } else { constants::TICK_SHORT };
-            quads.push(QuadInstance {
-                rect: [x, zone.y, TICK_WIDTH, h],
-                color: TICK_COLOR, color_bottom: TICK_COLOR,
-                border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
+                let x = frame_to_x(fi, current_frame, zone) + frac * ppf();
+                if x >= zone.x && x <= zone.x + zone.width {
+                    let bar_h = amp * ruler_h;
+                    if bar_h > 0.3 {
+                        quads.push(QuadInstance {
+                            rect: [x, zone.y + ruler_h - bar_h, bar_w, bar_h],
+                            color: [0.4, 0.65, 1.0, 0.85],
+                            color_bottom: [0.2, 0.45, 0.85, 0.4],
+                            border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+                            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                            rotation: 0.0, _padding: [0.0; 2],
+                        });
+                    }
+                }
+            }
+            t += step as f64;
         }
-        tick_frame += FRAMES_PER_TICK;
     }
+
+    // Ticks removed from UI (kept in CPU/GPU export renderers)
 
     let playhead_x = zone.x + (zone.width - PLAYHEAD_WIDTH) / 2.0;
     quads.push(QuadInstance {

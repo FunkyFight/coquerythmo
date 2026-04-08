@@ -140,6 +140,13 @@ impl State {
         self.video_player.as_ref().map_or(30.0, |p| p.fps())
     }
 
+    pub fn waveform(&self) -> Vec<f32> {
+        self.video_player.as_ref()
+            .and_then(|p| p.waveform.read().ok())
+            .map(|w| w.clone())
+            .unwrap_or_default()
+    }
+
     pub fn video_path(&self) -> Option<std::path::PathBuf> {
         self.video_player.as_ref().and_then(|p| p.path())
     }
@@ -156,6 +163,7 @@ impl State {
                 self.timeline.emit(TimelineEvent::VideoLoaded { fps, total_frames: total });
                 self.timeline.emit(TimelineEvent::FrameChanged { frame: 0 });
                 self.ui.has_video = true;
+                self.ui.total_frames = total;
                 self.rebuild_topbar_for_network();
             }
             Err(e) => log::error!("Failed to load video: {e}"),
@@ -197,6 +205,17 @@ impl State {
             player.step_forward(&self.gfx.device, &self.gfx.queue, bgl, sampler);
             if self.ui.is_playing() { self.ui.toggle_play_pause(); }
         }
+    }
+
+    pub fn seek_absolute(&mut self, frame: i64) {
+        if let Some(player) = &mut self.video_player {
+            let current = player.current_frame();
+            let delta = (frame - current) as i32;
+            player.seek_frame_instant(delta);
+            self.timeline.emit(TimelineEvent::FrameChanged { frame: player.current_frame() });
+        }
+        self.last_scroll_time = Some(Instant::now());
+        self.scroll_needs_decode = true;
     }
 
     pub fn seek_relative(&mut self, delta: i32) {
@@ -853,12 +872,14 @@ impl State {
         let current_frame = self.current_frame();
 
         // UI render
+        let waveform = self.waveform();
         self.ui.render(
             &mut self.ui_renderer,
             &self.gfx.device, &self.gfx.queue, &mut encoder, &view,
             self.gfx.config.width, self.gfx.config.height,
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
             &self.project, current_frame,
+            &waveform,
         );
 
         self.gfx.queue.submit(std::iter::once(encoder.finish()));
