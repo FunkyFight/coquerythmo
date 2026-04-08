@@ -264,7 +264,7 @@ impl Widget for Dropdown {
                     }
                 }
             }
-            UiEvent::MousePress { x, y } => {
+            UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 if self.open {
                     let in_submenu = self.submenu_panel_rect().map(|r| r.contains(*x, *y)).unwrap_or(false);
                     // Press inside trigger, panel, or submenu is fine

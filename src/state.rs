@@ -151,6 +151,8 @@ impl State {
                 self.video_player = Some(player);
                 self.timeline.emit(TimelineEvent::VideoLoaded { fps, total_frames: total });
                 self.timeline.emit(TimelineEvent::FrameChanged { frame: 0 });
+                self.ui.has_video = true;
+                self.rebuild_topbar_for_network();
             }
             Err(e) => log::error!("Failed to load video: {e}"),
         }

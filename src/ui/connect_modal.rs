@@ -114,7 +114,7 @@ impl ConnectModal {
                 self.focus_next();
                 ConnectModalResult::Consumed
             }
-            UiEvent::MousePress { x, y } => {
+            UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 let field_count = self.field_count();
                 let label_h = 16.0;
                 let field_h = 28.0;

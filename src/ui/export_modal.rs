@@ -73,7 +73,7 @@ impl ExportModal {
                 self.input.move_right(&self.filename);
                 ExportModalResult::Consumed
             }
-            UiEvent::MousePress { x, y } => {
+            UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 if !card.contains(*x, *y) {
                     return ExportModalResult::Close;
                 }

@@ -88,7 +88,7 @@ impl SettingsModal {
                 }
                 SettingsModalResult::Consumed
             }
-            UiEvent::MousePress { x, y } => {
+            UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 if !card.contains(*x, *y) {
                     return SettingsModalResult::Close;
                 }

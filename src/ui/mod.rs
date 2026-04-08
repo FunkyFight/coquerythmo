@@ -54,6 +54,7 @@ pub struct Ui {
     export_modal: Option<export_modal::ExportModal>,
     network_in_room: bool,
     pub network_status: String,
+    pub has_video: bool,
     pub sync_overlay: Option<String>,
     pub sync_progress: f32, // 0.0 to 1.0
 }
@@ -72,7 +73,7 @@ impl Ui {
 
         let settings_uv = icon_uvs.get("settings").copied().unwrap_or([0.0; 4]);
         let mut ui = Self {
-            topbar_widgets: Self::build_topbar(false, sw, settings_uv),
+            topbar_widgets: Self::build_topbar(false, false, sw, settings_uv),
             toolbar_widgets: vec![],
             layout,
             screen_w: sw,
@@ -96,6 +97,7 @@ impl Ui {
             network_status: String::new(),
             sync_overlay: None,
             sync_progress: 0.0,
+            has_video: false,
         };
         ui.toolbar_widgets = ui.build_toolbar();
         ui
@@ -106,7 +108,7 @@ impl Ui {
         self.toolbar_widgets = self.build_toolbar();
     }
 
-    fn build_topbar(in_room: bool, screen_w: f32, settings_uv: [f32; 4]) -> Vec<Box<dyn Widget>> {
+    fn build_topbar(in_room: bool, has_video: bool, screen_w: f32, settings_uv: [f32; 4]) -> Vec<Box<dyn Widget>> {
         // Build project menu with "Récent" submenu
         let recents = crate::config::recent_projects();
         let recent_labels: Vec<String> = recents.iter().map(|r| {
@@ -134,7 +136,8 @@ impl Ui {
         .with_arrow(false)
         .with_trigger_bg(false)
         .with_trigger_label(t("menu.project"))
-        .with_panel_width(250.0);
+        .with_panel_width(250.0)
+        .with_disabled_items(vec![false, !has_video, !has_video, false]);
 
         // Attach submenu to item index 3 ("Récent ▸")
         if !recent_labels.is_empty() {
@@ -203,7 +206,7 @@ impl Ui {
 
     pub fn rebuild_topbar(&mut self, in_room: bool) {
         self.network_in_room = in_room;
-        self.topbar_widgets = Self::build_topbar(in_room, self.screen_w, self.uv("settings"));
+        self.topbar_widgets = Self::build_topbar(in_room, self.has_video, self.screen_w, self.uv("settings"));
     }
 
     pub fn rebuild_toolbar(&mut self) {
@@ -635,7 +638,7 @@ impl Ui {
     pub fn resize(&mut self, screen_width: u32, screen_height: u32) {
         self.screen_w = screen_width as f32;
         self.screen_h = screen_height as f32;
-        self.topbar_widgets = Self::build_topbar(self.network_in_room, self.screen_w, self.uv("settings"));
+        self.topbar_widgets = Self::build_topbar(self.network_in_room, self.has_video, self.screen_w, self.uv("settings"));
         self.rebuild_layout();
     }
 
