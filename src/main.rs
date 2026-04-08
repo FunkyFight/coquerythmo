@@ -15,6 +15,7 @@ mod project;
 mod rythmo_line;
 mod state;
 mod ui;
+mod update;
 mod video;
 
 use std::sync::Arc;
@@ -353,6 +354,12 @@ fn main() {
     env_logger::init();
     config::init();
     i18n::init(&config::get().lang);
+
+    // Check for updates (blocks briefly on network, shows dialog if update available)
+    if update::check() {
+        // Updater was launched, exit so it can replace our files
+        return;
+    }
 
     let cfg = config::get().clone();
 

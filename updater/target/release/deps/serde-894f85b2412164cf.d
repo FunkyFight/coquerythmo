@@ -1,0 +1,14 @@
+D:\Données\Documents\stupid rust projects\coquerythmo\updater\target\release\deps\serde-894f85b2412164cf.d: D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs D:\Données\Documents\stupid\ rust\ projects\coquerythmo\updater\target\release\build\serde-cf39a1f6442d61c3\out/private.rs
+
+D:\Données\Documents\stupid rust projects\coquerythmo\updater\target\release\deps\libserde-894f85b2412164cf.rlib: D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs D:\Données\Documents\stupid\ rust\ projects\coquerythmo\updater\target\release\build\serde-cf39a1f6442d61c3\out/private.rs
+
+D:\Données\Documents\stupid rust projects\coquerythmo\updater\target\release\deps\libserde-894f85b2412164cf.rmeta: D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs D:\Données\Documents\stupid\ rust\ projects\coquerythmo\updater\target\release\build\serde-cf39a1f6442d61c3\out/private.rs
+
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs:
+D:\Données\Documents\stupid\ rust\ projects\coquerythmo\updater\target\release\build\serde-cf39a1f6442d61c3\out/private.rs:
+
+# env-dep:OUT_DIR=D:\\Données\\Documents\\stupid rust projects\\coquerythmo\\updater\\target\\release\\build\\serde-cf39a1f6442d61c3\\out

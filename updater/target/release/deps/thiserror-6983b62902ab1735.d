@@ -1,0 +1,14 @@
+D:\Données\Documents\stupid rust projects\coquerythmo\updater\target\release\deps\thiserror-6983b62902ab1735.d: D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\lib.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\aserror.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\display.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\var.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\private.rs D:\Données\Documents\stupid\ rust\ projects\coquerythmo\updater\target\release\build\thiserror-6413da79bcc544c7\out/private.rs
+
+D:\Données\Documents\stupid rust projects\coquerythmo\updater\target\release\deps\libthiserror-6983b62902ab1735.rlib: D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\lib.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\aserror.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\display.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\var.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\private.rs D:\Données\Documents\stupid\ rust\ projects\coquerythmo\updater\target\release\build\thiserror-6413da79bcc544c7\out/private.rs
+
+D:\Données\Documents\stupid rust projects\coquerythmo\updater\target\release\deps\libthiserror-6983b62902ab1735.rmeta: D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\lib.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\aserror.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\display.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\var.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\private.rs D:\Données\Documents\stupid\ rust\ projects\coquerythmo\updater\target\release\build\thiserror-6413da79bcc544c7\out/private.rs
+
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\lib.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\aserror.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\display.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\var.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\private.rs:
+D:\Données\Documents\stupid\ rust\ projects\coquerythmo\updater\target\release\build\thiserror-6413da79bcc544c7\out/private.rs:
+
+# env-dep:OUT_DIR=D:\\Données\\Documents\\stupid rust projects\\coquerythmo\\updater\\target\\release\\build\\thiserror-6413da79bcc544c7\\out
