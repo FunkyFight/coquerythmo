@@ -12,6 +12,7 @@ pub mod slider;
 pub mod text_input;
 pub mod theme;
 pub mod renderer;
+pub mod toast;
 pub mod tooltip;
 pub mod widget;
 
@@ -56,7 +57,8 @@ pub struct Ui {
     pub network_status: String,
     pub has_video: bool,
     pub sync_overlay: Option<String>,
-    pub sync_progress: f32, // 0.0 to 1.0
+    pub sync_progress: f32,
+    pub toasts: toast::ToastManager,
 }
 
 impl Ui {
@@ -98,6 +100,7 @@ impl Ui {
             sync_overlay: None,
             sync_progress: 0.0,
             has_video: false,
+            toasts: toast::ToastManager::new(),
         };
         ui.toolbar_widgets = ui.build_toolbar();
         ui
@@ -294,6 +297,11 @@ impl Ui {
     pub fn handle_event(&mut self, event: &UiEvent, project: &Project, current_frame: i64, fps: f64) -> EventResponse {
         if let UiEvent::MouseMove { x, y } = event {
             self.cursor_pos = (*x, *y);
+        }
+
+        // Toast click to dismiss
+        if self.toasts.handle_event(event, self.screen_w, self.screen_h) {
+            return EventResponse::Consumed;
         }
 
         // Sync overlay blocks all input
@@ -655,6 +663,9 @@ impl Ui {
         project: &Project,
         current_frame: i64,
     ) {
+        // Tick toasts (needs &mut self, before labels borrow self)
+        self.toasts.tick();
+
         // Prepare color picker textures first (needs &mut self, before labels borrow self)
         self.rythmo_state.color_picker.ensure_textures(
             device, queue,
@@ -904,6 +915,9 @@ impl Ui {
         if let Some(modal) = &self.export_modal {
             modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
         }
+
+        // Toasts
+        self.toasts.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
 
         renderer.render(
             device, queue, encoder, view,

@@ -103,6 +103,10 @@ impl State {
         self.ui.open_settings_modal(fonts);
     }
 
+    pub fn show_toast(&mut self, message: &str, duration_secs: f32) {
+        self.ui.toasts.push(message, duration_secs);
+    }
+
     pub fn toggle_syllable_mode(&mut self) {
         self.ui.rythmo_state.syllable_mode = !self.ui.rythmo_state.syllable_mode;
         self.ui.rebuild_toolbar();

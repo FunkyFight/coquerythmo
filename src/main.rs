@@ -413,6 +413,10 @@ fn main() {
     );
 
     let mut state = pollster::block_on(State::new(window.clone()));
+    state.show_toast(
+        "Cette application est gratuite pour que quiconque puisse faire ses bandes rythmos. Créditez le logiciel s'il vous sert dans vos projets s'il vous plait !",
+        10.0,
+    );
     let mut cursor_pos = (0.0_f32, 0.0_f32);
     let mut last_click_time = Instant::now();
     let mut ctrl_held = false;
