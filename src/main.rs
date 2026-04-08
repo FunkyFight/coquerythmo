@@ -78,7 +78,12 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                     Ok(data) => {
                         let fps = state.fps();
                         data.apply_to_project(&mut state.project, fps);
-                        state.project_path = Some(path);
+                        state.project_path = Some(path.clone());
+                        // Save to recent projects if video is loaded
+                        if let Some(video) = state.video_path() {
+                            config::add_recent_project(video, path);
+                            state.rebuild_topbar_for_network();
+                        }
                     }
                     Err(e) => log::error!("Import failed: {e}"),
                 }
@@ -223,6 +228,26 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         }
         UiAction::StopEditing => {
             state.broadcast_finalize();
+        }
+        UiAction::OpenRecentProject { video_path, br_path } => {
+            use export::{JsonImporter, ProjectImporter};
+            if video_path.exists() && br_path.exists() {
+                state.load_video(&video_path);
+                let importer = JsonImporter;
+                match importer.import(&br_path) {
+                    Ok(data) => {
+                        let fps = state.fps();
+                        data.apply_to_project(&mut state.project, fps);
+                        state.project_path = Some(br_path.clone());
+                        config::add_recent_project(video_path, br_path);
+                        state.rebuild_topbar_for_network();
+                        log::info!("Loaded recent project");
+                    }
+                    Err(e) => log::error!("Failed to load recent BR: {e}"),
+                }
+            } else {
+                log::warn!("Recent project files missing, skipping");
+            }
         }
         UiAction::ToggleSyllableMode => {
             state.toggle_syllable_mode();

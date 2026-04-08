@@ -5,6 +5,7 @@
 "menu.project.add_video" = "Add a video"
 "menu.project.import" = "Import a rythmo band"
 "menu.project.export" = "Export a rythmo band"
+"menu.project.recent" = "Recent"
 
 "menu.export" = "Export"
 "menu.export.mp4" = "Export project as MP4"

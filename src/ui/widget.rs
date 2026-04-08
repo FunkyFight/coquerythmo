@@ -96,6 +96,7 @@ pub enum UiAction {
     OpenDropdown(ToolbarDropdown),
     StopEditing,
     ToggleSyllableMode,
+    OpenRecentProject { video_path: std::path::PathBuf, br_path: std::path::PathBuf },
     SetSyllableRatios { line_id: u64, ratios: Vec<f32> },
     // Network
     OpenConnectModal { join: bool },

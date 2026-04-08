@@ -107,24 +107,48 @@ impl Ui {
     }
 
     fn build_topbar(in_room: bool, screen_w: f32, settings_uv: [f32; 4]) -> Vec<Box<dyn Widget>> {
-        let project_menu = Dropdown::new(
+        // Build project menu with "Récent" submenu
+        let recents = crate::config::recent_projects();
+        let recent_labels: Vec<String> = recents.iter().map(|r| {
+            let video = r.video_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let br = r.br_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            format!("{} + {}", video, br)
+        }).collect();
+
+        let recents_clone = recents.clone();
+        let mut project_menu = Dropdown::new(
             Rect { x: 4.0, y: 2.0, width: 80.0, height: 28.0 },
             vec![
                 t("menu.project.add_video").into(),
                 t("menu.project.import").into(),
                 t("menu.project.export").into(),
+                format!("{} ▸", t("menu.project.recent")),
             ],
             |index, _label| match index {
                 0 => EventResponse::Action(UiAction::AddVideo),
                 1 => EventResponse::Action(UiAction::ImportProject),
                 2 => EventResponse::Action(UiAction::ExportProject),
-                _ => EventResponse::Consumed,
+                _ => EventResponse::Consumed, // "Récent" item does nothing on click
             },
         )
         .with_arrow(false)
         .with_trigger_bg(false)
         .with_trigger_label(t("menu.project"))
         .with_panel_width(250.0);
+
+        // Attach submenu to item index 3 ("Récent ▸")
+        if !recent_labels.is_empty() {
+            project_menu = project_menu.with_submenu(3, recent_labels, move |index, _label| {
+                if let Some(r) = recents_clone.get(index) {
+                    EventResponse::Action(UiAction::OpenRecentProject {
+                        video_path: r.video_path.clone(),
+                        br_path: r.br_path.clone(),
+                    })
+                } else {
+                    EventResponse::Consumed
+                }
+            });
+        }
 
         let export_menu = Dropdown::new(
             Rect { x: 88.0, y: 2.0, width: 80.0, height: 28.0 },

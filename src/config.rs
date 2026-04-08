@@ -3,6 +3,14 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
+const MAX_RECENT: usize = 10;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentProject {
+    pub video_path: PathBuf,
+    pub br_path: PathBuf,
+}
+
 static INSTANCE: OnceLock<RwLock<Config>> = OnceLock::new();
 
 const APP_NAME: &str = "coquerythmo";
@@ -15,6 +23,8 @@ pub struct Config {
     pub ui: UiConfig,
     pub lang: String,
     pub network: NetworkConfig,
+    #[serde(default)]
+    pub recent_projects: Vec<RecentProject>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +73,7 @@ impl Default for Config {
             ui: UiConfig::default(),
             lang: "fr-fr".into(),
             network: NetworkConfig::default(),
+            recent_projects: Vec::new(),
         }
     }
 }
@@ -151,6 +162,22 @@ pub fn save_settings(lang: String, rythmo_font: Option<String>, scroll_speed: f3
     cfg.ui.rythmo_font = rythmo_font;
     cfg.ui.scroll_speed = scroll_speed;
     cfg.save();
+}
+
+pub fn add_recent_project(video_path: PathBuf, br_path: PathBuf) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    // Remove existing entry with same paths
+    cfg.recent_projects.retain(|r| r.video_path != video_path || r.br_path != br_path);
+    // Insert at front
+    cfg.recent_projects.insert(0, RecentProject { video_path, br_path });
+    // Keep only MAX_RECENT
+    cfg.recent_projects.truncate(MAX_RECENT);
+    cfg.save();
+}
+
+pub fn recent_projects() -> Vec<RecentProject> {
+    get().recent_projects.clone()
 }
 
 pub fn scroll_speed() -> f32 {
