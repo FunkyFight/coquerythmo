@@ -647,7 +647,10 @@ fn decode_audio_stream_from(path: PathBuf, timestamp: f64, tx: SyncSender<Vec<f3
     let _ = child.wait();
 }
 
-/// Decode entire audio track and compute peak amplitude per video frame.
+/// Decode entire audio track and compute peak amplitude.
+/// Returns `SAMPLES_PER_FRAME` peaks per video frame for sub-frame precision.
+const WAVEFORM_SUBDIVISIONS: usize = 4;
+
 fn decode_waveform_peaks(path: &Path, fps: f64, total_frames: usize) -> Result<Vec<f32>, String> {
     let sr = 22050u32;
     let mut child = Command::new("ffmpeg")
@@ -664,20 +667,30 @@ fn decode_waveform_peaks(path: &Path, fps: f64, total_frames: usize) -> Result<V
     let stdout = child.stdout.take().unwrap();
     let mut reader = std::io::BufReader::with_capacity(65536, stdout);
 
-    let samples_per_frame = (sr as f64 / fps) as usize;
-    let mut peaks = Vec::with_capacity(total_frames);
-    let mut frame_buf = vec![0u8; samples_per_frame * 4];
+    // Sub-frame resolution: WAVEFORM_SUBDIVISIONS peaks per video frame.
+    // Use floating-point accumulator to avoid integer truncation drift.
+    let sub_fps = fps * WAVEFORM_SUBDIVISIONS as f64;
+    let exact_samples_per_sub = sr as f64 / sub_fps;
+    let total_subs = total_frames * WAVEFORM_SUBDIVISIONS;
+    let mut peaks = Vec::with_capacity(total_subs);
+    let max_chunk = (exact_samples_per_sub.ceil() as usize + 1) * 4;
+    let mut buf = vec![0u8; max_chunk];
+    let mut sample_accum = 0.0_f64;
 
-    for _ in 0..total_frames {
-        match reader.read_exact(&mut frame_buf) {
+    for _ in 0..total_subs {
+        sample_accum += exact_samples_per_sub;
+        let n = sample_accum.round() as usize;
+        sample_accum -= n as f64;
+        let bytes = n * 4;
+        match reader.read_exact(&mut buf[..bytes]) {
             Ok(()) => {
-                let peak = frame_buf.chunks_exact(4)
+                let peak = buf[..bytes].chunks_exact(4)
                     .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs())
                     .fold(0.0_f32, f32::max);
                 peaks.push(peak);
             }
             Err(_) => {
-                peaks.resize(total_frames, 0.0);
+                peaks.resize(total_subs, 0.0);
                 break;
             }
         }

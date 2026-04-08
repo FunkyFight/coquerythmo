@@ -188,40 +188,37 @@ pub fn render_rythmo_base(zone: &Rect, current_frame: i64, waveform: &[f32]) -> 
     let mut quads = Vec::new();
 
     // Waveform (rendered first, behind playhead)
+    // waveform has WAVEFORM_SUBDIVISIONS (4) entries per video frame
     if !waveform.is_empty() {
+        let subs = 4usize; // must match WAVEFORM_SUBDIVISIONS in video.rs
         let ruler_h = constants::RULER_HEIGHT;
-        let bar_w = 1.5_f32; // thin bars for smooth waveform
-        let step = (bar_w / ppf()).max(0.5); // sub-frame step for precision
-        let visible_frames = (zone.width / ppf()) as f64 + 4.0;
-        let first = current_frame as f64 - visible_frames / 2.0;
-        let last = current_frame as f64 + visible_frames / 2.0;
+        let sub_ppf = ppf() / subs as f32; // pixels per sub-frame
+        let bar_w = sub_ppf.max(1.0);
+        let visible_frames = (zone.width / ppf()) as i64 + 4;
+        let first_frame = current_frame - visible_frames / 2;
+        let last_frame = current_frame + visible_frames / 2;
+        let first_sub = (first_frame * subs as i64).max(0);
+        let last_sub = ((last_frame + 1) * subs as i64).min(waveform.len() as i64);
 
-        let mut t = first;
-        while t <= last {
-            let fi = t.floor() as i64;
-            if fi >= 0 && (fi as usize) < waveform.len() {
-                // Interpolate between frames for smoothness
-                let frac = (t - fi as f64) as f32;
-                let a0 = waveform[fi as usize];
-                let a1 = if (fi + 1) < waveform.len() as i64 { waveform[(fi + 1) as usize] } else { a0 };
-                let amp = (a0 + (a1 - a0) * frac).min(1.0);
+        for si in first_sub..last_sub {
+            let amp = waveform[si as usize].min(1.0);
+            let bar_h = amp * ruler_h;
+            if bar_h < 0.3 { continue; }
 
-                let x = frame_to_x(fi, current_frame, zone) + frac * ppf();
-                if x >= zone.x && x <= zone.x + zone.width {
-                    let bar_h = amp * ruler_h;
-                    if bar_h > 0.3 {
-                        quads.push(QuadInstance {
-                            rect: [x, zone.y + ruler_h - bar_h, bar_w, bar_h],
-                            color: [0.4, 0.65, 1.0, 0.85],
-                            color_bottom: [0.2, 0.45, 0.85, 0.4],
-                            border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-                            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                            rotation: 0.0, _padding: [0.0; 2],
-                        });
-                    }
-                }
-            }
-            t += step as f64;
+            // Position: which video frame + sub offset
+            let frame = si / subs as i64;
+            let sub_offset = (si % subs as i64) as f32;
+            let x = frame_to_x(frame, current_frame, zone) + sub_offset * sub_ppf;
+            if x < zone.x || x > zone.x + zone.width { continue; }
+
+            quads.push(QuadInstance {
+                rect: [x, zone.y + ruler_h - bar_h, bar_w, bar_h],
+                color: [0.4, 0.65, 1.0, 0.85],
+                color_bottom: [0.2, 0.45, 0.85, 0.4],
+                border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                rotation: 0.0, _padding: [0.0; 2],
+            });
         }
     }
 
