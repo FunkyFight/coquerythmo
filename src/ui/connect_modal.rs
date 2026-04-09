@@ -5,26 +5,26 @@ use crate::i18n::t;
 
 pub struct ConnectModal {
     pub join: bool,
-    pub fields: [String; 5],
+    pub ip: String,
+    pub port: u16,
+    pub fields: [String; 3], // password, username, room_code
     pub input: text_input::TextInputState,
     pub focused: usize,
 }
 
 impl ConnectModal {
-    pub const IP: usize = 0;
-    pub const PORT: usize = 1;
-    pub const PASSWORD: usize = 2;
-    pub const USERNAME: usize = 3;
-    pub const ROOM_CODE: usize = 4;
+    pub const PASSWORD: usize = 0;
+    pub const USERNAME: usize = 1;
+    pub const ROOM_CODE: usize = 2;
 
-    pub fn new(join: bool) -> Self {
+    pub fn new_with_server(ip: &str, port: u16, join: bool) -> Self {
         let cfg = crate::config::get();
         let net = &cfg.network;
         let mut modal = Self {
             join,
+            ip: ip.to_string(),
+            port,
             fields: [
-                net.server_ip.clone(),
-                net.server_port.to_string(),
                 net.password.clone(),
                 net.username.clone(),
                 String::new(),
@@ -37,16 +37,14 @@ impl ConnectModal {
     }
 
     pub fn field_count(&self) -> usize {
-        if self.join { 5 } else { 4 }
+        if self.join { 3 } else { 2 }
     }
 
     pub fn field_label(&self, i: usize) -> &str {
         match i {
-            0 => "IP",
-            1 => "Port",
-            2 => "Mot de passe",
-            3 => "Pseudo",
-            4 => "Code du salon",
+            0 => "Mot de passe",
+            1 => "Pseudo",
+            2 => "Code du salon",
             _ => "",
         }
     }
@@ -64,30 +62,21 @@ impl ConnectModal {
     pub fn handle_event(&mut self, event: &UiEvent, screen_w: f32, screen_h: f32) -> ConnectModalResult {
         match event {
             UiEvent::KeyInput { text } => {
-                if text == "\x1b" {
-                    return ConnectModalResult::Close;
-                }
-                if text == "\t" {
-                    self.focus_next();
-                    return ConnectModalResult::Consumed;
-                }
+                if text == "\x1b" { return ConnectModalResult::Close; }
+                if text == "\t" { self.focus_next(); return ConnectModalResult::Consumed; }
                 if text == "\r" || text == "\n" {
-                    // Submit
-                    let ip = self.fields[Self::IP].trim().to_string();
-                    let port: u16 = self.fields[Self::PORT].trim().parse().unwrap_or(9050);
                     let password = self.fields[Self::PASSWORD].clone();
                     let username = self.fields[Self::USERNAME].trim().to_string();
                     let room_code = if self.join {
                         let c = self.fields[Self::ROOM_CODE].trim().to_uppercase();
                         if c.is_empty() { return ConnectModalResult::Consumed; }
                         Some(c)
-                    } else {
-                        None
+                    } else { None };
+                    if username.is_empty() { return ConnectModalResult::Consumed; }
+                    return ConnectModalResult::Connect {
+                        ip: self.ip.clone(), port: self.port,
+                        password, username, room_code,
                     };
-                    if ip.is_empty() || username.is_empty() {
-                        return ConnectModalResult::Close;
-                    }
-                    return ConnectModalResult::Connect { ip, port, password, username, room_code };
                 }
                 let focused = self.focused;
                 if let Some(action) = self.input.handle_key(text, &self.fields[focused]) {
@@ -97,23 +86,14 @@ impl ConnectModal {
                 }
                 ConnectModalResult::Consumed
             }
-            UiEvent::CursorLeft => {
-                self.input.move_left();
-                ConnectModalResult::Consumed
-            }
+            UiEvent::CursorLeft => { self.input.move_left(); ConnectModalResult::Consumed }
             UiEvent::CursorRight => {
                 let f = self.focused;
                 self.input.move_right(&self.fields[f]);
                 ConnectModalResult::Consumed
             }
-            UiEvent::CursorUp => {
-                self.focus_prev();
-                ConnectModalResult::Consumed
-            }
-            UiEvent::CursorDown => {
-                self.focus_next();
-                ConnectModalResult::Consumed
-            }
+            UiEvent::CursorUp => { self.focus_prev(); ConnectModalResult::Consumed }
+            UiEvent::CursorDown => { self.focus_next(); ConnectModalResult::Consumed }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 let field_count = self.field_count();
                 let label_h = 16.0;
@@ -121,14 +101,13 @@ impl ConnectModal {
                 let field_gap = 8.0;
                 let row_h = label_h + field_h + field_gap;
                 let dw = 380.0;
-                let dh = 40.0 + row_h * field_count as f32 + 10.0;
+                let dh = 60.0 + row_h * field_count as f32 + 10.0;
                 let dx = (screen_w - dw) / 2.0;
                 let dy = (screen_h - dh) / 2.0;
                 let fx = dx + 24.0;
                 let fw = dw - 48.0;
-                let base_y = dy + 38.0;
+                let base_y = dy + 56.0;
 
-                // Check if click is on a field
                 let mut hit = false;
                 for i in 0..field_count {
                     let fy = base_y + i as f32 * row_h + label_h;
@@ -140,12 +119,9 @@ impl ConnectModal {
                         break;
                     }
                 }
-                // Click outside card -> close
                 if !hit {
                     let card = Rect { x: dx, y: dy, width: dw, height: dh };
-                    if !card.contains(*x, *y) {
-                        return ConnectModalResult::Close;
-                    }
+                    if !card.contains(*x, *y) { return ConnectModalResult::Close; }
                 }
                 ConnectModalResult::Consumed
             }
@@ -160,11 +136,11 @@ impl ConnectModal {
         let label_h = 16.0;
         let row_h = label_h + field_h + field_gap;
         let dw = 380.0;
-        let dh = 40.0 + row_h * field_count as f32 + 10.0;
+        let dh = 60.0 + row_h * field_count as f32 + 10.0;
         let dx = (screen_w - dw) / 2.0;
         let dy = (screen_h - dh) / 2.0;
 
-        // Dim background
+        // Dim
         overlay_quads.push(QuadInstance {
             rect: [0.0, 0.0, screen_w, screen_h],
             color: [0.0, 0.0, 0.0, 0.75], color_bottom: [0.0, 0.0, 0.0, 0.75],
@@ -190,16 +166,23 @@ impl ConnectModal {
             overflow: Overflow::Clip, padding: 0.0,
             font_size_override: Some(15.0), color_override: None, font_family_override: None,
         });
+        // Server info subtitle
+        labels.push(LabelInfo {
+            text: &self.ip,
+            bounds: Rect { x: dx, y: dy + 30.0, width: dw, height: 18.0 },
+            h_align: HAlign::Center, v_align: VAlign::Center,
+            overflow: Overflow::Clip, padding: 0.0,
+            font_size_override: Some(10.0), color_override: Some([130, 130, 145]), font_family_override: None,
+        });
 
         // Fields
         let fx = dx + 24.0;
         let fw = dw - 48.0;
-        let base_y = dy + 38.0;
+        let base_y = dy + 56.0;
         for i in 0..field_count {
             let fy = base_y + i as f32 * row_h;
             let is_focused = self.focused == i;
 
-            // Label
             labels.push(LabelInfo {
                 text: self.field_label(i),
                 bounds: Rect { x: fx, y: fy, width: fw, height: label_h },
@@ -210,13 +193,8 @@ impl ConnectModal {
                 font_family_override: None,
             });
 
-            // Input bg
             let iy = fy + label_h;
-            let border = if is_focused {
-                [0.40, 0.37, 0.80, 0.8]
-            } else {
-                [0.30, 0.30, 0.36, 0.5]
-            };
+            let border = if is_focused { [0.40, 0.37, 0.80, 0.8] } else { [0.30, 0.30, 0.36, 0.5] };
             overlay_quads.push(QuadInstance {
                 rect: [fx, iy, fw, field_h],
                 color: [0.08, 0.08, 0.10, 1.0], color_bottom: [0.08, 0.08, 0.10, 1.0],
@@ -225,7 +203,6 @@ impl ConnectModal {
                 rotation: 0.0, _padding: [0.0; 2],
             });
 
-            // Field text (password shown as-is -- masking requires owned string storage)
             if !self.fields[i].is_empty() {
                 labels.push(LabelInfo {
                     text: &self.fields[i],
@@ -236,7 +213,6 @@ impl ConnectModal {
                 });
             }
 
-            // Cursor
             if is_focused && self.input.cursor_visible() {
                 let cursor_x = fx + 8.0 + self.input.cursor_pos as f32 * 7.8;
                 overlay_quads.push(QuadInstance {

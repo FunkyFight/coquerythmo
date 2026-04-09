@@ -11,9 +11,20 @@
 "menu.export.mp4" = "Export project as MP4"
 
 "menu.connect" = "Connect"
+"menu.connect.servers" = "Servers"
 "menu.connect.create_room" = "Create a room"
 "menu.connect.join_room" = "Join a room"
 "menu.connect.disconnect" = "Disconnect"
+
+# Server browser
+"server_browser.title" = "Servers"
+"server_browser.close" = "Close"
+"server_browser.create" = "Create"
+"server_browser.join" = "Join"
+"server_browser.remove" = "Remove"
+"server_browser.add" = "Add"
+"server_browser.refresh" = "Refresh"
+"server_browser.add_title" = "Add a server"
 
 # File pickers
 "picker.video.title" = "Choose a video"

@@ -53,6 +53,18 @@ pub struct NetworkConfig {
     #[serde(skip)]
     pub password: String,
     pub username: String,
+    #[serde(default = "default_servers")]
+    pub saved_servers: Vec<SavedServer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedServer {
+    pub ip: String,
+    pub port: u16,
+}
+
+fn default_servers() -> Vec<SavedServer> {
+    vec![SavedServer { ip: "46.225.214.44".into(), port: 9050 }]
 }
 
 impl Default for NetworkConfig {
@@ -62,6 +74,7 @@ impl Default for NetworkConfig {
             server_port: 9050,
             password: String::new(),
             username: "User".into(),
+            saved_servers: default_servers(),
         }
     }
 }
@@ -178,6 +191,28 @@ pub fn add_recent_project(video_path: PathBuf, br_path: PathBuf) {
 
 pub fn recent_projects() -> Vec<RecentProject> {
     get().recent_projects.clone()
+}
+
+pub fn saved_servers() -> Vec<SavedServer> {
+    get().network.saved_servers.clone()
+}
+
+pub fn add_server(ip: String, port: u16) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    if !cfg.network.saved_servers.iter().any(|s| s.ip == ip && s.port == port) {
+        cfg.network.saved_servers.push(SavedServer { ip, port });
+        cfg.save();
+    }
+}
+
+pub fn remove_server(index: usize) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    if index < cfg.network.saved_servers.len() {
+        cfg.network.saved_servers.remove(index);
+        cfg.save();
+    }
 }
 
 pub fn scroll_speed() -> f32 {

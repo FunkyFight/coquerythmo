@@ -260,8 +260,25 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                 line.syllable_ratios = ratios;
             }
         }
-        UiAction::OpenConnectModal { join } => {
-            state.open_connect_modal(join);
+        UiAction::OpenServerBrowser => {
+            state.open_server_browser();
+        }
+        UiAction::OpenConnectModal { ip, port, join } => {
+            state.open_connect_modal(&ip, port, join);
+        }
+        UiAction::OpenAddServerModal => {
+            state.open_add_server_modal();
+        }
+        UiAction::AddServer { ip, port } => {
+            config::add_server(ip, port);
+            state.refresh_server_browser();
+        }
+        UiAction::RemoveServer(index) => {
+            config::remove_server(index);
+            state.refresh_server_browser();
+        }
+        UiAction::RefreshServers => {
+            state.refresh_server_browser();
         }
         UiAction::NetworkConnect { ip, port, password, username, room_code } => {
             // Save last used connection settings

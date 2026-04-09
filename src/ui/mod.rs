@@ -2,6 +2,7 @@ pub mod connect_modal;
 pub mod dropdown;
 pub mod color_picker;
 pub mod export_modal;
+pub mod server_browser;
 pub mod icon_button;
 pub mod icons;
 pub mod interactive;
@@ -53,6 +54,8 @@ pub struct Ui {
     connect_modal: Option<connect_modal::ConnectModal>,
     settings_modal: Option<settings_modal::SettingsModal>,
     export_modal: Option<export_modal::ExportModal>,
+    server_browser: Option<server_browser::ServerBrowserModal>,
+    add_server_modal: Option<server_browser::AddServerModal>,
     network_in_room: bool,
     pub network_status: String,
     pub has_video: bool,
@@ -98,6 +101,8 @@ impl Ui {
             connect_modal: None,
             settings_modal: None,
             export_modal: None,
+            server_browser: None,
+            add_server_modal: None,
             network_in_room: false,
             network_status: String::new(),
             sync_overlay: None,
@@ -180,26 +185,20 @@ impl Ui {
         let connect_menu = Dropdown::new(
             Rect { x: 172.0, y: 2.0, width: 120.0, height: 28.0 },
             vec![
-                t("menu.connect.create_room").into(),
-                t("menu.connect.join_room").into(),
+                t("menu.connect.servers").into(),
                 t("menu.connect.disconnect").into(),
             ],
             |index, _label| match index {
-                0 => EventResponse::Action(UiAction::OpenConnectModal { join: false }),
-                1 => EventResponse::Action(UiAction::OpenConnectModal { join: true }),
-                2 => EventResponse::Action(UiAction::NetworkDisconnect),
+                0 => EventResponse::Action(UiAction::OpenServerBrowser),
+                1 => EventResponse::Action(UiAction::NetworkDisconnect),
                 _ => EventResponse::Consumed,
             },
         )
         .with_arrow(false)
         .with_trigger_bg(false)
         .with_trigger_label(t("menu.connect"))
-        .with_panel_width(280.0)
-        .with_disabled_items(vec![
-            in_room,   // Create: disabled if already in room
-            in_room,   // Join: disabled if already in room
-            !in_room,  // Disconnect: disabled if not in room
-        ]);
+        .with_panel_width(250.0)
+        .with_disabled_items(vec![false, !in_room]);
 
         let settings_size = 24.0;
         let settings_x = screen_w - settings_size - 8.0;
@@ -365,6 +364,16 @@ impl Ui {
         // Export modal intercepts all input
         if self.export_modal.is_some() {
             return self.handle_export_modal_event(event);
+        }
+
+        // Add server modal intercepts all input
+        if self.add_server_modal.is_some() {
+            return self.handle_add_server_event(event);
+        }
+
+        // Server browser intercepts all input
+        if self.server_browser.is_some() {
+            return self.handle_server_browser_event(event);
         }
 
         // Connect modal intercepts all input
@@ -659,8 +668,69 @@ impl Ui {
         self.export_modal = Some(export_modal::ExportModal::new());
     }
 
-    pub fn open_connect_modal(&mut self, join: bool) {
-        self.connect_modal = Some(connect_modal::ConnectModal::new(join));
+    fn handle_server_browser_event(&mut self, event: &UiEvent) -> EventResponse {
+        let modal = match &mut self.server_browser {
+            Some(m) => m,
+            None => return EventResponse::Ignored,
+        };
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            server_browser::BrowserResult::Consumed => EventResponse::Consumed,
+            server_browser::BrowserResult::Close => {
+                self.server_browser = None;
+                EventResponse::Consumed
+            }
+            server_browser::BrowserResult::CreateRoom { ip, port } => {
+                self.server_browser = None;
+                EventResponse::Action(UiAction::OpenConnectModal { ip, port, join: false })
+            }
+            server_browser::BrowserResult::JoinRoom { ip, port } => {
+                self.server_browser = None;
+                EventResponse::Action(UiAction::OpenConnectModal { ip, port, join: true })
+            }
+            server_browser::BrowserResult::AddServer => {
+                EventResponse::Action(UiAction::OpenAddServerModal)
+            }
+            server_browser::BrowserResult::RemoveServer(i) => {
+                EventResponse::Action(UiAction::RemoveServer(i))
+            }
+            server_browser::BrowserResult::Refresh => {
+                EventResponse::Action(UiAction::RefreshServers)
+            }
+        }
+    }
+
+    fn handle_add_server_event(&mut self, event: &UiEvent) -> EventResponse {
+        let modal = match &mut self.add_server_modal {
+            Some(m) => m,
+            None => return EventResponse::Ignored,
+        };
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            server_browser::AddServerResult::Consumed => EventResponse::Consumed,
+            server_browser::AddServerResult::Close => {
+                self.add_server_modal = None;
+                EventResponse::Consumed
+            }
+            server_browser::AddServerResult::Add { ip, port } => {
+                self.add_server_modal = None;
+                EventResponse::Action(UiAction::AddServer { ip, port })
+            }
+        }
+    }
+
+    pub fn open_server_browser(&mut self) {
+        self.server_browser = Some(server_browser::ServerBrowserModal::new());
+    }
+
+    pub fn open_add_server_modal(&mut self) {
+        self.add_server_modal = Some(server_browser::AddServerModal::new());
+    }
+
+    pub fn server_browser_mut(&mut self) -> Option<&mut server_browser::ServerBrowserModal> {
+        self.server_browser.as_mut()
+    }
+
+    pub fn open_connect_modal(&mut self, ip: &str, port: u16, join: bool) {
+        self.connect_modal = Some(connect_modal::ConnectModal::new_with_server(ip, port, join));
     }
 
     pub fn open_settings_modal(&mut self, fonts: Vec<String>) {
@@ -960,6 +1030,16 @@ impl Ui {
 
         // Connect modal
         if let Some(modal) = &self.connect_modal {
+            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+        }
+
+        // Server browser
+        if let Some(modal) = &self.server_browser {
+            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+        }
+
+        // Add server modal (on top of browser)
+        if let Some(modal) = &self.add_server_modal {
             modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
         }
 

@@ -100,7 +100,12 @@ pub enum UiAction {
     OpenRecentProject { video_path: std::path::PathBuf, br_path: std::path::PathBuf },
     SetSyllableRatios { line_id: u64, ratios: Vec<f32> },
     // Network
-    OpenConnectModal { join: bool },
+    OpenServerBrowser,
+    OpenConnectModal { ip: String, port: u16, join: bool },
+    OpenAddServerModal,
+    AddServer { ip: String, port: u16 },
+    RemoveServer(usize),
+    RefreshServers,
     NetworkConnect { ip: String, port: u16, password: String, username: String, room_code: Option<String> },
     NetworkDisconnect,
     // Settings

@@ -31,6 +31,17 @@ fn parse_color(v: &serde_json::Value) -> [f32; 4] {
 }
 
 
+/// Result from a background server ping.
+pub struct PingResult {
+    pub ip: String,
+    pub port: u16,
+    pub name: String,
+    pub motd: String,
+    pub online: u32,
+    pub max_slots: u32,
+    pub success: bool,
+}
+
 pub struct State {
     pub gfx: GraphicsContext,
     ui: Ui,
@@ -44,6 +55,7 @@ pub struct State {
     pub network: NetworkClient,
     last_scroll_time: Option<Instant>,
     scroll_needs_decode: bool,
+    ping_results: std::sync::Arc<std::sync::Mutex<Vec<PingResult>>>,
 }
 
 impl State {
@@ -59,6 +71,7 @@ impl State {
             history: CommandHistory::new(), timeline: TimelineBus::new(),
             network: NetworkClient::new(),
             last_scroll_time: None, scroll_needs_decode: false,
+            ping_results: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -94,8 +107,40 @@ impl State {
         self.ui.is_editing_text()
     }
 
-    pub fn open_connect_modal(&mut self, join: bool) {
-        self.ui.open_connect_modal(join);
+    pub fn open_server_browser(&mut self) {
+        self.ui.open_server_browser();
+        self.ping_servers();
+    }
+
+    pub fn open_connect_modal(&mut self, ip: &str, port: u16, join: bool) {
+        self.ui.open_connect_modal(ip, port, join);
+    }
+
+    pub fn open_add_server_modal(&mut self) {
+        self.ui.open_add_server_modal();
+    }
+
+    pub fn refresh_server_browser(&mut self) {
+        // Re-open browser with fresh server list
+        self.ui.open_server_browser();
+        self.ping_servers();
+    }
+
+    fn ping_servers(&mut self) {
+        if let Some(browser) = self.ui.server_browser_mut() {
+            for s in &mut browser.servers {
+                s.status = crate::ui::server_browser::ServerStatus::Pinging;
+            }
+        }
+        let servers = crate::config::saved_servers();
+        for s in servers {
+            let ip = s.ip.clone();
+            let port = s.port;
+            let ping_results = self.ping_results.clone();
+            std::thread::spawn(move || {
+                ping_server_socketio(&ip, port, ping_results);
+            });
+        }
     }
 
     pub fn open_settings_modal(&mut self) {
@@ -296,6 +341,7 @@ impl State {
                 self.network.room_code = Some(code.clone());
                 self.network.role = Some("admin".into());
                 self.ui.network_status = format!("Salon créé — Code: {code}");
+                self.ui.toasts.push(format!("Salon créé ! Code : {code}"), 5.0);
                 log::info!("Room created: {code}");
             }
             Packet::RoomJoined { code, role, members } => {
@@ -304,6 +350,7 @@ impl State {
                 self.network.role = Some(role);
                 self.network.members = members;
                 self.ui.network_status = format!("Connecté au salon {code}");
+                self.ui.toasts.push(format!("Connecté au salon {code}"), 5.0);
                 self.ui.sync_overlay = Some("Synchronisation en cours...".into());
                 self.ui.sync_progress = 0.0;
                 // request_sync is sent directly from the room_joined callback
@@ -798,6 +845,19 @@ impl State {
     // -- Render --
 
     pub fn render(&mut self) {
+        // Poll ping results
+        if let Ok(mut results) = self.ping_results.try_lock() {
+            for r in results.drain(..) {
+                if let Some(browser) = self.ui.server_browser_mut() {
+                    if r.success {
+                        browser.update_server_info(&r.ip, r.port, r.name, r.motd, r.online, r.max_slots);
+                    } else {
+                        browser.mark_offline(&r.ip, r.port);
+                    }
+                }
+            }
+        }
+
         let surface_texture = match self.gfx.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(tex) | CurrentSurfaceTexture::Suboptimal(tex) => tex,
             CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
@@ -912,4 +972,83 @@ fn build_video_quad<'a>(
             tint: [1.0, 1.0, 1.0, 1.0],
         },
     ))
+}
+
+fn ping_server_socketio(ip: &str, port: u16, results: std::sync::Arc<std::sync::Mutex<Vec<PingResult>>>) {
+    use rust_socketio::{ClientBuilder, Event, Payload};
+
+    let ip_clone = ip.to_string();
+    let port_clone = port;
+    let results_clone = results.clone();
+    let url = format!("http://{}:{}", ip, port);
+
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done2 = done.clone();
+    let done3 = done.clone();
+    let ip_for_info = ip_clone.clone();
+    let ip_for_disc = ip_clone.clone();
+    let results_disc = results.clone();
+
+    let client = ClientBuilder::new(&url)
+        .on("server_info", move |payload, _client| {
+            if let Payload::Text(values) = payload {
+                if let Some(info) = values.first() {
+                    let name = info["name"].as_str().unwrap_or("").to_string();
+                    let motd = info["motd"].as_str().unwrap_or("").to_string();
+                    let online = info["online"].as_u64().unwrap_or(0) as u32;
+                    let max_slots = info["max_slots"].as_u64().unwrap_or(0) as u32;
+                    if let Ok(mut r) = results_clone.lock() {
+                        r.push(PingResult {
+                            ip: ip_for_info.clone(), port: port_clone,
+                            name, motd, online, max_slots, success: true,
+                        });
+                    }
+                    done2.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        })
+        .on(Event::Connect, move |_, client| {
+            let _ = client.emit("ping_server", serde_json::json!({}));
+        })
+        .on(Event::Close, move |_, _| {
+            // Server disconnected us — if we didn't get info, mark offline
+            if !done3.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Ok(mut r) = results_disc.lock() {
+                    r.push(PingResult {
+                        ip: ip_for_disc.clone(), port: port_clone,
+                        name: String::new(), motd: String::new(),
+                        online: 0, max_slots: 0, success: false,
+                    });
+                }
+                done3.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        })
+        .connect();
+
+    match client {
+        Ok(_c) => {
+            // Wait for server to disconnect us (max 6s safety)
+            for _ in 0..60 {
+                if done.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            // If still no response after timeout, mark offline
+            if !done.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Ok(mut r) = results.lock() {
+                    r.push(PingResult {
+                        ip: ip_clone, port, name: String::new(), motd: String::new(),
+                        online: 0, max_slots: 0, success: false,
+                    });
+                }
+            }
+        }
+        Err(_) => {
+            if let Ok(mut r) = results.lock() {
+                r.push(PingResult {
+                    ip: ip_clone, port, name: String::new(), motd: String::new(),
+                    online: 0, max_slots: 0, success: false,
+                });
+            }
+        }
+    }
 }
