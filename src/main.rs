@@ -301,6 +301,82 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
             state.network.disconnect();
             state.rebuild_topbar_for_network();
         }
+        UiAction::OpenVocalRemover => {
+            if state.video_path().is_none() {
+                log::warn!("No video loaded");
+            } else {
+                let cfg = config::get();
+                let need_ai = !cfg.ui.hide_ai_warning;
+                let need_heavy = !cfg.ui.hide_heavy_op_warning;
+                let need_download = !cfg.ui.hide_download_warning;
+                drop(cfg);
+                if need_ai {
+                    state.open_warning("ai");
+                } else if need_heavy {
+                    state.open_warning("heavy");
+                } else if need_download {
+                    state.open_warning("download");
+                } else {
+                    state.open_vocal_remover();
+                }
+            }
+        }
+        UiAction::DismissWarning { warning_type, never_again } => {
+            if never_again {
+                match warning_type.as_str() {
+                    "ai" => config::dismiss_warning(true, false, false),
+                    "heavy" => config::dismiss_warning(false, true, false),
+                    "download" => config::dismiss_warning(false, false, true),
+                    _ => {}
+                }
+            }
+            // Chain: ai -> heavy -> download -> open modal
+            let cfg = config::get();
+            let need_heavy = !cfg.ui.hide_heavy_op_warning;
+            let need_download = !cfg.ui.hide_download_warning;
+            drop(cfg);
+            if warning_type == "ai" && need_heavy {
+                state.open_warning("heavy");
+            } else if (warning_type == "ai" || warning_type == "heavy") && need_download {
+                state.open_warning("download");
+            } else {
+                state.open_vocal_remover();
+            }
+        }
+        UiAction::StartVocalRemoval { params, .. } => {
+            if let Some(source) = state.video_path() {
+                let progress = std::sync::Arc::new(
+                    std::sync::atomic::AtomicU32::new(0.0_f32.to_bits())
+                );
+                let progress_for_ui = progress.clone();
+                let title = i18n::t("tools.save_output").to_string();
+                let source_clone = source.clone();
+                let pending = state.pending_video_load.clone();
+                std::thread::spawn(move || {
+                    let file = rfd::FileDialog::new()
+                        .set_title(&title)
+                        .set_file_name("output_no_vocals.mp4")
+                        .add_filter("MP4 Video", &["mp4"])
+                        .save_file();
+                    if let Some(output) = file {
+                        progress.store(0.01_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                        let output_for_load = output.clone();
+                        let result = run_vocal_removal(&source_clone, &output, &progress);
+                        match result {
+                            Ok(()) => {
+                                if let Ok(mut p) = pending.lock() {
+                                    *p = Some(output_for_load);
+                                }
+                            }
+                            Err(e) => log::error!("Vocal removal failed: {e}"),
+                        }
+                    }
+                    progress.store(2.0_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                });
+                state.set_progress_label(i18n::t("progress.vocal_removal"));
+                state.set_export_progress(Some(progress_for_ui));
+            }
+        }
         UiAction::OpenSettings => {
             state.open_settings_modal();
         }
@@ -403,6 +479,130 @@ fn clipboard_paste() -> Option<String> {
 #[cfg(not(target_os = "windows"))]
 fn clipboard_paste() -> Option<String> { None }
 
+fn run_vocal_removal(
+    source_video: &std::path::Path,
+    output: &std::path::Path,
+    progress: &std::sync::Arc<std::sync::atomic::AtomicU32>,
+) -> Result<(), String> {
+    use std::io::Read;
+    use std::process::Command;
+
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| format!("cannot locate exe: {e}"))?
+        .parent().ok_or("cannot get exe directory")?.to_path_buf();
+
+    let python = exe_dir.join("python").join("bin").join("python.exe");
+    let mdx_script = exe_dir.join("mdx-net").join("separate_vocals.py");
+    let temp_dir = exe_dir.join("temp");
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let temp_audio = temp_dir.join("source_audio.wav");
+    let temp_vocals = temp_dir.join("vocals.wav");
+    let temp_instrumental = temp_dir.join("instrumental.wav");
+
+    // Step 0: Download demucs model if missing
+    let demucs_ckpt = exe_dir.join("mdx-net").join("model").join("demucs.ckpt");
+    if !demucs_ckpt.exists() {
+        log::info!("Vocal removal: downloading demucs model (~300MB)...");
+        progress.store(0.01_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        let demucs_url = "https://dl.fbaipublicfiles.com/demucs/v3.0/demucs-e07c671f.th";
+        let _ = std::fs::create_dir_all(demucs_ckpt.parent().unwrap());
+
+        let response = ureq::get(demucs_url)
+            .call()
+            .map_err(|e| format!("Download demucs failed: {e}"))?;
+
+        let content_length = response.headers().get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(330_000_000); // ~300MB fallback
+
+        let mut body = response.into_body().into_reader();
+        let temp_ckpt = demucs_ckpt.with_extension("ckpt.tmp");
+        let mut file = std::fs::File::create(&temp_ckpt)
+            .map_err(|e| format!("Cannot create demucs temp: {e}"))?;
+
+        let mut downloaded: u64 = 0;
+        let mut buf = [0u8; 65536];
+        // Download progress mapped to 0.01 -> 0.08 (8% of total progress)
+        loop {
+            let n = body.read(&mut buf).map_err(|e| format!("Download read error: {e}"))?;
+            if n == 0 { break; }
+            std::io::Write::write_all(&mut file, &buf[..n])
+                .map_err(|e| format!("Write error: {e}"))?;
+            downloaded += n as u64;
+            let dl_progress = (downloaded as f32 / content_length as f32).min(1.0);
+            progress.store((0.01 + dl_progress * 0.07).to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
+        drop(file);
+        std::fs::rename(&temp_ckpt, &demucs_ckpt)
+            .map_err(|e| format!("Cannot rename demucs temp: {e}"))?;
+        log::info!("Demucs model downloaded ({} bytes)", downloaded);
+    }
+
+    // Step 1: Extract audio from video (20%)
+    log::info!("Vocal removal: extracting audio...");
+    progress.store(0.1_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    let status = Command::new("ffmpeg")
+        .args(["-y", "-i"]).arg(source_video)
+        .args(["-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2"])
+        .arg(&temp_audio)
+        .args(["-v", "error"])
+        .status().map_err(|e| format!("ffmpeg audio extract: {e}"))?;
+    if !status.success() { return Err("ffmpeg audio extraction failed".into()); }
+
+    // Step 2: Run MDX-Net vocal separation (20% -> 90%) with progress tracking
+    log::info!("Vocal removal: running MDX-Net separation...");
+    progress.store(0.2_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    let mut child = Command::new(&python)
+        .arg(&mdx_script)
+        .arg(&temp_audio)
+        .arg(&temp_vocals)
+        .arg(&temp_instrumental)
+        .current_dir(exe_dir.join("mdx-net"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn().map_err(|e| format!("python mdx-net: {e}"))?;
+
+    // Read stdout for PROGRESS:XX lines
+    if let Some(stdout) = child.stdout.take() {
+        let reader = std::io::BufReader::new(stdout);
+        use std::io::BufRead;
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
+                if let Ok(pct) = pct_str.trim().parse::<f32>() {
+                    progress.store((pct / 100.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+                }
+            } else {
+                log::info!("[mdx-net] {}", line);
+            }
+        }
+    }
+    let status = child.wait().map_err(|e| format!("python mdx-net wait: {e}"))?;
+    if !status.success() { return Err("MDX-Net vocal separation failed".into()); }
+
+    // Step 3: Recombine video + instrumental audio (80% -> 95%)
+    log::info!("Vocal removal: recombining video + instrumental...");
+    progress.store(0.8_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    let status = Command::new("ffmpeg")
+        .args(["-y", "-i"]).arg(source_video)
+        .args(["-i"]).arg(&temp_instrumental)
+        .args(["-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0", "-shortest"])
+        .args(["-v", "error"])
+        .arg(output)
+        .status().map_err(|e| format!("ffmpeg recombine: {e}"))?;
+    if !status.success() { return Err("ffmpeg recombination failed".into()); }
+
+    // Cleanup temp files
+    let _ = std::fs::remove_file(&temp_audio);
+    let _ = std::fs::remove_file(&temp_vocals);
+    let _ = std::fs::remove_file(&temp_instrumental);
+
+    progress.store(0.95_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    log::info!("Vocal removal complete: {}", output.display());
+    Ok(())
+}
+
 fn main() {
     env_logger::init();
     config::init();
@@ -433,10 +633,7 @@ fn main() {
     );
 
     let mut state = pollster::block_on(State::new(window.clone()));
-    state.show_toast(
-        "Cette application est gratuite pour que quiconque puisse faire ses bandes rythmos. Créditez le logiciel s'il vous sert dans vos projets s'il vous plait !",
-        10.0,
-    );
+    state.show_toast(i18n::t("toast.welcome"), 10.0);
     let mut cursor_pos = (0.0_f32, 0.0_f32);
     let mut last_click_time = Instant::now();
     let mut ctrl_held = false;

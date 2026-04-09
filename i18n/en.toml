@@ -76,6 +76,29 @@
 "react.hun" = "Questioning"
 "react.psst" = "Getting attention"
 
+# Progress
+"progress.exporting" = "Exporting..."
+"progress.vocal_removal" = "Vocal processing..."
+"progress.downloading_model" = "Downloading model..."
+
+# Toasts
+"toast.welcome" = "This app is free so that anyone can create their rythmo bands. Please credit the software if it helps you in your projects!"
+"toast.room_created" = "Room created! Code: "
+"toast.room_joined" = "Connected to room "
+"toast.vocal_done" = "Vocal processing complete! Video loaded."
+
+# Tools
+"tools.title" = "Tools"
+"tools.vocal_remover" = "Remove vocals"
+"tools.vocal_params" = "Vocal processing parameters"
+"tools.start" = "Start processing"
+"tools.warning_ai" = "This process uses a local AI model. No data is sent to third parties. However, if you have any ethical concerns about this feature, please report them to the developer."
+"tools.warning_heavy" = "This operation is very resource-intensive. A powerful GPU is strongly recommended. Processing may take several minutes."
+"tools.warning_download" = "First-time use requires downloading AI libraries (~2 GB). Please ensure you have up to 8 GB of additional disk space available. This download only happens once."
+"tools.warning_ok" = "OK"
+"tools.warning_dismiss" = "Don't show again"
+"tools.save_output" = "Save video without vocals"
+
 # Export modal
 "export_modal.title" = "Export MP4"
 "export_modal.filename" = "File name"

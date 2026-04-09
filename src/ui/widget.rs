@@ -110,7 +110,25 @@ pub enum UiAction {
     NetworkDisconnect,
     // Settings
     OpenSettings,
+    OpenVocalRemover,
+    DismissWarning { warning_type: String, never_again: bool },
+    StartVocalRemoval { output: std::path::PathBuf, params: VocalRemovalParams },
     SaveSettings { lang: String, rythmo_font: Option<String>, scroll_speed: f32 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VocalRemovalParams {
+    pub reverb_room_size: f32,
+    pub reverb_damping: f32,
+    pub reverb_dry: f32,
+    pub reverb_wet: f32,
+    pub delay_seconds: f32,
+    pub delay_mix: f32,
+    pub compressor_threshold: f32,
+    pub compressor_ratio: f32,
+    pub compressor_attack: f32,
+    pub compressor_release: f32,
+    pub vocal_gain: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]

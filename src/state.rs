@@ -56,6 +56,7 @@ pub struct State {
     last_scroll_time: Option<Instant>,
     scroll_needs_decode: bool,
     ping_results: std::sync::Arc<std::sync::Mutex<Vec<PingResult>>>,
+    pub pending_video_load: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
 }
 
 impl State {
@@ -72,6 +73,7 @@ impl State {
             network: NetworkClient::new(),
             last_scroll_time: None, scroll_needs_decode: false,
             ping_results: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            pending_video_load: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -93,7 +95,13 @@ impl State {
     }
 
     pub fn set_export_progress(&mut self, p: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>) {
+        let is_none = p.is_none();
         self.ui.export_progress = p;
+        if is_none { self.ui.progress_prefix = String::new(); }
+    }
+
+    pub fn set_progress_label(&mut self, label: &str) {
+        self.ui.progress_prefix = label.to_string();
     }
 
     pub fn set_ctrl_held(&mut self, held: bool) {
@@ -150,6 +158,14 @@ impl State {
 
     pub fn show_toast(&mut self, message: &str, duration_secs: f32) {
         self.ui.toasts.push(message, duration_secs);
+    }
+
+    pub fn open_warning(&mut self, warning_type: &str) {
+        self.ui.open_warning(warning_type);
+    }
+
+    pub fn open_vocal_remover(&mut self) {
+        self.ui.open_vocal_remover();
     }
 
     pub fn toggle_syllable_mode(&mut self) {
@@ -341,7 +357,7 @@ impl State {
                 self.network.room_code = Some(code.clone());
                 self.network.role = Some("admin".into());
                 self.ui.network_status = format!("Salon créé — Code: {code}");
-                self.ui.toasts.push(format!("Salon créé ! Code : {code}"), 5.0);
+                self.ui.toasts.push(format!("{}{code}", crate::i18n::t("toast.room_created")), 5.0);
                 log::info!("Room created: {code}");
             }
             Packet::RoomJoined { code, role, members } => {
@@ -350,7 +366,7 @@ impl State {
                 self.network.role = Some(role);
                 self.network.members = members;
                 self.ui.network_status = format!("Connecté au salon {code}");
-                self.ui.toasts.push(format!("Connecté au salon {code}"), 5.0);
+                self.ui.toasts.push(format!("{}{code}", crate::i18n::t("toast.room_joined")), 5.0);
                 self.ui.sync_overlay = Some("Synchronisation en cours...".into());
                 self.ui.sync_progress = 0.0;
                 // request_sync is sent directly from the room_joined callback
@@ -856,6 +872,13 @@ impl State {
                     }
                 }
             }
+        }
+
+        // Poll pending video load (from vocal removal)
+        let pending_path = self.pending_video_load.try_lock().ok().and_then(|mut p| p.take());
+        if let Some(path) = pending_path {
+            self.load_video(&path);
+            self.ui.toasts.push(crate::i18n::t("toast.vocal_done"), 6.0);
         }
 
         let surface_texture = match self.gfx.surface.get_current_texture() {

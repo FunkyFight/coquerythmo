@@ -76,6 +76,29 @@
 "react.hun" = "Interrogation"
 "react.psst" = "Interpellation"
 
+# Progress
+"progress.exporting" = "Export en cours..."
+"progress.vocal_removal" = "Traitement vocal en cours..."
+"progress.downloading_model" = "Téléchargement du modèle..."
+
+# Toasts
+"toast.welcome" = "Cette application est gratuite pour que quiconque puisse faire ses bandes rythmos. Créditez le logiciel s'il vous sert dans vos projets s'il vous plait !"
+"toast.room_created" = "Salon créé ! Code : "
+"toast.room_joined" = "Connecté au salon "
+"toast.vocal_done" = "Traitement vocal terminé ! Vidéo chargée."
+
+# Tools
+"tools.title" = "Outils"
+"tools.vocal_remover" = "Retirer les voix"
+"tools.vocal_params" = "Paramètres de traitement vocal"
+"tools.start" = "Lancer le traitement"
+"tools.warning_ai" = "Ce traitement utilise un modèle d'IA local. Aucune donnée n'est envoyée à un tier parti. Néanmoins, si la fonctionnalité pose problème éthiquement, veuillez le faire remonter au développeur."
+"tools.warning_heavy" = "Cette opération est très gourmande en ressources. Un GPU performant est fortement recommandé. Le traitement peut prendre plusieurs minutes."
+"tools.warning_download" = "La première utilisation nécessite le téléchargement de bibliothèques d'IA (~2 Go). Prévoyez jusqu'à 8 Go d'espace disque supplémentaire. Ce téléchargement n'aura lieu qu'une seule fois."
+"tools.warning_ok" = "OK"
+"tools.warning_dismiss" = "Ne plus afficher"
+"tools.save_output" = "Enregistrer la vidéo sans voix"
+
 # Export modal
 "export_modal.title" = "Export MP4"
 "export_modal.filename" = "Nom du fichier"
