@@ -2,8 +2,10 @@ pub mod connect_modal;
 pub mod dropdown;
 pub mod color_picker;
 pub mod export_modal;
+pub mod save_prompt_modal;
 pub mod server_browser;
 pub mod vocal_remover;
+pub mod vocal_wizard;
 pub mod warning_modal;
 pub mod icon_button;
 pub mod icons;
@@ -60,7 +62,9 @@ pub struct Ui {
     server_browser: Option<server_browser::ServerBrowserModal>,
     add_server_modal: Option<server_browser::AddServerModal>,
     vocal_remover: Option<vocal_remover::VocalRemoverModal>,
+    vocal_wizard: Option<vocal_wizard::VocalWizard>,
     warning_modal: Option<warning_modal::WarningModal>,
+    save_prompt_modal: Option<save_prompt_modal::SavePromptModal>,
     network_in_room: bool,
     pub network_status: String,
     pub has_video: bool,
@@ -110,7 +114,9 @@ impl Ui {
             server_browser: None,
             add_server_modal: None,
             vocal_remover: None,
+            vocal_wizard: None,
             warning_modal: None,
+            save_prompt_modal: None,
             network_in_room: false,
             network_status: String::new(),
             sync_overlay: None,
@@ -147,19 +153,21 @@ impl Ui {
                 t("menu.project.import").into(),
                 t("menu.project.export").into(),
                 format!("{} ▸", t("menu.project.recent")),
+                t("menu.project.restore_backup").into(),
             ],
             |index, _label| match index {
                 0 => EventResponse::Action(UiAction::AddVideo),
                 1 => EventResponse::Action(UiAction::ImportProject),
                 2 => EventResponse::Action(UiAction::ExportProject),
+                4 => EventResponse::Action(UiAction::RestoreBackup),
                 _ => EventResponse::Consumed, // "Récent" item does nothing on click
             },
         )
         .with_arrow(false)
         .with_trigger_bg(false)
         .with_trigger_label(t("menu.project"))
-        .with_panel_width(250.0)
-        .with_disabled_items(vec![false, !has_video, !has_video, false]);
+        .with_panel_width(340.0)
+        .with_disabled_items(vec![false, !has_video, !has_video, false, false]);
 
         // Attach submenu to item index 3 ("Récent ▸")
         if !recent_labels.is_empty() {
@@ -382,9 +390,19 @@ impl Ui {
             return self.handle_settings_modal_event(event);
         }
 
+        // Save prompt modal (new project)
+        if self.save_prompt_modal.is_some() {
+            return self.handle_save_prompt_event(event);
+        }
+
         // Warning modal
         if self.warning_modal.is_some() {
             return self.handle_warning_event(event);
+        }
+
+        // Vocal wizard (on top of remover modal)
+        if self.vocal_wizard.is_some() {
+            return self.handle_vocal_wizard_event(event);
         }
 
         // Vocal remover modal
@@ -766,6 +784,31 @@ impl Ui {
                     params,
                 })
             }
+            vocal_remover::VocalRemoverResult::OpenWizard => {
+                self.vocal_wizard = Some(vocal_wizard::VocalWizard::new());
+                EventResponse::Consumed
+            }
+        }
+    }
+
+    fn handle_vocal_wizard_event(&mut self, event: &UiEvent) -> EventResponse {
+        let wizard = match &mut self.vocal_wizard {
+            Some(w) => w,
+            None => return EventResponse::Ignored,
+        };
+        match wizard.handle_event(event, self.screen_w, self.screen_h) {
+            vocal_wizard::WizardResult::Consumed => EventResponse::Consumed,
+            vocal_wizard::WizardResult::Cancel => {
+                self.vocal_wizard = None;
+                EventResponse::Consumed
+            }
+            vocal_wizard::WizardResult::BackToManual { preset } => {
+                self.vocal_wizard = None;
+                if let Some(modal) = &mut self.vocal_remover {
+                    modal.apply_preset(preset);
+                }
+                EventResponse::Consumed
+            }
         }
     }
 
@@ -789,6 +832,32 @@ impl Ui {
 
     pub fn open_warning(&mut self, warning_type: &str) {
         self.warning_modal = Some(warning_modal::WarningModal::new(warning_type));
+    }
+
+    fn handle_save_prompt_event(&mut self, event: &UiEvent) -> EventResponse {
+        let modal = match &mut self.save_prompt_modal {
+            Some(m) => m,
+            None => return EventResponse::Ignored,
+        };
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            save_prompt_modal::SavePromptResult::Consumed => EventResponse::Consumed,
+            save_prompt_modal::SavePromptResult::Save => {
+                self.save_prompt_modal = None;
+                EventResponse::Action(UiAction::NewProjectSave)
+            }
+            save_prompt_modal::SavePromptResult::Discard => {
+                self.save_prompt_modal = None;
+                EventResponse::Action(UiAction::NewProjectDiscard)
+            }
+            save_prompt_modal::SavePromptResult::Cancel => {
+                self.save_prompt_modal = None;
+                EventResponse::Consumed
+            }
+        }
+    }
+
+    pub fn open_save_prompt(&mut self) {
+        self.save_prompt_modal = Some(save_prompt_modal::SavePromptModal::new());
     }
 
     pub fn open_vocal_remover(&mut self) {
@@ -983,68 +1052,6 @@ impl Ui {
             labels.extend(tooltip.render_labels(self.screen_w));
         }
 
-        // Export progress modal (only shown once export actually started, progress > 0)
-        let export_progress_val = self.export_progress.as_ref().map(|p| {
-            f32::from_bits(p.load(std::sync::atomic::Ordering::Relaxed))
-        }).unwrap_or(0.0);
-        if self.export_progress.is_some() && export_progress_val > 0.0 {
-            let progress = export_progress_val;
-
-            let dw = 420.0;
-            let dh = 120.0;
-            let dx = (self.screen_w - dw) / 2.0;
-            let dy = (self.screen_h - dh) / 2.0;
-
-            // Dim
-            overlay_quads.push(QuadInstance {
-                rect: [0.0, 0.0, self.screen_w, self.screen_h],
-                color: [0.0, 0.0, 0.0, 0.75], color_bottom: [0.0, 0.0, 0.0, 0.75],
-                border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
-            // Card
-            overlay_quads.push(QuadInstance {
-                rect: [dx, dy, dw, dh],
-                color: [0.22, 0.22, 0.26, 1.0], color_bottom: [0.16, 0.16, 0.19, 1.0],
-                border_color: [0.45, 0.45, 0.52, 0.8],
-                border_width: 1.5, border_radius: 14.0,
-                shadow_offset: [0.0, 4.0], shadow_color: [0.0, 0.0, 0.0, 0.5], shadow_blur: 10.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
-            // Bar track
-            let bx = dx + 30.0;
-            let by = dy + 65.0;
-            let bw = dw - 60.0;
-            let bh = 14.0;
-            overlay_quads.push(QuadInstance {
-                rect: [bx, by, bw, bh],
-                color: [0.10, 0.10, 0.13, 1.0], color_bottom: [0.10, 0.10, 0.13, 1.0],
-                border_color: [0.30, 0.30, 0.38, 0.8], border_width: 1.0, border_radius: 7.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
-            // Bar fill
-            let fill = (bw - 4.0) * progress.clamp(0.0, 1.0);
-            if fill > 0.5 {
-                overlay_quads.push(QuadInstance {
-                    rect: [bx + 2.0, by + 2.0, fill, bh - 4.0],
-                    color: [0.35, 0.60, 1.0, 1.0], color_bottom: [0.25, 0.45, 0.85, 1.0],
-                    border_color: [0.0; 4], border_width: 0.0, border_radius: 5.0,
-                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                    rotation: 0.0, _padding: [0.0; 2],
-                });
-            }
-            // Labels
-            labels.push(LabelInfo {
-                text: &self.export_label,
-                bounds: Rect { x: dx, y: dy + 18.0, width: dw, height: 28.0 },
-                h_align: HAlign::Center, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(17.0), color_override: None, font_family_override: None,
-            });
-        }
-
         // Sync overlay (blocks UI during video transfer)
         if let Some(msg) = &self.sync_overlay {
             let dw = 420.0;
@@ -1132,9 +1139,83 @@ impl Ui {
             modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
         }
 
-        // Vocal remover modal
-        if let Some(modal) = &self.vocal_remover {
+        // Save prompt modal
+        if let Some(modal) = &self.save_prompt_modal {
             modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+        }
+
+        // Vocal remover modal (hidden while wizard is open)
+        if self.vocal_wizard.is_none() {
+            if let Some(modal) = &self.vocal_remover {
+                modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+            }
+        }
+
+        // Vocal wizard (on top of remover)
+        if let Some(wizard) = &self.vocal_wizard {
+            wizard.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+        }
+
+        // Export progress modal (rendered last so it's always on top)
+        let export_progress_val = self.export_progress.as_ref().map(|p| {
+            f32::from_bits(p.load(std::sync::atomic::Ordering::Relaxed))
+        }).unwrap_or(0.0);
+        if self.export_progress.is_some() && export_progress_val > 0.0 {
+            let progress = export_progress_val;
+
+            let dw = 420.0;
+            let dh = 120.0;
+            let dx = (self.screen_w - dw) / 2.0;
+            let dy = (self.screen_h - dh) / 2.0;
+
+            // Dim
+            overlay_quads.push(QuadInstance {
+                rect: [0.0, 0.0, self.screen_w, self.screen_h],
+                color: [0.0, 0.0, 0.0, 0.75], color_bottom: [0.0, 0.0, 0.0, 0.75],
+                border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                rotation: 0.0, _padding: [0.0; 2],
+            });
+            // Card
+            overlay_quads.push(QuadInstance {
+                rect: [dx, dy, dw, dh],
+                color: [0.22, 0.22, 0.26, 1.0], color_bottom: [0.16, 0.16, 0.19, 1.0],
+                border_color: [0.45, 0.45, 0.52, 0.8],
+                border_width: 1.5, border_radius: 14.0,
+                shadow_offset: [0.0, 4.0], shadow_color: [0.0, 0.0, 0.0, 0.5], shadow_blur: 10.0,
+                rotation: 0.0, _padding: [0.0; 2],
+            });
+            // Bar track
+            let bx = dx + 30.0;
+            let by = dy + 65.0;
+            let bw = dw - 60.0;
+            let bh = 14.0;
+            overlay_quads.push(QuadInstance {
+                rect: [bx, by, bw, bh],
+                color: [0.10, 0.10, 0.13, 1.0], color_bottom: [0.10, 0.10, 0.13, 1.0],
+                border_color: [0.30, 0.30, 0.38, 0.8], border_width: 1.0, border_radius: 7.0,
+                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                rotation: 0.0, _padding: [0.0; 2],
+            });
+            // Bar fill
+            let fill = (bw - 4.0) * progress.clamp(0.0, 1.0);
+            if fill > 0.5 {
+                overlay_quads.push(QuadInstance {
+                    rect: [bx + 2.0, by + 2.0, fill, bh - 4.0],
+                    color: [0.35, 0.60, 1.0, 1.0], color_bottom: [0.25, 0.45, 0.85, 1.0],
+                    border_color: [0.0; 4], border_width: 0.0, border_radius: 5.0,
+                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                    rotation: 0.0, _padding: [0.0; 2],
+                });
+            }
+            // Labels
+            labels.push(LabelInfo {
+                text: &self.export_label,
+                bounds: Rect { x: dx, y: dy + 18.0, width: dw, height: 28.0 },
+                h_align: HAlign::Center, v_align: VAlign::Center,
+                overflow: Overflow::Clip, padding: 0.0,
+                font_size_override: Some(17.0), color_override: None, font_family_override: None,
+            });
         }
 
         // Toasts

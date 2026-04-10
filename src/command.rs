@@ -42,6 +42,11 @@ pub enum Command {
         marker: RythmoMarker,
         index: usize,
     },
+    MoveMarker {
+        index: usize,
+        old_frame: i64,
+        new_frame: i64,
+    },
 }
 
 impl Command {
@@ -87,6 +92,11 @@ impl Command {
             Command::RemoveMarker { index, .. } => {
                 if *index < project.markers.len() {
                     project.markers.remove(*index);
+                }
+            }
+            Command::MoveMarker { index, new_frame, .. } => {
+                if let Some(m) = project.markers.get_mut(*index) {
+                    m.frame = *new_frame;
                 }
             }
         }
@@ -137,6 +147,11 @@ impl Command {
                 let idx = (*index).min(project.markers.len());
                 project.markers.insert(idx, marker.clone());
             }
+            Command::MoveMarker { index, old_frame, .. } => {
+                if let Some(m) = project.markers.get_mut(*index) {
+                    m.frame = *old_frame;
+                }
+            }
         }
     }
 }
@@ -149,6 +164,11 @@ pub struct CommandHistory {
 impl CommandHistory {
     pub fn new() -> Self {
         Self { undo_stack: Vec::new(), redo_stack: Vec::new() }
+    }
+
+    pub fn clear(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
     }
 
     /// Push a command that has ALREADY been applied to the project.
@@ -172,6 +192,7 @@ impl CommandHistory {
             (Command::ResizeLine { line_id: id, .. }, CommandKind::ResizeLine) => *id == line_id,
             (Command::SetCharacter { line_id: id, .. }, CommandKind::SetCharacter) => *id == line_id,
             (Command::SetCharacterColor { line_id: id, .. }, CommandKind::SetCharacterColor) => *id == line_id,
+            (Command::MoveMarker { index: idx, .. }, CommandKind::MoveMarker) => *idx == line_id as usize,
             _ => false,
         })
     }
@@ -202,6 +223,7 @@ pub enum CommandKind {
     ResizeLine,
     SetCharacter,
     SetCharacterColor,
+    MoveMarker,
 }
 
 #[cfg(test)]

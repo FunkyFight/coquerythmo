@@ -229,68 +229,73 @@ pub fn export_mp4(
     log::info!("Pass 2: combining source + BR strip");
     progress_cb(0.9);
 
-    // Both source video and BR temp are at source fps — no fps conversion needed, just vstack.
-    // Ensure both streams have matching pixel format before vstack.
-    let filter = if use_cuda {
-        format!(
-            "[0:v]scale_cuda={}:{},hwdownload,format=nv12[v];[1:v]format=nv12[br];[v][br]vstack=inputs=2[out]",
-            out_w, vid_h
-        )
+    // Try CUDA hwaccel first, fallback to CPU filters if it fails
+    let cuda_filter = format!(
+        "[0:v]scale_cuda={}:{},hwdownload,format=nv12[v];[1:v]format=nv12[br];[v][br]vstack=inputs=2[out]",
+        out_w, vid_h
+    );
+    let cpu_filter = format!(
+        "[0:v]scale={}:{},format=yuv420p[v];[1:v]format=yuv420p[br];[v][br]vstack=inputs=2[out]",
+        out_w, vid_h
+    );
+
+    let result = if use_cuda {
+        // Try CUDA-accelerated pass 2
+        let r = run_pass2(source_video, &temp_br, output, &cuda_filter, true, use_nvenc, codec, fps);
+        if r.is_err() {
+            log::warn!("CUDA pass 2 failed, falling back to CPU filters");
+            let _ = std::fs::remove_file(output);
+            run_pass2(source_video, &temp_br, output, &cpu_filter, false, use_nvenc, codec, fps)
+        } else {
+            r
+        }
     } else {
-        format!(
-            "[0:v]scale={}:{},format=yuv420p[v];[1:v]format=yuv420p[br];[v][br]vstack=inputs=2[out]",
-            out_w, vid_h
-        )
+        run_pass2(source_video, &temp_br, output, &cpu_filter, false, use_nvenc, codec, fps)
     };
 
-    // CUDA hwaccel only on the first input (source video), not the BR temp
+    let _ = std::fs::remove_file(&temp_br);
+    result?;
+
+    progress_cb(1.0);
+    log::info!("Export complete: {}", output.display());
+    Ok(())
+}
+
+fn run_pass2(
+    source_video: &Path,
+    temp_br: &Path,
+    output: &Path,
+    filter: &str,
+    use_cuda: bool,
+    use_nvenc: bool,
+    codec: &str,
+    fps: f64,
+) -> Result<(), String> {
     let mut cmd = Command::new("ffmpeg");
     if use_cuda {
         cmd.args(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]);
     }
-    let mut combine = cmd
+    let combine = cmd
         .arg("-i").arg(source_video)
-        .arg("-i").arg(&temp_br)
-        .args(["-filter_complex", &filter, "-map", "[out]", "-map", "0:a?"])
+        .arg("-i").arg(temp_br)
+        .args(["-filter_complex", filter, "-map", "[out]", "-map", "0:a?"])
         .args(if use_nvenc {
             vec!["-c:v", codec, "-preset", "p1", "-rc", "constqp", "-qp", "20", "-b:v", "0"]
         } else {
             vec!["-c:v", codec, "-preset", "ultrafast", "-crf", "20"]
         })
         .args(["-pix_fmt", "yuv420p", "-r", &fps.to_string(), "-c:a", "copy", "-shortest", "-v", "warning", "-y"])
-        .args(["-progress", "pipe:1"])
         .arg(output)
-        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .stdout(Stdio::null())
+        .status()
         .map_err(|e| format!("ffmpeg pass 2: {e}"))?;
 
-    // Parse ffmpeg progress output for pass 2 (90% → 100%)
-    let duration_us = (info.duration_secs * 1_000_000.0) as u64;
-    if let Some(stdout) = combine.stdout.take() {
-        let reader = std::io::BufReader::new(stdout);
-        use std::io::BufRead;
-        for line in reader.lines() {
-            let Ok(line) = line else { break };
-            if let Some(time_str) = line.strip_prefix("out_time_us=") {
-                if let Ok(us) = time_str.trim().parse::<u64>() {
-                    let p2 = if duration_us > 0 { us as f32 / duration_us as f32 } else { 0.0 };
-                    progress_cb(0.9 + p2.min(1.0) * 0.1);
-                }
-            }
-        }
+    if !combine.success() {
+        Err(format!("ffmpeg pass 2 failed (cuda={}, filter={})", use_cuda, filter))
+    } else {
+        Ok(())
     }
-
-    let result = combine.wait_with_output().map_err(|e| format!("ffmpeg pass 2: {e}"))?;
-    let _ = std::fs::remove_file(&temp_br);
-
-    if !result.status.success() {
-        return Err(format!("ffmpeg pass 2: {}", String::from_utf8_lossy(&result.stderr)));
-    }
-
-    progress_cb(1.0);
-    log::info!("Export complete: {}", output.display());
-    Ok(())
 }
 
 /// Convert RGBA pixels to YUV420p.

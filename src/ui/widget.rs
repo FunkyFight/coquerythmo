@@ -112,8 +112,13 @@ pub enum UiAction {
     OpenSettings,
     OpenVocalRemover,
     DismissWarning { warning_type: String, never_again: bool },
+    RestoreBackup,
     StartVocalRemoval { output: std::path::PathBuf, params: VocalRemovalParams },
     SaveSettings { lang: String, rythmo_font: Option<String>, scroll_speed: f32 },
+    // New project
+    NewProject,
+    NewProjectSave,
+    NewProjectDiscard,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,13 +127,13 @@ pub struct VocalRemovalParams {
     pub reverb_damping: f32,
     pub reverb_dry: f32,
     pub reverb_wet: f32,
-    pub delay_seconds: f32,
-    pub delay_mix: f32,
+    pub highpass: f32,
+    pub lowpass: f32,
     pub compressor_threshold: f32,
     pub compressor_ratio: f32,
     pub compressor_attack: f32,
     pub compressor_release: f32,
-    pub vocal_gain: f32,
+    pub bg_gain: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]

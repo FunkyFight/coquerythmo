@@ -165,6 +165,20 @@ impl Project {
         self.line_order.clear();
     }
 
+    /// Returns true if the project has no lines, no markers, and no characters.
+    pub fn is_empty(&self) -> bool {
+        self.line_map.is_empty() && self.markers.is_empty() && self.known_characters.is_empty()
+    }
+
+    /// Full reset: clear lines, markers, characters, and color index.
+    pub fn reset(&mut self) {
+        self.line_map.clear();
+        self.line_order.clear();
+        self.markers.clear();
+        self.known_characters.clear();
+        self.color_index = 0;
+    }
+
     // -- Character management --
 
     pub fn set_character(&mut self, line_id: u64, name: String, color: [f32; 4]) {

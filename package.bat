@@ -38,7 +38,7 @@ copy /Y updater\target\release\updater.exe target\release\updater.exe
 
 echo.
 echo === Creating zip: coquerythmo-v%VERSION%-windows-portable.zip ===
-powershell -Command "Compress-Archive -Force -Path 'target\release\coquerythmo.exe','target\release\updater.exe','target\release\ffmpeg.exe','target\release\ffplay.exe','target\release\ffprobe.exe' -DestinationPath 'target\release\coquerythmo-v%VERSION%-windows-portable.zip'"
+powershell -Command "Compress-Archive -Force -CompressionLevel Fastest -Path 'target\release\coquerythmo.exe','target\release\updater.exe','target\release\ffmpeg.exe','target\release\ffplay.exe','target\release\ffprobe.exe','target\release\python','target\release\mdx-net' -DestinationPath 'target\release\coquerythmo-v%VERSION%-windows-portable.zip'"
 if errorlevel 1 (
     echo Zip creation failed!
     pause

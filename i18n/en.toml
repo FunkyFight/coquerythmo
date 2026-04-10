@@ -6,6 +6,10 @@
 "menu.project.import" = "Import a rythmo band"
 "menu.project.export" = "Export a rythmo band"
 "menu.project.recent" = "Recent"
+"menu.project.restore_backup" = "Restore last lost rythmo band"
+"toast.backup_restored" = "Rythmo band restored from backup"
+"toast.saved" = "Rythmo band saved."
+"toast.no_backup" = "No backup found"
 
 "menu.export" = "Export"
 "menu.export.mp4" = "Export project as MP4"
@@ -98,6 +102,42 @@
 "tools.warning_ok" = "OK"
 "tools.warning_dismiss" = "Don't show again"
 "tools.save_output" = "Save video without vocals"
+"tools.wizard" = "Assistant"
+
+# Vocal wizard
+"wizard.title_content" = "What type of content are you processing?"
+"wizard.content_dialogue" = "Film / TV dialogue"
+"wizard.content_music" = "Music / Singing"
+"wizard.content_podcast" = "Podcast / Voice only"
+"wizard.content_mixed" = "Mixed (dialogue + music)"
+
+"wizard.title_quality" = "How is the source audio quality?"
+"wizard.quality_studio" = "Studio, very clean"
+"wizard.quality_decent" = "Decent, no notable issues"
+"wizard.quality_noisy" = "Background noise or echo present"
+
+"wizard.title_reverb" = "Is there natural reverb in the audio?"
+"wizard.reverb_none" = "None perceptible"
+"wizard.reverb_light" = "Light (furnished room)"
+"wizard.reverb_heavy" = "Heavy (empty hall, church...)"
+
+"wizard.title_retry" = "Have you already tried processing this audio?"
+"wizard.retry_first" = "First attempt"
+"wizard.retry_vocals" = "Yes, vocals weren't removed enough"
+"wizard.retry_altered" = "Yes, resulting audio was too altered"
+
+"wizard.title_result" = "What result do you want?"
+"wizard.result_vocals" = "Isolated vocals only"
+"wizard.result_instrumental" = "Instrumental only (karaoke)"
+"wizard.result_mixed" = "Vocals with light background music"
+
+"wizard.title_dynamics" = "Is the audio dynamics variable?"
+"wizard.dynamics_steady" = "Fairly constant levels"
+"wizard.dynamics_variable" = "Alternating whispers / loud voices"
+"wizard.dynamics_compressed" = "Already compressed (radio, phone)"
+
+"wizard.back" = "Back"
+"wizard.cancel" = "Cancel"
 
 # Export modal
 "export_modal.title" = "Export MP4"
@@ -115,3 +155,10 @@
 "settings.restart_required" = "(restart required)"
 "settings.scroll_speed" = "Scroll speed"
 "settings.tooltip" = "Settings"
+
+# Save prompt (new project)
+"save_prompt.title" = "Unsaved changes"
+"save_prompt.message" = "Save before starting a new project?"
+"save_prompt.save" = "Save"
+"save_prompt.discard" = "Don't save"
+"save_prompt.cancel" = "Cancel"

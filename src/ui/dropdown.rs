@@ -202,7 +202,7 @@ impl Widget for Dropdown {
             Rect {
                 x: self.bounds.x,
                 y: self.bounds.y,
-                width: self.bounds.width,
+                width: panel.width.max(self.bounds.width),
                 height: (panel.y + panel.height) - self.bounds.y,
             }
         } else {

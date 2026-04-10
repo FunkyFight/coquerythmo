@@ -6,6 +6,10 @@
 "menu.project.import" = "Importer une bande rythmo"
 "menu.project.export" = "Exporter une bande rythmo"
 "menu.project.recent" = "Récents"
+"menu.project.restore_backup" = "Restorer la dernière bande rythmo perdue"
+"toast.backup_restored" = "Bande rythmo restorée depuis la sauvegarde"
+"toast.saved" = "Bande rythmo sauvegardée."
+"toast.no_backup" = "Aucune sauvegarde trouvée"
 
 "menu.export" = "Export"
 "menu.export.mp4" = "Exporter le projet en MP4"
@@ -98,6 +102,42 @@
 "tools.warning_ok" = "OK"
 "tools.warning_dismiss" = "Ne plus afficher"
 "tools.save_output" = "Enregistrer la vidéo sans voix"
+"tools.wizard" = "Assistant"
+
+# Vocal wizard
+"wizard.title_content" = "Quel type de contenu traitez-vous ?"
+"wizard.content_dialogue" = "Dialogue de film / série"
+"wizard.content_music" = "Musique / Chant"
+"wizard.content_podcast" = "Podcast / Voix seule"
+"wizard.content_mixed" = "Mixte (dialogue + musique)"
+
+"wizard.title_quality" = "Comment est la qualité audio source ?"
+"wizard.quality_studio" = "Studio, très propre"
+"wizard.quality_decent" = "Correct, sans problème notable"
+"wizard.quality_noisy" = "Bruit de fond ou écho présent"
+
+"wizard.title_reverb" = "Y a-t-il de la réverbération naturelle ?"
+"wizard.reverb_none" = "Aucune perceptible"
+"wizard.reverb_light" = "Légère (pièce meublée)"
+"wizard.reverb_heavy" = "Forte (salle vide, église...)"
+
+"wizard.title_retry" = "Avez-vous déjà essayé de traiter cet audio ?"
+"wizard.retry_first" = "Première tentative"
+"wizard.retry_vocals" = "Oui, les voix n'étaient pas assez retirées"
+"wizard.retry_altered" = "Oui, l'audio résultant était trop altéré"
+
+"wizard.title_result" = "Quel résultat souhaitez-vous ?"
+"wizard.result_vocals" = "Voix isolée uniquement"
+"wizard.result_instrumental" = "Instrumental seul (karaoké)"
+"wizard.result_mixed" = "Voix avec léger fond musical"
+
+"wizard.title_dynamics" = "La dynamique de l'audio est-elle variable ?"
+"wizard.dynamics_steady" = "Niveaux assez constants"
+"wizard.dynamics_variable" = "Alternance chuchotements / voix fortes"
+"wizard.dynamics_compressed" = "Déjà compressé (radio, téléphone)"
+
+"wizard.back" = "Précédent"
+"wizard.cancel" = "Annuler"
 
 # Export modal
 "export_modal.title" = "Export MP4"
@@ -115,3 +155,10 @@
 "settings.restart_required" = "(redémarrage nécessaire)"
 "settings.scroll_speed" = "Vitesse de défilement"
 "settings.tooltip" = "Paramètres"
+
+# Save prompt (new project)
+"save_prompt.title" = "Modifications non sauvegardées"
+"save_prompt.message" = "Sauvegarder avant de créer un nouveau projet ?"
+"save_prompt.save" = "Sauvegarder"
+"save_prompt.discard" = "Ne pas sauvegarder"
+"save_prompt.cancel" = "Annuler"

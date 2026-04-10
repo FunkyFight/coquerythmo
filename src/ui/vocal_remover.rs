@@ -11,49 +11,57 @@ const BTN_W: f32 = 30.0;
 pub struct VocalRemoverModal {
     pub params: [f32; 11],
     pub param_texts: [String; 11],
+    pub wizard_preset: Option<[f32; 11]>,
 }
 
 const PARAM_NAMES: [&str; 11] = [
     "Reverb Room Size",
     "Reverb Damping",
-    "Reverb Dry Level",
-    "Reverb Wet Level",
-    "Delay Seconds",
-    "Delay Mix",
-    "Compressor Threshold",
-    "Compressor Ratio",
-    "Compressor Attack",
-    "Compressor Release",
-    "Vocal Gain",
+    "Reverb Dry",
+    "Reverb Wet",
+    "Highpass",
+    "Lowpass",
+    "Comp. Threshold",
+    "Comp. Ratio",
+    "Comp. Attack",
+    "Comp. Release",
+    "BG Gain",
 ];
 
 const PARAM_DEFAULTS: [f32; 11] = [
-    0.15, 0.7, 0.8, 0.2, 0.0, 0.0, -15.0, 4.0, 1.0, 100.0, 0.0,
+    0.15, 0.7, 0.8, 0.2, 20.0, 22050.0, -15.0, 4.0, 1.0, 100.0, 0.0,
 ];
 
 const PARAM_STEPS: [f32; 11] = [
-    0.05, 0.05, 0.05, 0.05, 0.1, 0.05, 1.0, 0.5, 0.5, 10.0, 1.0,
+    0.05, 0.05, 0.05, 0.05, 10.0, 500.0, 1.0, 0.5, 0.5, 10.0, 1.0,
 ];
 
 const PARAM_MINS: [f32; 11] = [
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -60.0, 1.0, 0.1, 10.0, -20.0,
+    0.0, 0.0, 0.0, 0.0, 20.0, 1000.0, -60.0, 1.0, 0.1, 10.0, -6.0,
 ];
 
 const PARAM_MAXS: [f32; 11] = [
-    1.0, 1.0, 1.0, 1.0, 5.0, 1.0, 0.0, 20.0, 50.0, 1000.0, 20.0,
+    1.0, 1.0, 1.0, 1.0, 500.0, 22050.0, 0.0, 20.0, 50.0, 1000.0, 6.0,
 ];
 
 pub enum VocalRemoverResult {
     Consumed,
     Close,
     Start(VocalRemovalParams),
+    OpenWizard,
 }
 
 impl VocalRemoverModal {
     pub fn new() -> Self {
         let params = PARAM_DEFAULTS;
         let param_texts = std::array::from_fn(|i| format_param(params[i], i));
-        Self { params, param_texts }
+        Self { params, param_texts, wizard_preset: None }
+    }
+
+    pub fn apply_preset(&mut self, preset: [f32; 11]) {
+        self.params = preset;
+        self.param_texts = std::array::from_fn(|i| format_param(self.params[i], i));
+        self.wizard_preset = None;
     }
 
     fn card_rect(sw: f32, sh: f32) -> Rect {
@@ -96,6 +104,12 @@ impl VocalRemoverModal {
                     return VocalRemoverResult::Start(self.to_params());
                 }
 
+                // Wizard button
+                let wiz_btn = Rect { x: card.x + 15.0, y: btn_y, width: 120.0, height: 30.0 };
+                if wiz_btn.contains(*x, *y) {
+                    return VocalRemoverResult::OpenWizard;
+                }
+
                 VocalRemoverResult::Consumed
             }
             _ => VocalRemoverResult::Consumed,
@@ -108,13 +122,13 @@ impl VocalRemoverModal {
             reverb_damping: self.params[1],
             reverb_dry: self.params[2],
             reverb_wet: self.params[3],
-            delay_seconds: self.params[4],
-            delay_mix: self.params[5],
+            highpass: self.params[4],
+            lowpass: self.params[5],
             compressor_threshold: self.params[6],
             compressor_ratio: self.params[7],
             compressor_attack: self.params[8],
             compressor_release: self.params[9],
-            vocal_gain: self.params[10],
+            bg_gain: self.params[10],
         }
     }
 
@@ -237,6 +251,23 @@ impl VocalRemoverModal {
             h_align: HAlign::Center, v_align: VAlign::Center,
             overflow: Overflow::Clip, padding: 0.0,
             font_size_override: Some(11.0), color_override: None, font_family_override: None,
+        });
+
+        // Wizard button
+        let wiz_x = card.x + 15.0;
+        quads.push(QuadInstance {
+            rect: [wiz_x, btn_y, 120.0, 30.0],
+            color: [0.20, 0.25, 0.35, 1.0], color_bottom: [0.18, 0.22, 0.30, 1.0],
+            border_color: [0.40, 0.50, 0.70, 0.7], border_width: 1.0, border_radius: 4.0,
+            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+            rotation: 0.0, _padding: [0.0; 2],
+        });
+        labels.push(LabelInfo {
+            text: t("tools.wizard"),
+            bounds: Rect { x: wiz_x, y: btn_y, width: 120.0, height: 30.0 },
+            h_align: HAlign::Center, v_align: VAlign::Center,
+            overflow: Overflow::Clip, padding: 0.0,
+            font_size_override: Some(11.0), color_override: Some([160, 200, 255]), font_family_override: None,
         });
     }
 }

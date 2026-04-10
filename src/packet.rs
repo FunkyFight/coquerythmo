@@ -83,6 +83,11 @@ pub enum CommandPayload {
         kind: MarkerKind,
         frame: i64,
     },
+    MoveMarker {
+        kind: MarkerKind,
+        old_frame: i64,
+        new_frame: i64,
+    },
     LoadVideo {
         filename: String,
         data_base64: String,
@@ -168,6 +173,16 @@ impl Packetable for Command {
                 CommandPayload::RemoveMarker {
                     kind: marker.kind.clone(),
                     frame: marker.frame,
+                }
+            }
+            Command::MoveMarker { index, old_frame, new_frame } => {
+                let kind = project.markers.get(*index)
+                    .map(|m| m.kind.clone())
+                    .unwrap_or(crate::rythmo_line::MarkerKind::Boucle);
+                CommandPayload::MoveMarker {
+                    kind,
+                    old_frame: *old_frame,
+                    new_frame: *new_frame,
                 }
             }
         };

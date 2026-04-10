@@ -29,6 +29,14 @@ use winit::window::WindowBuilder;
 use state::State;
 use ui::widget::{EventResponse, UiAction, UiEvent};
 
+fn new_project_reset_and_pick_video(state: &mut State) {
+    state.project.reset();
+    state.project_path = None;
+    state.dirty = false;
+    state.clear_history();
+    handle_action(UiAction::AddVideo, state);
+}
+
 fn handle_action(action: UiAction, state: &mut State) -> bool {
     match action {
         UiAction::CloseApp => return true,
@@ -63,6 +71,7 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                 } else {
                     state.project_path = Some(path);
                     state.dirty = false;
+                    state.show_toast(i18n::t("toast.saved"), 3.0);
                 }
             }
         }
@@ -99,6 +108,7 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                 } else {
                     log::info!("Quick saved to {}", path.display());
                     state.dirty = false;
+                    state.show_toast(i18n::t("toast.saved"), 3.0);
                 }
             } else {
                 // No path yet — fall back to save dialog
@@ -114,6 +124,7 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                     } else {
                         state.project_path = Some(path);
                         state.dirty = false;
+                        state.show_toast(i18n::t("toast.saved"), 3.0);
                     }
                 }
             }
@@ -346,12 +357,13 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         UiAction::StartVocalRemoval { params, .. } => {
             if let Some(source) = state.video_path() {
                 let progress = std::sync::Arc::new(
-                    std::sync::atomic::AtomicU32::new(0.0_f32.to_bits())
+                    std::sync::atomic::AtomicU32::new(0.005_f32.to_bits())
                 );
                 let progress_for_ui = progress.clone();
                 let title = i18n::t("tools.save_output").to_string();
                 let source_clone = source.clone();
                 let pending = state.pending_video_load.clone();
+                let pp = params.clone(); // post-processing params
                 std::thread::spawn(move || {
                     let file = rfd::FileDialog::new()
                         .set_title(&title)
@@ -361,7 +373,7 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                     if let Some(output) = file {
                         progress.store(0.01_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
                         let output_for_load = output.clone();
-                        let result = run_vocal_removal(&source_clone, &output, &progress);
+                        let result = run_vocal_removal(&source_clone, &output, &progress, &pp);
                         match result {
                             Ok(()) => {
                                 if let Ok(mut p) = pending.lock() {
@@ -377,12 +389,33 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                 state.set_export_progress(Some(progress_for_ui));
             }
         }
+        UiAction::RestoreBackup => {
+            if state.restore_backup() {
+                state.show_toast(i18n::t("toast.backup_restored"), 5.0);
+            } else {
+                state.show_toast(i18n::t("toast.no_backup"), 4.0);
+            }
+        }
         UiAction::OpenSettings => {
             state.open_settings_modal();
         }
         UiAction::SaveSettings { lang, rythmo_font, scroll_speed } => {
             crate::config::save_settings(lang, rythmo_font, scroll_speed);
             state.close_settings_modal();
+        }
+        UiAction::NewProject => {
+            if state.dirty && !state.project.is_empty() {
+                state.open_save_prompt();
+            } else {
+                new_project_reset_and_pick_video(state);
+            }
+        }
+        UiAction::NewProjectSave => {
+            handle_action(UiAction::QuickSave, state);
+            new_project_reset_and_pick_video(state);
+        }
+        UiAction::NewProjectDiscard => {
+            new_project_reset_and_pick_video(state);
         }
     }
     false
@@ -483,8 +516,8 @@ fn run_vocal_removal(
     source_video: &std::path::Path,
     output: &std::path::Path,
     progress: &std::sync::Arc<std::sync::atomic::AtomicU32>,
+    pp: &ui::widget::VocalRemovalParams,
 ) -> Result<(), String> {
-    use std::io::Read;
     use std::process::Command;
 
     let exe_dir = std::env::current_exe()
@@ -499,49 +532,9 @@ fn run_vocal_removal(
     let temp_vocals = temp_dir.join("vocals.wav");
     let temp_instrumental = temp_dir.join("instrumental.wav");
 
-    // Step 0: Download demucs model if missing
-    let demucs_ckpt = exe_dir.join("mdx-net").join("model").join("demucs.ckpt");
-    if !demucs_ckpt.exists() {
-        log::info!("Vocal removal: downloading demucs model (~300MB)...");
-        progress.store(0.01_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
-        let demucs_url = "https://dl.fbaipublicfiles.com/demucs/v3.0/demucs-e07c671f.th";
-        let _ = std::fs::create_dir_all(demucs_ckpt.parent().unwrap());
-
-        let response = ureq::get(demucs_url)
-            .call()
-            .map_err(|e| format!("Download demucs failed: {e}"))?;
-
-        let content_length = response.headers().get("content-length")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(330_000_000); // ~300MB fallback
-
-        let mut body = response.into_body().into_reader();
-        let temp_ckpt = demucs_ckpt.with_extension("ckpt.tmp");
-        let mut file = std::fs::File::create(&temp_ckpt)
-            .map_err(|e| format!("Cannot create demucs temp: {e}"))?;
-
-        let mut downloaded: u64 = 0;
-        let mut buf = [0u8; 65536];
-        // Download progress mapped to 0.01 -> 0.08 (8% of total progress)
-        loop {
-            let n = body.read(&mut buf).map_err(|e| format!("Download read error: {e}"))?;
-            if n == 0 { break; }
-            std::io::Write::write_all(&mut file, &buf[..n])
-                .map_err(|e| format!("Write error: {e}"))?;
-            downloaded += n as u64;
-            let dl_progress = (downloaded as f32 / content_length as f32).min(1.0);
-            progress.store((0.01 + dl_progress * 0.07).to_bits(), std::sync::atomic::Ordering::Relaxed);
-        }
-        drop(file);
-        std::fs::rename(&temp_ckpt, &demucs_ckpt)
-            .map_err(|e| format!("Cannot rename demucs temp: {e}"))?;
-        log::info!("Demucs model downloaded ({} bytes)", downloaded);
-    }
-
-    // Step 1: Extract audio from video (20%)
+    // Step 1: Extract audio from video
     log::info!("Vocal removal: extracting audio...");
-    progress.store(0.1_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    progress.store(0.01_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
     let status = Command::new("ffmpeg")
         .args(["-y", "-i"]).arg(source_video)
         .args(["-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2"])
@@ -558,6 +551,18 @@ fn run_vocal_removal(
         .arg(&temp_audio)
         .arg(&temp_vocals)
         .arg(&temp_instrumental)
+        // Post-processing params
+        .arg(format!("{}", pp.reverb_room_size))
+        .arg(format!("{}", pp.reverb_damping))
+        .arg(format!("{}", pp.reverb_dry))
+        .arg(format!("{}", pp.reverb_wet))
+        .arg(format!("{}", pp.highpass))
+        .arg(format!("{}", pp.lowpass))
+        .arg(format!("{}", pp.compressor_threshold))
+        .arg(format!("{}", pp.compressor_ratio))
+        .arg(format!("{}", pp.compressor_attack))
+        .arg(format!("{}", pp.compressor_release))
+        .arg(format!("{}", pp.bg_gain))
         .current_dir(exe_dir.join("mdx-net"))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
@@ -581,24 +586,28 @@ fn run_vocal_removal(
     let status = child.wait().map_err(|e| format!("python mdx-net wait: {e}"))?;
     if !status.success() { return Err("MDX-Net vocal separation failed".into()); }
 
-    // Step 3: Recombine video + instrumental audio (80% -> 95%)
+    // Step 3: Recombine video + instrumental audio (70% -> 95%)
     log::info!("Vocal removal: recombining video + instrumental...");
-    progress.store(0.8_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
-    let status = Command::new("ffmpeg")
+    progress.store(0.7_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+
+    // Run ffmpeg and track progress by parsing its duration output
+    let ffmpeg_output = Command::new("ffmpeg")
         .args(["-y", "-i"]).arg(source_video)
         .args(["-i"]).arg(&temp_instrumental)
         .args(["-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0", "-shortest"])
         .args(["-v", "error"])
         .arg(output)
-        .status().map_err(|e| format!("ffmpeg recombine: {e}"))?;
-    if !status.success() { return Err("ffmpeg recombination failed".into()); }
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .output().map_err(|e| format!("ffmpeg recombine: {e}"))?;
+    if !ffmpeg_output.status.success() { return Err("ffmpeg recombination failed".into()); }
 
     // Cleanup temp files
     let _ = std::fs::remove_file(&temp_audio);
     let _ = std::fs::remove_file(&temp_vocals);
     let _ = std::fs::remove_file(&temp_instrumental);
 
-    progress.store(0.95_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    progress.store(0.9_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
     log::info!("Vocal removal complete: {}", output.display());
     Ok(())
 }
@@ -691,6 +700,9 @@ fn main() {
                                 state.undo();
                                 state.request_redraw();
                             }
+                        } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "n") {
+                            handle_action(UiAction::NewProject, &mut state);
+                            state.request_redraw();
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "Z") {
                             // CTRL+SHIFT+Z = redo (capital Z)
                             state.redo();
@@ -773,6 +785,15 @@ fn main() {
                 WindowEvent::RedrawRequested => {
                     state.render();
                     state.request_redraw();
+                }
+                WindowEvent::DroppedFile(path) => {
+                    let ext = path.extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_lowercase())
+                        .unwrap_or_default();
+                    if ["mp4", "mov", "avi", "mkv", "webm"].contains(&ext.as_str()) {
+                        state.load_video(&path);
+                    }
                 }
                 _ => {}
             },

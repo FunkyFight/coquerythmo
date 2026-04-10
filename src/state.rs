@@ -57,6 +57,7 @@ pub struct State {
     scroll_needs_decode: bool,
     ping_results: std::sync::Arc<std::sync::Mutex<Vec<PingResult>>>,
     pub pending_video_load: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
+    last_autosave: Instant,
 }
 
 impl State {
@@ -74,6 +75,7 @@ impl State {
             last_scroll_time: None, scroll_needs_decode: false,
             ping_results: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             pending_video_load: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            last_autosave: Instant::now(),
         }
     }
 
@@ -162,6 +164,10 @@ impl State {
 
     pub fn open_warning(&mut self, warning_type: &str) {
         self.ui.open_warning(warning_type);
+    }
+
+    pub fn open_save_prompt(&mut self) {
+        self.ui.open_save_prompt();
     }
 
     pub fn open_vocal_remover(&mut self) {
@@ -453,6 +459,15 @@ impl State {
                 log::debug!("Remote: remove marker at frame {}", frame);
                 self.project.markers.retain(|m| !(m.kind == kind && m.frame == frame));
             }
+            CommandPayload::MoveMarker { kind, old_frame, new_frame } => {
+                log::debug!("Remote: move marker from frame {} to {}", old_frame, new_frame);
+                for m in &mut self.project.markers {
+                    if m.kind == kind && m.frame == old_frame {
+                        m.frame = new_frame;
+                        break;
+                    }
+                }
+            }
             CommandPayload::LoadVideo { .. } => {
                 log::debug!("Remote: load video (ignored, using chunked transfer)");
                 // Video transfer now uses chunked video_start/chunk/end events
@@ -570,6 +585,20 @@ impl State {
                     self.project.markers.retain(|m| !(m.kind == kind && m.frame == frame));
                 }
             }
+            "move_marker" => {
+                if let (Some(old_frame), Some(new_frame), Ok(kind)) = (
+                    data["old_frame"].as_i64(),
+                    data["new_frame"].as_i64(),
+                    serde_json::from_value::<crate::rythmo_line::MarkerKind>(data["kind"].clone()),
+                ) {
+                    for m in &mut self.project.markers {
+                        if m.kind == kind && m.frame == old_frame {
+                            m.frame = new_frame;
+                            break;
+                        }
+                    }
+                }
+            }
             _ => log::warn!("Unknown delta action: {action}"),
         }
     }
@@ -617,6 +646,11 @@ impl State {
             Command::RemoveMarker { marker, .. } => {
                 serde_json::json!({ "action": "remove_marker", "kind": serde_json::to_value(&marker.kind).unwrap_or_default(), "frame": marker.frame })
             }
+            Command::MoveMarker { index, old_frame, new_frame } => {
+                if let Some(m) = self.project.markers.get(*index) {
+                    serde_json::json!({ "action": "move_marker", "kind": serde_json::to_value(&m.kind).unwrap_or_default(), "old_frame": old_frame, "new_frame": new_frame })
+                } else { return; }
+            }
         };
         self.network.send_raw("delta", payload);
     }
@@ -628,7 +662,7 @@ impl State {
             if matches!(cmd,
                 Command::MoveLine { .. } | Command::ResizeLine { .. } |
                 Command::UpdateLineText { .. } | Command::SetCharacter { .. } |
-                Command::SetCharacterColor { .. }
+                Command::SetCharacterColor { .. } | Command::MoveMarker { .. }
             ) {
                 self.broadcast_delta(cmd);
             }
@@ -652,6 +686,10 @@ impl State {
     pub fn redo(&mut self) {
         self.history.redo(&mut self.project);
         self.broadcast_full_sync();
+    }
+
+    pub fn clear_history(&mut self) {
+        self.history.clear();
     }
 
     // -- Project / Lines (all via Command pattern) --
@@ -681,10 +719,11 @@ impl State {
     }
 
     pub fn move_marker(&mut self, index: usize, frame: i64) {
-        if let Some(marker) = self.project.markers.get_mut(index) {
-            marker.frame = frame;
-        }
-        // Marker moves are broadcast via full sync on finalization (mouse release)
+        if index >= self.project.markers.len() { return; }
+        let old_frame = self.project.markers[index].frame;
+        self.push_and_broadcast(Command::MoveMarker { index, old_frame, new_frame: frame });
+        self.project.markers[index].frame = frame;
+        self.dirty = true;
     }
 
     pub fn add_marker(&mut self, kind: crate::rythmo_line::MarkerKind) {
@@ -858,6 +897,44 @@ impl State {
         self.project.set_character(line_id, name, color);
     }
 
+    // -- Backup --
+
+    fn backup_path() -> std::path::PathBuf {
+        std::env::current_exe()
+            .map(|p| p.parent().unwrap_or(std::path::Path::new(".")).join("br_backup.json"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("br_backup.json"))
+    }
+
+    pub fn save_backup(&self) {
+        use crate::export::{JsonExporter, ProjectExporter};
+        let path = Self::backup_path();
+        let fps = self.fps();
+        if let Err(e) = JsonExporter.export(&self.project, fps, &path) {
+            log::warn!("Auto-save failed: {e}");
+        } else {
+            log::info!("Auto-saved to {}", path.display());
+        }
+    }
+
+    pub fn restore_backup(&mut self) -> bool {
+        use crate::export::{JsonImporter, ProjectImporter};
+        let path = Self::backup_path();
+        if !path.exists() {
+            return false;
+        }
+        match JsonImporter.import(&path) {
+            Ok(data) => {
+                let fps = self.fps();
+                data.apply_to_project(&mut self.project, fps);
+                true
+            }
+            Err(e) => {
+                log::error!("Restore backup failed: {e}");
+                false
+            }
+        }
+    }
+
     // -- Render --
 
     pub fn render(&mut self) {
@@ -872,6 +949,12 @@ impl State {
                     }
                 }
             }
+        }
+
+        // Auto-save every 60 seconds if project is dirty
+        if self.dirty && self.last_autosave.elapsed().as_secs() >= 60 {
+            self.save_backup();
+            self.last_autosave = Instant::now();
         }
 
         // Poll pending video load (from vocal removal)

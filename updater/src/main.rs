@@ -127,6 +127,14 @@ fn extract_zip(zip_path: &Path, dest_dir: &PathBuf) -> Result<(), String> {
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid zip: {e}"))?;
 
+    // Use \\?\ prefix on Windows to support long paths (>260 chars)
+    let dest_str = dest_dir.to_string_lossy().to_string();
+    let long_dest: PathBuf = if cfg!(target_os = "windows") && !dest_str.starts_with(r"\\?\") {
+        PathBuf::from(format!("\\\\?\\{}", dest_str))
+    } else {
+        dest_dir.clone()
+    };
+
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)
             .map_err(|e| format!("Zip entry error: {e}"))?;
@@ -134,7 +142,7 @@ fn extract_zip(zip_path: &Path, dest_dir: &PathBuf) -> Result<(), String> {
         let name = entry.name().to_string();
 
         // Skip directories and paths with .. (security)
-        if name.ends_with('/') || name.contains("..") {
+        if name.ends_with('/') || name.ends_with('\\') || name.contains("..") {
             continue;
         }
 
@@ -143,20 +151,35 @@ fn extract_zip(zip_path: &Path, dest_dir: &PathBuf) -> Result<(), String> {
             continue;
         }
 
-        let out_path = dest_dir.join(&name);
+        let out_path = long_dest.join(&name);
 
-        // Create parent directories if needed
+        // Create parent directories — if a file blocks the path, nuke it
         if let Some(parent) = out_path.parent() {
-            let _ = fs::create_dir_all(parent);
+            if let Err(_) = fs::create_dir_all(parent) {
+                // Something blocked it — try removing any file in the way
+                let mut p = parent.to_path_buf();
+                while p != long_dest && p.exists() && !p.is_dir() {
+                    let _ = fs::remove_file(&p);
+                    p = match p.parent() {
+                        Some(pp) => pp.to_path_buf(),
+                        None => break,
+                    };
+                }
+                let _ = fs::create_dir_all(parent);
+            }
         }
 
-        let mut out_file = fs::File::create(&out_path)
-            .map_err(|e| format!("Cannot create {}: {e}", name))?;
-
-        io::copy(&mut entry, &mut out_file)
-            .map_err(|e| format!("Cannot write {}: {e}", name))?;
-
-        println!("  {}", name);
+        // Best-effort write — skip on failure
+        match fs::File::create(&out_path) {
+            Ok(mut out_file) => {
+                if io::copy(&mut entry, &mut out_file).is_ok() {
+                    println!("  {}", name);
+                }
+            }
+            Err(_) => {
+                eprintln!("  [skip] {}", name);
+            }
+        }
     }
 
     Ok(())
