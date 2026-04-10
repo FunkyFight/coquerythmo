@@ -13,6 +13,7 @@
 
 "menu.export" = "Export"
 "menu.export.mp4" = "Exporter le projet en MP4"
+"menu.export.studio_mode" = "Mode Studio"
 
 "menu.connect" = "Connexion"
 "menu.connect.servers" = "Serveurs"
@@ -82,62 +83,11 @@
 
 # Progress
 "progress.exporting" = "Export en cours..."
-"progress.vocal_removal" = "Traitement vocal en cours..."
-"progress.downloading_model" = "Téléchargement du modèle..."
 
 # Toasts
 "toast.welcome" = "Cette application est gratuite pour que quiconque puisse faire ses bandes rythmos. Créditez le logiciel s'il vous sert dans vos projets s'il vous plait !"
 "toast.room_created" = "Salon créé ! Code : "
 "toast.room_joined" = "Connecté au salon "
-"toast.vocal_done" = "Traitement vocal terminé ! Vidéo chargée."
-
-# Tools
-"tools.title" = "Outils"
-"tools.vocal_remover" = "Retirer les voix"
-"tools.vocal_params" = "Paramètres de traitement vocal"
-"tools.start" = "Lancer le traitement"
-"tools.warning_ai" = "Ce traitement utilise un modèle d'IA local. Aucune donnée n'est envoyée à un tier parti. Néanmoins, si la fonctionnalité pose problème éthiquement, veuillez le faire remonter au développeur."
-"tools.warning_heavy" = "Cette opération est très gourmande en ressources. Un GPU performant est fortement recommandé. Le traitement peut prendre plusieurs minutes."
-"tools.warning_download" = "La première utilisation nécessite le téléchargement de bibliothèques d'IA (~2 Go). Prévoyez jusqu'à 8 Go d'espace disque supplémentaire. Ce téléchargement n'aura lieu qu'une seule fois."
-"tools.warning_ok" = "OK"
-"tools.warning_dismiss" = "Ne plus afficher"
-"tools.save_output" = "Enregistrer la vidéo sans voix"
-"tools.wizard" = "Assistant"
-
-# Vocal wizard
-"wizard.title_content" = "Quel type de contenu traitez-vous ?"
-"wizard.content_dialogue" = "Dialogue de film / série"
-"wizard.content_music" = "Musique / Chant"
-"wizard.content_podcast" = "Podcast / Voix seule"
-"wizard.content_mixed" = "Mixte (dialogue + musique)"
-
-"wizard.title_quality" = "Comment est la qualité audio source ?"
-"wizard.quality_studio" = "Studio, très propre"
-"wizard.quality_decent" = "Correct, sans problème notable"
-"wizard.quality_noisy" = "Bruit de fond ou écho présent"
-
-"wizard.title_reverb" = "Y a-t-il de la réverbération naturelle ?"
-"wizard.reverb_none" = "Aucune perceptible"
-"wizard.reverb_light" = "Légère (pièce meublée)"
-"wizard.reverb_heavy" = "Forte (salle vide, église...)"
-
-"wizard.title_retry" = "Avez-vous déjà essayé de traiter cet audio ?"
-"wizard.retry_first" = "Première tentative"
-"wizard.retry_vocals" = "Oui, les voix n'étaient pas assez retirées"
-"wizard.retry_altered" = "Oui, l'audio résultant était trop altéré"
-
-"wizard.title_result" = "Quel résultat souhaitez-vous ?"
-"wizard.result_vocals" = "Voix isolée uniquement"
-"wizard.result_instrumental" = "Instrumental seul (karaoké)"
-"wizard.result_mixed" = "Voix avec léger fond musical"
-
-"wizard.title_dynamics" = "La dynamique de l'audio est-elle variable ?"
-"wizard.dynamics_steady" = "Niveaux assez constants"
-"wizard.dynamics_variable" = "Alternance chuchotements / voix fortes"
-"wizard.dynamics_compressed" = "Déjà compressé (radio, téléphone)"
-
-"wizard.back" = "Précédent"
-"wizard.cancel" = "Annuler"
 
 # Export modal
 "export_modal.title" = "Export MP4"

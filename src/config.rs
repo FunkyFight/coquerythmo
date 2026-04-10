@@ -43,12 +43,6 @@ pub struct UiConfig {
     pub border_radius: f32,
     pub rythmo_font: Option<String>,
     pub scroll_speed: f32,
-    #[serde(default)]
-    pub hide_ai_warning: bool,
-    #[serde(default)]
-    pub hide_heavy_op_warning: bool,
-    #[serde(default)]
-    pub hide_download_warning: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,9 +109,6 @@ impl Default for UiConfig {
             border_radius: 8.0,
             rythmo_font: None,
             scroll_speed: 1.0,
-            hide_ai_warning: false,
-            hide_heavy_op_warning: false,
-            hide_download_warning: false,
         }
     }
 }
@@ -200,15 +191,6 @@ pub fn add_recent_project(video_path: PathBuf, br_path: PathBuf) {
 
 pub fn recent_projects() -> Vec<RecentProject> {
     get().recent_projects.clone()
-}
-
-pub fn dismiss_warning(ai: bool, heavy: bool, download: bool) {
-    let lock = INSTANCE.get().expect("config not initialized");
-    let mut cfg = lock.write().unwrap();
-    if ai { cfg.ui.hide_ai_warning = true; }
-    if heavy { cfg.ui.hide_heavy_op_warning = true; }
-    if download { cfg.ui.hide_download_warning = true; }
-    cfg.save();
 }
 
 pub fn saved_servers() -> Vec<SavedServer> {

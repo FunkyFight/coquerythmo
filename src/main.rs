@@ -147,6 +147,9 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         UiAction::SeekAbsolute(frame) => {
             state.seek_absolute(frame);
         }
+        UiAction::SeekToNextBoucle { direction } => {
+            state.seek_to_next_boucle(direction);
+        }
         UiAction::CreateLine { frame, y_slot } => {
             let line_id = state.create_line(frame, y_slot);
             state.start_editing_line(line_id);
@@ -312,83 +315,6 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
             state.network.disconnect();
             state.rebuild_topbar_for_network();
         }
-        UiAction::OpenVocalRemover => {
-            if state.video_path().is_none() {
-                log::warn!("No video loaded");
-            } else {
-                let cfg = config::get();
-                let need_ai = !cfg.ui.hide_ai_warning;
-                let need_heavy = !cfg.ui.hide_heavy_op_warning;
-                let need_download = !cfg.ui.hide_download_warning;
-                drop(cfg);
-                if need_ai {
-                    state.open_warning("ai");
-                } else if need_heavy {
-                    state.open_warning("heavy");
-                } else if need_download {
-                    state.open_warning("download");
-                } else {
-                    state.open_vocal_remover();
-                }
-            }
-        }
-        UiAction::DismissWarning { warning_type, never_again } => {
-            if never_again {
-                match warning_type.as_str() {
-                    "ai" => config::dismiss_warning(true, false, false),
-                    "heavy" => config::dismiss_warning(false, true, false),
-                    "download" => config::dismiss_warning(false, false, true),
-                    _ => {}
-                }
-            }
-            // Chain: ai -> heavy -> download -> open modal
-            let cfg = config::get();
-            let need_heavy = !cfg.ui.hide_heavy_op_warning;
-            let need_download = !cfg.ui.hide_download_warning;
-            drop(cfg);
-            if warning_type == "ai" && need_heavy {
-                state.open_warning("heavy");
-            } else if (warning_type == "ai" || warning_type == "heavy") && need_download {
-                state.open_warning("download");
-            } else {
-                state.open_vocal_remover();
-            }
-        }
-        UiAction::StartVocalRemoval { params, .. } => {
-            if let Some(source) = state.video_path() {
-                let progress = std::sync::Arc::new(
-                    std::sync::atomic::AtomicU32::new(0.005_f32.to_bits())
-                );
-                let progress_for_ui = progress.clone();
-                let title = i18n::t("tools.save_output").to_string();
-                let source_clone = source.clone();
-                let pending = state.pending_video_load.clone();
-                let pp = params.clone(); // post-processing params
-                std::thread::spawn(move || {
-                    let file = rfd::FileDialog::new()
-                        .set_title(&title)
-                        .set_file_name("output_no_vocals.mp4")
-                        .add_filter("MP4 Video", &["mp4"])
-                        .save_file();
-                    if let Some(output) = file {
-                        progress.store(0.01_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                        let output_for_load = output.clone();
-                        let result = run_vocal_removal(&source_clone, &output, &progress, &pp);
-                        match result {
-                            Ok(()) => {
-                                if let Ok(mut p) = pending.lock() {
-                                    *p = Some(output_for_load);
-                                }
-                            }
-                            Err(e) => log::error!("Vocal removal failed: {e}"),
-                        }
-                    }
-                    progress.store(2.0_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                });
-                state.set_progress_label(i18n::t("progress.vocal_removal"));
-                state.set_export_progress(Some(progress_for_ui));
-            }
-        }
         UiAction::RestoreBackup => {
             if state.restore_backup() {
                 state.show_toast(i18n::t("toast.backup_restored"), 5.0);
@@ -416,6 +342,9 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         }
         UiAction::NewProjectDiscard => {
             new_project_reset_and_pick_video(state);
+        }
+        UiAction::EnterStudioMode => {
+            state.enter_studio_mode();
         }
     }
     false
@@ -512,106 +441,6 @@ fn clipboard_paste() -> Option<String> {
 #[cfg(not(target_os = "windows"))]
 fn clipboard_paste() -> Option<String> { None }
 
-fn run_vocal_removal(
-    source_video: &std::path::Path,
-    output: &std::path::Path,
-    progress: &std::sync::Arc<std::sync::atomic::AtomicU32>,
-    pp: &ui::widget::VocalRemovalParams,
-) -> Result<(), String> {
-    use std::process::Command;
-
-    let exe_dir = std::env::current_exe()
-        .map_err(|e| format!("cannot locate exe: {e}"))?
-        .parent().ok_or("cannot get exe directory")?.to_path_buf();
-
-    let python = exe_dir.join("python").join("bin").join("python.exe");
-    let mdx_script = exe_dir.join("mdx-net").join("separate_vocals.py");
-    let temp_dir = exe_dir.join("temp");
-    let _ = std::fs::create_dir_all(&temp_dir);
-    let temp_audio = temp_dir.join("source_audio.wav");
-    let temp_vocals = temp_dir.join("vocals.wav");
-    let temp_instrumental = temp_dir.join("instrumental.wav");
-
-    // Step 1: Extract audio from video
-    log::info!("Vocal removal: extracting audio...");
-    progress.store(0.01_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
-    let status = Command::new("ffmpeg")
-        .args(["-y", "-i"]).arg(source_video)
-        .args(["-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2"])
-        .arg(&temp_audio)
-        .args(["-v", "error"])
-        .status().map_err(|e| format!("ffmpeg audio extract: {e}"))?;
-    if !status.success() { return Err("ffmpeg audio extraction failed".into()); }
-
-    // Step 2: Run MDX-Net vocal separation (20% -> 90%) with progress tracking
-    log::info!("Vocal removal: running MDX-Net separation...");
-    progress.store(0.2_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
-    let mut child = Command::new(&python)
-        .arg(&mdx_script)
-        .arg(&temp_audio)
-        .arg(&temp_vocals)
-        .arg(&temp_instrumental)
-        // Post-processing params
-        .arg(format!("{}", pp.reverb_room_size))
-        .arg(format!("{}", pp.reverb_damping))
-        .arg(format!("{}", pp.reverb_dry))
-        .arg(format!("{}", pp.reverb_wet))
-        .arg(format!("{}", pp.highpass))
-        .arg(format!("{}", pp.lowpass))
-        .arg(format!("{}", pp.compressor_threshold))
-        .arg(format!("{}", pp.compressor_ratio))
-        .arg(format!("{}", pp.compressor_attack))
-        .arg(format!("{}", pp.compressor_release))
-        .arg(format!("{}", pp.bg_gain))
-        .current_dir(exe_dir.join("mdx-net"))
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .spawn().map_err(|e| format!("python mdx-net: {e}"))?;
-
-    // Read stdout for PROGRESS:XX lines
-    if let Some(stdout) = child.stdout.take() {
-        let reader = std::io::BufReader::new(stdout);
-        use std::io::BufRead;
-        for line in reader.lines() {
-            let Ok(line) = line else { break };
-            if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
-                if let Ok(pct) = pct_str.trim().parse::<f32>() {
-                    progress.store((pct / 100.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
-                }
-            } else {
-                log::info!("[mdx-net] {}", line);
-            }
-        }
-    }
-    let status = child.wait().map_err(|e| format!("python mdx-net wait: {e}"))?;
-    if !status.success() { return Err("MDX-Net vocal separation failed".into()); }
-
-    // Step 3: Recombine video + instrumental audio (70% -> 95%)
-    log::info!("Vocal removal: recombining video + instrumental...");
-    progress.store(0.7_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
-
-    // Run ffmpeg and track progress by parsing its duration output
-    let ffmpeg_output = Command::new("ffmpeg")
-        .args(["-y", "-i"]).arg(source_video)
-        .args(["-i"]).arg(&temp_instrumental)
-        .args(["-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0", "-shortest"])
-        .args(["-v", "error"])
-        .arg(output)
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .output().map_err(|e| format!("ffmpeg recombine: {e}"))?;
-    if !ffmpeg_output.status.success() { return Err("ffmpeg recombination failed".into()); }
-
-    // Cleanup temp files
-    let _ = std::fs::remove_file(&temp_audio);
-    let _ = std::fs::remove_file(&temp_vocals);
-    let _ = std::fs::remove_file(&temp_instrumental);
-
-    progress.store(0.9_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
-    log::info!("Vocal removal complete: {}", output.display());
-    Ok(())
-}
-
 fn main() {
     env_logger::init();
     config::init();
@@ -663,6 +492,19 @@ fn main() {
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
                     if event.state == ElementState::Pressed {
+                        // F5: enter studio mode if video is loaded
+                        if matches!(event.logical_key, Key::Named(NamedKey::F5)) && state.video_path().is_some() {
+                            state.enter_studio_mode();
+                            state.request_redraw();
+                            return;
+                        }
+                        // ESCAPE: exit studio mode if active
+                        if matches!(event.logical_key, Key::Named(NamedKey::Escape)) && state.is_studio_mode() {
+                            state.exit_studio_mode();
+                            state.request_redraw();
+                            return;
+                        }
+
                         let key_text = match &event.logical_key {
                             Key::Named(NamedKey::Escape) => Some("\x1b"),
                             Key::Named(NamedKey::Backspace) => Some("\x08"),
@@ -692,6 +534,12 @@ fn main() {
                                     dispatch(UiEvent::KeyInput { text: ch.to_string() }, &mut state, elwt);
                                 }
                             }
+                        } else if state.is_studio_mode() {
+                            // In studio mode: only Space (play/pause) is allowed
+                            if matches!(event.logical_key, Key::Named(NamedKey::Space)) {
+                                state.toggle_play_pause();
+                                state.request_redraw();
+                            }
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "s") {
                             handle_action(UiAction::QuickSave, &mut state);
                             state.request_redraw();
@@ -720,12 +568,28 @@ fn main() {
                         winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                         winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 40.0,
                     };
-                    dispatch(UiEvent::Scroll {
-                        x: cursor_pos.0, y: cursor_pos.1, delta: scroll_delta, fast: shift_held,
-                    }, &mut state, elwt);
+                    if state.is_studio_mode() {
+                        // In studio mode: scroll navigates between boucles
+                        // Positive delta (scroll up) = forward (+1), negative delta (scroll down) = backward (-1)
+                        let direction = if scroll_delta > 0.0 { 1 } else { -1 };
+                        if ctrl_held {
+                            // CTRL+SHIFT+scroll: jump to next/prev boucle
+                            handle_action(UiAction::SeekToNextBoucle { direction }, &mut state);
+                        } else {
+                            // Regular scroll: seek by frames
+                            let frame_delta = (scroll_delta.abs() * 10.0) as i32 * direction;
+                            handle_action(UiAction::SeekRelative(frame_delta), &mut state);
+                        }
+                        state.request_redraw();
+                    } else {
+                        dispatch(UiEvent::Scroll {
+                            x: cursor_pos.0, y: cursor_pos.1, delta: scroll_delta, fast: shift_held, ctrl: ctrl_held,
+                        }, &mut state, elwt);
+                    }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     cursor_pos = (position.x as f32, position.y as f32);
+                    // Always dispatch mouse move (needed for panning in studio mode)
                     dispatch(UiEvent::MouseMove {
                         x: cursor_pos.0, y: cursor_pos.1,
                     }, &mut state, elwt);
@@ -735,32 +599,34 @@ fn main() {
                     button: MouseButton::Left,
                     ..
                 } => {
-                    match button_state {
-                        ElementState::Pressed => {
-                            let now = Instant::now();
-                            let is_double = now.duration_since(last_click_time).as_millis() < 400;
-                            last_click_time = now;
+                    if !state.is_studio_mode() {
+                        match button_state {
+                            ElementState::Pressed => {
+                                let now = Instant::now();
+                                let is_double = now.duration_since(last_click_time).as_millis() < 400;
+                                last_click_time = now;
 
-                            if ctrl_held {
-                                dispatch(UiEvent::CtrlClick {
-                                    x: cursor_pos.0, y: cursor_pos.1,
-                                }, &mut state, elwt);
-                            } else if is_double {
-                                dispatch(UiEvent::DoubleClick {
-                                    x: cursor_pos.0, y: cursor_pos.1,
-                                }, &mut state, elwt);
-                            } else {
-                                dispatch(UiEvent::MousePress {
-                                    x: cursor_pos.0, y: cursor_pos.1,
-                                }, &mut state, elwt);
+                                if ctrl_held {
+                                    dispatch(UiEvent::CtrlClick {
+                                        x: cursor_pos.0, y: cursor_pos.1,
+                                    }, &mut state, elwt);
+                                } else if is_double {
+                                    dispatch(UiEvent::DoubleClick {
+                                        x: cursor_pos.0, y: cursor_pos.1,
+                                    }, &mut state, elwt);
+                                } else {
+                                    dispatch(UiEvent::MousePress {
+                                        x: cursor_pos.0, y: cursor_pos.1,
+                                    }, &mut state, elwt);
+                                }
                             }
-                        }
-                        ElementState::Released => {
-                            dispatch(UiEvent::MouseRelease {
-                                x: cursor_pos.0, y: cursor_pos.1,
-                            }, &mut state, elwt);
-                            // Broadcast coalesced command on drag end
-                            state.broadcast_finalize();
+                            ElementState::Released => {
+                                dispatch(UiEvent::MouseRelease {
+                                    x: cursor_pos.0, y: cursor_pos.1,
+                                }, &mut state, elwt);
+                                // Broadcast coalesced command on drag end
+                                state.broadcast_finalize();
+                            }
                         }
                     }
                 }
@@ -769,6 +635,7 @@ fn main() {
                     button: MouseButton::Middle,
                     ..
                 } => {
+                    // Allow middle click panning in both editor and studio modes
                     match button_state {
                         ElementState::Pressed => {
                             dispatch(UiEvent::MiddlePress {

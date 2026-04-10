@@ -44,6 +44,7 @@ pub struct PingResult {
 
 pub struct State {
     pub gfx: GraphicsContext,
+    window: Arc<Window>,
     ui: Ui,
     ui_renderer: UiRenderer,
     video_player: Option<VideoPlayer>,
@@ -56,26 +57,28 @@ pub struct State {
     last_scroll_time: Option<Instant>,
     scroll_needs_decode: bool,
     ping_results: std::sync::Arc<std::sync::Mutex<Vec<PingResult>>>,
-    pub pending_video_load: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
     last_autosave: Instant,
+    studio_mode: bool,
+    fullscreen_before_studio: Option<winit::window::Fullscreen>,
 }
 
 impl State {
     pub async fn new(window: Arc<Window>) -> Self {
-        let gfx = GraphicsContext::new(window).await;
+        let gfx = GraphicsContext::new(window.clone()).await;
         let format = gfx.surface_format();
         let ui_renderer = UiRenderer::new(&gfx.device, &gfx.queue, format);
         let ui = Ui::new(gfx.size.width, gfx.size.height, &ui_renderer.icon_atlas);
 
         Self {
-            gfx, ui, ui_renderer, video_player: None, project: Project::new(),
+            gfx, window, ui, ui_renderer, video_player: None, project: Project::new(),
             project_path: None, dirty: false,
             history: CommandHistory::new(), timeline: TimelineBus::new(),
             network: NetworkClient::new(),
             last_scroll_time: None, scroll_needs_decode: false,
             ping_results: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            pending_video_load: std::sync::Arc::new(std::sync::Mutex::new(None)),
             last_autosave: Instant::now(),
+            studio_mode: false,
+            fullscreen_before_studio: None,
         }
     }
 
@@ -162,16 +165,8 @@ impl State {
         self.ui.toasts.push(message, duration_secs);
     }
 
-    pub fn open_warning(&mut self, warning_type: &str) {
-        self.ui.open_warning(warning_type);
-    }
-
     pub fn open_save_prompt(&mut self) {
         self.ui.open_save_prompt();
-    }
-
-    pub fn open_vocal_remover(&mut self) {
-        self.ui.open_vocal_remover();
     }
 
     pub fn toggle_syllable_mode(&mut self) {
@@ -294,6 +289,27 @@ impl State {
         self.scroll_needs_decode = true;
     }
 
+    pub fn seek_to_next_boucle(&mut self, direction: i32) {
+        let current = self.current_frame();
+        let boucle_frames: Vec<i64> = self.project.markers.iter()
+            .filter(|m| m.kind == crate::rythmo_line::MarkerKind::Boucle)
+            .map(|m| m.frame)
+            .collect();
+        if boucle_frames.is_empty() { return; }
+
+        let target = if direction > 0 {
+            // Forward: find first boucle strictly after current frame
+            boucle_frames.iter().find(|&&f| f > current).copied()
+        } else {
+            // Backward: find last boucle strictly before current frame
+            boucle_frames.iter().rev().find(|&&f| f < current).copied()
+        };
+
+        if let Some(frame) = target {
+            self.seek_absolute(frame);
+        }
+    }
+
     fn tick_scroll_decode(&mut self) {
         if !self.scroll_needs_decode { return; }
         if let Some(t) = self.last_scroll_time {
@@ -333,7 +349,10 @@ impl State {
                     self.ui.network_status = format!("Erreur: {err}");
                 }
                 IncomingMessage::Delta(data) => {
-                    self.apply_delta(data);
+                    // Ignore network updates in studio mode (read-only playback)
+                    if !self.studio_mode {
+                        self.apply_delta(data);
+                    }
                 }
                 IncomingMessage::SyncRequested { requester } => {
                     log::info!("Sync requested by {requester}");
@@ -692,6 +711,33 @@ impl State {
         self.history.clear();
     }
 
+    pub fn enter_studio_mode(&mut self) {
+        self.studio_mode = true;
+        self.ui.rythmo_state.editing_line = None;
+        self.ui.rythmo_state.editing_character = None;
+        self.ui.rythmo_state.selected = None;
+        self.ui.rythmo_state.dragging = None;
+        self.ui.rythmo_state.ghost_preview = None;
+        self.ui.rythmo_state.syllable_mode = false;
+
+        // Save current fullscreen state and enter fullscreen
+        self.fullscreen_before_studio = self.window.fullscreen();
+        self.window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+    }
+
+    pub fn exit_studio_mode(&mut self) {
+        self.studio_mode = false;
+
+        // Restore fullscreen state: if we were windowed before, fullscreen_before_studio is None
+        // so set_fullscreen(None) should exit fullscreen
+        self.fullscreen_before_studio = None;
+        self.window.set_fullscreen(None);
+    }
+
+    pub fn is_studio_mode(&self) -> bool {
+        self.studio_mode
+    }
+
     // -- Project / Lines (all via Command pattern) --
 
     pub fn open_toolbar_dropdown(&mut self, dropdown: crate::ui::widget::ToolbarDropdown) {
@@ -957,11 +1003,9 @@ impl State {
             self.last_autosave = Instant::now();
         }
 
-        // Poll pending video load (from vocal removal)
-        let pending_path = self.pending_video_load.try_lock().ok().and_then(|mut p| p.take());
-        if let Some(path) = pending_path {
-            self.load_video(&path);
-            self.ui.toasts.push(crate::i18n::t("toast.vocal_done"), 6.0);
+        if self.studio_mode {
+            self.render_studio();
+            return;
         }
 
         let surface_texture = match self.gfx.surface.get_current_texture() {
@@ -1051,6 +1095,73 @@ impl State {
         self.gfx.queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
     }
+
+    fn render_studio(&mut self) {
+        let surface_texture = match self.gfx.surface.get_current_texture() {
+            CurrentSurfaceTexture::Success(tex) | CurrentSurfaceTexture::Suboptimal(tex) => tex,
+            CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
+                self.gfx.surface.configure(&self.gfx.device, &self.gfx.config);
+                return;
+            }
+            CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => return,
+            _ => return,
+        };
+
+        let view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.gfx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Studio Render Encoder"),
+        });
+
+        // Clear to black
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Studio Clear Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None, timestamp_writes: None,
+                occlusion_query_set: None, multiview_mask: None,
+            });
+        }
+
+        // Drain timeline, tick video, tick scroll decode
+        let _events = self.timeline.drain();
+        self.tick_scroll_decode();
+
+        if let Some(player) = &mut self.video_player {
+            let prev_frame = player.current_frame();
+            let (bgl, sampler) = (
+                self.ui_renderer.texture_bind_group_layout(),
+                self.ui_renderer.texture_sampler(),
+            );
+            player.tick(&self.gfx.device, &self.gfx.queue, bgl, sampler);
+            if player.current_frame() != prev_frame {
+                self.timeline.emit(TimelineEvent::FrameChanged { frame: player.current_frame() });
+            }
+            if !player.is_playing() && self.ui.is_playing() {
+                self.timeline.emit(TimelineEvent::PlaybackStopped);
+                self.ui.toggle_play_pause();
+            }
+        }
+
+        let rythmo_h = crate::ui::rythmo::studio_br_height(&self.project, self.ui.screen_w());
+        let video_quad = build_studio_video_quad(&self.video_player, &self.ui, rythmo_h);
+        // Use interpolated frame for smooth playback in studio mode (handles low-fps source video)
+        let current_frame = self.video_player.as_ref().map_or(0, |p| p.current_frame_interpolated());
+
+        self.ui.render_studio(
+            &mut self.ui_renderer,
+            &self.gfx.device, &self.gfx.queue, &mut encoder, &view,
+            self.gfx.config.width, self.gfx.config.height,
+            video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
+            &self.project, current_frame,
+        );
+
+        self.gfx.queue.submit(std::iter::once(encoder.finish()));
+        surface_texture.present();
+    }
 }
 
 fn build_video_quad<'a>(
@@ -1074,6 +1185,37 @@ fn build_video_quad<'a>(
         bind_group,
         crate::ui::widget::IconInstance {
             rect: [preview.x + (preview.width - draw_w) / 2.0, preview.y + (preview.height - draw_h) / 2.0, draw_w, draw_h],
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            tint: [1.0, 1.0, 1.0, 1.0],
+        },
+    ))
+}
+
+fn build_studio_video_quad<'a>(
+    video_player: &'a Option<VideoPlayer>,
+    ui: &Ui,
+    rythmo_h: f32,
+) -> Option<(&'a wgpu::BindGroup, crate::ui::widget::IconInstance)> {
+    let player = video_player.as_ref()?;
+    let bind_group = player.bind_group.as_ref()?;
+    let (vid_w, vid_h) = player.video_size()?;
+
+    let screen_w = ui.screen_w();
+    let screen_h = ui.screen_h();
+    let video_zone_h = screen_h - rythmo_h;
+
+    let vid_aspect = vid_w as f32 / vid_h as f32;
+    let zone_aspect = screen_w / video_zone_h;
+    let (draw_w, draw_h) = if vid_aspect > zone_aspect {
+        (screen_w, screen_w / vid_aspect)
+    } else {
+        (video_zone_h * vid_aspect, video_zone_h)
+    };
+
+    Some((
+        bind_group,
+        crate::ui::widget::IconInstance {
+            rect: [(screen_w - draw_w) / 2.0, (video_zone_h - draw_h) / 2.0, draw_w, draw_h],
             uv_rect: [0.0, 0.0, 1.0, 1.0],
             tint: [1.0, 1.0, 1.0, 1.0],
         },

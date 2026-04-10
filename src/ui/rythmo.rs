@@ -817,7 +817,7 @@ pub fn handle_rythmo_event(
             let dx = *x - state.pan_last_x;
             state.pan_last_x = *x;
             state.pan_accum -= dx;
-            let frames = (state.pan_accum / ppf()) as i32;
+            let frames = (state.pan_accum / ppf()).round() as i32;
             if frames != 0 {
                 state.pan_accum -= frames as f32 * ppf();
                 return EventResponse::Action(UiAction::SeekRelative(frames));
@@ -1295,4 +1295,250 @@ fn syllable_mouse_release(state: &mut RythmoState) -> Option<EventResponse> {
         line_id: drag.line_id,
         ratios: drag.ratios,
     }))
+}
+
+// -- Studio Mode (export-style rythmo rendering) --
+
+fn studio_count_used_slots(project: &Project) -> usize {
+    let mut slots = std::collections::HashSet::new();
+    for line in project.lines() {
+        let idx = (line.y_slot * constants::NUM_SLOTS).round() as i32;
+        slots.insert(idx);
+    }
+    slots.len()
+}
+
+/// Compute the rythmo band height in pixels for studio mode, matching the export renderer formula.
+pub fn studio_br_height(_project: &Project, _width: f32) -> f32 {
+    // Studio mode: rythmo band at bottom (video still dominates)
+    // Fixed reasonable height for readability
+    300.0
+}
+
+/// Export-style rythmo: ticks, playhead, lines with badges, markers. No waveform, no handles.
+pub fn render_studio_rythmo<'a>(
+    zone: &Rect,
+    project: &'a Project,
+    current_frame: i64,
+    quads: &mut Vec<QuadInstance>,
+    labels: &mut Vec<LabelInfo<'a>>,
+    stretched: &mut Vec<StretchedText>,
+) {
+    // Studio mode: render with proportions scaled to zone height
+    let scale = zone.height / 300.0; // normalize to 300px baseline
+    let used_slots = studio_count_used_slots(project).max(1) as f32;
+
+    // Readable sizes (increase text)
+    let ruler_h = 20.0 * scale;
+    let slot_h = 32.0 * scale;
+    let badge_h = 20.0 * scale;
+    let badge_gap = 4.0 * scale;
+    let badge_char_w = 8.0 * scale;
+    let badge_font_size = 16.0 * scale; // increased from 13.0
+    let badge_padding = 4.0 * scale;
+    let badge_min_w = 14.0 * scale;
+
+    // PPF: same as editor mode (not dependent on zone width)
+    let ppf = constants::PIXELS_PER_FRAME * crate::config::scroll_speed();
+    let total_slot_h = slot_h + badge_h + badge_gap;
+    let tick_long = 10.0 * scale;
+    let tick_short = 5.0 * scale;
+    let tick_w = 1.0 * scale;
+    let playhead_w = 2.0 * scale;
+    let center_x = zone.x + zone.width / 2.0;
+
+    // Ruler ticks (alternating long/short — export style)
+    let visible_frames = (zone.width / ppf) as i64 + 4;
+    let first_tick = ((current_frame - visible_frames / 2) / constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
+    let mut tf = first_tick;
+    loop {
+        let x = center_x + (tf - current_frame) as f32 * ppf;
+        if x > zone.x + zone.width { break; }
+        if x >= zone.x {
+            let tick_idx = tf / constants::TICK_GAP_FRAMES;
+            let th = if tick_idx % 2 == 0 { tick_long } else { tick_short };
+            let c = [100.0 / 255.0, 100.0 / 255.0, 115.0 / 255.0, 128.0 / 255.0];
+            quads.push(QuadInstance {
+                rect: [x, zone.y, tick_w, th],
+                color: c, color_bottom: c,
+                border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                rotation: 0.0, _padding: [0.0; 2],
+            });
+        }
+        tf += constants::TICK_GAP_FRAMES;
+    }
+
+    // Playhead (full height of rythmo zone)
+    let ph_c = [217.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0];
+    quads.push(QuadInstance {
+        rect: [center_x - playhead_w / 2.0, zone.y, playhead_w, zone.height],
+        color: ph_c, color_bottom: ph_c,
+        border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+        shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+        rotation: 0.0, _padding: [0.0; 2],
+    });
+
+    // Lines (export style: no handles, no borders, no hover effects)
+    for line in project.lines() {
+        let x1 = center_x + (line.start_frame - current_frame) as f32 * ppf;
+        let x2 = center_x + (line.end_frame() - current_frame) as f32 * ppf;
+        let lw = (x2 - x1).max(2.0);
+        if x1 + lw < zone.x || x1 > zone.x + zone.width { continue; }
+
+        let slot_idx = (line.y_slot * used_slots).round().min(used_slots - 1.0) as usize;
+        let y_base = zone.y + ruler_h + slot_idx as f32 * total_slot_h;
+
+        // Badge background
+        let [cr, cg, cb, _] = line.character_color;
+        let badge_w = (line.character_name.chars().count().max(1) as f32 * badge_char_w + badge_padding * 2.0).max(badge_min_w);
+        let bc = [cr, cg, cb, 1.0];
+        quads.push(QuadInstance {
+            rect: [x1, y_base, badge_w, badge_h],
+            color: bc, color_bottom: bc,
+            border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+            rotation: 0.0, _padding: [0.0; 2],
+        });
+
+        // Badge text
+        if !line.character_name.is_empty() {
+            let luminance = 0.299 * cr + 0.587 * cg + 0.114 * cb;
+            let text_color = if luminance > 0.55 { Some([0, 0, 0]) } else { Some([224, 224, 230]) };
+            labels.push(LabelInfo {
+                text: &line.character_name,
+                bounds: Rect { x: x1, y: y_base, width: badge_w, height: badge_h },
+                h_align: HAlign::Center, v_align: VAlign::Center,
+                overflow: Overflow::Clip, padding: badge_padding,
+                font_size_override: Some(badge_font_size), color_override: text_color,
+                font_family_override: None,
+            });
+        }
+
+        let line_y = y_base + badge_h + badge_gap;
+
+        // Stretched text or breath arrows
+        if !line.text.is_empty() && line.text != "\u{2191}" && line.text != "\u{2193}" {
+            let lang_cfg = crate::config::get().lang.clone();
+            let breaks = crate::syllable::syllable_breaks(&line.text, &lang_cfg);
+            let use_segments = !line.syllable_ratios.is_empty() && line.syllable_ratios.len() == breaks.len() + 1;
+            if use_segments {
+                let chars: Vec<char> = line.text.chars().collect();
+                let mut seg_x = x1;
+                let mut prev_break = 0usize;
+                for (i, &ratio) in line.syllable_ratios.iter().enumerate() {
+                    let seg_w = ratio * lw;
+                    let end_break = if i < breaks.len() { breaks[i] } else { chars.len() };
+                    let segment: String = chars[prev_break..end_break].iter().collect();
+                    if !segment.is_empty() && seg_w > 1.0 {
+                        stretched.push(StretchedText {
+                            line_id: line.id * 1000 + i as u64,
+                            text: segment,
+                            dest_rect: Rect { x: seg_x, y: line_y, width: seg_w, height: slot_h },
+                        });
+                    }
+                    seg_x += seg_w;
+                    prev_break = end_break;
+                }
+            } else {
+                stretched.push(StretchedText {
+                    line_id: line.id,
+                    text: line.text.clone(),
+                    dest_rect: Rect { x: x1, y: line_y, width: lw, height: slot_h },
+                });
+            }
+        }
+
+        // Breath arrows
+        if line.text == "\u{2191}" || line.text == "\u{2193}" {
+            let up = line.text == "\u{2191}";
+            let r = Rect { x: x1, y: line_y, width: lw, height: slot_h };
+            render_breath_arrow(&r, up, quads);
+        }
+    }
+
+    // Markers (export-style: use center_x + frame offset with studio ppf)
+    for marker in &project.markers {
+        let marker_x = center_x + (marker.frame - current_frame) as f32 * ppf;
+        if marker_x < zone.x - 20.0 || marker_x > zone.x + zone.width + 20.0 { continue; }
+
+        match &marker.kind {
+            MarkerKind::Boucle => {
+                let red = [0.85, 0.15, 0.15, 0.9];
+                // Red vertical bar
+                quads.push(QuadInstance {
+                    rect: [marker_x - 1.0, zone.y, 2.0, zone.height],
+                    color: red, color_bottom: red,
+                    border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                    rotation: 0.0, _padding: [0.0; 2],
+                });
+                // Big "X" — two smooth rotated bars
+                let cy = zone.y + zone.height / 2.0;
+                let arm_len = 20.0;
+                let thickness = 2.5;
+                let pi4 = std::f32::consts::FRAC_PI_4;
+                // "\" bar
+                quads.push(QuadInstance {
+                    rect: [marker_x - arm_len / 2.0, cy - thickness / 2.0, arm_len, thickness],
+                    color: red, color_bottom: red,
+                    border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                    rotation: pi4, _padding: [0.0; 2],
+                });
+                // "/" bar
+                quads.push(QuadInstance {
+                    rect: [marker_x - arm_len / 2.0, cy - thickness / 2.0, arm_len, thickness],
+                    color: red, color_bottom: red,
+                    border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                    rotation: -pi4, _padding: [0.0; 2],
+                });
+            }
+            MarkerKind::Out => {
+                let col = [0.85, 0.45, 0.45, 0.7];
+                // Light red vertical bar
+                quads.push(QuadInstance {
+                    rect: [marker_x - 1.0, zone.y, 2.0, zone.height],
+                    color: col, color_bottom: col,
+                    border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                    rotation: 0.0, _padding: [0.0; 2],
+                });
+                // Two parallel oblique bars crossing the vertical bar
+                let cy = zone.y + zone.height / 2.0;
+                let bar_len = zone.height * 0.25;
+                let thickness = 2.0;
+                let angle = 0.5;
+                for offset in &[-5.0_f32, 5.0] {
+                    quads.push(QuadInstance {
+                        rect: [marker_x + offset - bar_len / 2.0, cy - thickness / 2.0, bar_len, thickness],
+                        color: col, color_bottom: col,
+                        border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+                        shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                        rotation: angle, _padding: [0.0; 2],
+                    });
+                }
+                // "out" text
+                labels.push(LabelInfo {
+                    text: "out",
+                    bounds: Rect { x: marker_x + 12.0, y: cy - 8.0, width: 30.0, height: 16.0 },
+                    h_align: HAlign::Center, v_align: VAlign::Center,
+                    overflow: Overflow::Clip, padding: 0.0,
+                    font_size_override: Some(10.0), color_override: Some([220, 120, 120]), font_family_override: None,
+                });
+            }
+            MarkerKind::SceneChange => {
+                // White bar
+                quads.push(QuadInstance {
+                    rect: [marker_x - 1.0, zone.y, 2.0, zone.height],
+                    color: [0.9, 0.9, 0.95, 0.8], color_bottom: [0.9, 0.9, 0.95, 0.8],
+                    border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                    rotation: 0.0, _padding: [0.0; 2],
+                });
+            }
+            _ => {} // LiaisonLeft/Right not rendered in studio mode
+        }
+    }
 }

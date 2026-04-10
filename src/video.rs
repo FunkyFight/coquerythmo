@@ -287,6 +287,22 @@ impl VideoPlayer {
         self.current_frame
     }
 
+    /// Get interpolated frame based on elapsed time since playback started.
+    /// This provides smooth motion even with low-fps video (e.g., 24fps source).
+    pub fn current_frame_interpolated(&self) -> i64 {
+        if !self.playing || self.fps <= 0.0 {
+            return self.current_frame;
+        }
+
+        if let Some(start_time) = self.playback_start_time {
+            let elapsed = start_time.elapsed().as_secs_f64();
+            let interpolated_frame = self.playback_start_frame as f64 + (elapsed * self.fps);
+            return interpolated_frame.floor() as i64;
+        }
+
+        self.current_frame
+    }
+
     pub fn fps(&self) -> f64 {
         self.fps
     }

@@ -53,7 +53,7 @@ pub enum UiEvent {
     MouseMove { x: f32, y: f32 },
     MousePress { x: f32, y: f32 },
     MouseRelease { x: f32, y: f32 },
-    Scroll { x: f32, y: f32, delta: f32, fast: bool },
+    Scroll { x: f32, y: f32, delta: f32, fast: bool, ctrl: bool },
     KeyInput { text: String },
     CursorLeft,
     CursorRight,
@@ -82,6 +82,7 @@ pub enum UiAction {
     NextFrame,
     SeekRelative(i32),
     SeekAbsolute(i64),
+    SeekToNextBoucle { direction: i32 },
     CreateLine { frame: i64, y_slot: f32 },
     ResizeLine { id: u64, start_frame: i64, duration_frames: i64 },
     MoveLine { id: u64, start_frame: i64, y_slot: f32 },
@@ -110,30 +111,14 @@ pub enum UiAction {
     NetworkDisconnect,
     // Settings
     OpenSettings,
-    OpenVocalRemover,
-    DismissWarning { warning_type: String, never_again: bool },
     RestoreBackup,
-    StartVocalRemoval { output: std::path::PathBuf, params: VocalRemovalParams },
     SaveSettings { lang: String, rythmo_font: Option<String>, scroll_speed: f32 },
     // New project
     NewProject,
     NewProjectSave,
     NewProjectDiscard,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct VocalRemovalParams {
-    pub reverb_room_size: f32,
-    pub reverb_damping: f32,
-    pub reverb_dry: f32,
-    pub reverb_wet: f32,
-    pub highpass: f32,
-    pub lowpass: f32,
-    pub compressor_threshold: f32,
-    pub compressor_ratio: f32,
-    pub compressor_attack: f32,
-    pub compressor_release: f32,
-    pub bg_gain: f32,
+    // Studio mode
+    EnterStudioMode,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -4,9 +4,6 @@ pub mod color_picker;
 pub mod export_modal;
 pub mod save_prompt_modal;
 pub mod server_browser;
-pub mod vocal_remover;
-pub mod vocal_wizard;
-pub mod warning_modal;
 pub mod icon_button;
 pub mod icons;
 pub mod interactive;
@@ -61,9 +58,6 @@ pub struct Ui {
     export_modal: Option<export_modal::ExportModal>,
     server_browser: Option<server_browser::ServerBrowserModal>,
     add_server_modal: Option<server_browser::AddServerModal>,
-    vocal_remover: Option<vocal_remover::VocalRemoverModal>,
-    vocal_wizard: Option<vocal_wizard::VocalWizard>,
-    warning_modal: Option<warning_modal::WarningModal>,
     save_prompt_modal: Option<save_prompt_modal::SavePromptModal>,
     network_in_room: bool,
     pub network_status: String,
@@ -113,9 +107,6 @@ impl Ui {
             export_modal: None,
             server_browser: None,
             add_server_modal: None,
-            vocal_remover: None,
-            vocal_wizard: None,
-            warning_modal: None,
             save_prompt_modal: None,
             network_in_room: false,
             network_status: String::new(),
@@ -187,9 +178,11 @@ impl Ui {
             Rect { x: 88.0, y: 2.0, width: 80.0, height: 28.0 },
             vec![
                 t("menu.export.mp4").into(),
+                t("menu.export.studio_mode").into(),
             ],
             |index, _label| match index {
                 0 => EventResponse::Action(UiAction::OpenExportModal),
+                1 => EventResponse::Action(UiAction::EnterStudioMode),
                 _ => EventResponse::Consumed,
             },
         )
@@ -198,21 +191,8 @@ impl Ui {
         .with_trigger_label(t("menu.export"))
         .with_panel_width(260.0);
 
-        let tools_menu = Dropdown::new(
-            Rect { x: 172.0, y: 2.0, width: 80.0, height: 28.0 },
-            vec![t("tools.vocal_remover").into()],
-            |index, _label| match index {
-                0 => EventResponse::Action(UiAction::OpenVocalRemover),
-                _ => EventResponse::Consumed,
-            },
-        )
-        .with_arrow(false)
-        .with_trigger_bg(false)
-        .with_trigger_label(t("tools.title"))
-        .with_panel_width(240.0);
-
         let connect_menu = Dropdown::new(
-            Rect { x: 256.0, y: 2.0, width: 120.0, height: 28.0 },
+            Rect { x: 172.0, y: 2.0, width: 120.0, height: 28.0 },
             vec![
                 t("menu.connect.servers").into(),
                 t("menu.connect.disconnect").into(),
@@ -238,7 +218,7 @@ impl Ui {
             || EventResponse::Action(UiAction::OpenSettings),
         ).with_tooltip(t("settings.tooltip"));
 
-        vec![Box::new(project_menu), Box::new(export_menu), Box::new(tools_menu), Box::new(connect_menu), Box::new(settings_btn)]
+        vec![Box::new(project_menu), Box::new(export_menu), Box::new(connect_menu), Box::new(settings_btn)]
     }
 
     pub fn rebuild_topbar(&mut self, in_room: bool) {
@@ -395,21 +375,6 @@ impl Ui {
             return self.handle_save_prompt_event(event);
         }
 
-        // Warning modal
-        if self.warning_modal.is_some() {
-            return self.handle_warning_event(event);
-        }
-
-        // Vocal wizard (on top of remover modal)
-        if self.vocal_wizard.is_some() {
-            return self.handle_vocal_wizard_event(event);
-        }
-
-        // Vocal remover modal
-        if self.vocal_remover.is_some() {
-            return self.handle_vocal_remover_event(event);
-        }
-
         // Export modal intercepts all input
         if self.export_modal.is_some() {
             return self.handle_export_modal_event(event);
@@ -450,9 +415,14 @@ impl Ui {
             return rythmo_response;
         }
 
-        // Scroll in rythmo zone → seek (shift = fast)
-        if let UiEvent::Scroll { x, y, delta, fast } = event {
+        // Scroll in rythmo zone
+        if let UiEvent::Scroll { x, y, delta, fast, ctrl } = event {
             if self.layout.rythmo.contains(*x, *y) {
+                if *ctrl && *fast {
+                    // CTRL+SHIFT+scroll: jump between boucle markers
+                    let direction: i32 = if *delta > 0.0 { 1 } else { -1 };
+                    return EventResponse::Action(UiAction::SeekToNextBoucle { direction });
+                }
                 let multiplier = if *fast { 60.0 } else { 15.0 };
                 let frames = (delta * multiplier) as i32;
                 if frames != 0 {
@@ -766,74 +736,6 @@ impl Ui {
         }
     }
 
-    fn handle_vocal_remover_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.vocal_remover {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            vocal_remover::VocalRemoverResult::Consumed => EventResponse::Consumed,
-            vocal_remover::VocalRemoverResult::Close => {
-                self.vocal_remover = None;
-                EventResponse::Consumed
-            }
-            vocal_remover::VocalRemoverResult::Start(params) => {
-                self.vocal_remover = None;
-                EventResponse::Action(UiAction::StartVocalRemoval {
-                    output: std::path::PathBuf::new(), // placeholder, main.rs will ask for path
-                    params,
-                })
-            }
-            vocal_remover::VocalRemoverResult::OpenWizard => {
-                self.vocal_wizard = Some(vocal_wizard::VocalWizard::new());
-                EventResponse::Consumed
-            }
-        }
-    }
-
-    fn handle_vocal_wizard_event(&mut self, event: &UiEvent) -> EventResponse {
-        let wizard = match &mut self.vocal_wizard {
-            Some(w) => w,
-            None => return EventResponse::Ignored,
-        };
-        match wizard.handle_event(event, self.screen_w, self.screen_h) {
-            vocal_wizard::WizardResult::Consumed => EventResponse::Consumed,
-            vocal_wizard::WizardResult::Cancel => {
-                self.vocal_wizard = None;
-                EventResponse::Consumed
-            }
-            vocal_wizard::WizardResult::BackToManual { preset } => {
-                self.vocal_wizard = None;
-                if let Some(modal) = &mut self.vocal_remover {
-                    modal.apply_preset(preset);
-                }
-                EventResponse::Consumed
-            }
-        }
-    }
-
-    fn handle_warning_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.warning_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            warning_modal::WarningResult::Consumed => EventResponse::Consumed,
-            warning_modal::WarningResult::Ok { warning_type } => {
-                self.warning_modal = None;
-                EventResponse::Action(UiAction::DismissWarning { warning_type, never_again: false })
-            }
-            warning_modal::WarningResult::NeverAgain { warning_type } => {
-                self.warning_modal = None;
-                EventResponse::Action(UiAction::DismissWarning { warning_type, never_again: true })
-            }
-        }
-    }
-
-    pub fn open_warning(&mut self, warning_type: &str) {
-        self.warning_modal = Some(warning_modal::WarningModal::new(warning_type));
-    }
-
     fn handle_save_prompt_event(&mut self, event: &UiEvent) -> EventResponse {
         let modal = match &mut self.save_prompt_modal {
             Some(m) => m,
@@ -858,10 +760,6 @@ impl Ui {
 
     pub fn open_save_prompt(&mut self) {
         self.save_prompt_modal = Some(save_prompt_modal::SavePromptModal::new());
-    }
-
-    pub fn open_vocal_remover(&mut self) {
-        self.vocal_remover = Some(vocal_remover::VocalRemoverModal::new());
     }
 
     pub fn open_server_browser(&mut self) {
@@ -907,6 +805,9 @@ impl Ui {
     pub fn layout(&self) -> &Layout {
         &self.layout
     }
+
+    pub fn screen_w(&self) -> f32 { self.screen_w }
+    pub fn screen_h(&self) -> f32 { self.screen_h }
 
     pub fn resize(&mut self, screen_width: u32, screen_height: u32) {
         self.screen_w = screen_width as f32;
@@ -1134,26 +1035,9 @@ impl Ui {
             modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
         }
 
-        // Warning modal
-        if let Some(modal) = &self.warning_modal {
-            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
-        }
-
         // Save prompt modal
         if let Some(modal) = &self.save_prompt_modal {
             modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
-        }
-
-        // Vocal remover modal (hidden while wizard is open)
-        if self.vocal_wizard.is_none() {
-            if let Some(modal) = &self.vocal_remover {
-                modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
-            }
-        }
-
-        // Vocal wizard (on top of remover)
-        if let Some(wizard) = &self.vocal_wizard {
-            wizard.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
         }
 
         // Export progress modal (rendered last so it's always on top)
@@ -1331,5 +1215,66 @@ impl Ui {
                 overflow: Overflow::Clip, padding: 8.0, font_size_override: None, color_override: None, font_family_override: None,
             });
         }
+    }
+
+    /// Studio Mode render: black BG + video + export-style rythmo band only.
+    pub fn render_studio(
+        &mut self,
+        renderer: &mut UiRenderer,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        screen_width: u32,
+        screen_height: u32,
+        video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
+        project: &Project,
+        current_frame: i64,
+    ) {
+        let mut quads: Vec<QuadInstance> = Vec::new();
+        let mut labels: Vec<LabelInfo> = Vec::new();
+        let mut stretched_texts: Vec<StretchedText> = Vec::new();
+
+        // Compute studio rythmo zone: full width, bottom portion
+        let rythmo_h = rythmo::studio_br_height(project, self.screen_w);
+        let rythmo_zone = Rect {
+            x: 0.0,
+            y: self.screen_h - rythmo_h,
+            width: self.screen_w,
+            height: rythmo_h,
+        };
+
+        // Black background for rythmo zone
+        let bg = [0.02, 0.02, 0.03, 1.0];
+        quads.push(QuadInstance {
+            rect: [rythmo_zone.x, rythmo_zone.y, rythmo_zone.width, rythmo_zone.height],
+            color: bg, color_bottom: bg,
+            border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+            rotation: 0.0, _padding: [0.0; 2],
+        });
+
+        // Export-style rythmo: ticks, playhead, lines, markers — NO waveform
+        rythmo::render_studio_rythmo(
+            &rythmo_zone, project, current_frame,
+            &mut quads, &mut labels, &mut stretched_texts,
+        );
+
+        // Prepare stretched text textures
+        let stretched_quads = renderer.prepare_stretched_texts(device, queue, &stretched_texts);
+
+        // Render through existing UiRenderer
+        renderer.render(
+            device, queue, encoder, view,
+            screen_width, screen_height,
+            &quads,       // base layer
+            &[],          // no overlay quads
+            &[],          // no icons (markers use quads)
+            &labels,
+            video_quad,
+            &stretched_quads,
+            &[],          // no extra_textured
+            &[],          // no post_texture_quads
+        );
     }
 }
