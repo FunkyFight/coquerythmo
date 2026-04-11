@@ -729,6 +729,28 @@ impl GpuRenderer {
                     quads.push(rotated_line(cx, cy, length, 2.0*s, angle, 220.0/255.0, 220.0/255.0, 230.0/255.0, 230.0/255.0));
                 }
             }
+
+            // Note text (discrete, gray, at the bottom of the line)
+            if !line.note.is_empty() {
+                let note_font = badge_font * 0.9;
+                let hash = self.get_or_upload_text(&line.note, note_font);
+                if let Some(cached) = self.text_cache.get(&hash) {
+                    let tw = cached.width as f32;
+                    let _th = cached.height as f32;
+                    let note_h = (note_font * 1.3).ceil();
+                    let note_y = line_y + slot_h - note_h - 1.0;
+                    let max_note_w = lw - 8.0 * s;
+                    let draw_w = tw.min(max_note_w);
+                    let uv_end = (draw_w / tw).min(1.0);
+                    let start = all_icons.len() as u32;
+                    all_icons.push(IconInstance {
+                        rect: [x1 + 4.0 * s, note_y, draw_w, note_h],
+                        uv_rect: [0.0, 0.0, uv_end, 1.0],
+                        tint: [160.0/255.0, 160.0/255.0, 170.0/255.0, 1.0],
+                    });
+                    icon_batches.push(IconBatch { hash, start, count: 1 });
+                }
+            }
         }
 
         // ── Markers ──

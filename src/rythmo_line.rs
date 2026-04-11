@@ -11,6 +11,8 @@ pub struct RythmoLine {
     pub character_color: [f32; 4],
     #[serde(default)]
     pub syllable_ratios: Vec<f32>,
+    #[serde(default)]
+    pub note: String,
 }
 
 impl RythmoLine {

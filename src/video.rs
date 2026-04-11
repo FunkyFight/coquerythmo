@@ -33,6 +33,7 @@ pub struct VideoPlayer {
     path: Option<PathBuf>,
     finished: bool,
     current_frame: i64,
+    interpolated_frame: i64,
     total_frames: i64,
     volume: f32,
 
@@ -62,6 +63,7 @@ impl VideoPlayer {
             path: None,
             finished: false,
             current_frame: 0,
+            interpolated_frame: 0,
             total_frames: 0,
             volume: 0.75,
             _audio_stream: None,
@@ -88,6 +90,7 @@ impl VideoPlayer {
         self.fps = fps;
         self.total_frames = total_frames;
         self.current_frame = 0;
+        self.interpolated_frame = 0;
         self.path = Some(path.to_path_buf());
         self.finished = false;
 
@@ -169,6 +172,7 @@ impl VideoPlayer {
             target
         };
         self.current_frame = target;
+        self.interpolated_frame = target;
     }
 
     /// Decode and display the frame at current_frame. Call after scroll stabilizes.
@@ -247,6 +251,9 @@ impl VideoPlayer {
         let elapsed = Instant::now().duration_since(start_time).as_secs_f64();
         let target_frame = self.playback_start_frame + (elapsed * self.fps) as i64;
 
+        // Store interpolated frame for smooth playback even with discrete frame updates
+        self.interpolated_frame = target_frame;
+
         // Already at or ahead of target — nothing to do
         if self.current_frame >= target_frame {
             return;
@@ -290,17 +297,7 @@ impl VideoPlayer {
     /// Get interpolated frame based on elapsed time since playback started.
     /// This provides smooth motion even with low-fps video (e.g., 24fps source).
     pub fn current_frame_interpolated(&self) -> i64 {
-        if !self.playing || self.fps <= 0.0 {
-            return self.current_frame;
-        }
-
-        if let Some(start_time) = self.playback_start_time {
-            let elapsed = start_time.elapsed().as_secs_f64();
-            let interpolated_frame = self.playback_start_frame as f64 + (elapsed * self.fps);
-            return interpolated_frame.floor() as i64;
-        }
-
-        self.current_frame
+        self.interpolated_frame
     }
 
     pub fn fps(&self) -> f64 {

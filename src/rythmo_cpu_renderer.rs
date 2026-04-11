@@ -270,6 +270,43 @@ impl CpuRenderer {
                     pixmap.stroke_path(&path, &arrow_paint, &stroke, Transform::identity(), None);
                 }
             }
+
+            // Note text (discrete, at the bottom of the line)
+            if !line.note.is_empty() {
+                let note_font = badge_font * 0.9;
+                let note_h = (note_font * 1.3).ceil();
+                let note_y = line_y + slot_h - note_h - 1.0;
+                let (tex, tw, th) = self.rasterize_text(&line.note, note_font);
+                if tw > 0 && th > 0 {
+                    let max_note_w = lw - 8.0 * s;
+                    let blit_w = (tw as f32).min(max_note_w);
+                    let pm_w = pixmap.width() as i32;
+                    let pm_h = pixmap.height() as i32;
+                    let pm_data = pixmap.data_mut();
+                    for py in 0..th {
+                        for px in 0..tw {
+                            let dx = (x1 + 4.0 * s) as i32 + px as i32;
+                            let dy = note_y as i32 + py as i32;
+                            if dx < 0 || dy < 0 || dx >= pm_w || dy >= pm_h { continue; }
+                            if px as f32 >= blit_w { break; }
+                            let si = ((py * tw + px) * 4) as usize;
+                            let di = ((dy as u32 * pm_w as u32 + dx as u32) * 4) as usize;
+                            if si + 3 >= tex.len() || di + 3 >= pm_data.len() { continue; }
+                            let a = tex[si + 3] as u32;
+                            if a == 0 { continue; }
+                            // Tint: gray (160, 160, 170)
+                            let sr = (160u32 * a / 255) as u32;
+                            let sg = (160u32 * a / 255) as u32;
+                            let sb = (170u32 * a / 255) as u32;
+                            let inv = 255 - a;
+                            pm_data[di] = ((sr + pm_data[di] as u32 * inv) / 255) as u8;
+                            pm_data[di+1] = ((sg + pm_data[di+1] as u32 * inv) / 255) as u8;
+                            pm_data[di+2] = ((sb + pm_data[di+2] as u32 * inv) / 255) as u8;
+                            pm_data[di+3] = (a + (pm_data[di+3] as u32 * inv) / 255) as u8;
+                        }
+                    }
+                }
+            }
         }
 
         // -- Markers --

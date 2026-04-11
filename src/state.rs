@@ -60,6 +60,7 @@ pub struct State {
     last_autosave: Instant,
     studio_mode: bool,
     fullscreen_before_studio: Option<winit::window::Fullscreen>,
+    show_studio_warning: bool,
 }
 
 impl State {
@@ -79,6 +80,7 @@ impl State {
             last_autosave: Instant::now(),
             studio_mode: false,
             fullscreen_before_studio: None,
+            show_studio_warning: false,
         }
     }
 
@@ -491,6 +493,12 @@ impl State {
                 log::debug!("Remote: load video (ignored, using chunked transfer)");
                 // Video transfer now uses chunked video_start/chunk/end events
             }
+            CommandPayload::UpdateLineNote { line_id, note } => {
+                log::debug!("Remote: update note for line {}", line_id);
+                if let Some(l) = self.project.get_line_mut(line_id) {
+                    l.note = note;
+                }
+            }
         }
     }
 
@@ -651,6 +659,9 @@ impl State {
             Command::UpdateLineText { line_id, new_text, .. } => {
                 serde_json::json!({ "action": "update_text", "line_id": line_id, "text": new_text })
             }
+            Command::UpdateLineNote { line_id, new_note, .. } => {
+                serde_json::json!({ "action": "update_note", "line_id": line_id, "note": new_note })
+            }
             Command::SetCharacter { line_id, new_name, new_color, .. } => {
                 serde_json::json!({ "action": "set_character", "line_id": line_id, "name": new_name, "color": new_color })
             }
@@ -736,6 +747,27 @@ impl State {
 
     pub fn is_studio_mode(&self) -> bool {
         self.studio_mode
+    }
+
+    pub fn show_studio_warning(&self) -> bool {
+        self.show_studio_warning
+    }
+
+    pub fn request_studio_mode(&mut self) {
+        self.show_studio_warning = true;
+    }
+
+    pub fn confirm_studio_mode(&mut self) {
+        self.show_studio_warning = false;
+        self.enter_studio_mode();
+    }
+
+    pub fn cancel_studio_mode(&mut self) {
+        self.show_studio_warning = false;
+    }
+
+    pub fn open_studio_warning(&mut self) {
+        self.ui.open_studio_warning();
     }
 
     // -- Project / Lines (all via Command pattern) --
@@ -941,6 +973,44 @@ impl State {
             _ => return,
         };
         self.project.set_character(line_id, name, color);
+    }
+
+    pub fn start_editing_note(&mut self, line_id: u64) {
+        let note = self.project.get_line(line_id).map(|l| l.note.clone()).unwrap_or_default();
+        let text = if note.is_empty() { "Note".to_string() } else { note };
+        self.ui.rythmo_state.start_editing_note(line_id, &text);
+        if self.project.get_line(line_id).map(|l| l.note.is_empty()).unwrap_or(true) {
+            if let Some(l) = self.project.get_line_mut(line_id) {
+                l.note = "Note".to_string();
+            }
+            self.dirty = true;
+        }
+    }
+
+    pub fn start_editing_note_selected(&mut self) {
+        if let Some(crate::ui::rythmo::Selection::Line(id)) = self.ui.rythmo_state.selected {
+            self.start_editing_note(id);
+        }
+    }
+
+    pub fn update_line_note(&mut self, id: u64, note: String) {
+        use crate::command::{Command, CommandKind};
+        if self.history.last_matches(id, CommandKind::UpdateLineNote) {
+            if let Some(l) = self.project.get_line_mut(id) {
+                l.note = note.clone();
+            }
+            self.history.update_last(|cmd| {
+                if let Command::UpdateLineNote { new_note, .. } = cmd {
+                    *new_note = note;
+                }
+            });
+        } else {
+            let old_note = self.project.get_line(id).map(|l| l.note.clone()).unwrap_or_default();
+            if let Some(l) = self.project.get_line_mut(id) {
+                l.note = note.clone();
+            }
+            self.push_and_broadcast(Command::UpdateLineNote { line_id: id, old_note, new_note: note });
+        }
     }
 
     // -- Backup --

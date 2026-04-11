@@ -57,6 +57,7 @@
 "toolbar.liaison_right" = "Right liaison"
 "toolbar.stretcher" = "Syllable stretcher"
 "toolbar.back_to_edit" = "Back to editing"
+"toolbar.note" = "Add a note"
 
 # Respirations
 "resp.up" = "Inhale"
@@ -112,3 +113,11 @@
 "save_prompt.save" = "Save"
 "save_prompt.discard" = "Don't save"
 "save_prompt.cancel" = "Cancel"
+
+# Studio warning
+"studio_warning.title" = "Studio Mode (Alpha)"
+"studio_warning.message_1" = "Studio mode is in alpha — playback may be choppy"
+"studio_warning.message_2" = "and your rythmo band may be hard to read."
+"studio_warning.message_3" = "For smooth playback, export your video with the rythmo band."
+"studio_warning.continue" = "Continue"
+"studio_warning.cancel" = "Cancel"

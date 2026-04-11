@@ -3,6 +3,7 @@ pub mod dropdown;
 pub mod color_picker;
 pub mod export_modal;
 pub mod save_prompt_modal;
+pub mod studio_warning_modal;
 pub mod server_browser;
 pub mod icon_button;
 pub mod icons;
@@ -59,6 +60,7 @@ pub struct Ui {
     server_browser: Option<server_browser::ServerBrowserModal>,
     add_server_modal: Option<server_browser::AddServerModal>,
     save_prompt_modal: Option<save_prompt_modal::SavePromptModal>,
+    studio_warning_modal: Option<studio_warning_modal::StudioWarningModal>,
     network_in_room: bool,
     pub network_status: String,
     pub has_video: bool,
@@ -77,7 +79,7 @@ impl Ui {
         let layout = Layout::compute(sw, sh, false, PROPS_DEFAULT_W);
 
         let icon_names = ["resume", "pause", "prev_frame", "next_frame",
-            "boucle", "out", "scene", "respirations", "reactions", "liaison_left", "liaison_right", "settings", "stretcher", "br-edit"];
+            "boucle", "out", "scene", "respirations", "reactions", "liaison_left", "liaison_right", "settings", "stretcher", "br-edit", "note"];
         let icon_uvs: std::collections::HashMap<String, [f32; 4]> = icon_names.iter()
             .map(|&name| (name.to_string(), icon_atlas.get_uv(name).unwrap_or([0.0; 4])))
             .collect();
@@ -108,6 +110,7 @@ impl Ui {
             server_browser: None,
             add_server_modal: None,
             save_prompt_modal: None,
+            studio_warning_modal: None,
             network_in_room: false,
             network_status: String::new(),
             sync_overlay: None,
@@ -178,11 +181,11 @@ impl Ui {
             Rect { x: 88.0, y: 2.0, width: 80.0, height: 28.0 },
             vec![
                 t("menu.export.mp4").into(),
-                t("menu.export.studio_mode").into(),
+                format!("{} (Alpha)", t("menu.export.studio_mode")),
             ],
             |index, _label| match index {
                 0 => EventResponse::Action(UiAction::OpenExportModal),
-                1 => EventResponse::Action(UiAction::EnterStudioMode),
+                1 => EventResponse::Action(UiAction::ShowStudioWarning),
                 _ => EventResponse::Consumed,
             },
         )
@@ -230,8 +233,8 @@ impl Ui {
         let tb = &self.layout.toolbar;
         let s = TOOLBAR_BTN_SIZE;
         let gap = 4.0;
-        // 12 buttons + 3 double-gaps + 1 trailing gap
-        let buttons_end = tb.x + 8.0 + 12.0 * (s + gap) + 3.0 * gap * 2.0 + gap;
+        // 13 buttons + 4 double-gaps + 1 trailing gap
+        let buttons_end = tb.x + 8.0 + 13.0 * (s + gap) + 4.0 * gap * 2.0 + gap;
         let slider_start = tb.x + tb.width - SLIDER_W - 8.0;
         let left = buttons_end + 8.0;
         let right = slider_start - 8.0;
@@ -302,6 +305,11 @@ impl Ui {
 
         x += gap * 2.0; // separator
 
+        // Note
+        btn!("note", || EventResponse::Action(UiAction::AddNote), "toolbar.note");
+
+        x += gap * 2.0; // separator
+
         // Liaisons: left | right
         btn!("liaison_left", || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonLeft)), "toolbar.liaison_left");
         btn!("liaison_right", || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonRight)), "toolbar.liaison_right");
@@ -368,6 +376,11 @@ impl Ui {
         // Settings modal intercepts all input
         if self.settings_modal.is_some() {
             return self.handle_settings_modal_event(event);
+        }
+
+        // Studio warning modal
+        if self.studio_warning_modal.is_some() {
+            return self.handle_studio_warning_event(event);
         }
 
         // Save prompt modal (new project)
@@ -762,6 +775,28 @@ impl Ui {
         self.save_prompt_modal = Some(save_prompt_modal::SavePromptModal::new());
     }
 
+    fn handle_studio_warning_event(&mut self, event: &UiEvent) -> EventResponse {
+        let modal = match &mut self.studio_warning_modal {
+            Some(m) => m,
+            None => return EventResponse::Ignored,
+        };
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            studio_warning_modal::StudioWarningResult::Consumed => EventResponse::Consumed,
+            studio_warning_modal::StudioWarningResult::Confirm => {
+                self.studio_warning_modal = None;
+                EventResponse::Action(UiAction::EnterStudioMode)
+            }
+            studio_warning_modal::StudioWarningResult::Cancel => {
+                self.studio_warning_modal = None;
+                EventResponse::Consumed
+            }
+        }
+    }
+
+    pub fn open_studio_warning(&mut self) {
+        self.studio_warning_modal = Some(studio_warning_modal::StudioWarningModal::new());
+    }
+
     pub fn open_server_browser(&mut self) {
         self.server_browser = Some(server_browser::ServerBrowserModal::new());
     }
@@ -886,10 +921,13 @@ impl Ui {
 
         // Rythmo lines
         let mut stretched_texts: Vec<StretchedText> = Vec::new();
+        let mut note_icons: Vec<IconInstance> = Vec::new();
         let cursor_info = rythmo::render_lines(
             &self.layout.rythmo, project, current_frame,
             &self.rythmo_state, &mut quads, &mut labels, &mut stretched_texts,
+            &mut note_icons, self.uv("note"),
         );
+        icons.extend(note_icons);
 
         // Markers
         let mut liaison_icons: Vec<IconInstance> = Vec::new();
@@ -1037,6 +1075,11 @@ impl Ui {
 
         // Save prompt modal
         if let Some(modal) = &self.save_prompt_modal {
+            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+        }
+
+        // Studio warning modal
+        if let Some(modal) = &self.studio_warning_modal {
             modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
         }
 

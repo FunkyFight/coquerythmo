@@ -57,6 +57,7 @@
 "toolbar.liaison_right" = "Liaison à droite"
 "toolbar.stretcher" = "Étireur de syllabes"
 "toolbar.back_to_edit" = "Retour à l'édition"
+"toolbar.note" = "Ajouter une note"
 
 # Respirations
 "resp.up" = "Inspiration"
@@ -112,3 +113,11 @@
 "save_prompt.save" = "Sauvegarder"
 "save_prompt.discard" = "Ne pas sauvegarder"
 "save_prompt.cancel" = "Annuler"
+
+# Studio warning
+"studio_warning.title" = "Mode Studio (Alpha)"
+"studio_warning.message_1" = "Le mode studio est en alpha — la lecture peut être saccadée"
+"studio_warning.message_2" = "et ta bande rythmo peut être difficile à lire."
+"studio_warning.message_3" = "Pour une lecture fluide, exporte ta vidéo avec la bande rythmo."
+"studio_warning.continue" = "Continuer"
+"studio_warning.cancel" = "Annuler"

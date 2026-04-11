@@ -38,6 +38,8 @@ pub struct LineData {
     pub text: String,
     pub character_name: String,
     pub character_color: [f32; 4],
+    #[serde(default)]
+    pub note: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -65,6 +67,7 @@ impl ProjectData {
                 text: l.text.clone(),
                 character_name: l.character_name.clone(),
                 character_color: l.character_color,
+                note: l.note.clone(),
             }).collect(),
             markers: project.markers.iter().map(|m| MarkerData {
                 kind: match &m.kind {
@@ -118,6 +121,16 @@ impl ProjectData {
                 l.y_slot,
                 l.text.clone(), l.character_name.clone(), l.character_color,
             );
+            // Apply note after creation
+            if !l.note.is_empty() {
+                if let Some(last_line) = project.lines().last() {
+                    let note = l.note.clone();
+                    let id = last_line.id;
+                    if let Some(line) = project.get_line_mut(id) {
+                        line.note = note;
+                    }
+                }
+            }
         }
 
         for m in &self.markers {

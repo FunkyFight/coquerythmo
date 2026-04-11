@@ -38,6 +38,8 @@ pub struct RythmoState {
     pub line_input: super::text_input::TextInputState,
     pub editing_character: Option<u64>,
     pub char_input: super::text_input::TextInputState,
+    pub editing_note: Option<u64>,
+    pub note_input: super::text_input::TextInputState,
     pub color_picker: super::color_picker::ColorPickerState,
     pub autocomplete_index: Option<usize>,
     pub autocomplete_hover: Option<usize>,
@@ -92,6 +94,8 @@ impl RythmoState {
             line_input: super::text_input::TextInputState::new(),
             editing_character: None,
             char_input: super::text_input::TextInputState::new(),
+            editing_note: None,
+            note_input: super::text_input::TextInputState::new(),
             color_picker: super::color_picker::ColorPickerState::new(),
             autocomplete_index: None,
             autocomplete_hover: None,
@@ -107,12 +111,23 @@ impl RythmoState {
     }
 
     pub fn is_editing(&self) -> bool {
-        self.editing_line.is_some() || self.editing_character.is_some()
+        self.editing_line.is_some() || self.editing_character.is_some() || self.editing_note.is_some()
     }
 
     pub fn stop_line_editing(&mut self) {
         self.editing_line = None;
         self.line_input.deactivate();
+    }
+
+    pub fn start_editing_note(&mut self, line_id: u64, text: &str) {
+        self.editing_note = Some(line_id);
+        self.note_input.activate(text);
+        self.selected = Some(Selection::Line(line_id));
+    }
+
+    pub fn stop_note_editing(&mut self) {
+        self.editing_note = None;
+        self.note_input.deactivate();
     }
 
     pub fn start_editing_line(&mut self, line_id: u64, text: &str) {
@@ -255,6 +270,8 @@ pub fn render_lines<'a>(
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
     stretched: &mut Vec<StretchedText>,
+    note_icons: &mut Vec<IconInstance>,
+    note_uv: [f32; 4],
 ) -> Option<(u64, usize, f32, f32, f32, f32)> {
     let mut cursor_info = None;
     for line in project.lines() {
@@ -441,6 +458,50 @@ pub fn render_lines<'a>(
             let margin = 3.0;
             quads.push(QuadInstance {
                 rect: [cx, br.y + margin, CURSOR_WIDTH, br.height - margin * 2.0],
+                color: CURSOR_COLOR, color_bottom: CURSOR_COLOR,
+                border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                rotation: 0.0, _padding: [0.0; 2],
+            });
+        }
+
+        // Note indicator: small icon at the end of the badge if line has a note
+        if !line.note.is_empty() {
+            let icon_size = 10.0;
+            note_icons.push(IconInstance {
+                rect: [br.x + br.width - icon_size - 2.0, br.y + (br.height - icon_size) / 2.0, icon_size, icon_size],
+                uv_rect: note_uv,
+                tint: [0.7, 0.7, 0.75, 0.9],
+            });
+        }
+
+        // Note text: small italic label at the bottom of the line
+        if !line.note.is_empty() {
+            let note_label_h = 12.0;
+            let note_y = r.y + r.height - note_label_h - 1.0;
+            labels.push(LabelInfo {
+                text: &line.note,
+                bounds: Rect { x: r.x + 4.0, y: note_y, width: r.width - 8.0, height: note_label_h },
+                h_align: HAlign::Left,
+                v_align: VAlign::Center,
+                overflow: Overflow::Ellipsis,
+                padding: 0.0,
+                font_size_override: Some(9.0),
+                color_override: Some([160, 160, 170]),
+                font_family_override: None,
+            });
+        }
+
+        // Note editing cursor
+        let is_editing_note = state.editing_note == Some(line.id);
+        if is_editing_note && state.note_input.cursor_visible() {
+            let note_label_h = 12.0;
+            let note_y = r.y + r.height - note_label_h - 1.0;
+            let cursor_pos = state.note_input.cursor_pos;
+            let note_char_w = 5.0; // approximate at font size 9
+            let cx = r.x + 4.0 + cursor_pos as f32 * note_char_w;
+            quads.push(QuadInstance {
+                rect: [cx, note_y + 1.0, CURSOR_WIDTH, note_label_h - 2.0],
                 color: CURSOR_COLOR, color_bottom: CURSOR_COLOR,
                 border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
                 shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
@@ -997,8 +1058,10 @@ fn handle_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) 
     if !ctx.zone.contains(x, y) {
         let char_id = state.editing_character;
         let was_editing_line = state.editing_line.is_some();
+        let was_editing_note = state.editing_note.is_some();
         if char_id.is_some() { state.stop_char_editing(); }
         if was_editing_line { state.stop_line_editing(); }
+        if was_editing_note { state.stop_note_editing(); }
         if let Some(line_id) = char_id {
             return EventResponse::Action(UiAction::FinalizeCharacter { line_id });
         }
@@ -1050,12 +1113,14 @@ fn handle_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) 
     state.selected = None;
     let char_id = state.editing_character;
     let was_editing_line = state.editing_line.is_some();
+    let was_editing_note = state.editing_note.is_some();
     if char_id.is_some() { state.stop_char_editing(); }
     if was_editing_line { state.stop_line_editing(); }
+    if was_editing_note { state.stop_note_editing(); }
     if let Some(line_id) = char_id {
         return EventResponse::Action(UiAction::FinalizeCharacter { line_id });
     }
-    if was_editing_line {
+    if was_editing_line || was_editing_note {
         return EventResponse::Action(UiAction::StopEditing);
     }
     EventResponse::Ignored
@@ -1069,6 +1134,7 @@ fn handle_ctrl_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -
     if !ctx.zone.contains(x, y) { return EventResponse::Ignored; }
     state.stop_line_editing();
     state.stop_char_editing();
+    state.stop_note_editing();
     EventResponse::Action(UiAction::CreateLine {
         frame: x_to_frame(x, ctx.current_frame, ctx.zone),
         y_slot: y_to_slot(y, ctx.zone),
@@ -1094,6 +1160,7 @@ fn handle_double_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32)
             let lr = line_rect(line, ctx.current_frame, ctx.zone);
             state.color_picker.open(lr.x + lr.width + 10.0, lr.y - 30.0, line.character_color);
             state.stop_line_editing();
+            state.stop_note_editing();
             return if let Some(old_id) = finalize_line_id.filter(|&id| id != line.id) {
                 EventResponse::Action(UiAction::FinalizeCharacter { line_id: old_id })
             } else {
@@ -1101,13 +1168,24 @@ fn handle_double_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32)
             };
         }
     }
-    // Line body → text editing
+    // Line body → note editing (if has note and click is in note area) or text editing
     for line in ctx.project.lines() {
         let r = line_rect(line, ctx.current_frame, ctx.zone);
         if r.contains(x, y) {
+            // If the line has a note and click is in the bottom part, edit note
+            if !line.note.is_empty() {
+                let note_label_h = 12.0;
+                let note_y = r.y + r.height - note_label_h - 1.0;
+                if y >= note_y {
+                    state.stop_line_editing();
+                    state.stop_char_editing();
+                    return EventResponse::Action(UiAction::AddNote);
+                }
+            }
             state.editing_line = Some(line.id);
             state.line_input.activate(&line.text);
             state.stop_char_editing();
+            state.stop_note_editing();
             return if let Some(old_id) = finalize_line_id {
                 EventResponse::Action(UiAction::FinalizeCharacter { line_id: old_id })
             } else {
@@ -1129,6 +1207,22 @@ fn handle_double_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32)
 
 fn handle_key_input(ctx: &RythmoCtx, state: &mut RythmoState, text: &str) -> EventResponse {
     use super::text_input::TextInputAction;
+
+    // Note editing takes priority
+    if let Some(line_id) = state.editing_note {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            match state.note_input.handle_key(text, &line.note) {
+                Some(TextInputAction::Changed(new_note)) =>
+                    return EventResponse::Action(UiAction::UpdateLineNote { line_id, note: new_note }),
+                Some(TextInputAction::Finished) => {
+                    state.stop_note_editing();
+                    return EventResponse::Action(UiAction::StopEditing);
+                }
+                None => {}
+            }
+        }
+        return EventResponse::Consumed;
+    }
 
     if let Some(line_id) = state.editing_character {
         if let Some(line) = ctx.project.get_line(line_id) {
@@ -1454,6 +1548,21 @@ pub fn render_studio_rythmo<'a>(
             let up = line.text == "\u{2191}";
             let r = Rect { x: x1, y: line_y, width: lw, height: slot_h };
             render_breath_arrow(&r, up, quads);
+        }
+
+        // Note text in studio mode
+        if !line.note.is_empty() {
+            let note_label_h = 10.0 * scale;
+            let note_y = line_y + slot_h - note_label_h - 1.0;
+            labels.push(LabelInfo {
+                text: &line.note,
+                bounds: Rect { x: x1 + 4.0 * scale, y: note_y, width: lw - 8.0 * scale, height: note_label_h },
+                h_align: HAlign::Left, v_align: VAlign::Center,
+                overflow: Overflow::Ellipsis, padding: 0.0,
+                font_size_override: Some(8.0 * scale),
+                color_override: Some([160, 160, 170]),
+                font_family_override: None,
+            });
         }
     }
 

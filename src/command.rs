@@ -47,6 +47,11 @@ pub enum Command {
         old_frame: i64,
         new_frame: i64,
     },
+    UpdateLineNote {
+        line_id: u64,
+        old_note: String,
+        new_note: String,
+    },
 }
 
 impl Command {
@@ -97,6 +102,11 @@ impl Command {
             Command::MoveMarker { index, new_frame, .. } => {
                 if let Some(m) = project.markers.get_mut(*index) {
                     m.frame = *new_frame;
+                }
+            }
+            Command::UpdateLineNote { line_id, new_note, .. } => {
+                if let Some(l) = project.get_line_mut(*line_id) {
+                    l.note = new_note.clone();
                 }
             }
         }
@@ -152,6 +162,11 @@ impl Command {
                     m.frame = *old_frame;
                 }
             }
+            Command::UpdateLineNote { line_id, old_note, .. } => {
+                if let Some(l) = project.get_line_mut(*line_id) {
+                    l.note = old_note.clone();
+                }
+            }
         }
     }
 }
@@ -188,6 +203,7 @@ impl CommandHistory {
     pub fn last_matches(&self, line_id: u64, kind: CommandKind) -> bool {
         self.undo_stack.last().map_or(false, |cmd| match (cmd, kind) {
             (Command::UpdateLineText { line_id: id, .. }, CommandKind::UpdateLineText) => *id == line_id,
+            (Command::UpdateLineNote { line_id: id, .. }, CommandKind::UpdateLineNote) => *id == line_id,
             (Command::MoveLine { line_id: id, .. }, CommandKind::MoveLine) => *id == line_id,
             (Command::ResizeLine { line_id: id, .. }, CommandKind::ResizeLine) => *id == line_id,
             (Command::SetCharacter { line_id: id, .. }, CommandKind::SetCharacter) => *id == line_id,
@@ -219,6 +235,7 @@ impl CommandHistory {
 #[derive(Clone, Copy, PartialEq)]
 pub enum CommandKind {
     UpdateLineText,
+    UpdateLineNote,
     MoveLine,
     ResizeLine,
     SetCharacter,

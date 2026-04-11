@@ -66,6 +66,10 @@ pub enum CommandPayload {
         line_id: u64,
         text: String,
     },
+    UpdateLineNote {
+        line_id: u64,
+        note: String,
+    },
     SetCharacter {
         line_id: u64,
         name: String,
@@ -149,6 +153,12 @@ impl Packetable for Command {
                     text: new_text.clone(),
                 }
             }
+            Command::UpdateLineNote { line_id, new_note, .. } => {
+                CommandPayload::UpdateLineNote {
+                    line_id: *line_id,
+                    note: new_note.clone(),
+                }
+            }
             Command::SetCharacter { line_id, new_name, new_color, .. } => {
                 CommandPayload::SetCharacter {
                     line_id: *line_id,
@@ -214,6 +224,7 @@ mod tests {
                 text: "test".into(), character_name: "Alice".into(),
                 character_color: [1.0, 0.0, 0.0, 1.0],
                 syllable_ratios: Vec::new(),
+                note: String::new(),
             },
         };
         let json = serde_json::to_string(&payload).unwrap();

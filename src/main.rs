@@ -346,6 +346,15 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         UiAction::EnterStudioMode => {
             state.enter_studio_mode();
         }
+        UiAction::ShowStudioWarning => {
+            state.open_studio_warning();
+        }
+        UiAction::AddNote => {
+            state.start_editing_note_selected();
+        }
+        UiAction::UpdateLineNote { line_id, note } => {
+            state.update_line_note(line_id, note);
+        }
     }
     false
 }
@@ -492,9 +501,9 @@ fn main() {
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
                     if event.state == ElementState::Pressed {
-                        // F5: enter studio mode if video is loaded
+                        // F5: show studio warning if video is loaded
                         if matches!(event.logical_key, Key::Named(NamedKey::F5)) && state.video_path().is_some() {
-                            state.enter_studio_mode();
+                            handle_action(UiAction::ShowStudioWarning, &mut state);
                             state.request_redraw();
                             return;
                         }

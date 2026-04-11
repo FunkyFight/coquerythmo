@@ -119,6 +119,10 @@ pub enum UiAction {
     NewProjectDiscard,
     // Studio mode
     EnterStudioMode,
+    ShowStudioWarning,
+    // Notes
+    AddNote,
+    UpdateLineNote { line_id: u64, note: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
