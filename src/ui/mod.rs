@@ -79,7 +79,7 @@ impl Ui {
         let layout = Layout::compute(sw, sh, false, PROPS_DEFAULT_W);
 
         let icon_names = ["resume", "pause", "prev_frame", "next_frame",
-            "boucle", "out", "scene", "respirations", "reactions", "liaison_left", "liaison_right", "settings", "stretcher", "br-edit", "note"];
+            "boucle", "out", "scene", "respirations", "reactions", "liaison_left", "liaison_right", "settings", "stretcher", "br-edit", "note", "sound", "mute"];
         let icon_uvs: std::collections::HashMap<String, [f32; 4]> = icon_names.iter()
             .map(|&name| (name.to_string(), icon_atlas.get_uv(name).unwrap_or([0.0; 4])))
             .collect();
@@ -144,28 +144,36 @@ impl Ui {
             Rect { x: 4.0, y: 2.0, width: 80.0, height: 28.0 },
             vec![
                 t("menu.project.add_video").into(),
-                t("menu.project.import").into(),
+                format!("{} ▸", t("menu.project.import")),
                 t("menu.project.export").into(),
-                format!("{} ▸", t("menu.project.recent")),
                 t("menu.project.restore_backup").into(),
+                format!("{} ▸", t("menu.project.recent")),
             ],
             |index, _label| match index {
                 0 => EventResponse::Action(UiAction::AddVideo),
-                1 => EventResponse::Action(UiAction::ImportProject),
                 2 => EventResponse::Action(UiAction::ExportProject),
-                4 => EventResponse::Action(UiAction::RestoreBackup),
-                _ => EventResponse::Consumed, // "Récent" item does nothing on click
+                3 => EventResponse::Action(UiAction::RestoreBackup),
+                _ => EventResponse::Consumed, // "Importer" et "Récents" ne font rien au clic
             },
         )
         .with_arrow(false)
         .with_trigger_bg(false)
         .with_trigger_label(t("menu.project"))
         .with_panel_width(340.0)
-        .with_disabled_items(vec![false, !has_video, !has_video, false, false]);
+        .with_disabled_items(vec![false, false, !has_video, false, false]);
 
-        // Attach submenu to item index 3 ("Récent ▸")
+        project_menu = project_menu.with_submenu(1, vec![
+            t("menu.project.import.coquerythmo").into(),
+            t("menu.project.import.cappela").into(),
+        ], |index, _label| match index {
+            0 => EventResponse::Action(UiAction::ImportProject),
+            1 => EventResponse::Action(UiAction::ImportCappelaProject),
+            _ => EventResponse::Consumed,
+        });
+
+        // Attach submenu to item index 4 ("Récent ▸")
         if !recent_labels.is_empty() {
-            project_menu = project_menu.with_submenu(3, recent_labels, move |index, _label| {
+            project_menu = project_menu.with_submenu(4, recent_labels, move |index, _label| {
                 if let Some(r) = recents_clone.get(index) {
                     EventResponse::Action(UiAction::OpenRecentProject {
                         video_path: r.video_path.clone(),
@@ -236,8 +244,9 @@ impl Ui {
         // 13 buttons + 4 double-gaps + 1 trailing gap
         let buttons_end = tb.x + 8.0 + 13.0 * (s + gap) + 4.0 * gap * 2.0 + gap;
         let slider_start = tb.x + tb.width - SLIDER_W - 8.0;
+        let mute_start = slider_start - s - gap;
         let left = buttons_end + 8.0;
-        let right = slider_start - 8.0;
+        let right = mute_start - 8.0;
         let w = (right - left).max(40.0);
         let h = 6.0;
         Rect { x: left, y: tb.y + (TOOLBAR_HEIGHT - h) / 2.0, width: w, height: h }
@@ -321,11 +330,19 @@ impl Ui {
         let stretcher_tip = if self.rythmo_state.syllable_mode { "toolbar.back_to_edit" } else { "toolbar.stretcher" };
         btn!(stretcher_icon, || EventResponse::Action(UiAction::ToggleSyllableMode), stretcher_tip);
 
-        // Right side: volume slider
+        // Right side: mute button + volume slider
         let slider_w = SLIDER_W;
         let slider_h = 24.0;
         let slider_x = tb.x + tb.width - slider_w - 8.0;
         let slider_y = tb.y + (TOOLBAR_HEIGHT - slider_h) / 2.0;
+        let mute_x = slider_x - s - gap;
+        let mute_icon = if self.volume <= 0.001 { "mute" } else { "sound" };
+        let mute_tip = if self.volume <= 0.001 { "toolbar.unmute" } else { "toolbar.mute" };
+        let mute = IconButton::new(
+            Rect { x: mute_x, y, width: s, height: s }, "", self.uv(mute_icon),
+            || EventResponse::Action(UiAction::ToggleMute),
+        ).with_tooltip(t(mute_tip));
+        widgets.push(Box::new(mute));
         let volume = Slider::new(
             Rect { x: slider_x, y: slider_y, width: slider_w, height: slider_h },
             self.volume, |val| EventResponse::Action(UiAction::SetVolume(val)),
@@ -343,29 +360,6 @@ impl Ui {
         // Toast click to dismiss
         if self.toasts.handle_event(event, self.screen_w, self.screen_h) {
             return EventResponse::Consumed;
-        }
-
-        // Progress bar scrubbing
-        if self.total_frames > 0 {
-            let hit = self.progress_bar_hit_rect();
-            match event {
-                UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } if hit.contains(*x, *y) => {
-                    self.scrubbing = true;
-                    let t = ((*x - hit.x) / hit.width).clamp(0.0, 1.0);
-                    let frame = (t * self.total_frames as f32) as i64;
-                    return EventResponse::Action(UiAction::SeekAbsolute(frame));
-                }
-                UiEvent::MouseMove { x, .. } if self.scrubbing => {
-                    let t = ((*x - hit.x) / hit.width).clamp(0.0, 1.0);
-                    let frame = (t * self.total_frames as f32) as i64;
-                    return EventResponse::Action(UiAction::SeekAbsolute(frame));
-                }
-                UiEvent::MouseRelease { .. } if self.scrubbing => {
-                    self.scrubbing = false;
-                    return EventResponse::Consumed;
-                }
-                _ => {}
-            }
         }
 
         // Sync overlay blocks all input
@@ -420,6 +414,56 @@ impl Ui {
             return response;
         }
 
+        // Toolbar widgets must receive clicks before seek scrubbing because they live in the same bar.
+        if let UiEvent::MousePress { x, y } = event {
+            for widget in self.toolbar_widgets.iter() {
+                if widget.bounds().contains(*x, *y) && widget.tooltip().is_some_and(|tip| tip == t("toolbar.mute") || tip == t("toolbar.unmute")) {
+                    return EventResponse::Action(UiAction::ToggleMute);
+                }
+            }
+        }
+        for widget in self.topbar_widgets.iter_mut().chain(self.toolbar_widgets.iter_mut()) {
+            if widget.captures_all() {
+                let response = widget.handle_event(event);
+                if response != EventResponse::Ignored {
+                    self.update_tooltip();
+                    return response;
+                }
+            }
+        }
+        for widget in self.topbar_widgets.iter_mut().chain(self.toolbar_widgets.iter_mut()) {
+            if !widget.captures_all() {
+                let response = widget.handle_event(event);
+                if response != EventResponse::Ignored {
+                    self.update_tooltip();
+                    return response;
+                }
+            }
+        }
+
+        // Progress bar scrubbing
+        if self.total_frames > 0 {
+            let hit = self.progress_bar_hit_rect();
+            match event {
+                UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } if hit.contains(*x, *y) => {
+                    self.scrubbing = true;
+                    let t = ((*x - hit.x) / hit.width).clamp(0.0, 1.0);
+                    let frame = (t * self.total_frames as f32) as i64;
+                    return EventResponse::Action(UiAction::SeekAbsolute(frame));
+                }
+                UiEvent::MouseMove { x, .. } if self.scrubbing => {
+                    let t = ((*x - hit.x) / hit.width).clamp(0.0, 1.0);
+                    let frame = (t * self.total_frames as f32) as i64;
+                    return EventResponse::Action(UiAction::SeekAbsolute(frame));
+                }
+                UiEvent::MouseRelease { .. } if self.scrubbing => {
+                    self.scrubbing = false;
+                    return EventResponse::Consumed;
+                }
+                _ => {}
+            }
+        }
+
         // Rythmo zone events (lines, scroll, ctrl+click, etc.)
         let rythmo_response = rythmo::handle_rythmo_event(
             event, &self.layout.rythmo, project, current_frame, fps, &mut self.rythmo_state,
@@ -440,28 +484,6 @@ impl Ui {
                 let frames = (delta * multiplier) as i32;
                 if frames != 0 {
                     return EventResponse::Action(UiAction::SeekRelative(frames));
-                }
-            }
-        }
-
-        // Capturing widgets first
-        for widget in self.topbar_widgets.iter_mut().chain(self.toolbar_widgets.iter_mut()) {
-            if widget.captures_all() {
-                let response = widget.handle_event(event);
-                if response != EventResponse::Ignored {
-                    self.update_tooltip();
-                    return response;
-                }
-            }
-        }
-
-        // Normal widgets
-        for widget in self.topbar_widgets.iter_mut().chain(self.toolbar_widgets.iter_mut()) {
-            if !widget.captures_all() {
-                let response = widget.handle_event(event);
-                if response != EventResponse::Ignored {
-                    self.update_tooltip();
-                    return response;
                 }
             }
         }
@@ -689,9 +711,9 @@ impl Ui {
                 self.export_modal = None;
                 EventResponse::Consumed
             }
-            export_modal::ExportModalResult::Export { filename, fps } => {
+            export_modal::ExportModalResult::Export { fps, br_scale } => {
                 self.export_modal = None;
-                EventResponse::Action(UiAction::StartExport { filename, fps })
+                EventResponse::Action(UiAction::StartExport { fps, br_scale })
             }
         }
     }
@@ -835,6 +857,7 @@ impl Ui {
 
     pub fn set_volume(&mut self, vol: f32) {
         self.volume = vol;
+        self.rebuild_toolbar();
     }
 
     pub fn layout(&self) -> &Layout {
@@ -891,33 +914,29 @@ impl Ui {
             self.export_label = format!("{} {}%", prefix, pct);
         }
 
+        // Consume pending cursor click if any before starting to collect labels referencing self
+        let pending_click = self.rythmo_state.pending_cursor_click.take();
+
         let mut quads = Vec::new();         // base layer (behind video)
         let mut overlay_quads = Vec::new(); // overlay layer (on top of video)
         let mut icons: Vec<IconInstance> = Vec::new();
         let mut labels: Vec<LabelInfo> = Vec::new();
 
+        // We can't mutate self after borrowing labels. So process click before ANY render stuff borrowing self.
+        if let Some((ratio, is_shift)) = pending_click {
+            if let Some(line_id) = self.rythmo_state.editing_line {
+                if let Some(closest_idx) = renderer.cursor_pos_from_x_ratio(line_id, ratio) {
+                    if is_shift {
+                        self.rythmo_state.line_input.update_selection(closest_idx);
+                    } else {
+                        self.rythmo_state.line_input.set_cursor_pos(closest_idx);
+                    }
+                }
+            }
+        }
+
         // Zone backgrounds
         self.render_zones(&mut quads, &mut labels, current_frame, waveform);
-
-        // Network status in topbar (right-aligned)
-        if !self.network_status.is_empty() {
-            labels.push(LabelInfo {
-                text: &self.network_status,
-                bounds: Rect {
-                    x: self.screen_w - 400.0,
-                    y: 2.0,
-                    width: 350.0,
-                    height: TOPBAR_HEIGHT - 4.0,
-                },
-                h_align: HAlign::Right,
-                v_align: VAlign::Center,
-                overflow: Overflow::Ellipsis,
-                padding: 8.0,
-                font_size_override: Some(12.0),
-                color_override: Some([160, 200, 160]),
-                font_family_override: None,
-            });
-        }
 
         // Rythmo lines
         let mut stretched_texts: Vec<StretchedText> = Vec::new();
@@ -941,18 +960,39 @@ impl Ui {
         // Prepare stretched text textures
         let stretched_quads = renderer.prepare_stretched_texts(device, queue, &stretched_texts);
 
-        // Render cursor using real glyph positions from the renderer cache
-        if let Some((line_id, cursor_pos, text_x, text_w, ry, rh)) = cursor_info {
-            let ratio = renderer.cursor_x_ratio(line_id, cursor_pos);
-            let cx = text_x + ratio * text_w;
+        // Render cursor and selection using real glyph positions from the renderer cache
+        if let Some((line_id, cursor_pos, selection, text_x, text_w, ry, rh)) = cursor_info {
             let margin = rh * 0.25;
-            quads.push(QuadInstance {
-                rect: [cx, ry + margin, 1.5, rh - margin * 2.0],
-                color: [0.9, 0.9, 0.95, 1.0], color_bottom: [0.9, 0.9, 0.95, 1.0],
-                border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
-            });
+
+            // Draw selection highlight if any (blueish rect)
+            if let Some((start_idx, end_idx)) = selection {
+                let start_ratio = renderer.cursor_x_ratio(line_id, start_idx);
+                let end_ratio = renderer.cursor_x_ratio(line_id, end_idx);
+                let sx = text_x + start_ratio * text_w;
+                let sw = (end_ratio - start_ratio) * text_w;
+                if sw > 0.0 {
+                    quads.push(QuadInstance {
+                        rect: [sx, ry, sw, rh],
+                        color: [0.2, 0.4, 0.8, 0.5], color_bottom: [0.2, 0.4, 0.8, 0.5],
+                        border_color: [0.0; 4], border_width: 0.0, border_radius: 2.0,
+                        shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                        rotation: 0.0, _padding: [0.0; 2],
+                    });
+                }
+            }
+
+            // Draw blinking cursor (only if it should be visible based on timer, handled by rythmo)
+            if self.rythmo_state.line_input.cursor_visible() {
+                let ratio = renderer.cursor_x_ratio(line_id, cursor_pos);
+                let cx = text_x + ratio * text_w;
+                quads.push(QuadInstance {
+                    rect: [cx, ry + margin, 1.5, rh - margin * 2.0],
+                    color: [0.9, 0.9, 0.95, 1.0], color_bottom: [0.9, 0.9, 0.95, 1.0],
+                    border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
+                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                    rotation: 0.0, _padding: [0.0; 2],
+                });
+            }
         }
 
         // Non-capturing widgets

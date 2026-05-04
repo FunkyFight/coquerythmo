@@ -122,6 +122,15 @@ impl Project {
         id
     }
 
+    pub fn duplicate_line_from(&mut self, snapshot: &RythmoLine, start_frame: i64) -> (RythmoLine, usize) {
+        let mut line = snapshot.clone();
+        line.id = rand::random::<u64>() % JS_MAX_SAFE_INTEGER;
+        line.start_frame = start_frame;
+        let index = self.line_order.len();
+        self.insert_line(line.clone());
+        (line, index)
+    }
+
     /// Insert a line with a pre-existing ID (for network sync).
     pub fn insert_line(&mut self, line: RythmoLine) {
         let id = line.id;

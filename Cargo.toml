@@ -1,6 +1,6 @@
 [package]
 name = "coquerythmo"
-version = "2.1.0"
+version = "2.2.2"
 edition = "2021"
 
 [dependencies]
@@ -23,6 +23,7 @@ rand = "0.8"
 base64 = "0.22"
 hypher = "0.1"
 ureq = { version = "3", features = ["json"] }
+quick-xml = "0.37"
 
 [build-dependencies]
 winres = "0.1"

@@ -6,6 +6,10 @@ pub enum Command {
     CreateLine {
         line_id: u64,
     },
+    InsertLine {
+        snapshot: RythmoLine,
+        index: usize,
+    },
     DeleteLine {
         snapshot: RythmoLine,
         index: usize,
@@ -59,6 +63,9 @@ impl Command {
         match self {
             Command::CreateLine { line_id: _ } => {
                 // Line was already added — nothing to re-apply for redo
+            }
+            Command::InsertLine { snapshot, index } => {
+                project.insert_line_at(*index, snapshot.clone());
             }
             Command::DeleteLine { snapshot, .. } => {
                 project.remove_line(snapshot.id);
@@ -116,6 +123,9 @@ impl Command {
         match self {
             Command::CreateLine { line_id } => {
                 project.remove_line(*line_id);
+            }
+            Command::InsertLine { snapshot, .. } => {
+                project.remove_line(snapshot.id);
             }
             Command::DeleteLine { snapshot, index } => {
                 project.insert_line_at(*index, snapshot.clone());

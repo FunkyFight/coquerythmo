@@ -34,7 +34,7 @@ pub struct Dropdown {
     trigger_label: Option<String>,
     panel_width: Option<f32>,
     disabled_items: Vec<bool>,
-    submenu: Option<Submenu>,
+    submenus: Vec<Submenu>,
 }
 
 impl Dropdown {
@@ -56,7 +56,7 @@ impl Dropdown {
             trigger_label: None,
             panel_width: None,
             disabled_items: Vec::new(),
-            submenu: None,
+            submenus: Vec::new(),
         }
     }
 
@@ -91,7 +91,7 @@ impl Dropdown {
         items: Vec<String>,
         on_select: impl FnMut(usize, &str) -> EventResponse + 'static,
     ) -> Self {
-        self.submenu = Some(Submenu {
+        self.submenus.push(Submenu {
             trigger_index,
             items,
             on_select: Box::new(on_select),
@@ -101,8 +101,8 @@ impl Dropdown {
         self
     }
 
-    fn submenu_panel_rect(&self) -> Option<Rect> {
-        let sub = self.submenu.as_ref()?;
+    fn submenu_panel_rect(&self, sub_idx: usize) -> Option<Rect> {
+        let sub = self.submenus.get(sub_idx)?;
         if !sub.open || sub.items.is_empty() { return None; }
         let parent = self.panel_rect();
         let trigger_item = self.option_rect(sub.trigger_index);
@@ -114,18 +114,27 @@ impl Dropdown {
         })
     }
 
-    fn hit_submenu_option(&self, x: f32, y: f32) -> Option<usize> {
-        let rect = self.submenu_panel_rect()?;
-        if !rect.contains(x, y) { return None; }
-        let index = ((y - rect.y) / ITEM_HEIGHT) as usize;
-        let sub = self.submenu.as_ref()?;
-        if index < sub.items.len() { Some(index) } else { None }
+    fn hit_submenu_option(&self, x: f32, y: f32) -> Option<(usize, usize)> {
+        for (i, sub) in self.submenus.iter().enumerate() {
+            if let Some(rect) = self.submenu_panel_rect(i) {
+                if rect.contains(x, y) {
+                    let index = ((y - rect.y) / ITEM_HEIGHT) as usize;
+                    if index < sub.items.len() {
+                        return Some((i, index));
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn close(&mut self) {
         self.open = false;
         self.hovered_option = None;
-        if let Some(sub) = &mut self.submenu { sub.open = false; sub.hovered = None; }
+        for sub in &mut self.submenus {
+            sub.open = false;
+            sub.hovered = None;
+        }
     }
 
     fn is_disabled(&self, index: usize) -> bool {
@@ -220,32 +229,50 @@ impl Widget for Dropdown {
                 if self.open {
                     let prev = self.hovered_option;
                     self.hovered_option = self.hit_option(*x, *y);
-                    // Also update trigger hover
+
                     self.trigger_state = if self.bounds.contains(*x, *y) {
                         DropdownState::Hovered
                     } else {
                         DropdownState::Normal
                     };
 
-                    // Submenu: open/close on hover, track submenu hover
                     let sub_hit = self.hit_submenu_option(*x, *y);
-                    if let Some(sub) = &mut self.submenu {
+
+                    let mut state_changed = false;
+                    for (i, sub) in self.submenus.iter_mut().enumerate() {
+                        let was_open = sub.open;
+                        let prev_hover = sub.hovered;
+
                         if self.hovered_option == Some(sub.trigger_index) {
                             sub.open = true;
-                        }
-                        if sub.open {
-                            if sub_hit != sub.hovered {
-                                sub.hovered = sub_hit;
-                                return EventResponse::Consumed;
-                            }
-                            if self.hovered_option.is_some() && self.hovered_option != Some(sub.trigger_index) {
+                        } else if let Some((hit_sub_idx, _)) = sub_hit {
+                            if hit_sub_idx != i {
                                 sub.open = false;
                                 sub.hovered = None;
                             }
+                        } else if self.hovered_option.is_some() {
+                            sub.open = false;
+                            sub.hovered = None;
+                        }
+
+                        if sub.open {
+                            if let Some((hit_sub_idx, hit_item_idx)) = sub_hit {
+                                if hit_sub_idx == i {
+                                    sub.hovered = Some(hit_item_idx);
+                                } else {
+                                    sub.hovered = None;
+                                }
+                            } else {
+                                sub.hovered = None;
+                            }
+                        }
+
+                        if was_open != sub.open || prev_hover != sub.hovered {
+                            state_changed = true;
                         }
                     }
 
-                    if self.hovered_option != prev {
+                    if self.hovered_option != prev || state_changed {
                         return EventResponse::Consumed;
                     }
                     EventResponse::Ignored
@@ -266,8 +293,10 @@ impl Widget for Dropdown {
             }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 if self.open {
-                    let in_submenu = self.submenu_panel_rect().map(|r| r.contains(*x, *y)).unwrap_or(false);
-                    // Press inside trigger, panel, or submenu is fine
+                    let in_submenu = self.submenus.iter().enumerate().any(|(i, _)| {
+                        self.submenu_panel_rect(i).map(|r| r.contains(*x, *y)).unwrap_or(false)
+                    });
+
                     if self.bounds.contains(*x, *y) || self.panel_rect().contains(*x, *y) || in_submenu {
                         EventResponse::Consumed
                     } else {
@@ -284,19 +313,15 @@ impl Widget for Dropdown {
             }
             UiEvent::MouseRelease { x, y } => {
                 if self.open {
-                    // Check submenu click first
-                    if let Some(sub_index) = self.hit_submenu_option(*x, *y) {
-                        if let Some(sub) = &mut self.submenu {
-                            let label = sub.items[sub_index].clone();
-                            let response = (sub.on_select)(sub_index, &label);
-                            self.close();
-                            self.trigger_state = DropdownState::Normal;
-                            return if response != EventResponse::Ignored { response } else { EventResponse::Consumed };
-                        }
+                    if let Some((sub_idx, item_idx)) = self.hit_submenu_option(*x, *y) {
+                        let label = self.submenus[sub_idx].items[item_idx].clone();
+                        let response = (self.submenus[sub_idx].on_select)(item_idx, &label);
+                        self.close();
+                        self.trigger_state = DropdownState::Normal;
+                        return if response != EventResponse::Ignored { response } else { EventResponse::Consumed };
                     }
 
-                    // Don't select the submenu trigger item itself
-                    let is_submenu_trigger = self.submenu.as_ref().map(|s| s.trigger_index) == self.hit_option(*x, *y);
+                    let is_submenu_trigger = self.submenus.iter().any(|s| Some(s.trigger_index) == self.hit_option(*x, *y));
 
                     if let Some(index) = self.hit_option(*x, *y) {
                         if self.is_disabled(index) || is_submenu_trigger {
@@ -343,7 +368,6 @@ impl Widget for Dropdown {
     fn render_quads(&self) -> Vec<QuadInstance> {
         let mut quads = Vec::new();
 
-        // Trigger button
         if self.show_trigger_bg {
             quads.push(QuadInstance {
                 rect: [self.bounds.x, self.bounds.y, self.bounds.width, self.bounds.height],
@@ -362,7 +386,6 @@ impl Widget for Dropdown {
         if self.open {
             let panel = self.panel_rect();
 
-            // Panel background
             quads.push(QuadInstance {
                 rect: [panel.x, panel.y, panel.width, panel.height],
                 color: [0.15, 0.15, 0.17, 1.0],
@@ -376,21 +399,20 @@ impl Widget for Dropdown {
                 rotation: 0.0, _padding: [0.0; 2],
             });
 
-            // Submenu panel
-            if let Some(sub_rect) = self.submenu_panel_rect() {
-                quads.push(QuadInstance {
-                    rect: [sub_rect.x, sub_rect.y, sub_rect.width, sub_rect.height],
-                    color: [0.15, 0.15, 0.17, 1.0],
-                    color_bottom: [0.12, 0.12, 0.14, 1.0],
-                    border_color: [0.30, 0.30, 0.36, 0.6],
-                    border_width: 1.0, border_radius: RADIUS,
-                    shadow_offset: [0.0, 4.0], shadow_color: [0.0, 0.0, 0.0, 0.5], shadow_blur: 12.0,
-                    rotation: 0.0, _padding: [0.0; 2],
-                });
-                if let Some(sub) = &self.submenu {
-                    for i in 0..sub.items.len() {
-                        if sub.hovered == Some(i) {
-                            let sy = sub_rect.y + i as f32 * ITEM_HEIGHT;
+            for (i, sub) in self.submenus.iter().enumerate() {
+                if let Some(sub_rect) = self.submenu_panel_rect(i) {
+                    quads.push(QuadInstance {
+                        rect: [sub_rect.x, sub_rect.y, sub_rect.width, sub_rect.height],
+                        color: [0.15, 0.15, 0.17, 1.0],
+                        color_bottom: [0.12, 0.12, 0.14, 1.0],
+                        border_color: [0.30, 0.30, 0.36, 0.6],
+                        border_width: 1.0, border_radius: RADIUS,
+                        shadow_offset: [0.0, 4.0], shadow_color: [0.0, 0.0, 0.0, 0.5], shadow_blur: 12.0,
+                        rotation: 0.0, _padding: [0.0; 2],
+                    });
+                    for j in 0..sub.items.len() {
+                        if sub.hovered == Some(j) {
+                            let sy = sub_rect.y + j as f32 * ITEM_HEIGHT;
                             quads.push(QuadInstance {
                                 rect: [sub_rect.x + 3.0, sy + 1.0, sub_rect.width - 6.0, ITEM_HEIGHT - 2.0],
                                 color: [1.0, 1.0, 1.0, 0.07], color_bottom: [1.0, 1.0, 1.0, 0.07],
@@ -403,7 +425,6 @@ impl Widget for Dropdown {
                 }
             }
 
-            // Option highlights
             for i in 0..self.options.len() {
                 if self.is_disabled(i) { continue; }
                 let is_hovered = self.hovered_option == Some(i);
@@ -411,14 +432,12 @@ impl Widget for Dropdown {
 
                 if is_hovered || is_selected {
                     let r = self.option_rect(i);
-                    // Inset the highlight slightly
                     let inset = 3.0;
                     let bg = if is_hovered && is_selected {
                         [0.30, 0.27, 0.75, 0.5]
                     } else if is_hovered {
                         [1.0, 1.0, 1.0, 0.07]
                     } else {
-                        // selected only
                         [0.30, 0.27, 0.75, 0.3]
                     };
                     quads.push(QuadInstance {
@@ -443,7 +462,6 @@ impl Widget for Dropdown {
     fn labels(&self) -> Vec<LabelInfo<'_>> {
         let mut result = Vec::new();
 
-        // Trigger label: fixed label or selected option
         let selected_text = self
             .trigger_label
             .as_deref()
@@ -464,7 +482,6 @@ impl Widget for Dropdown {
             padding: 12.0, font_size_override: None, color_override: None, font_family_override: None,
         });
 
-        // Arrow indicator
         if self.show_arrow {
             let arrow_rect = Rect {
                 x: self.bounds.x + self.bounds.width - 32.0,
@@ -482,7 +499,6 @@ impl Widget for Dropdown {
             });
         }
 
-        // Option labels when open
         if self.open {
             for (i, option) in self.options.iter().enumerate() {
                 let r = self.option_rect(i);
@@ -501,11 +517,10 @@ impl Widget for Dropdown {
                 });
             }
 
-            // Submenu labels
-            if let Some(sub_rect) = self.submenu_panel_rect() {
-                if let Some(sub) = &self.submenu {
-                    for (i, item) in sub.items.iter().enumerate() {
-                        let sy = sub_rect.y + i as f32 * ITEM_HEIGHT;
+            for (i, sub) in self.submenus.iter().enumerate() {
+                if let Some(sub_rect) = self.submenu_panel_rect(i) {
+                    for (j, item) in sub.items.iter().enumerate() {
+                        let sy = sub_rect.y + j as f32 * ITEM_HEIGHT;
                         result.push(LabelInfo {
                             text: item,
                             bounds: Rect { x: sub_rect.x, y: sy, width: sub_rect.width, height: ITEM_HEIGHT },

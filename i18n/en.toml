@@ -4,6 +4,8 @@
 "menu.project" = "Project"
 "menu.project.add_video" = "Add a video"
 "menu.project.import" = "Import a rythmo band"
+"menu.project.import.coquerythmo" = "Coquerythmo (.json)"
+"menu.project.import.cappela" = "Cappela (.detx)"
 "menu.project.export" = "Export a rythmo band"
 "menu.project.recent" = "Recent"
 "menu.project.restore_backup" = "Restore last lost rythmo band"
@@ -34,6 +36,7 @@
 # File pickers
 "picker.video.title" = "Choose a video"
 "picker.import.title" = "Import a project"
+"picker.import.cappela.title" = "Import a Cappela rythmo band"
 "picker.export.title" = "Export the project"
 "picker.export_mp4.title" = "Save MP4 video"
 
@@ -46,6 +49,8 @@
 "toolbar.play" = "Play"
 "toolbar.stop" = "Pause"
 "toolbar.volume" = "Volume"
+"toolbar.mute" = "Mute"
+"toolbar.unmute" = "Unmute"
 "toolbar.prev_frame" = "Previous frame"
 "toolbar.next_frame" = "Next frame"
 "toolbar.boucle" = "Add a loop"
@@ -94,6 +99,7 @@
 "export_modal.title" = "Export MP4"
 "export_modal.filename" = "File name"
 "export_modal.fps" = "Rythmo band FPS"
+"export_modal.br_scale" = "Rythmo band zoom"
 "export_modal.export" = "Export"
 
 # Settings

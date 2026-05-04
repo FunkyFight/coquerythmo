@@ -249,6 +249,23 @@ impl UiRenderer {
         0.0
     }
 
+    /// Give an x ratio, returns the closest cursor index in text
+    pub fn cursor_pos_from_x_ratio(&self, line_id: u64, x_ratio: f32) -> Option<usize> {
+        if let Some(cached) = self.text_texture_cache.get(&line_id) {
+            let mut closest = 0;
+            let mut min_diff = f32::MAX;
+            for (i, &r) in cached.char_x_ratios.iter().enumerate() {
+                let diff = (r - x_ratio).abs();
+                if diff < min_diff {
+                    min_diff = diff;
+                    closest = i;
+                }
+            }
+            return Some(closest);
+        }
+        None
+    }
+
     pub fn texture_sampler(&self) -> &wgpu::Sampler {
         &self.icon_atlas.sampler
     }

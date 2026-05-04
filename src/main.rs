@@ -98,6 +98,24 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                 }
             }
         }
+        UiAction::ImportCappelaProject => {
+            let file = rfd::FileDialog::new()
+                .set_title(i18n::t("picker.import.cappela.title"))
+                .add_filter("Cappela DETX", &["detx"])
+                .pick_file();
+            if let Some(path) = file {
+                let fps = state.fps();
+                match export::import_cappela(&path, fps) {
+                    Ok(data) => {
+                        data.apply_to_project(&mut state.project, fps);
+                        // On ne sauvegarde pas le path puisqu'on a importé un format qu'on va sauvegarder en .json
+                        state.project_path = None;
+                        state.dirty = true;
+                    }
+                    Err(e) => log::error!("Cappela import failed: {e}"),
+                }
+            }
+        }
         UiAction::QuickSave => {
             use export::{JsonExporter, ProjectExporter};
             if let Some(path) = &state.project_path {
@@ -134,6 +152,9 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         }
         UiAction::SetVolume(vol) => {
             state.set_volume(vol);
+        }
+        UiAction::ToggleMute => {
+            state.toggle_mute();
         }
         UiAction::PrevFrame => {
             state.prev_frame();
@@ -188,7 +209,7 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                 log::warn!("No video loaded — cannot export MP4");
             }
         }
-        UiAction::StartExport { filename, fps } => {
+        UiAction::StartExport { fps, br_scale } => {
             if let Some(source) = state.video_path() {
                 let source_fps = state.fps();
                 let project_snap = state.project.snapshot();
@@ -198,15 +219,9 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                 let progress_for_ui = progress.clone();
 
                 let title = i18n::t("picker.export_mp4.title").to_string();
-                let default_filename = if filename.ends_with(".mp4") {
-                    filename
-                } else {
-                    format!("{}.mp4", filename)
-                };
                 std::thread::spawn(move || {
                     let file = rfd::FileDialog::new()
                         .set_title(&title)
-                        .set_file_name(&default_filename)
                         .add_filter("MP4 Video", &["mp4"])
                         .save_file();
                     if let Some(output) = file {
@@ -214,7 +229,7 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                         progress.store(0.01_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
                         let p = progress.clone();
                         let result = video_export::export_mp4(
-                            &project_snap, &source, &output, fps, source_fps,
+                            &project_snap, &source, &output, fps, source_fps, br_scale,
                             move |v| {
                                 p.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
                             },
@@ -355,6 +370,18 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         UiAction::UpdateLineNote { line_id, note } => {
             state.update_line_note(line_id, note);
         }
+        UiAction::SetClipboard(text) => {
+            clipboard_set(&text);
+        }
+        UiAction::CopySelectedLine => {
+            state.copy_selected_line();
+        }
+        UiAction::CutSelectedLine => {
+            state.cut_selected_line();
+        }
+        UiAction::PasteLine => {
+            state.paste_line();
+        }
     }
     false
 }
@@ -421,6 +448,41 @@ fn parse_ico_to_winit_icon(ico_data: &[u8]) -> Option<winit::window::Icon> {
         None // BMP entries not supported, skip
     }
 }
+
+#[cfg(target_os = "windows")]
+fn clipboard_set(text: &str) {
+    use std::ptr;
+    extern "system" {
+        fn OpenClipboard(hwnd: *mut std::ffi::c_void) -> i32;
+        fn CloseClipboard() -> i32;
+        fn EmptyClipboard() -> i32;
+        fn SetClipboardData(format: u32, hmem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn GlobalAlloc(flags: u32, bytes: usize) -> *mut std::ffi::c_void;
+        fn GlobalLock(hmem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn GlobalUnlock(hmem: *mut std::ffi::c_void) -> i32;
+    }
+    const GMEM_MOVEABLE: u32 = 0x0002;
+    unsafe {
+        if OpenClipboard(ptr::null_mut()) == 0 { return; }
+        EmptyClipboard();
+        let mut wide: Vec<u16> = text.encode_utf16().collect();
+        wide.push(0);
+        let bytes = wide.len() * std::mem::size_of::<u16>();
+        let handle = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if !handle.is_null() {
+            let data = GlobalLock(handle) as *mut u16;
+            if !data.is_null() {
+                ptr::copy_nonoverlapping(wide.as_ptr(), data, wide.len());
+                GlobalUnlock(handle);
+                SetClipboardData(13, handle);
+            }
+        }
+        CloseClipboard();
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn clipboard_set(_text: &str) {}
 
 #[cfg(target_os = "windows")]
 fn clipboard_paste() -> Option<String> {
@@ -523,15 +585,30 @@ fn main() {
                         };
 
                         if state.is_editing_text() {
-                            if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "v") {
+                            if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "a") {
+                                // Ctrl+A — select all text
+                                dispatch(UiEvent::SelectAll, &mut state, elwt);
+                            } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("c")) {
+                                dispatch(UiEvent::Copy, &mut state, elwt);
+                            } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("x")) {
+                                dispatch(UiEvent::Cut, &mut state, elwt);
+                            } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v")) {
                                 // Ctrl+V — paste from clipboard
                                 if let Some(text) = clipboard_paste() {
                                     dispatch(UiEvent::KeyInput { text }, &mut state, elwt);
                                 }
                             } else if matches!(event.logical_key, Key::Named(NamedKey::ArrowLeft)) {
-                                dispatch(UiEvent::CursorLeft, &mut state, elwt);
+                                if shift_held {
+                                    dispatch(UiEvent::ShiftCursorLeft, &mut state, elwt);
+                                } else {
+                                    dispatch(UiEvent::CursorLeft, &mut state, elwt);
+                                }
                             } else if matches!(event.logical_key, Key::Named(NamedKey::ArrowRight)) {
-                                dispatch(UiEvent::CursorRight, &mut state, elwt);
+                                if shift_held {
+                                    dispatch(UiEvent::ShiftCursorRight, &mut state, elwt);
+                                } else {
+                                    dispatch(UiEvent::CursorRight, &mut state, elwt);
+                                }
                             } else if matches!(event.logical_key, Key::Named(NamedKey::ArrowUp)) {
                                 dispatch(UiEvent::CursorUp, &mut state, elwt);
                             } else if matches!(event.logical_key, Key::Named(NamedKey::ArrowDown)) {
@@ -551,6 +628,15 @@ fn main() {
                             }
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "s") {
                             handle_action(UiAction::QuickSave, &mut state);
+                            state.request_redraw();
+                        } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("c")) {
+                            handle_action(UiAction::CopySelectedLine, &mut state);
+                            state.request_redraw();
+                        } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("x")) {
+                            handle_action(UiAction::CutSelectedLine, &mut state);
+                            state.request_redraw();
+                        } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v")) {
+                            handle_action(UiAction::PasteLine, &mut state);
                             state.request_redraw();
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "z") {
                             if event.repeat || !event.state.is_pressed() { /* skip */ } else {
@@ -602,6 +688,25 @@ fn main() {
                     dispatch(UiEvent::MouseMove {
                         x: cursor_pos.0, y: cursor_pos.1,
                     }, &mut state, elwt);
+
+                    // Update cursor icon if hover over active text
+                    let is_text_cursor = {
+                        let mut res = false;
+                        if state.is_editing_text() {
+                            if let Some(h) = state.hovered_line() {
+                                if state.editing_line() == Some(h) {
+                                    res = true;
+                                }
+                            }
+                        }
+                        res
+                    };
+
+                    if is_text_cursor {
+                        window.set_cursor_icon(winit::window::CursorIcon::Text);
+                    } else {
+                        window.set_cursor_icon(winit::window::CursorIcon::Default);
+                    }
                 }
                 WindowEvent::MouseInput {
                     state: ref button_state,
@@ -617,6 +722,10 @@ fn main() {
 
                                 if ctrl_held {
                                     dispatch(UiEvent::CtrlClick {
+                                        x: cursor_pos.0, y: cursor_pos.1,
+                                    }, &mut state, elwt);
+                                } else if shift_held {
+                                    dispatch(UiEvent::ShiftMousePress {
                                         x: cursor_pos.0, y: cursor_pos.1,
                                     }, &mut state, elwt);
                                 } else if is_double {

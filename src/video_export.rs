@@ -87,6 +87,7 @@ pub fn export_mp4(
     output: &Path,
     fps: f64,
     source_fps: f64,
+    br_scale: f32,
     mut progress_cb: impl FnMut(f32) + Send,
 ) -> Result<(), String> {
     if !check_ffmpeg() {
@@ -94,7 +95,7 @@ pub fn export_mp4(
     }
     let info = probe(source_video)?;
     let out_w = info.width;
-    let br_h = rythmo_cpu_renderer::br_height(project, out_w);
+    let br_h = rythmo_cpu_renderer::br_height(project, out_w, br_scale);
     let vid_h = info.height;
     let total_frames = (info.duration_secs * fps) as u64;
 
@@ -162,12 +163,12 @@ pub fn export_mp4(
             Ok(mut gpu) => {
                 log::info!("Pass 1: GPU pipelined");
 
-                gpu.submit_render(project, 0.0, out_w, fps);
+                gpu.submit_render(project, 0.0, out_w, fps, br_scale);
 
                 for frame in 1..total_frames as i64 {
                     let rgba = gpu.finish_render(out_w, br_h);
                     let video_pos = frame as f64 * frame_ratio;
-                    gpu.submit_render(project, video_pos, out_w, fps);
+                    gpu.submit_render(project, video_pos, out_w, fps, br_scale);
 
                     rgba_to_yuv420p(&rgba, &mut yuv_buf, w, h, br_h as usize, hw, u_off, v_off);
 
@@ -198,7 +199,7 @@ pub fn export_mp4(
                             .zip(renderers.iter_mut())
                             .map(|(&frame, renderer)| {
                                 let vf = (frame as f64 * frame_ratio) as i64;
-                                scope.spawn(move || renderer.render_br(project, vf, out_w, source_fps))
+                                scope.spawn(move || renderer.render_br(project, vf, out_w, source_fps, br_scale))
                             }).collect();
                         handles.into_iter().map(|h| h.join().unwrap()).collect()
                     });

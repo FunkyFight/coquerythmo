@@ -185,6 +185,265 @@ impl ProjectImporter for JsonImporter {
     }
 }
 
+// -- Cappela .detx importer --
+
+/// Parse a timecode "HH:MM:SS:FF" into a total frame number at the given FPS.
+fn timecode_to_frames(tc: &str, fps: f64) -> Result<i64, String> {
+    let parts: Vec<&str> = tc.split(':').collect();
+    if parts.len() != 4 {
+        return Err(format!("Invalid timecode format: '{tc}', expected HH:MM:SS:FF"));
+    }
+    let h: i64 = parts[0].parse().map_err(|_| format!("Invalid hours in timecode: '{}'", parts[0]))?;
+    let m: i64 = parts[1].parse().map_err(|_| format!("Invalid minutes in timecode: '{}'", parts[1]))?;
+    let s: i64 = parts[2].parse().map_err(|_| format!("Invalid seconds in timecode: '{}'", parts[2]))?;
+    let f: i64 = parts[3].parse().map_err(|_| format!("Invalid frames in timecode: '{}'", parts[3]))?;
+    Ok((h * 3600 + m * 60 + s) * fps as i64 + f)
+}
+
+/// Parse a hex color "#RRGGBB" into RGBA [f32; 4] (0.0–1.0).
+fn hex_color_to_rgba(hex: &str) -> [f32; 4] {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() != 6 {
+        return [1.0, 1.0, 1.0, 1.0]; // fallback white
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(255) as f32 / 255.0;
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(255) as f32 / 255.0;
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255) as f32 / 255.0;
+    [r, g, b, 1.0]
+}
+
+/// Import a Cappela .detx file and convert it to ProjectData.
+/// Requires the video FPS to correctly interpret timecodes.
+pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Read error: {e}"))?;
+
+    let mut reader = Reader::from_str(&content);
+    reader.config_mut().trim_text(true);
+
+    // Roles map: id -> (name, color)
+    let mut roles: std::collections::HashMap<String, (String, [f32; 4])> = std::collections::HashMap::new();
+    let mut lines: Vec<LineData> = Vec::new();
+    let mut markers: Vec<MarkerData> = Vec::new();
+    let mut characters: Vec<CharacterData> = Vec::new();
+
+    // State machine for parsing
+    #[derive(PartialEq)]
+    enum ParseState {
+        Root,
+        InHeader,
+        InRoles,
+        InBody,
+        InLine { role_id: String, track: i32, voice_off: bool },
+    }
+    let mut state = ParseState::Root;
+
+    // Per-line accumulation
+    let mut line_texts: Vec<String> = Vec::new();
+    let mut line_first_tc: Option<String> = None;
+    let mut line_last_tc: Option<String> = None;
+
+    // Global offsets
+    let mut video_offset_frames: Option<i64> = None;
+
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let attrs: std::collections::HashMap<String, String> = e.attributes()
+                    .filter_map(|a| a.ok())
+                    .map(|a| {
+                        let key = String::from_utf8_lossy(a.key.as_ref()).to_string();
+                        let val = String::from_utf8_lossy(&a.value).to_string();
+                        (key, val)
+                    })
+                    .collect();
+
+                match state {
+                    ParseState::Root => {
+                        if tag == "header" {
+                            state = ParseState::InHeader;
+                        } else if tag == "roles" {
+                            state = ParseState::InRoles;
+                        } else if tag == "body" {
+                            state = ParseState::InBody;
+                        }
+                    }
+                    ParseState::InHeader => {
+                        if tag == "videofile" {
+                            if let Some(tc) = attrs.get("timestamp") {
+                                video_offset_frames = timecode_to_frames(tc, fps).ok();
+                                log::info!("Cappela video offset found: {} frames", video_offset_frames.unwrap_or(0));
+                            }
+                        }
+                    }
+                    ParseState::InRoles => {
+                        if tag == "role" {
+                            if let (Some(id), Some(name)) = (attrs.get("id"), attrs.get("name")) {
+                                let color = attrs.get("color").map(|c| hex_color_to_rgba(c))
+                                    .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                                roles.insert(id.clone(), (name.clone(), color));
+                            }
+                        }
+                    }
+                    ParseState::InBody => {
+                        if tag == "line" {
+                            let role_id = attrs.get("role").cloned().unwrap_or_default();
+                            let track: i32 = attrs.get("track")
+                                .and_then(|t| t.parse().ok())
+                                .unwrap_or(0);
+                            let voice_off = attrs.get("voice").map(|v| v == "off").unwrap_or(false);
+                            state = ParseState::InLine { role_id, track, voice_off };
+                            line_texts.clear();
+                            line_first_tc = None;
+                            line_last_tc = None;
+                        } else if tag == "loop" {
+                            if let Some(tc) = attrs.get("timecode") {
+                                let frame = timecode_to_frames(tc, fps).unwrap_or(0);
+                                markers.push(MarkerData {
+                                    kind: "boucle".to_string(),
+                                    frame,
+                                });
+                            }
+                        } else if tag == "shot" {
+                            if let Some(tc) = attrs.get("timecode") {
+                                let frame = timecode_to_frames(tc, fps).unwrap_or(0);
+                                markers.push(MarkerData {
+                                    kind: "scene_change".to_string(),
+                                    frame,
+                                });
+                            }
+                        }
+                    }
+                    ParseState::InLine { .. } => {
+                        if tag == "lipsync" {
+                            if let Some(tc) = attrs.get("timecode") {
+                                if line_first_tc.is_none() {
+                                    line_first_tc = Some(tc.clone());
+                                }
+                                line_last_tc = Some(tc.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Event::Text(ref e)) => {
+                if let ParseState::InLine { .. } = state {
+                    let text = e.unescape().map_err(|e| format!("XML text decode error: {e}"))?;
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        line_texts.push(trimmed.to_string());
+                    }
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                match state {
+                    ParseState::InHeader => {
+                        if tag == "header" {
+                            state = ParseState::Root;
+                        }
+                    }
+                    ParseState::InRoles => {
+                        if tag == "roles" {
+                            state = ParseState::Root;
+                            // Build characters from roles
+                            for (name, color) in roles.values() {
+                                characters.push(CharacterData {
+                                    name: name.clone(),
+                                    color: *color,
+                                });
+                            }
+                        }
+                    }
+                    ParseState::InBody => {
+                        if tag == "body" {
+                            state = ParseState::Root;
+                        }
+                    }
+                    ParseState::InLine { ref role_id, track, voice_off } => {
+                        if tag == "line" {
+                            let full_text = line_texts.join(" "); // Ajout d'espaces entre les morceaux
+                            let (char_name, char_color) = roles.get(role_id)
+                                .cloned()
+                                .unwrap_or((role_id.clone(), [1.0, 1.0, 1.0, 1.0]));
+
+                            let y_slot = {
+                                let slots = [0.25, 0.5, 0.75, 1.0];
+                                slots.get(track as usize).copied().unwrap_or(0.5)
+                            };
+
+                            let start_frame = line_first_tc.as_ref()
+                                .and_then(|tc| timecode_to_frames(tc, fps).ok())
+                                .unwrap_or(0);
+                            let end_frame = line_last_tc.as_ref()
+                                .and_then(|tc| timecode_to_frames(tc, fps).ok())
+                                .unwrap_or(start_frame);
+                            let duration = (end_frame - start_frame).max(1);
+
+                            let note = if voice_off { "Voix off".to_string() } else { String::new() };
+
+                            lines.push(LineData {
+                                start_frame,
+                                duration_frames: duration,
+                                y_slot,
+                                text: full_text,
+                                character_name: char_name,
+                                character_color: char_color,
+                                note,
+                            });
+
+                            state = ParseState::InBody;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(format!("XML parse error at position {}: {e}", reader.error_position())),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    // Si on a un offset global (ex: 01:00:00:00), on le soustrait partout.
+    // Si on n'a pas cet offset explicitement dans le header, vérifions la première ligne.
+    let offset = video_offset_frames.unwrap_or_else(|| {
+        if let Some(first_line) = lines.first() {
+            // Parfois, le timecode commence à 10:00:00:00 ou 01:00:00:00 dans le doublage sans header videofile
+            let h = first_line.start_frame / (3600 * fps as i64);
+            h * 3600 * fps as i64
+        } else {
+            0
+        }
+    });
+
+    if offset > 0 {
+        for l in &mut lines {
+            l.start_frame -= offset;
+            if l.start_frame < 0 { l.start_frame = 0; }
+        }
+        for m in &mut markers {
+            m.frame -= offset;
+            if m.frame < 0 { m.frame = 0; }
+        }
+    }
+
+    log::info!("Cappela .detx imported: {} lines, {} markers, {} characters | Video offset applied: {}",
+        lines.len(), markers.len(), characters.len(), offset);
+
+    Ok(ProjectData {
+        source_fps: fps,
+        lines,
+        markers,
+        characters,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,5 +521,74 @@ mod tests {
         let mut project = Project::new();
         data.apply_to_project(&mut project, 24.0);
         assert_eq!(project.markers.len(), 0);
+    }
+
+    #[test]
+    fn test_timecode_to_frames() {
+        assert_eq!(timecode_to_frames("00:00:00:00", 24.0).unwrap(), 0);
+        assert_eq!(timecode_to_frames("00:00:01:00", 24.0).unwrap(), 24);
+        assert_eq!(timecode_to_frames("00:01:00:00", 24.0).unwrap(), 24 * 60);
+        assert_eq!(timecode_to_frames("01:00:00:00", 24.0).unwrap(), 24 * 3600);
+        assert_eq!(timecode_to_frames("01:00:08:19", 24.0).unwrap(), 24 * 3600 + 8 * 24 + 19);
+    }
+
+    #[test]
+    fn test_hex_color_to_rgba() {
+        assert_eq!(hex_color_to_rgba("#FF0000"), [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(hex_color_to_rgba("#00FF00"), [0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(hex_color_to_rgba("#0000FF"), [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_import_cappela_basic() {
+        let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<detx>\n  <roles>\n    <role id=\"inspecteur\" name=\"Inspecteur\" color=\"#FF0000\"/>\n  </roles>\n  <body>\n    <line role=\"inspecteur\" track=\"0\">\n      <lipsync timecode=\"01:00:08:19\" type=\"in_open\"/>\n      <text>Restez où vous </text>\n      <lipsync timecode=\"01:00:09:14\" type=\"mpb\"/>\n      <text>êtes !</text>\n      <lipsync timecode=\"01:00:09:21\" type=\"out_open\"/>\n    </line>\n  </body>\n</detx>";
+        let dir = std::env::temp_dir().join("coquerythmo_test_cappela");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.detx");
+        std::fs::write(&path, xml).unwrap();
+
+        let data = import_cappela(&path, 24.0).unwrap();
+        assert_eq!(data.lines.len(), 1);
+        assert_eq!(data.lines[0].text, "Restez où vous êtes !");
+        assert_eq!(data.lines[0].character_name, "Inspecteur");
+        assert_eq!(data.lines[0].character_color, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(data.lines[0].y_slot, 0.25); // track 0
+
+        let start = 3600 * 24 + 8 * 24 + 19;
+        let end = 3600 * 24 + 9 * 24 + 21;
+        assert_eq!(data.lines[0].start_frame, start);
+        assert_eq!(data.lines[0].duration_frames, end - start);
+
+        assert_eq!(data.characters.len(), 1);
+        assert_eq!(data.characters[0].name, "Inspecteur");
+    }
+
+    #[test]
+    fn test_import_cappela_markers() {
+        let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<detx>\n  <roles></roles>\n  <body>\n    <loop timecode=\"00:00:10:00\"/>\n    <shot timecode=\"00:00:20:00\"/>\n  </body>\n</detx>";
+        let dir = std::env::temp_dir().join("coquerythmo_test_cappela2");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test_markers.detx");
+        std::fs::write(&path, xml).unwrap();
+
+        let data = import_cappela(&path, 24.0).unwrap();
+        assert_eq!(data.markers.len(), 2);
+        assert_eq!(data.markers[0].kind, "boucle");
+        assert_eq!(data.markers[0].frame, 10 * 24);
+        assert_eq!(data.markers[1].kind, "scene_change");
+        assert_eq!(data.markers[1].frame, 20 * 24);
+    }
+
+    #[test]
+    fn test_import_cappela_voice_off() {
+        let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<detx>\n  <roles>\n    <role id=\"narrator\" name=\"Narrateur\" color=\"#0000FF\"/>\n  </roles>\n  <body>\n    <line role=\"narrator\" track=\"1\" voice=\"off\">\n      <lipsync timecode=\"00:00:05:00\" type=\"in_open\"/>\n      <text>Il était une fois</text>\n      <lipsync timecode=\"00:00:08:00\" type=\"out_open\"/>\n    </line>\n  </body>\n</detx>";
+        let dir = std::env::temp_dir().join("coquerythmo_test_cappela3");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test_voiceoff.detx");
+        std::fs::write(&path, xml).unwrap();
+
+        let data = import_cappela(&path, 24.0).unwrap();
+        assert_eq!(data.lines[0].note, "Voix off");
+        assert_eq!(data.lines[0].y_slot, 0.5); // track 1
     }
 }

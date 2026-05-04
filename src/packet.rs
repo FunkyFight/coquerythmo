@@ -130,6 +130,9 @@ impl Packetable for Command {
                     .clone();
                 CommandPayload::CreateLine { line }
             }
+            Command::InsertLine { snapshot, .. } => {
+                CommandPayload::CreateLine { line: snapshot.clone() }
+            }
             Command::DeleteLine { snapshot, .. } => {
                 CommandPayload::DeleteLine { line_id: snapshot.id }
             }

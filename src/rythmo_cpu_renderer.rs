@@ -137,8 +137,8 @@ impl CpuRenderer {
     }
 
     /// Render the bande rythmo for a given frame. All sizes scale with width.
-    pub fn render_br(&mut self, project: &Project, current_frame: i64, width: u32, _fps: f64) -> Vec<u8> {
-        let s = width as f32 / constants::REF_WIDTH; // scale factor
+    pub fn render_br(&mut self, project: &Project, current_frame: i64, width: u32, _fps: f64, br_scale: f32) -> Vec<u8> {
+        let s = width as f32 / constants::REF_WIDTH * br_scale; // export BR scale factor
         let used_slots = count_used_slots(project);
         let slot_count = used_slots.max(1) as f32;
         let slot_h = constants::SLOT_HEIGHT * s;
@@ -380,8 +380,8 @@ impl CpuRenderer {
 }
 
 /// Calculate the BR height in pixels based on used slots.
-pub fn br_height(project: &Project, width: u32) -> u32 {
-    let s = width as f32 / constants::REF_WIDTH;
+pub fn br_height(project: &Project, width: u32, br_scale: f32) -> u32 {
+    let s = width as f32 / constants::REF_WIDTH * br_scale;
     let used = count_used_slots(project);
     let slot_count = used.max(1) as f32;
     (constants::RULER_HEIGHT * s + slot_count * (constants::SLOT_HEIGHT * s + constants::BADGE_HEIGHT * s + constants::BADGE_GAP * s)).ceil() as u32

@@ -37,10 +37,11 @@ fn rotated_line(
     q
 }
 
-fn text_hash(text: &str) -> u64 {
+fn text_hash(text: &str, font_size: f32) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut h);
+    font_size.to_bits().hash(&mut h);
     h.finish()
 }
 
@@ -513,7 +514,7 @@ impl GpuRenderer {
     }
 
     fn get_or_upload_text(&mut self, text: &str, font_size: f32) -> u64 {
-        let hash = text_hash(text);
+        let hash = text_hash(text, font_size);
         if self.text_cache.contains_key(&hash) {
             return hash;
         }
@@ -594,10 +595,11 @@ impl GpuRenderer {
         project: &Project,
         current_frame: f64,
         width: u32,
-        fps: f64,
+        _fps: f64,
+        br_scale: f32,
     ) {
         // Build quads + icons using the same logic as render_br
-        let s = width as f32 / constants::REF_WIDTH;
+        let s = width as f32 / constants::REF_WIDTH * br_scale;
         let used_slots = count_used_slots(project);
         let slot_count = used_slots.max(1) as f32;
         let slot_h = constants::SLOT_HEIGHT * s;

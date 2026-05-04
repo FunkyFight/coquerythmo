@@ -29,10 +29,12 @@ pub enum Selection {
 pub struct GhostPreview {
     pub frame: i64,
     pub y_slot: f32,
+    pub duration_frames: i64,
 }
 
 pub struct RythmoState {
     pub hovered_line: Option<u64>,
+    pub hovered_track: Option<usize>,
     pub selected: Option<Selection>,
     pub editing_line: Option<u64>,
     pub line_input: super::text_input::TextInputState,
@@ -47,6 +49,7 @@ pub struct RythmoState {
     pub ghost_preview: Option<GhostPreview>,
     pub ctrl_held: bool,
     pub panning: bool,
+    pub pending_cursor_click: Option<(f32, bool)>, // (x_ratio, is_shift_click)
     pub pan_last_x: f32,
     pub pan_accum: f32,
     pub syllable_mode: bool,
@@ -83,12 +86,14 @@ pub enum DragHandle {
     Left,
     Right,
     Body,
+    Selection,
 }
 
 impl RythmoState {
     pub fn new() -> Self {
         Self {
             hovered_line: None,
+            hovered_track: None,
             selected: None,
             editing_line: None,
             line_input: super::text_input::TextInputState::new(),
@@ -103,6 +108,7 @@ impl RythmoState {
             ghost_preview: None,
             ctrl_held: false,
             panning: false,
+            pending_cursor_click: None,
             pan_last_x: 0.0,
             pan_accum: 0.0,
             syllable_mode: false,
@@ -157,6 +163,16 @@ fn frame_to_x(frame: i64, current_frame: i64, zone: &Rect) -> f32 {
 fn x_to_frame(x: f32, current_frame: i64, zone: &Rect) -> i64 {
     let center_x = zone.x + zone.width / 2.0;
     current_frame + ((x - center_x) / ppf()) as i64
+}
+
+fn clamped_new_line_duration(project: &Project, frame: i64, y_slot: f32, fps: f64) -> i64 {
+    let default_dur = (fps * constants::DEFAULT_LINE_DURATION_SEC) as i64;
+    project.lines()
+        .filter(|line| (line.y_slot - y_slot).abs() < 0.01 && line.start_frame > frame)
+        .map(|line| line.start_frame)
+        .min()
+        .map(|start| (start - frame - constants::TICK_GAP_FRAMES).clamp(1, default_dur))
+        .unwrap_or(default_dur)
 }
 
 fn y_to_slot(y: f32, zone: &Rect) -> f32 {
@@ -272,7 +288,26 @@ pub fn render_lines<'a>(
     stretched: &mut Vec<StretchedText>,
     note_icons: &mut Vec<IconInstance>,
     note_uv: [f32; 4],
-) -> Option<(u64, usize, f32, f32, f32, f32)> {
+) -> Option<(u64, usize, Option<(usize, usize)>, f32, f32, f32, f32)> {
+    // Rend le highlight de la track survolée (s'il y en a une et qu'elle est valide)
+    if let Some(track_idx) = state.hovered_track {
+        let (total_slot_h, _) = slot_metrics(zone);
+        let y_base = zone.y + constants::RULER_HEIGHT + track_idx as f32 * total_slot_h;
+        quads.push(QuadInstance {
+            rect: [zone.x, y_base, zone.width, total_slot_h],
+            color: [1.0, 1.0, 1.0, 0.03], // Highlight très léger
+            color_bottom: [1.0, 1.0, 1.0, 0.03],
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+    }
+
     let mut cursor_info = None;
     for line in project.lines() {
         let r = line_rect(line, current_frame, zone);
@@ -359,8 +394,10 @@ pub fn render_lines<'a>(
         }
 
         // Cursor info for mod.rs to resolve with renderer
-        if is_editing && state.line_input.cursor_visible() {
-            cursor_info = Some((line.id, state.line_input.cursor_pos, r.x, r.width, r.y, r.height));
+        if is_editing {
+            if state.line_input.cursor_visible() || state.line_input.has_selection() {
+                cursor_info = Some((line.id, state.line_input.cursor_pos, state.line_input.selection_range(), r.x, r.width, r.y, r.height));
+            }
         }
 
         // Syllable separators (in syllable mode, on hovered or dragged line)
@@ -446,6 +483,23 @@ pub fn render_lines<'a>(
             });
         }
 
+        if is_editing_char {
+            if let Some((start, end)) = state.char_input.selection_range() {
+                let char_count = line.character_name.chars().count();
+                let total_text_w = char_count as f32 * BADGE_CHAR_W;
+                let text_start_x = br.x + (br.width - total_text_w) / 2.0;
+                let sx = text_start_x + start as f32 * BADGE_CHAR_W;
+                let ex = text_start_x + end as f32 * BADGE_CHAR_W;
+                quads.push(QuadInstance {
+                    rect: [sx, br.y + 3.0, (ex - sx).max(1.0), br.height - 6.0],
+                    color: [0.25, 0.45, 0.95, 0.45], color_bottom: [0.25, 0.45, 0.95, 0.45],
+                    border_color: [0.0; 4], border_width: 0.0, border_radius: 2.0,
+                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+                    rotation: 0.0, _padding: [0.0; 2],
+                });
+            }
+        }
+
         // Character name editing cursor
         if is_editing_char && state.char_input.cursor_visible() {
             let char_count = line.character_name.chars().count();
@@ -518,8 +572,7 @@ pub fn render_lines<'a>(
         let y_base = zone.y + constants::RULER_HEIGHT + slot_index as f32 * total_slot_h;
         let ghost_y = y_base + BADGE_HEIGHT + BADGE_GAP;
         let ghost_rect_x = frame_to_x(ghost.frame, current_frame, zone);
-        // Fixed preview width (~2s at 25fps)
-        let ghost_w = 300.0_f32;
+        let ghost_w = (ghost.duration_frames as f32 * ppf()).max(2.0);
 
         let ghost_bg = [0.25, 0.25, 0.35, 0.2];
         let ghost_border = [0.5, 0.5, 0.6, 0.3];
@@ -826,6 +879,7 @@ struct RythmoCtx<'a> {
     zone: &'a Rect,
     project: &'a Project,
     current_frame: i64,
+    fps: f64,
 }
 
 pub fn handle_rythmo_event(
@@ -833,10 +887,10 @@ pub fn handle_rythmo_event(
     zone: &Rect,
     project: &Project,
     current_frame: i64,
-    _fps: f64,
+    fps: f64,
     state: &mut RythmoState,
 ) -> EventResponse {
-    let ctx = RythmoCtx { zone, project, current_frame };
+    let ctx = RythmoCtx { zone, project, current_frame, fps };
 
     // Autocomplete click has highest priority (before color picker eats it)
     if let UiEvent::MousePress { x, y } = event {
@@ -929,12 +983,18 @@ pub fn handle_rythmo_event(
         }
         UiEvent::MouseRelease { .. } => handle_mouse_release(state),
         UiEvent::CtrlClick { x, y } => handle_ctrl_click(&ctx, state, *x, *y),
+        UiEvent::ShiftMousePress { x, y } => handle_shift_mouse_press(&ctx, state, *x, *y),
         UiEvent::DoubleClick { x, y } => handle_double_click(&ctx, state, *x, *y),
         UiEvent::KeyInput { text } => handle_key_input(&ctx, state, text),
-        UiEvent::CursorLeft => handle_cursor_move(&ctx, state, -1),
-        UiEvent::CursorRight => handle_cursor_move(&ctx, state, 1),
+        UiEvent::CursorLeft => handle_cursor_move(&ctx, state, -1, false),
+        UiEvent::CursorRight => handle_cursor_move(&ctx, state, 1, false),
+        UiEvent::ShiftCursorLeft => handle_cursor_move(&ctx, state, -1, true),
+        UiEvent::ShiftCursorRight => handle_cursor_move(&ctx, state, 1, true),
         UiEvent::CursorUp => handle_autocomplete_nav(&ctx, state, -1),
         UiEvent::CursorDown => handle_autocomplete_nav(&ctx, state, 1),
+        UiEvent::SelectAll => handle_select_all(&ctx, state),
+        UiEvent::Copy => handle_copy(&ctx, state),
+        UiEvent::Cut => handle_cut(&ctx, state),
         UiEvent::Delete => {
             if state.selected.is_some() {
                 EventResponse::Action(UiAction::DeleteSelected)
@@ -1001,6 +1061,19 @@ fn handle_mouse_move(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -
                     DragHandle::Right => {
                         EventResponse::Action(UiAction::ResizeLine { id: line_id, start_frame: drag.original_frame, duration_frames: (drag.original_duration + dx_frames).max(1) })
                     }
+                    DragHandle::Selection => {
+                        if let Some(line) = ctx.project.get_line(line_id) {
+                            let r = line_rect(line, ctx.current_frame, ctx.zone);
+                            let ratio = ((x - r.x) / r.width).clamp(0.0, 1.0);
+                            state.pending_cursor_click = Some((ratio, true));
+
+                            // Approximate fallback
+                            let char_count = line.text.chars().count();
+                            let char_pos = (ratio * char_count as f32).round() as usize;
+                            state.line_input.update_selection(char_pos);
+                        }
+                        EventResponse::Consumed
+                    }
                     DragHandle::Body => {
                         let candidate = y_to_slot(y, ctx.zone);
                         let new_y_slot = if candidate != drag.original_y_slot {
@@ -1023,9 +1096,12 @@ fn handle_mouse_move(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -
         let on_line = ctx.project.lines()
             .any(|l| line_rect(l, ctx.current_frame, ctx.zone).contains(x, y));
         if !on_line {
+            let frame = x_to_frame(x, ctx.current_frame, ctx.zone);
+            let y_slot = y_to_slot(y, ctx.zone);
             state.ghost_preview = Some(GhostPreview {
-                frame: x_to_frame(x, ctx.current_frame, ctx.zone),
-                y_slot: y_to_slot(y, ctx.zone),
+                frame,
+                y_slot,
+                duration_frames: clamped_new_line_duration(ctx.project, frame, y_slot, ctx.fps),
             });
             return EventResponse::Consumed;
         }
@@ -1036,15 +1112,38 @@ fn handle_mouse_move(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -
     }
 
     if !ctx.zone.contains(x, y) {
-        if state.hovered_line.take().is_some() { return EventResponse::Consumed; }
-        return EventResponse::Ignored;
+        let mut consumed = false;
+        if state.hovered_line.take().is_some() { consumed = true; }
+        if state.hovered_track.take().is_some() { consumed = true; }
+        return if consumed { EventResponse::Consumed } else { EventResponse::Ignored };
     }
 
     let found = ctx.project.lines()
         .find(|l| line_rect(l, ctx.current_frame, ctx.zone).contains(x, y))
         .map(|l| l.id);
+
+    let hovered_track = {
+        let relative_y = y - ctx.zone.y - constants::RULER_HEIGHT;
+        let (total_slot_h, _) = slot_metrics(ctx.zone);
+        let slot_idx = (relative_y / total_slot_h).floor() as usize;
+        if slot_idx < constants::NUM_SLOTS as usize {
+            Some(slot_idx)
+        } else {
+            None
+        }
+    };
+
+    let mut changed = false;
     if found != state.hovered_line {
         state.hovered_line = found;
+        changed = true;
+    }
+    if hovered_track != state.hovered_track {
+        state.hovered_track = hovered_track;
+        changed = true;
+    }
+
+    if changed {
         EventResponse::Consumed
     } else {
         EventResponse::Ignored
@@ -1096,8 +1195,34 @@ fn handle_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) 
 
         state.selected = Some(Selection::Line(line.id));
 
-        let handle = if x < r.x + constants::HANDLE_WIDTH { DragHandle::Left }
-            else if x > r.x + r.width - constants::HANDLE_WIDTH { DragHandle::Right }
+        // If editing this line, single click positions cursor instead of starting a generic drag
+        // Only exceptions are the resize handles which should still resize the line
+        let is_left_handle = x < r.x + constants::HANDLE_WIDTH;
+        let is_right_handle = x > r.x + r.width - constants::HANDLE_WIDTH;
+        let is_editing = state.editing_line == Some(line.id);
+
+        if is_editing && !is_left_handle && !is_right_handle {
+            if !line.text.is_empty() {
+                let ratio = ((x - r.x) / r.width).clamp(0.0, 1.0);
+                state.pending_cursor_click = Some((ratio, false));
+
+                // Fallback direct update for visual feedback
+                let char_count = line.text.chars().count();
+                let char_pos = (ratio * char_count as f32).round() as usize;
+                state.line_input.start_selection(char_pos);
+            }
+            // Add a special drag handle for mouse selection to allow mouse drag selection
+            state.dragging = Some(DragState {
+                target: DragTarget::Line(line.id),
+                handle: DragHandle::Selection, drag_start_x: x,
+                original_frame: line.start_frame, original_duration: line.duration_frames,
+                original_y_slot: line.y_slot, drag_start_y: y,
+            });
+            return EventResponse::Consumed;
+        }
+
+        let handle = if is_left_handle { DragHandle::Left }
+            else if is_right_handle { DragHandle::Right }
             else { DragHandle::Body };
 
         state.dragging = Some(DragState {
@@ -1141,6 +1266,36 @@ fn handle_ctrl_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -
     })
 }
 
+fn handle_shift_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -> EventResponse {
+    if !ctx.zone.contains(x, y) { return EventResponse::Ignored; }
+
+    // Line text editing selection
+    if let Some(line_id) = state.editing_line {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            let r = line_rect(line, ctx.current_frame, ctx.zone);
+            if r.contains(x, y) && !line.text.is_empty() {
+                let ratio = ((x - r.x) / r.width).clamp(0.0, 1.0);
+                state.pending_cursor_click = Some((ratio, true));
+
+                // If there's no selection, start one from current cursor
+                if !state.line_input.has_selection() {
+                    let current = state.line_input.cursor_pos;
+                    state.line_input.selection = Some((current, current));
+                }
+
+                // Fallback approximate update
+                let char_count = line.text.chars().count();
+                let char_pos = (ratio * char_count as f32).round() as usize;
+                state.line_input.update_selection(char_pos);
+
+                return EventResponse::Consumed;
+            }
+        }
+    }
+
+    EventResponse::Ignored
+}
+
 fn handle_double_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -> EventResponse {
     // Save current character edit before switching
     let finalize_line_id = state.editing_character;
@@ -1157,6 +1312,7 @@ fn handle_double_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32)
             }
             state.editing_character = Some(line.id);
             state.char_input.activate(&line.character_name);
+            state.char_input.select_all(&line.character_name);
             let lr = line_rect(line, ctx.current_frame, ctx.zone);
             state.color_picker.open(lr.x + lr.width + 10.0, lr.y - 30.0, line.character_color);
             state.stop_line_editing();
@@ -1181,6 +1337,14 @@ fn handle_double_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32)
                     state.stop_char_editing();
                     return EventResponse::Action(UiAction::AddNote);
                 }
+            }
+            // If already editing this line, select the clicked word.
+            if state.editing_line == Some(line.id) && !line.text.is_empty() {
+                let char_count = line.text.chars().count();
+                let ratio = ((x - r.x) / r.width).clamp(0.0, 1.0);
+                let char_pos = (ratio * char_count as f32).round() as usize;
+                state.line_input.select_word_at(&line.text, char_pos);
+                return EventResponse::Consumed;
             }
             state.editing_line = Some(line.id);
             state.line_input.activate(&line.text);
@@ -1301,18 +1465,123 @@ fn handle_autocomplete_nav(ctx: &RythmoCtx, state: &mut RythmoState, dir: i32) -
     EventResponse::Ignored
 }
 
-fn handle_cursor_move(ctx: &RythmoCtx, state: &mut RythmoState, dir: i32) -> EventResponse {
+fn handle_select_all(ctx: &RythmoCtx, state: &mut RythmoState) -> EventResponse {
     if let Some(line_id) = state.editing_character {
         if let Some(line) = ctx.project.get_line(line_id) {
-            if dir < 0 { state.char_input.move_left(); }
-            else { state.char_input.move_right(&line.character_name); }
+            state.char_input.select_all(&line.character_name);
             return EventResponse::Consumed;
         }
     }
     if let Some(line_id) = state.editing_line {
         if let Some(line) = ctx.project.get_line(line_id) {
-            if dir < 0 { state.line_input.move_left(); }
-            else { state.line_input.move_right(&line.text); }
+            state.line_input.select_all(&line.text);
+            return EventResponse::Consumed;
+        }
+    }
+    if let Some(line_id) = state.editing_note {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            state.note_input.select_all(&line.note);
+            return EventResponse::Consumed;
+        }
+    }
+    EventResponse::Ignored
+}
+
+fn handle_copy(ctx: &RythmoCtx, state: &mut RythmoState) -> EventResponse {
+    if let Some(line_id) = state.editing_note {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if let Some(text) = state.note_input.selected_text(&line.note) {
+                return EventResponse::Action(UiAction::SetClipboard(text));
+            }
+        }
+    }
+    if let Some(line_id) = state.editing_character {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if let Some(text) = state.char_input.selected_text(&line.character_name) {
+                return EventResponse::Action(UiAction::SetClipboard(text));
+            }
+        }
+    }
+    if let Some(line_id) = state.editing_line {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if let Some(text) = state.line_input.selected_text(&line.text) {
+                return EventResponse::Action(UiAction::SetClipboard(text));
+            }
+        }
+    }
+    EventResponse::Consumed
+}
+
+fn handle_cut(ctx: &RythmoCtx, state: &mut RythmoState) -> EventResponse {
+    let delete = "\x08";
+    if let Some(line_id) = state.editing_note {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if let Some(text) = state.note_input.selected_text(&line.note) {
+                if let Some(super::text_input::TextInputAction::Changed(note)) = state.note_input.handle_key(delete, &line.note) {
+                    return EventResponse::Action(UiAction::UpdateLineNote { line_id, note });
+                }
+                return EventResponse::Action(UiAction::SetClipboard(text));
+            }
+        }
+    }
+    if let Some(line_id) = state.editing_character {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if let Some(text) = state.char_input.selected_text(&line.character_name) {
+                if let Some(super::text_input::TextInputAction::Changed(name)) = state.char_input.handle_key(delete, &line.character_name) {
+                    state.autocomplete_index = Some(0);
+                    return EventResponse::Action(UiAction::UpdateCharacterName { line_id, name });
+                }
+                return EventResponse::Action(UiAction::SetClipboard(text));
+            }
+        }
+    }
+    if let Some(line_id) = state.editing_line {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if let Some(text) = state.line_input.selected_text(&line.text) {
+                if let Some(super::text_input::TextInputAction::Changed(new_text)) = state.line_input.handle_key(delete, &line.text) {
+                    return EventResponse::Action(UiAction::UpdateLineText { id: line_id, text: new_text });
+                }
+                return EventResponse::Action(UiAction::SetClipboard(text));
+            }
+        }
+    }
+    EventResponse::Consumed
+}
+
+fn handle_cursor_move(ctx: &RythmoCtx, state: &mut RythmoState, dir: i32, shift: bool) -> EventResponse {
+    if let Some(line_id) = state.editing_character {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if dir < 0 {
+                if shift { state.char_input.move_left_shift(); }
+                else { state.char_input.move_left(); }
+            } else {
+                if shift { state.char_input.move_right_shift(&line.character_name); }
+                else { state.char_input.move_right(&line.character_name); }
+            }
+            return EventResponse::Consumed;
+        }
+    }
+    if let Some(line_id) = state.editing_line {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if dir < 0 {
+                if shift { state.line_input.move_left_shift(); }
+                else { state.line_input.move_left(); }
+            } else {
+                if shift { state.line_input.move_right_shift(&line.text); }
+                else { state.line_input.move_right(&line.text); }
+            }
+            return EventResponse::Consumed;
+        }
+    }
+    if let Some(line_id) = state.editing_note {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if dir < 0 {
+                if shift { state.note_input.move_left_shift(); }
+                else { state.note_input.move_left(); }
+            } else {
+                if shift { state.note_input.move_right_shift(&line.note); }
+                else { state.note_input.move_right(&line.note); }
+            }
             return EventResponse::Consumed;
         }
     }

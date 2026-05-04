@@ -15,6 +15,7 @@ use crate::ui::renderer::UiRenderer;
 use crate::ui::widget::{EventResponse, UiEvent};
 use crate::ui::Ui;
 use crate::video::VideoPlayer;
+use crate::rythmo_line::RythmoLine;
 
 use crate::constants;
 
@@ -61,6 +62,8 @@ pub struct State {
     studio_mode: bool,
     fullscreen_before_studio: Option<winit::window::Fullscreen>,
     show_studio_warning: bool,
+    line_clipboard: Option<RythmoLine>,
+    last_nonzero_volume: f32,
 }
 
 impl State {
@@ -81,6 +84,8 @@ impl State {
             studio_mode: false,
             fullscreen_before_studio: None,
             show_studio_warning: false,
+            line_clipboard: None,
+            last_nonzero_volume: 0.75,
         }
     }
 
@@ -120,6 +125,14 @@ impl State {
 
     pub fn is_editing_text(&self) -> bool {
         self.ui.is_editing_text()
+    }
+
+    pub fn hovered_line(&self) -> Option<u64> {
+        self.ui.rythmo_state.hovered_line
+    }
+
+    pub fn editing_line(&self) -> Option<u64> {
+        self.ui.rythmo_state.editing_line
     }
 
     pub fn open_server_browser(&mut self) {
@@ -247,10 +260,18 @@ impl State {
     }
 
     pub fn set_volume(&mut self, vol: f32) {
+        if vol > 0.001 {
+            self.last_nonzero_volume = vol;
+        }
         self.ui.set_volume(vol);
         if let Some(player) = &mut self.video_player {
             player.set_volume(vol);
         }
+    }
+
+    pub fn toggle_mute(&mut self) {
+        let target = if self.ui.volume() > 0.001 { 0.0 } else { self.last_nonzero_volume.max(0.75) };
+        self.set_volume(target);
     }
 
     pub fn prev_frame(&mut self) {
@@ -647,6 +668,9 @@ impl State {
                     serde_json::json!({ "action": "create_line", "line": serde_json::to_value(&l).unwrap_or_default() })
                 } else { return; }
             }
+            Command::InsertLine { snapshot, .. } => {
+                serde_json::json!({ "action": "create_line", "line": serde_json::to_value(snapshot).unwrap_or_default() })
+            }
             Command::DeleteLine { snapshot, .. } => {
                 serde_json::json!({ "action": "delete_line", "line_id": snapshot.id })
             }
@@ -796,6 +820,27 @@ impl State {
         }
     }
 
+    pub fn copy_selected_line(&mut self) {
+        use crate::ui::rythmo::Selection;
+        if let Some(Selection::Line(id)) = self.ui.rythmo_state().selected {
+            self.line_clipboard = self.project.get_line(id).cloned();
+        }
+    }
+
+    pub fn cut_selected_line(&mut self) {
+        self.copy_selected_line();
+        self.delete_selected();
+    }
+
+    pub fn paste_line(&mut self) {
+        let Some(snapshot) = self.line_clipboard.clone() else { return; };
+        let start_frame = self.current_frame();
+        let (line, index) = self.project.duplicate_line_from(&snapshot, start_frame);
+        let id = line.id;
+        self.ui.rythmo_state.selected = Some(crate::ui::rythmo::Selection::Line(id));
+        self.push_and_broadcast(Command::InsertLine { snapshot: line, index });
+    }
+
     pub fn move_marker(&mut self, index: usize, frame: i64) {
         if index >= self.project.markers.len() { return; }
         let old_frame = self.project.markers[index].frame;
@@ -821,7 +866,13 @@ impl State {
     }
 
     pub fn create_line(&mut self, frame: i64, y_slot: f32) -> u64 {
-        let dur = (self.fps() * constants::DEFAULT_LINE_DURATION_SEC) as i64;
+        let default_dur = (self.fps() * constants::DEFAULT_LINE_DURATION_SEC) as i64;
+        let dur = self.project.lines()
+            .filter(|line| (line.y_slot - y_slot).abs() < 0.01 && line.start_frame > frame)
+            .map(|line| line.start_frame)
+            .min()
+            .map(|start| (start - frame - constants::TICK_GAP_FRAMES).clamp(1, default_dur))
+            .unwrap_or(default_dur);
         let line_id = self.project.add_line(frame, dur, y_slot);
         self.push_and_broadcast(Command::CreateLine { line_id });
         line_id
