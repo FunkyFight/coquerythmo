@@ -103,7 +103,9 @@ impl Dropdown {
 
     fn submenu_panel_rect(&self, sub_idx: usize) -> Option<Rect> {
         let sub = self.submenus.get(sub_idx)?;
-        if !sub.open || sub.items.is_empty() { return None; }
+        if !sub.open || sub.items.is_empty() {
+            return None;
+        }
         let parent = self.panel_rect();
         let trigger_item = self.option_rect(sub.trigger_index);
         Some(Rect {
@@ -294,10 +296,15 @@ impl Widget for Dropdown {
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 if self.open {
                     let in_submenu = self.submenus.iter().enumerate().any(|(i, _)| {
-                        self.submenu_panel_rect(i).map(|r| r.contains(*x, *y)).unwrap_or(false)
+                        self.submenu_panel_rect(i)
+                            .map(|r| r.contains(*x, *y))
+                            .unwrap_or(false)
                     });
 
-                    if self.bounds.contains(*x, *y) || self.panel_rect().contains(*x, *y) || in_submenu {
+                    if self.bounds.contains(*x, *y)
+                        || self.panel_rect().contains(*x, *y)
+                        || in_submenu
+                    {
                         EventResponse::Consumed
                     } else {
                         self.close();
@@ -318,10 +325,17 @@ impl Widget for Dropdown {
                         let response = (self.submenus[sub_idx].on_select)(item_idx, &label);
                         self.close();
                         self.trigger_state = DropdownState::Normal;
-                        return if response != EventResponse::Ignored { response } else { EventResponse::Consumed };
+                        return if response != EventResponse::Ignored {
+                            response
+                        } else {
+                            EventResponse::Consumed
+                        };
                     }
 
-                    let is_submenu_trigger = self.submenus.iter().any(|s| Some(s.trigger_index) == self.hit_option(*x, *y));
+                    let is_submenu_trigger = self
+                        .submenus
+                        .iter()
+                        .any(|s| Some(s.trigger_index) == self.hit_option(*x, *y));
 
                     if let Some(index) = self.hit_option(*x, *y) {
                         if self.is_disabled(index) || is_submenu_trigger {
@@ -336,7 +350,11 @@ impl Widget for Dropdown {
                         } else {
                             DropdownState::Normal
                         };
-                        if response != EventResponse::Ignored { response } else { EventResponse::Consumed }
+                        if response != EventResponse::Ignored {
+                            response
+                        } else {
+                            EventResponse::Consumed
+                        }
                     } else if self.bounds.contains(*x, *y) {
                         self.close();
                         self.trigger_state = DropdownState::Hovered;
@@ -370,7 +388,12 @@ impl Widget for Dropdown {
 
         if self.show_trigger_bg {
             quads.push(QuadInstance {
-                rect: [self.bounds.x, self.bounds.y, self.bounds.width, self.bounds.height],
+                rect: [
+                    self.bounds.x,
+                    self.bounds.y,
+                    self.bounds.width,
+                    self.bounds.height,
+                ],
                 color: self.trigger_bg_top(),
                 color_bottom: self.trigger_bg_bottom(),
                 border_color: self.trigger_border(),
@@ -379,7 +402,8 @@ impl Widget for Dropdown {
                 shadow_offset: [0.0, 2.0],
                 shadow_color: [0.0, 0.0, 0.0, 0.35],
                 shadow_blur: 6.0,
-                rotation: 0.0, _padding: [0.0; 2],
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
         }
 
@@ -396,7 +420,8 @@ impl Widget for Dropdown {
                 shadow_offset: [0.0, 4.0],
                 shadow_color: [0.0, 0.0, 0.0, 0.5],
                 shadow_blur: 12.0,
-                rotation: 0.0, _padding: [0.0; 2],
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
 
             for (i, sub) in self.submenus.iter().enumerate() {
@@ -406,19 +431,34 @@ impl Widget for Dropdown {
                         color: [0.15, 0.15, 0.17, 1.0],
                         color_bottom: [0.12, 0.12, 0.14, 1.0],
                         border_color: [0.30, 0.30, 0.36, 0.6],
-                        border_width: 1.0, border_radius: RADIUS,
-                        shadow_offset: [0.0, 4.0], shadow_color: [0.0, 0.0, 0.0, 0.5], shadow_blur: 12.0,
-                        rotation: 0.0, _padding: [0.0; 2],
+                        border_width: 1.0,
+                        border_radius: RADIUS,
+                        shadow_offset: [0.0, 4.0],
+                        shadow_color: [0.0, 0.0, 0.0, 0.5],
+                        shadow_blur: 12.0,
+                        rotation: 0.0,
+                        _padding: [0.0; 2],
                     });
                     for j in 0..sub.items.len() {
                         if sub.hovered == Some(j) {
                             let sy = sub_rect.y + j as f32 * ITEM_HEIGHT;
                             quads.push(QuadInstance {
-                                rect: [sub_rect.x + 3.0, sy + 1.0, sub_rect.width - 6.0, ITEM_HEIGHT - 2.0],
-                                color: [1.0, 1.0, 1.0, 0.07], color_bottom: [1.0, 1.0, 1.0, 0.07],
-                                border_color: [0.0; 4], border_width: 0.0, border_radius: 4.0,
-                                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                                rotation: 0.0, _padding: [0.0; 2],
+                                rect: [
+                                    sub_rect.x + 3.0,
+                                    sy + 1.0,
+                                    sub_rect.width - 6.0,
+                                    ITEM_HEIGHT - 2.0,
+                                ],
+                                color: [1.0, 1.0, 1.0, 0.07],
+                                color_bottom: [1.0, 1.0, 1.0, 0.07],
+                                border_color: [0.0; 4],
+                                border_width: 0.0,
+                                border_radius: 4.0,
+                                shadow_offset: [0.0; 2],
+                                shadow_color: [0.0; 4],
+                                shadow_blur: 0.0,
+                                rotation: 0.0,
+                                _padding: [0.0; 2],
                             });
                         }
                     }
@@ -426,7 +466,9 @@ impl Widget for Dropdown {
             }
 
             for i in 0..self.options.len() {
-                if self.is_disabled(i) { continue; }
+                if self.is_disabled(i) {
+                    continue;
+                }
                 let is_hovered = self.hovered_option == Some(i);
                 let is_selected = self.selected == i;
 
@@ -441,7 +483,12 @@ impl Widget for Dropdown {
                         [0.30, 0.27, 0.75, 0.3]
                     };
                     quads.push(QuadInstance {
-                        rect: [r.x + inset, r.y + 1.0, r.width - inset * 2.0, r.height - 2.0],
+                        rect: [
+                            r.x + inset,
+                            r.y + 1.0,
+                            r.width - inset * 2.0,
+                            r.height - 2.0,
+                        ],
                         color: bg,
                         color_bottom: bg,
                         border_color: [0.0, 0.0, 0.0, 0.0],
@@ -450,7 +497,8 @@ impl Widget for Dropdown {
                         shadow_offset: [0.0, 0.0],
                         shadow_color: [0.0, 0.0, 0.0, 0.0],
                         shadow_blur: 0.0,
-                        rotation: 0.0, _padding: [0.0; 2],
+                        rotation: 0.0,
+                        _padding: [0.0; 2],
                     });
                 }
             }
@@ -479,7 +527,10 @@ impl Widget for Dropdown {
             h_align: HAlign::Left,
             v_align: VAlign::Center,
             overflow: Overflow::Ellipsis,
-            padding: 12.0, font_size_override: None, color_override: None, font_family_override: None,
+            padding: 12.0,
+            font_size_override: None,
+            color_override: None,
+            font_family_override: None,
         });
 
         if self.show_arrow {
@@ -495,7 +546,10 @@ impl Widget for Dropdown {
                 h_align: HAlign::Center,
                 v_align: VAlign::Center,
                 overflow: Overflow::Clip,
-                padding: 0.0, font_size_override: None, color_override: None, font_family_override: None,
+                padding: 0.0,
+                font_size_override: None,
+                color_override: None,
+                font_family_override: None,
             });
         }
 
@@ -513,7 +567,10 @@ impl Widget for Dropdown {
                     h_align: HAlign::Left,
                     v_align: VAlign::Center,
                     overflow: Overflow::Ellipsis,
-                    padding: 12.0, font_size_override: None, color_override, font_family_override: None,
+                    padding: 12.0,
+                    font_size_override: None,
+                    color_override,
+                    font_family_override: None,
                 });
             }
 
@@ -523,10 +580,19 @@ impl Widget for Dropdown {
                         let sy = sub_rect.y + j as f32 * ITEM_HEIGHT;
                         result.push(LabelInfo {
                             text: item,
-                            bounds: Rect { x: sub_rect.x, y: sy, width: sub_rect.width, height: ITEM_HEIGHT },
-                            h_align: HAlign::Left, v_align: VAlign::Center,
+                            bounds: Rect {
+                                x: sub_rect.x,
+                                y: sy,
+                                width: sub_rect.width,
+                                height: ITEM_HEIGHT,
+                            },
+                            h_align: HAlign::Left,
+                            v_align: VAlign::Center,
                             overflow: Overflow::Ellipsis,
-                            padding: 12.0, font_size_override: None, color_override: None, font_family_override: None,
+                            padding: 12.0,
+                            font_size_override: None,
+                            color_override: None,
+                            font_family_override: None,
                         });
                     }
                 }

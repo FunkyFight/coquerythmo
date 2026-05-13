@@ -94,7 +94,14 @@ impl VideoPlayer {
         self.path = Some(path.to_path_buf());
         self.finished = false;
 
-        log::info!("Video: {}x{} @ {:.2} fps, {} frames from {}", width, height, fps, total_frames, path.display());
+        log::info!(
+            "Video: {}x{} @ {:.2} fps, {} frames from {}",
+            width,
+            height,
+            fps,
+            total_frames,
+            path.display()
+        );
 
         let first_frame = decode_frame_at(path, width, height, 0.0)?;
         self.upload_frame(&first_frame, device, queue, bind_group_layout, sampler);
@@ -353,10 +360,9 @@ impl VideoPlayer {
     }
 
     fn setup_audio_from(&mut self, path: &Path, timestamp: f64) -> Result<(), String> {
-        let (stream, handle) = OutputStream::try_default()
-            .map_err(|e| format!("Audio output failed: {e}"))?;
-        let sink = Sink::try_new(&handle)
-            .map_err(|e| format!("Audio sink failed: {e}"))?;
+        let (stream, handle) =
+            OutputStream::try_default().map_err(|e| format!("Audio output failed: {e}"))?;
+        let sink = Sink::try_new(&handle).map_err(|e| format!("Audio sink failed: {e}"))?;
         sink.pause();
 
         let (audio_tx, audio_rx) = mpsc::sync_channel::<Vec<f32>>(8);
@@ -392,9 +398,12 @@ impl VideoPlayer {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("Video Frame"),
                 size: wgpu::Extent3d {
-                    width: frame.width, height: frame.height, depth_or_array_layers: 1,
+                    width: frame.width,
+                    height: frame.height,
+                    depth_or_array_layers: 1,
                 },
-                mip_level_count: 1, sample_count: 1,
+                mip_level_count: 1,
+                sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8UnormSrgb,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
@@ -402,10 +411,17 @@ impl VideoPlayer {
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Video BG"), layout: bind_group_layout,
+                label: Some("Video BG"),
+                layout: bind_group_layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
                 ],
             });
             self.texture = Some(texture);
@@ -416,13 +432,21 @@ impl VideoPlayer {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: self.texture.as_ref().unwrap(),
-                mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
             },
             &frame.data,
             wgpu::TexelCopyBufferLayout {
-                offset: 0, bytes_per_row: Some(4 * frame.width), rows_per_image: Some(frame.height),
+                offset: 0,
+                bytes_per_row: Some(4 * frame.width),
+                rows_per_image: Some(frame.height),
             },
-            wgpu::Extent3d { width: frame.width, height: frame.height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: frame.width,
+                height: frame.height,
+                depth_or_array_layers: 1,
+            },
         );
     }
 
@@ -466,7 +490,11 @@ struct AudioChannelSource {
 
 impl AudioChannelSource {
     fn new(rx: Receiver<Vec<f32>>) -> Self {
-        Self { rx, buffer: Vec::new(), pos: 0 }
+        Self {
+            rx,
+            buffer: Vec::new(),
+            pos: 0,
+        }
     }
 }
 
@@ -480,7 +508,10 @@ impl Iterator for AudioChannelSource {
                 return Some(sample);
             }
             match self.rx.recv() {
-                Ok(chunk) => { self.buffer = chunk; self.pos = 0; }
+                Ok(chunk) => {
+                    self.buffer = chunk;
+                    self.pos = 0;
+                }
                 Err(_) => return None,
             }
         }
@@ -488,10 +519,18 @@ impl Iterator for AudioChannelSource {
 }
 
 impl Source for AudioChannelSource {
-    fn current_frame_len(&self) -> Option<usize> { None }
-    fn channels(&self) -> u16 { AUDIO_CHANNELS }
-    fn sample_rate(&self) -> u32 { AUDIO_SAMPLE_RATE }
-    fn total_duration(&self) -> Option<Duration> { None }
+    fn current_frame_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> u16 {
+        AUDIO_CHANNELS
+    }
+    fn sample_rate(&self) -> u32 {
+        AUDIO_SAMPLE_RATE
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
 }
 
 // --- ffmpeg subprocess functions ---
@@ -499,9 +538,14 @@ impl Source for AudioChannelSource {
 fn probe_video(path: &Path) -> Result<(u32, u32, f64, i64), String> {
     let output = Command::new("ffprobe")
         .args([
-            "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,r_frame_rate,nb_frames",
-            "-of", "csv=p=0:s=,",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height,r_frame_rate,nb_frames",
+            "-of",
+            "csv=p=0:s=,",
         ])
         .arg(path)
         .output()
@@ -512,7 +556,9 @@ fn probe_video(path: &Path) -> Result<(u32, u32, f64, i64), String> {
         let stdout = String::from_utf8_lossy(&output.stdout);
         return Err(format!(
             "ffprobe error (code {:?}):\nstderr: {}\nstdout: {}",
-            output.status.code(), stderr.trim(), stdout.trim()
+            output.status.code(),
+            stderr.trim(),
+            stdout.trim()
         ));
     }
 
@@ -522,18 +568,26 @@ fn probe_video(path: &Path) -> Result<(u32, u32, f64, i64), String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
             "ffprobe returned empty output for '{}'\nstderr: {}",
-            path.display(), stderr.trim()
+            path.display(),
+            stderr.trim()
         ));
     }
     let parts: Vec<&str> = text.split(',').collect();
     if parts.len() < 3 {
-        return Err(format!("Unexpected ffprobe output: '{text}' for '{}'", path.display()));
+        return Err(format!(
+            "Unexpected ffprobe output: '{text}' for '{}'",
+            path.display()
+        ));
     }
 
     let width: u32 = parts[0].parse().map_err(|e| format!("Bad width: {e}"))?;
     let height: u32 = parts[1].parse().map_err(|e| format!("Bad height: {e}"))?;
     let fps = parse_frame_rate(parts[2])?;
-    let total_frames: i64 = if parts.len() > 3 { parts[3].parse().unwrap_or(0) } else { 0 };
+    let total_frames: i64 = if parts.len() > 3 {
+        parts[3].parse().unwrap_or(0)
+    } else {
+        0
+    };
 
     Ok((width, height, fps, total_frames))
 }
@@ -543,51 +597,96 @@ fn parse_frame_rate(s: &str) -> Result<f64, String> {
     if parts.len() == 2 {
         let num: f64 = parts[0].parse().map_err(|e| format!("Bad fps num: {e}"))?;
         let den: f64 = parts[1].parse().map_err(|e| format!("Bad fps den: {e}"))?;
-        if den > 0.0 { Ok(num / den) } else { Ok(30.0) }
+        if den > 0.0 {
+            Ok(num / den)
+        } else {
+            Ok(30.0)
+        }
     } else {
         s.parse::<f64>().map_err(|e| format!("Bad fps: {e}"))
     }
 }
 
-fn decode_frame_at(path: &Path, width: u32, height: u32, timestamp: f64) -> Result<VideoFrame, String> {
+fn decode_frame_at(
+    path: &Path,
+    width: u32,
+    height: u32,
+    timestamp: f64,
+) -> Result<VideoFrame, String> {
     let ts = format!("{:.6}", timestamp);
     let output = Command::new("ffmpeg")
         .args(["-ss", &ts])
-        .arg("-i").arg(path)
-        .args(["-frames:v", "1", "-pix_fmt", "rgba", "-f", "rawvideo", "-v", "error", "pipe:1"])
+        .arg("-i")
+        .arg(path)
+        .args([
+            "-frames:v",
+            "1",
+            "-pix_fmt",
+            "rgba",
+            "-f",
+            "rawvideo",
+            "-v",
+            "error",
+            "pipe:1",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .map_err(|e| format!("ffmpeg seek failed: {e}"))?;
 
     if !output.status.success() {
-        return Err(format!("ffmpeg error: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(format!(
+            "ffmpeg error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     let expected = (width * height * 4) as usize;
     if output.stdout.len() != expected {
-        return Err(format!("Bad frame size: {} vs expected {}", output.stdout.len(), expected));
+        return Err(format!(
+            "Bad frame size: {} vs expected {}",
+            output.stdout.len(),
+            expected
+        ));
     }
 
-    Ok(VideoFrame { data: output.stdout, width, height })
+    Ok(VideoFrame {
+        data: output.stdout,
+        width,
+        height,
+    })
 }
 
-fn decode_video_stream_from(path: PathBuf, width: u32, height: u32, timestamp: f64, tx: SyncSender<VideoFrame>, kill: Arc<AtomicBool>) {
+fn decode_video_stream_from(
+    path: PathBuf,
+    width: u32,
+    height: u32,
+    timestamp: f64,
+    tx: SyncSender<VideoFrame>,
+    kill: Arc<AtomicBool>,
+) {
     let ts = format!("{:.6}", timestamp);
     let mut child = match Command::new("ffmpeg")
         .args(["-ss", &ts])
-        .arg("-i").arg(&path)
-        .args(["-pix_fmt", "rgba", "-f", "rawvideo", "-v", "error", "pipe:1"])
+        .arg("-i")
+        .arg(&path)
+        .args([
+            "-pix_fmt", "rgba", "-f", "rawvideo", "-v", "error", "pipe:1",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => { log::error!("Failed to spawn ffmpeg video decoder: {e}"); return; }
+        Err(e) => {
+            log::error!("Failed to spawn ffmpeg video decoder: {e}");
+            return;
+        }
     };
 
     let stdout = child.stdout.take().unwrap();
-    let mut reader = std::io::BufReader::with_capacity(width as usize * height as usize * 4, stdout);
+    let mut reader =
+        std::io::BufReader::with_capacity(width as usize * height as usize * 4, stdout);
     let frame_size = (width * height * 4) as usize;
     let mut buf = vec![0u8; frame_size];
 
@@ -607,8 +706,14 @@ fn decode_video_stream_from(path: PathBuf, width: u32, height: u32, timestamp: f
         }
         match reader.read_exact(&mut buf) {
             Ok(()) => {
-                let frame = VideoFrame { data: buf.clone(), width, height };
-                if tx.send(frame).is_err() { break; }
+                let frame = VideoFrame {
+                    data: buf.clone(),
+                    width,
+                    height,
+                };
+                if tx.send(frame).is_err() {
+                    break;
+                }
             }
             Err(_) => break,
         }
@@ -622,19 +727,31 @@ fn decode_audio_stream_from(path: PathBuf, timestamp: f64, tx: SyncSender<Vec<f3
     let ts = format!("{:.6}", timestamp);
     let mut child = match Command::new("ffmpeg")
         .args(["-ss", &ts])
-        .arg("-i").arg(&path)
+        .arg("-i")
+        .arg(&path)
         .args([
-            "-vn", "-f", "f32le", "-acodec", "pcm_f32le",
-            "-ar", &AUDIO_SAMPLE_RATE.to_string(),
-            "-ac", &AUDIO_CHANNELS.to_string(),
-            "-v", "error", "pipe:1",
+            "-vn",
+            "-f",
+            "f32le",
+            "-acodec",
+            "pcm_f32le",
+            "-ar",
+            &AUDIO_SAMPLE_RATE.to_string(),
+            "-ac",
+            &AUDIO_CHANNELS.to_string(),
+            "-v",
+            "error",
+            "pipe:1",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => { log::error!("Failed to spawn ffmpeg audio decoder: {e}"); return; }
+        Err(e) => {
+            log::error!("Failed to spawn ffmpeg audio decoder: {e}");
+            return;
+        }
     };
 
     let stdout = child.stdout.take().unwrap();
@@ -650,7 +767,9 @@ fn decode_audio_stream_from(path: PathBuf, timestamp: f64, tx: SyncSender<Vec<f3
                     .chunks_exact(4)
                     .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                     .collect();
-                if tx.send(samples).is_err() { break; }
+                if tx.send(samples).is_err() {
+                    break;
+                }
             }
             Err(_) => break,
         }
@@ -667,11 +786,22 @@ const WAVEFORM_SUBDIVISIONS: usize = 4;
 fn decode_waveform_peaks(path: &Path, fps: f64, total_frames: usize) -> Result<Vec<f32>, String> {
     let sr = 22050u32;
     let mut child = Command::new("ffmpeg")
-        .arg("-i").arg(path)
-        .args(["-vn", "-f", "f32le", "-acodec", "pcm_f32le",
-            "-ar", &sr.to_string(),
-            "-ac", "1",
-            "-v", "error", "pipe:1"])
+        .arg("-i")
+        .arg(path)
+        .args([
+            "-vn",
+            "-f",
+            "f32le",
+            "-acodec",
+            "pcm_f32le",
+            "-ar",
+            &sr.to_string(),
+            "-ac",
+            "1",
+            "-v",
+            "error",
+            "pipe:1",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -697,7 +827,8 @@ fn decode_waveform_peaks(path: &Path, fps: f64, total_frames: usize) -> Result<V
         let bytes = n * 4;
         match reader.read_exact(&mut buf[..bytes]) {
             Ok(()) => {
-                let peak = buf[..bytes].chunks_exact(4)
+                let peak = buf[..bytes]
+                    .chunks_exact(4)
                     .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs())
                     .fold(0.0_f32, f32::max);
                 peaks.push(peak);

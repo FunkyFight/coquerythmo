@@ -22,7 +22,9 @@ impl GraphicsContext {
             display: None,
         });
 
-        let surface = instance.create_surface(window.clone()).expect("Failed to create GPU surface");
+        let surface = instance
+            .create_surface(window.clone())
+            .expect("Failed to create GPU surface");
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -63,7 +65,14 @@ impl GraphicsContext {
         };
         surface.configure(&device, &config);
 
-        Self { surface, device, queue, config, size, window }
+        Self {
+            surface,
+            device,
+            queue,
+            config,
+            size,
+            window,
+        }
     }
 
     pub fn surface_format(&self) -> wgpu::TextureFormat {

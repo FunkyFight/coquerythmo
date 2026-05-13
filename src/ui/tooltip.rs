@@ -21,7 +21,12 @@ impl TooltipState {
         let h = font_size + TOOLTIP_PADDING_V * 2.0;
         let x = (self.cursor_x - w / 2.0).clamp(4.0, screen_w - w - 4.0);
         let y = self.cursor_y + TOOLTIP_OFFSET_Y;
-        Rect { x, y, width: w, height: h }
+        Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        }
     }
 
     pub fn render_quads(&self, screen_w: f32) -> Vec<QuadInstance> {
@@ -37,7 +42,8 @@ impl TooltipState {
             shadow_offset: [0.0, 2.0],
             shadow_color: [0.0, 0.0, 0.0, 0.4],
             shadow_blur: 6.0,
-            rotation: 0.0, _padding: [0.0; 2],
+            rotation: 0.0,
+            _padding: [0.0; 2],
         }]
     }
 
@@ -50,7 +56,10 @@ impl TooltipState {
             h_align: HAlign::Center,
             v_align: VAlign::Center,
             overflow: Overflow::Visible,
-            padding: TOOLTIP_PADDING_H, font_size_override: None, color_override: None, font_family_override: None,
+            padding: TOOLTIP_PADDING_H,
+            font_size_override: None,
+            color_override: None,
+            font_family_override: None,
         }]
     }
 }

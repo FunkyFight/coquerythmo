@@ -21,7 +21,12 @@ impl Toast {
     fn new(message: impl Into<String>, duration_secs: f32) -> Self {
         let message = message.into();
         let lines = word_wrap(&message, TOAST_W - TOAST_PAD_X * 2.0);
-        Self { message, lines, duration_secs, created: Instant::now() }
+        Self {
+            message,
+            lines,
+            duration_secs,
+            created: Instant::now(),
+        }
     }
 
     fn alpha(&self) -> f32 {
@@ -55,7 +60,10 @@ pub struct ToastManager {
 
 impl ToastManager {
     pub fn new() -> Self {
-        Self { toasts: Vec::new(), hovered: None }
+        Self {
+            toasts: Vec::new(),
+            hovered: None,
+        }
     }
 
     pub fn push(&mut self, message: impl Into<String>, duration_secs: f32) {
@@ -92,7 +100,14 @@ impl ToastManager {
             let h = self.toasts[i].height();
             ty -= h;
             let tx = (screen_w - TOAST_W) / 2.0;
-            if (Rect { x: tx, y: ty, width: TOAST_W, height: h }).contains(x, y) {
+            if (Rect {
+                x: tx,
+                y: ty,
+                width: TOAST_W,
+                height: h,
+            })
+            .contains(x, y)
+            {
                 return Some(i);
             }
             ty -= TOAST_GAP;
@@ -100,11 +115,19 @@ impl ToastManager {
         None
     }
 
-    pub fn render<'a>(&'a self, overlay_quads: &mut Vec<QuadInstance>, labels: &mut Vec<LabelInfo<'a>>, screen_w: f32, screen_h: f32) {
+    pub fn render<'a>(
+        &'a self,
+        overlay_quads: &mut Vec<QuadInstance>,
+        labels: &mut Vec<LabelInfo<'a>>,
+        screen_w: f32,
+        screen_h: f32,
+    ) {
         let mut y = screen_h - TOAST_MARGIN;
         for (idx, toast) in self.toasts.iter().enumerate().rev() {
             let a = toast.alpha();
-            if a <= 0.0 { continue; }
+            if a <= 0.0 {
+                continue;
+            }
 
             let h = toast.height();
             y -= h;
@@ -113,18 +136,30 @@ impl ToastManager {
 
             // Background
             let (bg_top, bg_bot, border) = if is_hovered {
-                ([0.20, 0.20, 0.26, 0.95 * a], [0.16, 0.16, 0.22, 0.95 * a], [0.55, 0.50, 0.75, 0.8 * a])
+                (
+                    [0.20, 0.20, 0.26, 0.95 * a],
+                    [0.16, 0.16, 0.22, 0.95 * a],
+                    [0.55, 0.50, 0.75, 0.8 * a],
+                )
             } else {
-                ([0.14, 0.14, 0.18, 0.92 * a], [0.10, 0.10, 0.14, 0.92 * a], [0.40, 0.38, 0.55, 0.6 * a])
+                (
+                    [0.14, 0.14, 0.18, 0.92 * a],
+                    [0.10, 0.10, 0.14, 0.92 * a],
+                    [0.40, 0.38, 0.55, 0.6 * a],
+                )
             };
             overlay_quads.push(QuadInstance {
                 rect: [x, y, TOAST_W, h],
                 color: bg_top,
                 color_bottom: bg_bot,
                 border_color: border,
-                border_width: 1.0, border_radius: 8.0,
-                shadow_offset: [0.0, 2.0], shadow_color: [0.0, 0.0, 0.0, 0.4 * a], shadow_blur: 8.0,
-                rotation: 0.0, _padding: [0.0; 2],
+                border_width: 1.0,
+                border_radius: 8.0,
+                shadow_offset: [0.0, 2.0],
+                shadow_color: [0.0, 0.0, 0.0, 0.4 * a],
+                shadow_blur: 8.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
 
             // Text lines
@@ -134,10 +169,19 @@ impl ToastManager {
             for line in &toast.lines {
                 labels.push(LabelInfo {
                     text: line,
-                    bounds: Rect { x: text_x, y: ly, width: text_w, height: LINE_HEIGHT },
-                    h_align: HAlign::Center, v_align: VAlign::Center,
-                    overflow: Overflow::Clip, padding: 0.0,
-                    font_size_override: Some(FONT_SIZE), color_override: None, font_family_override: None,
+                    bounds: Rect {
+                        x: text_x,
+                        y: ly,
+                        width: text_w,
+                        height: LINE_HEIGHT,
+                    },
+                    h_align: HAlign::Center,
+                    v_align: VAlign::Center,
+                    overflow: Overflow::Clip,
+                    padding: 0.0,
+                    font_size_override: Some(FONT_SIZE),
+                    color_override: None,
+                    font_family_override: None,
                 });
                 ly += LINE_HEIGHT;
             }
@@ -150,7 +194,9 @@ impl ToastManager {
 /// Word-wrap text to fit within `max_width` pixels (approximate).
 fn word_wrap(text: &str, max_width: f32) -> Vec<String> {
     let max_chars = (max_width / CHAR_WIDTH).floor() as usize;
-    if max_chars == 0 { return vec![text.to_string()]; }
+    if max_chars == 0 {
+        return vec![text.to_string()];
+    }
 
     let mut lines = Vec::new();
     let mut current_line = String::new();

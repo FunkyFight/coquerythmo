@@ -3,20 +3,21 @@ mod config;
 mod constants;
 mod export;
 mod graphics;
+mod i18n;
 mod network;
 mod observer;
 mod packet;
+mod project;
 mod rythmo_cpu_renderer;
 mod rythmo_gpu_renderer;
-mod syllable;
-mod video_export;
-mod i18n;
-mod project;
 mod rythmo_line;
 mod state;
+mod syllable;
 mod ui;
 mod update;
+mod vector_text;
 mod video;
+mod video_export;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -175,16 +176,28 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
             let line_id = state.create_line(frame, y_slot);
             state.start_editing_line(line_id);
         }
-        UiAction::ResizeLine { id, start_frame, duration_frames } => {
+        UiAction::ResizeLine {
+            id,
+            start_frame,
+            duration_frames,
+        } => {
             state.resize_line(id, start_frame, duration_frames);
         }
-        UiAction::MoveLine { id, start_frame, y_slot } => {
+        UiAction::MoveLine {
+            id,
+            start_frame,
+            y_slot,
+        } => {
             state.move_line(id, start_frame, y_slot);
         }
         UiAction::UpdateLineText { id, text } => {
             state.update_line_text(id, text);
         }
-        UiAction::SetCharacter { line_id, name, color } => {
+        UiAction::SetCharacter {
+            line_id,
+            name,
+            color,
+        } => {
             state.set_character(line_id, name, color);
         }
         UiAction::SetCharacterColor { line_id, color } => {
@@ -213,9 +226,8 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
             if let Some(source) = state.video_path() {
                 let source_fps = state.fps();
                 let project_snap = state.project.snapshot();
-                let progress = std::sync::Arc::new(
-                    std::sync::atomic::AtomicU32::new(0.0_f32.to_bits())
-                );
+                let progress =
+                    std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0.0_f32.to_bits()));
                 let progress_for_ui = progress.clone();
 
                 let title = i18n::t("picker.export_mp4.title").to_string();
@@ -229,7 +241,12 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                         progress.store(0.01_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
                         let p = progress.clone();
                         let result = video_export::export_mp4(
-                            &project_snap, &source, &output, fps, source_fps, br_scale,
+                            &project_snap,
+                            &source,
+                            &output,
+                            fps,
+                            source_fps,
+                            br_scale,
                             move |v| {
                                 p.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
                             },
@@ -261,7 +278,10 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         UiAction::StopEditing => {
             state.broadcast_finalize();
         }
-        UiAction::OpenRecentProject { video_path, br_path } => {
+        UiAction::OpenRecentProject {
+            video_path,
+            br_path,
+        } => {
             use export::{JsonImporter, ProjectImporter};
             if video_path.exists() && br_path.exists() {
                 state.load_video(&video_path);
@@ -309,7 +329,13 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         UiAction::RefreshServers => {
             state.refresh_server_browser();
         }
-        UiAction::NetworkConnect { ip, port, password, username, room_code } => {
+        UiAction::NetworkConnect {
+            ip,
+            port,
+            password,
+            username,
+            room_code,
+        } => {
             // Save last used connection settings
             {
                 let mut cfg = config::get().clone();
@@ -324,7 +350,9 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
             } else {
                 packet::Packet::CreateRoom { username }
             };
-            state.network.connect_and_send(&ip, port, &password, first_packet);
+            state
+                .network
+                .connect_and_send(&ip, port, &password, first_packet);
         }
         UiAction::NetworkDisconnect => {
             state.network.disconnect();
@@ -340,7 +368,11 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         UiAction::OpenSettings => {
             state.open_settings_modal();
         }
-        UiAction::SaveSettings { lang, rythmo_font, scroll_speed } => {
+        UiAction::SaveSettings {
+            lang,
+            rythmo_font,
+            scroll_speed,
+        } => {
             crate::config::save_settings(lang, rythmo_font, scroll_speed);
             state.close_settings_modal();
         }
@@ -373,6 +405,30 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         UiAction::SetClipboard(text) => {
             clipboard_set(&text);
         }
+        UiAction::SetClipboardAndUpdateLineText {
+            clipboard,
+            id,
+            text,
+        } => {
+            clipboard_set(&clipboard);
+            state.update_line_text(id, text);
+        }
+        UiAction::SetClipboardAndUpdateCharacterName {
+            clipboard,
+            line_id,
+            name,
+        } => {
+            clipboard_set(&clipboard);
+            state.update_character_name(line_id, name);
+        }
+        UiAction::SetClipboardAndUpdateLineNote {
+            clipboard,
+            line_id,
+            note,
+        } => {
+            clipboard_set(&clipboard);
+            state.update_line_note(line_id, note);
+        }
         UiAction::CopySelectedLine => {
             state.copy_selected_line();
         }
@@ -386,7 +442,11 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
     false
 }
 
-fn dispatch(ui_event: UiEvent, state: &mut State, elwt: &winit::event_loop::EventLoopWindowTarget<()>) {
+fn dispatch(
+    ui_event: UiEvent,
+    state: &mut State,
+    elwt: &winit::event_loop::EventLoopWindowTarget<()>,
+) {
     if let EventResponse::Action(action) = state.handle_ui_event(&ui_event) {
         if handle_action(action, state) {
             elwt.exit();
@@ -399,18 +459,32 @@ fn dispatch(ui_event: UiEvent, state: &mut State, elwt: &winit::event_loop::Even
 /// Picks the largest image entry, renders it via resvg's tiny-skia PNG decoder if PNG,
 /// or falls back to raw BMP parsing.
 fn parse_ico_to_winit_icon(ico_data: &[u8]) -> Option<winit::window::Icon> {
-    if ico_data.len() < 6 { return None; }
+    if ico_data.len() < 6 {
+        return None;
+    }
     let count = u16::from_le_bytes([ico_data[4], ico_data[5]]) as usize;
-    if count == 0 { return None; }
+    if count == 0 {
+        return None;
+    }
 
     // Find the largest entry
     let mut best_idx = 0;
     let mut best_size = 0u32;
     for i in 0..count {
         let off = 6 + i * 16;
-        if off + 16 > ico_data.len() { break; }
-        let w = if ico_data[off] == 0 { 256 } else { ico_data[off] as u32 };
-        let h = if ico_data[off + 1] == 0 { 256 } else { ico_data[off + 1] as u32 };
+        if off + 16 > ico_data.len() {
+            break;
+        }
+        let w = if ico_data[off] == 0 {
+            256
+        } else {
+            ico_data[off] as u32
+        };
+        let h = if ico_data[off + 1] == 0 {
+            256
+        } else {
+            ico_data[off + 1] as u32
+        };
         if w * h > best_size {
             best_size = w * h;
             best_idx = i;
@@ -418,10 +492,22 @@ fn parse_ico_to_winit_icon(ico_data: &[u8]) -> Option<winit::window::Icon> {
     }
 
     let entry_off = 6 + best_idx * 16;
-    let img_size = u32::from_le_bytes([ico_data[entry_off+8], ico_data[entry_off+9], ico_data[entry_off+10], ico_data[entry_off+11]]) as usize;
-    let img_offset = u32::from_le_bytes([ico_data[entry_off+12], ico_data[entry_off+13], ico_data[entry_off+14], ico_data[entry_off+15]]) as usize;
+    let img_size = u32::from_le_bytes([
+        ico_data[entry_off + 8],
+        ico_data[entry_off + 9],
+        ico_data[entry_off + 10],
+        ico_data[entry_off + 11],
+    ]) as usize;
+    let img_offset = u32::from_le_bytes([
+        ico_data[entry_off + 12],
+        ico_data[entry_off + 13],
+        ico_data[entry_off + 14],
+        ico_data[entry_off + 15],
+    ]) as usize;
 
-    if img_offset + img_size > ico_data.len() { return None; }
+    if img_offset + img_size > ico_data.len() {
+        return None;
+    }
     let img_data = &ico_data[img_offset..img_offset + img_size];
 
     // Check if it's PNG (starts with PNG signature)
@@ -439,7 +525,9 @@ fn parse_ico_to_winit_icon(ico_data: &[u8]) -> Option<winit::window::Icon> {
                 rgba.push((pixel[1] as f32 / a).min(255.0) as u8);
                 rgba.push((pixel[2] as f32 / a).min(255.0) as u8);
             } else {
-                rgba.push(0); rgba.push(0); rgba.push(0);
+                rgba.push(0);
+                rgba.push(0);
+                rgba.push(0);
             }
             rgba.push(pixel[3]);
         }
@@ -463,7 +551,9 @@ fn clipboard_set(text: &str) {
     }
     const GMEM_MOVEABLE: u32 = 0x0002;
     unsafe {
-        if OpenClipboard(ptr::null_mut()) == 0 { return; }
+        if OpenClipboard(ptr::null_mut()) == 0 {
+            return;
+        }
         EmptyClipboard();
         let mut wide: Vec<u16> = text.encode_utf16().collect();
         wide.push(0);
@@ -495,22 +585,38 @@ fn clipboard_paste() -> Option<String> {
         fn GlobalUnlock(hmem: *mut std::ffi::c_void) -> i32;
     }
     unsafe {
-        if OpenClipboard(ptr::null_mut()) == 0 { return None; }
+        if OpenClipboard(ptr::null_mut()) == 0 {
+            return None;
+        }
         let handle = GetClipboardData(13); // CF_UNICODETEXT
-        if handle.is_null() { CloseClipboard(); return None; }
+        if handle.is_null() {
+            CloseClipboard();
+            return None;
+        }
         let data = GlobalLock(handle) as *const u16;
-        if data.is_null() { CloseClipboard(); return None; }
+        if data.is_null() {
+            CloseClipboard();
+            return None;
+        }
         let mut len = 0;
-        while *data.add(len) != 0 { len += 1; }
+        while *data.add(len) != 0 {
+            len += 1;
+        }
         let text = String::from_utf16_lossy(std::slice::from_raw_parts(data, len));
         GlobalUnlock(handle);
         CloseClipboard();
-        if text.is_empty() { None } else { Some(text) }
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn clipboard_paste() -> Option<String> { None }
+fn clipboard_paste() -> Option<String> {
+    None
+}
 
 fn main() {
     env_logger::init();
@@ -592,6 +698,8 @@ fn main() {
                                 dispatch(UiEvent::Copy, &mut state, elwt);
                             } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("x")) {
                                 dispatch(UiEvent::Cut, &mut state, elwt);
+                            } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("z")) {
+                                dispatch(UiEvent::UndoTextEdit, &mut state, elwt);
                             } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v")) {
                                 // Ctrl+V — paste from clipboard
                                 if let Some(text) = clipboard_paste() {

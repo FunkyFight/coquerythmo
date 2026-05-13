@@ -11,11 +11,11 @@ use crate::network::{ConnectionState, IncomingMessage, NetworkClient};
 use crate::observer::{TimelineBus, TimelineEvent};
 use crate::packet::{CommandPayload, Packet, ProjectData};
 use crate::project::Project;
+use crate::rythmo_line::RythmoLine;
 use crate::ui::renderer::UiRenderer;
 use crate::ui::widget::{EventResponse, UiEvent};
 use crate::ui::Ui;
 use crate::video::VideoPlayer;
-use crate::rythmo_line::RythmoLine;
 
 use crate::constants;
 
@@ -30,7 +30,6 @@ fn parse_color(v: &serde_json::Value) -> [f32; 4] {
         [1.0, 1.0, 1.0, 1.0]
     }
 }
-
 
 /// Result from a background server ping.
 pub struct PingResult {
@@ -74,11 +73,19 @@ impl State {
         let ui = Ui::new(gfx.size.width, gfx.size.height, &ui_renderer.icon_atlas);
 
         Self {
-            gfx, window, ui, ui_renderer, video_player: None, project: Project::new(),
-            project_path: None, dirty: false,
-            history: CommandHistory::new(), timeline: TimelineBus::new(),
+            gfx,
+            window,
+            ui,
+            ui_renderer,
+            video_player: None,
+            project: Project::new(),
+            project_path: None,
+            dirty: false,
+            history: CommandHistory::new(),
+            timeline: TimelineBus::new(),
             network: NetworkClient::new(),
-            last_scroll_time: None, scroll_needs_decode: false,
+            last_scroll_time: None,
+            scroll_needs_decode: false,
             ping_results: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             last_autosave: Instant::now(),
             studio_mode: false,
@@ -92,7 +99,10 @@ impl State {
     // -- Delegation helpers --
 
     fn renderer_refs(&self) -> (&wgpu::BindGroupLayout, &wgpu::Sampler) {
-        (self.ui_renderer.texture_bind_group_layout(), self.ui_renderer.texture_sampler())
+        (
+            self.ui_renderer.texture_bind_group_layout(),
+            self.ui_renderer.texture_sampler(),
+        )
     }
 
     // -- Public API --
@@ -103,13 +113,16 @@ impl State {
     }
 
     pub fn handle_ui_event(&mut self, event: &UiEvent) -> EventResponse {
-        self.ui.handle_event(event, &self.project, self.current_frame(), self.fps())
+        self.ui
+            .handle_event(event, &self.project, self.current_frame(), self.fps())
     }
 
     pub fn set_export_progress(&mut self, p: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>) {
         let is_none = p.is_none();
         self.ui.export_progress = p;
-        if is_none { self.ui.progress_prefix = String::new(); }
+        if is_none {
+            self.ui.progress_prefix = String::new();
+        }
     }
 
     pub fn set_progress_label(&mut self, label: &str) {
@@ -218,7 +231,8 @@ impl State {
     }
 
     pub fn waveform(&self) -> Vec<f32> {
-        self.video_player.as_ref()
+        self.video_player
+            .as_ref()
             .and_then(|p| p.waveform.read().ok())
             .map(|w| w.clone())
             .unwrap_or_default()
@@ -237,7 +251,10 @@ impl State {
                 let fps = player.fps();
                 let total = player.total_frames();
                 self.video_player = Some(player);
-                self.timeline.emit(TimelineEvent::VideoLoaded { fps, total_frames: total });
+                self.timeline.emit(TimelineEvent::VideoLoaded {
+                    fps,
+                    total_frames: total,
+                });
                 self.timeline.emit(TimelineEvent::FrameChanged { frame: 0 });
                 self.ui.has_video = true;
                 self.ui.total_frames = total;
@@ -270,7 +287,11 @@ impl State {
     }
 
     pub fn toggle_mute(&mut self) {
-        let target = if self.ui.volume() > 0.001 { 0.0 } else { self.last_nonzero_volume.max(0.75) };
+        let target = if self.ui.volume() > 0.001 {
+            0.0
+        } else {
+            self.last_nonzero_volume.max(0.75)
+        };
         self.set_volume(target);
     }
 
@@ -279,7 +300,9 @@ impl State {
         let sampler = self.ui_renderer.texture_sampler();
         if let Some(player) = &mut self.video_player {
             player.step_backward(&self.gfx.device, &self.gfx.queue, bgl, sampler);
-            if self.ui.is_playing() { self.ui.toggle_play_pause(); }
+            if self.ui.is_playing() {
+                self.ui.toggle_play_pause();
+            }
         }
     }
 
@@ -288,7 +311,9 @@ impl State {
         let sampler = self.ui_renderer.texture_sampler();
         if let Some(player) = &mut self.video_player {
             player.step_forward(&self.gfx.device, &self.gfx.queue, bgl, sampler);
-            if self.ui.is_playing() { self.ui.toggle_play_pause(); }
+            if self.ui.is_playing() {
+                self.ui.toggle_play_pause();
+            }
         }
     }
 
@@ -297,7 +322,9 @@ impl State {
             let current = player.current_frame();
             let delta = (frame - current) as i32;
             player.seek_frame_instant(delta);
-            self.timeline.emit(TimelineEvent::FrameChanged { frame: player.current_frame() });
+            self.timeline.emit(TimelineEvent::FrameChanged {
+                frame: player.current_frame(),
+            });
         }
         self.last_scroll_time = Some(Instant::now());
         self.scroll_needs_decode = true;
@@ -306,7 +333,9 @@ impl State {
     pub fn seek_relative(&mut self, delta: i32) {
         if let Some(player) = &mut self.video_player {
             player.seek_frame_instant(delta);
-            self.timeline.emit(TimelineEvent::FrameChanged { frame: player.current_frame() });
+            self.timeline.emit(TimelineEvent::FrameChanged {
+                frame: player.current_frame(),
+            });
         }
         self.last_scroll_time = Some(Instant::now());
         self.scroll_needs_decode = true;
@@ -314,11 +343,16 @@ impl State {
 
     pub fn seek_to_next_boucle(&mut self, direction: i32) {
         let current = self.current_frame();
-        let boucle_frames: Vec<i64> = self.project.markers.iter()
+        let boucle_frames: Vec<i64> = self
+            .project
+            .markers
+            .iter()
             .filter(|m| m.kind == crate::rythmo_line::MarkerKind::Boucle)
             .map(|m| m.frame)
             .collect();
-        if boucle_frames.is_empty() { return; }
+        if boucle_frames.is_empty() {
+            return;
+        }
 
         let target = if direction > 0 {
             // Forward: find first boucle strictly after current frame
@@ -334,7 +368,9 @@ impl State {
     }
 
     fn tick_scroll_decode(&mut self) {
-        if !self.scroll_needs_decode { return; }
+        if !self.scroll_needs_decode {
+            return;
+        }
         if let Some(t) = self.last_scroll_time {
             if t.elapsed().as_millis() >= constants::SCROLL_DECODE_DELAY_MS {
                 self.scroll_needs_decode = false;
@@ -405,16 +441,26 @@ impl State {
                 self.network.room_code = Some(code.clone());
                 self.network.role = Some("admin".into());
                 self.ui.network_status = format!("Salon créé — Code: {code}");
-                self.ui.toasts.push(format!("{}{code}", crate::i18n::t("toast.room_created")), 5.0);
+                self.ui.toasts.push(
+                    format!("{}{code}", crate::i18n::t("toast.room_created")),
+                    5.0,
+                );
                 log::info!("Room created: {code}");
             }
-            Packet::RoomJoined { code, role, members } => {
+            Packet::RoomJoined {
+                code,
+                role,
+                members,
+            } => {
                 self.network.state = ConnectionState::InRoom;
                 self.network.room_code = Some(code.clone());
                 self.network.role = Some(role);
                 self.network.members = members;
                 self.ui.network_status = format!("Connecté au salon {code}");
-                self.ui.toasts.push(format!("{}{code}", crate::i18n::t("toast.room_joined")), 5.0);
+                self.ui.toasts.push(
+                    format!("{}{code}", crate::i18n::t("toast.room_joined")),
+                    5.0,
+                );
                 self.ui.sync_overlay = Some("Synchronisation en cours...".into());
                 self.ui.sync_progress = 0.0;
                 // request_sync is sent directly from the room_joined callback
@@ -463,14 +509,22 @@ impl State {
                 log::debug!("Remote: delete line {}", line_id);
                 self.project.remove_line(line_id);
             }
-            CommandPayload::MoveLine { line_id, start_frame, y_slot } => {
+            CommandPayload::MoveLine {
+                line_id,
+                start_frame,
+                y_slot,
+            } => {
                 log::debug!("Remote: move line {}", line_id);
                 if let Some(l) = self.project.get_line_mut(line_id) {
                     l.start_frame = start_frame;
                     l.y_slot = y_slot;
                 }
             }
-            CommandPayload::ResizeLine { line_id, start_frame, duration_frames } => {
+            CommandPayload::ResizeLine {
+                line_id,
+                start_frame,
+                duration_frames,
+            } => {
                 log::debug!("Remote: resize line {}", line_id);
                 if let Some(l) = self.project.get_line_mut(line_id) {
                     l.start_frame = start_frame;
@@ -483,7 +537,11 @@ impl State {
                     l.text = text;
                 }
             }
-            CommandPayload::SetCharacter { line_id, name, color } => {
+            CommandPayload::SetCharacter {
+                line_id,
+                name,
+                color,
+            } => {
                 log::debug!("Remote: set character for line {}", line_id);
                 self.project.set_character(line_id, name, color);
             }
@@ -495,14 +553,26 @@ impl State {
             }
             CommandPayload::AddMarker { kind, frame } => {
                 log::debug!("Remote: add marker at frame {}", frame);
-                self.project.markers.push(crate::rythmo_line::RythmoMarker { kind, frame });
+                self.project
+                    .markers
+                    .push(crate::rythmo_line::RythmoMarker { kind, frame });
             }
             CommandPayload::RemoveMarker { kind, frame } => {
                 log::debug!("Remote: remove marker at frame {}", frame);
-                self.project.markers.retain(|m| !(m.kind == kind && m.frame == frame));
+                self.project
+                    .markers
+                    .retain(|m| !(m.kind == kind && m.frame == frame));
             }
-            CommandPayload::MoveMarker { kind, old_frame, new_frame } => {
-                log::debug!("Remote: move marker from frame {} to {}", old_frame, new_frame);
+            CommandPayload::MoveMarker {
+                kind,
+                old_frame,
+                new_frame,
+            } => {
+                log::debug!(
+                    "Remote: move marker from frame {} to {}",
+                    old_frame,
+                    new_frame
+                );
                 for m in &mut self.project.markers {
                     if m.kind == kind && m.frame == old_frame {
                         m.frame = new_frame;
@@ -548,19 +618,29 @@ impl State {
         self.project.markers = data.markers;
 
         // Merge known characters
-        self.project.known_characters = data.known_characters.into_iter()
-            .map(|c| crate::project::Character { name: c.name, color: c.color })
+        self.project.known_characters = data
+            .known_characters
+            .into_iter()
+            .map(|c| crate::project::Character {
+                name: c.name,
+                color: c.color,
+            })
             .collect();
 
         log::info!("Project synced (merged)");
     }
 
     fn apply_delta(&mut self, data: serde_json::Value) {
-        log::debug!("Applying delta: {}", data["action"].as_str().unwrap_or("unknown"));
+        log::debug!(
+            "Applying delta: {}",
+            data["action"].as_str().unwrap_or("unknown")
+        );
         let action = data["action"].as_str().unwrap_or("");
         match action {
             "create_line" => {
-                if let Ok(line) = serde_json::from_value::<crate::rythmo_line::RythmoLine>(data["line"].clone()) {
+                if let Ok(line) =
+                    serde_json::from_value::<crate::rythmo_line::RythmoLine>(data["line"].clone())
+                {
                     // Don't add if already exists
                     if self.project.get_line(line.id).is_none() {
                         self.project.insert_line(line);
@@ -622,7 +702,9 @@ impl State {
                     data["frame"].as_i64(),
                     serde_json::from_value::<crate::rythmo_line::MarkerKind>(data["kind"].clone()),
                 ) {
-                    self.project.markers.push(crate::rythmo_line::RythmoMarker { kind, frame });
+                    self.project
+                        .markers
+                        .push(crate::rythmo_line::RythmoMarker { kind, frame });
                 }
             }
             "remove_marker" => {
@@ -630,7 +712,9 @@ impl State {
                     data["frame"].as_i64(),
                     serde_json::from_value::<crate::rythmo_line::MarkerKind>(data["kind"].clone()),
                 ) {
-                    self.project.markers.retain(|m| !(m.kind == kind && m.frame == frame));
+                    self.project
+                        .markers
+                        .retain(|m| !(m.kind == kind && m.frame == frame));
                 }
             }
             "move_marker" => {
@@ -660,13 +744,17 @@ impl State {
 
     /// Broadcast a single command as a delta via the "delta" event.
     fn broadcast_delta(&self, cmd: &Command) {
-        if !self.network.is_in_room() { return; }
+        if !self.network.is_in_room() {
+            return;
+        }
         let payload = match cmd {
             Command::CreateLine { line_id } => {
                 let line = self.project.get_line(*line_id).cloned();
                 if let Some(l) = line {
                     serde_json::json!({ "action": "create_line", "line": serde_json::to_value(&l).unwrap_or_default() })
-                } else { return; }
+                } else {
+                    return;
+                }
             }
             Command::InsertLine { snapshot, .. } => {
                 serde_json::json!({ "action": "create_line", "line": serde_json::to_value(snapshot).unwrap_or_default() })
@@ -674,36 +762,65 @@ impl State {
             Command::DeleteLine { snapshot, .. } => {
                 serde_json::json!({ "action": "delete_line", "line_id": snapshot.id })
             }
-            Command::MoveLine { line_id, new_start, new_y_slot, .. } => {
+            Command::MoveLine {
+                line_id,
+                new_start,
+                new_y_slot,
+                ..
+            } => {
                 serde_json::json!({ "action": "move_line", "line_id": line_id, "start_frame": new_start, "y_slot": new_y_slot })
             }
-            Command::ResizeLine { line_id, new_start, new_dur, .. } => {
+            Command::ResizeLine {
+                line_id,
+                new_start,
+                new_dur,
+                ..
+            } => {
                 serde_json::json!({ "action": "resize_line", "line_id": line_id, "start_frame": new_start, "duration_frames": new_dur })
             }
-            Command::UpdateLineText { line_id, new_text, .. } => {
+            Command::UpdateLineText {
+                line_id, new_text, ..
+            } => {
                 serde_json::json!({ "action": "update_text", "line_id": line_id, "text": new_text })
             }
-            Command::UpdateLineNote { line_id, new_note, .. } => {
+            Command::UpdateLineNote {
+                line_id, new_note, ..
+            } => {
                 serde_json::json!({ "action": "update_note", "line_id": line_id, "note": new_note })
             }
-            Command::SetCharacter { line_id, new_name, new_color, .. } => {
+            Command::SetCharacter {
+                line_id,
+                new_name,
+                new_color,
+                ..
+            } => {
                 serde_json::json!({ "action": "set_character", "line_id": line_id, "name": new_name, "color": new_color })
             }
-            Command::SetCharacterColor { line_id, new_color, .. } => {
+            Command::SetCharacterColor {
+                line_id, new_color, ..
+            } => {
                 serde_json::json!({ "action": "set_character_color", "line_id": line_id, "color": new_color })
             }
             Command::AddMarker { index } => {
                 if let Some(m) = self.project.markers.get(*index) {
                     serde_json::json!({ "action": "add_marker", "kind": serde_json::to_value(&m.kind).unwrap_or_default(), "frame": m.frame })
-                } else { return; }
+                } else {
+                    return;
+                }
             }
             Command::RemoveMarker { marker, .. } => {
                 serde_json::json!({ "action": "remove_marker", "kind": serde_json::to_value(&marker.kind).unwrap_or_default(), "frame": marker.frame })
             }
-            Command::MoveMarker { index, old_frame, new_frame } => {
+            Command::MoveMarker {
+                index,
+                old_frame,
+                new_frame,
+            } => {
                 if let Some(m) = self.project.markers.get(*index) {
                     serde_json::json!({ "action": "move_marker", "kind": serde_json::to_value(&m.kind).unwrap_or_default(), "old_frame": old_frame, "new_frame": new_frame })
-                } else { return; }
+                } else {
+                    return;
+                }
             }
         };
         self.network.send_raw("delta", payload);
@@ -711,12 +828,18 @@ impl State {
 
     /// Broadcast coalesced final state on mouse release / StopEditing.
     pub fn broadcast_finalize(&self) {
-        if !self.network.is_in_room() { return; }
+        if !self.network.is_in_room() {
+            return;
+        }
         if let Some(cmd) = self.history.last() {
-            if matches!(cmd,
-                Command::MoveLine { .. } | Command::ResizeLine { .. } |
-                Command::UpdateLineText { .. } | Command::SetCharacter { .. } |
-                Command::SetCharacterColor { .. } | Command::MoveMarker { .. }
+            if matches!(
+                cmd,
+                Command::MoveLine { .. }
+                    | Command::ResizeLine { .. }
+                    | Command::UpdateLineText { .. }
+                    | Command::SetCharacter { .. }
+                    | Command::SetCharacterColor { .. }
+                    | Command::MoveMarker { .. }
             ) {
                 self.broadcast_delta(cmd);
             }
@@ -725,9 +848,12 @@ impl State {
 
     /// Broadcast full project state (only for undo/redo/join sync).
     fn broadcast_full_sync(&self) {
-        if !self.network.is_in_room() { return; }
+        if !self.network.is_in_room() {
+            return;
+        }
         let data = ProjectData::from_project(&self.project);
-        self.network.send_raw("sync", serde_json::json!({ "project": data }));
+        self.network
+            .send_raw("sync", serde_json::json!({ "project": data }));
     }
 
     // -- Undo / Redo --
@@ -757,7 +883,8 @@ impl State {
 
         // Save current fullscreen state and enter fullscreen
         self.fullscreen_before_studio = self.window.fullscreen();
-        self.window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+        self.window
+            .set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
     }
 
     pub fn exit_studio_mode(&mut self) {
@@ -833,26 +960,41 @@ impl State {
     }
 
     pub fn paste_line(&mut self) {
-        let Some(snapshot) = self.line_clipboard.clone() else { return; };
+        let Some(snapshot) = self.line_clipboard.clone() else {
+            return;
+        };
         let start_frame = self.current_frame();
         let (line, index) = self.project.duplicate_line_from(&snapshot, start_frame);
         let id = line.id;
         self.ui.rythmo_state.selected = Some(crate::ui::rythmo::Selection::Line(id));
-        self.push_and_broadcast(Command::InsertLine { snapshot: line, index });
+        self.push_and_broadcast(Command::InsertLine {
+            snapshot: line,
+            index,
+        });
     }
 
     pub fn move_marker(&mut self, index: usize, frame: i64) {
-        if index >= self.project.markers.len() { return; }
+        if index >= self.project.markers.len() {
+            return;
+        }
         let old_frame = self.project.markers[index].frame;
-        self.push_and_broadcast(Command::MoveMarker { index, old_frame, new_frame: frame });
+        self.push_and_broadcast(Command::MoveMarker {
+            index,
+            old_frame,
+            new_frame: frame,
+        });
         self.project.markers[index].frame = frame;
         self.dirty = true;
     }
 
     pub fn add_marker(&mut self, kind: crate::rythmo_line::MarkerKind) {
         let frame = self.current_frame();
-        self.project.markers.push(crate::rythmo_line::RythmoMarker { kind, frame });
-        self.push_and_broadcast(Command::AddMarker { index: self.project.markers.len() - 1 });
+        self.project
+            .markers
+            .push(crate::rythmo_line::RythmoMarker { kind, frame });
+        self.push_and_broadcast(Command::AddMarker {
+            index: self.project.markers.len() - 1,
+        });
     }
 
     pub fn add_quick_line(&mut self, text: String) {
@@ -867,7 +1009,9 @@ impl State {
 
     pub fn create_line(&mut self, frame: i64, y_slot: f32) -> u64 {
         let default_dur = (self.fps() * constants::DEFAULT_LINE_DURATION_SEC) as i64;
-        let dur = self.project.lines()
+        let dur = self
+            .project
+            .lines()
             .filter(|line| (line.y_slot - y_slot).abs() < 0.01 && line.start_frame > frame)
             .map(|line| line.start_frame)
             .min()
@@ -893,7 +1037,12 @@ impl State {
                 line.y_slot = y_slot;
             }
             self.history.update_last(|cmd| {
-                if let Command::MoveLine { new_start, new_y_slot, .. } = cmd {
+                if let Command::MoveLine {
+                    new_start,
+                    new_y_slot,
+                    ..
+                } = cmd
+                {
                     *new_start = start_frame;
                     *new_y_slot = y_slot;
                 }
@@ -906,7 +1055,11 @@ impl State {
                 l.y_slot = y_slot;
             }
             self.push_and_broadcast(Command::MoveLine {
-                line_id: id, old_start, old_y_slot: old_y, new_start: start_frame, new_y_slot: y_slot,
+                line_id: id,
+                old_start,
+                old_y_slot: old_y,
+                new_start: start_frame,
+                new_y_slot: y_slot,
             });
         }
     }
@@ -918,7 +1071,10 @@ impl State {
                 l.duration_frames = duration_frames;
             }
             self.history.update_last(|cmd| {
-                if let Command::ResizeLine { new_start, new_dur, .. } = cmd {
+                if let Command::ResizeLine {
+                    new_start, new_dur, ..
+                } = cmd
+                {
                     *new_start = start_frame;
                     *new_dur = duration_frames;
                 }
@@ -931,7 +1087,11 @@ impl State {
                 l.duration_frames = duration_frames;
             }
             self.push_and_broadcast(Command::ResizeLine {
-                line_id: id, old_start, old_dur, new_start: start_frame, new_dur: duration_frames,
+                line_id: id,
+                old_start,
+                old_dur,
+                new_start: start_frame,
+                new_dur: duration_frames,
             });
         }
     }
@@ -948,26 +1108,43 @@ impl State {
                 }
             });
         } else {
-            let old_text = self.project.get_line(id).map(|l| l.text.clone()).unwrap_or_default();
+            let old_text = self
+                .project
+                .get_line(id)
+                .map(|l| l.text.clone())
+                .unwrap_or_default();
             if let Some(l) = self.project.get_line_mut(id) {
                 l.text = text.clone();
             }
-            self.push_and_broadcast(Command::UpdateLineText { line_id: id, old_text, new_text: text });
+            self.push_and_broadcast(Command::UpdateLineText {
+                line_id: id,
+                old_text,
+                new_text: text,
+            });
         }
     }
 
     pub fn set_character(&mut self, line_id: u64, name: String, color: [f32; 4]) {
-        let (old_name, old_color) = self.project.get_line(line_id)
+        let (old_name, old_color) = self
+            .project
+            .get_line(line_id)
             .map(|l| (l.character_name.clone(), l.character_color))
             .unwrap_or_default();
         self.project.set_character(line_id, name.clone(), color);
         self.push_and_broadcast(Command::SetCharacter {
-            line_id, old_name, old_color, new_name: name, new_color: color,
+            line_id,
+            old_name,
+            old_color,
+            new_name: name,
+            new_color: color,
         });
     }
 
     pub fn set_character_color(&mut self, line_id: u64, color: [f32; 4]) {
-        if self.history.last_matches(line_id, CommandKind::SetCharacterColor) {
+        if self
+            .history
+            .last_matches(line_id, CommandKind::SetCharacterColor)
+        {
             if let Some(l) = self.project.get_line_mut(line_id) {
                 l.character_color = color;
             }
@@ -977,60 +1154,112 @@ impl State {
                 }
             });
         } else {
-            let old_color = self.project.get_line(line_id).map(|l| l.character_color).unwrap_or_default();
+            let old_color = self
+                .project
+                .get_line(line_id)
+                .map(|l| l.character_color)
+                .unwrap_or_default();
             if let Some(l) = self.project.get_line_mut(line_id) {
                 l.character_color = color;
             }
-            self.push_and_broadcast(Command::SetCharacterColor { line_id, old_color, new_color: color });
+            self.push_and_broadcast(Command::SetCharacterColor {
+                line_id,
+                old_color,
+                new_color: color,
+            });
         }
     }
 
     pub fn update_character_name(&mut self, line_id: u64, name: String) {
-        let known_color = self.project.known_characters.iter()
+        let known_color = self
+            .project
+            .known_characters
+            .iter()
             .find(|c| c.name == name)
             .map(|c| c.color);
 
         // Coalesce character name edits
-        if self.history.last_matches(line_id, CommandKind::SetCharacter) {
+        if self
+            .history
+            .last_matches(line_id, CommandKind::SetCharacter)
+        {
             if let Some(l) = self.project.get_line_mut(line_id) {
                 l.character_name = name.clone();
-                if let Some(c) = known_color { l.character_color = c; }
+                if let Some(c) = known_color {
+                    l.character_color = c;
+                }
             }
-            let final_color = self.project.get_line(line_id).map(|l| l.character_color).unwrap_or_default();
+            let final_color = self
+                .project
+                .get_line(line_id)
+                .map(|l| l.character_color)
+                .unwrap_or_default();
             self.history.update_last(|cmd| {
-                if let Command::SetCharacter { new_name, new_color, .. } = cmd {
+                if let Command::SetCharacter {
+                    new_name,
+                    new_color,
+                    ..
+                } = cmd
+                {
                     *new_name = name;
                     *new_color = final_color;
                 }
             });
         } else {
-            let (old_name, old_color) = self.project.get_line(line_id)
+            let (old_name, old_color) = self
+                .project
+                .get_line(line_id)
                 .map(|l| (l.character_name.clone(), l.character_color))
                 .unwrap_or_default();
             if let Some(l) = self.project.get_line_mut(line_id) {
                 l.character_name = name.clone();
-                if let Some(c) = known_color { l.character_color = c; }
+                if let Some(c) = known_color {
+                    l.character_color = c;
+                }
             }
-            let final_color = self.project.get_line(line_id).map(|l| l.character_color).unwrap_or_default();
+            let final_color = self
+                .project
+                .get_line(line_id)
+                .map(|l| l.character_color)
+                .unwrap_or_default();
             self.push_and_broadcast(Command::SetCharacter {
-                line_id, old_name, old_color, new_name: name, new_color: final_color,
+                line_id,
+                old_name,
+                old_color,
+                new_name: name,
+                new_color: final_color,
             });
         }
     }
 
     pub fn finalize_character(&mut self, line_id: u64) {
         let (name, color) = match self.project.get_line(line_id) {
-            Some(l) if !l.character_name.is_empty() => (l.character_name.clone(), l.character_color),
+            Some(l) if !l.character_name.is_empty() => {
+                (l.character_name.clone(), l.character_color)
+            }
             _ => return,
         };
         self.project.set_character(line_id, name, color);
     }
 
     pub fn start_editing_note(&mut self, line_id: u64) {
-        let note = self.project.get_line(line_id).map(|l| l.note.clone()).unwrap_or_default();
-        let text = if note.is_empty() { "Note".to_string() } else { note };
+        let note = self
+            .project
+            .get_line(line_id)
+            .map(|l| l.note.clone())
+            .unwrap_or_default();
+        let text = if note.is_empty() {
+            "Note".to_string()
+        } else {
+            note
+        };
         self.ui.rythmo_state.start_editing_note(line_id, &text);
-        if self.project.get_line(line_id).map(|l| l.note.is_empty()).unwrap_or(true) {
+        if self
+            .project
+            .get_line(line_id)
+            .map(|l| l.note.is_empty())
+            .unwrap_or(true)
+        {
             if let Some(l) = self.project.get_line_mut(line_id) {
                 l.note = "Note".to_string();
             }
@@ -1056,11 +1285,19 @@ impl State {
                 }
             });
         } else {
-            let old_note = self.project.get_line(id).map(|l| l.note.clone()).unwrap_or_default();
+            let old_note = self
+                .project
+                .get_line(id)
+                .map(|l| l.note.clone())
+                .unwrap_or_default();
             if let Some(l) = self.project.get_line_mut(id) {
                 l.note = note.clone();
             }
-            self.push_and_broadcast(Command::UpdateLineNote { line_id: id, old_note, new_note: note });
+            self.push_and_broadcast(Command::UpdateLineNote {
+                line_id: id,
+                old_note,
+                new_note: note,
+            });
         }
     }
 
@@ -1068,7 +1305,11 @@ impl State {
 
     fn backup_path() -> std::path::PathBuf {
         std::env::current_exe()
-            .map(|p| p.parent().unwrap_or(std::path::Path::new(".")).join("br_backup.json"))
+            .map(|p| {
+                p.parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join("br_backup.json")
+            })
             .unwrap_or_else(|_| std::path::PathBuf::from("br_backup.json"))
     }
 
@@ -1110,7 +1351,14 @@ impl State {
             for r in results.drain(..) {
                 if let Some(browser) = self.ui.server_browser_mut() {
                     if r.success {
-                        browser.update_server_info(&r.ip, r.port, r.name, r.motd, r.online, r.max_slots);
+                        browser.update_server_info(
+                            &r.ip,
+                            r.port,
+                            r.name,
+                            r.motd,
+                            r.online,
+                            r.max_slots,
+                        );
                     } else {
                         browser.mark_offline(&r.ip, r.port);
                     }
@@ -1132,29 +1380,42 @@ impl State {
         let surface_texture = match self.gfx.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(tex) | CurrentSurfaceTexture::Suboptimal(tex) => tex,
             CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
-                self.gfx.surface.configure(&self.gfx.device, &self.gfx.config);
+                self.gfx
+                    .surface
+                    .configure(&self.gfx.device, &self.gfx.config);
                 return;
             }
             CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => return,
             _ => return,
         };
 
-        let view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.gfx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
+        let view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .gfx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
 
         // Clear
         {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Clear Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view, resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
                     depth_slice: None,
                 })],
-                depth_stencil_attachment: None, timestamp_writes: None,
-                occlusion_query_set: None, multiview_mask: None,
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
             });
         }
 
@@ -1165,7 +1426,8 @@ impl State {
         if let Some(progress) = &self.ui.export_progress {
             use std::sync::atomic::Ordering;
             let v = f32::from_bits(progress.load(Ordering::Relaxed));
-            if v >= 1.5 { // sentinel: 2.0 means done
+            if v >= 1.5 {
+                // sentinel: 2.0 means done
                 self.ui.export_progress = None;
                 log::info!("Export completed");
             }
@@ -1186,7 +1448,9 @@ impl State {
             );
             player.tick(&self.gfx.device, &self.gfx.queue, bgl, sampler);
             if player.current_frame() != prev_frame {
-                self.timeline.emit(TimelineEvent::FrameChanged { frame: player.current_frame() });
+                self.timeline.emit(TimelineEvent::FrameChanged {
+                    frame: player.current_frame(),
+                });
             }
             if !player.is_playing() && self.ui.is_playing() {
                 self.timeline.emit(TimelineEvent::PlaybackStopped);
@@ -1206,10 +1470,15 @@ impl State {
         let waveform = self.waveform();
         self.ui.render(
             &mut self.ui_renderer,
-            &self.gfx.device, &self.gfx.queue, &mut encoder, &view,
-            self.gfx.config.width, self.gfx.config.height,
+            &self.gfx.device,
+            &self.gfx.queue,
+            &mut encoder,
+            &view,
+            self.gfx.config.width,
+            self.gfx.config.height,
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
-            &self.project, current_frame,
+            &self.project,
+            current_frame,
             &waveform,
         );
 
@@ -1221,29 +1490,42 @@ impl State {
         let surface_texture = match self.gfx.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(tex) | CurrentSurfaceTexture::Suboptimal(tex) => tex,
             CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
-                self.gfx.surface.configure(&self.gfx.device, &self.gfx.config);
+                self.gfx
+                    .surface
+                    .configure(&self.gfx.device, &self.gfx.config);
                 return;
             }
             CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => return,
             _ => return,
         };
 
-        let view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.gfx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Studio Render Encoder"),
-        });
+        let view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .gfx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Studio Render Encoder"),
+            });
 
         // Clear to black
         {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Studio Clear Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view, resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
                     depth_slice: None,
                 })],
-                depth_stencil_attachment: None, timestamp_writes: None,
-                occlusion_query_set: None, multiview_mask: None,
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
             });
         }
 
@@ -1259,7 +1541,9 @@ impl State {
             );
             player.tick(&self.gfx.device, &self.gfx.queue, bgl, sampler);
             if player.current_frame() != prev_frame {
-                self.timeline.emit(TimelineEvent::FrameChanged { frame: player.current_frame() });
+                self.timeline.emit(TimelineEvent::FrameChanged {
+                    frame: player.current_frame(),
+                });
             }
             if !player.is_playing() && self.ui.is_playing() {
                 self.timeline.emit(TimelineEvent::PlaybackStopped);
@@ -1270,14 +1554,22 @@ impl State {
         let rythmo_h = crate::ui::rythmo::studio_br_height(&self.project, self.ui.screen_w());
         let video_quad = build_studio_video_quad(&self.video_player, &self.ui, rythmo_h);
         // Use interpolated frame for smooth playback in studio mode (handles low-fps source video)
-        let current_frame = self.video_player.as_ref().map_or(0, |p| p.current_frame_interpolated());
+        let current_frame = self
+            .video_player
+            .as_ref()
+            .map_or(0, |p| p.current_frame_interpolated());
 
         self.ui.render_studio(
             &mut self.ui_renderer,
-            &self.gfx.device, &self.gfx.queue, &mut encoder, &view,
-            self.gfx.config.width, self.gfx.config.height,
+            &self.gfx.device,
+            &self.gfx.queue,
+            &mut encoder,
+            &view,
+            self.gfx.config.width,
+            self.gfx.config.height,
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
-            &self.project, current_frame,
+            &self.project,
+            current_frame,
         );
 
         self.gfx.queue.submit(std::iter::once(encoder.finish()));
@@ -1305,7 +1597,12 @@ fn build_video_quad<'a>(
     Some((
         bind_group,
         crate::ui::widget::IconInstance {
-            rect: [preview.x + (preview.width - draw_w) / 2.0, preview.y + (preview.height - draw_h) / 2.0, draw_w, draw_h],
+            rect: [
+                preview.x + (preview.width - draw_w) / 2.0,
+                preview.y + (preview.height - draw_h) / 2.0,
+                draw_w,
+                draw_h,
+            ],
             uv_rect: [0.0, 0.0, 1.0, 1.0],
             tint: [1.0, 1.0, 1.0, 1.0],
         },
@@ -1336,14 +1633,23 @@ fn build_studio_video_quad<'a>(
     Some((
         bind_group,
         crate::ui::widget::IconInstance {
-            rect: [(screen_w - draw_w) / 2.0, (video_zone_h - draw_h) / 2.0, draw_w, draw_h],
+            rect: [
+                (screen_w - draw_w) / 2.0,
+                (video_zone_h - draw_h) / 2.0,
+                draw_w,
+                draw_h,
+            ],
             uv_rect: [0.0, 0.0, 1.0, 1.0],
             tint: [1.0, 1.0, 1.0, 1.0],
         },
     ))
 }
 
-fn ping_server_socketio(ip: &str, port: u16, results: std::sync::Arc<std::sync::Mutex<Vec<PingResult>>>) {
+fn ping_server_socketio(
+    ip: &str,
+    port: u16,
+    results: std::sync::Arc<std::sync::Mutex<Vec<PingResult>>>,
+) {
     use rust_socketio::{ClientBuilder, Event, Payload};
 
     let ip_clone = ip.to_string();
@@ -1368,8 +1674,13 @@ fn ping_server_socketio(ip: &str, port: u16, results: std::sync::Arc<std::sync::
                     let max_slots = info["max_slots"].as_u64().unwrap_or(0) as u32;
                     if let Ok(mut r) = results_clone.lock() {
                         r.push(PingResult {
-                            ip: ip_for_info.clone(), port: port_clone,
-                            name, motd, online, max_slots, success: true,
+                            ip: ip_for_info.clone(),
+                            port: port_clone,
+                            name,
+                            motd,
+                            online,
+                            max_slots,
+                            success: true,
                         });
                     }
                     done2.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1384,9 +1695,13 @@ fn ping_server_socketio(ip: &str, port: u16, results: std::sync::Arc<std::sync::
             if !done3.load(std::sync::atomic::Ordering::Relaxed) {
                 if let Ok(mut r) = results_disc.lock() {
                     r.push(PingResult {
-                        ip: ip_for_disc.clone(), port: port_clone,
-                        name: String::new(), motd: String::new(),
-                        online: 0, max_slots: 0, success: false,
+                        ip: ip_for_disc.clone(),
+                        port: port_clone,
+                        name: String::new(),
+                        motd: String::new(),
+                        online: 0,
+                        max_slots: 0,
+                        success: false,
                     });
                 }
                 done3.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1398,15 +1713,22 @@ fn ping_server_socketio(ip: &str, port: u16, results: std::sync::Arc<std::sync::
         Ok(_c) => {
             // Wait for server to disconnect us (max 6s safety)
             for _ in 0..60 {
-                if done.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                if done.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
             // If still no response after timeout, mark offline
             if !done.load(std::sync::atomic::Ordering::Relaxed) {
                 if let Ok(mut r) = results.lock() {
                     r.push(PingResult {
-                        ip: ip_clone, port, name: String::new(), motd: String::new(),
-                        online: 0, max_slots: 0, success: false,
+                        ip: ip_clone,
+                        port,
+                        name: String::new(),
+                        motd: String::new(),
+                        online: 0,
+                        max_slots: 0,
+                        success: false,
                     });
                 }
             }
@@ -1414,8 +1736,13 @@ fn ping_server_socketio(ip: &str, port: u16, results: std::sync::Arc<std::sync::
         Err(_) => {
             if let Ok(mut r) = results.lock() {
                 r.push(PingResult {
-                    ip: ip_clone, port, name: String::new(), motd: String::new(),
-                    online: 0, max_slots: 0, success: false,
+                    ip: ip_clone,
+                    port,
+                    name: String::new(),
+                    motd: String::new(),
+                    online: 0,
+                    max_slots: 0,
+                    success: false,
                 });
             }
         }

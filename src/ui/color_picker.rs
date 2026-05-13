@@ -63,7 +63,12 @@ impl ColorPickerState {
     fn total_rect(&self) -> Rect {
         let w = SV_SIZE + PICKER_PADDING * 2.0;
         let h = SV_SIZE + GAP + HUE_BAR_HEIGHT + PICKER_PADDING * 2.0;
-        Rect { x: self.origin.0, y: self.origin.1, width: w, height: h }
+        Rect {
+            x: self.origin.0,
+            y: self.origin.1,
+            width: w,
+            height: h,
+        }
     }
 
     fn sv_rect(&self) -> Rect {
@@ -103,7 +108,15 @@ impl ColorPickerState {
                 pixels[i + 2] = (b * 255.0) as u8;
                 pixels[i + 3] = 255;
             }
-            self.hue_bind_group = Some(upload_texture(device, queue, bind_group_layout, sampler, &pixels, HUE_TEX_W, HUE_TEX_H));
+            self.hue_bind_group = Some(upload_texture(
+                device,
+                queue,
+                bind_group_layout,
+                sampler,
+                &pixels,
+                HUE_TEX_W,
+                HUE_TEX_H,
+            ));
         }
 
         // SV texture (regenerated when hue changes)
@@ -121,7 +134,15 @@ impl ColorPickerState {
                     pixels[i + 3] = 255;
                 }
             }
-            self.sv_bind_group = Some(upload_texture(device, queue, bind_group_layout, sampler, &pixels, SV_TEX_SIZE, SV_TEX_SIZE));
+            self.sv_bind_group = Some(upload_texture(
+                device,
+                queue,
+                bind_group_layout,
+                sampler,
+                &pixels,
+                SV_TEX_SIZE,
+                SV_TEX_SIZE,
+            ));
             self.sv_texture_dirty = false;
         }
     }
@@ -155,7 +176,8 @@ impl ColorPickerState {
             shadow_offset: [0.0, 4.0],
             shadow_color: [0.0, 0.0, 0.0, 0.5],
             shadow_blur: 10.0,
-            rotation: 0.0, _padding: [0.0; 2],
+            rotation: 0.0,
+            _padding: [0.0; 2],
         });
 
         // SV gradient quad
@@ -192,8 +214,11 @@ impl ColorPickerState {
             border_color: [0.0, 0.0, 0.0, 0.8],
             border_width: 1.5,
             border_radius: INDICATOR_SIZE / 2.0,
-            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-            rotation: 0.0, _padding: [0.0; 2],
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
         });
 
         // Hue indicator
@@ -205,8 +230,11 @@ impl ColorPickerState {
             border_color: [0.0, 0.0, 0.0, 0.8],
             border_width: 1.0,
             border_radius: 2.0,
-            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-            rotation: 0.0, _padding: [0.0; 2],
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
         });
 
         // Preview swatch
@@ -216,12 +244,16 @@ impl ColorPickerState {
         let py = hue.y + hue.height + GAP;
         fg_quads.push(QuadInstance {
             rect: [px, py - GAP, preview_size, preview_size],
-            color, color_bottom: color,
+            color,
+            color_bottom: color,
             border_color: [0.5, 0.5, 0.55, 0.5],
             border_width: 1.0,
             border_radius: 3.0,
-            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-            rotation: 0.0, _padding: [0.0; 2],
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
         });
     }
 
@@ -286,29 +318,55 @@ fn upload_texture(
     bind_group_layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
     pixels: &[u8],
-    w: u32, h: u32,
+    w: u32,
+    h: u32,
 ) -> wgpu::BindGroup {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("ColorPicker Tex"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
     queue.write_texture(
-        wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
         pixels,
-        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * w),
+            rows_per_image: Some(h),
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("ColorPicker BG"), layout: bind_group_layout,
+        label: Some("ColorPicker BG"),
+        layout: bind_group_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
         ],
     })
 }

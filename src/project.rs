@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use crate::constants::JS_MAX_SAFE_INTEGER;
 use crate::rythmo_line::{RythmoLine, RythmoMarker};
+use std::collections::HashMap;
 
 const DEFAULT_COLORS: &[[f32; 4]] = &[
     [0.35, 0.55, 0.90, 1.0], // blue
@@ -62,7 +62,9 @@ impl Project {
 
     /// Iterate over lines in insertion order.
     pub fn lines(&self) -> impl Iterator<Item = &RythmoLine> {
-        self.line_order.iter().filter_map(move |id| self.line_map.get(id))
+        self.line_order
+            .iter()
+            .filter_map(move |id| self.line_map.get(id))
     }
 
     /// Collect all lines as a Vec (for serialization or cloning).
@@ -81,7 +83,8 @@ impl Project {
         let color = self.next_color();
 
         // Find the last line on the same track (y_slot) that ends before this one starts
-        let (char_name, char_color) = self.lines()
+        let (char_name, char_color) = self
+            .lines()
             .filter(|l| (l.y_slot - y_slot).abs() < 0.01 && l.end_frame() <= start_frame)
             .max_by_key(|l| l.end_frame())
             .map(|l| (l.character_name.clone(), l.character_color))
@@ -94,7 +97,9 @@ impl Project {
             })
             .or_else(|| {
                 // Fallback: first known character
-                self.known_characters.first().map(|c| (c.name.clone(), c.color))
+                self.known_characters
+                    .first()
+                    .map(|c| (c.name.clone(), c.color))
             })
             .unwrap_or_else(|| ("Character".to_string(), color));
 
@@ -114,15 +119,37 @@ impl Project {
         id
     }
 
-    pub fn add_line_full(&mut self, start_frame: i64, duration_frames: i64, y_slot: f32, text: String, character_name: String, character_color: [f32; 4]) -> u64 {
+    pub fn add_line_full(
+        &mut self,
+        start_frame: i64,
+        duration_frames: i64,
+        y_slot: f32,
+        text: String,
+        character_name: String,
+        character_color: [f32; 4],
+    ) -> u64 {
         let id = rand::random::<u64>() % JS_MAX_SAFE_INTEGER;
-        let line = RythmoLine { id, start_frame, duration_frames, y_slot, text, character_name, character_color, syllable_ratios: Vec::new(), note: String::new() };
+        let line = RythmoLine {
+            id,
+            start_frame,
+            duration_frames,
+            y_slot,
+            text,
+            character_name,
+            character_color,
+            syllable_ratios: Vec::new(),
+            note: String::new(),
+        };
         self.line_map.insert(id, line);
         self.line_order.push(id);
         id
     }
 
-    pub fn duplicate_line_from(&mut self, snapshot: &RythmoLine, start_frame: i64) -> (RythmoLine, usize) {
+    pub fn duplicate_line_from(
+        &mut self,
+        snapshot: &RythmoLine,
+        start_frame: i64,
+    ) -> (RythmoLine, usize) {
         let mut line = snapshot.clone();
         line.id = rand::random::<u64>() % JS_MAX_SAFE_INTEGER;
         line.start_frame = start_frame;
@@ -197,7 +224,10 @@ impl Project {
             if let Some(existing) = self.known_characters.iter_mut().find(|c| c.name == name) {
                 existing.color = color;
             } else {
-                self.known_characters.push(Character { name: name.clone(), color });
+                self.known_characters.push(Character {
+                    name: name.clone(),
+                    color,
+                });
             }
         }
         if let Some(line) = self.get_line_mut(line_id) {
@@ -253,7 +283,14 @@ mod tests {
     #[test]
     fn test_add_line_full() {
         let mut p = Project::new();
-        let id = p.add_line_full(10, 20, 0.25, "hello".into(), "Alice".into(), [1.0, 0.0, 0.0, 1.0]);
+        let id = p.add_line_full(
+            10,
+            20,
+            0.25,
+            "hello".into(),
+            "Alice".into(),
+            [1.0, 0.0, 0.0, 1.0],
+        );
         let line = p.get_line(id).unwrap();
         assert_eq!(line.text, "hello");
         assert_eq!(line.character_name, "Alice");
@@ -283,9 +320,15 @@ mod tests {
         let id2 = p.add_line(20, 10, 0.5);
         // Insert at position 1 (between id1 and id2)
         let line = crate::rythmo_line::RythmoLine {
-            id: 42, start_frame: 10, duration_frames: 10, y_slot: 0.75,
-            text: String::new(), character_name: String::new(), character_color: [1.0; 4],
-            syllable_ratios: Vec::new(), note: String::new(),
+            id: 42,
+            start_frame: 10,
+            duration_frames: 10,
+            y_slot: 0.75,
+            text: String::new(),
+            character_name: String::new(),
+            character_color: [1.0; 4],
+            syllable_ratios: Vec::new(),
+            note: String::new(),
         };
         p.insert_line_at(1, line);
         let ids: Vec<u64> = p.lines().map(|l| l.id).collect();

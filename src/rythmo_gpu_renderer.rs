@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 
-use glyphon::{
-    Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, SwashCache,
-    SwashContent,
-};
 use crate::constants;
 use crate::project::Project;
 use crate::rythmo_line::MarkerKind;
 use crate::ui::widget::{IconInstance, QuadInstance};
+use glyphon::{
+    Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent,
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -29,19 +28,45 @@ fn quad(x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: f32, a: f32) -> QuadI
 }
 
 fn rotated_line(
-    cx: f32, cy: f32, length: f32, thickness: f32, angle: f32,
-    r: f32, g: f32, b: f32, a: f32,
+    cx: f32,
+    cy: f32,
+    length: f32,
+    thickness: f32,
+    angle: f32,
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
 ) -> QuadInstance {
-    let mut q = quad(cx - length / 2.0, cy - thickness / 2.0, length, thickness, r, g, b, a);
+    let mut q = quad(
+        cx - length / 2.0,
+        cy - thickness / 2.0,
+        length,
+        thickness,
+        r,
+        g,
+        b,
+        a,
+    );
     q.rotation = angle;
     q
 }
 
-fn text_hash(text: &str, font_size: f32) -> u64 {
+fn text_hash(
+    kind: &str,
+    text: &str,
+    font_size: f32,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    kind.hash(&mut h);
     text.hash(&mut h);
     font_size.to_bits().hash(&mut h);
+    width.hash(&mut h);
+    height.hash(&mut h);
+    crate::vector_text::rythmo_font_family_name().hash(&mut h);
     h.finish()
 }
 
@@ -61,7 +86,11 @@ impl OffscreenTarget {
     fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("GPU Export Offscreen"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -182,17 +211,17 @@ impl GpuRenderer {
         let info = adapter.get_info();
         log::info!(
             "GPU export adapter: {} ({:?}, backend: {:?})",
-            info.name, info.device_type, info.backend
+            info.name,
+            info.device_type,
+            info.backend
         );
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("GPU Export Device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                ..Default::default()
-            },
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("GPU Export Device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            ..Default::default()
+        }))
         .map_err(|e| format!("Failed to create GPU device: {e}"))?;
 
         // Uniform buffer + bind group layout
@@ -257,14 +286,46 @@ impl GpuRenderer {
                     array_stride: std::mem::size_of::<QuadInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0, shader_location: 0 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16, shader_location: 1 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 2 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 3 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 64, shader_location: 4 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 72, shader_location: 5 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 80, shader_location: 6 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 96, shader_location: 7 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 16,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 32,
+                            shader_location: 2,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 48,
+                            shader_location: 3,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 64,
+                            shader_location: 4,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 72,
+                            shader_location: 5,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 80,
+                            shader_location: 6,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 96,
+                            shader_location: 7,
+                        },
                     ],
                 }],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -334,9 +395,21 @@ impl GpuRenderer {
                     array_stride: std::mem::size_of::<IconInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0, shader_location: 0 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16, shader_location: 1 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 2 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 16,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 32,
+                            shader_location: 2,
+                        },
                     ],
                 }],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -431,10 +504,8 @@ impl GpuRenderer {
 
     fn rasterize_text(&mut self, text: &str, font_size: f32) -> (Vec<u8>, u32, u32) {
         let line_height = (font_size * 1.4).ceil();
-        let mut buffer = GlyphonBuffer::new(
-            &mut self.font_system,
-            Metrics::new(font_size, line_height),
-        );
+        let mut buffer =
+            GlyphonBuffer::new(&mut self.font_system, Metrics::new(font_size, line_height));
         buffer.set_size(&mut self.font_system, Some(10000.0), Some(line_height));
         let rythmo_family = crate::config::get().ui.rythmo_font.clone();
         let family = match &rythmo_family {
@@ -514,7 +585,7 @@ impl GpuRenderer {
     }
 
     fn get_or_upload_text(&mut self, text: &str, font_size: f32) -> u64 {
-        let hash = text_hash(text, font_size);
+        let hash = text_hash("glyphon", text, font_size, None, None);
         if self.text_cache.contains_key(&hash) {
             return hash;
         }
@@ -526,7 +597,11 @@ impl GpuRenderer {
 
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Export Text Tex"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -548,7 +623,11 @@ impl GpuRenderer {
                 bytes_per_row: Some(4 * w),
                 rows_per_image: Some(h),
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -567,11 +646,102 @@ impl GpuRenderer {
             ],
         });
 
-        self.text_cache.insert(hash, CachedText {
-            bind_group,
-            width: w,
-            height: h,
+        self.text_cache.insert(
+            hash,
+            CachedText {
+                bind_group,
+                width: w,
+                height: h,
+            },
+        );
+
+        hash
+    }
+
+    fn get_or_upload_rythmo_text(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        dest_w: u32,
+        dest_h: u32,
+    ) -> u64 {
+        let hash = text_hash("vector-rythmo", text, font_size, Some(dest_w), Some(dest_h));
+        if self.text_cache.contains_key(&hash) {
+            return hash;
+        }
+
+        let Some(rendered) = crate::vector_text::render_rythmo_text(
+            &mut self.font_system,
+            text,
+            font_size,
+            dest_w,
+            dest_h,
+        ) else {
+            return hash;
+        };
+        if rendered.width == 0 || rendered.height == 0 {
+            return hash;
+        }
+
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Export Vector Rythmo Text Tex"),
+            size: wgpu::Extent3d {
+                width: rendered.width,
+                height: rendered.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         });
+
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &rendered.pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * rendered.width),
+                rows_per_image: Some(rendered.height),
+            },
+            wgpu::Extent3d {
+                width: rendered.width,
+                height: rendered.height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Export Vector Rythmo Text BG"),
+            layout: &self.texture_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.nearest_sampler),
+                },
+            ],
+        });
+
+        self.text_cache.insert(
+            hash,
+            CachedText {
+                bind_group,
+                width: rendered.width,
+                height: rendered.height,
+            },
+        );
 
         hash
     }
@@ -630,91 +800,154 @@ impl GpuRenderer {
         // ── Ruler ticks ──
         let visible_frames = (w / ppf) as i64 + 4;
         let cf_i64 = current_frame as i64;
-        let first_tick = ((cf_i64 - visible_frames / 2) / constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
+        let first_tick = ((cf_i64 - visible_frames / 2) / constants::TICK_GAP_FRAMES)
+            * constants::TICK_GAP_FRAMES;
         let mut tf = first_tick;
         loop {
             let x = center_x + (tf as f64 - current_frame) as f32 * ppf;
-            if x > w { break; }
+            if x > w {
+                break;
+            }
             if x >= 0.0 {
                 let tick_idx = tf / constants::TICK_GAP_FRAMES;
-                let th = if tick_idx % 2 == 0 { tick_long } else { tick_short };
-                quads.push(quad(x, 0.0, tick_w, th, 100.0/255.0, 100.0/255.0, 115.0/255.0, 128.0/255.0));
+                let th = if tick_idx % 2 == 0 {
+                    tick_long
+                } else {
+                    tick_short
+                };
+                quads.push(quad(
+                    x,
+                    0.0,
+                    tick_w,
+                    th,
+                    100.0 / 255.0,
+                    100.0 / 255.0,
+                    115.0 / 255.0,
+                    128.0 / 255.0,
+                ));
             }
             tf += constants::TICK_GAP_FRAMES;
         }
 
         // ── Playhead ──
-        quads.push(quad(center_x - playhead_w/2.0, 0.0, playhead_w, h, 217.0/255.0, 38.0/255.0, 38.0/255.0, 1.0));
+        quads.push(quad(
+            center_x - playhead_w / 2.0,
+            0.0,
+            playhead_w,
+            h,
+            217.0 / 255.0,
+            38.0 / 255.0,
+            38.0 / 255.0,
+            1.0,
+        ));
 
         // ── Lines ──
         for line in project.lines() {
             let x1 = center_x + (line.start_frame as f64 - current_frame) as f32 * ppf;
             let x2 = center_x + (line.end_frame() as f64 - current_frame) as f32 * ppf;
             let lw = (x2 - x1).max(2.0);
-            if x1 + lw < 0.0 || x1 > w { continue; }
+            if x1 + lw < 0.0 || x1 > w {
+                continue;
+            }
 
             let slot_idx = (line.y_slot * slot_count).round().min(slot_count - 1.0) as usize;
             let y_base = ruler_h + slot_idx as f32 * total_slot_h;
 
             let [cr, cg, cb, _] = line.character_color;
-            let badge_w = (line.character_name.chars().count().max(1) as f32 * badge_char_w + 12.0 * s).max(16.0 * s);
+            let badge_w = (line.character_name.chars().count().max(1) as f32 * badge_char_w
+                + 12.0 * s)
+                .max(16.0 * s);
             quads.push(quad(x1, y_base, badge_w, badge_h, cr, cg, cb, 1.0));
 
             if !line.character_name.is_empty() {
                 let luminance = 0.299 * cr + 0.587 * cg + 0.114 * cb;
-                let (tr, tg, tb) = if luminance > 0.55 { (0.0_f32, 0.0, 0.0) } else { (224.0/255.0, 224.0/255.0, 230.0/255.0) };
+                let (tr, tg, tb) = if luminance > 0.55 {
+                    (0.0_f32, 0.0, 0.0)
+                } else {
+                    (224.0 / 255.0, 224.0 / 255.0, 230.0 / 255.0)
+                };
                 let hash = self.get_or_upload_text(&line.character_name, badge_font);
                 if let Some(cached) = self.text_cache.get(&hash) {
                     let tw = cached.width as f32;
                     let th = cached.height as f32;
                     let start = all_icons.len() as u32;
                     all_icons.push(IconInstance {
-                        rect: [x1 + (badge_w - tw) / 2.0, y_base + (badge_h - th) / 2.0, tw, th],
+                        rect: [
+                            x1 + (badge_w - tw) / 2.0,
+                            y_base + (badge_h - th) / 2.0,
+                            tw,
+                            th,
+                        ],
                         uv_rect: [0.0, 0.0, 1.0, 1.0],
                         tint: [tr, tg, tb, 1.0],
                     });
-                    icon_batches.push(IconBatch { hash, start, count: 1 });
+                    icon_batches.push(IconBatch {
+                        hash,
+                        start,
+                        count: 1,
+                    });
                 }
             }
 
             let line_y = y_base + badge_h + badge_gap;
 
             if !line.text.is_empty() && line.text != "\u{2191}" && line.text != "\u{2193}" {
-                let hash = self.get_or_upload_text(&line.text, font_size);
-                if self.text_cache.contains_key(&hash) {
-                    let start = all_icons.len() as u32;
-                    if !line.syllable_ratios.is_empty() {
-                        let lang = &crate::config::get().lang;
-                        let breaks = crate::syllable::syllable_breaks(&line.text, lang);
-                        let syl_count = breaks.len() + 1;
-                        if line.syllable_ratios.len() == syl_count && !breaks.is_empty() {
-                            let total_chars = line.text.chars().count();
-                            let char_positions: Vec<f32> = (0..=total_chars).map(|i| i as f32 / total_chars as f32).collect();
-                            let mut seg_x = x1;
-                            let mut prev_brk = 0;
-                            for (i, &brk) in breaks.iter().enumerate() {
-                                let seg_w = line.syllable_ratios.get(i).copied().unwrap_or(0.0) * lw;
-                                let uv_start = char_positions.get(prev_brk).copied().unwrap_or(0.0);
-                                let uv_end = char_positions.get(brk).copied().unwrap_or(1.0);
-                                if seg_w > 0.5 && uv_end > uv_start {
-                                    all_icons.push(IconInstance { rect: [seg_x, line_y, seg_w, slot_h], uv_rect: [uv_start, 0.0, uv_end, 1.0], tint: [1.0; 4] });
-                                }
-                                seg_x += seg_w;
-                                prev_brk = brk;
-                            }
-                            let last_w = line.syllable_ratios.last().copied().unwrap_or(0.0) * lw;
-                            let uv_start = char_positions.get(prev_brk).copied().unwrap_or(0.0);
-                            if last_w > 0.5 && uv_start < 1.0 {
-                                all_icons.push(IconInstance { rect: [seg_x, line_y, last_w, slot_h], uv_rect: [uv_start, 0.0, 1.0, 1.0], tint: [1.0; 4] });
-                            }
+                let lang = &crate::config::get().lang;
+                let breaks = crate::syllable::syllable_breaks(&line.text, lang);
+                let use_segments =
+                    !breaks.is_empty() && line.syllable_ratios.len() == breaks.len() + 1;
+
+                if use_segments {
+                    let chars: Vec<char> = line.text.chars().collect();
+                    let mut seg_x = x1;
+                    let mut prev_break = 0usize;
+                    for (i, &ratio) in line.syllable_ratios.iter().enumerate() {
+                        let seg_w = ratio * lw;
+                        let end_break = if i < breaks.len() {
+                            breaks[i]
                         } else {
-                            all_icons.push(IconInstance { rect: [x1, line_y, lw, slot_h], uv_rect: [0.0, 0.0, 1.0, 1.0], tint: [1.0; 4] });
+                            chars.len()
+                        };
+                        let segment: String = chars[prev_break..end_break].iter().collect();
+                        if !segment.is_empty() && seg_w > 0.5 {
+                            let tex_w = seg_w.max(1.0).ceil() as u32;
+                            let tex_h = slot_h.max(1.0).ceil() as u32;
+                            let hash =
+                                self.get_or_upload_rythmo_text(&segment, font_size, tex_w, tex_h);
+                            if self.text_cache.contains_key(&hash) {
+                                let start = all_icons.len() as u32;
+                                all_icons.push(IconInstance {
+                                    rect: [seg_x, line_y, seg_w, slot_h],
+                                    uv_rect: [0.0, 0.0, 1.0, 1.0],
+                                    tint: [1.0; 4],
+                                });
+                                icon_batches.push(IconBatch {
+                                    hash,
+                                    start,
+                                    count: 1,
+                                });
+                            }
                         }
-                    } else {
-                        all_icons.push(IconInstance { rect: [x1, line_y, lw, slot_h], uv_rect: [0.0, 0.0, 1.0, 1.0], tint: [1.0; 4] });
+                        seg_x += seg_w;
+                        prev_break = end_break;
                     }
-                    let count = all_icons.len() as u32 - start;
-                    if count > 0 { icon_batches.push(IconBatch { hash, start, count }); }
+                } else {
+                    let tex_w = lw.max(1.0).ceil() as u32;
+                    let tex_h = slot_h.max(1.0).ceil() as u32;
+                    let hash = self.get_or_upload_rythmo_text(&line.text, font_size, tex_w, tex_h);
+                    if self.text_cache.contains_key(&hash) {
+                        let start = all_icons.len() as u32;
+                        all_icons.push(IconInstance {
+                            rect: [x1, line_y, lw, slot_h],
+                            uv_rect: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0; 4],
+                        });
+                        icon_batches.push(IconBatch {
+                            hash,
+                            start,
+                            count: 1,
+                        });
+                    }
                 }
             }
 
@@ -728,7 +961,17 @@ impl GpuRenderer {
                     let cx = x1 + lw / 2.0;
                     let cy = line_y + slot_h / 2.0;
                     let angle = if up { (-dy).atan2(dx) } else { dy.atan2(dx) };
-                    quads.push(rotated_line(cx, cy, length, 2.0*s, angle, 220.0/255.0, 220.0/255.0, 230.0/255.0, 230.0/255.0));
+                    quads.push(rotated_line(
+                        cx,
+                        cy,
+                        length,
+                        2.0 * s,
+                        angle,
+                        220.0 / 255.0,
+                        220.0 / 255.0,
+                        230.0 / 255.0,
+                        230.0 / 255.0,
+                    ));
                 }
             }
 
@@ -748,9 +991,13 @@ impl GpuRenderer {
                     all_icons.push(IconInstance {
                         rect: [x1 + 4.0 * s, note_y, draw_w, note_h],
                         uv_rect: [0.0, 0.0, uv_end, 1.0],
-                        tint: [160.0/255.0, 160.0/255.0, 170.0/255.0, 1.0],
+                        tint: [160.0 / 255.0, 160.0 / 255.0, 170.0 / 255.0, 1.0],
                     });
-                    icon_batches.push(IconBatch { hash, start, count: 1 });
+                    icon_batches.push(IconBatch {
+                        hash,
+                        start,
+                        count: 1,
+                    });
                 }
             }
         }
@@ -758,44 +1005,137 @@ impl GpuRenderer {
         // ── Markers ──
         for marker in &project.markers {
             let mx = center_x + (marker.frame as f64 - current_frame) as f32 * ppf;
-            if mx < -10.0 * s || mx > w + 10.0 * s { continue; }
+            if mx < -10.0 * s || mx > w + 10.0 * s {
+                continue;
+            }
             match &marker.kind {
                 MarkerKind::Boucle => {
-                    quads.push(quad(mx - 1.0*s, 0.0, 2.0*s, h, 217.0/255.0, 38.0/255.0, 38.0/255.0, 230.0/255.0));
-                    let cy = h / 2.0; let arm = 10.0 * s; let diag_len = arm * 2.0 * std::f32::consts::SQRT_2;
-                    quads.push(rotated_line(mx, cy, diag_len, 2.5*s, std::f32::consts::FRAC_PI_4, 217.0/255.0, 38.0/255.0, 38.0/255.0, 230.0/255.0));
-                    quads.push(rotated_line(mx, cy, diag_len, 2.5*s, -std::f32::consts::FRAC_PI_4, 217.0/255.0, 38.0/255.0, 38.0/255.0, 230.0/255.0));
+                    quads.push(quad(
+                        mx - 1.0 * s,
+                        0.0,
+                        2.0 * s,
+                        h,
+                        217.0 / 255.0,
+                        38.0 / 255.0,
+                        38.0 / 255.0,
+                        230.0 / 255.0,
+                    ));
+                    let cy = h / 2.0;
+                    let arm = 10.0 * s;
+                    let diag_len = arm * 2.0 * std::f32::consts::SQRT_2;
+                    quads.push(rotated_line(
+                        mx,
+                        cy,
+                        diag_len,
+                        2.5 * s,
+                        std::f32::consts::FRAC_PI_4,
+                        217.0 / 255.0,
+                        38.0 / 255.0,
+                        38.0 / 255.0,
+                        230.0 / 255.0,
+                    ));
+                    quads.push(rotated_line(
+                        mx,
+                        cy,
+                        diag_len,
+                        2.5 * s,
+                        -std::f32::consts::FRAC_PI_4,
+                        217.0 / 255.0,
+                        38.0 / 255.0,
+                        38.0 / 255.0,
+                        230.0 / 255.0,
+                    ));
                 }
                 MarkerKind::Out => {
-                    quads.push(quad(mx - 1.0*s, 0.0, 2.0*s, h, 217.0/255.0, 115.0/255.0, 115.0/255.0, 180.0/255.0));
-                    let cy = h / 2.0; let bh = h * 0.15;
+                    quads.push(quad(
+                        mx - 1.0 * s,
+                        0.0,
+                        2.0 * s,
+                        h,
+                        217.0 / 255.0,
+                        115.0 / 255.0,
+                        115.0 / 255.0,
+                        180.0 / 255.0,
+                    ));
+                    let cy = h / 2.0;
+                    let bh = h * 0.15;
                     for &offset in &[-5.0_f32, 5.0] {
-                        let dx = bh * 0.3; let length = (dx*2.0_f32).hypot(bh*2.0); let angle = (bh*2.0).atan2(dx*2.0);
-                        quads.push(rotated_line(mx + offset*s, cy, length, 2.0*s, angle, 217.0/255.0, 115.0/255.0, 115.0/255.0, 180.0/255.0));
+                        let dx = bh * 0.3;
+                        let length = (dx * 2.0_f32).hypot(bh * 2.0);
+                        let angle = (bh * 2.0).atan2(dx * 2.0);
+                        quads.push(rotated_line(
+                            mx + offset * s,
+                            cy,
+                            length,
+                            2.0 * s,
+                            angle,
+                            217.0 / 255.0,
+                            115.0 / 255.0,
+                            115.0 / 255.0,
+                            180.0 / 255.0,
+                        ));
                     }
                 }
                 MarkerKind::SceneChange => {
-                    quads.push(quad(mx - 1.0*s, 0.0, 2.0*s, h, 230.0/255.0, 230.0/255.0, 240.0/255.0, 200.0/255.0));
+                    quads.push(quad(
+                        mx - 1.0 * s,
+                        0.0,
+                        2.0 * s,
+                        h,
+                        230.0 / 255.0,
+                        230.0 / 255.0,
+                        240.0 / 255.0,
+                        200.0 / 255.0,
+                    ));
                 }
                 MarkerKind::LiaisonLeft | MarkerKind::LiaisonRight => {
                     let is_left = matches!(marker.kind, MarkerKind::LiaisonLeft);
-                    let ay = ruler_h / 2.0; let arm_x = if is_left { -3.0 } else { 3.0 } * s; let arm_y = 4.0 * s; let tip_x = mx + arm_x;
+                    let ay = ruler_h / 2.0;
+                    let arm_x = if is_left { -3.0 } else { 3.0 } * s;
+                    let arm_y = 4.0 * s;
+                    let tip_x = mx + arm_x;
                     for &dy in &[-arm_y, arm_y] {
-                        let sx = mx - arm_x; let length = ((tip_x - sx).powi(2) + dy.powi(2)).sqrt(); let angle = dy.atan2(tip_x - sx);
-                        quads.push(rotated_line((sx+tip_x)/2.0, ay+dy/2.0, length, 1.5*s, angle, 180.0/255.0, 180.0/255.0, 190.0/255.0, 200.0/255.0));
+                        let sx = mx - arm_x;
+                        let length = ((tip_x - sx).powi(2) + dy.powi(2)).sqrt();
+                        let angle = dy.atan2(tip_x - sx);
+                        quads.push(rotated_line(
+                            (sx + tip_x) / 2.0,
+                            ay + dy / 2.0,
+                            length,
+                            1.5 * s,
+                            angle,
+                            180.0 / 255.0,
+                            180.0 / 255.0,
+                            190.0 / 255.0,
+                            200.0 / 255.0,
+                        ));
                     }
                 }
             }
         }
 
         // ── Submit GPU work (non-blocking) ──
-        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[width as f32, height as f32]));
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[width as f32, height as f32]),
+        );
         self.ensure_quad_buf(quads.len());
         self.ensure_icon_buf(all_icons.len().max(1));
-        if !quads.is_empty() { self.queue.write_buffer(&self.quad_buf, 0, bytemuck::cast_slice(&quads)); }
-        if !all_icons.is_empty() { self.queue.write_buffer(&self.icon_buf, 0, bytemuck::cast_slice(&all_icons)); }
+        if !quads.is_empty() {
+            self.queue
+                .write_buffer(&self.quad_buf, 0, bytemuck::cast_slice(&quads));
+        }
+        if !all_icons.is_empty() {
+            self.queue
+                .write_buffer(&self.icon_buf, 0, bytemuck::cast_slice(&all_icons));
+        }
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Export Encoder") });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Export Encoder"),
+            });
 
         {
             let offscreen = self.offscreen.as_ref().unwrap();
@@ -803,14 +1143,23 @@ impl GpuRenderer {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Export Render Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &offscreen.view, resolve_target: None,
+                        view: &offscreen.view,
+                        resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color { r: 5.0/255.0, g: 5.0/255.0, b: 8.0/255.0, a: 1.0 }),
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 5.0 / 255.0,
+                                g: 5.0 / 255.0,
+                                b: 8.0 / 255.0,
+                                a: 1.0,
+                            }),
                             store: wgpu::StoreOp::Store,
                         },
                         depth_slice: None,
                     })],
-                    depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 if !quads.is_empty() {
                     pass.set_pipeline(&self.quad_pipeline);
@@ -831,12 +1180,25 @@ impl GpuRenderer {
                 }
             }
             encoder.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo { texture: &offscreen.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &offscreen.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
                 wgpu::TexelCopyBufferInfo {
                     buffer: offscreen.current_buf(),
-                    layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(offscreen.padded_row_bytes), rows_per_image: Some(height) },
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(offscreen.padded_row_bytes),
+                        rows_per_image: Some(height),
+                    },
                 },
-                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
             );
         }
 
@@ -851,7 +1213,10 @@ impl GpuRenderer {
         let buf = offscreen.current_buf();
         let buffer_slice = buf.slice(..);
         buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
-        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
 
         let data = buffer_slice.get_mapped_range();
         let unpadded_row = (width * 4) as usize;
@@ -865,7 +1230,8 @@ impl GpuRenderer {
         } else {
             for row in 0..height as usize {
                 let start = row * padded_row;
-                self.pixel_buf.extend_from_slice(&data[start..start + unpadded_row]);
+                self.pixel_buf
+                    .extend_from_slice(&data[start..start + unpadded_row]);
             }
         }
         drop(data);

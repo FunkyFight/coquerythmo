@@ -18,7 +18,9 @@ impl IconButton {
         on_click: impl FnMut() -> EventResponse + 'static,
     ) -> Self {
         Self {
-            bounds, icon_uv, tooltip_text: None,
+            bounds,
+            icon_uv,
+            tooltip_text: None,
             state: InteractiveState::default(),
             on_click: Box::new(on_click),
         }
@@ -31,14 +33,22 @@ impl IconButton {
 }
 
 impl Widget for IconButton {
-    fn bounds(&self) -> Rect { self.bounds }
-    fn tooltip(&self) -> Option<&str> { self.tooltip_text.as_deref() }
+    fn bounds(&self) -> Rect {
+        self.bounds
+    }
+    fn tooltip(&self) -> Option<&str> {
+        self.tooltip_text.as_deref()
+    }
 
     fn handle_event(&mut self, event: &UiEvent) -> EventResponse {
         match self.state.handle(event, &self.bounds) {
             InteractiveResult::Clicked => {
                 let r = (self.on_click)();
-                if r != EventResponse::Ignored { r } else { EventResponse::Consumed }
+                if r != EventResponse::Ignored {
+                    r
+                } else {
+                    EventResponse::Consumed
+                }
             }
             InteractiveResult::StateChanged => EventResponse::Consumed,
             InteractiveResult::None => EventResponse::Ignored,
@@ -52,11 +62,22 @@ impl Widget for IconButton {
             InteractiveState::Pressed => theme::TRANSPARENT_PRESS,
         };
         vec![QuadInstance {
-            rect: [self.bounds.x, self.bounds.y, self.bounds.width, self.bounds.height],
-            color: bg, color_bottom: bg,
-            border_color: [0.0; 4], border_width: 0.0, border_radius: theme::BORDER_RADIUS_SMALL,
-            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-            rotation: 0.0, _padding: [0.0; 2],
+            rect: [
+                self.bounds.x,
+                self.bounds.y,
+                self.bounds.width,
+                self.bounds.height,
+            ],
+            color: bg,
+            color_bottom: bg,
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            border_radius: theme::BORDER_RADIUS_SMALL,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
         }]
     }
 
@@ -70,8 +91,14 @@ impl Widget for IconButton {
         let icon_size = self.bounds.width.min(self.bounds.height) - padding * 2.0;
         let x = self.bounds.x + (self.bounds.width - icon_size) / 2.0;
         let y = self.bounds.y + (self.bounds.height - icon_size) / 2.0;
-        vec![IconInstance { rect: [x, y, icon_size, icon_size], uv_rect: self.icon_uv, tint }]
+        vec![IconInstance {
+            rect: [x, y, icon_size, icon_size],
+            uv_rect: self.icon_uv,
+            tint,
+        }]
     }
 
-    fn labels(&self) -> Vec<LabelInfo<'_>> { vec![] }
+    fn labels(&self) -> Vec<LabelInfo<'_>> {
+        vec![]
+    }
 }

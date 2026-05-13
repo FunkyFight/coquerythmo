@@ -17,12 +17,7 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn compute(
-        screen_w: f32,
-        screen_h: f32,
-        props_visible: bool,
-        props_width: f32,
-    ) -> Self {
+    pub fn compute(screen_w: f32, screen_h: f32, props_visible: bool, props_width: f32) -> Self {
         let props_w = if props_visible {
             props_width.clamp(PROPS_MIN_W, PROPS_MAX_W)
         } else {

@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
 use glyphon::{
-    Attrs, Buffer as GlyphonBuffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics,
-    Resolution, Shaping, SwashCache, SwashContent, TextArea, TextAtlas, TextBounds, TextRenderer,
-    Viewport, Wrap,
     cosmic_text::{Align, Ellipsize, EllipsizeHeightLimit},
+    Attrs, Buffer as GlyphonBuffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics,
+    Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Wrap,
 };
 use wgpu::util::DeviceExt;
 use wgpu::MultisampleState;
@@ -20,9 +19,7 @@ struct Uniforms {
 
 struct CachedTextTexture {
     bind_group: wgpu::BindGroup,
-    text_hash: u64,
-    natural_width: u32,
-    natural_height: u32,
+    cache_hash: u64,
     char_x_ratios: Vec<f32>, // ratio 0.0-1.0 for each char boundary (len = char_count + 1)
 }
 
@@ -40,7 +37,6 @@ pub struct UiRenderer {
     uniform_bind_group_for_icons: wgpu::BindGroup,
 
     pub icon_atlas: IconAtlas,
-    nearest_sampler: wgpu::Sampler,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -106,15 +102,47 @@ impl UiRenderer {
                     array_stride: std::mem::size_of::<QuadInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0, shader_location: 0 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16, shader_location: 1 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 2 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 3 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 64, shader_location: 4 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 72, shader_location: 5 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 80, shader_location: 6 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 16,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 32,
+                            shader_location: 2,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 48,
+                            shader_location: 3,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 64,
+                            shader_location: 4,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 72,
+                            shader_location: 5,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 80,
+                            shader_location: 6,
+                        },
                         // shadow_blur + rotation packed as vec2
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 96, shader_location: 7 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 96,
+                            shader_location: 7,
+                        },
                     ],
                 }],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -174,9 +202,21 @@ impl UiRenderer {
                     array_stride: std::mem::size_of::<IconInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0, shader_location: 0 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16, shader_location: 1 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 2 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 16,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 32,
+                            shader_location: 2,
+                        },
                     ],
                 }],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -201,13 +241,6 @@ impl UiRenderer {
             cache: None,
         });
 
-        // Nearest sampler for sharp stretched text
-        let nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-
         // == Text ==
         let font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
@@ -224,7 +257,6 @@ impl UiRenderer {
             uniform_bind_group,
             uniform_bind_group_for_icons,
             icon_atlas,
-            nearest_sampler,
             font_system,
             swash_cache,
             text_atlas,
@@ -270,14 +302,13 @@ impl UiRenderer {
         &self.icon_atlas.sampler
     }
 
-    /// Rasterize text to CPU RGBA pixels, cache as GPU texture, return icon instances for stretched rendering.
+    /// Render rythmo text at final size, cache as GPU texture, return icon instances.
     pub fn prepare_stretched_texts(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         stretched: &[StretchedText],
     ) -> Vec<(IconInstance, u64)> {
-        // Rasterize at 2x font size for sharper stretched text
         let font_size = crate::config::get().ui.font_size * 2.0;
         let mut result = Vec::new();
 
@@ -286,24 +317,41 @@ impl UiRenderer {
                 continue;
             }
 
-            let text_hash = Self::hash_text(&st.text);
+            let tex_w = st.dest_rect.width.max(1.0).ceil() as u32;
+            let tex_h = st.dest_rect.height.max(1.0).ceil() as u32;
+            let cache_hash = Self::hash_stretched_text(&st.text, font_size, tex_w, tex_h);
 
             // Check cache
             let needs_update = match self.text_texture_cache.get(&st.line_id) {
-                Some(cached) => cached.text_hash != text_hash,
+                Some(cached) => cached.cache_hash != cache_hash,
                 None => true,
             };
 
             if needs_update {
-                let (pixels, w, h, char_x_ratios) = self.rasterize_text(&st.text, font_size);
+                let Some(rendered) = crate::vector_text::render_rythmo_text(
+                    &mut self.font_system,
+                    &st.text,
+                    font_size,
+                    tex_w,
+                    tex_h,
+                ) else {
+                    continue;
+                };
+                let w = rendered.width;
+                let h = rendered.height;
                 if w == 0 || h == 0 {
                     continue;
                 }
 
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("Stretched Text"),
-                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                    mip_level_count: 1, sample_count: 1,
+                    label: Some("Vector Rythmo Text"),
+                    size: wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format: wgpu::TextureFormat::Rgba8UnormSrgb,
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
@@ -312,39 +360,59 @@ impl UiRenderer {
 
                 queue.write_texture(
                     wgpu::TexelCopyTextureInfo {
-                        texture: &texture, mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All,
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
                     },
-                    &pixels,
+                    &rendered.pixels,
                     wgpu::TexelCopyBufferLayout {
-                        offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h),
+                        offset: 0,
+                        bytes_per_row: Some(4 * w),
+                        rows_per_image: Some(h),
                     },
-                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
                 );
 
                 let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Stretched Text BG"),
+                    label: Some("Vector Rythmo Text BG"),
                     layout: &self.icon_atlas.bind_group_layout,
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.nearest_sampler) },
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.icon_atlas.sampler),
+                        },
                     ],
                 });
 
-                self.text_texture_cache.insert(st.line_id, CachedTextTexture {
-                    bind_group,
-                    text_hash,
-                    natural_width: w,
-                    natural_height: h,
-                    char_x_ratios,
-                });
+                self.text_texture_cache.insert(
+                    st.line_id,
+                    CachedTextTexture {
+                        bind_group,
+                        cache_hash,
+                        char_x_ratios: rendered.char_x_ratios,
+                    },
+                );
             }
 
             if let Some(_cached) = self.text_texture_cache.get(&st.line_id) {
                 result.push((
                     IconInstance {
-                        rect: [st.dest_rect.x, st.dest_rect.y, st.dest_rect.width, st.dest_rect.height],
+                        rect: [
+                            st.dest_rect.x,
+                            st.dest_rect.y,
+                            st.dest_rect.width,
+                            st.dest_rect.height,
+                        ],
                         uv_rect: [0.0, 0.0, 1.0, 1.0],
                         tint: [1.0, 1.0, 1.0, 1.0],
                     },
@@ -356,10 +424,15 @@ impl UiRenderer {
         result
     }
 
-    fn hash_text(text: &str) -> u64 {
+    fn hash_stretched_text(text: &str, font_size: f32, dest_w: u32, dest_h: u32) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        "vector-rythmo".hash(&mut hasher);
         text.hash(&mut hasher);
+        font_size.to_bits().hash(&mut hasher);
+        dest_w.hash(&mut hasher);
+        dest_h.hash(&mut hasher);
+        crate::vector_text::rythmo_font_family_name().hash(&mut hasher);
         hasher.finish()
     }
 
@@ -378,92 +451,6 @@ impl UiRenderer {
         families.into_iter().collect()
     }
 
-    fn rasterize_text(&mut self, text: &str, font_size: f32) -> (Vec<u8>, u32, u32, Vec<f32>) {
-        let rythmo_family = crate::config::get().ui.rythmo_font.clone();
-        let family = match &rythmo_family {
-            Some(name) => Family::Name(name),
-            None => Family::SansSerif,
-        };
-        let line_height = (font_size * 1.4).ceil();
-        let mut buffer = GlyphonBuffer::new(&mut self.font_system, Metrics::new(font_size, line_height));
-        buffer.set_size(&mut self.font_system, Some(10000.0), Some(line_height));
-        buffer.set_text(&mut self.font_system, text, &Attrs::new().family(family), Shaping::Advanced, None);
-        buffer.shape_until_scroll(&mut self.font_system, false);
-
-        // Measure text width and collect glyph boundaries
-        let mut text_width = 0.0_f32;
-        let mut glyph_ends: Vec<f32> = Vec::new(); // end x of each glyph
-        for run in buffer.layout_runs() {
-            for glyph in run.glyphs.iter() {
-                let end = glyph.x + glyph.w;
-                glyph_ends.push(end);
-                if end > text_width {
-                    text_width = end;
-                }
-            }
-        }
-
-        let w = (text_width.ceil() as u32).max(1);
-        let h = line_height.ceil() as u32;
-        let mut pixels = vec![0u8; (w * h * 4) as usize];
-
-        // Rasterize each glyph
-        for run in buffer.layout_runs() {
-            let line_y = run.line_y;
-            for glyph in run.glyphs.iter() {
-                let physical = glyph.physical((0.0, 0.0), 1.0);
-                if let Some(image) = self.swash_cache.get_image_uncached(&mut self.font_system, physical.cache_key) {
-                    let gx = physical.x as i32;
-                    let gy = (line_y as i32) + physical.y as i32;
-
-                    for iy in 0..image.placement.height as i32 {
-                        for ix in 0..image.placement.width as i32 {
-                            let px = gx + image.placement.left + ix;
-                            let py = gy - image.placement.top + iy;
-                            if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 {
-                                continue;
-                            }
-
-                            let src_idx = (iy * image.placement.width as i32 + ix) as usize;
-                            let dst_idx = ((py as u32 * w + px as u32) * 4) as usize;
-
-                            match image.content {
-                                SwashContent::Mask => {
-                                    if src_idx < image.data.len() {
-                                        let a = image.data[src_idx];
-                                        if a > 0 && dst_idx + 3 < pixels.len() {
-                                            // White text, premultiplied alpha
-                                            pixels[dst_idx] = a;
-                                            pixels[dst_idx + 1] = a;
-                                            pixels[dst_idx + 2] = a;
-                                            pixels[dst_idx + 3] = a;
-                                        }
-                                    }
-                                }
-                                SwashContent::Color => {
-                                    let si = src_idx * 4;
-                                    if si + 3 < image.data.len() && dst_idx + 3 < pixels.len() {
-                                        pixels[dst_idx..dst_idx + 4].copy_from_slice(&image.data[si..si + 4]);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Build char boundary ratios: [0.0, end_of_char1/total, end_of_char2/total, ..., 1.0]
-        let tw = if text_width > 0.0 { text_width } else { 1.0 };
-        let mut char_x_ratios = vec![0.0_f32];
-        for end in &glyph_ends {
-            char_x_ratios.push(end / tw);
-        }
-
-        (pixels, w, h, char_x_ratios)
-    }
-
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -472,8 +459,8 @@ impl UiRenderer {
         view: &wgpu::TextureView,
         screen_width: u32,
         screen_height: u32,
-        quads: &[QuadInstance],          // base layer (behind video)
-        overlay_quads: &[QuadInstance],  // overlay layer (on top of video)
+        quads: &[QuadInstance],         // base layer (behind video)
+        overlay_quads: &[QuadInstance], // overlay layer (on top of video)
         icons: &[IconInstance],
         labels: &[LabelInfo],
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
@@ -505,10 +492,7 @@ impl UiRenderer {
             let fs = label.font_size_override.unwrap_or(default_font_size);
             let lh = (fs * 1.3).ceil();
 
-            let mut buffer = GlyphonBuffer::new(
-                &mut self.font_system,
-                Metrics::new(fs, lh),
-            );
+            let mut buffer = GlyphonBuffer::new(&mut self.font_system, Metrics::new(fs, lh));
             buffer.set_size(&mut self.font_system, Some(inner_width), Some(rect.height));
 
             let cosmic_align = match label.h_align {
@@ -573,7 +557,10 @@ impl UiRenderer {
 
                 let bounds = match label.overflow {
                     Overflow::Visible => TextBounds {
-                        left: i32::MIN, top: i32::MIN, right: i32::MAX, bottom: i32::MAX,
+                        left: i32::MIN,
+                        top: i32::MIN,
+                        right: i32::MAX,
+                        bottom: i32::MAX,
                     },
                     _ => TextBounds {
                         left: rect.x as i32,
@@ -602,8 +589,13 @@ impl UiRenderer {
 
         self.text_renderer
             .prepare(
-                device, queue, &mut self.font_system, &mut self.text_atlas,
-                &self.viewport, text_areas, &mut self.swash_cache,
+                device,
+                queue,
+                &mut self.font_system,
+                &mut self.text_atlas,
+                &self.viewport,
+                text_areas,
+                &mut self.swash_cache,
             )
             .unwrap();
 
@@ -615,11 +607,13 @@ impl UiRenderer {
         });
 
         let icon_buffer = if !icons.is_empty() {
-            Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Icon Instance Buffer"),
-                contents: bytemuck::cast_slice(icons),
-                usage: wgpu::BufferUsages::VERTEX,
-            }))
+            Some(
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Icon Instance Buffer"),
+                    contents: bytemuck::cast_slice(icons),
+                    usage: wgpu::BufferUsages::VERTEX,
+                }),
+            )
         } else {
             None
         };

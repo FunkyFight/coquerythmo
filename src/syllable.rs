@@ -47,7 +47,13 @@ pub fn syllable_breaks(text: &str, lang: &str) -> Vec<usize> {
                 // Hyphenate the remainder
                 let remainder: String = chars[contraction_end..word_end].iter().collect();
                 if remainder.len() > 1 {
-                    hyphenate_word(&remainder, contraction_end, hypher_lang, is_french, &mut raw_breaks);
+                    hyphenate_word(
+                        &remainder,
+                        contraction_end,
+                        hypher_lang,
+                        is_french,
+                        &mut raw_breaks,
+                    );
                 }
                 continue;
             }
@@ -72,7 +78,13 @@ pub fn syllable_breaks(text: &str, lang: &str) -> Vec<usize> {
 
 /// Hyphenate a single word and add break positions to raw_breaks.
 /// Uses hypher first, then falls back to French CV rules if hypher returns no breaks.
-fn hyphenate_word(word: &str, offset: usize, hypher_lang: Lang, is_french: bool, raw_breaks: &mut Vec<usize>) {
+fn hyphenate_word(
+    word: &str,
+    offset: usize,
+    hypher_lang: Lang,
+    is_french: bool,
+    raw_breaks: &mut Vec<usize>,
+) {
     // Strip apostrophes for hypher (it doesn't handle them)
     let clean: String = word.chars().filter(|c| c.is_alphabetic()).collect();
     if clean.len() <= 1 {
@@ -116,7 +128,8 @@ fn french_syllable_breaks(word: &str) -> Vec<usize> {
         return Vec::new();
     }
 
-    let is_vowel = |ch: char| "aeiouyàâäéèêëïîôùûüœæ".contains(ch.to_lowercase().next().unwrap_or(ch));
+    let is_vowel =
+        |ch: char| "aeiouyàâäéèêëïîôùûüœæ".contains(ch.to_lowercase().next().unwrap_or(ch));
 
     let mut breaks = Vec::new();
     let mut i = 1;
@@ -136,10 +149,24 @@ fn french_syllable_breaks(word: &str) -> Vec<usize> {
                 // "pl", "pr", "tr", "vr" — these stay together
                 let c1 = chars[i].to_lowercase().next().unwrap_or(chars[i]);
                 let c2 = chars[i + 1].to_lowercase().next().unwrap_or(chars[i + 1]);
-                let inseparable = matches!((c1, c2),
-                    ('b', 'l') | ('b', 'r') | ('c', 'l') | ('c', 'r') | ('c', 'h') |
-                    ('d', 'r') | ('f', 'l') | ('f', 'r') | ('g', 'l') | ('g', 'r') |
-                    ('p', 'l') | ('p', 'r') | ('p', 'h') | ('t', 'r') | ('t', 'h') | ('v', 'r')
+                let inseparable = matches!(
+                    (c1, c2),
+                    ('b', 'l')
+                        | ('b', 'r')
+                        | ('c', 'l')
+                        | ('c', 'r')
+                        | ('c', 'h')
+                        | ('d', 'r')
+                        | ('f', 'l')
+                        | ('f', 'r')
+                        | ('g', 'l')
+                        | ('g', 'r')
+                        | ('p', 'l')
+                        | ('p', 'r')
+                        | ('p', 'h')
+                        | ('t', 'r')
+                        | ('t', 'h')
+                        | ('v', 'r')
                 );
                 if inseparable {
                     breaks.push(i);
@@ -246,21 +273,38 @@ mod tests {
     fn test_french_fallback_adore() {
         let breaks = french_syllable_breaks("adore");
         // a|do|re → breaks at [1, 3]
-        assert_eq!(breaks, vec![1, 3], "adore should split as a|do|re, got {:?}", breaks);
+        assert_eq!(
+            breaks,
+            vec![1, 3],
+            "adore should split as a|do|re, got {:?}",
+            breaks
+        );
     }
 
     #[test]
     fn test_french_fallback_spaghettis() {
         let breaks = french_syllable_breaks("spaghettis");
-        assert!(!breaks.is_empty(), "spaghettis should have breaks, got {:?}", breaks);
+        assert!(
+            !breaks.is_empty(),
+            "spaghettis should have breaks, got {:?}",
+            breaks
+        );
     }
 
     #[test]
     fn test_contraction_jadore() {
         let breaks = syllable_breaks("J'adore", "fr-fr");
         // J' | a | do | re → at least 3 breaks
-        assert!(breaks.len() >= 2, "J'adore should have >=2 breaks, got {:?}", breaks);
-        assert!(breaks.contains(&2), "Should break after J' (pos 2), got {:?}", breaks);
+        assert!(
+            breaks.len() >= 2,
+            "J'adore should have >=2 breaks, got {:?}",
+            breaks
+        );
+        assert!(
+            breaks.contains(&2),
+            "Should break after J' (pos 2), got {:?}",
+            breaks
+        );
     }
 
     #[test]
@@ -272,7 +316,11 @@ mod tests {
     #[test]
     fn test_word_boundaries() {
         let breaks = syllable_breaks("un deux trois", "fr-fr");
-        assert!(breaks.len() >= 2, "Expected >=2 word breaks, got {:?}", breaks);
+        assert!(
+            breaks.len() >= 2,
+            "Expected >=2 word breaks, got {:?}",
+            breaks
+        );
     }
 
     #[test]

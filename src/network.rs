@@ -18,10 +18,18 @@ pub enum IncomingMessage {
     Connected,
     Disconnected(String),
     Error(String),
-    SyncRequested { requester: String },
+    SyncRequested {
+        requester: String,
+    },
     Delta(serde_json::Value),
-    VideoStart { filename: String, total_chunks: usize },
-    VideoChunk { index: usize, data_base64: String },
+    VideoStart {
+        filename: String,
+        total_chunks: usize,
+    },
+    VideoChunk {
+        index: usize,
+        data_base64: String,
+    },
     VideoEnd,
 }
 
@@ -56,7 +64,10 @@ impl NetworkClient {
     }
 
     pub fn is_connected(&self) -> bool {
-        matches!(self.state, ConnectionState::Connected | ConnectionState::InRoom)
+        matches!(
+            self.state,
+            ConnectionState::Connected | ConnectionState::InRoom
+        )
     }
 
     pub fn connect_and_send(&mut self, ip: &str, port: u16, password: &str, first_packet: Packet) {
@@ -107,7 +118,8 @@ impl NetworkClient {
             })
             .on(Event::Error, move |err, _| {
                 let msg = match &err {
-                    Payload::Text(v) => v.first()
+                    Payload::Text(v) => v
+                        .first()
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown error")
                         .to_string(),
@@ -123,12 +135,19 @@ impl NetworkClient {
                 if let Some(obj) = payload_to_value(&payload) {
                     let code = obj["code"].as_str().unwrap_or("").to_string();
                     let role = obj["role"].as_str().unwrap_or("user").to_string();
-                    let members = obj["members"].as_array()
-                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    let members = obj["members"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
                         .unwrap_or_default();
-                    let _ = tx_room_joined.send(IncomingMessage::Packet(
-                        Packet::RoomJoined { code, role, members },
-                    ));
+                    let _ = tx_room_joined.send(IncomingMessage::Packet(Packet::RoomJoined {
+                        code,
+                        role,
+                        members,
+                    }));
                     // Request sync directly from callback
                     let _ = client.emit("request_sync", serde_json::json!({}));
                 }
@@ -139,16 +158,19 @@ impl NetworkClient {
             })
             .on("member_joined", move |payload, _| {
                 let username = extract_string_field(&payload, "username");
-                let _ = tx_member_joined.send(IncomingMessage::Packet(Packet::MemberJoined { username }));
+                let _ = tx_member_joined
+                    .send(IncomingMessage::Packet(Packet::MemberJoined { username }));
             })
             .on("member_left", move |payload, _| {
                 let username = extract_string_field(&payload, "username");
-                let _ = tx_member_left.send(IncomingMessage::Packet(Packet::MemberLeft { username }));
+                let _ =
+                    tx_member_left.send(IncomingMessage::Packet(Packet::MemberLeft { username }));
             })
             .on("remote_command", move |payload, _| {
                 let obj = payload_to_value(&payload);
                 if obj.is_none() {
-                    let _ = tx_remote_command.send(IncomingMessage::Error("remote_command: no payload".into()));
+                    let _ = tx_remote_command
+                        .send(IncomingMessage::Error("remote_command: no payload".into()));
                     return;
                 }
                 let obj = obj.unwrap();
@@ -157,22 +179,22 @@ impl NetworkClient {
                 match serde_json::from_value::<crate::packet::CommandPayload>(raw_payload.clone()) {
                     Ok(cmd_payload) => {
                         let _ = tx_remote_command.send(IncomingMessage::Packet(
-                            Packet::RemoteCommand { from, payload: cmd_payload },
+                            Packet::RemoteCommand {
+                                from,
+                                payload: cmd_payload,
+                            },
                         ));
                     }
                     Err(e) => {
-                        let _ = tx_remote_command.send(IncomingMessage::Error(
-                            format!("Déser. échouée: {e}")
-                        ));
+                        let _ = tx_remote_command
+                            .send(IncomingMessage::Error(format!("Déser. échouée: {e}")));
                     }
                 }
             })
             .on("sync", move |payload, _| {
                 if let Some(obj) = payload_to_value(&payload) {
                     if let Ok(project) = serde_json::from_value(obj["project"].clone()) {
-                        let _ = tx_sync.send(IncomingMessage::Packet(
-                            Packet::Sync { project },
-                        ));
+                        let _ = tx_sync.send(IncomingMessage::Packet(Packet::Sync { project }));
                     }
                 }
             })
@@ -195,7 +217,10 @@ impl NetworkClient {
                 if let Some(obj) = payload_to_value(&payload) {
                     let filename = obj["filename"].as_str().unwrap_or("video.mp4").to_string();
                     let total_chunks = obj["total_chunks"].as_u64().unwrap_or(0) as usize;
-                    let _ = tx_vstart.send(IncomingMessage::VideoStart { filename, total_chunks });
+                    let _ = tx_vstart.send(IncomingMessage::VideoStart {
+                        filename,
+                        total_chunks,
+                    });
                 }
             })
             .on("video_chunk", move |payload, _| {
@@ -207,8 +232,7 @@ impl NetworkClient {
             })
             .on("video_end", move |_, _| {
                 let _ = tx_vend.send(IncomingMessage::VideoEnd);
-            })
-            ;
+            });
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| builder.connect()));
         let result = match result {
@@ -273,8 +297,13 @@ impl Drop for NetworkClient {
 
 fn packet_to_emit(packet: &Packet) -> (&'static str, serde_json::Value) {
     match packet {
-        Packet::CreateRoom { username } => ("create_room", serde_json::json!({ "username": username })),
-        Packet::JoinRoom { code, username } => ("join_room", serde_json::json!({ "code": code, "username": username })),
+        Packet::CreateRoom { username } => {
+            ("create_room", serde_json::json!({ "username": username }))
+        }
+        Packet::JoinRoom { code, username } => (
+            "join_room",
+            serde_json::json!({ "code": code, "username": username }),
+        ),
         Packet::LeaveRoom => ("leave_room", serde_json::json!({})),
         Packet::Command { payload } => ("command", serde_json::json!({ "payload": payload })),
         Packet::RequestSync => ("request_sync", serde_json::json!({})),

@@ -5,20 +5,30 @@ pub enum TextInputAction {
     Finished,
 }
 
+struct TextEditSnapshot {
+    text: String,
+    cursor_pos: usize,
+    selection: Option<(usize, usize)>,
+}
+
 pub struct TextInputState {
     pub active: bool,
     pub cursor_pos: usize,
     cursor_blink: Instant,
     pub selection: Option<(usize, usize)>,
+    undo_stack: Vec<TextEditSnapshot>,
 }
 
 impl TextInputState {
+    const MAX_UNDO: usize = 100;
+
     pub fn new() -> Self {
         Self {
             active: false,
             cursor_pos: 0,
             cursor_blink: Instant::now(),
             selection: None,
+            undo_stack: Vec::new(),
         }
     }
 
@@ -27,11 +37,13 @@ impl TextInputState {
         self.cursor_pos = text.chars().count();
         self.cursor_blink = Instant::now();
         self.selection = None;
+        self.undo_stack.clear();
     }
 
     pub fn deactivate(&mut self) {
         self.active = false;
         self.selection = None;
+        self.undo_stack.clear();
     }
 
     pub fn cursor_visible(&self) -> bool {
@@ -47,21 +59,35 @@ impl TextInputState {
     }
 
     pub fn select_range(&mut self, start: usize, end: usize) {
-        self.selection = if start == end { None } else { Some((start, end)) };
+        self.selection = if start == end {
+            None
+        } else {
+            Some((start, end))
+        };
         self.cursor_pos = end;
         self.cursor_blink = Instant::now();
     }
 
     pub fn selected_text(&self, text: &str) -> Option<String> {
         let (start, end) = self.selection_range()?;
-        let byte_start = text.char_indices().nth(start).map(|(i, _)| i).unwrap_or(text.len());
-        let byte_end = text.char_indices().nth(end).map(|(i, _)| i).unwrap_or(text.len());
+        let byte_start = text
+            .char_indices()
+            .nth(start)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
+        let byte_end = text
+            .char_indices()
+            .nth(end)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
         Some(text[byte_start..byte_end].to_string())
     }
 
     pub fn select_word_at(&mut self, text: &str, pos: usize) {
         let chars: Vec<char> = text.chars().collect();
-        if chars.is_empty() { return; }
+        if chars.is_empty() {
+            return;
+        }
         let mut idx = pos.min(chars.len().saturating_sub(1));
         if idx > 0 && is_word_separator(chars[idx]) {
             idx -= 1;
@@ -97,9 +123,18 @@ impl TextInputState {
         if key_text == "\x08" || key_text == "\x7f" {
             // Delete / Backspace with selection
             if let Some((start, end)) = self.selection_range() {
+                self.push_undo_snapshot(current_text);
                 self.selection = None;
-                let byte_start = current_text.char_indices().nth(start).map(|(i, _)| i).unwrap_or(current_text.len());
-                let byte_end = current_text.char_indices().nth(end).map(|(i, _)| i).unwrap_or(current_text.len());
+                let byte_start = current_text
+                    .char_indices()
+                    .nth(start)
+                    .map(|(i, _)| i)
+                    .unwrap_or(current_text.len());
+                let byte_end = current_text
+                    .char_indices()
+                    .nth(end)
+                    .map(|(i, _)| i)
+                    .unwrap_or(current_text.len());
                 let mut new_text = current_text.to_string();
                 new_text.replace_range(byte_start..byte_end, "");
                 self.cursor_pos = start;
@@ -108,8 +143,17 @@ impl TextInputState {
 
             // Standard backspace
             if key_text == "\x08" && self.cursor_pos > 0 {
-                let byte_start = current_text.char_indices().nth(self.cursor_pos - 1).map(|(i, _)| i).unwrap_or(0);
-                let byte_end = current_text.char_indices().nth(self.cursor_pos).map(|(i, _)| i).unwrap_or(current_text.len());
+                self.push_undo_snapshot(current_text);
+                let byte_start = current_text
+                    .char_indices()
+                    .nth(self.cursor_pos - 1)
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                let byte_end = current_text
+                    .char_indices()
+                    .nth(self.cursor_pos)
+                    .map(|(i, _)| i)
+                    .unwrap_or(current_text.len());
                 let mut new_text = current_text.to_string();
                 new_text.replace_range(byte_start..byte_end, "");
                 self.cursor_pos -= 1;
@@ -117,8 +161,17 @@ impl TextInputState {
             }
             // Standard delete
             if key_text == "\x7f" && self.cursor_pos < current_text.chars().count() {
-                let byte_start = current_text.char_indices().nth(self.cursor_pos).map(|(i, _)| i).unwrap_or(0);
-                let byte_end = current_text.char_indices().nth(self.cursor_pos + 1).map(|(i, _)| i).unwrap_or(current_text.len());
+                self.push_undo_snapshot(current_text);
+                let byte_start = current_text
+                    .char_indices()
+                    .nth(self.cursor_pos)
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                let byte_end = current_text
+                    .char_indices()
+                    .nth(self.cursor_pos + 1)
+                    .map(|(i, _)| i)
+                    .unwrap_or(current_text.len());
                 let mut new_text = current_text.to_string();
                 new_text.replace_range(byte_start..byte_end, "");
                 return Some(TextInputAction::Changed(new_text));
@@ -129,16 +182,30 @@ impl TextInputState {
         if !key_text.is_empty() {
             // If has selection, replace it
             if let Some((start, end)) = self.selection_range() {
+                self.push_undo_snapshot(current_text);
                 self.selection = None;
-                let byte_start = current_text.char_indices().nth(start).map(|(i, _)| i).unwrap_or(current_text.len());
-                let byte_end = current_text.char_indices().nth(end).map(|(i, _)| i).unwrap_or(current_text.len());
+                let byte_start = current_text
+                    .char_indices()
+                    .nth(start)
+                    .map(|(i, _)| i)
+                    .unwrap_or(current_text.len());
+                let byte_end = current_text
+                    .char_indices()
+                    .nth(end)
+                    .map(|(i, _)| i)
+                    .unwrap_or(current_text.len());
                 let mut new_text = current_text.to_string();
                 new_text.replace_range(byte_start..byte_end, key_text);
                 self.cursor_pos = start + key_text.chars().count();
                 return Some(TextInputAction::Changed(new_text));
             }
             // Normal insert
-            let byte_pos = current_text.char_indices().nth(self.cursor_pos).map(|(i, _)| i).unwrap_or(current_text.len());
+            let byte_pos = current_text
+                .char_indices()
+                .nth(self.cursor_pos)
+                .map(|(i, _)| i)
+                .unwrap_or(current_text.len());
+            self.push_undo_snapshot(current_text);
             let mut new_text = current_text.to_string();
             new_text.insert_str(byte_pos, key_text);
             self.cursor_pos += key_text.chars().count();
@@ -240,6 +307,38 @@ impl TextInputState {
         self.cursor_pos = text.chars().count();
         self.cursor_blink = Instant::now();
         self.selection = None;
+        self.undo_stack.clear();
+    }
+
+    pub fn undo(&mut self, current_text: &str) -> Option<String> {
+        if !self.active {
+            return None;
+        }
+
+        let snapshot = self.undo_stack.pop()?;
+        let len = snapshot.text.chars().count();
+        self.cursor_pos = snapshot.cursor_pos.min(len);
+        self.selection = snapshot
+            .selection
+            .map(|(start, end)| (start.min(len), end.min(len)));
+        self.cursor_blink = Instant::now();
+
+        if snapshot.text == current_text {
+            None
+        } else {
+            Some(snapshot.text)
+        }
+    }
+
+    fn push_undo_snapshot(&mut self, current_text: &str) {
+        if self.undo_stack.len() >= Self::MAX_UNDO {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(TextEditSnapshot {
+            text: current_text.to_string(),
+            cursor_pos: self.cursor_pos,
+            selection: self.selection,
+        });
     }
 }
 

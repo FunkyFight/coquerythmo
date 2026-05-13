@@ -39,10 +39,18 @@ struct VideoInfo {
 
 fn probe(path: &Path) -> Result<VideoInfo, String> {
     let out = Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=width,height",
-            "-show_entries", "format=duration",
-            "-of", "csv=p=0:s=,"])
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0:s=,",
+        ])
         .arg(path)
         .output()
         .map_err(|e| format!("ffprobe: {e}"))?;
@@ -51,12 +59,21 @@ fn probe(path: &Path) -> Result<VideoInfo, String> {
     }
     let text = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = text.trim().lines().collect();
-    if lines.is_empty() { return Err("ffprobe: no output".into()); }
+    if lines.is_empty() {
+        return Err("ffprobe: no output".into());
+    }
     let parts: Vec<&str> = lines[0].split(',').collect();
     let width: u32 = parts.get(0).and_then(|s| s.parse().ok()).unwrap_or(1920);
     let height: u32 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1080);
-    let duration_secs: f64 = lines.get(1).and_then(|s| s.trim().parse().ok()).unwrap_or(0.0);
-    Ok(VideoInfo { width, height, duration_secs })
+    let duration_secs: f64 = lines
+        .get(1)
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0.0);
+    Ok(VideoInfo {
+        width,
+        height,
+        duration_secs,
+    })
 }
 
 /// Check if nvenc is available
@@ -107,8 +124,15 @@ pub fn export_mp4(
     let use_cuda = use_nvenc && has_cuda_hwaccel();
     let codec = if use_nvenc { "h264_nvenc" } else { "libx264" };
     log::info!("Using {} encoding, CUDA hwaccel={}", codec, use_cuda);
-    log::info!("Export: {}x{} video + {}px BR, {} frames at {}fps, codec={}",
-        out_w, vid_h, br_h, total_frames, fps, codec);
+    log::info!(
+        "Export: {}x{} video + {}px BR, {} frames at {}fps, codec={}",
+        out_w,
+        vid_h,
+        br_h,
+        total_frames,
+        fps,
+        codec
+    );
 
     // === Pass 1: Render BR strip → temp video file ===
     let exe_dir = std::env::current_exe()
@@ -119,7 +143,12 @@ pub fn export_mp4(
     let temp_dir = exe_dir.join("temp");
     let _ = std::fs::create_dir_all(&temp_dir);
     let temp_br = temp_dir.join("br_temp.mp4");
-    log::info!("Pass 1: encoding {} BR frames at {}fps to {}", total_frames, fps, temp_br.display());
+    log::info!(
+        "Pass 1: encoding {} BR frames at {}fps to {}",
+        total_frames,
+        fps,
+        temp_br.display()
+    );
 
     // Ensure even dimensions for YUV420p (chroma subsampling requires 2x2 blocks)
     let br_h_even = (br_h + 1) & !1;
@@ -129,10 +158,16 @@ pub fn export_mp4(
 
     let mut br_encoder = Command::new("ffmpeg")
         .args([
-            "-f", "rawvideo", "-pix_fmt", "yuv420p",
-            "-s", &format!("{}x{}", w, h),
-            "-r", &fps.to_string(),
-            "-i", "pipe:0",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p",
+            "-s",
+            &format!("{}x{}", w, h),
+            "-r",
+            &fps.to_string(),
+            "-i",
+            "pipe:0",
         ])
         .args(if use_nvenc {
             vec!["-c:v", "hevc_nvenc", "-preset", "p1", "-tune", "lossless"]
@@ -157,7 +192,12 @@ pub fn export_mp4(
 
         // Ratio to convert export frame index → video source frame position
         let frame_ratio = source_fps / fps;
-        log::info!("Frame ratio: source {:.2}fps / export {:.2}fps = {:.4}", source_fps, fps, frame_ratio);
+        log::info!(
+            "Frame ratio: source {:.2}fps / export {:.2}fps = {:.4}",
+            source_fps,
+            fps,
+            frame_ratio
+        );
 
         match rythmo_gpu_renderer::GpuRenderer::new() {
             Ok(mut gpu) => {
@@ -172,7 +212,9 @@ pub fn export_mp4(
 
                     rgba_to_yuv420p(&rgba, &mut yuv_buf, w, h, br_h as usize, hw, u_off, v_off);
 
-                    if writer.write_all(&yuv_buf).is_err() { break; }
+                    if writer.write_all(&yuv_buf).is_err() {
+                        break;
+                    }
 
                     if frame as u64 % fps as u64 == 0 {
                         progress_cb((frame - 1) as f32 / total_frames as f32 * 0.9);
@@ -185,7 +227,9 @@ pub fn export_mp4(
             }
             Err(e) => {
                 log::warn!("GPU unavailable ({}), CPU fallback", e);
-                let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+                let n_threads = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4);
                 log::info!("CPU render: {} threads", n_threads);
 
                 let mut renderers: Vec<rythmo_cpu_renderer::CpuRenderer> = (0..n_threads)
@@ -195,19 +239,25 @@ pub fn export_mp4(
 
                 for batch in frame_indices.chunks(n_threads) {
                     let rendered: Vec<Vec<u8>> = std::thread::scope(|scope| {
-                        let handles: Vec<_> = batch.iter()
+                        let handles: Vec<_> = batch
+                            .iter()
                             .zip(renderers.iter_mut())
                             .map(|(&frame, renderer)| {
                                 let vf = (frame as f64 * frame_ratio) as i64;
-                                scope.spawn(move || renderer.render_br(project, vf, out_w, source_fps, br_scale))
-                            }).collect();
+                                scope.spawn(move || {
+                                    renderer.render_br(project, vf, out_w, source_fps, br_scale)
+                                })
+                            })
+                            .collect();
                         handles.into_iter().map(|h| h.join().unwrap()).collect()
                     });
 
                     for (i, rgba) in rendered.iter().enumerate() {
                         let frame = batch[i];
                         rgba_to_yuv420p(rgba, &mut yuv_buf, w, h, br_h as usize, hw, u_off, v_off);
-                        if writer.write_all(&yuv_buf).is_err() { break; }
+                        if writer.write_all(&yuv_buf).is_err() {
+                            break;
+                        }
                         if frame as u64 % fps as u64 == 0 {
                             progress_cb(frame as f32 / total_frames as f32 * 0.9);
                         }
@@ -219,10 +269,15 @@ pub fn export_mp4(
         let _ = writer.flush();
     }
 
-    let result = br_encoder.wait_with_output().map_err(|e| format!("ffmpeg pass 1: {e}"))?;
+    let result = br_encoder
+        .wait_with_output()
+        .map_err(|e| format!("ffmpeg pass 1: {e}"))?;
     if !result.status.success() {
         let _ = std::fs::remove_file(&temp_br);
-        return Err(format!("ffmpeg pass 1: {}", String::from_utf8_lossy(&result.stderr)));
+        return Err(format!(
+            "ffmpeg pass 1: {}",
+            String::from_utf8_lossy(&result.stderr)
+        ));
     }
     log::info!("Pass 1 complete, BR temp: {}", temp_br.display());
 
@@ -242,16 +297,43 @@ pub fn export_mp4(
 
     let result = if use_cuda {
         // Try CUDA-accelerated pass 2
-        let r = run_pass2(source_video, &temp_br, output, &cuda_filter, true, use_nvenc, codec, fps);
+        let r = run_pass2(
+            source_video,
+            &temp_br,
+            output,
+            &cuda_filter,
+            true,
+            use_nvenc,
+            codec,
+            fps,
+        );
         if r.is_err() {
             log::warn!("CUDA pass 2 failed, falling back to CPU filters");
             let _ = std::fs::remove_file(output);
-            run_pass2(source_video, &temp_br, output, &cpu_filter, false, use_nvenc, codec, fps)
+            run_pass2(
+                source_video,
+                &temp_br,
+                output,
+                &cpu_filter,
+                false,
+                use_nvenc,
+                codec,
+                fps,
+            )
         } else {
             r
         }
     } else {
-        run_pass2(source_video, &temp_br, output, &cpu_filter, false, use_nvenc, codec, fps)
+        run_pass2(
+            source_video,
+            &temp_br,
+            output,
+            &cpu_filter,
+            false,
+            use_nvenc,
+            codec,
+            fps,
+        )
     };
 
     let _ = std::fs::remove_file(&temp_br);
@@ -277,15 +359,30 @@ fn run_pass2(
         cmd.args(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]);
     }
     let combine = cmd
-        .arg("-i").arg(source_video)
-        .arg("-i").arg(temp_br)
+        .arg("-i")
+        .arg(source_video)
+        .arg("-i")
+        .arg(temp_br)
         .args(["-filter_complex", filter, "-map", "[out]", "-map", "0:a?"])
         .args(if use_nvenc {
-            vec!["-c:v", codec, "-preset", "p1", "-rc", "constqp", "-qp", "20", "-b:v", "0"]
+            vec![
+                "-c:v", codec, "-preset", "p1", "-rc", "constqp", "-qp", "20", "-b:v", "0",
+            ]
         } else {
             vec!["-c:v", codec, "-preset", "ultrafast", "-crf", "20"]
         })
-        .args(["-pix_fmt", "yuv420p", "-r", &fps.to_string(), "-c:a", "copy", "-shortest", "-v", "warning", "-y"])
+        .args([
+            "-pix_fmt",
+            "yuv420p",
+            "-r",
+            &fps.to_string(),
+            "-c:a",
+            "copy",
+            "-shortest",
+            "-v",
+            "warning",
+            "-y",
+        ])
         .arg(output)
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
@@ -293,7 +390,10 @@ fn run_pass2(
         .map_err(|e| format!("ffmpeg pass 2: {e}"))?;
 
     if !combine.success() {
-        Err(format!("ffmpeg pass 2 failed (cuda={}, filter={})", use_cuda, filter))
+        Err(format!(
+            "ffmpeg pass 2 failed (cuda={}, filter={})",
+            use_cuda, filter
+        ))
     } else {
         Ok(())
     }
@@ -314,7 +414,8 @@ fn rgba_to_yuv420p(
         for x in 0..w {
             let si = (y * w + x) * 4;
             let (r, g, b) = (rgba[si] as i32, rgba[si + 1] as i32, rgba[si + 2] as i32);
-            yuv_buf[y * w + x] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(16, 235) as u8;
+            yuv_buf[y * w + x] =
+                (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(16, 235) as u8;
         }
     }
     for y in br_h..h {
@@ -342,8 +443,10 @@ fn rgba_to_yuv420p(
             let r = rs >> 2;
             let g = gs >> 2;
             let b = bs >> 2;
-            yuv_buf[u_off + cy * hw + cx] = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128).clamp(16, 240) as u8;
-            yuv_buf[v_off + cy * hw + cx] = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(16, 240) as u8;
+            yuv_buf[u_off + cy * hw + cx] =
+                (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128).clamp(16, 240) as u8;
+            yuv_buf[v_off + cy * hw + cx] =
+                (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(16, 240) as u8;
         }
     }
 }

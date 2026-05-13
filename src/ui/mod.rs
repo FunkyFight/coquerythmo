@@ -1,20 +1,20 @@
+pub mod color_picker;
 pub mod connect_modal;
 pub mod dropdown;
-pub mod color_picker;
 pub mod export_modal;
-pub mod save_prompt_modal;
-pub mod studio_warning_modal;
-pub mod server_browser;
 pub mod icon_button;
 pub mod icons;
 pub mod interactive;
 pub mod layout;
+pub mod renderer;
 pub mod rythmo;
+pub mod save_prompt_modal;
+pub mod server_browser;
 pub mod settings_modal;
 pub mod slider;
+pub mod studio_warning_modal;
 pub mod text_input;
 pub mod theme;
-pub mod renderer;
 pub mod toast;
 pub mod tooltip;
 pub mod widget;
@@ -22,7 +22,10 @@ pub mod widget;
 use layout::{Layout, PROPS_DEFAULT_W, PROPS_DRAG_ZONE, PROPS_MAX_W, PROPS_MIN_W};
 use renderer::StretchedText;
 use tooltip::TooltipState;
-use widget::{EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction, UiEvent, VAlign, Widget};
+use widget::{
+    EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction,
+    UiEvent, VAlign, Widget,
+};
 
 use crate::i18n::t;
 use crate::project::Project;
@@ -78,10 +81,33 @@ impl Ui {
         let sh = screen_height as f32;
         let layout = Layout::compute(sw, sh, false, PROPS_DEFAULT_W);
 
-        let icon_names = ["resume", "pause", "prev_frame", "next_frame",
-            "boucle", "out", "scene", "respirations", "reactions", "liaison_left", "liaison_right", "settings", "stretcher", "br-edit", "note", "sound", "mute"];
-        let icon_uvs: std::collections::HashMap<String, [f32; 4]> = icon_names.iter()
-            .map(|&name| (name.to_string(), icon_atlas.get_uv(name).unwrap_or([0.0; 4])))
+        let icon_names = [
+            "resume",
+            "pause",
+            "prev_frame",
+            "next_frame",
+            "boucle",
+            "out",
+            "scene",
+            "respirations",
+            "reactions",
+            "liaison_left",
+            "liaison_right",
+            "settings",
+            "stretcher",
+            "br-edit",
+            "note",
+            "sound",
+            "mute",
+        ];
+        let icon_uvs: std::collections::HashMap<String, [f32; 4]> = icon_names
+            .iter()
+            .map(|&name| {
+                (
+                    name.to_string(),
+                    icon_atlas.get_uv(name).unwrap_or([0.0; 4]),
+                )
+            })
             .collect();
 
         let settings_uv = icon_uvs.get("settings").copied().unwrap_or([0.0; 4]);
@@ -126,22 +152,48 @@ impl Ui {
     }
 
     fn rebuild_layout(&mut self) {
-        self.layout = Layout::compute(self.screen_w, self.screen_h, self.props_visible, self.props_width);
+        self.layout = Layout::compute(
+            self.screen_w,
+            self.screen_h,
+            self.props_visible,
+            self.props_width,
+        );
         self.toolbar_widgets = self.build_toolbar();
     }
 
-    fn build_topbar(in_room: bool, has_video: bool, screen_w: f32, settings_uv: [f32; 4]) -> Vec<Box<dyn Widget>> {
+    fn build_topbar(
+        in_room: bool,
+        has_video: bool,
+        screen_w: f32,
+        settings_uv: [f32; 4],
+    ) -> Vec<Box<dyn Widget>> {
         // Build project menu with "Récent" submenu
         let recents = crate::config::recent_projects();
-        let recent_labels: Vec<String> = recents.iter().map(|r| {
-            let video = r.video_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-            let br = r.br_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-            format!("{} + {}", video, br)
-        }).collect();
+        let recent_labels: Vec<String> = recents
+            .iter()
+            .map(|r| {
+                let video = r
+                    .video_path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let br = r
+                    .br_path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                format!("{} + {}", video, br)
+            })
+            .collect();
 
         let recents_clone = recents.clone();
         let mut project_menu = Dropdown::new(
-            Rect { x: 4.0, y: 2.0, width: 80.0, height: 28.0 },
+            Rect {
+                x: 4.0,
+                y: 2.0,
+                width: 80.0,
+                height: 28.0,
+            },
             vec![
                 t("menu.project.add_video").into(),
                 format!("{} ▸", t("menu.project.import")),
@@ -162,14 +214,18 @@ impl Ui {
         .with_panel_width(340.0)
         .with_disabled_items(vec![false, false, !has_video, false, false]);
 
-        project_menu = project_menu.with_submenu(1, vec![
-            t("menu.project.import.coquerythmo").into(),
-            t("menu.project.import.cappela").into(),
-        ], |index, _label| match index {
-            0 => EventResponse::Action(UiAction::ImportProject),
-            1 => EventResponse::Action(UiAction::ImportCappelaProject),
-            _ => EventResponse::Consumed,
-        });
+        project_menu = project_menu.with_submenu(
+            1,
+            vec![
+                t("menu.project.import.coquerythmo").into(),
+                t("menu.project.import.cappela").into(),
+            ],
+            |index, _label| match index {
+                0 => EventResponse::Action(UiAction::ImportProject),
+                1 => EventResponse::Action(UiAction::ImportCappelaProject),
+                _ => EventResponse::Consumed,
+            },
+        );
 
         // Attach submenu to item index 4 ("Récent ▸")
         if !recent_labels.is_empty() {
@@ -186,7 +242,12 @@ impl Ui {
         }
 
         let export_menu = Dropdown::new(
-            Rect { x: 88.0, y: 2.0, width: 80.0, height: 28.0 },
+            Rect {
+                x: 88.0,
+                y: 2.0,
+                width: 80.0,
+                height: 28.0,
+            },
             vec![
                 t("menu.export.mp4").into(),
                 format!("{} (Alpha)", t("menu.export.studio_mode")),
@@ -203,7 +264,12 @@ impl Ui {
         .with_panel_width(260.0);
 
         let connect_menu = Dropdown::new(
-            Rect { x: 172.0, y: 2.0, width: 120.0, height: 28.0 },
+            Rect {
+                x: 172.0,
+                y: 2.0,
+                width: 120.0,
+                height: 28.0,
+            },
             vec![
                 t("menu.connect.servers").into(),
                 t("menu.connect.disconnect").into(),
@@ -224,17 +290,30 @@ impl Ui {
         let settings_x = screen_w - settings_size - 8.0;
         let settings_y = (TOPBAR_HEIGHT - settings_size) / 2.0;
         let settings_btn = IconButton::new(
-            Rect { x: settings_x, y: settings_y, width: settings_size, height: settings_size },
-            "", settings_uv,
+            Rect {
+                x: settings_x,
+                y: settings_y,
+                width: settings_size,
+                height: settings_size,
+            },
+            "",
+            settings_uv,
             || EventResponse::Action(UiAction::OpenSettings),
-        ).with_tooltip(t("settings.tooltip"));
+        )
+        .with_tooltip(t("settings.tooltip"));
 
-        vec![Box::new(project_menu), Box::new(export_menu), Box::new(connect_menu), Box::new(settings_btn)]
+        vec![
+            Box::new(project_menu),
+            Box::new(export_menu),
+            Box::new(connect_menu),
+            Box::new(settings_btn),
+        ]
     }
 
     pub fn rebuild_topbar(&mut self, in_room: bool) {
         self.network_in_room = in_room;
-        self.topbar_widgets = Self::build_topbar(in_room, self.has_video, self.screen_w, self.uv("settings"));
+        self.topbar_widgets =
+            Self::build_topbar(in_room, self.has_video, self.screen_w, self.uv("settings"));
     }
 
     fn progress_bar_rect(&self) -> Rect {
@@ -249,12 +328,22 @@ impl Ui {
         let right = mute_start - 8.0;
         let w = (right - left).max(40.0);
         let h = 6.0;
-        Rect { x: left, y: tb.y + (TOOLBAR_HEIGHT - h) / 2.0, width: w, height: h }
+        Rect {
+            x: left,
+            y: tb.y + (TOOLBAR_HEIGHT - h) / 2.0,
+            width: w,
+            height: h,
+        }
     }
 
     fn progress_bar_hit_rect(&self) -> Rect {
         let r = self.progress_bar_rect();
-        Rect { x: r.x, y: r.y - 8.0, width: r.width, height: r.height + 16.0 }
+        Rect {
+            x: r.x,
+            y: r.y - 8.0,
+            width: r.width,
+            height: r.height + 16.0,
+        }
     }
 
     pub fn rebuild_toolbar(&mut self) {
@@ -280,55 +369,134 @@ impl Ui {
         macro_rules! btn {
             ($icon:expr, $action:expr, $tip:expr) => {{
                 let b = IconButton::new(
-                    Rect { x, y, width: s, height: s }, "", self.uv($icon), $action,
-                ).with_tooltip(t($tip));
+                    Rect {
+                        x,
+                        y,
+                        width: s,
+                        height: s,
+                    },
+                    "",
+                    self.uv($icon),
+                    $action,
+                )
+                .with_tooltip(t($tip));
                 widgets.push(Box::new(b));
                 x += s + gap;
             }};
         }
 
         // Transport: prev | play/pause | next
-        btn!("prev_frame", || EventResponse::Action(UiAction::PrevFrame), "toolbar.prev_frame");
-        let play_uv = if self.playing { self.uv("pause") } else { self.uv("resume") };
-        let play_tip = if self.playing { "toolbar.stop" } else { "toolbar.play" };
+        btn!(
+            "prev_frame",
+            || EventResponse::Action(UiAction::PrevFrame),
+            "toolbar.prev_frame"
+        );
+        let play_uv = if self.playing {
+            self.uv("pause")
+        } else {
+            self.uv("resume")
+        };
+        let play_tip = if self.playing {
+            "toolbar.stop"
+        } else {
+            "toolbar.play"
+        };
         let play = IconButton::new(
-            Rect { x, y, width: s, height: s }, "", play_uv,
+            Rect {
+                x,
+                y,
+                width: s,
+                height: s,
+            },
+            "",
+            play_uv,
             || EventResponse::Action(UiAction::TogglePlayPause),
-        ).with_tooltip(t(play_tip));
+        )
+        .with_tooltip(t(play_tip));
         widgets.push(Box::new(play));
         x += s + gap;
-        btn!("next_frame", || EventResponse::Action(UiAction::NextFrame), "toolbar.next_frame");
+        btn!(
+            "next_frame",
+            || EventResponse::Action(UiAction::NextFrame),
+            "toolbar.next_frame"
+        );
 
         x += gap * 2.0; // separator
 
         // Markers: boucle | out | scene
-        btn!("boucle", || EventResponse::Action(UiAction::AddMarker(MarkerKind::Boucle)), "toolbar.boucle");
-        btn!("out", || EventResponse::Action(UiAction::AddMarker(MarkerKind::Out)), "toolbar.out");
-        btn!("scene", || EventResponse::Action(UiAction::AddMarker(MarkerKind::SceneChange)), "toolbar.scene");
+        btn!(
+            "boucle",
+            || EventResponse::Action(UiAction::AddMarker(MarkerKind::Boucle)),
+            "toolbar.boucle"
+        );
+        btn!(
+            "out",
+            || EventResponse::Action(UiAction::AddMarker(MarkerKind::Out)),
+            "toolbar.out"
+        );
+        btn!(
+            "scene",
+            || EventResponse::Action(UiAction::AddMarker(MarkerKind::SceneChange)),
+            "toolbar.scene"
+        );
 
         x += gap * 2.0; // separator
 
         // Quick-insert dropdowns: respirations | reactions
-        btn!("respirations", || EventResponse::Action(UiAction::OpenDropdown(widget::ToolbarDropdown::Respirations)), "toolbar.respirations");
-        btn!("reactions", || EventResponse::Action(UiAction::OpenDropdown(widget::ToolbarDropdown::Reactions)), "toolbar.reactions");
+        btn!(
+            "respirations",
+            || EventResponse::Action(UiAction::OpenDropdown(
+                widget::ToolbarDropdown::Respirations
+            )),
+            "toolbar.respirations"
+        );
+        btn!(
+            "reactions",
+            || EventResponse::Action(UiAction::OpenDropdown(widget::ToolbarDropdown::Reactions)),
+            "toolbar.reactions"
+        );
 
         x += gap * 2.0; // separator
 
         // Note
-        btn!("note", || EventResponse::Action(UiAction::AddNote), "toolbar.note");
+        btn!(
+            "note",
+            || EventResponse::Action(UiAction::AddNote),
+            "toolbar.note"
+        );
 
         x += gap * 2.0; // separator
 
         // Liaisons: left | right
-        btn!("liaison_left", || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonLeft)), "toolbar.liaison_left");
-        btn!("liaison_right", || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonRight)), "toolbar.liaison_right");
+        btn!(
+            "liaison_left",
+            || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonLeft)),
+            "toolbar.liaison_left"
+        );
+        btn!(
+            "liaison_right",
+            || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonRight)),
+            "toolbar.liaison_right"
+        );
 
         x += gap * 2.0; // separator
 
         // Syllable stretcher (toggles between stretcher and br-edit icons)
-        let stretcher_icon = if self.rythmo_state.syllable_mode { "br-edit" } else { "stretcher" };
-        let stretcher_tip = if self.rythmo_state.syllable_mode { "toolbar.back_to_edit" } else { "toolbar.stretcher" };
-        btn!(stretcher_icon, || EventResponse::Action(UiAction::ToggleSyllableMode), stretcher_tip);
+        let stretcher_icon = if self.rythmo_state.syllable_mode {
+            "br-edit"
+        } else {
+            "stretcher"
+        };
+        let stretcher_tip = if self.rythmo_state.syllable_mode {
+            "toolbar.back_to_edit"
+        } else {
+            "toolbar.stretcher"
+        };
+        btn!(
+            stretcher_icon,
+            || EventResponse::Action(UiAction::ToggleSyllableMode),
+            stretcher_tip
+        );
 
         // Right side: mute button + volume slider
         let slider_w = SLIDER_W;
@@ -336,29 +504,61 @@ impl Ui {
         let slider_x = tb.x + tb.width - slider_w - 8.0;
         let slider_y = tb.y + (TOOLBAR_HEIGHT - slider_h) / 2.0;
         let mute_x = slider_x - s - gap;
-        let mute_icon = if self.volume <= 0.001 { "mute" } else { "sound" };
-        let mute_tip = if self.volume <= 0.001 { "toolbar.unmute" } else { "toolbar.mute" };
+        let mute_icon = if self.volume <= 0.001 {
+            "mute"
+        } else {
+            "sound"
+        };
+        let mute_tip = if self.volume <= 0.001 {
+            "toolbar.unmute"
+        } else {
+            "toolbar.mute"
+        };
         let mute = IconButton::new(
-            Rect { x: mute_x, y, width: s, height: s }, "", self.uv(mute_icon),
+            Rect {
+                x: mute_x,
+                y,
+                width: s,
+                height: s,
+            },
+            "",
+            self.uv(mute_icon),
             || EventResponse::Action(UiAction::ToggleMute),
-        ).with_tooltip(t(mute_tip));
+        )
+        .with_tooltip(t(mute_tip));
         widgets.push(Box::new(mute));
         let volume = Slider::new(
-            Rect { x: slider_x, y: slider_y, width: slider_w, height: slider_h },
-            self.volume, |val| EventResponse::Action(UiAction::SetVolume(val)),
-        ).with_tooltip(t("toolbar.volume"));
+            Rect {
+                x: slider_x,
+                y: slider_y,
+                width: slider_w,
+                height: slider_h,
+            },
+            self.volume,
+            |val| EventResponse::Action(UiAction::SetVolume(val)),
+        )
+        .with_tooltip(t("toolbar.volume"));
         widgets.push(Box::new(volume));
 
         widgets
     }
 
-    pub fn handle_event(&mut self, event: &UiEvent, project: &Project, current_frame: i64, fps: f64) -> EventResponse {
+    pub fn handle_event(
+        &mut self,
+        event: &UiEvent,
+        project: &Project,
+        current_frame: i64,
+        fps: f64,
+    ) -> EventResponse {
         if let UiEvent::MouseMove { x, y } = event {
             self.cursor_pos = (*x, *y);
         }
 
         // Toast click to dismiss
-        if self.toasts.handle_event(event, self.screen_w, self.screen_h) {
+        if self
+            .toasts
+            .handle_event(event, self.screen_w, self.screen_h)
+        {
             return EventResponse::Consumed;
         }
 
@@ -406,7 +606,9 @@ impl Ui {
         if self.active_dropdown.is_some() {
             if let UiEvent::MousePress { x, y } = event {
                 let resp = self.handle_dropdown_click(*x, *y);
-                if resp != EventResponse::Ignored { return resp; }
+                if resp != EventResponse::Ignored {
+                    return resp;
+                }
             }
         }
 
@@ -417,12 +619,20 @@ impl Ui {
         // Toolbar widgets must receive clicks before seek scrubbing because they live in the same bar.
         if let UiEvent::MousePress { x, y } = event {
             for widget in self.toolbar_widgets.iter() {
-                if widget.bounds().contains(*x, *y) && widget.tooltip().is_some_and(|tip| tip == t("toolbar.mute") || tip == t("toolbar.unmute")) {
+                if widget.bounds().contains(*x, *y)
+                    && widget
+                        .tooltip()
+                        .is_some_and(|tip| tip == t("toolbar.mute") || tip == t("toolbar.unmute"))
+                {
                     return EventResponse::Action(UiAction::ToggleMute);
                 }
             }
         }
-        for widget in self.topbar_widgets.iter_mut().chain(self.toolbar_widgets.iter_mut()) {
+        for widget in self
+            .topbar_widgets
+            .iter_mut()
+            .chain(self.toolbar_widgets.iter_mut())
+        {
             if widget.captures_all() {
                 let response = widget.handle_event(event);
                 if response != EventResponse::Ignored {
@@ -431,7 +641,11 @@ impl Ui {
                 }
             }
         }
-        for widget in self.topbar_widgets.iter_mut().chain(self.toolbar_widgets.iter_mut()) {
+        for widget in self
+            .topbar_widgets
+            .iter_mut()
+            .chain(self.toolbar_widgets.iter_mut())
+        {
             if !widget.captures_all() {
                 let response = widget.handle_event(event);
                 if response != EventResponse::Ignored {
@@ -445,7 +659,9 @@ impl Ui {
         if self.total_frames > 0 {
             let hit = self.progress_bar_hit_rect();
             match event {
-                UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } if hit.contains(*x, *y) => {
+                UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y }
+                    if hit.contains(*x, *y) =>
+                {
                     self.scrubbing = true;
                     let t = ((*x - hit.x) / hit.width).clamp(0.0, 1.0);
                     let frame = (t * self.total_frames as f32) as i64;
@@ -466,14 +682,26 @@ impl Ui {
 
         // Rythmo zone events (lines, scroll, ctrl+click, etc.)
         let rythmo_response = rythmo::handle_rythmo_event(
-            event, &self.layout.rythmo, project, current_frame, fps, &mut self.rythmo_state,
+            event,
+            &self.layout.rythmo,
+            project,
+            current_frame,
+            fps,
+            &mut self.rythmo_state,
         );
         if rythmo_response != EventResponse::Ignored {
             return rythmo_response;
         }
 
         // Scroll in rythmo zone
-        if let UiEvent::Scroll { x, y, delta, fast, ctrl } = event {
+        if let UiEvent::Scroll {
+            x,
+            y,
+            delta,
+            fast,
+            ctrl,
+        } = event
+        {
             if self.layout.rythmo.contains(*x, *y) {
                 if *ctrl && *fast {
                     // CTRL+SHIFT+scroll: jump between boucle markers
@@ -533,7 +761,11 @@ impl Ui {
 
     fn update_tooltip(&mut self) {
         let (cx, cy) = self.cursor_pos;
-        for widget in self.topbar_widgets.iter().chain(self.toolbar_widgets.iter()) {
+        for widget in self
+            .topbar_widgets
+            .iter()
+            .chain(self.toolbar_widgets.iter())
+        {
             if widget.bounds().contains(cx, cy) {
                 if let Some(text) = widget.tooltip() {
                     self.tooltip = Some(TooltipState {
@@ -568,15 +800,26 @@ impl Ui {
     fn dropdown_items(dd: &widget::ToolbarDropdown) -> Vec<(&'static str, &'static str)> {
         match dd {
             widget::ToolbarDropdown::Respirations => vec![
-                ("↑", "resp.up"), ("↓", "resp.down"),
-                ("(H)", "resp.h"), ("(HH)", "resp.hh"),
-                ("(mH)", "resp.mh"), ("(mHH)", "resp.mhh"),
+                ("↑", "resp.up"),
+                ("↓", "resp.down"),
+                ("(H)", "resp.h"),
+                ("(HH)", "resp.hh"),
+                ("(mH)", "resp.mh"),
+                ("(mHH)", "resp.mhh"),
             ],
             widget::ToolbarDropdown::Reactions => vec![
-                ("(X)", "react.x"), ("(mts)", "react.mts"), ("(tsc)", "react.tsc"),
-                ("(ah)", "react.ah"), ("(oh)", "react.oh"), ("(ih)", "react.ih"),
-                ("(mhm)", "react.mhm"), ("(hm)", "react.hm"), ("(ptt)", "react.ptt"),
-                ("(pff)", "react.pff"), ("(unh)", "react.unh"), ("(hun)", "react.hun"),
+                ("(X)", "react.x"),
+                ("(mts)", "react.mts"),
+                ("(tsc)", "react.tsc"),
+                ("(ah)", "react.ah"),
+                ("(oh)", "react.oh"),
+                ("(ih)", "react.ih"),
+                ("(mhm)", "react.mhm"),
+                ("(hm)", "react.hm"),
+                ("(ptt)", "react.ptt"),
+                ("(pff)", "react.pff"),
+                ("(unh)", "react.unh"),
+                ("(hun)", "react.hun"),
                 ("(psst)", "react.psst"),
             ],
         }
@@ -597,7 +840,9 @@ impl Ui {
         let idx = ((y - dropdown_rect.y) / item_h) as usize;
         if let Some((text, _)) = items.get(idx) {
             self.active_dropdown = None;
-            return EventResponse::Action(UiAction::AddQuickLine { text: text.to_string() });
+            return EventResponse::Action(UiAction::AddQuickLine {
+                text: text.to_string(),
+            });
         }
         EventResponse::Consumed
     }
@@ -616,10 +861,19 @@ impl Ui {
         let btn_x = self.layout.toolbar.x + 8.0 + btn_index as f32 * (TOOLBAR_BTN_SIZE + 4.0)
             + if btn_index >= 3 { 8.0 } else { 0.0 }  // separator after transport
             + if btn_index >= 6 { 8.0 } else { 0.0 }; // separator after markers
-        Rect { x: btn_x, y: self.layout.toolbar.y - h - 2.0, width: w, height: h }
+        Rect {
+            x: btn_x,
+            y: self.layout.toolbar.y - h - 2.0,
+            width: w,
+            height: h,
+        }
     }
 
-    fn render_toolbar_dropdown(&self, quads: &mut Vec<QuadInstance>, labels: &mut Vec<LabelInfo<'_>>) {
+    fn render_toolbar_dropdown(
+        &self,
+        quads: &mut Vec<QuadInstance>,
+        labels: &mut Vec<LabelInfo<'_>>,
+    ) {
         let dd = match &self.active_dropdown {
             Some(dd) => dd,
             None => return,
@@ -631,11 +885,16 @@ impl Ui {
         // Background
         quads.push(QuadInstance {
             rect: [rect.x, rect.y, rect.width, rect.height],
-            color: DROPDOWN_PANEL_TOP, color_bottom: DROPDOWN_PANEL_BOT,
+            color: DROPDOWN_PANEL_TOP,
+            color_bottom: DROPDOWN_PANEL_BOT,
             border_color: DROPDOWN_PANEL_BORDER,
-            border_width: 1.0, border_radius: 4.0,
-            shadow_offset: [0.0, -2.0], shadow_color: [0.0, 0.0, 0.0, 0.4], shadow_blur: 8.0,
-            rotation: 0.0, _padding: [0.0; 2],
+            border_width: 1.0,
+            border_radius: 4.0,
+            shadow_offset: [0.0, -2.0],
+            shadow_color: [0.0, 0.0, 0.0, 0.4],
+            shadow_blur: 8.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
         });
 
         let mut iy = rect.y;
@@ -643,25 +902,45 @@ impl Ui {
             // Item label
             labels.push(LabelInfo {
                 text,
-                bounds: Rect { x: rect.x + 8.0, y: iy, width: rect.width - 16.0, height: item_h },
-                h_align: HAlign::Left, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(13.0), color_override: None, font_family_override: None,
+                bounds: Rect {
+                    x: rect.x + 8.0,
+                    y: iy,
+                    width: rect.width - 16.0,
+                    height: item_h,
+                },
+                h_align: HAlign::Left,
+                v_align: VAlign::Center,
+                overflow: Overflow::Clip,
+                padding: 0.0,
+                font_size_override: Some(13.0),
+                color_override: None,
+                font_family_override: None,
             });
             // Tooltip text on the right
             labels.push(LabelInfo {
                 text: t(tooltip_key),
-                bounds: Rect { x: rect.x + 40.0, y: iy, width: rect.width - 48.0, height: item_h },
-                h_align: HAlign::Right, v_align: VAlign::Center,
-                overflow: Overflow::Ellipsis, padding: 0.0,
-                font_size_override: Some(9.0), color_override: Some([150, 150, 160]), font_family_override: None,
+                bounds: Rect {
+                    x: rect.x + 40.0,
+                    y: iy,
+                    width: rect.width - 48.0,
+                    height: item_h,
+                },
+                h_align: HAlign::Right,
+                v_align: VAlign::Center,
+                overflow: Overflow::Ellipsis,
+                padding: 0.0,
+                font_size_override: Some(9.0),
+                color_override: Some([150, 150, 160]),
+                font_family_override: None,
             });
             iy += item_h;
         }
     }
 
     pub fn is_editing_text(&self) -> bool {
-        self.rythmo_state.is_editing() || self.connect_modal.is_some() || self.export_modal.is_some()
+        self.rythmo_state.is_editing()
+            || self.connect_modal.is_some()
+            || self.export_modal.is_some()
     }
 
     fn handle_connect_modal_event(&mut self, event: &UiEvent) -> EventResponse {
@@ -675,9 +954,21 @@ impl Ui {
                 self.connect_modal = None;
                 EventResponse::Consumed
             }
-            connect_modal::ConnectModalResult::Connect { ip, port, password, username, room_code } => {
+            connect_modal::ConnectModalResult::Connect {
+                ip,
+                port,
+                password,
+                username,
+                room_code,
+            } => {
                 self.connect_modal = None;
-                EventResponse::Action(UiAction::NetworkConnect { ip, port, password, username, room_code })
+                EventResponse::Action(UiAction::NetworkConnect {
+                    ip,
+                    port,
+                    password,
+                    username,
+                    room_code,
+                })
             }
         }
     }
@@ -693,9 +984,17 @@ impl Ui {
                 self.settings_modal = None;
                 EventResponse::Consumed
             }
-            settings_modal::SettingsModalResult::Save { lang, rythmo_font, scroll_speed } => {
+            settings_modal::SettingsModalResult::Save {
+                lang,
+                rythmo_font,
+                scroll_speed,
+            } => {
                 self.settings_modal = None;
-                EventResponse::Action(UiAction::SaveSettings { lang, rythmo_font, scroll_speed })
+                EventResponse::Action(UiAction::SaveSettings {
+                    lang,
+                    rythmo_font,
+                    scroll_speed,
+                })
             }
         }
     }
@@ -735,11 +1034,19 @@ impl Ui {
             }
             server_browser::BrowserResult::CreateRoom { ip, port } => {
                 self.server_browser = None;
-                EventResponse::Action(UiAction::OpenConnectModal { ip, port, join: false })
+                EventResponse::Action(UiAction::OpenConnectModal {
+                    ip,
+                    port,
+                    join: false,
+                })
             }
             server_browser::BrowserResult::JoinRoom { ip, port } => {
                 self.server_browser = None;
-                EventResponse::Action(UiAction::OpenConnectModal { ip, port, join: true })
+                EventResponse::Action(UiAction::OpenConnectModal {
+                    ip,
+                    port,
+                    join: true,
+                })
             }
             server_browser::BrowserResult::AddServer => {
                 EventResponse::Action(UiAction::OpenAddServerModal)
@@ -864,13 +1171,22 @@ impl Ui {
         &self.layout
     }
 
-    pub fn screen_w(&self) -> f32 { self.screen_w }
-    pub fn screen_h(&self) -> f32 { self.screen_h }
+    pub fn screen_w(&self) -> f32 {
+        self.screen_w
+    }
+    pub fn screen_h(&self) -> f32 {
+        self.screen_h
+    }
 
     pub fn resize(&mut self, screen_width: u32, screen_height: u32) {
         self.screen_w = screen_width as f32;
         self.screen_h = screen_height as f32;
-        self.topbar_widgets = Self::build_topbar(self.network_in_room, self.has_video, self.screen_w, self.uv("settings"));
+        self.topbar_widgets = Self::build_topbar(
+            self.network_in_room,
+            self.has_video,
+            self.screen_w,
+            self.uv("settings"),
+        );
         self.rebuild_layout();
     }
 
@@ -896,28 +1212,37 @@ impl Ui {
 
         // Prepare color picker textures first (needs &mut self, before labels borrow self)
         self.rythmo_state.color_picker.ensure_textures(
-            device, queue,
+            device,
+            queue,
             renderer.texture_bind_group_layout(),
             renderer.texture_sampler(),
         );
         let mut color_picker_bg_quads: Vec<QuadInstance> = Vec::new();
         let mut extra_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
         let mut color_picker_fg_quads: Vec<QuadInstance> = Vec::new();
-        self.rythmo_state.color_picker.render(&mut color_picker_bg_quads, &mut extra_textured, &mut color_picker_fg_quads);
+        self.rythmo_state.color_picker.render(
+            &mut color_picker_bg_quads,
+            &mut extra_textured,
+            &mut color_picker_fg_quads,
+        );
 
         // Update export label BEFORE borrowing self via labels
         if let Some(progress_atomic) = &self.export_progress {
             use std::sync::atomic::Ordering;
             let progress = f32::from_bits(progress_atomic.load(Ordering::Relaxed));
             let pct = (progress.clamp(0.0, 1.0) * 100.0) as u32;
-            let prefix = if self.progress_prefix.is_empty() { crate::i18n::t("progress.exporting") } else { &self.progress_prefix };
+            let prefix = if self.progress_prefix.is_empty() {
+                crate::i18n::t("progress.exporting")
+            } else {
+                &self.progress_prefix
+            };
             self.export_label = format!("{} {}%", prefix, pct);
         }
 
         // Consume pending cursor click if any before starting to collect labels referencing self
         let pending_click = self.rythmo_state.pending_cursor_click.take();
 
-        let mut quads = Vec::new();         // base layer (behind video)
+        let mut quads = Vec::new(); // base layer (behind video)
         let mut overlay_quads = Vec::new(); // overlay layer (on top of video)
         let mut icons: Vec<IconInstance> = Vec::new();
         let mut labels: Vec<LabelInfo> = Vec::new();
@@ -942,18 +1267,29 @@ impl Ui {
         let mut stretched_texts: Vec<StretchedText> = Vec::new();
         let mut note_icons: Vec<IconInstance> = Vec::new();
         let cursor_info = rythmo::render_lines(
-            &self.layout.rythmo, project, current_frame,
-            &self.rythmo_state, &mut quads, &mut labels, &mut stretched_texts,
-            &mut note_icons, self.uv("note"),
+            &self.layout.rythmo,
+            project,
+            current_frame,
+            &self.rythmo_state,
+            &mut quads,
+            &mut labels,
+            &mut stretched_texts,
+            &mut note_icons,
+            self.uv("note"),
         );
         icons.extend(note_icons);
 
         // Markers
         let mut liaison_icons: Vec<IconInstance> = Vec::new();
         rythmo::render_markers(
-            &self.layout.rythmo, project, current_frame,
-            &mut quads, &mut labels, &mut liaison_icons,
-            self.uv("liaison_left"), self.uv("liaison_right"),
+            &self.layout.rythmo,
+            project,
+            current_frame,
+            &mut quads,
+            &mut labels,
+            &mut liaison_icons,
+            self.uv("liaison_left"),
+            self.uv("liaison_right"),
         );
         icons.extend(liaison_icons);
 
@@ -973,10 +1309,16 @@ impl Ui {
                 if sw > 0.0 {
                     quads.push(QuadInstance {
                         rect: [sx, ry, sw, rh],
-                        color: [0.2, 0.4, 0.8, 0.5], color_bottom: [0.2, 0.4, 0.8, 0.5],
-                        border_color: [0.0; 4], border_width: 0.0, border_radius: 2.0,
-                        shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                        rotation: 0.0, _padding: [0.0; 2],
+                        color: [0.2, 0.4, 0.8, 0.5],
+                        color_bottom: [0.2, 0.4, 0.8, 0.5],
+                        border_color: [0.0; 4],
+                        border_width: 0.0,
+                        border_radius: 2.0,
+                        shadow_offset: [0.0; 2],
+                        shadow_color: [0.0; 4],
+                        shadow_blur: 0.0,
+                        rotation: 0.0,
+                        _padding: [0.0; 2],
                     });
                 }
             }
@@ -987,16 +1329,26 @@ impl Ui {
                 let cx = text_x + ratio * text_w;
                 quads.push(QuadInstance {
                     rect: [cx, ry + margin, 1.5, rh - margin * 2.0],
-                    color: [0.9, 0.9, 0.95, 1.0], color_bottom: [0.9, 0.9, 0.95, 1.0],
-                    border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                    rotation: 0.0, _padding: [0.0; 2],
+                    color: [0.9, 0.9, 0.95, 1.0],
+                    color_bottom: [0.9, 0.9, 0.95, 1.0],
+                    border_color: [0.0; 4],
+                    border_width: 0.0,
+                    border_radius: 0.0,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0; 4],
+                    shadow_blur: 0.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
                 });
             }
         }
 
         // Non-capturing widgets
-        for widget in self.topbar_widgets.iter().chain(self.toolbar_widgets.iter()) {
+        for widget in self
+            .topbar_widgets
+            .iter()
+            .chain(self.toolbar_widgets.iter())
+        {
             if !widget.captures_all() {
                 quads.extend(widget.render_quads());
                 icons.extend(widget.render_icons());
@@ -1005,7 +1357,11 @@ impl Ui {
         }
 
         // Capturing widgets → overlay (on top of video)
-        for widget in self.topbar_widgets.iter().chain(self.toolbar_widgets.iter()) {
+        for widget in self
+            .topbar_widgets
+            .iter()
+            .chain(self.toolbar_widgets.iter())
+        {
             if widget.captures_all() {
                 overlay_quads.extend(widget.render_quads());
                 icons.extend(widget.render_icons());
@@ -1015,8 +1371,12 @@ impl Ui {
 
         // Autocomplete dropdown (on top of all lines)
         rythmo::render_autocomplete(
-            &self.layout.rythmo, project, current_frame,
-            &self.rythmo_state, &mut quads, &mut labels,
+            &self.layout.rythmo,
+            project,
+            current_frame,
+            &self.rythmo_state,
+            &mut quads,
+            &mut labels,
         );
 
         // Color picker quads → overlay
@@ -1041,27 +1401,47 @@ impl Ui {
             // Dim
             overlay_quads.push(QuadInstance {
                 rect: [0.0, 0.0, self.screen_w, self.screen_h],
-                color: [0.0, 0.0, 0.0, 0.85], color_bottom: [0.0, 0.0, 0.0, 0.85],
-                border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
+                color: [0.0, 0.0, 0.0, 0.85],
+                color_bottom: [0.0, 0.0, 0.0, 0.85],
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 0.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
             // Card
             overlay_quads.push(QuadInstance {
                 rect: [dx, dy, dw, dh],
-                color: [0.22, 0.22, 0.26, 1.0], color_bottom: [0.16, 0.16, 0.19, 1.0],
+                color: [0.22, 0.22, 0.26, 1.0],
+                color_bottom: [0.16, 0.16, 0.19, 1.0],
                 border_color: [0.45, 0.45, 0.52, 0.8],
-                border_width: 1.5, border_radius: 14.0,
-                shadow_offset: [0.0, 4.0], shadow_color: [0.0, 0.0, 0.0, 0.5], shadow_blur: 10.0,
-                rotation: 0.0, _padding: [0.0; 2],
+                border_width: 1.5,
+                border_radius: 14.0,
+                shadow_offset: [0.0, 4.0],
+                shadow_color: [0.0, 0.0, 0.0, 0.5],
+                shadow_blur: 10.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
             // Label
             labels.push(LabelInfo {
                 text: msg,
-                bounds: Rect { x: dx, y: dy + 16.0, width: dw, height: 28.0 },
-                h_align: HAlign::Center, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(16.0), color_override: Some([200, 200, 220]), font_family_override: None,
+                bounds: Rect {
+                    x: dx,
+                    y: dy + 16.0,
+                    width: dw,
+                    height: 28.0,
+                },
+                h_align: HAlign::Center,
+                v_align: VAlign::Center,
+                overflow: Overflow::Clip,
+                padding: 0.0,
+                font_size_override: Some(16.0),
+                color_override: Some([200, 200, 220]),
+                font_family_override: None,
             });
             // Progress bar track
             let bx = dx + 30.0;
@@ -1070,63 +1450,112 @@ impl Ui {
             let bh = 14.0;
             overlay_quads.push(QuadInstance {
                 rect: [bx, by, bw, bh],
-                color: [0.10, 0.10, 0.13, 1.0], color_bottom: [0.10, 0.10, 0.13, 1.0],
-                border_color: [0.30, 0.30, 0.38, 0.8], border_width: 1.0, border_radius: 7.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
+                color: [0.10, 0.10, 0.13, 1.0],
+                color_bottom: [0.10, 0.10, 0.13, 1.0],
+                border_color: [0.30, 0.30, 0.38, 0.8],
+                border_width: 1.0,
+                border_radius: 7.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
             // Progress bar fill
             let fill = (bw - 4.0) * self.sync_progress.clamp(0.0, 1.0);
             if fill > 0.5 {
                 overlay_quads.push(QuadInstance {
                     rect: [bx + 2.0, by + 2.0, fill, bh - 4.0],
-                    color: [0.35, 0.60, 1.0, 1.0], color_bottom: [0.25, 0.45, 0.85, 1.0],
-                    border_color: [0.0; 4], border_width: 0.0, border_radius: 5.0,
-                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                    rotation: 0.0, _padding: [0.0; 2],
+                    color: [0.35, 0.60, 1.0, 1.0],
+                    color_bottom: [0.25, 0.45, 0.85, 1.0],
+                    border_color: [0.0; 4],
+                    border_width: 0.0,
+                    border_radius: 5.0,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0; 4],
+                    shadow_blur: 0.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
                 });
             }
         }
 
         // Settings modal
         if let Some(modal) = &self.settings_modal {
-            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
         }
 
         // Connect modal
         if let Some(modal) = &self.connect_modal {
-            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
         }
 
         // Server browser
         if let Some(modal) = &self.server_browser {
-            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
         }
 
         // Add server modal (on top of browser)
         if let Some(modal) = &self.add_server_modal {
-            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
         }
 
         // Export modal
         if let Some(modal) = &self.export_modal {
-            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
         }
 
         // Save prompt modal
         if let Some(modal) = &self.save_prompt_modal {
-            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
         }
 
         // Studio warning modal
         if let Some(modal) = &self.studio_warning_modal {
-            modal.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
         }
 
         // Export progress modal (rendered last so it's always on top)
-        let export_progress_val = self.export_progress.as_ref().map(|p| {
-            f32::from_bits(p.load(std::sync::atomic::Ordering::Relaxed))
-        }).unwrap_or(0.0);
+        let export_progress_val = self
+            .export_progress
+            .as_ref()
+            .map(|p| f32::from_bits(p.load(std::sync::atomic::Ordering::Relaxed)))
+            .unwrap_or(0.0);
         if self.export_progress.is_some() && export_progress_val > 0.0 {
             let progress = export_progress_val;
 
@@ -1138,19 +1567,30 @@ impl Ui {
             // Dim
             overlay_quads.push(QuadInstance {
                 rect: [0.0, 0.0, self.screen_w, self.screen_h],
-                color: [0.0, 0.0, 0.0, 0.75], color_bottom: [0.0, 0.0, 0.0, 0.75],
-                border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
+                color: [0.0, 0.0, 0.0, 0.75],
+                color_bottom: [0.0, 0.0, 0.0, 0.75],
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 0.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
             // Card
             overlay_quads.push(QuadInstance {
                 rect: [dx, dy, dw, dh],
-                color: [0.22, 0.22, 0.26, 1.0], color_bottom: [0.16, 0.16, 0.19, 1.0],
+                color: [0.22, 0.22, 0.26, 1.0],
+                color_bottom: [0.16, 0.16, 0.19, 1.0],
                 border_color: [0.45, 0.45, 0.52, 0.8],
-                border_width: 1.5, border_radius: 14.0,
-                shadow_offset: [0.0, 4.0], shadow_color: [0.0, 0.0, 0.0, 0.5], shadow_blur: 10.0,
-                rotation: 0.0, _padding: [0.0; 2],
+                border_width: 1.5,
+                border_radius: 14.0,
+                shadow_offset: [0.0, 4.0],
+                shadow_color: [0.0, 0.0, 0.0, 0.5],
+                shadow_blur: 10.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
             // Bar track
             let bx = dx + 30.0;
@@ -1159,39 +1599,72 @@ impl Ui {
             let bh = 14.0;
             overlay_quads.push(QuadInstance {
                 rect: [bx, by, bw, bh],
-                color: [0.10, 0.10, 0.13, 1.0], color_bottom: [0.10, 0.10, 0.13, 1.0],
-                border_color: [0.30, 0.30, 0.38, 0.8], border_width: 1.0, border_radius: 7.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
+                color: [0.10, 0.10, 0.13, 1.0],
+                color_bottom: [0.10, 0.10, 0.13, 1.0],
+                border_color: [0.30, 0.30, 0.38, 0.8],
+                border_width: 1.0,
+                border_radius: 7.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
             // Bar fill
             let fill = (bw - 4.0) * progress.clamp(0.0, 1.0);
             if fill > 0.5 {
                 overlay_quads.push(QuadInstance {
                     rect: [bx + 2.0, by + 2.0, fill, bh - 4.0],
-                    color: [0.35, 0.60, 1.0, 1.0], color_bottom: [0.25, 0.45, 0.85, 1.0],
-                    border_color: [0.0; 4], border_width: 0.0, border_radius: 5.0,
-                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                    rotation: 0.0, _padding: [0.0; 2],
+                    color: [0.35, 0.60, 1.0, 1.0],
+                    color_bottom: [0.25, 0.45, 0.85, 1.0],
+                    border_color: [0.0; 4],
+                    border_width: 0.0,
+                    border_radius: 5.0,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0; 4],
+                    shadow_blur: 0.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
                 });
             }
             // Labels
             labels.push(LabelInfo {
                 text: &self.export_label,
-                bounds: Rect { x: dx, y: dy + 18.0, width: dw, height: 28.0 },
-                h_align: HAlign::Center, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 0.0,
-                font_size_override: Some(17.0), color_override: None, font_family_override: None,
+                bounds: Rect {
+                    x: dx,
+                    y: dy + 18.0,
+                    width: dw,
+                    height: 28.0,
+                },
+                h_align: HAlign::Center,
+                v_align: VAlign::Center,
+                overflow: Overflow::Clip,
+                padding: 0.0,
+                font_size_override: Some(17.0),
+                color_override: None,
+                font_family_override: None,
             });
         }
 
         // Toasts
-        self.toasts.render(&mut overlay_quads, &mut labels, self.screen_w, self.screen_h);
+        self.toasts.render(
+            &mut overlay_quads,
+            &mut labels,
+            self.screen_w,
+            self.screen_h,
+        );
 
         renderer.render(
-            device, queue, encoder, view,
-            screen_width, screen_height,
-            &quads, &overlay_quads, &icons, &labels,
+            device,
+            queue,
+            encoder,
+            view,
+            screen_width,
+            screen_height,
+            &quads,
+            &overlay_quads,
+            &icons,
+            &labels,
             video_quad,
             &stretched_quads,
             &extra_textured,
@@ -1199,34 +1672,63 @@ impl Ui {
         );
     }
 
-    fn render_zones<'a>(&'a self, quads: &mut Vec<QuadInstance>, labels: &mut Vec<LabelInfo<'a>>, current_frame: i64, waveform: &[f32]) {
+    fn render_zones<'a>(
+        &'a self,
+        quads: &mut Vec<QuadInstance>,
+        labels: &mut Vec<LabelInfo<'a>>,
+        current_frame: i64,
+        waveform: &[f32],
+    ) {
         let l = &self.layout;
 
         // Topbar
         quads.push(QuadInstance {
             rect: [l.topbar.x, l.topbar.y, l.topbar.width, l.topbar.height],
-            color: TOPBAR_BG, color_bottom: TOPBAR_BG,
-            border_color: TOPBAR_SHADOW, border_width: 0.0, border_radius: 0.0,
-            shadow_offset: [0.0, 1.0], shadow_color: [0.0, 0.0, 0.0, 0.3], shadow_blur: 4.0,
-            rotation: 0.0, _padding: [0.0; 2],
+            color: TOPBAR_BG,
+            color_bottom: TOPBAR_BG,
+            border_color: TOPBAR_SHADOW,
+            border_width: 0.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0, 1.0],
+            shadow_color: [0.0, 0.0, 0.0, 0.3],
+            shadow_blur: 4.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
         });
 
         // Video preview
         quads.push(QuadInstance {
-            rect: [l.video_preview.x, l.video_preview.y, l.video_preview.width, l.video_preview.height],
-            color: VIDEO_BG, color_bottom: VIDEO_BG,
-            border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-            rotation: 0.0, _padding: [0.0; 2],
+            rect: [
+                l.video_preview.x,
+                l.video_preview.y,
+                l.video_preview.width,
+                l.video_preview.height,
+            ],
+            color: VIDEO_BG,
+            color_bottom: VIDEO_BG,
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
         });
 
         // Toolbar
         quads.push(QuadInstance {
             rect: [l.toolbar.x, l.toolbar.y, l.toolbar.width, l.toolbar.height],
-            color: TOOLBAR_BG, color_bottom: TOOLBAR_BG,
-            border_color: TOOLBAR_BORDER, border_width: 0.0, border_radius: 0.0,
-            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-            rotation: 0.0, _padding: [0.0; 2],
+            color: TOOLBAR_BG,
+            color_bottom: TOOLBAR_BG,
+            border_color: TOOLBAR_BORDER,
+            border_width: 0.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
         });
 
         // Progress bar (in toolbar)
@@ -1236,20 +1738,32 @@ impl Ui {
             // Track
             quads.push(QuadInstance {
                 rect: [pb.x, pb.y, pb.width, pb.height],
-                color: [0.10, 0.10, 0.13, 1.0], color_bottom: [0.10, 0.10, 0.13, 1.0],
-                border_color: [0.25, 0.25, 0.30, 0.5], border_width: 0.5, border_radius: 3.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
+                color: [0.10, 0.10, 0.13, 1.0],
+                color_bottom: [0.10, 0.10, 0.13, 1.0],
+                border_color: [0.25, 0.25, 0.30, 0.5],
+                border_width: 0.5,
+                border_radius: 3.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
             // Fill
             let fill_w = (pb.width - 2.0) * progress;
             if fill_w > 1.0 {
                 quads.push(QuadInstance {
                     rect: [pb.x + 1.0, pb.y + 1.0, fill_w, pb.height - 2.0],
-                    color: [0.35, 0.45, 0.85, 0.9], color_bottom: [0.25, 0.35, 0.70, 0.9],
-                    border_color: [0.0; 4], border_width: 0.0, border_radius: 2.0,
-                    shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                    rotation: 0.0, _padding: [0.0; 2],
+                    color: [0.35, 0.45, 0.85, 0.9],
+                    color_bottom: [0.25, 0.35, 0.70, 0.9],
+                    border_color: [0.0; 4],
+                    border_width: 0.0,
+                    border_radius: 2.0,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0; 4],
+                    shadow_blur: 0.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
                 });
             }
             // Knob
@@ -1258,44 +1772,83 @@ impl Ui {
             let knob_y = pb.y + pb.height / 2.0 - knob_r;
             quads.push(QuadInstance {
                 rect: [knob_x - knob_r, knob_y, knob_r * 2.0, knob_r * 2.0],
-                color: [0.85, 0.85, 0.92, 1.0], color_bottom: [0.70, 0.70, 0.78, 1.0],
-                border_color: [0.0; 4], border_width: 0.0, border_radius: knob_r,
-                shadow_offset: [0.0, 1.0], shadow_color: [0.0, 0.0, 0.0, 0.3], shadow_blur: 3.0,
-                rotation: 0.0, _padding: [0.0; 2],
+                color: [0.85, 0.85, 0.92, 1.0],
+                color_bottom: [0.70, 0.70, 0.78, 1.0],
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: knob_r,
+                shadow_offset: [0.0, 1.0],
+                shadow_color: [0.0, 0.0, 0.0, 0.3],
+                shadow_blur: 3.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
         }
 
         // Bande rythmo — fond noir + perforations + playhead
         quads.push(QuadInstance {
             rect: [l.rythmo.x, l.rythmo.y, l.rythmo.width, l.rythmo.height],
-            color: [0.02, 0.02, 0.03, 1.0], color_bottom: [0.02, 0.02, 0.03, 1.0],
-            border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-            rotation: 0.0, _padding: [0.0; 2],
+            color: [0.02, 0.02, 0.03, 1.0],
+            color_bottom: [0.02, 0.02, 0.03, 1.0],
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
         });
-        quads.extend(rythmo::render_rythmo_base(&l.rythmo, current_frame, waveform));
+        quads.extend(rythmo::render_rythmo_base(
+            &l.rythmo,
+            current_frame,
+            waveform,
+        ));
 
         // Properties panel
         if let Some(props) = &l.properties {
             quads.push(QuadInstance {
                 rect: [props.x, props.y, props.width, props.height],
-                color: PROPS_BG, color_bottom: PROPS_BG,
-                border_color: PROPS_BORDER, border_width: 0.0, border_radius: 0.0,
-                shadow_offset: [-2.0, 0.0], shadow_color: [0.0, 0.0, 0.0, 0.3], shadow_blur: 6.0,
-                rotation: 0.0, _padding: [0.0; 2],
+                color: PROPS_BG,
+                color_bottom: PROPS_BG,
+                border_color: PROPS_BORDER,
+                border_width: 0.0,
+                border_radius: 0.0,
+                shadow_offset: [-2.0, 0.0],
+                shadow_color: [0.0, 0.0, 0.0, 0.3],
+                shadow_blur: 6.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
             quads.push(QuadInstance {
                 rect: [props.x, props.y, 1.0, props.height],
-                color: PROPS_BORDER, color_bottom: PROPS_BORDER,
-                border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-                shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-                rotation: 0.0, _padding: [0.0; 2],
+                color: PROPS_BORDER,
+                color_bottom: PROPS_BORDER,
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 0.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
-            let header_rect = Rect { x: props.x, y: props.y, width: props.width, height: 32.0 };
+            let header_rect = Rect {
+                x: props.x,
+                y: props.y,
+                width: props.width,
+                height: 32.0,
+            };
             labels.push(LabelInfo {
-                text: t("zone.properties"), bounds: header_rect,
-                h_align: HAlign::Center, v_align: VAlign::Center,
-                overflow: Overflow::Clip, padding: 8.0, font_size_override: None, color_override: None, font_family_override: None,
+                text: t("zone.properties"),
+                bounds: header_rect,
+                h_align: HAlign::Center,
+                v_align: VAlign::Center,
+                overflow: Overflow::Clip,
+                padding: 8.0,
+                font_size_override: None,
+                color_override: None,
+                font_family_override: None,
             });
         }
     }
@@ -1330,17 +1883,32 @@ impl Ui {
         // Black background for rythmo zone
         let bg = [0.02, 0.02, 0.03, 1.0];
         quads.push(QuadInstance {
-            rect: [rythmo_zone.x, rythmo_zone.y, rythmo_zone.width, rythmo_zone.height],
-            color: bg, color_bottom: bg,
-            border_color: [0.0; 4], border_width: 0.0, border_radius: 0.0,
-            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-            rotation: 0.0, _padding: [0.0; 2],
+            rect: [
+                rythmo_zone.x,
+                rythmo_zone.y,
+                rythmo_zone.width,
+                rythmo_zone.height,
+            ],
+            color: bg,
+            color_bottom: bg,
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
         });
 
         // Export-style rythmo: ticks, playhead, lines, markers — NO waveform
         rythmo::render_studio_rythmo(
-            &rythmo_zone, project, current_frame,
-            &mut quads, &mut labels, &mut stretched_texts,
+            &rythmo_zone,
+            project,
+            current_frame,
+            &mut quads,
+            &mut labels,
+            &mut stretched_texts,
         );
 
         // Prepare stretched text textures
@@ -1348,16 +1916,20 @@ impl Ui {
 
         // Render through existing UiRenderer
         renderer.render(
-            device, queue, encoder, view,
-            screen_width, screen_height,
-            &quads,       // base layer
-            &[],          // no overlay quads
-            &[],          // no icons (markers use quads)
+            device,
+            queue,
+            encoder,
+            view,
+            screen_width,
+            screen_height,
+            &quads, // base layer
+            &[],    // no overlay quads
+            &[],    // no icons (markers use quads)
             &labels,
             video_quad,
             &stretched_quads,
-            &[],          // no extra_textured
-            &[],          // no post_texture_quads
+            &[], // no extra_textured
+            &[], // no post_texture_quads
         );
     }
 }

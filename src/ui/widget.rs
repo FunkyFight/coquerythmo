@@ -50,11 +50,28 @@ pub struct LabelInfo<'a> {
 
 #[derive(Debug, Clone)]
 pub enum UiEvent {
-    MouseMove { x: f32, y: f32 },
-    MousePress { x: f32, y: f32 },
-    MouseRelease { x: f32, y: f32 },
-    Scroll { x: f32, y: f32, delta: f32, fast: bool, ctrl: bool },
-    KeyInput { text: String },
+    MouseMove {
+        x: f32,
+        y: f32,
+    },
+    MousePress {
+        x: f32,
+        y: f32,
+    },
+    MouseRelease {
+        x: f32,
+        y: f32,
+    },
+    Scroll {
+        x: f32,
+        y: f32,
+        delta: f32,
+        fast: bool,
+        ctrl: bool,
+    },
+    KeyInput {
+        text: String,
+    },
     CursorLeft,
     CursorRight,
     ShiftCursorLeft,
@@ -65,11 +82,27 @@ pub enum UiEvent {
     SelectAll,
     Copy,
     Cut,
-    CtrlClick { x: f32, y: f32 },
-    ShiftMousePress { x: f32, y: f32 },
-    DoubleClick { x: f32, y: f32 },
-    MiddlePress { x: f32, y: f32 },
-    MiddleRelease { x: f32, y: f32 },
+    UndoTextEdit,
+    CtrlClick {
+        x: f32,
+        y: f32,
+    },
+    ShiftMousePress {
+        x: f32,
+        y: f32,
+    },
+    DoubleClick {
+        x: f32,
+        y: f32,
+    },
+    MiddlePress {
+        x: f32,
+        y: f32,
+    },
+    MiddleRelease {
+        x: f32,
+        y: f32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,7 +113,10 @@ pub enum UiAction {
     ImportCappelaProject,
     ExportProject,
     OpenExportModal,
-    StartExport { fps: f64, br_scale: f32 },
+    StartExport {
+        fps: f64,
+        br_scale: f32,
+    },
     QuickSave,
     CancelExport,
     TogglePlayPause,
@@ -90,37 +126,93 @@ pub enum UiAction {
     NextFrame,
     SeekRelative(i32),
     SeekAbsolute(i64),
-    SeekToNextBoucle { direction: i32 },
-    CreateLine { frame: i64, y_slot: f32 },
-    ResizeLine { id: u64, start_frame: i64, duration_frames: i64 },
-    MoveLine { id: u64, start_frame: i64, y_slot: f32 },
-    UpdateLineText { id: u64, text: String },
-    SetCharacter { line_id: u64, name: String, color: [f32; 4] },
-    SetCharacterColor { line_id: u64, color: [f32; 4] },
-    UpdateCharacterName { line_id: u64, name: String },
-    FinalizeCharacter { line_id: u64 },
+    SeekToNextBoucle {
+        direction: i32,
+    },
+    CreateLine {
+        frame: i64,
+        y_slot: f32,
+    },
+    ResizeLine {
+        id: u64,
+        start_frame: i64,
+        duration_frames: i64,
+    },
+    MoveLine {
+        id: u64,
+        start_frame: i64,
+        y_slot: f32,
+    },
+    UpdateLineText {
+        id: u64,
+        text: String,
+    },
+    SetCharacter {
+        line_id: u64,
+        name: String,
+        color: [f32; 4],
+    },
+    SetCharacterColor {
+        line_id: u64,
+        color: [f32; 4],
+    },
+    UpdateCharacterName {
+        line_id: u64,
+        name: String,
+    },
+    FinalizeCharacter {
+        line_id: u64,
+    },
     DeleteSelected,
-    MoveMarker { index: usize, frame: i64 },
+    MoveMarker {
+        index: usize,
+        frame: i64,
+    },
     AddMarker(crate::rythmo_line::MarkerKind),
-    AddQuickLine { text: String },
+    AddQuickLine {
+        text: String,
+    },
     OpenDropdown(ToolbarDropdown),
     StopEditing,
     ToggleSyllableMode,
-    OpenRecentProject { video_path: std::path::PathBuf, br_path: std::path::PathBuf },
-    SetSyllableRatios { line_id: u64, ratios: Vec<f32> },
+    OpenRecentProject {
+        video_path: std::path::PathBuf,
+        br_path: std::path::PathBuf,
+    },
+    SetSyllableRatios {
+        line_id: u64,
+        ratios: Vec<f32>,
+    },
     // Network
     OpenServerBrowser,
-    OpenConnectModal { ip: String, port: u16, join: bool },
+    OpenConnectModal {
+        ip: String,
+        port: u16,
+        join: bool,
+    },
     OpenAddServerModal,
-    AddServer { ip: String, port: u16 },
+    AddServer {
+        ip: String,
+        port: u16,
+    },
     RemoveServer(usize),
     RefreshServers,
-    NetworkConnect { ip: String, port: u16, password: String, username: String, room_code: Option<String> },
+    NetworkConnect {
+        ip: String,
+        port: u16,
+        password: String,
+        username: String,
+        room_code: Option<String>,
+    },
     NetworkDisconnect,
     // Settings
     OpenSettings,
     RestoreBackup,
-    SaveSettings { lang: String, rythmo_font: Option<String>, scroll_speed: f32 },
+    SaveSettings {
+        lang: String,
+        rythmo_font: Option<String>,
+        scroll_speed: f32,
+    },
     // New project
     NewProject,
     NewProjectSave,
@@ -130,8 +222,26 @@ pub enum UiAction {
     ShowStudioWarning,
     // Notes
     AddNote,
-    UpdateLineNote { line_id: u64, note: String },
+    UpdateLineNote {
+        line_id: u64,
+        note: String,
+    },
     SetClipboard(String),
+    SetClipboardAndUpdateLineText {
+        clipboard: String,
+        id: u64,
+        text: String,
+    },
+    SetClipboardAndUpdateCharacterName {
+        clipboard: String,
+        line_id: u64,
+        name: String,
+    },
+    SetClipboardAndUpdateLineNote {
+        clipboard: String,
+        line_id: u64,
+        note: String,
+    },
     CopySelectedLine,
     CutSelectedLine,
     PasteLine,
@@ -154,12 +264,18 @@ pub trait Widget {
     fn bounds(&self) -> Rect;
     fn handle_event(&mut self, event: &UiEvent) -> EventResponse;
     fn render_quads(&self) -> Vec<QuadInstance>;
-    fn render_icons(&self) -> Vec<IconInstance> { vec![] }
+    fn render_icons(&self) -> Vec<IconInstance> {
+        vec![]
+    }
     fn labels(&self) -> Vec<LabelInfo<'_>>;
     /// When true, this widget receives events before all others (e.g. open dropdown).
-    fn captures_all(&self) -> bool { false }
+    fn captures_all(&self) -> bool {
+        false
+    }
     /// Tooltip text shown on hover. Return None for no tooltip.
-    fn tooltip(&self) -> Option<&str> { None }
+    fn tooltip(&self) -> Option<&str> {
+        None
+    }
 }
 
 #[repr(C)]
@@ -173,15 +289,15 @@ pub struct IconInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct QuadInstance {
-    pub rect: [f32; 4],          // x, y, w, h
-    pub color: [f32; 4],         // bg color
-    pub color_bottom: [f32; 4],  // gradient bottom (if == color, no gradient)
-    pub border_color: [f32; 4],  // border color
+    pub rect: [f32; 4],         // x, y, w, h
+    pub color: [f32; 4],        // bg color
+    pub color_bottom: [f32; 4], // gradient bottom (if == color, no gradient)
+    pub border_color: [f32; 4], // border color
     pub border_width: f32,
     pub border_radius: f32,
     pub shadow_offset: [f32; 2], // shadow dx, dy
     pub shadow_color: [f32; 4],  // shadow color + alpha
     pub shadow_blur: f32,
-    pub rotation: f32,        // radians, rotation around quad center
+    pub rotation: f32, // radians, rotation around quad center
     pub _padding: [f32; 2],
 }

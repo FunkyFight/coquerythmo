@@ -1,6 +1,7 @@
 use std::process::Command;
 
-const GITHUB_API: &str = "https://api.github.com/repos/funkyfight/coquerythmo-releases/releases/latest";
+const GITHUB_API: &str =
+    "https://api.github.com/repos/funkyfight/coquerythmo-releases/releases/latest";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Check for updates in the background. Returns true if the app should exit (updater launched).
@@ -33,7 +34,8 @@ pub fn check() -> bool {
         .set_title("Mise à jour disponible")
         .set_description(&message)
         .set_buttons(rfd::MessageButtons::YesNo)
-        .show() == rfd::MessageDialogResult::Yes;
+        .show()
+        == rfd::MessageDialogResult::Yes;
 
     if !accepted {
         log::info!("Update declined by user");
@@ -42,7 +44,10 @@ pub fn check() -> bool {
 
     // Launch updater.exe next to our executable
     let exe_dir = match std::env::current_exe() {
-        Ok(p) => p.parent().unwrap_or(std::path::Path::new(".")).to_path_buf(),
+        Ok(p) => p
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf(),
         Err(e) => {
             log::error!("Cannot find exe path: {}", e);
             return false;

@@ -1,8 +1,10 @@
-use resvg::tiny_skia::{self, Pixmap, Paint, Rect as SkRect, Transform, PathBuilder};
-use glyphon::{Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent};
 use crate::constants;
 use crate::project::Project;
 use crate::rythmo_line::MarkerKind;
+use glyphon::{
+    Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent,
+};
+use resvg::tiny_skia::{self, Paint, PathBuilder, Pixmap, Rect as SkRect, Transform};
 
 // Local constants not shared with the UI
 const BASE_TICK_WIDTH: f32 = 1.0;
@@ -25,21 +27,30 @@ impl CpuRenderer {
     /// Rasterize text into RGBA pixels at natural size, returns (pixels, width, height).
     fn rasterize_text(&mut self, text: &str, font_size: f32) -> (Vec<u8>, u32, u32) {
         let line_height = (font_size * 1.4).ceil();
-        let mut buffer = GlyphonBuffer::new(&mut self.font_system, Metrics::new(font_size, line_height));
+        let mut buffer =
+            GlyphonBuffer::new(&mut self.font_system, Metrics::new(font_size, line_height));
         buffer.set_size(&mut self.font_system, Some(10000.0), Some(line_height));
         let rythmo_family = crate::config::get().ui.rythmo_font.clone();
         let family = match &rythmo_family {
             Some(name) => Family::Name(name),
             None => Family::SansSerif,
         };
-        buffer.set_text(&mut self.font_system, text, &Attrs::new().family(family), Shaping::Advanced, None);
+        buffer.set_text(
+            &mut self.font_system,
+            text,
+            &Attrs::new().family(family),
+            Shaping::Advanced,
+            None,
+        );
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         let mut text_width = 0.0_f32;
         for run in buffer.layout_runs() {
             for glyph in run.glyphs.iter() {
                 let end = glyph.x + glyph.w;
-                if end > text_width { text_width = end; }
+                if end > text_width {
+                    text_width = end;
+                }
             }
         }
 
@@ -51,14 +62,19 @@ impl CpuRenderer {
             let line_y = run.line_y;
             for glyph in run.glyphs.iter() {
                 let physical = glyph.physical((0.0, 0.0), 1.0);
-                if let Some(image) = self.swash_cache.get_image_uncached(&mut self.font_system, physical.cache_key) {
+                if let Some(image) = self
+                    .swash_cache
+                    .get_image_uncached(&mut self.font_system, physical.cache_key)
+                {
                     let gx = physical.x as i32;
                     let gy = (line_y as i32) + physical.y as i32;
                     for iy in 0..image.placement.height as i32 {
                         for ix in 0..image.placement.width as i32 {
                             let px = gx + image.placement.left + ix;
                             let py = gy - image.placement.top + iy;
-                            if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 { continue; }
+                            if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 {
+                                continue;
+                            }
                             let src_idx = (iy * image.placement.width as i32 + ix) as usize;
                             let dst_idx = ((py as u32 * w + px as u32) * 4) as usize;
                             match image.content {
@@ -76,7 +92,8 @@ impl CpuRenderer {
                                 SwashContent::Color => {
                                     let si = src_idx * 4;
                                     if si + 3 < image.data.len() && dst_idx + 3 < pixels.len() {
-                                        pixels[dst_idx..dst_idx + 4].copy_from_slice(&image.data[si..si + 4]);
+                                        pixels[dst_idx..dst_idx + 4]
+                                            .copy_from_slice(&image.data[si..si + 4]);
                                     }
                                 }
                                 _ => {}
@@ -90,46 +107,68 @@ impl CpuRenderer {
         (pixels, w, h)
     }
 
-    /// Blit a rasterized text (stretched) onto the pixmap.
-    fn blit_stretched_text(&mut self, pixmap: &mut Pixmap, text: &str, x: f32, y: f32, dest_w: f32, dest_h: f32, font_size: f32) {
-        let (tex_pixels, tex_w, tex_h) = self.rasterize_text(text, font_size);
-        if tex_w == 0 || tex_h == 0 { return; }
+    /// Render vector rythmo text at final size and blit it without horizontal resampling.
+    fn blit_rythmo_text(
+        &mut self,
+        pixmap: &mut Pixmap,
+        text: &str,
+        x: f32,
+        y: f32,
+        dest_w: f32,
+        dest_h: f32,
+        font_size: f32,
+    ) {
+        let tex_w = dest_w.max(1.0).ceil() as u32;
+        let tex_h = dest_h.max(1.0).ceil() as u32;
+        let Some(rendered) = crate::vector_text::render_rythmo_text(
+            &mut self.font_system,
+            text,
+            font_size,
+            tex_w,
+            tex_h,
+        ) else {
+            return;
+        };
+        if rendered.width == 0 || rendered.height == 0 {
+            return;
+        }
 
         let pm_w = pixmap.width() as i32;
         let pm_h = pixmap.height() as i32;
-        let dest_w_i = dest_w as i32;
-        let dest_h_i = dest_h as i32;
         let xi = x as i32;
         let yi = y as i32;
 
         let pm_data = pixmap.data_mut();
 
-        for dy in 0..dest_h_i {
+        for dy in 0..rendered.height as i32 {
             let py = yi + dy;
-            if py < 0 || py >= pm_h { continue; }
-            let src_y = (dy as f32 / dest_h * tex_h as f32) as u32;
-            if src_y >= tex_h { continue; }
+            if py < 0 || py >= pm_h {
+                continue;
+            }
 
-            for dx in 0..dest_w_i {
+            for dx in 0..rendered.width as i32 {
                 let px = xi + dx;
-                if px < 0 || px >= pm_w { continue; }
+                if px < 0 || px >= pm_w {
+                    continue;
+                }
 
-                let src_x = (dx as f32 / dest_w * tex_w as f32) as u32;
-                if src_x >= tex_w { continue; }
-
-                let src_idx = ((src_y * tex_w + src_x) * 4) as usize;
+                let src_idx = (((dy as u32) * rendered.width + dx as u32) * 4) as usize;
                 let dst_idx = ((py as u32 * pm_w as u32 + px as u32) * 4) as usize;
 
-                if src_idx + 3 >= tex_pixels.len() || dst_idx + 3 >= pm_data.len() { continue; }
+                if src_idx + 3 >= rendered.pixels.len() || dst_idx + 3 >= pm_data.len() {
+                    continue;
+                }
 
-                let sa = tex_pixels[src_idx + 3] as u32;
-                if sa == 0 { continue; }
+                let sa = rendered.pixels[src_idx + 3] as u32;
+                if sa == 0 {
+                    continue;
+                }
 
                 let inv_a = 255 - sa;
                 for c in 0..3 {
-                    let src = tex_pixels[src_idx + c] as u32;
+                    let src = rendered.pixels[src_idx + c] as u32;
                     let dst = pm_data[dst_idx + c] as u32;
-                    pm_data[dst_idx + c] = ((src * sa + dst * inv_a) / 255) as u8;
+                    pm_data[dst_idx + c] = (src + (dst * inv_a) / 255).min(255) as u8;
                 }
                 pm_data[dst_idx + 3] = (sa + (pm_data[dst_idx + 3] as u32 * inv_a) / 255) as u8;
             }
@@ -137,7 +176,14 @@ impl CpuRenderer {
     }
 
     /// Render the bande rythmo for a given frame. All sizes scale with width.
-    pub fn render_br(&mut self, project: &Project, current_frame: i64, width: u32, _fps: f64, br_scale: f32) -> Vec<u8> {
+    pub fn render_br(
+        &mut self,
+        project: &Project,
+        current_frame: i64,
+        width: u32,
+        _fps: f64,
+        br_scale: f32,
+    ) -> Vec<u8> {
         let s = width as f32 / constants::REF_WIDTH * br_scale; // export BR scale factor
         let used_slots = count_used_slots(project);
         let slot_count = used_slots.max(1) as f32;
@@ -166,14 +212,21 @@ impl CpuRenderer {
         let mut tick_paint = Paint::default();
         tick_paint.set_color_rgba8(100, 100, 115, 128);
         let visible_frames = (w / ppf) as i64 + 4;
-        let first_tick = ((current_frame - visible_frames / 2) / constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
+        let first_tick = ((current_frame - visible_frames / 2) / constants::TICK_GAP_FRAMES)
+            * constants::TICK_GAP_FRAMES;
         let mut tf = first_tick;
         loop {
             let x = center_x + (tf - current_frame) as f32 * ppf;
-            if x > w { break; }
+            if x > w {
+                break;
+            }
             if x >= 0.0 {
                 let tick_idx = tf / constants::TICK_GAP_FRAMES;
-                let th = if tick_idx % 2 == 0 { tick_long } else { tick_short };
+                let th = if tick_idx % 2 == 0 {
+                    tick_long
+                } else {
+                    tick_short
+                };
                 if let Some(rect) = SkRect::from_xywh(x, 0.0, tick_w, th) {
                     pixmap.fill_rect(rect, &tick_paint, Transform::identity(), None);
                 }
@@ -195,7 +248,9 @@ impl CpuRenderer {
             let x1 = center_x + (line.start_frame - current_frame) as f32 * ppf;
             let x2 = center_x + (line.end_frame() - current_frame) as f32 * ppf;
             let lw = (x2 - x1).max(2.0);
-            if x1 + lw < 0.0 || x1 > w { continue; }
+            if x1 + lw < 0.0 || x1 > w {
+                continue;
+            }
 
             let slot_idx = (line.y_slot * slot_count).round().min(slot_count - 1.0) as usize;
             let y_base = ruler_h + slot_idx as f32 * total_slot_h;
@@ -203,8 +258,15 @@ impl CpuRenderer {
             // Badge
             let [cr, cg, cb, _] = line.character_color;
             let mut badge_paint = Paint::default();
-            badge_paint.set_color_rgba8((cr * 255.0) as u8, (cg * 255.0) as u8, (cb * 255.0) as u8, 255);
-            let badge_w = (line.character_name.chars().count().max(1) as f32 * badge_char_w + 12.0 * s).max(16.0 * s);
+            badge_paint.set_color_rgba8(
+                (cr * 255.0) as u8,
+                (cg * 255.0) as u8,
+                (cb * 255.0) as u8,
+                255,
+            );
+            let badge_w = (line.character_name.chars().count().max(1) as f32 * badge_char_w
+                + 12.0 * s)
+                .max(16.0 * s);
             if let Some(rect) = SkRect::from_xywh(x1, y_base, badge_w, badge_h) {
                 pixmap.fill_rect(rect, &badge_paint, Transform::identity(), None);
             }
@@ -221,22 +283,34 @@ impl CpuRenderer {
                     let pm_w = pixmap.width() as i32;
                     let pm_h = pixmap.height() as i32;
                     let pm_data = pixmap.data_mut();
-                    let (tr, tg, tb) = if luminance > 0.55 { (0u8, 0, 0) } else { (224, 224, 230) };
+                    let (tr, tg, tb) = if luminance > 0.55 {
+                        (0u8, 0, 0)
+                    } else {
+                        (224, 224, 230)
+                    };
                     for py in 0..th {
                         for px in 0..tw {
                             let dx = tx as i32 + px as i32;
                             let dy = ty as i32 + py as i32;
-                            if dx < 0 || dy < 0 || dx >= pm_w || dy >= pm_h { continue; }
+                            if dx < 0 || dy < 0 || dx >= pm_w || dy >= pm_h {
+                                continue;
+                            }
                             let si = ((py * tw + px) * 4) as usize;
                             let di = ((dy as u32 * pm_w as u32 + dx as u32) * 4) as usize;
-                            if si + 3 >= tex.len() || di + 3 >= pm_data.len() { continue; }
+                            if si + 3 >= tex.len() || di + 3 >= pm_data.len() {
+                                continue;
+                            }
                             let a = tex[si + 3] as u32;
-                            if a == 0 { continue; }
+                            if a == 0 {
+                                continue;
+                            }
                             let inv = 255 - a;
                             pm_data[di] = ((tr as u32 * a + pm_data[di] as u32 * inv) / 255) as u8;
-                            pm_data[di+1] = ((tg as u32 * a + pm_data[di+1] as u32 * inv) / 255) as u8;
-                            pm_data[di+2] = ((tb as u32 * a + pm_data[di+2] as u32 * inv) / 255) as u8;
-                            pm_data[di+3] = (a + (pm_data[di+3] as u32 * inv) / 255) as u8;
+                            pm_data[di + 1] =
+                                ((tg as u32 * a + pm_data[di + 1] as u32 * inv) / 255) as u8;
+                            pm_data[di + 2] =
+                                ((tb as u32 * a + pm_data[di + 2] as u32 * inv) / 255) as u8;
+                            pm_data[di + 3] = (a + (pm_data[di + 3] as u32 * inv) / 255) as u8;
                         }
                     }
                 }
@@ -245,9 +319,49 @@ impl CpuRenderer {
             // Line body
             let line_y = y_base + badge_h + badge_gap;
 
-            // Stretched text (real text, horizontally stretched)
+            // Rythmo text, rendered vectorially at final size.
             if !line.text.is_empty() && line.text != "↑" && line.text != "↓" {
-                self.blit_stretched_text(&mut pixmap, &line.text, x1, line_y, lw, slot_h, font_size);
+                let lang = &crate::config::get().lang;
+                let breaks = crate::syllable::syllable_breaks(&line.text, lang);
+                let use_segments =
+                    !breaks.is_empty() && line.syllable_ratios.len() == breaks.len() + 1;
+                if use_segments {
+                    let chars: Vec<char> = line.text.chars().collect();
+                    let mut seg_x = x1;
+                    let mut prev_break = 0usize;
+                    for (i, &ratio) in line.syllable_ratios.iter().enumerate() {
+                        let seg_w = ratio * lw;
+                        let end_break = if i < breaks.len() {
+                            breaks[i]
+                        } else {
+                            chars.len()
+                        };
+                        let segment: String = chars[prev_break..end_break].iter().collect();
+                        if !segment.is_empty() && seg_w > 0.5 {
+                            self.blit_rythmo_text(
+                                &mut pixmap,
+                                &segment,
+                                seg_x,
+                                line_y,
+                                seg_w,
+                                slot_h,
+                                font_size,
+                            );
+                        }
+                        seg_x += seg_w;
+                        prev_break = end_break;
+                    }
+                } else {
+                    self.blit_rythmo_text(
+                        &mut pixmap,
+                        &line.text,
+                        x1,
+                        line_y,
+                        lw,
+                        slot_h,
+                        font_size,
+                    );
+                }
             }
 
             // Breath arrows
@@ -266,7 +380,10 @@ impl CpuRenderer {
                     pb.line_to(x1 + lw - margin, line_y + slot_h - margin);
                 }
                 if let Some(path) = pb.finish() {
-                    let stroke = tiny_skia::Stroke { width: 2.0, ..Default::default() };
+                    let stroke = tiny_skia::Stroke {
+                        width: 2.0,
+                        ..Default::default()
+                    };
                     pixmap.stroke_path(&path, &arrow_paint, &stroke, Transform::identity(), None);
                 }
             }
@@ -287,22 +404,30 @@ impl CpuRenderer {
                         for px in 0..tw {
                             let dx = (x1 + 4.0 * s) as i32 + px as i32;
                             let dy = note_y as i32 + py as i32;
-                            if dx < 0 || dy < 0 || dx >= pm_w || dy >= pm_h { continue; }
-                            if px as f32 >= blit_w { break; }
+                            if dx < 0 || dy < 0 || dx >= pm_w || dy >= pm_h {
+                                continue;
+                            }
+                            if px as f32 >= blit_w {
+                                break;
+                            }
                             let si = ((py * tw + px) * 4) as usize;
                             let di = ((dy as u32 * pm_w as u32 + dx as u32) * 4) as usize;
-                            if si + 3 >= tex.len() || di + 3 >= pm_data.len() { continue; }
+                            if si + 3 >= tex.len() || di + 3 >= pm_data.len() {
+                                continue;
+                            }
                             let a = tex[si + 3] as u32;
-                            if a == 0 { continue; }
+                            if a == 0 {
+                                continue;
+                            }
                             // Tint: gray (160, 160, 170)
                             let sr = (160u32 * a / 255) as u32;
                             let sg = (160u32 * a / 255) as u32;
                             let sb = (170u32 * a / 255) as u32;
                             let inv = 255 - a;
                             pm_data[di] = ((sr + pm_data[di] as u32 * inv) / 255) as u8;
-                            pm_data[di+1] = ((sg + pm_data[di+1] as u32 * inv) / 255) as u8;
-                            pm_data[di+2] = ((sb + pm_data[di+2] as u32 * inv) / 255) as u8;
-                            pm_data[di+3] = (a + (pm_data[di+3] as u32 * inv) / 255) as u8;
+                            pm_data[di + 1] = ((sg + pm_data[di + 1] as u32 * inv) / 255) as u8;
+                            pm_data[di + 2] = ((sb + pm_data[di + 2] as u32 * inv) / 255) as u8;
+                            pm_data[di + 3] = (a + (pm_data[di + 3] as u32 * inv) / 255) as u8;
                         }
                     }
                 }
@@ -312,7 +437,9 @@ impl CpuRenderer {
         // -- Markers --
         for marker in &project.markers {
             let mx = center_x + (marker.frame - current_frame) as f32 * ppf;
-            if mx < -10.0 * s || mx > w + 10.0 * s { continue; }
+            if mx < -10.0 * s || mx > w + 10.0 * s {
+                continue;
+            }
 
             match &marker.kind {
                 MarkerKind::Boucle => {
@@ -325,10 +452,21 @@ impl CpuRenderer {
                     let cy = h / 2.0;
                     let arm = 10.0 * s;
                     let mut pb = PathBuilder::new();
-                    pb.move_to(mx - arm, cy - arm); pb.line_to(mx + arm, cy + arm);
-                    pb.move_to(mx - arm, cy + arm); pb.line_to(mx + arm, cy - arm);
+                    pb.move_to(mx - arm, cy - arm);
+                    pb.line_to(mx + arm, cy + arm);
+                    pb.move_to(mx - arm, cy + arm);
+                    pb.line_to(mx + arm, cy - arm);
                     if let Some(path) = pb.finish() {
-                        pixmap.stroke_path(&path, &p, &tiny_skia::Stroke { width: 2.5 * s, ..Default::default() }, Transform::identity(), None);
+                        pixmap.stroke_path(
+                            &path,
+                            &p,
+                            &tiny_skia::Stroke {
+                                width: 2.5 * s,
+                                ..Default::default()
+                            },
+                            Transform::identity(),
+                            None,
+                        );
                     }
                 }
                 MarkerKind::Out => {
@@ -345,7 +483,16 @@ impl CpuRenderer {
                         pb.move_to(mx + offset - bh * 0.3, cy - bh);
                         pb.line_to(mx + offset + bh * 0.3, cy + bh);
                         if let Some(path) = pb.finish() {
-                            pixmap.stroke_path(&path, &p, &tiny_skia::Stroke { width: 2.0 * s, ..Default::default() }, Transform::identity(), None);
+                            pixmap.stroke_path(
+                                &path,
+                                &p,
+                                &tiny_skia::Stroke {
+                                    width: 2.0 * s,
+                                    ..Default::default()
+                                },
+                                Transform::identity(),
+                                None,
+                            );
                         }
                     }
                 }
@@ -364,12 +511,25 @@ impl CpuRenderer {
                     let ay = ruler_h / 2.0;
                     let mut pb = PathBuilder::new();
                     if is_left {
-                        pb.move_to(mx + 5.0*s, ay - 4.0*s); pb.line_to(mx - 3.0*s, ay); pb.line_to(mx + 5.0*s, ay + 4.0*s);
+                        pb.move_to(mx + 5.0 * s, ay - 4.0 * s);
+                        pb.line_to(mx - 3.0 * s, ay);
+                        pb.line_to(mx + 5.0 * s, ay + 4.0 * s);
                     } else {
-                        pb.move_to(mx - 5.0*s, ay - 4.0*s); pb.line_to(mx + 3.0*s, ay); pb.line_to(mx - 5.0*s, ay + 4.0*s);
+                        pb.move_to(mx - 5.0 * s, ay - 4.0 * s);
+                        pb.line_to(mx + 3.0 * s, ay);
+                        pb.line_to(mx - 5.0 * s, ay + 4.0 * s);
                     }
                     if let Some(path) = pb.finish() {
-                        pixmap.stroke_path(&path, &p, &tiny_skia::Stroke { width: 1.5 * s, ..Default::default() }, Transform::identity(), None);
+                        pixmap.stroke_path(
+                            &path,
+                            &p,
+                            &tiny_skia::Stroke {
+                                width: 1.5 * s,
+                                ..Default::default()
+                            },
+                            Transform::identity(),
+                            None,
+                        );
                     }
                 }
             }
@@ -384,7 +544,10 @@ pub fn br_height(project: &Project, width: u32, br_scale: f32) -> u32 {
     let s = width as f32 / constants::REF_WIDTH * br_scale;
     let used = count_used_slots(project);
     let slot_count = used.max(1) as f32;
-    (constants::RULER_HEIGHT * s + slot_count * (constants::SLOT_HEIGHT * s + constants::BADGE_HEIGHT * s + constants::BADGE_GAP * s)).ceil() as u32
+    (constants::RULER_HEIGHT * s
+        + slot_count
+            * (constants::SLOT_HEIGHT * s + constants::BADGE_HEIGHT * s + constants::BADGE_GAP * s))
+        .ceil() as u32
 }
 
 fn count_used_slots(project: &Project) -> usize {

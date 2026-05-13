@@ -31,6 +31,8 @@ impl TimelineBus {
 
     /// Check if there's a FrameChanged pending (without consuming).
     pub fn has_frame_change(&self) -> bool {
-        self.events.iter().any(|e| matches!(e, TimelineEvent::FrameChanged { .. }))
+        self.events
+            .iter()
+            .any(|e| matches!(e, TimelineEvent::FrameChanged { .. }))
     }
 }

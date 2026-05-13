@@ -64,7 +64,10 @@ pub struct SavedServer {
 }
 
 fn default_servers() -> Vec<SavedServer> {
-    vec![SavedServer { ip: "46.225.214.44".into(), port: 9050 }]
+    vec![SavedServer {
+        ip: "46.225.214.44".into(),
+        port: 9050,
+    }]
 }
 
 impl Default for NetworkConfig {
@@ -181,9 +184,16 @@ pub fn add_recent_project(video_path: PathBuf, br_path: PathBuf) {
     let lock = INSTANCE.get().expect("config not initialized");
     let mut cfg = lock.write().unwrap();
     // Remove existing entry with same paths
-    cfg.recent_projects.retain(|r| r.video_path != video_path || r.br_path != br_path);
+    cfg.recent_projects
+        .retain(|r| r.video_path != video_path || r.br_path != br_path);
     // Insert at front
-    cfg.recent_projects.insert(0, RecentProject { video_path, br_path });
+    cfg.recent_projects.insert(
+        0,
+        RecentProject {
+            video_path,
+            br_path,
+        },
+    );
     // Keep only MAX_RECENT
     cfg.recent_projects.truncate(MAX_RECENT);
     cfg.save();
@@ -200,7 +210,12 @@ pub fn saved_servers() -> Vec<SavedServer> {
 pub fn add_server(ip: String, port: u16) {
     let lock = INSTANCE.get().expect("config not initialized");
     let mut cfg = lock.write().unwrap();
-    if !cfg.network.saved_servers.iter().any(|s| s.ip == ip && s.port == port) {
+    if !cfg
+        .network
+        .saved_servers
+        .iter()
+        .any(|s| s.ip == ip && s.port == port)
+    {
         cfg.network.saved_servers.push(SavedServer { ip, port });
         cfg.save();
     }

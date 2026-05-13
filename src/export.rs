@@ -1,7 +1,7 @@
-use std::path::Path;
-use serde::{Deserialize, Serialize};
 use crate::project::{Character, Project};
 use crate::rythmo_line::{MarkerKind, RythmoMarker};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// Trait for project exporters. Implement for each format.
 pub trait ProjectExporter {
@@ -28,7 +28,9 @@ pub struct ProjectData {
     pub characters: Vec<CharacterData>,
 }
 
-fn default_fps() -> f64 { 24.0 }
+fn default_fps() -> f64 {
+    24.0
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct LineData {
@@ -60,29 +62,41 @@ impl ProjectData {
     pub fn from_project(project: &Project, fps: f64) -> Self {
         Self {
             source_fps: fps,
-            lines: project.lines().map(|l| LineData {
-                start_frame: l.start_frame,
-                duration_frames: l.duration_frames,
-                y_slot: l.y_slot,
-                text: l.text.clone(),
-                character_name: l.character_name.clone(),
-                character_color: l.character_color,
-                note: l.note.clone(),
-            }).collect(),
-            markers: project.markers.iter().map(|m| MarkerData {
-                kind: match &m.kind {
-                    MarkerKind::Boucle => "boucle",
-                    MarkerKind::Out => "out",
-                    MarkerKind::SceneChange => "scene_change",
-                    MarkerKind::LiaisonLeft => "liaison_left",
-                    MarkerKind::LiaisonRight => "liaison_right",
-                }.to_string(),
-                frame: m.frame,
-            }).collect(),
-            characters: project.known_characters.iter().map(|c| CharacterData {
-                name: c.name.clone(),
-                color: c.color,
-            }).collect(),
+            lines: project
+                .lines()
+                .map(|l| LineData {
+                    start_frame: l.start_frame,
+                    duration_frames: l.duration_frames,
+                    y_slot: l.y_slot,
+                    text: l.text.clone(),
+                    character_name: l.character_name.clone(),
+                    character_color: l.character_color,
+                    note: l.note.clone(),
+                })
+                .collect(),
+            markers: project
+                .markers
+                .iter()
+                .map(|m| MarkerData {
+                    kind: match &m.kind {
+                        MarkerKind::Boucle => "boucle",
+                        MarkerKind::Out => "out",
+                        MarkerKind::SceneChange => "scene_change",
+                        MarkerKind::LiaisonLeft => "liaison_left",
+                        MarkerKind::LiaisonRight => "liaison_right",
+                    }
+                    .to_string(),
+                    frame: m.frame,
+                })
+                .collect(),
+            characters: project
+                .known_characters
+                .iter()
+                .map(|c| CharacterData {
+                    name: c.name.clone(),
+                    color: c.color,
+                })
+                .collect(),
         }
     }
 
@@ -93,7 +107,12 @@ impl ProjectData {
             1.0
         };
         if fps_ratio <= 0.0 {
-            log::error!("Invalid fps_ratio {} (source_fps={}, target_fps={}), aborting import", fps_ratio, self.source_fps, target_fps);
+            log::error!(
+                "Invalid fps_ratio {} (source_fps={}, target_fps={}), aborting import",
+                fps_ratio,
+                self.source_fps,
+                target_fps
+            );
             return;
         }
         project.clear_lines();
@@ -101,25 +120,38 @@ impl ProjectData {
         project.known_characters.clear();
 
         for ch in &self.characters {
-            project.known_characters.push(Character { name: ch.name.clone(), color: ch.color });
+            project.known_characters.push(Character {
+                name: ch.name.clone(),
+                color: ch.color,
+            });
         }
 
         for l in &self.lines {
             let adjusted_start = (l.start_frame as f64 * fps_ratio) as i64;
             let adjusted_duration = (l.duration_frames as f64 * fps_ratio) as i64;
             if adjusted_duration <= 0 {
-                log::warn!("Skipping line '{}': duration must be positive (got {})", l.text, adjusted_duration);
+                log::warn!(
+                    "Skipping line '{}': duration must be positive (got {})",
+                    l.text,
+                    adjusted_duration
+                );
                 continue;
             }
             if l.y_slot < 0.0 || l.y_slot > 1.0 {
-                log::warn!("Skipping line '{}': y_slot out of range (got {})", l.text, l.y_slot);
+                log::warn!(
+                    "Skipping line '{}': y_slot out of range (got {})",
+                    l.text,
+                    l.y_slot
+                );
                 continue;
             }
             project.add_line_full(
                 adjusted_start,
                 adjusted_duration,
                 l.y_slot,
-                l.text.clone(), l.character_name.clone(), l.character_color,
+                l.text.clone(),
+                l.character_name.clone(),
+                l.character_color,
             );
             // Apply note after creation
             if !l.note.is_empty() {
@@ -145,7 +177,10 @@ impl ProjectData {
                     continue;
                 }
             };
-            project.markers.push(RythmoMarker { kind, frame: (m.frame as f64 * fps_ratio) as i64 });
+            project.markers.push(RythmoMarker {
+                kind,
+                frame: (m.frame as f64 * fps_ratio) as i64,
+            });
         }
     }
 }
@@ -155,15 +190,18 @@ impl ProjectData {
 pub struct JsonExporter;
 
 impl ProjectExporter for JsonExporter {
-    fn extension(&self) -> &str { "json" }
-    fn description(&self) -> &str { "Bande rythmo JSON" }
+    fn extension(&self) -> &str {
+        "json"
+    }
+    fn description(&self) -> &str {
+        "Bande rythmo JSON"
+    }
 
     fn export(&self, project: &Project, fps: f64, path: &Path) -> Result<(), String> {
         let data = ProjectData::from_project(project, fps);
         let json = serde_json::to_string_pretty(&data)
             .map_err(|e| format!("JSON serialize error: {e}"))?;
-        std::fs::write(path, json)
-            .map_err(|e| format!("Write error: {e}"))?;
+        std::fs::write(path, json).map_err(|e| format!("Write error: {e}"))?;
         log::info!("Project exported to {}", path.display());
         Ok(())
     }
@@ -172,14 +210,17 @@ impl ProjectExporter for JsonExporter {
 pub struct JsonImporter;
 
 impl ProjectImporter for JsonImporter {
-    fn extension(&self) -> &str { "json" }
-    fn description(&self) -> &str { "Bande rythmo JSON" }
+    fn extension(&self) -> &str {
+        "json"
+    }
+    fn description(&self) -> &str {
+        "Bande rythmo JSON"
+    }
 
     fn import(&self, path: &Path) -> Result<ProjectData, String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("Read error: {e}"))?;
-        let data: ProjectData = serde_json::from_str(&content)
-            .map_err(|e| format!("JSON parse error: {e}"))?;
+        let content = std::fs::read_to_string(path).map_err(|e| format!("Read error: {e}"))?;
+        let data: ProjectData =
+            serde_json::from_str(&content).map_err(|e| format!("JSON parse error: {e}"))?;
         log::info!("Project imported from {}", path.display());
         Ok(data)
     }
@@ -191,12 +232,22 @@ impl ProjectImporter for JsonImporter {
 fn timecode_to_frames(tc: &str, fps: f64) -> Result<i64, String> {
     let parts: Vec<&str> = tc.split(':').collect();
     if parts.len() != 4 {
-        return Err(format!("Invalid timecode format: '{tc}', expected HH:MM:SS:FF"));
+        return Err(format!(
+            "Invalid timecode format: '{tc}', expected HH:MM:SS:FF"
+        ));
     }
-    let h: i64 = parts[0].parse().map_err(|_| format!("Invalid hours in timecode: '{}'", parts[0]))?;
-    let m: i64 = parts[1].parse().map_err(|_| format!("Invalid minutes in timecode: '{}'", parts[1]))?;
-    let s: i64 = parts[2].parse().map_err(|_| format!("Invalid seconds in timecode: '{}'", parts[2]))?;
-    let f: i64 = parts[3].parse().map_err(|_| format!("Invalid frames in timecode: '{}'", parts[3]))?;
+    let h: i64 = parts[0]
+        .parse()
+        .map_err(|_| format!("Invalid hours in timecode: '{}'", parts[0]))?;
+    let m: i64 = parts[1]
+        .parse()
+        .map_err(|_| format!("Invalid minutes in timecode: '{}'", parts[1]))?;
+    let s: i64 = parts[2]
+        .parse()
+        .map_err(|_| format!("Invalid seconds in timecode: '{}'", parts[2]))?;
+    let f: i64 = parts[3]
+        .parse()
+        .map_err(|_| format!("Invalid frames in timecode: '{}'", parts[3]))?;
     Ok((h * 3600 + m * 60 + s) * fps as i64 + f)
 }
 
@@ -215,17 +266,17 @@ fn hex_color_to_rgba(hex: &str) -> [f32; 4] {
 /// Import a Cappela .detx file and convert it to ProjectData.
 /// Requires the video FPS to correctly interpret timecodes.
 pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
-    use quick_xml::Reader;
     use quick_xml::events::Event;
+    use quick_xml::Reader;
 
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Read error: {e}"))?;
+    let content = std::fs::read_to_string(path).map_err(|e| format!("Read error: {e}"))?;
 
     let mut reader = Reader::from_str(&content);
     reader.config_mut().trim_text(true);
 
     // Roles map: id -> (name, color)
-    let mut roles: std::collections::HashMap<String, (String, [f32; 4])> = std::collections::HashMap::new();
+    let mut roles: std::collections::HashMap<String, (String, [f32; 4])> =
+        std::collections::HashMap::new();
     let mut lines: Vec<LineData> = Vec::new();
     let mut markers: Vec<MarkerData> = Vec::new();
     let mut characters: Vec<CharacterData> = Vec::new();
@@ -237,7 +288,11 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
         InHeader,
         InRoles,
         InBody,
-        InLine { role_id: String, track: i32, voice_off: bool },
+        InLine {
+            role_id: String,
+            track: i32,
+            voice_off: bool,
+        },
     }
     let mut state = ParseState::Root;
 
@@ -254,7 +309,8 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                let attrs: std::collections::HashMap<String, String> = e.attributes()
+                let attrs: std::collections::HashMap<String, String> = e
+                    .attributes()
                     .filter_map(|a| a.ok())
                     .map(|a| {
                         let key = String::from_utf8_lossy(a.key.as_ref()).to_string();
@@ -277,14 +333,19 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
                         if tag == "videofile" {
                             if let Some(tc) = attrs.get("timestamp") {
                                 video_offset_frames = timecode_to_frames(tc, fps).ok();
-                                log::info!("Cappela video offset found: {} frames", video_offset_frames.unwrap_or(0));
+                                log::info!(
+                                    "Cappela video offset found: {} frames",
+                                    video_offset_frames.unwrap_or(0)
+                                );
                             }
                         }
                     }
                     ParseState::InRoles => {
                         if tag == "role" {
                             if let (Some(id), Some(name)) = (attrs.get("id"), attrs.get("name")) {
-                                let color = attrs.get("color").map(|c| hex_color_to_rgba(c))
+                                let color = attrs
+                                    .get("color")
+                                    .map(|c| hex_color_to_rgba(c))
                                     .unwrap_or([1.0, 1.0, 1.0, 1.0]);
                                 roles.insert(id.clone(), (name.clone(), color));
                             }
@@ -293,11 +354,14 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
                     ParseState::InBody => {
                         if tag == "line" {
                             let role_id = attrs.get("role").cloned().unwrap_or_default();
-                            let track: i32 = attrs.get("track")
-                                .and_then(|t| t.parse().ok())
-                                .unwrap_or(0);
+                            let track: i32 =
+                                attrs.get("track").and_then(|t| t.parse().ok()).unwrap_or(0);
                             let voice_off = attrs.get("voice").map(|v| v == "off").unwrap_or(false);
-                            state = ParseState::InLine { role_id, track, voice_off };
+                            state = ParseState::InLine {
+                                role_id,
+                                track,
+                                voice_off,
+                            };
                             line_texts.clear();
                             line_first_tc = None;
                             line_last_tc = None;
@@ -333,7 +397,9 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
             }
             Ok(Event::Text(ref e)) => {
                 if let ParseState::InLine { .. } = state {
-                    let text = e.unescape().map_err(|e| format!("XML text decode error: {e}"))?;
+                    let text = e
+                        .unescape()
+                        .map_err(|e| format!("XML text decode error: {e}"))?;
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         line_texts.push(trimmed.to_string());
@@ -365,10 +431,15 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
                             state = ParseState::Root;
                         }
                     }
-                    ParseState::InLine { ref role_id, track, voice_off } => {
+                    ParseState::InLine {
+                        ref role_id,
+                        track,
+                        voice_off,
+                    } => {
                         if tag == "line" {
                             let full_text = line_texts.join(" "); // Ajout d'espaces entre les morceaux
-                            let (char_name, char_color) = roles.get(role_id)
+                            let (char_name, char_color) = roles
+                                .get(role_id)
                                 .cloned()
                                 .unwrap_or((role_id.clone(), [1.0, 1.0, 1.0, 1.0]));
 
@@ -377,15 +448,21 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
                                 slots.get(track as usize).copied().unwrap_or(0.5)
                             };
 
-                            let start_frame = line_first_tc.as_ref()
+                            let start_frame = line_first_tc
+                                .as_ref()
                                 .and_then(|tc| timecode_to_frames(tc, fps).ok())
                                 .unwrap_or(0);
-                            let end_frame = line_last_tc.as_ref()
+                            let end_frame = line_last_tc
+                                .as_ref()
                                 .and_then(|tc| timecode_to_frames(tc, fps).ok())
                                 .unwrap_or(start_frame);
                             let duration = (end_frame - start_frame).max(1);
 
-                            let note = if voice_off { "Voix off".to_string() } else { String::new() };
+                            let note = if voice_off {
+                                "Voix off".to_string()
+                            } else {
+                                String::new()
+                            };
 
                             lines.push(LineData {
                                 start_frame,
@@ -404,7 +481,12 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
                 }
             }
             Ok(Event::Eof) => break,
-            Err(e) => return Err(format!("XML parse error at position {}: {e}", reader.error_position())),
+            Err(e) => {
+                return Err(format!(
+                    "XML parse error at position {}: {e}",
+                    reader.error_position()
+                ))
+            }
             _ => {}
         }
         buf.clear();
@@ -425,16 +507,25 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
     if offset > 0 {
         for l in &mut lines {
             l.start_frame -= offset;
-            if l.start_frame < 0 { l.start_frame = 0; }
+            if l.start_frame < 0 {
+                l.start_frame = 0;
+            }
         }
         for m in &mut markers {
             m.frame -= offset;
-            if m.frame < 0 { m.frame = 0; }
+            if m.frame < 0 {
+                m.frame = 0;
+            }
         }
     }
 
-    log::info!("Cappela .detx imported: {} lines, {} markers, {} characters | Video offset applied: {}",
-        lines.len(), markers.len(), characters.len(), offset);
+    log::info!(
+        "Cappela .detx imported: {} lines, {} markers, {} characters | Video offset applied: {}",
+        lines.len(),
+        markers.len(),
+        characters.len(),
+        offset
+    );
 
     Ok(ProjectData {
         source_fps: fps,
@@ -451,9 +542,17 @@ mod tests {
     #[test]
     fn test_roundtrip_json() {
         let mut project = Project::new();
-        project.add_line_full(0, 48, 0.5, "hello".into(), "Alice".into(), [1.0, 0.0, 0.0, 1.0]);
+        project.add_line_full(
+            0,
+            48,
+            0.5,
+            "hello".into(),
+            "Alice".into(),
+            [1.0, 0.0, 0.0, 1.0],
+        );
         project.markers.push(crate::rythmo_line::RythmoMarker {
-            kind: crate::rythmo_line::MarkerKind::Boucle, frame: 100,
+            kind: crate::rythmo_line::MarkerKind::Boucle,
+            frame: 100,
         });
 
         let data = ProjectData::from_project(&project, 24.0);
@@ -471,8 +570,11 @@ mod tests {
         let data = ProjectData {
             source_fps: 24.0,
             lines: vec![LineData {
-                start_frame: 24, duration_frames: 48, y_slot: 0.5,
-                text: "test".into(), character_name: "A".into(),
+                start_frame: 24,
+                duration_frames: 48,
+                y_slot: 0.5,
+                text: "test".into(),
+                character_name: "A".into(),
                 character_color: [1.0; 4],
             }],
             markers: vec![],
@@ -499,8 +601,11 @@ mod tests {
         let data = ProjectData {
             source_fps: 24.0,
             lines: vec![LineData {
-                start_frame: 0, duration_frames: 10, y_slot: 0.25,
-                text: "new".into(), character_name: "X".into(),
+                start_frame: 0,
+                duration_frames: 10,
+                y_slot: 0.25,
+                text: "new".into(),
+                character_name: "X".into(),
                 character_color: [1.0; 4],
             }],
             markers: vec![],
@@ -515,7 +620,10 @@ mod tests {
         let data = ProjectData {
             source_fps: 24.0,
             lines: vec![],
-            markers: vec![MarkerData { kind: "unknown_kind".into(), frame: 50 }],
+            markers: vec![MarkerData {
+                kind: "unknown_kind".into(),
+                frame: 50,
+            }],
             characters: vec![],
         };
         let mut project = Project::new();
@@ -529,7 +637,10 @@ mod tests {
         assert_eq!(timecode_to_frames("00:00:01:00", 24.0).unwrap(), 24);
         assert_eq!(timecode_to_frames("00:01:00:00", 24.0).unwrap(), 24 * 60);
         assert_eq!(timecode_to_frames("01:00:00:00", 24.0).unwrap(), 24 * 3600);
-        assert_eq!(timecode_to_frames("01:00:08:19", 24.0).unwrap(), 24 * 3600 + 8 * 24 + 19);
+        assert_eq!(
+            timecode_to_frames("01:00:08:19", 24.0).unwrap(),
+            24 * 3600 + 8 * 24 + 19
+        );
     }
 
     #[test]
