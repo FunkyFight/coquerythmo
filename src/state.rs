@@ -266,8 +266,12 @@ impl State {
 
     pub fn toggle_play_pause(&mut self) {
         if let Some(player) = &mut self.video_player {
-            player.toggle();
-            self.ui.toggle_play_pause();
+            if !player.toggle() {
+                return;
+            }
+            if self.ui.is_playing() != player.is_playing() {
+                self.ui.toggle_play_pause();
+            }
             if player.is_playing() {
                 self.timeline.emit(TimelineEvent::PlaybackStarted);
             } else {

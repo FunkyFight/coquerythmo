@@ -133,25 +133,26 @@ impl VideoPlayer {
         }
     }
 
-    pub fn toggle(&mut self) {
+    pub fn toggle(&mut self) -> bool {
         if self.finished {
-            return;
+            return false;
         }
 
         // Debounce: ignore toggles within 200ms of each other
         let now = Instant::now();
         if let Some(last) = self.last_toggle {
             if now.duration_since(last).as_millis() < 50 {
-                return;
+                return false;
             }
         }
         self.last_toggle = Some(now);
 
         self.playing = !self.playing;
         if self.playing {
-            self.stop_decoders();
-            let ts = self.current_frame as f64 / self.fps;
-            self.start_decoders_at(ts);
+            if self.receiver.is_none() {
+                let ts = self.current_frame as f64 / self.fps;
+                self.start_decoders_at(ts);
+            }
 
             self.playback_start_time = Some(now);
             self.playback_start_frame = self.current_frame;
@@ -164,6 +165,8 @@ impl VideoPlayer {
                 sink.pause();
             }
         }
+
+        true
     }
 
     pub fn is_playing(&self) -> bool {

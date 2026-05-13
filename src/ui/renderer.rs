@@ -328,7 +328,7 @@ impl UiRenderer {
             };
 
             if needs_update {
-                let Some(rendered) = crate::vector_text::render_rythmo_text(
+                let Some(rendered) = crate::vector_text::render_rythmo_text_with_ratios(
                     &mut self.font_system,
                     &st.text,
                     font_size,

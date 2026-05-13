@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::constants;
 use crate::project::Project;
 use crate::rythmo_line::MarkerKind;
@@ -9,11 +11,24 @@ use resvg::tiny_skia::{self, Paint, PathBuilder, Pixmap, Rect as SkRect, Transfo
 // Local constants not shared with the UI
 const BASE_TICK_WIDTH: f32 = 1.0;
 const BASE_PLAYHEAD_WIDTH: f32 = 2.0;
+const MAX_RYTHMO_TEXT_CACHE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_RYTHMO_TEXT_CACHE_ENTRIES: usize = 512;
+
+struct CachedCpuRythmoText {
+    pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+    bytes: usize,
+    last_used: u64,
+}
 
 /// Persistent state for CPU text rasterization (reused across frames).
 pub struct CpuRenderer {
     font_system: FontSystem,
     swash_cache: SwashCache,
+    rythmo_text_cache: HashMap<u64, CachedCpuRythmoText>,
+    rythmo_text_cache_bytes: usize,
+    cache_tick: u64,
 }
 
 impl CpuRenderer {
@@ -21,6 +36,79 @@ impl CpuRenderer {
         Self {
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
+            rythmo_text_cache: HashMap::new(),
+            rythmo_text_cache_bytes: 0,
+            cache_tick: 0,
+        }
+    }
+
+    fn rythmo_text_cache_key(text: &str, font_size: f32, dest_w: u32, dest_h: u32) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut h);
+        font_size.to_bits().hash(&mut h);
+        dest_w.hash(&mut h);
+        dest_h.hash(&mut h);
+        crate::vector_text::rythmo_font_family_name().hash(&mut h);
+        h.finish()
+    }
+
+    fn get_or_render_rythmo_text(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        dest_w: u32,
+        dest_h: u32,
+    ) -> Option<u64> {
+        self.cache_tick = self.cache_tick.wrapping_add(1);
+        let key = Self::rythmo_text_cache_key(text, font_size, dest_w, dest_h);
+        if let Some(cached) = self.rythmo_text_cache.get_mut(&key) {
+            cached.last_used = self.cache_tick;
+            return Some(key);
+        }
+
+        let rendered = crate::vector_text::render_rythmo_text(
+            &mut self.font_system,
+            text,
+            font_size,
+            dest_w,
+            dest_h,
+        )?;
+        let bytes = rendered.pixels.len();
+        self.rythmo_text_cache_bytes += bytes;
+        self.rythmo_text_cache.insert(
+            key,
+            CachedCpuRythmoText {
+                pixels: rendered.pixels,
+                width: rendered.width,
+                height: rendered.height,
+                bytes,
+                last_used: self.cache_tick,
+            },
+        );
+        self.evict_rythmo_text_cache();
+
+        Some(key)
+    }
+
+    fn evict_rythmo_text_cache(&mut self) {
+        while self.rythmo_text_cache.len() > 1
+            && (self.rythmo_text_cache.len() > MAX_RYTHMO_TEXT_CACHE_ENTRIES
+                || self.rythmo_text_cache_bytes > MAX_RYTHMO_TEXT_CACHE_BYTES)
+        {
+            let Some(oldest_key) = self
+                .rythmo_text_cache
+                .iter()
+                .min_by_key(|(_, cached)| cached.last_used)
+                .map(|(&key, _)| key)
+            else {
+                break;
+            };
+            if let Some(removed) = self.rythmo_text_cache.remove(&oldest_key) {
+                self.rythmo_text_cache_bytes = self
+                    .rythmo_text_cache_bytes
+                    .saturating_sub(removed.bytes);
+            }
         }
     }
 
@@ -120,13 +208,10 @@ impl CpuRenderer {
     ) {
         let tex_w = dest_w.max(1.0).ceil() as u32;
         let tex_h = dest_h.max(1.0).ceil() as u32;
-        let Some(rendered) = crate::vector_text::render_rythmo_text(
-            &mut self.font_system,
-            text,
-            font_size,
-            tex_w,
-            tex_h,
-        ) else {
+        let Some(cache_key) = self.get_or_render_rythmo_text(text, font_size, tex_w, tex_h) else {
+            return;
+        };
+        let Some(rendered) = self.rythmo_text_cache.get(&cache_key) else {
             return;
         };
         if rendered.width == 0 || rendered.height == 0 {
@@ -137,22 +222,24 @@ impl CpuRenderer {
         let pm_h = pixmap.height() as i32;
         let xi = x as i32;
         let yi = y as i32;
+        let start_dx = (-xi).max(0).min(rendered.width as i32) as u32;
+        let end_dx = (pm_w - xi).max(0).min(rendered.width as i32) as u32;
+        let start_dy = (-yi).max(0).min(rendered.height as i32) as u32;
+        let end_dy = (pm_h - yi).max(0).min(rendered.height as i32) as u32;
+
+        if start_dx >= end_dx || start_dy >= end_dy {
+            return;
+        }
 
         let pm_data = pixmap.data_mut();
 
-        for dy in 0..rendered.height as i32 {
-            let py = yi + dy;
-            if py < 0 || py >= pm_h {
-                continue;
-            }
+        for dy in start_dy..end_dy {
+            let py = yi + dy as i32;
 
-            for dx in 0..rendered.width as i32 {
-                let px = xi + dx;
-                if px < 0 || px >= pm_w {
-                    continue;
-                }
+            for dx in start_dx..end_dx {
+                let px = xi + dx as i32;
 
-                let src_idx = (((dy as u32) * rendered.width + dx as u32) * 4) as usize;
+                let src_idx = ((dy * rendered.width + dx) * 4) as usize;
                 let dst_idx = ((py as u32 * pm_w as u32 + px as u32) * 4) as usize;
 
                 if src_idx + 3 >= rendered.pixels.len() || dst_idx + 3 >= pm_data.len() {
