@@ -6,6 +6,8 @@ pub mod icon_button;
 pub mod icons;
 pub mod interactive;
 pub mod layout;
+pub mod proxy_error_modal;
+pub mod proxy_modal;
 pub mod renderer;
 pub mod rythmo;
 pub mod save_prompt_modal;
@@ -60,6 +62,8 @@ pub struct Ui {
     connect_modal: Option<connect_modal::ConnectModal>,
     settings_modal: Option<settings_modal::SettingsModal>,
     export_modal: Option<export_modal::ExportModal>,
+    proxy_modal: Option<proxy_modal::ProxyModal>,
+    proxy_error_modal: Option<proxy_error_modal::ProxyErrorModal>,
     server_browser: Option<server_browser::ServerBrowserModal>,
     add_server_modal: Option<server_browser::AddServerModal>,
     save_prompt_modal: Option<save_prompt_modal::SavePromptModal>,
@@ -133,6 +137,8 @@ impl Ui {
             connect_modal: None,
             settings_modal: None,
             export_modal: None,
+            proxy_modal: None,
+            proxy_error_modal: None,
             server_browser: None,
             add_server_modal: None,
             save_prompt_modal: None,
@@ -263,9 +269,32 @@ impl Ui {
         .with_trigger_label(t("menu.export"))
         .with_panel_width(260.0);
 
-        let connect_menu = Dropdown::new(
+        let tools_menu = Dropdown::new(
             Rect {
                 x: 172.0,
+                y: 2.0,
+                width: 80.0,
+                height: 28.0,
+            },
+            vec![
+                t("menu.tools.create_proxy").into(),
+                t("menu.tools.secondary_display").into(),
+            ],
+            |index, _label| match index {
+                0 => EventResponse::Action(UiAction::OpenProxyModal),
+                1 => EventResponse::Action(UiAction::OpenSecondaryDisplay),
+                _ => EventResponse::Consumed,
+            },
+        )
+        .with_arrow(false)
+        .with_trigger_bg(false)
+        .with_trigger_label(t("menu.tools"))
+        .with_panel_width(250.0)
+        .with_disabled_items(vec![!has_video, !has_video]);
+
+        let connect_menu = Dropdown::new(
+            Rect {
+                x: 256.0,
                 y: 2.0,
                 width: 120.0,
                 height: 28.0,
@@ -305,6 +334,7 @@ impl Ui {
         vec![
             Box::new(project_menu),
             Box::new(export_menu),
+            Box::new(tools_menu),
             Box::new(connect_menu),
             Box::new(settings_btn),
         ]
@@ -554,6 +584,11 @@ impl Ui {
             self.cursor_pos = (*x, *y);
         }
 
+        // Proxy error modal blocks all input, including toast dismissal.
+        if self.proxy_error_modal.is_some() {
+            return self.handle_proxy_error_modal_event(event);
+        }
+
         // Toast click to dismiss
         if self
             .toasts
@@ -585,6 +620,11 @@ impl Ui {
         // Export modal intercepts all input
         if self.export_modal.is_some() {
             return self.handle_export_modal_event(event);
+        }
+
+        // Proxy modal intercepts all input
+        if self.proxy_modal.is_some() {
+            return self.handle_proxy_modal_event(event);
         }
 
         // Add server modal intercepts all input
@@ -941,6 +981,8 @@ impl Ui {
         self.rythmo_state.is_editing()
             || self.connect_modal.is_some()
             || self.export_modal.is_some()
+            || self.proxy_modal.is_some()
+            || self.proxy_error_modal.is_some()
     }
 
     fn handle_connect_modal_event(&mut self, event: &UiEvent) -> EventResponse {
@@ -1010,15 +1052,65 @@ impl Ui {
                 self.export_modal = None;
                 EventResponse::Consumed
             }
-            export_modal::ExportModalResult::Export { fps, br_scale } => {
+            export_modal::ExportModalResult::Export {
+                fps,
+                br_scale,
+                export_width,
+                export_height,
+            } => {
                 self.export_modal = None;
-                EventResponse::Action(UiAction::StartExport { fps, br_scale })
+                EventResponse::Action(UiAction::StartExport {
+                    fps,
+                    br_scale,
+                    export_width,
+                    export_height,
+                })
             }
         }
     }
 
-    pub fn open_export_modal(&mut self) {
-        self.export_modal = Some(export_modal::ExportModal::new());
+    fn handle_proxy_modal_event(&mut self, event: &UiEvent) -> EventResponse {
+        let modal = match &mut self.proxy_modal {
+            Some(m) => m,
+            None => return EventResponse::Ignored,
+        };
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            proxy_modal::ProxyModalResult::Consumed => EventResponse::Consumed,
+            proxy_modal::ProxyModalResult::Close => {
+                self.proxy_modal = None;
+                EventResponse::Consumed
+            }
+            proxy_modal::ProxyModalResult::Create { width, height, crf } => {
+                self.proxy_modal = None;
+                EventResponse::Action(UiAction::CreateProxy { width, height, crf })
+            }
+        }
+    }
+
+    fn handle_proxy_error_modal_event(&mut self, event: &UiEvent) -> EventResponse {
+        let modal = match &mut self.proxy_error_modal {
+            Some(m) => m,
+            None => return EventResponse::Ignored,
+        };
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            proxy_error_modal::ProxyErrorResult::Consumed => EventResponse::Consumed,
+            proxy_error_modal::ProxyErrorResult::Close => {
+                self.proxy_error_modal = None;
+                EventResponse::Consumed
+            }
+        }
+    }
+
+    pub fn open_export_modal(&mut self, video_width: u32, video_height: u32) {
+        self.export_modal = Some(export_modal::ExportModal::new(video_width, video_height));
+    }
+
+    pub fn open_proxy_modal(&mut self, video_width: u32, video_height: u32) {
+        self.proxy_modal = Some(proxy_modal::ProxyModal::new(video_width, video_height));
+    }
+
+    pub fn open_proxy_error_modal(&mut self, detail: impl Into<String>) {
+        self.proxy_error_modal = Some(proxy_error_modal::ProxyErrorModal::new(detail));
     }
 
     fn handle_server_browser_event(&mut self, event: &UiEvent) -> EventResponse {
@@ -1530,6 +1622,16 @@ impl Ui {
             );
         }
 
+        // Proxy modal
+        if let Some(modal) = &self.proxy_modal {
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
+        }
+
         // Save prompt modal
         if let Some(modal) = &self.save_prompt_modal {
             modal.render(
@@ -1653,6 +1755,16 @@ impl Ui {
             self.screen_w,
             self.screen_h,
         );
+
+        // Proxy error modal is rendered last so it stays above toasts and progress.
+        if let Some(modal) = &self.proxy_error_modal {
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
+        }
 
         renderer.render(
             device,

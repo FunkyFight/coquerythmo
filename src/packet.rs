@@ -87,6 +87,9 @@ pub enum CommandPayload {
         start_frame: i64,
         y_slot: f32,
     },
+    MoveLines {
+        lines: Vec<MoveLinePayload>,
+    },
     ResizeLine {
         line_id: u64,
         start_frame: i64,
@@ -126,6 +129,13 @@ pub enum CommandPayload {
         filename: String,
         data_base64: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoveLinePayload {
+    pub line_id: u64,
+    pub start_frame: i64,
+    pub y_slot: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +186,16 @@ impl Packetable for Command {
                 line_id: *line_id,
                 start_frame: *new_start,
                 y_slot: *new_y_slot,
+            },
+            Command::MoveLines { moves } => CommandPayload::MoveLines {
+                lines: moves
+                    .iter()
+                    .map(|movement| MoveLinePayload {
+                        line_id: movement.line_id,
+                        start_frame: movement.new_start,
+                        y_slot: movement.new_y_slot,
+                    })
+                    .collect(),
             },
             Command::ResizeLine {
                 line_id,

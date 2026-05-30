@@ -1,6 +1,15 @@
 use crate::project::Project;
 use crate::rythmo_line::{RythmoLine, RythmoMarker};
 
+#[derive(Clone)]
+pub struct LineMove {
+    pub line_id: u64,
+    pub old_start: i64,
+    pub old_y_slot: f32,
+    pub new_start: i64,
+    pub new_y_slot: f32,
+}
+
 /// Each command stores before/after state for reversibility.
 pub enum Command {
     CreateLine {
@@ -20,6 +29,9 @@ pub enum Command {
         old_y_slot: f32,
         new_start: i64,
         new_y_slot: f32,
+    },
+    MoveLines {
+        moves: Vec<LineMove>,
     },
     ResizeLine {
         line_id: u64,
@@ -85,6 +97,14 @@ impl Command {
                 if let Some(l) = project.get_line_mut(*line_id) {
                     l.start_frame = *new_start;
                     l.y_slot = *new_y_slot;
+                }
+            }
+            Command::MoveLines { moves } => {
+                for movement in moves {
+                    if let Some(l) = project.get_line_mut(movement.line_id) {
+                        l.start_frame = movement.new_start;
+                        l.y_slot = movement.new_y_slot;
+                    }
                 }
             }
             Command::ResizeLine {
@@ -168,6 +188,14 @@ impl Command {
                 if let Some(l) = project.get_line_mut(*line_id) {
                     l.start_frame = *old_start;
                     l.y_slot = *old_y_slot;
+                }
+            }
+            Command::MoveLines { moves } => {
+                for movement in moves {
+                    if let Some(l) = project.get_line_mut(movement.line_id) {
+                        l.start_frame = movement.old_start;
+                        l.y_slot = movement.old_y_slot;
+                    }
                 }
             }
             Command::ResizeLine {

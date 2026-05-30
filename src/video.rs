@@ -1,13 +1,18 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, Sample, SizedSample};
+
+const VIDEO_PIX_FMT: &str = "bgra";
+const VIDEO_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
+const AUDIO_DECODE_CHANNELS: usize = 2;
 
 pub struct VideoFrame {
     pub data: Vec<u8>,
@@ -26,22 +31,100 @@ pub struct VideoPlayer {
     playing: bool,
     playback_start_time: Option<Instant>,
     playback_start_frame: i64,
+    playback_start_audio_frame: u64,
     last_toggle: Option<Instant>,
     receiver: Option<Receiver<VideoFrame>>,
+    frame_recycler: Option<SyncSender<Vec<u8>>>,
     decoder_handle: Option<JoinHandle<()>>,
     kill_signal: Arc<AtomicBool>,
     path: Option<PathBuf>,
+    audio_path: Option<PathBuf>,
     finished: bool,
     current_frame: i64,
     interpolated_frame: i64,
     total_frames: i64,
     volume: f32,
 
-    _audio_stream: Option<OutputStream>,
-    _audio_handle: Option<OutputStreamHandle>,
-    audio_sink: Option<Sink>,
+    audio_stream: Option<cpal::Stream>,
+    audio_clock: Option<Arc<AudioOutputState>>,
     audio_thread: Option<JoinHandle<()>>,
     pub waveform: Arc<RwLock<Vec<f32>>>,
+}
+
+struct AudioClockSnapshot {
+    wall_instant: Instant,
+    audible_frame: i64,
+    written_frame: u64,
+}
+
+struct AudioOutputState {
+    sample_rate: u32,
+    volume_bits: AtomicU32,
+    frames_written: AtomicU64,
+    underruns: AtomicU64,
+    snapshot: Mutex<AudioClockSnapshot>,
+}
+
+impl AudioOutputState {
+    fn new(sample_rate: u32, volume: f32) -> Self {
+        Self {
+            sample_rate,
+            volume_bits: AtomicU32::new(volume.to_bits()),
+            frames_written: AtomicU64::new(0),
+            underruns: AtomicU64::new(0),
+            snapshot: Mutex::new(AudioClockSnapshot {
+                wall_instant: Instant::now(),
+                audible_frame: 0,
+                written_frame: 0,
+            }),
+        }
+    }
+
+    fn set_volume(&self, volume: f32) {
+        self.volume_bits.store(volume.to_bits(), Ordering::Relaxed);
+    }
+
+    fn volume(&self) -> f32 {
+        f32::from_bits(self.volume_bits.load(Ordering::Relaxed))
+    }
+
+    fn audible_frame(&self) -> u64 {
+        let Ok(snapshot) = self.snapshot.lock() else {
+            return self.frames_written.load(Ordering::Relaxed);
+        };
+        self.audible_frame_from_snapshot(&snapshot, Instant::now())
+    }
+
+    fn freeze(&self) {
+        if let Ok(mut snapshot) = self.snapshot.lock() {
+            let now = Instant::now();
+            let audible_frame = self.audible_frame_from_snapshot(&snapshot, now);
+            snapshot.wall_instant = now;
+            snapshot.audible_frame = audible_frame as i64;
+            snapshot.written_frame = self.frames_written.load(Ordering::Relaxed);
+        }
+    }
+
+    fn update_callback_snapshot(&self, frames_before: u64, frames_after: u64, latency_frames: u64) {
+        if let Ok(mut snapshot) = self.snapshot.lock() {
+            snapshot.wall_instant = Instant::now();
+            snapshot.audible_frame = frames_before as i64 - latency_frames as i64;
+            snapshot.written_frame = frames_after;
+        }
+    }
+
+    fn audible_frame_from_snapshot(&self, snapshot: &AudioClockSnapshot, now: Instant) -> u64 {
+        let elapsed_frames = now
+            .saturating_duration_since(snapshot.wall_instant)
+            .as_secs_f64()
+            * self.sample_rate as f64;
+        let audible = snapshot.audible_frame as f64 + elapsed_frames.max(0.0);
+        if audible <= 0.0 {
+            0
+        } else {
+            (audible as u64).min(snapshot.written_frame)
+        }
+    }
 }
 
 impl VideoPlayer {
@@ -56,27 +139,30 @@ impl VideoPlayer {
             playing: false,
             playback_start_time: None,
             playback_start_frame: 0,
+            playback_start_audio_frame: 0,
             last_toggle: None,
             receiver: None,
+            frame_recycler: None,
             decoder_handle: None,
             kill_signal: Arc::new(AtomicBool::new(false)),
             path: None,
+            audio_path: None,
             finished: false,
             current_frame: 0,
             interpolated_frame: 0,
             total_frames: 0,
             volume: 0.75,
-            _audio_stream: None,
-            _audio_handle: None,
-            audio_sink: None,
+            audio_stream: None,
+            audio_clock: None,
             audio_thread: None,
             waveform: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
-    pub fn load(
+    pub fn load_with_audio(
         &mut self,
-        path: &Path,
+        video_path: &Path,
+        audio_path: &Path,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bind_group_layout: &wgpu::BindGroupLayout,
@@ -84,33 +170,35 @@ impl VideoPlayer {
     ) -> Result<(), String> {
         self.stop();
 
-        let (width, height, fps, total_frames) = probe_video(path)?;
+        let (width, height, fps, total_frames) = probe_video(video_path)?;
         self.width = width;
         self.height = height;
         self.fps = fps;
         self.total_frames = total_frames;
         self.current_frame = 0;
         self.interpolated_frame = 0;
-        self.path = Some(path.to_path_buf());
+        self.path = Some(video_path.to_path_buf());
+        self.audio_path = Some(audio_path.to_path_buf());
         self.finished = false;
 
         log::info!(
-            "Video: {}x{} @ {:.2} fps, {} frames from {}",
+            "Video: {}x{} @ {:.2} fps, {} frames from {} (audio from {})",
             width,
             height,
             fps,
             total_frames,
-            path.display()
+            video_path.display(),
+            audio_path.display()
         );
 
-        let first_frame = decode_frame_at(path, width, height, 0.0)?;
+        let first_frame = decode_frame_at(video_path, width, height, 0.0)?;
         self.upload_frame(&first_frame, device, queue, bind_group_layout, sampler);
 
         self.start_decoders_at(0.0);
 
         // Decode waveform in background (peak amplitude per video frame)
         let waveform = self.waveform.clone();
-        let wave_path = path.to_path_buf();
+        let wave_path = audio_path.to_path_buf();
         let wave_fps = fps;
         let wave_total = total_frames;
         thread::spawn(move || {
@@ -127,9 +215,8 @@ impl VideoPlayer {
 
     pub fn set_volume(&mut self, vol: f32) {
         self.volume = vol;
-        if let Some(sink) = &self.audio_sink {
-            let v = if vol < 0.01 { 0.0 } else { vol };
-            sink.set_volume(v);
+        if let Some(clock) = &self.audio_clock {
+            clock.set_volume(if vol < 0.01 { 0.0 } else { vol });
         }
     }
 
@@ -156,13 +243,25 @@ impl VideoPlayer {
 
             self.playback_start_time = Some(now);
             self.playback_start_frame = self.current_frame;
+            self.playback_start_audio_frame = self
+                .audio_clock
+                .as_ref()
+                .map(|clock| clock.audible_frame())
+                .unwrap_or(0);
 
-            if let Some(sink) = &self.audio_sink {
-                sink.play();
+            if let Some(stream) = &self.audio_stream {
+                if let Err(e) = stream.play() {
+                    log::error!("Audio stream play failed: {e}");
+                }
             }
         } else {
-            if let Some(sink) = &self.audio_sink {
-                sink.pause();
+            if let Some(clock) = &self.audio_clock {
+                clock.freeze();
+            }
+            if let Some(stream) = &self.audio_stream {
+                if let Err(e) = stream.pause() {
+                    log::warn!("Audio stream pause failed: {e}");
+                }
             }
         }
 
@@ -258,7 +357,14 @@ impl VideoPlayer {
             Some(t) => t,
             None => return,
         };
-        let elapsed = Instant::now().duration_since(start_time).as_secs_f64();
+        let elapsed = if let Some(clock) = &self.audio_clock {
+            let audio_frames = clock
+                .audible_frame()
+                .saturating_sub(self.playback_start_audio_frame);
+            audio_frames as f64 / clock.sample_rate as f64
+        } else {
+            Instant::now().duration_since(start_time).as_secs_f64()
+        };
         let target_frame = self.playback_start_frame + (elapsed * self.fps) as i64;
 
         // Store interpolated frame for smooth playback even with discrete frame updates
@@ -276,7 +382,9 @@ impl VideoPlayer {
             for _ in 0..frames_behind {
                 match rx.try_recv() {
                     Ok(frame) => {
-                        last_frame = Some(frame);
+                        if let Some(previous) = last_frame.replace(frame) {
+                            recycle_frame(previous, self.frame_recycler.as_ref());
+                        }
                         self.current_frame += 1;
                     }
                     Err(mpsc::TryRecvError::Empty) => break, // decoder hasn't caught up
@@ -284,8 +392,8 @@ impl VideoPlayer {
                         self.playing = false;
                         self.finished = true;
                         self.receiver = None;
-                        if let Some(sink) = &self.audio_sink {
-                            sink.pause();
+                        if let Some(stream) = &self.audio_stream {
+                            let _ = stream.pause();
                         }
                         log::info!("Video playback finished");
                         return;
@@ -297,6 +405,7 @@ impl VideoPlayer {
         // Upload only the last consumed frame (skip intermediate ones for performance)
         if let Some(frame) = last_frame {
             self.upload_frame(&frame, device, queue, bind_group_layout, sampler);
+            recycle_frame(frame, self.frame_recycler.as_ref());
         }
     }
 
@@ -335,51 +444,100 @@ impl VideoPlayer {
             Some(p) => p.clone(),
             None => return,
         };
+        let audio_path = self.audio_path.clone().unwrap_or_else(|| path.clone());
 
         // Fresh kill signal for new decoders
         self.kill_signal = Arc::new(AtomicBool::new(false));
 
         // Video decoder
+        let frame_size = (self.width * self.height * 4) as usize;
         let (tx, rx) = mpsc::sync_channel::<VideoFrame>(3);
+        let (free_tx, free_rx) = mpsc::sync_channel::<Vec<u8>>(3);
+        for _ in 0..3 {
+            if free_tx.send(vec![0u8; frame_size]).is_err() {
+                break;
+            }
+        }
         let path_clone = path.clone();
         let w = self.width;
         let h = self.height;
         let kill = self.kill_signal.clone();
         let vid_handle = thread::spawn(move || {
-            decode_video_stream_from(path_clone, w, h, timestamp, tx, kill);
+            decode_video_stream_from(path_clone, w, h, timestamp, tx, free_rx, kill);
         });
         self.receiver = Some(rx);
+        self.frame_recycler = Some(free_tx);
         self.decoder_handle = Some(vid_handle);
 
         // Audio decoder
-        if self.setup_audio_from(&path, timestamp).is_ok() {
+        if self.setup_audio_from(&audio_path, timestamp).is_ok() {
             self.set_volume(self.volume);
             if !self.playing {
-                if let Some(sink) = &self.audio_sink {
-                    sink.pause();
+                if let Some(stream) = &self.audio_stream {
+                    let _ = stream.pause();
                 }
             }
         }
     }
 
     fn setup_audio_from(&mut self, path: &Path, timestamp: f64) -> Result<(), String> {
-        let (stream, handle) =
-            OutputStream::try_default().map_err(|e| format!("Audio output failed: {e}"))?;
-        let sink = Sink::try_new(&handle).map_err(|e| format!("Audio sink failed: {e}"))?;
-        sink.pause();
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or_else(|| "No default audio output device".to_string())?;
+        let supported = device
+            .default_output_config()
+            .map_err(|e| format!("Audio output config failed: {e}"))?;
+        let config = supported.config();
+        let sample_rate = config.sample_rate.0;
+        let channels = config.channels as usize;
 
-        let (audio_tx, audio_rx) = mpsc::sync_channel::<Vec<f32>>(8);
+        let (audio_tx, audio_rx) = mpsc::sync_channel::<Vec<f32>>(24);
         let path_clone = path.to_path_buf();
         let audio_handle = thread::spawn(move || {
-            decode_audio_stream_from(path_clone, timestamp, audio_tx);
+            decode_audio_stream_from(path_clone, timestamp, sample_rate, audio_tx);
         });
+        let initial_chunk = match audio_rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(chunk) => Some(chunk),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("No decodable audio stream".to_string());
+            }
+        };
 
-        let source = AudioChannelSource::new(audio_rx);
-        sink.append(source);
+        let state = Arc::new(AudioOutputState::new(sample_rate, self.volume));
+        let stream = match supported.sample_format() {
+            cpal::SampleFormat::F32 => build_audio_stream::<f32>(
+                &device,
+                &config,
+                audio_rx,
+                initial_chunk,
+                state.clone(),
+                channels,
+            ),
+            cpal::SampleFormat::I16 => build_audio_stream::<i16>(
+                &device,
+                &config,
+                audio_rx,
+                initial_chunk,
+                state.clone(),
+                channels,
+            ),
+            cpal::SampleFormat::U16 => build_audio_stream::<u16>(
+                &device,
+                &config,
+                audio_rx,
+                initial_chunk,
+                state.clone(),
+                channels,
+            ),
+            sample_format => Err(format!(
+                "Unsupported audio sample format: {sample_format:?}"
+            )),
+        }?;
 
-        self._audio_stream = Some(stream);
-        self._audio_handle = Some(handle);
-        self.audio_sink = Some(sink);
+        self.audio_stream = Some(stream);
+        self.audio_clock = Some(state);
         self.audio_thread = Some(audio_handle);
         Ok(())
     }
@@ -408,7 +566,7 @@ impl VideoPlayer {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                format: VIDEO_TEXTURE_FORMAT,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
@@ -457,13 +615,13 @@ impl VideoPlayer {
         // Signal threads to kill their ffmpeg processes and exit
         self.kill_signal.store(true, Ordering::Relaxed);
 
-        if let Some(sink) = &self.audio_sink {
-            sink.stop();
+        if let Some(stream) = &self.audio_stream {
+            let _ = stream.pause();
         }
-        self.audio_sink = None;
-        self._audio_handle = None;
-        self._audio_stream = None;
+        self.audio_stream = None;
+        self.audio_clock = None;
         self.receiver = None;
+        self.frame_recycler = None;
         self.decoder_handle.take();
         self.audio_thread.take();
     }
@@ -480,30 +638,32 @@ impl Drop for VideoPlayer {
     }
 }
 
-// --- Audio channel source for rodio ---
+// --- Direct CPAL audio output ---
 
-const AUDIO_SAMPLE_RATE: u32 = 44100;
-const AUDIO_CHANNELS: u16 = 2;
+const AUDIO_CHANNELS: u16 = AUDIO_DECODE_CHANNELS as u16;
 
-struct AudioChannelSource {
+struct AudioSampleReader {
     rx: Receiver<Vec<f32>>,
     buffer: Vec<f32>,
     pos: usize,
 }
 
-impl AudioChannelSource {
-    fn new(rx: Receiver<Vec<f32>>) -> Self {
+impl AudioSampleReader {
+    fn new(rx: Receiver<Vec<f32>>, initial_chunk: Option<Vec<f32>>) -> Self {
         Self {
             rx,
-            buffer: Vec::new(),
+            buffer: initial_chunk.unwrap_or_default(),
             pos: 0,
         }
     }
-}
 
-impl Iterator for AudioChannelSource {
-    type Item = f32;
-    fn next(&mut self) -> Option<f32> {
+    fn next_stereo(&mut self) -> Option<[f32; 2]> {
+        let left = self.next_sample()?;
+        let right = self.next_sample().unwrap_or(left);
+        Some([left, right])
+    }
+
+    fn next_sample(&mut self) -> Option<f32> {
         loop {
             if self.pos < self.buffer.len() {
                 let sample = self.buffer[self.pos];
@@ -521,18 +681,94 @@ impl Iterator for AudioChannelSource {
     }
 }
 
-impl Source for AudioChannelSource {
-    fn current_frame_len(&self) -> Option<usize> {
-        None
+fn build_audio_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    rx: Receiver<Vec<f32>>,
+    initial_chunk: Option<Vec<f32>>,
+    state: Arc<AudioOutputState>,
+    output_channels: usize,
+) -> Result<cpal::Stream, String>
+where
+    T: Sample + SizedSample + FromSample<f32>,
+{
+    let sample_rate = config.sample_rate.0;
+    let mut reader = AudioSampleReader::new(rx, initial_chunk);
+    let err_fn = |err| log::error!("Audio stream error: {err}");
+
+    device
+        .build_output_stream(
+            config,
+            move |output: &mut [T], info: &cpal::OutputCallbackInfo| {
+                write_audio_output(
+                    output,
+                    output_channels,
+                    sample_rate,
+                    &state,
+                    &mut reader,
+                    info,
+                )
+            },
+            err_fn,
+            None,
+        )
+        .map_err(|e| format!("Audio stream build failed: {e}"))
+}
+
+fn write_audio_output<T>(
+    output: &mut [T],
+    output_channels: usize,
+    sample_rate: u32,
+    state: &AudioOutputState,
+    reader: &mut AudioSampleReader,
+    info: &cpal::OutputCallbackInfo,
+) where
+    T: Sample + FromSample<f32>,
+{
+    let frame_count = output.len() / output_channels.max(1);
+    let frames_before = state
+        .frames_written
+        .fetch_add(frame_count as u64, Ordering::Relaxed);
+    let frames_after = frames_before + frame_count as u64;
+    let latency_frames = info
+        .timestamp()
+        .playback
+        .duration_since(&info.timestamp().callback)
+        .map(|duration| (duration.as_secs_f64() * sample_rate as f64).round() as u64)
+        .unwrap_or(0);
+    state.update_callback_snapshot(frames_before, frames_after, latency_frames);
+
+    let volume = state.volume();
+    for frame in output.chunks_mut(output_channels.max(1)) {
+        let stereo = match reader.next_stereo() {
+            Some(stereo) => stereo,
+            None => {
+                state.underruns.fetch_add(1, Ordering::Relaxed);
+                [0.0, 0.0]
+            }
+        };
+        write_output_frame(frame, stereo, volume);
     }
-    fn channels(&self) -> u16 {
-        AUDIO_CHANNELS
+}
+
+fn write_output_frame<T>(frame: &mut [T], stereo: [f32; 2], volume: f32)
+where
+    T: Sample + FromSample<f32>,
+{
+    if frame.len() == 1 {
+        frame[0] = T::from_sample(((stereo[0] + stereo[1]) * 0.5 * volume).clamp(-1.0, 1.0));
+        return;
     }
-    fn sample_rate(&self) -> u32 {
-        AUDIO_SAMPLE_RATE
+
+    for (idx, sample) in frame.iter_mut().enumerate() {
+        let value = if idx % 2 == 0 { stereo[0] } else { stereo[1] };
+        *sample = T::from_sample((value * volume).clamp(-1.0, 1.0));
     }
-    fn total_duration(&self) -> Option<Duration> {
-        None
+}
+
+fn recycle_frame(frame: VideoFrame, recycler: Option<&SyncSender<Vec<u8>>>) {
+    if let Some(recycler) = recycler {
+        let _ = recycler.try_send(frame.data);
     }
 }
 
@@ -625,7 +861,7 @@ fn decode_frame_at(
             "-frames:v",
             "1",
             "-pix_fmt",
-            "rgba",
+            VIDEO_PIX_FMT,
             "-f",
             "rawvideo",
             "-v",
@@ -666,6 +902,7 @@ fn decode_video_stream_from(
     height: u32,
     timestamp: f64,
     tx: SyncSender<VideoFrame>,
+    free_rx: Receiver<Vec<u8>>,
     kill: Arc<AtomicBool>,
 ) {
     let ts = format!("{:.6}", timestamp);
@@ -674,7 +911,16 @@ fn decode_video_stream_from(
         .arg("-i")
         .arg(&path)
         .args([
-            "-pix_fmt", "rgba", "-f", "rawvideo", "-v", "error", "pipe:1",
+            "-an",
+            "-sn",
+            "-dn",
+            "-pix_fmt",
+            VIDEO_PIX_FMT,
+            "-f",
+            "rawvideo",
+            "-v",
+            "error",
+            "pipe:1",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -707,10 +953,14 @@ fn decode_video_stream_from(
             let _ = child.wait();
             return;
         }
-        match reader.read_exact(&mut buf) {
+        let mut frame_data = match free_rx.recv() {
+            Ok(buf) => buf,
+            Err(_) => break,
+        };
+        match reader.read_exact(&mut frame_data) {
             Ok(()) => {
                 let frame = VideoFrame {
-                    data: buf.clone(),
+                    data: frame_data,
                     width,
                     height,
                 };
@@ -726,20 +976,28 @@ fn decode_video_stream_from(
     let _ = child.wait();
 }
 
-fn decode_audio_stream_from(path: PathBuf, timestamp: f64, tx: SyncSender<Vec<f32>>) {
+fn decode_audio_stream_from(
+    path: PathBuf,
+    timestamp: f64,
+    sample_rate: u32,
+    tx: SyncSender<Vec<f32>>,
+) {
     let ts = format!("{:.6}", timestamp);
     let mut child = match Command::new("ffmpeg")
+        .args(["-threads", "1"])
         .args(["-ss", &ts])
         .arg("-i")
         .arg(&path)
         .args([
             "-vn",
+            "-af",
+            "aresample=async=1:first_pts=0",
             "-f",
             "f32le",
             "-acodec",
             "pcm_f32le",
             "-ar",
-            &AUDIO_SAMPLE_RATE.to_string(),
+            &sample_rate.to_string(),
             "-ac",
             &AUDIO_CHANNELS.to_string(),
             "-v",
@@ -789,10 +1047,13 @@ const WAVEFORM_SUBDIVISIONS: usize = 4;
 fn decode_waveform_peaks(path: &Path, fps: f64, total_frames: usize) -> Result<Vec<f32>, String> {
     let sr = 22050u32;
     let mut child = Command::new("ffmpeg")
+        .args(["-threads", "1"])
         .arg("-i")
         .arg(path)
         .args([
             "-vn",
+            "-af",
+            "aresample=async=1:first_pts=0",
             "-f",
             "f32le",
             "-acodec",

@@ -49,6 +49,17 @@ impl ColorPickerState {
         self.sv_texture_dirty = true;
     }
 
+    pub fn move_to(&mut self, x: f32, y: f32) {
+        self.origin = (x, y);
+    }
+
+    pub fn panel_size() -> (f32, f32) {
+        (
+            SV_SIZE + PICKER_PADDING * 2.0,
+            SV_SIZE + GAP + HUE_BAR_HEIGHT + PICKER_PADDING * 2.0,
+        )
+    }
+
     pub fn close(&mut self) {
         self.active = false;
         self.dragging_sv = false;

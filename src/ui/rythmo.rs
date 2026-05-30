@@ -26,6 +26,7 @@ const CURSOR_COLOR: [f32; 4] = [0.9, 0.9, 0.95, 1.0];
 pub enum Selection {
     Line(u64),
     Marker(usize),
+    AllLines,
 }
 
 /// Ghost line preview shown when holding click on empty BR space.
@@ -76,6 +77,14 @@ pub struct DragState {
     pub original_y_slot: f32,
     pub drag_start_y: f32,
     pub handle: DragHandle,
+    pub group_origins: Vec<DragLineOrigin>,
+}
+
+#[derive(Clone, Copy)]
+pub struct DragLineOrigin {
+    pub line_id: u64,
+    pub original_frame: i64,
+    pub original_y_slot: f32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -195,17 +204,43 @@ fn badge_rect_for_line(
     current_frame: i64,
     zone: &Rect,
 ) -> Rect {
+    badge_rect_for_name(line, &line.character_name, current_frame, zone)
+}
+
+fn badge_rect_for_name(
+    line: &crate::rythmo_line::RythmoLine,
+    name: &str,
+    current_frame: i64,
+    zone: &Rect,
+) -> Rect {
     let x1 = frame_to_x(line.start_frame, current_frame, zone);
     let (total_slot_h, _) = slot_metrics(zone);
     let slot_index = (line.y_slot * constants::NUM_SLOTS).round() as usize;
     let y_base = zone.y + constants::RULER_HEIGHT + slot_index as f32 * total_slot_h;
-    let w = badge_width(&line.character_name);
+    let w = badge_width(name);
     Rect {
         x: x1,
         y: y_base,
         width: w,
         height: BADGE_HEIGHT,
     }
+}
+
+fn color_picker_origin_for_badge(badge: &Rect, zone: &Rect) -> (f32, f32) {
+    let (picker_w, picker_h) = super::color_picker::ColorPickerState::panel_size();
+    let gap = 10.0;
+    let zone_right = zone.x + zone.width;
+    let zone_bottom = zone.y + zone.height;
+
+    let right_x = badge.x + badge.width + gap;
+    let x = if right_x + picker_w <= zone_right {
+        right_x
+    } else {
+        (badge.x - picker_w - gap).max(zone.x)
+    };
+
+    let y = (badge.y - 8.0).clamp(zone.y, (zone_bottom - picker_h).max(zone.y));
+    (x, y)
 }
 
 fn slot_metrics(zone: &Rect) -> (f32, f32) {
@@ -352,6 +387,8 @@ pub fn render_lines<'a>(
         }
 
         let is_hovered = state.hovered_line == Some(line.id);
+        let is_selected = matches!(state.selected, Some(Selection::Line(id)) if id == line.id)
+            || matches!(state.selected, Some(Selection::AllLines));
         let is_editing = state.editing_line == Some(line.id);
 
         // Subtle dark background + border
@@ -362,7 +399,9 @@ pub fn render_lines<'a>(
         } else {
             [0.08, 0.08, 0.10, 0.3]
         };
-        let border = if is_hovered || is_editing {
+        let border = if is_selected {
+            [0.90, 0.78, 0.30, 0.75]
+        } else if is_hovered || is_editing {
             LINE_BORDER_HOVER
         } else {
             LINE_BORDER
@@ -372,7 +411,7 @@ pub fn render_lines<'a>(
             color: bg,
             color_bottom: bg,
             border_color: border,
-            border_width: 1.0,
+            border_width: if is_selected { 1.5 } else { 1.0 },
             border_radius: LINE_RADIUS,
             shadow_offset: [0.0; 2],
             shadow_color: [0.0; 4],
@@ -1425,6 +1464,23 @@ fn handle_mouse_move(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -
                         } else {
                             drag.original_y_slot
                         };
+                        if !drag.group_origins.is_empty()
+                            && matches!(state.selected, Some(Selection::AllLines))
+                        {
+                            let y_delta = new_y_slot - drag.original_y_slot;
+                            let moves = drag
+                                .group_origins
+                                .iter()
+                                .map(|origin| {
+                                    (
+                                        origin.line_id,
+                                        origin.original_frame + dx_frames,
+                                        (origin.original_y_slot + y_delta).clamp(0.0, 0.75),
+                                    )
+                                })
+                                .collect();
+                            return EventResponse::Action(UiAction::MoveLines { moves });
+                        }
                         EventResponse::Action(UiAction::MoveLine {
                             id: line_id,
                             start_frame: drag.original_frame + dx_frames,
@@ -1548,6 +1604,7 @@ fn handle_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) 
                 original_y_slot: 0.0,
                 drag_start_y: y,
                 handle: DragHandle::Body,
+                group_origins: Vec::new(),
             });
             return EventResponse::Consumed;
         }
@@ -1559,8 +1616,6 @@ fn handle_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) 
         if !r.contains(x, y) {
             continue;
         }
-
-        state.selected = Some(Selection::Line(line.id));
 
         // If editing this line, single click positions cursor instead of starting a generic drag
         // Only exceptions are the resize handles which should still resize the line
@@ -1587,6 +1642,7 @@ fn handle_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) 
                 original_duration: line.duration_frames,
                 original_y_slot: line.y_slot,
                 drag_start_y: y,
+                group_origins: Vec::new(),
             });
             return EventResponse::Consumed;
         }
@@ -1598,6 +1654,13 @@ fn handle_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) 
         } else {
             DragHandle::Body
         };
+        let group_origins =
+            if handle == DragHandle::Body && matches!(state.selected, Some(Selection::AllLines)) {
+                all_line_origins(ctx.project)
+            } else {
+                state.selected = Some(Selection::Line(line.id));
+                Vec::new()
+            };
 
         state.dragging = Some(DragState {
             target: DragTarget::Line(line.id),
@@ -1607,6 +1670,7 @@ fn handle_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) 
             original_duration: line.duration_frames,
             original_y_slot: line.y_slot,
             drag_start_y: y,
+            group_origins,
         });
         return EventResponse::Consumed;
     }
@@ -1632,6 +1696,17 @@ fn handle_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) 
         return EventResponse::Action(UiAction::StopEditing);
     }
     EventResponse::Ignored
+}
+
+fn all_line_origins(project: &Project) -> Vec<DragLineOrigin> {
+    project
+        .lines()
+        .map(|line| DragLineOrigin {
+            line_id: line.id,
+            original_frame: line.start_frame,
+            original_y_slot: line.y_slot,
+        })
+        .collect()
 }
 
 fn handle_mouse_release(state: &mut RythmoState) -> EventResponse {
@@ -1709,10 +1784,10 @@ fn handle_double_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32)
             state.editing_character = Some(line.id);
             state.char_input.activate(&line.character_name);
             state.char_input.select_all(&line.character_name);
-            let lr = line_rect(line, ctx.current_frame, ctx.zone);
+            let (picker_x, picker_y) = color_picker_origin_for_badge(&br, ctx.zone);
             state
                 .color_picker
-                .open(lr.x + lr.width + 10.0, lr.y - 30.0, line.character_color);
+                .open(picker_x, picker_y, line.character_color);
             state.stop_line_editing();
             state.stop_note_editing();
             return if let Some(old_id) = finalize_line_id.filter(|&id| id != line.id) {
@@ -1813,6 +1888,9 @@ fn handle_key_input(ctx: &RythmoCtx, state: &mut RythmoState, text: &str) -> Eve
             match state.char_input.handle_key(text, &line.character_name) {
                 Some(TextInputAction::Changed(name)) => {
                     state.autocomplete_index = Some(0); // default to first suggestion
+                    let br = badge_rect_for_name(line, &name, ctx.current_frame, ctx.zone);
+                    let (picker_x, picker_y) = color_picker_origin_for_badge(&br, ctx.zone);
+                    state.color_picker.move_to(picker_x, picker_y);
                     return EventResponse::Action(UiAction::UpdateCharacterName { line_id, name });
                 }
                 Some(TextInputAction::Finished) => {
@@ -1907,6 +1985,14 @@ fn handle_select_all(ctx: &RythmoCtx, state: &mut RythmoState) -> EventResponse 
             state.note_input.select_all(&line.note);
             return EventResponse::Consumed;
         }
+    }
+    if ctx.project.lines().next().is_some() {
+        state.selected = Some(Selection::AllLines);
+        state.dragging = None;
+        state.stop_line_editing();
+        state.stop_char_editing();
+        state.stop_note_editing();
+        return EventResponse::Consumed;
     }
     EventResponse::Ignored
 }

@@ -116,6 +116,14 @@ pub enum UiAction {
     StartExport {
         fps: f64,
         br_scale: f32,
+        export_width: u32,
+        export_height: u32,
+    },
+    OpenProxyModal,
+    CreateProxy {
+        width: u32,
+        height: u32,
+        crf: u8,
     },
     QuickSave,
     CancelExport,
@@ -142,6 +150,9 @@ pub enum UiAction {
         id: u64,
         start_frame: i64,
         y_slot: f32,
+    },
+    MoveLines {
+        moves: Vec<(u64, i64, f32)>,
     },
     UpdateLineText {
         id: u64,
@@ -173,6 +184,7 @@ pub enum UiAction {
         text: String,
     },
     OpenDropdown(ToolbarDropdown),
+    OpenSecondaryDisplay,
     StopEditing,
     ToggleSyllableMode,
     OpenRecentProject {

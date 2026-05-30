@@ -1,12 +1,13 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::Arc;
 use wgpu::CurrentSurfaceTexture;
-use winit::window::Window;
+use winit::window::{Window, WindowId};
 
 use std::time::Instant;
 
-use crate::command::{Command, CommandHistory, CommandKind};
-use crate::graphics::GraphicsContext;
+use crate::command::{Command, CommandHistory, CommandKind, LineMove};
+use crate::graphics::{GraphicsContext, WindowSurface};
 use crate::network::{ConnectionState, IncomingMessage, NetworkClient};
 use crate::observer::{TimelineBus, TimelineEvent};
 use crate::packet::{CommandPayload, Packet, ProjectData};
@@ -42,14 +43,23 @@ pub struct PingResult {
     pub success: bool,
 }
 
+struct PendingProxyJob {
+    source_path: PathBuf,
+    receiver: Receiver<Result<PathBuf, String>>,
+}
+
 pub struct State {
     pub gfx: GraphicsContext,
     window: Arc<Window>,
     ui: Ui,
     ui_renderer: UiRenderer,
     video_player: Option<VideoPlayer>,
+    source_video_path: Option<PathBuf>,
+    source_video_size: Option<(u32, u32)>,
+    proxy_video_path: Option<PathBuf>,
+    pending_proxy_job: Option<PendingProxyJob>,
     pub project: Project,
-    pub project_path: Option<std::path::PathBuf>,
+    pub project_path: Option<PathBuf>,
     pub dirty: bool,
     history: CommandHistory,
     pub timeline: TimelineBus,
@@ -63,6 +73,7 @@ pub struct State {
     show_studio_warning: bool,
     line_clipboard: Option<RythmoLine>,
     last_nonzero_volume: f32,
+    secondary_display: Option<WindowSurface>,
 }
 
 impl State {
@@ -78,6 +89,10 @@ impl State {
             ui,
             ui_renderer,
             video_player: None,
+            source_video_path: None,
+            source_video_size: None,
+            proxy_video_path: None,
+            pending_proxy_job: None,
             project: Project::new(),
             project_path: None,
             dirty: false,
@@ -93,6 +108,7 @@ impl State {
             show_studio_warning: false,
             line_clipboard: None,
             last_nonzero_volume: 0.75,
+            secondary_display: None,
         }
     }
 
@@ -189,8 +205,12 @@ impl State {
         self.ui.open_settings_modal(fonts);
     }
 
-    pub fn show_toast(&mut self, message: &str, duration_secs: f32) {
+    pub fn show_toast(&mut self, message: impl Into<String>, duration_secs: f32) {
         self.ui.toasts.push(message, duration_secs);
+    }
+
+    pub fn show_proxy_error(&mut self, detail: impl Into<String>) {
+        self.ui.open_proxy_error_modal(detail);
     }
 
     pub fn open_save_prompt(&mut self) {
@@ -204,7 +224,13 @@ impl State {
     }
 
     pub fn open_export_modal(&mut self) {
-        self.ui.open_export_modal();
+        let (video_width, video_height) = self.source_video_size().unwrap_or((1920, 1080));
+        self.ui.open_export_modal(video_width, video_height);
+    }
+
+    pub fn open_proxy_modal(&mut self) {
+        let (video_width, video_height) = self.source_video_size().unwrap_or((1920, 1080));
+        self.ui.open_proxy_modal(video_width, video_height);
     }
 
     pub fn close_settings_modal(&mut self) {
@@ -220,6 +246,72 @@ impl State {
         self.gfx.request_redraw();
     }
 
+    pub fn has_secondary_display(&self) -> bool {
+        self.secondary_display.is_some()
+    }
+
+    pub fn secondary_window_id(&self) -> Option<WindowId> {
+        self.secondary_display
+            .as_ref()
+            .map(|display| display.window.id())
+    }
+
+    pub fn is_video_playing(&self) -> bool {
+        self.video_player
+            .as_ref()
+            .is_some_and(|player| player.is_playing())
+    }
+
+    pub fn is_secondary_window(&self, window_id: WindowId) -> bool {
+        self.secondary_display
+            .as_ref()
+            .is_some_and(|display| display.window.id() == window_id)
+    }
+
+    pub fn open_secondary_display(&mut self, window: Arc<Window>) {
+        if self.video_player.is_none() {
+            log::warn!("No video loaded — cannot open secondary display");
+            return;
+        }
+
+        if let Some(display) = &self.secondary_display {
+            display.window.request_redraw();
+            return;
+        }
+
+        match self.gfx.create_window_surface(window) {
+            Ok(display) => {
+                self.secondary_display = Some(display);
+                self.request_redraw();
+                self.request_secondary_redraw();
+            }
+            Err(e) => log::error!("Failed to open secondary display: {e}"),
+        }
+    }
+
+    pub fn close_secondary_display(&mut self) {
+        self.secondary_display = None;
+        self.request_redraw();
+    }
+
+    pub fn resize_secondary_display(
+        &mut self,
+        window_id: WindowId,
+        new_size: winit::dpi::PhysicalSize<u32>,
+    ) {
+        if let Some(display) = &mut self.secondary_display {
+            if display.window.id() == window_id {
+                display.resize(&self.gfx.device, new_size);
+            }
+        }
+    }
+
+    pub fn request_secondary_redraw(&self) {
+        if let Some(display) = &self.secondary_display {
+            display.request_redraw();
+        }
+    }
+
     // -- Video --
 
     pub fn current_frame(&self) -> i64 {
@@ -230,38 +322,169 @@ impl State {
         self.video_player.as_ref().map_or(30.0, |p| p.fps())
     }
 
-    pub fn waveform(&self) -> Vec<f32> {
-        self.video_player
-            .as_ref()
-            .and_then(|p| p.waveform.read().ok())
-            .map(|w| w.clone())
-            .unwrap_or_default()
+    pub fn source_video_size(&self) -> Option<(u32, u32)> {
+        self.source_video_size.or_else(|| {
+            self.video_player
+                .as_ref()
+                .and_then(|player| player.video_size())
+        })
     }
 
-    pub fn video_path(&self) -> Option<std::path::PathBuf> {
-        self.video_player.as_ref().and_then(|p| p.path())
+    pub fn video_path(&self) -> Option<PathBuf> {
+        self.source_video_path
+            .clone()
+            .or_else(|| self.video_player.as_ref().and_then(|p| p.path()))
     }
 
     pub fn load_video(&mut self, path: &Path) {
+        let proxy_path = self
+            .project_path
+            .as_ref()
+            .and_then(|br_path| crate::video_proxy::linked_proxy_path(br_path, path));
+        self.load_video_for_playback(path, proxy_path.as_deref(), None);
+    }
+
+    pub fn reload_linked_proxy(&mut self) {
+        if let Some(br_path) = &self.project_path {
+            if let Some(link) = crate::video_proxy::proxy_link_for_br(br_path) {
+                let source_matches = self.video_path().as_ref().is_some_and(|path| {
+                    crate::video_proxy::paths_match(path, &link.source_video_path)
+                });
+                let proxy_matches = self.proxy_video_path.as_ref().is_some_and(|path| {
+                    crate::video_proxy::paths_match(path, &link.proxy_video_path)
+                });
+
+                if source_matches && proxy_matches {
+                    return;
+                }
+
+                let frame = if source_matches {
+                    self.current_frame()
+                } else {
+                    0
+                };
+                self.load_video_for_playback(
+                    &link.source_video_path,
+                    Some(&link.proxy_video_path),
+                    Some(frame),
+                );
+                return;
+            }
+        }
+
+        let Some(source_path) = self.video_path() else {
+            return;
+        };
+        let proxy_path = self
+            .project_path
+            .as_ref()
+            .and_then(|br_path| crate::video_proxy::linked_proxy_path(br_path, &source_path));
+
+        if proxy_path == self.proxy_video_path {
+            return;
+        }
+
+        let frame = self.current_frame();
+        self.load_video_for_playback(&source_path, proxy_path.as_deref(), Some(frame));
+    }
+
+    pub fn watch_proxy_job(
+        &mut self,
+        source_path: PathBuf,
+        receiver: Receiver<Result<PathBuf, String>>,
+    ) {
+        self.pending_proxy_job = Some(PendingProxyJob {
+            source_path,
+            receiver,
+        });
+    }
+
+    fn load_video_for_playback(
+        &mut self,
+        source_path: &Path,
+        proxy_path: Option<&Path>,
+        seek_frame: Option<i64>,
+    ) {
         let (bgl, sampler) = self.renderer_refs();
         let mut player = VideoPlayer::new();
-        match player.load(path, &self.gfx.device, &self.gfx.queue, bgl, sampler) {
-            Ok(()) => {
-                player.set_volume(self.ui.volume());
-                let fps = player.fps();
-                let total = player.total_frames();
-                self.video_player = Some(player);
-                self.timeline.emit(TimelineEvent::VideoLoaded {
-                    fps,
-                    total_frames: total,
-                });
-                self.timeline.emit(TimelineEvent::FrameChanged { frame: 0 });
-                self.ui.has_video = true;
-                self.ui.total_frames = total;
-                self.rebuild_topbar_for_network();
+
+        let mut active_proxy_path = proxy_path.map(Path::to_path_buf);
+        let mut load_path = active_proxy_path.as_deref().unwrap_or(source_path);
+        let mut load_result = player.load_with_audio(
+            load_path,
+            source_path,
+            &self.gfx.device,
+            &self.gfx.queue,
+            bgl,
+            sampler,
+        );
+
+        if let Err(e) = &load_result {
+            if active_proxy_path.is_some() {
+                log::warn!(
+                    "Failed to load proxy {}, falling back to original video: {e}",
+                    load_path.display()
+                );
+                active_proxy_path = None;
+                load_path = source_path;
+                player = VideoPlayer::new();
+                load_result = player.load_with_audio(
+                    load_path,
+                    source_path,
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    bgl,
+                    sampler,
+                );
             }
-            Err(e) => log::error!("Failed to load video: {e}"),
         }
+
+        match load_result {
+            Ok(()) => {}
+            Err(e) => {
+                log::error!("Failed to load video: {e}");
+                return;
+            }
+        }
+
+        player.set_volume(self.ui.volume());
+        if let Some(frame) = seek_frame {
+            let total = player.total_frames();
+            let target = if total > 0 {
+                frame.clamp(0, total - 1)
+            } else {
+                frame.max(0)
+            };
+            player.seek_frame_instant(target as i32);
+            player.decode_current_frame(&self.gfx.device, &self.gfx.queue, bgl, sampler);
+        }
+
+        if self.ui.is_playing() {
+            self.ui.toggle_play_pause();
+        }
+
+        let fps = player.fps();
+        let total = player.total_frames();
+        let current_frame = player.current_frame();
+        let source_size = crate::video_proxy::probe_video(source_path)
+            .ok()
+            .map(|info| (info.width, info.height))
+            .or_else(|| player.video_size());
+
+        self.source_video_path = Some(source_path.to_path_buf());
+        self.source_video_size = source_size;
+        self.proxy_video_path = active_proxy_path;
+        self.video_player = Some(player);
+        self.timeline.emit(TimelineEvent::VideoLoaded {
+            fps,
+            total_frames: total,
+        });
+        self.timeline.emit(TimelineEvent::FrameChanged {
+            frame: current_frame,
+        });
+        self.ui.has_video = true;
+        self.ui.total_frames = total;
+        self.rebuild_topbar_for_network();
     }
 
     pub fn toggle_play_pause(&mut self) {
@@ -524,6 +747,15 @@ impl State {
                     l.y_slot = y_slot;
                 }
             }
+            CommandPayload::MoveLines { lines } => {
+                log::debug!("Remote: move {} lines", lines.len());
+                for movement in lines {
+                    if let Some(l) = self.project.get_line_mut(movement.line_id) {
+                        l.start_frame = movement.start_frame;
+                        l.y_slot = movement.y_slot;
+                    }
+                }
+            }
             CommandPayload::ResizeLine {
                 line_id,
                 start_frame,
@@ -668,6 +900,22 @@ impl State {
                     }
                 }
             }
+            "move_lines" => {
+                if let Some(lines) = data["lines"].as_array() {
+                    for movement in lines {
+                        if let (Some(id), Some(sf), Some(ys)) = (
+                            movement["line_id"].as_u64(),
+                            movement["start_frame"].as_i64(),
+                            movement["y_slot"].as_f64(),
+                        ) {
+                            if let Some(l) = self.project.get_line_mut(id) {
+                                l.start_frame = sf;
+                                l.y_slot = ys as f32;
+                            }
+                        }
+                    }
+                }
+            }
             "resize_line" => {
                 if let (Some(id), Some(sf), Some(df)) = (
                     data["line_id"].as_u64(),
@@ -774,6 +1022,19 @@ impl State {
             } => {
                 serde_json::json!({ "action": "move_line", "line_id": line_id, "start_frame": new_start, "y_slot": new_y_slot })
             }
+            Command::MoveLines { moves } => {
+                let lines: Vec<_> = moves
+                    .iter()
+                    .map(|movement| {
+                        serde_json::json!({
+                            "line_id": movement.line_id,
+                            "start_frame": movement.new_start,
+                            "y_slot": movement.new_y_slot,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({ "action": "move_lines", "lines": lines })
+            }
             Command::ResizeLine {
                 line_id,
                 new_start,
@@ -840,6 +1101,7 @@ impl State {
                 cmd,
                 Command::MoveLine { .. }
                     | Command::ResizeLine { .. }
+                    | Command::MoveLines { .. }
                     | Command::UpdateLineText { .. }
                     | Command::SetCharacter { .. }
                     | Command::SetCharacterColor { .. }
@@ -946,6 +1208,7 @@ impl State {
                         self.push_and_broadcast(Command::RemoveMarker { marker, index: idx });
                     }
                 }
+                Selection::AllLines => {}
             }
             self.ui.clear_selection();
         }
@@ -1066,6 +1329,77 @@ impl State {
                 new_y_slot: y_slot,
             });
         }
+    }
+
+    pub fn move_lines(&mut self, moves: Vec<(u64, i64, f32)>) {
+        let mut requested = Vec::new();
+        for (line_id, new_start, new_y_slot) in moves {
+            if self.project.get_line(line_id).is_some() {
+                requested.push((line_id, new_start, new_y_slot));
+            }
+        }
+        if requested.is_empty() {
+            return;
+        }
+
+        let same_group = matches!(
+            self.history.last(),
+            Some(Command::MoveLines { moves })
+                if moves.len() == requested.len()
+                    && moves
+                        .iter()
+                        .zip(requested.iter())
+                        .all(|(movement, (line_id, _, _))| movement.line_id == *line_id)
+        );
+
+        if same_group {
+            for (line_id, new_start, new_y_slot) in &requested {
+                if let Some(line) = self.project.get_line_mut(*line_id) {
+                    line.start_frame = *new_start;
+                    line.y_slot = *new_y_slot;
+                }
+            }
+            self.history.update_last(|cmd| {
+                if let Command::MoveLines { moves } = cmd {
+                    for (movement, (_, new_start, new_y_slot)) in moves.iter_mut().zip(&requested) {
+                        movement.new_start = *new_start;
+                        movement.new_y_slot = *new_y_slot;
+                    }
+                }
+            });
+            self.dirty = true;
+            return;
+        }
+
+        let mut command_moves = Vec::new();
+        for (line_id, new_start, new_y_slot) in requested {
+            if let Some(line) = self.project.get_line(line_id) {
+                if line.start_frame == new_start && (line.y_slot - new_y_slot).abs() < f32::EPSILON
+                {
+                    continue;
+                }
+                command_moves.push(LineMove {
+                    line_id,
+                    old_start: line.start_frame,
+                    old_y_slot: line.y_slot,
+                    new_start,
+                    new_y_slot,
+                });
+            }
+        }
+        if command_moves.is_empty() {
+            return;
+        }
+
+        for movement in &command_moves {
+            if let Some(line) = self.project.get_line_mut(movement.line_id) {
+                line.start_frame = movement.new_start;
+                line.y_slot = movement.new_y_slot;
+            }
+        }
+        self.push_and_broadcast(Command::MoveLines {
+            moves: command_moves,
+        });
     }
 
     pub fn resize_line(&mut self, id: u64, start_frame: i64, duration_frames: i64) {
@@ -1349,6 +1683,67 @@ impl State {
 
     // -- Render --
 
+    fn tick_video(&mut self) {
+        if let Some(player) = &mut self.video_player {
+            let prev_frame = player.current_frame();
+            let (bgl, sampler) = (
+                self.ui_renderer.texture_bind_group_layout(),
+                self.ui_renderer.texture_sampler(),
+            );
+            player.tick(&self.gfx.device, &self.gfx.queue, bgl, sampler);
+            if player.current_frame() != prev_frame {
+                self.timeline.emit(TimelineEvent::FrameChanged {
+                    frame: player.current_frame(),
+                });
+            }
+            if !player.is_playing() && self.ui.is_playing() {
+                self.timeline.emit(TimelineEvent::PlaybackStopped);
+                self.ui.toggle_play_pause();
+            }
+        }
+    }
+
+    fn poll_proxy_job(&mut self) {
+        let result = match self.pending_proxy_job.as_ref() {
+            Some(job) => match job.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err("Proxy job disconnected".into())),
+            },
+            None => None,
+        };
+
+        let Some(result) = result else {
+            return;
+        };
+
+        let Some(job) = self.pending_proxy_job.take() else {
+            return;
+        };
+
+        self.set_export_progress(None);
+        match result {
+            Ok(proxy_path) => {
+                log::info!("Proxy created at {}", proxy_path.display());
+                let current_source = self.video_path();
+                if current_source
+                    .as_ref()
+                    .is_some_and(|path| crate::video_proxy::paths_match(path, &job.source_path))
+                {
+                    let frame = self.current_frame();
+                    self.load_video_for_playback(&job.source_path, Some(&proxy_path), Some(frame));
+                    self.show_toast(crate::i18n::t("toast.proxy_created"), 4.0);
+                } else {
+                    self.show_toast(crate::i18n::t("toast.proxy_created_not_loaded"), 5.0);
+                }
+            }
+            Err(e) => {
+                log::error!("Proxy creation failed: {e}");
+                self.show_proxy_error(e);
+            }
+        }
+    }
+
     pub fn render(&mut self) {
         // Poll ping results
         if let Ok(mut results) = self.ping_results.try_lock() {
@@ -1443,35 +1838,31 @@ impl State {
         // Debounced scroll decode
         self.tick_scroll_decode();
 
-        // Video tick — emit FrameChanged so observers (rythmo) stay in sync
-        if let Some(player) = &mut self.video_player {
-            let prev_frame = player.current_frame();
-            let (bgl, sampler) = (
-                self.ui_renderer.texture_bind_group_layout(),
-                self.ui_renderer.texture_sampler(),
-            );
-            player.tick(&self.gfx.device, &self.gfx.queue, bgl, sampler);
-            if player.current_frame() != prev_frame {
-                self.timeline.emit(TimelineEvent::FrameChanged {
-                    frame: player.current_frame(),
-                });
-            }
-            if !player.is_playing() && self.ui.is_playing() {
-                self.timeline.emit(TimelineEvent::PlaybackStopped);
-                self.ui.toggle_play_pause();
-            }
-        }
+        self.poll_proxy_job();
+
+        self.tick_video();
 
         // Video quad — skip when export modal is showing (it would cover the modal)
-        let video_quad = if self.ui.export_progress.is_some() {
+        let video_quad = if self.ui.export_progress.is_some() || self.secondary_display.is_some() {
             None
         } else {
             build_video_quad(&self.video_player, &self.ui)
         };
         let current_frame = self.current_frame();
 
-        // UI render
-        let waveform = self.waveform();
+        // UI render. Keep a read guard instead of cloning the waveform every frame.
+        let waveform_arc = self
+            .video_player
+            .as_ref()
+            .map(|player| player.waveform.clone());
+        let waveform_guard = waveform_arc
+            .as_ref()
+            .and_then(|waveform| waveform.read().ok());
+        let empty_waveform: &[f32] = &[];
+        let waveform = waveform_guard
+            .as_deref()
+            .map(Vec::as_slice)
+            .unwrap_or(empty_waveform);
         self.ui.render(
             &mut self.ui_renderer,
             &self.gfx.device,
@@ -1483,7 +1874,7 @@ impl State {
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
             &self.project,
             current_frame,
-            &waveform,
+            waveform,
         );
 
         self.gfx.queue.submit(std::iter::once(encoder.finish()));
@@ -1536,27 +1927,14 @@ impl State {
         // Drain timeline, tick video, tick scroll decode
         let _events = self.timeline.drain();
         self.tick_scroll_decode();
-
-        if let Some(player) = &mut self.video_player {
-            let prev_frame = player.current_frame();
-            let (bgl, sampler) = (
-                self.ui_renderer.texture_bind_group_layout(),
-                self.ui_renderer.texture_sampler(),
-            );
-            player.tick(&self.gfx.device, &self.gfx.queue, bgl, sampler);
-            if player.current_frame() != prev_frame {
-                self.timeline.emit(TimelineEvent::FrameChanged {
-                    frame: player.current_frame(),
-                });
-            }
-            if !player.is_playing() && self.ui.is_playing() {
-                self.timeline.emit(TimelineEvent::PlaybackStopped);
-                self.ui.toggle_play_pause();
-            }
-        }
+        self.tick_video();
 
         let rythmo_h = crate::ui::rythmo::studio_br_height(&self.project, self.ui.screen_w());
-        let video_quad = build_studio_video_quad(&self.video_player, &self.ui, rythmo_h);
+        let video_quad = if self.secondary_display.is_some() {
+            None
+        } else {
+            build_studio_video_quad(&self.video_player, &self.ui, rythmo_h)
+        };
         // Use interpolated frame for smooth playback in studio mode (handles low-fps source video)
         let current_frame = self
             .video_player
@@ -1574,6 +1952,80 @@ impl State {
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
             &self.project,
             current_frame,
+        );
+
+        self.gfx.queue.submit(std::iter::once(encoder.finish()));
+        surface_texture.present();
+    }
+
+    pub fn render_secondary_display(&mut self, window_id: WindowId) {
+        self.tick_video();
+
+        let Some(display) = &mut self.secondary_display else {
+            return;
+        };
+        if display.window.id() != window_id {
+            return;
+        }
+
+        let surface_texture = match display.surface.get_current_texture() {
+            CurrentSurfaceTexture::Success(tex) | CurrentSurfaceTexture::Suboptimal(tex) => tex,
+            CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
+                display.surface.configure(&self.gfx.device, &display.config);
+                return;
+            }
+            CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => return,
+            _ => return,
+        };
+
+        let width = display.config.width;
+        let height = display.config.height;
+        let view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .gfx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Secondary Display Render Encoder"),
+            });
+
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Secondary Display Clear Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
+
+        let video_quad =
+            build_full_window_video_quad(&self.video_player, width as f32, height as f32);
+        self.ui_renderer.render(
+            &self.gfx.device,
+            &self.gfx.queue,
+            &mut encoder,
+            &view,
+            width,
+            height,
+            &[],
+            &[],
+            &[],
+            &[],
+            video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
+            &[],
+            &[],
+            &[],
         );
 
         self.gfx.queue.submit(std::iter::once(encoder.finish()));
@@ -1640,6 +2092,38 @@ fn build_studio_video_quad<'a>(
             rect: [
                 (screen_w - draw_w) / 2.0,
                 (video_zone_h - draw_h) / 2.0,
+                draw_w,
+                draw_h,
+            ],
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            tint: [1.0, 1.0, 1.0, 1.0],
+        },
+    ))
+}
+
+fn build_full_window_video_quad<'a>(
+    video_player: &'a Option<VideoPlayer>,
+    screen_w: f32,
+    screen_h: f32,
+) -> Option<(&'a wgpu::BindGroup, crate::ui::widget::IconInstance)> {
+    let player = video_player.as_ref()?;
+    let bind_group = player.bind_group.as_ref()?;
+    let (vid_w, vid_h) = player.video_size()?;
+
+    let vid_aspect = vid_w as f32 / vid_h as f32;
+    let screen_aspect = screen_w / screen_h;
+    let (draw_w, draw_h) = if vid_aspect > screen_aspect {
+        (screen_w, screen_w / vid_aspect)
+    } else {
+        (screen_h * vid_aspect, screen_h)
+    };
+
+    Some((
+        bind_group,
+        crate::ui::widget::IconInstance {
+            rect: [
+                (screen_w - draw_w) / 2.0,
+                (screen_h - draw_h) / 2.0,
                 draw_w,
                 draw_h,
             ],

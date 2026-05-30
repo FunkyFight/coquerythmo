@@ -17,6 +17,10 @@
 "menu.export.mp4" = "Export project as MP4"
 "menu.export.studio_mode" = "Studio Mode"
 
+"menu.tools" = "Tools"
+"menu.tools.create_proxy" = "Create Proxy"
+"menu.tools.secondary_display" = "Secondary Display"
+
 "menu.connect" = "Connect"
 "menu.connect.servers" = "Servers"
 "menu.connect.create_room" = "Create a room"
@@ -89,16 +93,39 @@
 
 # Progress
 "progress.exporting" = "Exporting..."
+"progress.proxy" = "Creating proxy..."
 
 # Toasts
 "toast.welcome" = "This app is free so that anyone can create their rythmo bands. Please credit the software if it helps you in your projects!"
 "toast.room_created" = "Room created! Code: "
 "toast.room_joined" = "Connected to room "
+"toast.proxy_requires_saved_br" = "Save the rythmo band before creating a proxy."
+"toast.proxy_created" = "Proxy created and loaded for playback."
+"toast.proxy_created_not_loaded" = "Proxy created, but the active video changed."
+"toast.proxy_failed" = "Proxy creation failed:"
+
+# Proxy modal
+"proxy_modal.title" = "Create Proxy"
+"proxy_modal.description" = "The proxy will be saved in the proxies folder linked to this rythmo band. Export still uses the original video."
+"proxy_modal.description_1" = "Saved in proxies, linked to this rythmo band."
+"proxy_modal.description_2" = "Export still uses the original video."
+"proxy_modal.resolution" = "Max resolution"
+"proxy_modal.target" = "Target"
+"proxy_modal.quality" = "Quality"
+"proxy_modal.quality_hint" = "Lower CRF = better quality, larger file."
+"proxy_modal.create" = "Create proxy"
+
+# Proxy error modal
+"proxy_error.title" = "Proxy Error"
+"proxy_error.message" = "Proxy creation failed."
+"proxy_error.close" = "Close"
+"proxy_error.unknown" = "Unknown error"
 
 # Export modal
 "export_modal.title" = "Export MP4"
 "export_modal.filename" = "File name"
 "export_modal.fps" = "Rythmo band FPS"
+"export_modal.resolution" = "Video resolution"
 "export_modal.br_scale" = "Rythmo band zoom"
 "export_modal.export" = "Export"
 

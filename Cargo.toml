@@ -1,6 +1,6 @@
 [package]
 name = "coquerythmo"
-version = "2.3.1"
+version = "2.4.0"
 edition = "2021"
 
 [dependencies]
@@ -17,7 +17,7 @@ toml = "0.8"
 dirs = "6"
 resvg = "0.44"
 rfd = "0.15"
-rodio = "0.20"
+cpal = "0.15"
 rust_socketio = "0.6"
 rand = "0.8"
 base64 = "0.22"

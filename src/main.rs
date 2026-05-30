@@ -18,27 +18,28 @@ mod update;
 mod vector_text;
 mod video;
 mod video_export;
+mod video_proxy;
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Event, MouseButton, WindowEvent};
-use winit::event_loop::EventLoop;
+use winit::event_loop::{ControlFlow, EventLoop, EventLoopWindowTarget};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::WindowBuilder;
 
 use state::State;
 use ui::widget::{EventResponse, UiAction, UiEvent};
 
-fn new_project_reset_and_pick_video(state: &mut State) {
+fn new_project_reset_and_pick_video(state: &mut State, elwt: &EventLoopWindowTarget<()>) {
     state.project.reset();
     state.project_path = None;
     state.dirty = false;
     state.clear_history();
-    handle_action(UiAction::AddVideo, state);
+    handle_action(UiAction::AddVideo, state, elwt);
 }
 
-fn handle_action(action: UiAction, state: &mut State) -> bool {
+fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarget<()>) -> bool {
     match action {
         UiAction::CloseApp => return true,
         UiAction::AddVideo => {
@@ -73,6 +74,7 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                     state.project_path = Some(path);
                     state.dirty = false;
                     state.show_toast(i18n::t("toast.saved"), 3.0);
+                    state.reload_linked_proxy();
                 }
             }
         }
@@ -89,6 +91,7 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                         let fps = state.fps();
                         data.apply_to_project(&mut state.project, fps);
                         state.project_path = Some(path.clone());
+                        state.reload_linked_proxy();
                         // Save to recent projects if video is loaded
                         if let Some(video) = state.video_path() {
                             config::add_recent_project(video, path);
@@ -144,6 +147,7 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                         state.project_path = Some(path);
                         state.dirty = false;
                         state.show_toast(i18n::t("toast.saved"), 3.0);
+                        state.reload_linked_proxy();
                     }
                 }
             }
@@ -190,6 +194,9 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         } => {
             state.move_line(id, start_frame, y_slot);
         }
+        UiAction::MoveLines { moves } => {
+            state.move_lines(moves);
+        }
         UiAction::UpdateLineText { id, text } => {
             state.update_line_text(id, text);
         }
@@ -222,7 +229,58 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                 log::warn!("No video loaded — cannot export MP4");
             }
         }
-        UiAction::StartExport { fps, br_scale } => {
+        UiAction::OpenProxyModal => {
+            if state.video_path().is_none() {
+                log::warn!("No video loaded — cannot create proxy");
+            } else if state.project_path.is_none() {
+                state.show_toast(i18n::t("toast.proxy_requires_saved_br"), 5.0);
+            } else {
+                state.open_proxy_modal();
+            }
+        }
+        UiAction::CreateProxy { width, height, crf } => {
+            let Some(source) = state.video_path() else {
+                log::warn!("No video loaded — cannot create proxy");
+                return false;
+            };
+            let Some(br_path) = state.project_path.clone() else {
+                state.show_toast(i18n::t("toast.proxy_requires_saved_br"), 5.0);
+                return false;
+            };
+
+            let progress =
+                std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0.01_f32.to_bits()));
+            let progress_for_ui = progress.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let source_for_job = source.clone();
+            let br_for_job = br_path.clone();
+
+            std::thread::spawn(move || {
+                let p = progress.clone();
+                let result = video_proxy::create_proxy(
+                    &source_for_job,
+                    &br_for_job,
+                    width,
+                    height,
+                    crf,
+                    move |v| {
+                        p.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                    },
+                );
+                let _ = tx.send(result);
+                progress.store(2.0_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            });
+
+            state.set_progress_label(i18n::t("progress.proxy"));
+            state.set_export_progress(Some(progress_for_ui));
+            state.watch_proxy_job(source, rx);
+        }
+        UiAction::StartExport {
+            fps,
+            br_scale,
+            export_width,
+            export_height,
+        } => {
             if let Some(source) = state.video_path() {
                 let source_fps = state.fps();
                 let project_snap = state.project.snapshot();
@@ -247,6 +305,8 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
                             fps,
                             source_fps,
                             br_scale,
+                            export_width,
+                            export_height,
                             move |v| {
                                 p.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
                             },
@@ -266,6 +326,23 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         UiAction::OpenDropdown(dropdown) => {
             state.open_toolbar_dropdown(dropdown);
         }
+        UiAction::OpenSecondaryDisplay => {
+            if state.video_path().is_none() {
+                log::warn!("No video loaded — cannot open secondary display");
+            } else if state.has_secondary_display() {
+                state.request_secondary_redraw();
+            } else {
+                match WindowBuilder::new()
+                    .with_title(i18n::t("menu.tools.secondary_display"))
+                    .with_inner_size(LogicalSize::new(1280.0, 720.0))
+                    .with_window_icon(parse_ico_to_winit_icon(include_bytes!("icons/app.ico")))
+                    .build(elwt)
+                {
+                    Ok(window) => state.open_secondary_display(Arc::new(window)),
+                    Err(e) => log::error!("Failed to create secondary display window: {e}"),
+                }
+            }
+        }
         UiAction::DeleteSelected => {
             state.delete_selected();
         }
@@ -284,13 +361,13 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
         } => {
             use export::{JsonImporter, ProjectImporter};
             if video_path.exists() && br_path.exists() {
+                state.project_path = Some(br_path.clone());
                 state.load_video(&video_path);
                 let importer = JsonImporter;
                 match importer.import(&br_path) {
                     Ok(data) => {
                         let fps = state.fps();
                         data.apply_to_project(&mut state.project, fps);
-                        state.project_path = Some(br_path.clone());
                         config::add_recent_project(video_path, br_path);
                         state.rebuild_topbar_for_network();
                         log::info!("Loaded recent project");
@@ -380,15 +457,15 @@ fn handle_action(action: UiAction, state: &mut State) -> bool {
             if state.dirty && !state.project.is_empty() {
                 state.open_save_prompt();
             } else {
-                new_project_reset_and_pick_video(state);
+                new_project_reset_and_pick_video(state, elwt);
             }
         }
         UiAction::NewProjectSave => {
-            handle_action(UiAction::QuickSave, state);
-            new_project_reset_and_pick_video(state);
+            handle_action(UiAction::QuickSave, state, elwt);
+            new_project_reset_and_pick_video(state, elwt);
         }
         UiAction::NewProjectDiscard => {
-            new_project_reset_and_pick_video(state);
+            new_project_reset_and_pick_video(state, elwt);
         }
         UiAction::EnterStudioMode => {
             state.enter_studio_mode();
@@ -448,7 +525,7 @@ fn dispatch(
     elwt: &winit::event_loop::EventLoopWindowTarget<()>,
 ) {
     if let EventResponse::Action(action) = state.handle_ui_event(&ui_event) {
-        if handle_action(action, state) {
+        if handle_action(action, state, elwt) {
             elwt.exit();
         }
     }
@@ -655,8 +732,50 @@ fn main() {
     let mut shift_held = false;
 
     event_loop
-        .run(move |event, elwt| match event {
-            Event::WindowEvent { event, .. } => match event {
+        .run(move |event, elwt| {
+            let secondary_video_running = state.has_secondary_display() && state.is_video_playing();
+            if secondary_video_running {
+                elwt.set_control_flow(ControlFlow::WaitUntil(
+                    Instant::now() + Duration::from_millis(16),
+                ));
+            } else {
+                elwt.set_control_flow(ControlFlow::Wait);
+            }
+
+            match event {
+                Event::WindowEvent { window_id, event } => {
+                if state.is_secondary_window(window_id) {
+                    match event {
+                        WindowEvent::CloseRequested => state.close_secondary_display(),
+                        WindowEvent::KeyboardInput { event, .. } => {
+                            if event.state == ElementState::Pressed {
+                                if matches!(event.logical_key, Key::Named(NamedKey::Space)) {
+                                    state.toggle_play_pause();
+                                    state.request_redraw();
+                                    state.request_secondary_redraw();
+                                } else if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+                                    state.close_secondary_display();
+                                }
+                            }
+                        }
+                        WindowEvent::Resized(physical_size) => {
+                            state.resize_secondary_display(window_id, physical_size);
+                            state.request_secondary_redraw();
+                        }
+                        WindowEvent::RedrawRequested => {
+                            state.render_secondary_display(window_id);
+                            state.request_secondary_redraw();
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+
+                if window_id != window.id() {
+                    return;
+                }
+
+                match event {
                 WindowEvent::CloseRequested => elwt.exit(),
                 WindowEvent::Resized(physical_size) => {
                     state.resize(physical_size);
@@ -671,7 +790,7 @@ fn main() {
                     if event.state == ElementState::Pressed {
                         // F5: show studio warning if video is loaded
                         if matches!(event.logical_key, Key::Named(NamedKey::F5)) && state.video_path().is_some() {
-                            handle_action(UiAction::ShowStudioWarning, &mut state);
+                            handle_action(UiAction::ShowStudioWarning, &mut state, elwt);
                             state.request_redraw();
                             return;
                         }
@@ -735,16 +854,18 @@ fn main() {
                                 state.request_redraw();
                             }
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "s") {
-                            handle_action(UiAction::QuickSave, &mut state);
+                            handle_action(UiAction::QuickSave, &mut state, elwt);
                             state.request_redraw();
+                        } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("a")) {
+                            dispatch(UiEvent::SelectAll, &mut state, elwt);
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("c")) {
-                            handle_action(UiAction::CopySelectedLine, &mut state);
+                            handle_action(UiAction::CopySelectedLine, &mut state, elwt);
                             state.request_redraw();
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("x")) {
-                            handle_action(UiAction::CutSelectedLine, &mut state);
+                            handle_action(UiAction::CutSelectedLine, &mut state, elwt);
                             state.request_redraw();
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v")) {
-                            handle_action(UiAction::PasteLine, &mut state);
+                            handle_action(UiAction::PasteLine, &mut state, elwt);
                             state.request_redraw();
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "z") {
                             if event.repeat || !event.state.is_pressed() { /* skip */ } else {
@@ -752,7 +873,7 @@ fn main() {
                                 state.request_redraw();
                             }
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "n") {
-                            handle_action(UiAction::NewProject, &mut state);
+                            handle_action(UiAction::NewProject, &mut state, elwt);
                             state.request_redraw();
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "Z") {
                             // CTRL+SHIFT+Z = redo (capital Z)
@@ -777,11 +898,11 @@ fn main() {
                         let direction = if scroll_delta > 0.0 { 1 } else { -1 };
                         if ctrl_held {
                             // CTRL+SHIFT+scroll: jump to next/prev boucle
-                            handle_action(UiAction::SeekToNextBoucle { direction }, &mut state);
+                            handle_action(UiAction::SeekToNextBoucle { direction }, &mut state, elwt);
                         } else {
                             // Regular scroll: seek by frames
                             let frame_delta = (scroll_delta.abs() * 10.0) as i32 * direction;
-                            handle_action(UiAction::SeekRelative(frame_delta), &mut state);
+                            handle_action(UiAction::SeekRelative(frame_delta), &mut state, elwt);
                         }
                         state.request_redraw();
                     } else {
@@ -878,6 +999,9 @@ fn main() {
                 WindowEvent::RedrawRequested => {
                     state.render();
                     state.request_redraw();
+                    if !state.is_video_playing() {
+                        state.request_secondary_redraw();
+                    }
                 }
                 WindowEvent::DroppedFile(path) => {
                     let ext = path.extension()
@@ -889,8 +1013,20 @@ fn main() {
                     }
                 }
                 _ => {}
-            },
+                }
+            }
+                Event::AboutToWait => {
+                if state.has_secondary_display() && state.is_video_playing() {
+                    if let Some(window_id) = state.secondary_window_id() {
+                        state.render_secondary_display(window_id);
+                    }
+                } else {
+                    state.request_secondary_redraw();
+                }
+                state.request_redraw();
+            }
             _ => {}
+            }
         })
         .expect("Event loop error");
 }

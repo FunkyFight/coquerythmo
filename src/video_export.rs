@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -105,15 +105,17 @@ pub fn export_mp4(
     fps: f64,
     source_fps: f64,
     br_scale: f32,
+    export_width: u32,
+    export_height: u32,
     mut progress_cb: impl FnMut(f32) + Send,
 ) -> Result<(), String> {
     if !check_ffmpeg() {
         return Err("ffmpeg/ffprobe not found in PATH".into());
     }
     let info = probe(source_video)?;
-    let out_w = info.width;
+    let out_w = even_dimension(export_width);
+    let vid_h = even_dimension(export_height);
     let br_h = rythmo_cpu_renderer::br_height(project, out_w, br_scale);
-    let vid_h = info.height;
     let total_frames = (info.duration_secs * fps) as u64;
 
     if total_frames == 0 {
@@ -125,7 +127,9 @@ pub fn export_mp4(
     let codec = if use_nvenc { "h264_nvenc" } else { "libx264" };
     log::info!("Using {} encoding, CUDA hwaccel={}", codec, use_cuda);
     log::info!(
-        "Export: {}x{} video + {}px BR, {} frames at {}fps, codec={}",
+        "Export: source {}x{} -> {}x{} video + {}px BR, {} frames at {}fps, codec={}",
+        info.width,
+        info.height,
         out_w,
         vid_h,
         br_h,
@@ -286,17 +290,11 @@ pub fn export_mp4(
     progress_cb(0.9);
 
     // Try CUDA hwaccel first, fallback to CPU filters if it fails
-    let cuda_filter = format!(
-        "[0:v]scale_cuda={}:{},hwdownload,format=nv12[v];[1:v]format=nv12[br];[v][br]vstack=inputs=2[out]",
-        out_w, vid_h
-    );
-    let cpu_filter = format!(
-        "[0:v]scale={}:{},format=yuv420p[v];[1:v]format=yuv420p[br];[v][br]vstack=inputs=2[out]",
-        out_w, vid_h
-    );
+    let cuda_filter = fit_and_stack_filter(out_w, vid_h, true);
+    let cpu_filter = fit_and_stack_filter(out_w, vid_h, false);
 
     let result = if use_cuda {
-        // Try CUDA-accelerated pass 2
+        // Try CUDA-accelerated decoding first, then preserve the source aspect ratio in CPU filters.
         let r = run_pass2(
             source_video,
             &temp_br,
@@ -306,9 +304,12 @@ pub fn export_mp4(
             use_nvenc,
             codec,
             fps,
+            info.duration_secs,
+            &mut progress_cb,
         );
         if r.is_err() {
             log::warn!("CUDA pass 2 failed, falling back to CPU filters");
+            progress_cb(0.9);
             let _ = std::fs::remove_file(output);
             run_pass2(
                 source_video,
@@ -319,6 +320,8 @@ pub fn export_mp4(
                 use_nvenc,
                 codec,
                 fps,
+                info.duration_secs,
+                &mut progress_cb,
             )
         } else {
             r
@@ -333,6 +336,8 @@ pub fn export_mp4(
             use_nvenc,
             codec,
             fps,
+            info.duration_secs,
+            &mut progress_cb,
         )
     };
 
@@ -344,6 +349,28 @@ pub fn export_mp4(
     Ok(())
 }
 
+fn even_dimension(value: u32) -> u32 {
+    let clamped = value.clamp(16, 8192);
+    if clamped % 2 == 0 {
+        clamped
+    } else {
+        (clamped + 1).min(8192)
+    }
+}
+
+fn fit_and_stack_filter(out_w: u32, vid_h: u32, from_cuda_frames: bool) -> String {
+    let source_prefix = if from_cuda_frames {
+        "hwdownload,format=nv12,"
+    } else {
+        ""
+    };
+    let cpu_filter = format!(
+        "[0:v]{}scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p[v];[1:v]format=yuv420p[br];[v][br]vstack=inputs=2[out]",
+        source_prefix, out_w, vid_h, out_w, vid_h
+    );
+    cpu_filter
+}
+
 fn run_pass2(
     source_video: &Path,
     temp_br: &Path,
@@ -353,6 +380,8 @@ fn run_pass2(
     use_nvenc: bool,
     codec: &str,
     fps: f64,
+    duration_secs: f64,
+    progress_cb: &mut impl FnMut(f32),
 ) -> Result<(), String> {
     let mut cmd = Command::new("ffmpeg");
     if use_cuda {
@@ -379,24 +408,90 @@ fn run_pass2(
             "-c:a",
             "copy",
             "-shortest",
+            "-progress",
+            "pipe:1",
+            "-nostats",
             "-v",
             "warning",
             "-y",
         ])
         .arg(output)
         .stderr(Stdio::piped())
-        .stdout(Stdio::null())
-        .status()
+        .stdout(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("ffmpeg pass 2: {e}"))?;
 
-    if !combine.success() {
-        Err(format!(
-            "ffmpeg pass 2 failed (cuda={}, filter={})",
-            use_cuda, filter
-        ))
+    let mut child = combine;
+    let stderr_handle = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = BufReader::new(stderr).read_to_string(&mut text);
+            text
+        })
+    });
+
+    if let Some(stdout) = child.stdout.take() {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().map_while(Result::ok) {
+            if let Some(progress) = pass2_progress_from_ffmpeg_line(&line, duration_secs) {
+                progress_cb(0.9 + progress.clamp(0.0, 1.0) * 0.095);
+            }
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("ffmpeg pass 2 wait: {e}"))?;
+    let stderr = stderr_handle
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+
+    if !status.success() {
+        let details = stderr.trim();
+        if details.is_empty() {
+            Err(format!(
+                "ffmpeg pass 2 failed (cuda={}, filter={})",
+                use_cuda, filter
+            ))
+        } else {
+            Err(format!(
+                "ffmpeg pass 2 failed (cuda={}, filter={}): {}",
+                use_cuda, filter, details
+            ))
+        }
     } else {
+        progress_cb(0.995);
         Ok(())
     }
+}
+
+fn pass2_progress_from_ffmpeg_line(line: &str, duration_secs: f64) -> Option<f32> {
+    if duration_secs <= 0.0 {
+        return None;
+    }
+
+    if let Some(raw) = line
+        .strip_prefix("out_time_ms=")
+        .or_else(|| line.strip_prefix("out_time_us="))
+    {
+        let micros = raw.trim().parse::<f64>().ok()?;
+        return Some((micros / 1_000_000.0 / duration_secs) as f32);
+    }
+
+    if let Some(raw) = line.strip_prefix("out_time=") {
+        let secs = parse_ffmpeg_time(raw.trim())?;
+        return Some((secs / duration_secs) as f32);
+    }
+
+    None
+}
+
+fn parse_ffmpeg_time(value: &str) -> Option<f64> {
+    let mut parts = value.split(':');
+    let hours = parts.next()?.parse::<f64>().ok()?;
+    let minutes = parts.next()?.parse::<f64>().ok()?;
+    let seconds = parts.next()?.parse::<f64>().ok()?;
+    Some(hours * 3600.0 + minutes * 60.0 + seconds)
 }
 
 /// Convert RGBA pixels to YUV420p.

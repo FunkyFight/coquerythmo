@@ -2,12 +2,36 @@ use std::sync::Arc;
 use winit::window::Window;
 
 pub struct GraphicsContext {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
     pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
     pub window: Arc<Window>,
+}
+
+pub struct WindowSurface {
+    pub surface: wgpu::Surface<'static>,
+    pub config: wgpu::SurfaceConfiguration,
+    pub size: winit::dpi::PhysicalSize<u32>,
+    pub window: Arc<Window>,
+}
+
+impl WindowSurface {
+    pub fn resize(&mut self, device: &wgpu::Device, new_size: winit::dpi::PhysicalSize<u32>) {
+        if new_size.width > 0 && new_size.height > 0 {
+            self.size = new_size;
+            self.config.width = new_size.width;
+            self.config.height = new_size.height;
+            self.surface.configure(device, &self.config);
+        }
+    }
+
+    pub fn request_redraw(&self) {
+        self.window.request_redraw();
+    }
 }
 
 impl GraphicsContext {
@@ -66,6 +90,8 @@ impl GraphicsContext {
         surface.configure(&device, &config);
 
         Self {
+            instance,
+            adapter,
             surface,
             device,
             queue,
@@ -90,5 +116,51 @@ impl GraphicsContext {
 
     pub fn request_redraw(&self) {
         self.window.request_redraw();
+    }
+
+    pub fn create_window_surface(&self, window: Arc<Window>) -> Result<WindowSurface, String> {
+        let size = window.inner_size();
+        let surface = self
+            .instance
+            .create_surface(window.clone())
+            .map_err(|e| format!("Failed to create GPU surface: {e}"))?;
+
+        let surface_caps = surface.get_capabilities(&self.adapter);
+        if !surface_caps.formats.contains(&self.config.format) {
+            return Err("Secondary display does not support the main surface format".into());
+        }
+
+        let present_mode = if surface_caps
+            .present_modes
+            .contains(&self.config.present_mode)
+        {
+            self.config.present_mode
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        };
+        let alpha_mode = if surface_caps.alpha_modes.contains(&self.config.alpha_mode) {
+            self.config.alpha_mode
+        } else {
+            surface_caps.alpha_modes[0]
+        };
+
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: self.config.format,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode,
+            alpha_mode,
+            view_formats: vec![],
+            desired_maximum_frame_latency: self.config.desired_maximum_frame_latency,
+        };
+        surface.configure(&self.device, &config);
+
+        Ok(WindowSurface {
+            surface,
+            config,
+            size,
+            window,
+        })
     }
 }

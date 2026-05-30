@@ -576,6 +576,7 @@ mod tests {
                 text: "test".into(),
                 character_name: "A".into(),
                 character_color: [1.0; 4],
+                note: String::new(),
             }],
             markers: vec![],
             characters: vec![],
@@ -607,6 +608,7 @@ mod tests {
                 text: "new".into(),
                 character_name: "X".into(),
                 character_color: [1.0; 4],
+                note: String::new(),
             }],
             markers: vec![],
             characters: vec![],
@@ -665,8 +667,8 @@ mod tests {
         assert_eq!(data.lines[0].character_color, [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(data.lines[0].y_slot, 0.25); // track 0
 
-        let start = 3600 * 24 + 8 * 24 + 19;
-        let end = 3600 * 24 + 9 * 24 + 21;
+        let start = 8 * 24 + 19;
+        let end = 9 * 24 + 21;
         assert_eq!(data.lines[0].start_frame, start);
         assert_eq!(data.lines[0].duration_frames, end - start);
 

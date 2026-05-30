@@ -2,29 +2,63 @@ use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VA
 
 use crate::i18n::t;
 
-const CARD_W: f32 = 400.0;
-const CARD_H: f32 = 190.0;
+const CARD_W: f32 = 430.0;
+const CARD_H: f32 = 270.0;
+
+#[derive(Clone, Copy, PartialEq)]
+enum ActiveField {
+    Width,
+    Height,
+}
+
+fn sanitize_dimension(value: u32) -> u32 {
+    let clamped = value.clamp(16, 8192);
+    if clamped % 2 == 0 {
+        clamped
+    } else {
+        (clamped + 1).min(8192)
+    }
+}
 
 pub struct ExportModal {
     pub fps: u32,
     pub fps_text: String,
     pub br_scale: f32,
     pub br_scale_text: String,
+    pub export_width: u32,
+    pub export_width_text: String,
+    pub export_height: u32,
+    pub export_height_text: String,
+    active_field: Option<ActiveField>,
+    replace_active_field: bool,
 }
 
 pub enum ExportModalResult {
     Consumed,
     Close,
-    Export { fps: f64, br_scale: f32 },
+    Export {
+        fps: f64,
+        br_scale: f32,
+        export_width: u32,
+        export_height: u32,
+    },
 }
 
 impl ExportModal {
-    pub fn new() -> Self {
+    pub fn new(video_width: u32, video_height: u32) -> Self {
+        let export_width = sanitize_dimension(video_width);
+        let export_height = sanitize_dimension(video_height);
         Self {
             fps: 60,
             fps_text: "60".to_string(),
             br_scale: 1.0,
             br_scale_text: "100%".to_string(),
+            export_width,
+            export_width_text: export_width.to_string(),
+            export_height,
+            export_height_text: export_height.to_string(),
+            active_field: None,
+            replace_active_field: false,
         }
     }
 
@@ -39,6 +73,86 @@ impl ExportModal {
             width: CARD_W,
             height: CARD_H,
         }
+    }
+
+    fn export_width(&self) -> u32 {
+        let value = self
+            .export_width_text
+            .parse::<u32>()
+            .ok()
+            .filter(|&v| v >= 16)
+            .unwrap_or(self.export_width);
+        sanitize_dimension(value)
+    }
+
+    fn export_height(&self) -> u32 {
+        let value = self
+            .export_height_text
+            .parse::<u32>()
+            .ok()
+            .filter(|&v| v >= 16)
+            .unwrap_or(self.export_height);
+        sanitize_dimension(value)
+    }
+
+    fn export_result(&mut self) -> ExportModalResult {
+        self.export_width = self.export_width();
+        self.export_height = self.export_height();
+        self.export_width_text = self.export_width.to_string();
+        self.export_height_text = self.export_height.to_string();
+        ExportModalResult::Export {
+            fps: self.fps as f64,
+            br_scale: self.br_scale,
+            export_width: self.export_width,
+            export_height: self.export_height,
+        }
+    }
+
+    fn handle_active_field_key(&mut self, text: &str) -> bool {
+        let Some(active_field) = self.active_field else {
+            return false;
+        };
+
+        if text == "\r" || text == "\n" {
+            self.active_field = None;
+            self.replace_active_field = false;
+            self.export_width = self.export_width();
+            self.export_height = self.export_height();
+            self.export_width_text = self.export_width.to_string();
+            self.export_height_text = self.export_height.to_string();
+            return true;
+        }
+
+        let target = match active_field {
+            ActiveField::Width => &mut self.export_width_text,
+            ActiveField::Height => &mut self.export_height_text,
+        };
+
+        if text == "\x08" || text == "\x7f" {
+            if self.replace_active_field {
+                target.clear();
+                self.replace_active_field = false;
+                return true;
+            }
+            target.pop();
+            return true;
+        }
+
+        if text.chars().all(|c| c.is_ascii_digit())
+            && (self.replace_active_field || target.len() < 5)
+        {
+            if self.replace_active_field {
+                target.clear();
+                self.replace_active_field = false;
+            }
+            if target.as_str() == "0" {
+                target.clear();
+            }
+            target.push_str(text);
+            return true;
+        }
+
+        true
     }
 
     pub fn handle_event(
@@ -64,11 +178,11 @@ impl ExportModal {
                 if text == "\x1b" {
                     return ExportModalResult::Close;
                 }
+                if self.handle_active_field_key(text) {
+                    return ExportModalResult::Consumed;
+                }
                 if text == "\r" || text == "\n" {
-                    return ExportModalResult::Export {
-                        fps: self.fps as f64,
-                        br_scale: self.br_scale,
-                    };
+                    return self.export_result();
                 }
                 ExportModalResult::Consumed
             }
@@ -100,7 +214,36 @@ impl ExportModal {
                     return ExportModalResult::Consumed;
                 }
 
-                let scale_y = card.y + 96.0;
+                let resolution_y = card.y + 98.0;
+                let field_w = 118.0;
+                let field_h = 30.0;
+                let width_rect = Rect {
+                    x: card.x + 20.0,
+                    y: resolution_y,
+                    width: field_w,
+                    height: field_h,
+                };
+                let height_rect = Rect {
+                    x: card.x + 170.0,
+                    y: resolution_y,
+                    width: field_w,
+                    height: field_h,
+                };
+                if width_rect.contains(*x, *y) {
+                    self.active_field = Some(ActiveField::Width);
+                    self.replace_active_field = true;
+                    return ExportModalResult::Consumed;
+                }
+                if height_rect.contains(*x, *y) {
+                    self.active_field = Some(ActiveField::Height);
+                    self.replace_active_field = true;
+                    return ExportModalResult::Consumed;
+                }
+
+                self.active_field = None;
+                self.replace_active_field = false;
+
+                let scale_y = card.y + 154.0;
                 let scale_minus = Rect {
                     x: card.x + 20.0,
                     y: scale_y,
@@ -136,10 +279,7 @@ impl ExportModal {
                     height: btn_h,
                 };
                 if btn_rect.contains(*x, *y) {
-                    return ExportModalResult::Export {
-                        fps: self.fps as f64,
-                        br_scale: self.br_scale,
-                    };
+                    return self.export_result();
                 }
 
                 ExportModalResult::Consumed
@@ -322,11 +462,12 @@ impl ExportModal {
             font_family_override: None,
         });
 
+        // --- Resolution section ---
         labels.push(LabelInfo {
-            text: t("export_modal.br_scale"),
+            text: t("export_modal.resolution"),
             bounds: Rect {
                 x: fx,
-                y: card.y + 76.0,
+                y: card.y + 78.0,
                 width: fw,
                 height: 18.0,
             },
@@ -339,7 +480,100 @@ impl ExportModal {
             font_family_override: None,
         });
 
-        let scale_y = card.y + 96.0;
+        let resolution_y = card.y + 98.0;
+        let field_w = 118.0;
+        let field_h = 30.0;
+        let width_rect = Rect {
+            x: fx,
+            y: resolution_y,
+            width: field_w,
+            height: field_h,
+        };
+        let height_rect = Rect {
+            x: card.x + 170.0,
+            y: resolution_y,
+            width: field_w,
+            height: field_h,
+        };
+        for (rect, active) in [
+            (width_rect, self.active_field == Some(ActiveField::Width)),
+            (height_rect, self.active_field == Some(ActiveField::Height)),
+        ] {
+            overlay_quads.push(QuadInstance {
+                rect: [rect.x, rect.y, rect.width, rect.height],
+                color: [0.08, 0.08, 0.10, 1.0],
+                color_bottom: [0.08, 0.08, 0.10, 1.0],
+                border_color: if active {
+                    [0.50, 0.65, 0.95, 0.9]
+                } else {
+                    [0.30, 0.30, 0.36, 0.5]
+                },
+                border_width: if active { 1.5 } else { 1.0 },
+                border_radius: 4.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
+        }
+        labels.push(LabelInfo {
+            text: &self.export_width_text,
+            bounds: width_rect,
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(12.0),
+            color_override: None,
+            font_family_override: None,
+        });
+        labels.push(LabelInfo {
+            text: "x",
+            bounds: Rect {
+                x: fx + field_w,
+                y: resolution_y,
+                width: 32.0,
+                height: field_h,
+            },
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(12.0),
+            color_override: Some([180, 180, 195]),
+            font_family_override: None,
+        });
+        labels.push(LabelInfo {
+            text: &self.export_height_text,
+            bounds: height_rect,
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(12.0),
+            color_override: None,
+            font_family_override: None,
+        });
+
+        labels.push(LabelInfo {
+            text: t("export_modal.br_scale"),
+            bounds: Rect {
+                x: fx,
+                y: card.y + 134.0,
+                width: fw,
+                height: 18.0,
+            },
+            h_align: HAlign::Left,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(12.0),
+            color_override: Some([180, 180, 195]),
+            font_family_override: None,
+        });
+
+        let scale_y = card.y + 154.0;
         overlay_quads.push(QuadInstance {
             rect: [fx, scale_y, btn_size, 30.0],
             color: [0.15, 0.15, 0.18, 1.0],
