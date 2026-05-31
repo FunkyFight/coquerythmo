@@ -70,6 +70,28 @@ fn text_hash(
     h.finish()
 }
 
+fn text_tile_hash(
+    kind: &str,
+    text: &str,
+    font_size: f32,
+    full_width: u32,
+    height: u32,
+    tile_x: u32,
+    tile_width: u32,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    kind.hash(&mut h);
+    text.hash(&mut h);
+    font_size.to_bits().hash(&mut h);
+    full_width.hash(&mut h);
+    height.hash(&mut h);
+    tile_x.hash(&mut h);
+    tile_width.hash(&mut h);
+    crate::vector_text::rythmo_font_family_name().hash(&mut h);
+    h.finish()
+}
+
 // ── Offscreen target with double-buffered staging ────────────────────────────
 
 struct OffscreenTarget {
@@ -158,6 +180,7 @@ const BASE_PLAYHEAD_WIDTH: f32 = 2.0;
 
 const INITIAL_QUAD_CAP: usize = 512;
 const INITIAL_ICON_CAP: usize = 256;
+const MAX_TEXT_TEXTURE_DIMENSION: u32 = 8192;
 
 pub struct GpuRenderer {
     device: wgpu::Device,
@@ -594,6 +617,15 @@ impl GpuRenderer {
         if w == 0 || h == 0 {
             return hash;
         }
+        if w > MAX_TEXT_TEXTURE_DIMENSION || h > MAX_TEXT_TEXTURE_DIMENSION {
+            log::warn!(
+                "Skipping oversized export text texture {}x{} for text '{}...'",
+                w,
+                h,
+                text.chars().take(24).collect::<String>()
+            );
+            return hash;
+        }
 
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Export Text Tex"),
@@ -658,24 +690,47 @@ impl GpuRenderer {
         hash
     }
 
-    fn get_or_upload_rythmo_text(
+    fn get_or_upload_rythmo_text_tile(
         &mut self,
         text: &str,
         font_size: f32,
-        dest_w: u32,
+        full_w: u32,
         dest_h: u32,
+        tile_x: u32,
+        tile_w: u32,
     ) -> u64 {
-        let hash = text_hash("vector-rythmo", text, font_size, Some(dest_w), Some(dest_h));
+        let tile_w = tile_w.min(full_w.saturating_sub(tile_x)).max(1);
+        let hash = text_tile_hash(
+            "vector-rythmo-tile",
+            text,
+            font_size,
+            full_w,
+            dest_h,
+            tile_x,
+            tile_w,
+        );
         if self.text_cache.contains_key(&hash) {
             return hash;
         }
 
-        let Some(rendered) = crate::vector_text::render_rythmo_text(
+        if tile_w > MAX_TEXT_TEXTURE_DIMENSION || dest_h > MAX_TEXT_TEXTURE_DIMENSION {
+            log::warn!(
+                "Skipping oversized export rythmo text texture {}x{} for text '{}...'",
+                tile_w,
+                dest_h,
+                text.chars().take(24).collect::<String>()
+            );
+            return hash;
+        }
+
+        let Some(rendered) = crate::vector_text::render_rythmo_text_tile(
             &mut self.font_system,
             text,
             font_size,
-            dest_w,
+            full_w,
             dest_h,
+            tile_x,
+            tile_w,
         ) else {
             return hash;
         };
@@ -744,6 +799,51 @@ impl GpuRenderer {
         );
 
         hash
+    }
+
+    fn push_rythmo_text_icons(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        all_icons: &mut Vec<IconInstance>,
+        icon_batches: &mut Vec<IconBatch>,
+    ) {
+        let full_w = w.max(1.0).ceil() as u32;
+        let full_h = h.max(1.0).ceil() as u32;
+        if full_h > MAX_TEXT_TEXTURE_DIMENSION {
+            log::warn!(
+                "Skipping export rythmo text taller than GPU texture limit: {}px",
+                full_h
+            );
+            return;
+        }
+
+        let mut tile_x = 0;
+        while tile_x < full_w {
+            let tile_w = (full_w - tile_x).min(MAX_TEXT_TEXTURE_DIMENSION);
+            let hash = self
+                .get_or_upload_rythmo_text_tile(text, font_size, full_w, full_h, tile_x, tile_w);
+            if self.text_cache.contains_key(&hash) {
+                let draw_x = x + (tile_x as f32 / full_w as f32) * w;
+                let draw_w = (tile_w as f32 / full_w as f32) * w;
+                let start = all_icons.len() as u32;
+                all_icons.push(IconInstance {
+                    rect: [draw_x, y, draw_w, h],
+                    uv_rect: [0.0, 0.0, 1.0, 1.0],
+                    tint: [1.0; 4],
+                });
+                icon_batches.push(IconBatch {
+                    hash,
+                    start,
+                    count: 1,
+                });
+            }
+            tile_x += tile_w;
+        }
     }
 
     // ── Offscreen management ─────────────────────────────────────────────
@@ -910,44 +1010,31 @@ impl GpuRenderer {
                         };
                         let segment: String = chars[prev_break..end_break].iter().collect();
                         if !segment.is_empty() && seg_w > 0.5 {
-                            let tex_w = seg_w.max(1.0).ceil() as u32;
-                            let tex_h = slot_h.max(1.0).ceil() as u32;
-                            let hash =
-                                self.get_or_upload_rythmo_text(&segment, font_size, tex_w, tex_h);
-                            if self.text_cache.contains_key(&hash) {
-                                let start = all_icons.len() as u32;
-                                all_icons.push(IconInstance {
-                                    rect: [seg_x, line_y, seg_w, slot_h],
-                                    uv_rect: [0.0, 0.0, 1.0, 1.0],
-                                    tint: [1.0; 4],
-                                });
-                                icon_batches.push(IconBatch {
-                                    hash,
-                                    start,
-                                    count: 1,
-                                });
-                            }
+                            self.push_rythmo_text_icons(
+                                &segment,
+                                font_size,
+                                seg_x,
+                                line_y,
+                                seg_w,
+                                slot_h,
+                                &mut all_icons,
+                                &mut icon_batches,
+                            );
                         }
                         seg_x += seg_w;
                         prev_break = end_break;
                     }
                 } else {
-                    let tex_w = lw.max(1.0).ceil() as u32;
-                    let tex_h = slot_h.max(1.0).ceil() as u32;
-                    let hash = self.get_or_upload_rythmo_text(&line.text, font_size, tex_w, tex_h);
-                    if self.text_cache.contains_key(&hash) {
-                        let start = all_icons.len() as u32;
-                        all_icons.push(IconInstance {
-                            rect: [x1, line_y, lw, slot_h],
-                            uv_rect: [0.0, 0.0, 1.0, 1.0],
-                            tint: [1.0; 4],
-                        });
-                        icon_batches.push(IconBatch {
-                            hash,
-                            start,
-                            count: 1,
-                        });
-                    }
+                    self.push_rythmo_text_icons(
+                        &line.text,
+                        font_size,
+                        x1,
+                        line_y,
+                        lw,
+                        slot_h,
+                        &mut all_icons,
+                        &mut icon_batches,
+                    );
                 }
             }
 

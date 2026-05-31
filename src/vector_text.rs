@@ -30,6 +30,49 @@ pub fn render_rythmo_text(
     render_rythmo_text_impl(font_system, text, font_size, dest_w, dest_h, false)
 }
 
+pub fn render_rythmo_text_tile(
+    _font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+    full_w: u32,
+    dest_h: u32,
+    tile_x: u32,
+    tile_w: u32,
+) -> Option<VectorTextPixmap> {
+    if text.is_empty() || full_w == 0 || dest_h == 0 || tile_w == 0 || tile_x >= full_w {
+        return None;
+    }
+
+    let tile_w = tile_w.min(full_w - tile_x).max(1);
+    let font_family = rythmo_font_family_name();
+    let line_height = (font_size * 1.4).ceil().max(1.0);
+    let svg = build_svg_tile(
+        text,
+        &font_family,
+        font_size,
+        line_height,
+        full_w,
+        dest_h,
+        tile_x,
+        tile_w,
+    );
+    let mut options = resvg::usvg::Options::default();
+    options.font_family = font_family;
+    options.font_size = font_size;
+    options.fontdb = system_fontdb();
+
+    let tree = resvg::usvg::Tree::from_data(svg.as_bytes(), &options).ok()?;
+    let mut pixmap = Pixmap::new(tile_w, dest_h)?;
+    resvg::render(&tree, Transform::identity(), &mut pixmap.as_mut());
+
+    Some(VectorTextPixmap {
+        pixels: pixmap.data().to_vec(),
+        width: tile_w,
+        height: dest_h,
+        char_x_ratios: Vec::new(),
+    })
+}
+
 pub fn render_rythmo_text_with_ratios(
     font_system: &mut FontSystem,
     text: &str,
@@ -162,6 +205,27 @@ fn build_svg(
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{dest_w}" height="{dest_h}" viewBox="0 0 {dest_w} {line_height:.3}" preserveAspectRatio="none">
 <text x="0" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white" textLength="{dest_w}" lengthAdjust="spacingAndGlyphs" xml:space="preserve">{escaped_text}</text>
+</svg>"#
+    )
+}
+
+fn build_svg_tile(
+    text: &str,
+    font_family: &str,
+    font_size: f32,
+    line_height: f32,
+    full_w: u32,
+    dest_h: u32,
+    tile_x: u32,
+    tile_w: u32,
+) -> String {
+    let escaped_text = escape_xml(text);
+    let escaped_family = escape_xml(font_family);
+    let baseline = font_size;
+
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{tile_w}" height="{dest_h}" viewBox="{tile_x} 0 {tile_w} {line_height:.3}" preserveAspectRatio="none">
+<text x="0" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white" textLength="{full_w}" lengthAdjust="spacingAndGlyphs" xml:space="preserve">{escaped_text}</text>
 </svg>"#
     )
 }

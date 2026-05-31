@@ -1057,6 +1057,7 @@ impl Ui {
                 br_scale,
                 export_width,
                 export_height,
+                instrumental_audio_path,
             } => {
                 self.export_modal = None;
                 EventResponse::Action(UiAction::StartExport {
@@ -1064,7 +1065,11 @@ impl Ui {
                     br_scale,
                     export_width,
                     export_height,
+                    instrumental_audio_path,
                 })
+            }
+            export_modal::ExportModalResult::PickInstrumentalAudio => {
+                EventResponse::Action(UiAction::PickExportInstrumentalAudio)
             }
         }
     }
@@ -1103,6 +1108,12 @@ impl Ui {
 
     pub fn open_export_modal(&mut self, video_width: u32, video_height: u32) {
         self.export_modal = Some(export_modal::ExportModal::new(video_width, video_height));
+    }
+
+    pub fn set_export_instrumental_audio_path(&mut self, path: impl Into<String>) {
+        if let Some(modal) = &mut self.export_modal {
+            modal.set_instrumental_audio_path(path);
+        }
     }
 
     pub fn open_proxy_modal(&mut self, video_width: u32, video_height: u32) {

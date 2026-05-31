@@ -13,7 +13,7 @@ pub const PIXELS_PER_FRAME: f32 = 6.0;
 pub const REF_WIDTH: f32 = 800.0;
 
 /// Default export framerate.
-pub const DEFAULT_EXPORT_FPS: u32 = 240;
+pub const DEFAULT_EXPORT_FPS: u32 = 60;
 
 /// Delay (ms) before decoding a frame after scrolling stops.
 pub const SCROLL_DECODE_DELAY_MS: u128 = 100;

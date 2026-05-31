@@ -118,7 +118,9 @@ pub enum UiAction {
         br_scale: f32,
         export_width: u32,
         export_height: u32,
+        instrumental_audio_path: Option<std::path::PathBuf>,
     },
+    PickExportInstrumentalAudio,
     OpenProxyModal,
     CreateProxy {
         width: u32,

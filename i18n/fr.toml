@@ -43,6 +43,7 @@
 "picker.import.cappela.title" = "Importer une bande rythmo Cappela"
 "picker.export.title" = "Exporter le projet"
 "picker.export_mp4.title" = "Enregistrer la vidéo MP4"
+"picker.instrumental_audio.title" = "Choisir l'audio instrumental"
 
 # Zones
 "zone.video_preview" = "Aperçu vidéo"
@@ -127,6 +128,10 @@
 "export_modal.fps" = "FPS de la bande rythmo"
 "export_modal.resolution" = "Résolution vidéo"
 "export_modal.br_scale" = "Zoom bande rythmo"
+"export_modal.instrumental_audio" = "Audio instrumental (optionnel)"
+"export_modal.instrumental_audio_placeholder" = "Audio original si vide"
+"export_modal.instrumental_audio_hint" = "Laisse vide pour conserver l'audio original de la vidéo."
+"export_modal.browse" = "Choisir"
 "export_modal.export" = "Exporter"
 
 # Settings

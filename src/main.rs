@@ -280,6 +280,7 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
             br_scale,
             export_width,
             export_height,
+            instrumental_audio_path,
         } => {
             if let Some(source) = state.video_path() {
                 let source_fps = state.fps();
@@ -307,6 +308,7 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
                             br_scale,
                             export_width,
                             export_height,
+                            instrumental_audio_path.as_deref(),
                             move |v| {
                                 p.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
                             },
@@ -321,6 +323,22 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
                 state.set_export_progress(Some(progress_for_ui));
             } else {
                 log::warn!("No video loaded — cannot export MP4");
+            }
+        }
+        UiAction::PickExportInstrumentalAudio => {
+            let mut dialog = rfd::FileDialog::new()
+                .set_title(i18n::t("picker.instrumental_audio.title"))
+                .add_filter(
+                    "Audio",
+                    &["wav", "mp3", "m4a", "aac", "flac", "ogg", "opus"],
+                );
+            if let Some(source) = state.video_path() {
+                if let Some(parent) = source.parent() {
+                    dialog = dialog.set_directory(parent);
+                }
+            }
+            if let Some(path) = dialog.pick_file() {
+                state.set_export_instrumental_audio_path(path.to_string_lossy().into_owned());
             }
         }
         UiAction::OpenDropdown(dropdown) => {

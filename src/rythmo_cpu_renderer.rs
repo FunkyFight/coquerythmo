@@ -105,9 +105,8 @@ impl CpuRenderer {
                 break;
             };
             if let Some(removed) = self.rythmo_text_cache.remove(&oldest_key) {
-                self.rythmo_text_cache_bytes = self
-                    .rythmo_text_cache_bytes
-                    .saturating_sub(removed.bytes);
+                self.rythmo_text_cache_bytes =
+                    self.rythmo_text_cache_bytes.saturating_sub(removed.bytes);
             }
         }
     }
