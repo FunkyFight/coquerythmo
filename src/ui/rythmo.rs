@@ -1460,7 +1460,7 @@ const MENU_ITEM_H: f32 = 26.0;
 const MENU_ROOT_W: f32 = 230.0;
 const MENU_ACTOR_W: f32 = 240.0;
 const MENU_ACTION_W: f32 = 285.0;
-const MENU_GAP: f32 = 4.0;
+const MENU_GAP: f32 = 0.0;
 const MENU_MARGIN: f32 = 8.0;
 const MENU_MAX_ACTOR_H: f32 = 260.0;
 
@@ -1571,7 +1571,10 @@ pub fn handle_context_menu_event(
                 return EventResponse::Consumed;
             }
 
-            if root_rect.contains(*x, *y) || action_rect.contains(*x, *y) {
+            if root_rect.contains(*x, *y)
+                || action_rect.contains(*x, *y)
+                || context_menu_bridge_contains(root_rect, actor_rect, action_rect, *x, *y)
+            {
                 return EventResponse::Consumed;
             }
 
@@ -1762,6 +1765,37 @@ fn context_menu_layout(
     (root_rect, actor_rect, action_rect, actor_scroll, max_scroll)
 }
 
+fn bridge_rect(a: Rect, b: Rect) -> Rect {
+    let a_right = a.x + a.width;
+    let b_right = b.x + b.width;
+    let (x, width) = if a_right <= b.x {
+        (a_right, b.x - a_right)
+    } else if b_right <= a.x {
+        (b_right, a.x - b_right)
+    } else {
+        (a.x.max(b.x), 0.0)
+    };
+    let y = a.y.min(b.y);
+    let bottom = (a.y + a.height).max(b.y + b.height);
+    Rect {
+        x,
+        y,
+        width,
+        height: bottom - y,
+    }
+}
+
+fn context_menu_bridge_contains(
+    root_rect: Rect,
+    actor_rect: Rect,
+    action_rect: Rect,
+    x: f32,
+    y: f32,
+) -> bool {
+    bridge_rect(root_rect, actor_rect).contains(x, y)
+        || bridge_rect(actor_rect, action_rect).contains(x, y)
+}
+
 fn update_context_menu_hover(
     project: &Project,
     screen_w: f32,
@@ -1779,6 +1813,9 @@ fn update_context_menu_hover(
     let root_hover = root_rect.contains(x, y);
     let mut actor_hover = None;
     let mut action_hover = None;
+    let root_actor_bridge = bridge_rect(root_rect, actor_rect).contains(x, y);
+    let actor_action_bridge =
+        menu.hover_actor_index.is_some() && bridge_rect(actor_rect, action_rect).contains(x, y);
 
     if actor_rect.contains(x, y) {
         let index = ((y - actor_rect.y + actor_scroll) / MENU_ITEM_H).floor() as usize;
@@ -1795,7 +1832,11 @@ fn update_context_menu_hover(
         }
     }
 
-    menu.hover_main = root_hover;
+    if actor_action_bridge {
+        actor_hover = menu.hover_actor_index;
+    }
+
+    menu.hover_main = root_hover || root_actor_bridge;
     menu.hover_actor_index = actor_hover;
     menu.hover_action_index = action_hover;
 }

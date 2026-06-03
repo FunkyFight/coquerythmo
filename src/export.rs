@@ -1,3 +1,4 @@
+use crate::constants::Y_SLOTS;
 use crate::project::{Character, Project};
 use crate::rythmo_line::{MarkerKind, RythmoMarker};
 use crate::voice_actor::VoiceActor;
@@ -124,6 +125,41 @@ impl ProjectData {
                 })
                 .collect(),
         }
+    }
+
+    pub fn clamp_to_total_frames(&mut self, total_frames: i64) -> (usize, usize) {
+        if total_frames <= 0 {
+            return (0, 0);
+        }
+
+        let mut clipped_lines = 0;
+        let before_lines = self.lines.len();
+
+        self.lines.retain_mut(|line| {
+            let mut changed = false;
+            if line.start_frame < 0 {
+                line.duration_frames += line.start_frame;
+                line.start_frame = 0;
+                changed = true;
+            }
+
+            if line.start_frame >= total_frames || line.duration_frames <= 0 {
+                return false;
+            }
+
+            let max_duration = total_frames - line.start_frame;
+            if line.duration_frames > max_duration {
+                line.duration_frames = max_duration;
+                changed = true;
+            }
+
+            if changed {
+                clipped_lines += 1;
+            }
+            true
+        });
+
+        (clipped_lines, before_lines - self.lines.len())
     }
 
     pub fn apply_to_project(&self, project: &mut Project, target_fps: f64) {
@@ -256,6 +292,115 @@ impl ProjectImporter for JsonImporter {
         log::info!("Project imported from {}", path.display());
         Ok(data)
     }
+}
+
+// -- SubRip .srt importer --
+
+fn srt_time_to_frames(time: &str, fps: f64) -> Result<i64, String> {
+    let time = time.trim();
+    let mut parts = time.split(':');
+    let hours: f64 = parts
+        .next()
+        .ok_or_else(|| format!("Invalid SRT time: '{time}'"))?
+        .parse()
+        .map_err(|_| format!("Invalid hours in SRT time: '{time}'"))?;
+    let minutes: f64 = parts
+        .next()
+        .ok_or_else(|| format!("Invalid SRT time: '{time}'"))?
+        .parse()
+        .map_err(|_| format!("Invalid minutes in SRT time: '{time}'"))?;
+    let seconds_part = parts
+        .next()
+        .ok_or_else(|| format!("Invalid SRT time: '{time}'"))?;
+    if parts.next().is_some() {
+        return Err(format!("Invalid SRT time: '{time}'"));
+    }
+    let seconds_part = seconds_part.replace(',', ".");
+    let seconds: f64 = seconds_part
+        .parse()
+        .map_err(|_| format!("Invalid seconds in SRT time: '{time}'"))?;
+
+    Ok(((hours * 3600.0 + minutes * 60.0 + seconds) * fps).round() as i64)
+}
+
+fn parse_srt_timing(line: &str, fps: f64) -> Result<(i64, i64), String> {
+    let (start, end_with_settings) = line
+        .split_once("-->")
+        .ok_or_else(|| format!("Invalid SRT timing line: '{line}'"))?;
+    let end = end_with_settings
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| format!("Invalid SRT timing line: '{line}'"))?;
+    let start_frame = srt_time_to_frames(start, fps)?;
+    let end_frame = srt_time_to_frames(end, fps)?;
+    Ok((start_frame, end_frame))
+}
+
+fn push_srt_block(block_lines: &[&str], fps: f64, lines: &mut Vec<LineData>) -> Result<(), String> {
+    if block_lines.is_empty() {
+        return Ok(());
+    }
+
+    let timing_index = block_lines
+        .iter()
+        .position(|line| line.contains("-->"))
+        .ok_or_else(|| {
+            format!(
+                "Invalid SRT block, missing timing line: '{}'",
+                block_lines.join(" ")
+            )
+        })?;
+    let (start_frame, end_frame) = parse_srt_timing(block_lines[timing_index], fps)?;
+    let text = block_lines[timing_index + 1..].join(" ");
+    if text.is_empty() {
+        return Ok(());
+    }
+
+    lines.push(LineData {
+        start_frame,
+        duration_frames: (end_frame - start_frame).max(1),
+        y_slot: Y_SLOTS[1],
+        text,
+        character_name: "Character".to_string(),
+        character_color: [1.0, 1.0, 1.0, 1.0],
+        voice_actor_names: Vec::new(),
+        note: String::new(),
+    });
+
+    Ok(())
+}
+
+/// Import a SubRip .srt file and convert it to ProjectData.
+/// Requires the video FPS to convert subtitle timestamps to frames.
+pub fn import_srt(path: &Path, fps: f64) -> Result<ProjectData, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| format!("Read error: {e}"))?;
+    let content = content.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+    let mut lines = Vec::new();
+    let mut block_lines = Vec::new();
+
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            push_srt_block(&block_lines, fps, &mut lines)?;
+            block_lines.clear();
+        } else {
+            block_lines.push(line);
+        }
+    }
+    push_srt_block(&block_lines, fps, &mut lines)?;
+
+    log::info!("SRT imported: {} lines", lines.len());
+
+    Ok(ProjectData {
+        source_fps: fps,
+        lines,
+        markers: Vec::new(),
+        characters: vec![CharacterData {
+            name: "Character".to_string(),
+            color: [1.0, 1.0, 1.0, 1.0],
+        }],
+        voice_actors: Vec::new(),
+    })
 }
 
 // -- Cappela .detx importer --
@@ -629,6 +774,44 @@ mod tests {
     }
 
     #[test]
+    fn test_clamp_to_total_frames() {
+        let mut data = ProjectData {
+            source_fps: 24.0,
+            lines: vec![
+                LineData {
+                    start_frame: 90,
+                    duration_frames: 20,
+                    y_slot: 0.5,
+                    text: "clipped".into(),
+                    character_name: "A".into(),
+                    character_color: [1.0; 4],
+                    voice_actor_names: Vec::new(),
+                    note: String::new(),
+                },
+                LineData {
+                    start_frame: 100,
+                    duration_frames: 10,
+                    y_slot: 0.5,
+                    text: "skipped".into(),
+                    character_name: "A".into(),
+                    character_color: [1.0; 4],
+                    voice_actor_names: Vec::new(),
+                    note: String::new(),
+                },
+            ],
+            markers: vec![],
+            characters: vec![],
+            voice_actors: vec![],
+        };
+
+        let (clipped, skipped) = data.clamp_to_total_frames(100);
+        assert_eq!((clipped, skipped), (1, 1));
+        assert_eq!(data.lines.len(), 1);
+        assert_eq!(data.lines[0].text, "clipped");
+        assert_eq!(data.lines[0].duration_frames, 10);
+    }
+
+    #[test]
     fn test_apply_clears_existing() {
         let mut project = Project::new();
         project.add_line(0, 10, 0.25);
@@ -682,6 +865,34 @@ mod tests {
             timecode_to_frames("01:00:08:19", 24.0).unwrap(),
             24 * 3600 + 8 * 24 + 19
         );
+    }
+
+    #[test]
+    fn test_srt_time_to_frames() {
+        assert_eq!(srt_time_to_frames("00:00:00,000", 24.0).unwrap(), 0);
+        assert_eq!(srt_time_to_frames("00:00:01,000", 24.0).unwrap(), 24);
+        assert_eq!(srt_time_to_frames("00:01:00.500", 24.0).unwrap(), 1452);
+    }
+
+    #[test]
+    fn test_import_srt_basic() {
+        let srt = "1\n00:00:01,000 --> 00:00:03,500\nBonjour\nle monde\n\n2\n00:00:04.000 --> 00:00:04.100 position:50%\nSalut\n";
+        let dir = std::env::temp_dir().join("coquerythmo_test_srt");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.srt");
+        std::fs::write(&path, srt).unwrap();
+
+        let data = import_srt(&path, 24.0).unwrap();
+        assert_eq!(data.lines.len(), 2);
+        assert_eq!(data.lines[0].start_frame, 24);
+        assert_eq!(data.lines[0].duration_frames, 60);
+        assert_eq!(data.lines[0].y_slot, 0.5);
+        assert_eq!(data.lines[0].text, "Bonjour le monde");
+        assert_eq!(data.lines[0].character_name, "Character");
+        assert_eq!(data.lines[1].start_frame, 96);
+        assert_eq!(data.lines[1].duration_frames, 2);
+        assert_eq!(data.characters.len(), 1);
+        assert_eq!(data.characters[0].name, "Character");
     }
 
     #[test]

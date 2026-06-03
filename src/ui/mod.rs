@@ -236,10 +236,12 @@ impl Ui {
             vec![
                 t("menu.project.import.coquerythmo").into(),
                 t("menu.project.import.cappela").into(),
+                t("menu.project.import.srt").into(),
             ],
             |index, _label| match index {
                 0 => EventResponse::Action(UiAction::ImportProject),
                 1 => EventResponse::Action(UiAction::ImportCappelaProject),
+                2 => EventResponse::Action(UiAction::ImportSrtProject),
                 _ => EventResponse::Consumed,
             },
         );

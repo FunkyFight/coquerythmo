@@ -168,6 +168,34 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
                 }
             }
         }
+        UiAction::ImportSrtProject => {
+            let filters = open_dialog_filters("SubRip SRT", &["srt"]);
+            let start_dir = downloads_or_home_dir();
+            let file = file_dialog::open_file(
+                i18n::t("picker.import.srt.title"),
+                &filters,
+                start_dir.as_deref(),
+            );
+            if let Some(path) = file {
+                let fps = state.fps();
+                let total_frames = state.total_frames();
+                match export::import_srt(&path, fps) {
+                    Ok(mut data) => {
+                        let (clipped, skipped) = data.clamp_to_total_frames(total_frames);
+                        if clipped > 0 || skipped > 0 {
+                            log::warn!(
+                                "SRT import clipped to video duration: {clipped} shortened, {skipped} skipped"
+                            );
+                        }
+                        data.apply_to_project(&mut state.project, fps);
+                        // On ne sauvegarde pas le path puisqu'on a importé un format qu'on va sauvegarder en .json
+                        state.project_path = None;
+                        state.dirty = true;
+                    }
+                    Err(e) => log::error!("SRT import failed: {e}"),
+                }
+            }
+        }
         UiAction::QuickSave => {
             use export::{JsonExporter, ProjectExporter};
             if let Some(path) = &state.project_path {

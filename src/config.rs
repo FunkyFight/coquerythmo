@@ -266,7 +266,10 @@ mod tests {
 
         assert!(!config.migrate());
         assert_eq!(config.network.server_ip, PREVIOUS_DEFAULT_SERVER_IP);
-        assert_eq!(config.network.saved_servers[0].ip, PREVIOUS_DEFAULT_SERVER_IP);
+        assert_eq!(
+            config.network.saved_servers[0].ip,
+            PREVIOUS_DEFAULT_SERVER_IP
+        );
     }
 }
 

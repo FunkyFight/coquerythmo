@@ -115,6 +115,7 @@ pub enum UiAction {
     AddVideo,
     ImportProject,
     ImportCappelaProject,
+    ImportSrtProject,
     ExportProject,
     OpenExportModal,
     StartExport {

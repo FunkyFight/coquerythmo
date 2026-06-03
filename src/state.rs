@@ -352,6 +352,10 @@ impl State {
         self.video_player.as_ref().map_or(30.0, |p| p.fps())
     }
 
+    pub fn total_frames(&self) -> i64 {
+        self.video_player.as_ref().map_or(0, |p| p.total_frames())
+    }
+
     pub fn source_video_size(&self) -> Option<(u32, u32)> {
         self.source_video_size.or_else(|| {
             self.video_player

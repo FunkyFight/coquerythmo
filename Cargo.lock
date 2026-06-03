@@ -719,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "coquerythmo"
-version = "2.7.4"
+version = "2.8.0"
 dependencies = [
  "base64 0.22.1",
  "bytemuck",
