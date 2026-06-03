@@ -1,3 +1,4 @@
+pub mod actor_icon_cache;
 pub mod color_picker;
 pub mod connect_modal;
 pub mod dropdown;
@@ -19,6 +20,7 @@ pub mod text_input;
 pub mod theme;
 pub mod toast;
 pub mod tooltip;
+pub mod voice_actor_modal;
 pub mod widget;
 
 use layout::{Layout, PROPS_DEFAULT_W, PROPS_DRAG_ZONE, PROPS_MAX_W, PROPS_MIN_W};
@@ -32,6 +34,7 @@ use widget::{
 use crate::i18n::t;
 use crate::project::Project;
 
+use self::actor_icon_cache::ActorIconCache;
 use self::dropdown::Dropdown;
 use self::icon_button::IconButton;
 use self::icons::IconAtlas;
@@ -57,6 +60,7 @@ pub struct Ui {
     icon_uvs: std::collections::HashMap<String, [f32; 4]>,
     active_dropdown: Option<widget::ToolbarDropdown>,
     pub export_progress: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
+    pub export_render_backend: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
     export_label: String,
     pub progress_prefix: String,
     connect_modal: Option<connect_modal::ConnectModal>,
@@ -68,8 +72,11 @@ pub struct Ui {
     add_server_modal: Option<server_browser::AddServerModal>,
     save_prompt_modal: Option<save_prompt_modal::SavePromptModal>,
     studio_warning_modal: Option<studio_warning_modal::StudioWarningModal>,
+    voice_actor_modal: Option<voice_actor_modal::VoiceActorModal>,
+    actor_icon_cache: ActorIconCache,
     network_in_room: bool,
     pub network_status: String,
+    network_room_label: String,
     pub has_video: bool,
     pub current_frame: i64,
     pub total_frames: i64,
@@ -132,6 +139,7 @@ impl Ui {
             icon_uvs,
             active_dropdown: None,
             export_progress: None,
+            export_render_backend: None,
             export_label: String::new(),
             progress_prefix: String::new(),
             connect_modal: None,
@@ -143,8 +151,11 @@ impl Ui {
             add_server_modal: None,
             save_prompt_modal: None,
             studio_warning_modal: None,
+            voice_actor_modal: None,
+            actor_icon_cache: ActorIconCache::new(),
             network_in_room: false,
-            network_status: String::new(),
+            network_status: "Déconnecté".into(),
+            network_room_label: String::new(),
             sync_overlay: None,
             sync_progress: 0.0,
             has_video: false,
@@ -344,6 +355,12 @@ impl Ui {
         self.network_in_room = in_room;
         self.topbar_widgets =
             Self::build_topbar(in_room, self.has_video, self.screen_w, self.uv("settings"));
+    }
+
+    pub fn set_network_room_code(&mut self, code: Option<&str>) {
+        self.network_room_label = code
+            .map(|code| format!("Code salon : {code}"))
+            .unwrap_or_default();
     }
 
     fn progress_bar_rect(&self) -> Rect {
@@ -622,6 +639,11 @@ impl Ui {
             return self.handle_export_modal_event(event);
         }
 
+        // Voice actor creation modal intercepts all input
+        if self.voice_actor_modal.is_some() {
+            return self.handle_voice_actor_modal_event(event);
+        }
+
         // Proxy modal intercepts all input
         if self.proxy_modal.is_some() {
             return self.handle_proxy_modal_event(event);
@@ -640,6 +662,22 @@ impl Ui {
         // Connect modal intercepts all input
         if self.connect_modal.is_some() {
             return self.handle_connect_modal_event(event);
+        }
+
+        if self.rythmo_state.context_menu.is_some() || matches!(event, UiEvent::ContextMenu { .. })
+        {
+            let response = rythmo::handle_context_menu_event(
+                event,
+                project,
+                current_frame,
+                &self.layout.rythmo,
+                self.screen_w,
+                self.screen_h,
+                &mut self.rythmo_state,
+            );
+            if response != EventResponse::Ignored {
+                return response;
+            }
         }
 
         // Toolbar dropdown overlay
@@ -983,6 +1021,7 @@ impl Ui {
             || self.export_modal.is_some()
             || self.proxy_modal.is_some()
             || self.proxy_error_modal.is_some()
+            || self.voice_actor_modal.is_some()
     }
 
     fn handle_connect_modal_event(&mut self, event: &UiEvent) -> EventResponse {
@@ -1074,6 +1113,30 @@ impl Ui {
         }
     }
 
+    fn handle_voice_actor_modal_event(&mut self, event: &UiEvent) -> EventResponse {
+        let modal = match &mut self.voice_actor_modal {
+            Some(m) => m,
+            None => return EventResponse::Ignored,
+        };
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            voice_actor_modal::VoiceActorModalResult::Consumed => EventResponse::Consumed,
+            voice_actor_modal::VoiceActorModalResult::Close => {
+                self.voice_actor_modal = None;
+                EventResponse::Consumed
+            }
+            voice_actor_modal::VoiceActorModalResult::PickIcon => {
+                EventResponse::Action(UiAction::PickVoiceActorIcon)
+            }
+            voice_actor_modal::VoiceActorModalResult::Clipboard(text) => {
+                EventResponse::Action(UiAction::SetClipboard(text))
+            }
+            voice_actor_modal::VoiceActorModalResult::Create { name, icon_path } => {
+                self.voice_actor_modal = None;
+                EventResponse::Action(UiAction::CreateVoiceActor { name, icon_path })
+            }
+        }
+    }
+
     fn handle_proxy_modal_event(&mut self, event: &UiEvent) -> EventResponse {
         let modal = match &mut self.proxy_modal {
             Some(m) => m,
@@ -1108,6 +1171,16 @@ impl Ui {
 
     pub fn open_export_modal(&mut self, video_width: u32, video_height: u32) {
         self.export_modal = Some(export_modal::ExportModal::new(video_width, video_height));
+    }
+
+    pub fn open_voice_actor_modal(&mut self) {
+        self.voice_actor_modal = Some(voice_actor_modal::VoiceActorModal::new());
+    }
+
+    pub fn set_voice_actor_modal_icon_path(&mut self, path: impl Into<String>) {
+        if let Some(modal) = &mut self.voice_actor_modal {
+            modal.set_icon_path(path);
+        }
     }
 
     pub fn set_export_instrumental_audio_path(&mut self, path: impl Into<String>) {
@@ -1320,7 +1393,15 @@ impl Ui {
             renderer.texture_bind_group_layout(),
             renderer.texture_sampler(),
         );
+        self.actor_icon_cache.sync(
+            project,
+            device,
+            queue,
+            renderer.texture_bind_group_layout(),
+            renderer.texture_sampler(),
+        );
         let mut color_picker_bg_quads: Vec<QuadInstance> = Vec::new();
+        let mut base_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
         let mut extra_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
         let mut color_picker_fg_quads: Vec<QuadInstance> = Vec::new();
         self.rythmo_state.color_picker.render(
@@ -1335,7 +1416,19 @@ impl Ui {
             let progress = f32::from_bits(progress_atomic.load(Ordering::Relaxed));
             let pct = (progress.clamp(0.0, 1.0) * 100.0) as u32;
             let prefix = if self.progress_prefix.is_empty() {
-                crate::i18n::t("progress.exporting")
+                self.export_render_backend
+                    .as_ref()
+                    .map(|status| status.load(Ordering::Relaxed))
+                    .and_then(|status| match status {
+                        crate::video_export::EXPORT_RENDER_BACKEND_GPU => {
+                            Some(crate::i18n::t("progress.export_gpu"))
+                        }
+                        crate::video_export::EXPORT_RENDER_BACKEND_CPU => {
+                            Some(crate::i18n::t("progress.export_cpu"))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| crate::i18n::t("progress.exporting"))
             } else {
                 &self.progress_prefix
             };
@@ -1369,6 +1462,7 @@ impl Ui {
         // Rythmo lines
         let mut stretched_texts: Vec<StretchedText> = Vec::new();
         let mut note_icons: Vec<IconInstance> = Vec::new();
+        let mut actor_icon_draws: Vec<rythmo::VoiceActorIconDraw> = Vec::new();
         let cursor_info = rythmo::render_lines(
             &self.layout.rythmo,
             project,
@@ -1378,9 +1472,24 @@ impl Ui {
             &mut labels,
             &mut stretched_texts,
             &mut note_icons,
+            &mut actor_icon_draws,
             self.uv("note"),
         );
         icons.extend(note_icons);
+        for draw in actor_icon_draws {
+            if let Some(actor) = project.find_voice_actor(&draw.actor_name) {
+                if let Some(bind_group) = self.actor_icon_cache.bind_group_for(actor) {
+                    base_textured.push((
+                        IconInstance {
+                            rect: [draw.rect.x, draw.rect.y, draw.rect.width, draw.rect.height],
+                            uv_rect: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0, 1.0],
+                        },
+                        bind_group,
+                    ));
+                }
+            }
+        }
 
         // Markers
         let mut liaison_icons: Vec<IconInstance> = Vec::new();
@@ -1487,6 +1596,15 @@ impl Ui {
 
         // Toolbar dropdown → overlay
         self.render_toolbar_dropdown(&mut overlay_quads, &mut labels);
+
+        rythmo::render_context_menu(
+            project,
+            self.screen_w,
+            self.screen_h,
+            &self.rythmo_state,
+            &mut overlay_quads,
+            &mut labels,
+        );
 
         // Tooltip → overlay
         if let Some(tooltip) = &self.tooltip {
@@ -1625,6 +1743,15 @@ impl Ui {
 
         // Export modal
         if let Some(modal) = &self.export_modal {
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
+        }
+
+        if let Some(modal) = &self.voice_actor_modal {
             modal.render(
                 &mut overlay_quads,
                 &mut labels,
@@ -1790,6 +1917,7 @@ impl Ui {
             &labels,
             video_quad,
             &stretched_quads,
+            &base_textured,
             &extra_textured,
             &color_picker_fg_quads,
         );
@@ -1818,6 +1946,108 @@ impl Ui {
             rotation: 0.0,
             _padding: [0.0; 2],
         });
+
+        let status_text = self.network_status.trim();
+        let room_text = self.network_room_label.trim();
+        if !status_text.is_empty() || !room_text.is_empty() {
+            let left = 388.0;
+            let right = self.screen_w - 42.0;
+            let available = right - left;
+            if available >= 140.0 {
+                let y = 0.0;
+                let h = TOPBAR_HEIGHT;
+                let dot_color = if status_text.starts_with("Erreur") || status_text.starts_with("Échec") {
+                    [0.90, 0.28, 0.28, 1.0]
+                } else if status_text == "Connexion..." {
+                    [0.95, 0.68, 0.30, 1.0]
+                } else if self.network_in_room {
+                    [0.38, 0.78, 0.48, 1.0]
+                } else {
+                    [0.46, 0.48, 0.55, 1.0]
+                };
+
+                let has_status = !status_text.is_empty();
+                let has_room = !room_text.is_empty();
+                let status_w = if has_room {
+                    (available * 0.42).clamp(92.0, 190.0).min(available - 96.0)
+                } else {
+                    available.min(240.0)
+                };
+                let status_x = if has_room { left } else { right - status_w };
+
+                if has_status {
+                    quads.push(QuadInstance {
+                        rect: [status_x + 4.0, 13.0, 6.0, 6.0],
+                        color: dot_color,
+                        color_bottom: dot_color,
+                        border_color: [0.0; 4],
+                        border_width: 0.0,
+                        border_radius: 3.0,
+                        shadow_offset: [0.0; 2],
+                        shadow_color: [0.0; 4],
+                        shadow_blur: 0.0,
+                        rotation: 0.0,
+                        _padding: [0.0; 2],
+                    });
+                    labels.push(LabelInfo {
+                        text: status_text,
+                        bounds: Rect {
+                            x: status_x + 14.0,
+                            y,
+                            width: status_w - 14.0,
+                            height: h,
+                        },
+                        h_align: HAlign::Left,
+                        v_align: VAlign::Center,
+                        overflow: Overflow::Ellipsis,
+                        padding: 0.0,
+                        font_size_override: Some(11.0),
+                        color_override: Some([165, 168, 178]),
+                        font_family_override: None,
+                    });
+                }
+
+                if has_room {
+                    let room_x = if has_status {
+                        status_x + status_w + 12.0
+                    } else {
+                        left
+                    };
+                    let room_w = (right - room_x).max(80.0);
+                    if has_status && room_w >= 90.0 {
+                        quads.push(QuadInstance {
+                            rect: [room_x - 7.0, 8.0, 1.0, 16.0],
+                            color: [0.28, 0.28, 0.34, 0.9],
+                            color_bottom: [0.28, 0.28, 0.34, 0.9],
+                            border_color: [0.0; 4],
+                            border_width: 0.0,
+                            border_radius: 0.0,
+                            shadow_offset: [0.0; 2],
+                            shadow_color: [0.0; 4],
+                            shadow_blur: 0.0,
+                            rotation: 0.0,
+                            _padding: [0.0; 2],
+                        });
+                    }
+                    labels.push(LabelInfo {
+                        text: room_text,
+                        bounds: Rect {
+                            x: room_x,
+                            y,
+                            width: room_w,
+                            height: h,
+                        },
+                        h_align: HAlign::Left,
+                        v_align: VAlign::Center,
+                        overflow: Overflow::Ellipsis,
+                        padding: 0.0,
+                        font_size_override: Some(11.0),
+                        color_override: Some([210, 212, 222]),
+                        font_family_override: None,
+                    });
+                }
+            }
+        }
 
         // Video preview
         quads.push(QuadInstance {
@@ -1993,6 +2223,14 @@ impl Ui {
         let mut quads: Vec<QuadInstance> = Vec::new();
         let mut labels: Vec<LabelInfo> = Vec::new();
         let mut stretched_texts: Vec<StretchedText> = Vec::new();
+        let mut actor_icon_draws: Vec<rythmo::VoiceActorIconDraw> = Vec::new();
+        self.actor_icon_cache.sync(
+            project,
+            device,
+            queue,
+            renderer.texture_bind_group_layout(),
+            renderer.texture_sampler(),
+        );
 
         // Compute studio rythmo zone: full width, bottom portion
         let rythmo_h = rythmo::studio_br_height(project, self.screen_w);
@@ -2032,10 +2270,26 @@ impl Ui {
             &mut quads,
             &mut labels,
             &mut stretched_texts,
+            &mut actor_icon_draws,
         );
 
         // Prepare stretched text textures
         let stretched_quads = renderer.prepare_stretched_texts(device, queue, &stretched_texts);
+        let mut base_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
+        for draw in actor_icon_draws {
+            if let Some(actor) = project.find_voice_actor(&draw.actor_name) {
+                if let Some(bind_group) = self.actor_icon_cache.bind_group_for(actor) {
+                    base_textured.push((
+                        IconInstance {
+                            rect: [draw.rect.x, draw.rect.y, draw.rect.width, draw.rect.height],
+                            uv_rect: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0, 1.0],
+                        },
+                        bind_group,
+                    ));
+                }
+            }
+        }
 
         // Render through existing UiRenderer
         renderer.render(
@@ -2051,7 +2305,8 @@ impl Ui {
             &labels,
             video_quad,
             &stretched_quads,
-            &[], // no extra_textured
+            &base_textured,
+            &[],
             &[], // no post_texture_quads
         );
     }

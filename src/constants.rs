@@ -32,6 +32,7 @@ pub const BADGE_HEIGHT: f32 = 14.0;
 pub const BADGE_GAP: f32 = 2.0;
 pub const BADGE_CHAR_W: f32 = 6.0;
 pub const BADGE_FONT_SIZE: f32 = 9.0;
+pub const VOICE_ACTOR_DISPLAY_ICON_SIZE: f32 = 28.0;
 
 pub const SLOT_HEIGHT: f32 = 40.0;
 pub const HANDLE_WIDTH: f32 = 6.0;

@@ -103,6 +103,10 @@ pub enum UiEvent {
         x: f32,
         y: f32,
     },
+    ContextMenu {
+        x: f32,
+        y: f32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -175,6 +179,28 @@ pub enum UiAction {
     },
     FinalizeCharacter {
         line_id: u64,
+    },
+    OpenVoiceActorModal,
+    PickVoiceActorIcon,
+    CreateVoiceActor {
+        name: String,
+        icon_path: String,
+    },
+    AssignVoiceActorLine {
+        line_id: u64,
+        actor_name: String,
+    },
+    AssignVoiceActorCharacter {
+        line_id: u64,
+        actor_name: String,
+    },
+    UnassignVoiceActorLine {
+        line_id: u64,
+        actor_name: String,
+    },
+    UnassignVoiceActorCharacter {
+        line_id: u64,
+        actor_name: String,
     },
     DeleteSelected,
     MoveMarker {

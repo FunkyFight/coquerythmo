@@ -44,6 +44,8 @@
 "picker.export.title" = "Exporter le projet"
 "picker.export_mp4.title" = "Enregistrer la vidéo MP4"
 "picker.instrumental_audio.title" = "Choisir l'audio instrumental"
+"picker.voice_actor_icon.title" = "Choisir l'icône du comédien"
+"picker.filter.all_files" = "Tous les fichiers"
 
 # Zones
 "zone.video_preview" = "Aperçu vidéo"
@@ -94,6 +96,8 @@
 
 # Progress
 "progress.exporting" = "Export en cours..."
+"progress.export_gpu" = "Export GPU"
+"progress.export_cpu" = "Export CPU"
 "progress.proxy" = "Création du proxy..."
 
 # Toasts
@@ -104,6 +108,27 @@
 "toast.proxy_created" = "Proxy créé et chargé pour la lecture."
 "toast.proxy_created_not_loaded" = "Proxy créé, mais la vidéo active a changé."
 "toast.proxy_failed" = "Création du proxy échouée :"
+"toast.voice_actor_created" = "Comédien créé."
+"toast.voice_actor_exists" = "Ce comédien existe déjà."
+"toast.voice_actor_name_required" = "Le nom du comédien est obligatoire."
+"toast.voice_actor_icon_failed" = "Icône du comédien invalide :"
+
+# Voice actor context menu
+"context.voice_actor.assign_to_actor" = "Attribuer à un comédien"
+"context.voice_actor.create" = "Créer un comédien"
+"context.voice_actor.assign_line" = "Attribuer la ligne"
+"context.voice_actor.assign_character" = "Attribuer toutes les lignes de ce personnage"
+"context.voice_actor.unassign_line" = "Ne plus attribuer"
+"context.voice_actor.unassign_character" = "Ne plus attribuer toutes les lignes de ce personnage"
+
+# Voice actor modal
+"voice_actor_modal.title" = "Créer un comédien"
+"voice_actor_modal.description" = "L'icône est intégrée à la bande rythmo en 256x256."
+"voice_actor_modal.name" = "Nom"
+"voice_actor_modal.icon_path" = "Chemin de l'icône"
+"voice_actor_modal.browse" = "Choisir"
+"voice_actor_modal.cancel" = "Annuler"
+"voice_actor_modal.create" = "Créer"
 
 # Proxy modal
 "proxy_modal.title" = "Créer un proxy"

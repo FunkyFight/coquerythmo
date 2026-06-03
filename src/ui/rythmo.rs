@@ -4,6 +4,7 @@ use super::widget::{
     UiEvent, VAlign,
 };
 use crate::constants;
+use crate::i18n::t;
 use crate::project::Project;
 use crate::rythmo_line::MarkerKind;
 
@@ -36,6 +37,21 @@ pub struct GhostPreview {
     pub duration_frames: i64,
 }
 
+pub struct VoiceActorIconDraw {
+    pub actor_name: String,
+    pub rect: Rect,
+}
+
+pub struct LineContextMenu {
+    pub line_id: u64,
+    pub x: f32,
+    pub y: f32,
+    pub hover_main: bool,
+    pub hover_actor_index: Option<usize>,
+    pub hover_action_index: Option<usize>,
+    pub actor_scroll: f32,
+}
+
 pub struct RythmoState {
     pub hovered_line: Option<u64>,
     pub hovered_track: Option<usize>,
@@ -58,6 +74,7 @@ pub struct RythmoState {
     pub pan_accum: f32,
     pub syllable_mode: bool,
     pub syllable_drag: Option<SyllableDrag>,
+    pub context_menu: Option<LineContextMenu>,
 }
 
 pub struct SyllableDrag {
@@ -125,6 +142,7 @@ impl RythmoState {
             pan_accum: 0.0,
             syllable_mode: false,
             syllable_drag: None,
+            context_menu: None,
         }
     }
 
@@ -220,7 +238,7 @@ fn badge_rect_for_name(
     let w = badge_width(name);
     Rect {
         x: x1,
-        y: y_base,
+        y: badge_y_from_slot_top(y_base),
         width: w,
         height: BADGE_HEIGHT,
     }
@@ -244,10 +262,10 @@ fn color_picker_origin_for_badge(badge: &Rect, zone: &Rect) -> (f32, f32) {
 }
 
 fn slot_metrics(zone: &Rect) -> (f32, f32) {
-    // Each slot = badge + gap + line body. 4 slots fit in the usable area.
+    // Each slot = header row + gap + line body. 4 slots fit in the usable area.
     let usable_h = zone.height - constants::RULER_HEIGHT;
     let total_slot_h = usable_h / constants::NUM_SLOTS;
-    let line_h = (total_slot_h - BADGE_HEIGHT - BADGE_GAP).max(8.0);
+    let line_h = (total_slot_h - slot_header_height() - BADGE_GAP).max(8.0);
     (total_slot_h, line_h)
 }
 
@@ -258,7 +276,7 @@ fn line_rect(line: &crate::rythmo_line::RythmoLine, current_frame: i64, zone: &R
     // y_slot is 0.0, 0.25, 0.5, 0.75 → maps to slot index 0,1,2,3
     let slot_index = (line.y_slot * constants::NUM_SLOTS).round() as usize;
     let y_base = zone.y + constants::RULER_HEIGHT + slot_index as f32 * total_slot_h;
-    let y = y_base + BADGE_HEIGHT + BADGE_GAP;
+    let y = y_base + slot_header_height() + BADGE_GAP;
     Rect {
         x: x1,
         y,
@@ -347,6 +365,16 @@ const BADGE_RADIUS: f32 = 2.0;
 const BADGE_CHAR_W: f32 = 6.0; // approximate char width at font size 10
 const BADGE_MIN_W: f32 = 16.0;
 const BADGE_FONT_SIZE: f32 = 10.0;
+const ACTOR_ICON_SIZE: f32 = constants::VOICE_ACTOR_DISPLAY_ICON_SIZE;
+const ACTOR_ICON_GAP: f32 = 3.0;
+
+fn slot_header_height() -> f32 {
+    BADGE_HEIGHT.max(ACTOR_ICON_SIZE)
+}
+
+fn badge_y_from_slot_top(y_base: f32) -> f32 {
+    y_base + ((slot_header_height() - BADGE_HEIGHT) * 0.5).max(0.0)
+}
 
 pub fn render_lines<'a>(
     zone: &Rect,
@@ -357,6 +385,7 @@ pub fn render_lines<'a>(
     labels: &mut Vec<LabelInfo<'a>>,
     stretched: &mut Vec<StretchedText>,
     note_icons: &mut Vec<IconInstance>,
+    actor_icons: &mut Vec<VoiceActorIconDraw>,
     note_uv: [f32; 4],
 ) -> Option<(u64, usize, Option<(usize, usize)>, f32, f32, f32, f32)> {
     // Rend le highlight de la track survolée (s'il y en a une et qu'elle est valide)
@@ -631,6 +660,17 @@ pub fn render_lines<'a>(
             });
         }
 
+        render_voice_actor_icons_for_line(
+            line,
+            project,
+            zone,
+            br,
+            ACTOR_ICON_SIZE,
+            quads,
+            labels,
+            actor_icons,
+        );
+
         if is_editing_char {
             if let Some((start, end)) = state.char_input.selection_range() {
                 let char_count = line.character_name.chars().count();
@@ -745,7 +785,7 @@ pub fn render_lines<'a>(
         let (total_slot_h, line_h) = slot_metrics(zone);
         let slot_index = (ghost.y_slot * constants::NUM_SLOTS).round() as usize;
         let y_base = zone.y + constants::RULER_HEIGHT + slot_index as f32 * total_slot_h;
-        let ghost_y = y_base + BADGE_HEIGHT + BADGE_GAP;
+        let ghost_y = y_base + slot_header_height() + BADGE_GAP;
         let ghost_rect_x = frame_to_x(ghost.frame, current_frame, zone);
         let ghost_w = (ghost.duration_frames as f32 * ppf()).max(2.0);
 
@@ -768,7 +808,12 @@ pub fn render_lines<'a>(
         // Ghost badge
         let ghost_badge_w = BADGE_MIN_W;
         quads.push(QuadInstance {
-            rect: [ghost_rect_x, y_base, ghost_badge_w, BADGE_HEIGHT],
+            rect: [
+                ghost_rect_x,
+                badge_y_from_slot_top(y_base),
+                ghost_badge_w,
+                BADGE_HEIGHT,
+            ],
             color: [0.4, 0.4, 0.5, 0.2],
             color_bottom: [0.4, 0.4, 0.5, 0.2],
             border_color: ghost_border,
@@ -783,6 +828,84 @@ pub fn render_lines<'a>(
     }
 
     cursor_info
+}
+
+fn render_voice_actor_icons_for_line<'a>(
+    line: &'a crate::rythmo_line::RythmoLine,
+    project: &'a Project,
+    zone: &Rect,
+    badge: Rect,
+    icon_size: f32,
+    quads: &mut Vec<QuadInstance>,
+    labels: &mut Vec<LabelInfo<'a>>,
+    actor_icons: &mut Vec<VoiceActorIconDraw>,
+) {
+    if line.voice_actor_names.is_empty() {
+        return;
+    }
+
+    let size = icon_size;
+    let gap = ACTOR_ICON_GAP;
+    let mut x = badge.x + badge.width + gap;
+    let y = badge.y + (badge.height - size) * 0.5;
+    for actor_name in &line.voice_actor_names {
+        if x > zone.x + zone.width {
+            break;
+        }
+        let rect = Rect {
+            x,
+            y,
+            width: size,
+            height: size,
+        };
+        quads.push(QuadInstance {
+            rect: [rect.x, rect.y, rect.width, rect.height],
+            color: [0.05, 0.05, 0.07, 0.92],
+            color_bottom: [0.02, 0.02, 0.03, 0.92],
+            border_color: [0.75, 0.75, 0.85, 0.45],
+            border_width: 1.0,
+            border_radius: 3.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+
+        if let Some(actor) = project.find_voice_actor(actor_name) {
+            if actor.icon_png_base64.is_some() {
+                actor_icons.push(VoiceActorIconDraw {
+                    actor_name: actor.name.clone(),
+                    rect,
+                });
+            } else {
+                labels.push(LabelInfo {
+                    text: &actor.name,
+                    bounds: rect,
+                    h_align: HAlign::Center,
+                    v_align: VAlign::Center,
+                    overflow: Overflow::Clip,
+                    padding: 1.0,
+                    font_size_override: Some((size * 0.55).max(8.0)),
+                    color_override: Some([230, 230, 238]),
+                    font_family_override: None,
+                });
+            }
+        } else {
+            labels.push(LabelInfo {
+                text: actor_name,
+                bounds: rect,
+                h_align: HAlign::Center,
+                v_align: VAlign::Center,
+                overflow: Overflow::Clip,
+                padding: 1.0,
+                font_size_override: Some((size * 0.55).max(8.0)),
+                color_override: Some([230, 230, 238]),
+                font_family_override: None,
+            });
+        }
+        x += size + gap;
+    }
 }
 
 /// Render a diagonal arrow for breath markers using rotated quads.
@@ -1331,6 +1454,489 @@ pub fn handle_rythmo_event(
         }
         _ => EventResponse::Ignored,
     }
+}
+
+const MENU_ITEM_H: f32 = 26.0;
+const MENU_ROOT_W: f32 = 230.0;
+const MENU_ACTOR_W: f32 = 240.0;
+const MENU_ACTION_W: f32 = 285.0;
+const MENU_GAP: f32 = 4.0;
+const MENU_MARGIN: f32 = 8.0;
+const MENU_MAX_ACTOR_H: f32 = 260.0;
+
+pub fn handle_context_menu_event(
+    event: &UiEvent,
+    project: &Project,
+    current_frame: i64,
+    zone: &Rect,
+    screen_w: f32,
+    screen_h: f32,
+    state: &mut RythmoState,
+) -> EventResponse {
+    match event {
+        UiEvent::ContextMenu { x, y } => {
+            let line_id = project
+                .lines()
+                .find(|line| {
+                    line_rect(line, current_frame, zone).contains(*x, *y)
+                        || badge_rect_for_line(line, current_frame, zone).contains(*x, *y)
+                })
+                .map(|line| line.id);
+            if let Some(line_id) = line_id {
+                state.context_menu = Some(LineContextMenu {
+                    line_id,
+                    x: *x,
+                    y: *y,
+                    hover_main: true,
+                    hover_actor_index: None,
+                    hover_action_index: None,
+                    actor_scroll: 0.0,
+                });
+                state.selected = Some(Selection::Line(line_id));
+                state.dragging = None;
+                return EventResponse::Consumed;
+            }
+            state.context_menu = None;
+            EventResponse::Ignored
+        }
+        UiEvent::MouseMove { x, y } => {
+            if state.context_menu.is_none() {
+                return EventResponse::Ignored;
+            }
+            update_context_menu_hover(project, screen_w, screen_h, state, *x, *y);
+            EventResponse::Consumed
+        }
+        UiEvent::Scroll { x, y, delta, .. } => {
+            let Some(menu) = state.context_menu.as_mut() else {
+                return EventResponse::Ignored;
+            };
+            let (_, actor_rect, _, _, max_scroll) =
+                context_menu_layout(project, screen_w, screen_h, menu);
+            if actor_rect.contains(*x, *y) {
+                menu.actor_scroll =
+                    (menu.actor_scroll - delta * MENU_ITEM_H * 2.0).clamp(0.0, max_scroll);
+                return EventResponse::Consumed;
+            }
+            EventResponse::Consumed
+        }
+        UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
+            if state.context_menu.is_none() {
+                return EventResponse::Ignored;
+            }
+            update_context_menu_hover(project, screen_w, screen_h, state, *x, *y);
+            let Some(menu) = state.context_menu.as_ref() else {
+                return EventResponse::Ignored;
+            };
+            let (root_rect, actor_rect, action_rect, actor_scroll, _) =
+                context_menu_layout(project, screen_w, screen_h, menu);
+
+            if let (Some(actor_index), Some(action_index)) =
+                (menu.hover_actor_index, menu.hover_action_index)
+            {
+                if action_rect.contains(*x, *y) {
+                    if let Some(actor) = project.voice_actors.get(actor_index) {
+                        let line_id = menu.line_id;
+                        let actor_name = actor.name.clone();
+                        state.context_menu = None;
+                        return match action_index {
+                            0 => EventResponse::Action(UiAction::AssignVoiceActorLine {
+                                line_id,
+                                actor_name,
+                            }),
+                            1 => EventResponse::Action(UiAction::AssignVoiceActorCharacter {
+                                line_id,
+                                actor_name,
+                            }),
+                            2 => EventResponse::Action(UiAction::UnassignVoiceActorLine {
+                                line_id,
+                                actor_name,
+                            }),
+                            3 => EventResponse::Action(UiAction::UnassignVoiceActorCharacter {
+                                line_id,
+                                actor_name,
+                            }),
+                            _ => EventResponse::Consumed,
+                        };
+                    }
+                }
+            }
+
+            if actor_rect.contains(*x, *y) {
+                let item_index =
+                    ((*y - actor_rect.y + actor_scroll) / MENU_ITEM_H).floor() as usize;
+                if item_index == project.voice_actors.len() {
+                    state.context_menu = None;
+                    return EventResponse::Action(UiAction::OpenVoiceActorModal);
+                }
+                return EventResponse::Consumed;
+            }
+
+            if root_rect.contains(*x, *y) || action_rect.contains(*x, *y) {
+                return EventResponse::Consumed;
+            }
+
+            state.context_menu = None;
+            EventResponse::Consumed
+        }
+        UiEvent::KeyInput { text } if text == "\x1b" => {
+            state.context_menu = None;
+            EventResponse::Consumed
+        }
+        _ => {
+            if state.context_menu.is_some() {
+                EventResponse::Consumed
+            } else {
+                EventResponse::Ignored
+            }
+        }
+    }
+}
+
+pub fn render_context_menu<'a>(
+    project: &'a Project,
+    screen_w: f32,
+    screen_h: f32,
+    state: &RythmoState,
+    quads: &mut Vec<QuadInstance>,
+    labels: &mut Vec<LabelInfo<'a>>,
+) {
+    let Some(menu) = &state.context_menu else {
+        return;
+    };
+    let (root_rect, actor_rect, action_rect, actor_scroll, max_scroll) =
+        context_menu_layout(project, screen_w, screen_h, menu);
+
+    render_menu_panel(quads, root_rect);
+    render_menu_item(
+        quads,
+        labels,
+        root_rect,
+        t("context.voice_actor.assign_to_actor"),
+        menu.hover_main,
+        true,
+    );
+
+    if !context_actor_menu_visible(menu) {
+        return;
+    }
+
+    render_menu_panel(quads, actor_rect);
+    let assigned_names = project
+        .get_line(menu.line_id)
+        .map(|line| line.voice_actor_names.as_slice())
+        .unwrap_or(&[]);
+    for (index, actor) in project.voice_actors.iter().enumerate() {
+        let y = actor_rect.y + index as f32 * MENU_ITEM_H - actor_scroll;
+        if y + MENU_ITEM_H < actor_rect.y || y > actor_rect.y + actor_rect.height {
+            continue;
+        }
+        let item_rect = Rect {
+            x: actor_rect.x,
+            y,
+            width: actor_rect.width,
+            height: MENU_ITEM_H,
+        };
+        let assigned = assigned_names.iter().any(|name| name == &actor.name);
+        render_menu_item(
+            quads,
+            labels,
+            item_rect,
+            &actor.name,
+            menu.hover_actor_index == Some(index) || assigned,
+            true,
+        );
+    }
+
+    let create_index = project.voice_actors.len();
+    let create_y = actor_rect.y + create_index as f32 * MENU_ITEM_H - actor_scroll;
+    if create_y + MENU_ITEM_H >= actor_rect.y && create_y <= actor_rect.y + actor_rect.height {
+        render_menu_separator(quads, actor_rect.x, create_y, actor_rect.width);
+        render_menu_item(
+            quads,
+            labels,
+            Rect {
+                x: actor_rect.x,
+                y: create_y,
+                width: actor_rect.width,
+                height: MENU_ITEM_H,
+            },
+            t("context.voice_actor.create"),
+            menu.hover_actor_index == Some(create_index),
+            false,
+        );
+    }
+
+    if max_scroll > 0.0 {
+        render_menu_scrollbar(quads, actor_rect, actor_scroll, max_scroll);
+    }
+
+    if let Some(actor_index) = menu.hover_actor_index {
+        if actor_index < project.voice_actors.len() {
+            render_menu_panel(quads, action_rect);
+            let actions = [
+                t("context.voice_actor.assign_line"),
+                t("context.voice_actor.assign_character"),
+                t("context.voice_actor.unassign_line"),
+                t("context.voice_actor.unassign_character"),
+            ];
+            for (index, label) in actions.iter().enumerate() {
+                render_menu_item(
+                    quads,
+                    labels,
+                    Rect {
+                        x: action_rect.x,
+                        y: action_rect.y + index as f32 * MENU_ITEM_H,
+                        width: action_rect.width,
+                        height: MENU_ITEM_H,
+                    },
+                    label,
+                    menu.hover_action_index == Some(index),
+                    false,
+                );
+            }
+        }
+    }
+}
+
+fn context_menu_layout(
+    project: &Project,
+    screen_w: f32,
+    screen_h: f32,
+    menu: &LineContextMenu,
+) -> (Rect, Rect, Rect, f32, f32) {
+    let root_h = MENU_ITEM_H;
+    let (root_x, root_y) =
+        clamped_menu_origin(menu.x, menu.y, MENU_ROOT_W, root_h, screen_w, screen_h);
+    let root_rect = Rect {
+        x: root_x,
+        y: root_y,
+        width: MENU_ROOT_W,
+        height: root_h,
+    };
+
+    let actor_items = project.voice_actors.len() + 1;
+    let total_actor_h = actor_items as f32 * MENU_ITEM_H;
+    let actor_h = total_actor_h
+        .min(MENU_MAX_ACTOR_H)
+        .min((screen_h - MENU_MARGIN * 2.0).max(MENU_ITEM_H));
+    let actor_x_right = root_rect.x + root_rect.width + MENU_GAP;
+    let actor_x = if actor_x_right + MENU_ACTOR_W <= screen_w - MENU_MARGIN {
+        actor_x_right
+    } else {
+        (root_rect.x - MENU_ACTOR_W - MENU_GAP).max(MENU_MARGIN)
+    };
+    let actor_y = root_rect.y.clamp(
+        MENU_MARGIN,
+        (screen_h - actor_h - MENU_MARGIN).max(MENU_MARGIN),
+    );
+    let actor_rect = Rect {
+        x: actor_x,
+        y: actor_y,
+        width: MENU_ACTOR_W,
+        height: actor_h,
+    };
+    let max_scroll = (total_actor_h - actor_h).max(0.0);
+    let actor_scroll = menu.actor_scroll.clamp(0.0, max_scroll);
+
+    let hovered_actor_y = menu
+        .hover_actor_index
+        .map(|index| actor_rect.y + index as f32 * MENU_ITEM_H - actor_scroll)
+        .unwrap_or(actor_rect.y)
+        .clamp(
+            MENU_MARGIN,
+            (screen_h - MENU_ITEM_H * 4.0 - MENU_MARGIN).max(MENU_MARGIN),
+        );
+    let action_x_right = actor_rect.x + actor_rect.width + MENU_GAP;
+    let action_x = if action_x_right + MENU_ACTION_W <= screen_w - MENU_MARGIN {
+        action_x_right
+    } else {
+        (actor_rect.x - MENU_ACTION_W - MENU_GAP).max(MENU_MARGIN)
+    };
+    let action_rect = Rect {
+        x: action_x,
+        y: hovered_actor_y,
+        width: MENU_ACTION_W,
+        height: MENU_ITEM_H * 4.0,
+    };
+
+    (root_rect, actor_rect, action_rect, actor_scroll, max_scroll)
+}
+
+fn update_context_menu_hover(
+    project: &Project,
+    screen_w: f32,
+    screen_h: f32,
+    state: &mut RythmoState,
+    x: f32,
+    y: f32,
+) {
+    let Some(menu) = state.context_menu.as_mut() else {
+        return;
+    };
+    let (root_rect, actor_rect, action_rect, actor_scroll, _) =
+        context_menu_layout(project, screen_w, screen_h, menu);
+
+    let root_hover = root_rect.contains(x, y);
+    let mut actor_hover = None;
+    let mut action_hover = None;
+
+    if actor_rect.contains(x, y) {
+        let index = ((y - actor_rect.y + actor_scroll) / MENU_ITEM_H).floor() as usize;
+        if index <= project.voice_actors.len() {
+            actor_hover = Some(index);
+        }
+    }
+
+    if action_rect.contains(x, y) {
+        let index = ((y - action_rect.y) / MENU_ITEM_H).floor() as usize;
+        if index < 4 {
+            action_hover = Some(index);
+            actor_hover = menu.hover_actor_index;
+        }
+    }
+
+    menu.hover_main = root_hover;
+    menu.hover_actor_index = actor_hover;
+    menu.hover_action_index = action_hover;
+}
+
+fn context_actor_menu_visible(menu: &LineContextMenu) -> bool {
+    menu.hover_main || menu.hover_actor_index.is_some() || menu.hover_action_index.is_some()
+}
+
+fn clamped_menu_origin(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    screen_w: f32,
+    screen_h: f32,
+) -> (f32, f32) {
+    (
+        x.clamp(
+            MENU_MARGIN,
+            (screen_w - width - MENU_MARGIN).max(MENU_MARGIN),
+        ),
+        y.clamp(
+            MENU_MARGIN,
+            (screen_h - height - MENU_MARGIN).max(MENU_MARGIN),
+        ),
+    )
+}
+
+fn render_menu_panel(quads: &mut Vec<QuadInstance>, rect: Rect) {
+    quads.push(QuadInstance {
+        rect: [rect.x, rect.y, rect.width, rect.height],
+        color: [0.16, 0.16, 0.19, 0.98],
+        color_bottom: [0.11, 0.11, 0.14, 0.98],
+        border_color: [0.42, 0.42, 0.50, 0.85],
+        border_width: 1.0,
+        border_radius: 0.0,
+        shadow_offset: [0.0, 4.0],
+        shadow_color: [0.0, 0.0, 0.0, 0.45],
+        shadow_blur: 10.0,
+        rotation: 0.0,
+        _padding: [0.0; 2],
+    });
+}
+
+fn render_menu_item<'a>(
+    quads: &mut Vec<QuadInstance>,
+    labels: &mut Vec<LabelInfo<'a>>,
+    rect: Rect,
+    text: &'a str,
+    hovered: bool,
+    arrow: bool,
+) {
+    if hovered {
+        quads.push(QuadInstance {
+            rect: [
+                rect.x + 3.0,
+                rect.y + 2.0,
+                rect.width - 6.0,
+                rect.height - 4.0,
+            ],
+            color: [0.31, 0.40, 0.72, 0.85],
+            color_bottom: [0.24, 0.32, 0.62, 0.85],
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+    }
+    labels.push(LabelInfo {
+        text,
+        bounds: Rect {
+            x: rect.x + 10.0,
+            y: rect.y,
+            width: rect.width - if arrow { 28.0 } else { 20.0 },
+            height: rect.height,
+        },
+        h_align: HAlign::Left,
+        v_align: VAlign::Center,
+        overflow: Overflow::Ellipsis,
+        padding: 0.0,
+        font_size_override: Some(12.0),
+        color_override: Some([230, 230, 238]),
+        font_family_override: None,
+    });
+    if arrow {
+        labels.push(LabelInfo {
+            text: ">",
+            bounds: Rect {
+                x: rect.x + rect.width - 24.0,
+                y: rect.y,
+                width: 16.0,
+                height: rect.height,
+            },
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(12.0),
+            color_override: Some([190, 190, 205]),
+            font_family_override: None,
+        });
+    }
+}
+
+fn render_menu_separator(quads: &mut Vec<QuadInstance>, x: f32, y: f32, width: f32) {
+    quads.push(QuadInstance {
+        rect: [x + 8.0, y, width - 16.0, 1.0],
+        color: [0.42, 0.42, 0.50, 0.55],
+        color_bottom: [0.42, 0.42, 0.50, 0.55],
+        border_color: [0.0; 4],
+        border_width: 0.0,
+        border_radius: 0.0,
+        shadow_offset: [0.0; 2],
+        shadow_color: [0.0; 4],
+        shadow_blur: 0.0,
+        rotation: 0.0,
+        _padding: [0.0; 2],
+    });
+}
+
+fn render_menu_scrollbar(quads: &mut Vec<QuadInstance>, rect: Rect, scroll: f32, max_scroll: f32) {
+    let track_h = rect.height - 10.0;
+    let thumb_h = (track_h * (rect.height / (rect.height + max_scroll))).clamp(24.0, track_h);
+    let thumb_y = rect.y + 5.0 + (track_h - thumb_h) * (scroll / max_scroll.max(1.0));
+    quads.push(QuadInstance {
+        rect: [rect.x + rect.width - 6.0, thumb_y, 3.0, thumb_h],
+        color: [0.70, 0.70, 0.78, 0.45],
+        color_bottom: [0.70, 0.70, 0.78, 0.45],
+        border_color: [0.0; 4],
+        border_width: 0.0,
+        border_radius: 0.0,
+        shadow_offset: [0.0; 2],
+        shadow_color: [0.0; 4],
+        shadow_blur: 0.0,
+        rotation: 0.0,
+        _padding: [0.0; 2],
+    });
 }
 
 fn handle_text_undo(ctx: &RythmoCtx, state: &mut RythmoState) -> EventResponse {
@@ -2249,6 +2855,7 @@ pub fn render_studio_rythmo<'a>(
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
     stretched: &mut Vec<StretchedText>,
+    actor_icons: &mut Vec<VoiceActorIconDraw>,
 ) {
     // Studio mode: render with proportions scaled to zone height
     let scale = zone.height / 300.0; // normalize to 300px baseline
@@ -2259,6 +2866,8 @@ pub fn render_studio_rythmo<'a>(
     let slot_h = 32.0 * scale;
     let badge_h = 20.0 * scale;
     let badge_gap = 4.0 * scale;
+    let actor_icon_size = ACTOR_ICON_SIZE * scale;
+    let slot_header_h = badge_h.max(actor_icon_size);
     let badge_char_w = 8.0 * scale;
     let badge_font_size = 16.0 * scale; // increased from 13.0
     let badge_padding = 4.0 * scale;
@@ -2266,7 +2875,7 @@ pub fn render_studio_rythmo<'a>(
 
     // PPF: same as editor mode (not dependent on zone width)
     let ppf = constants::PIXELS_PER_FRAME * crate::config::scroll_speed();
-    let total_slot_h = slot_h + badge_h + badge_gap;
+    let total_slot_h = slot_h + slot_header_h + badge_gap;
     let tick_long = 10.0 * scale;
     let tick_short = 5.0 * scale;
     let tick_w = 1.0 * scale;
@@ -2335,6 +2944,7 @@ pub fn render_studio_rythmo<'a>(
 
         let slot_idx = (line.y_slot * used_slots).round().min(used_slots - 1.0) as usize;
         let y_base = zone.y + ruler_h + slot_idx as f32 * total_slot_h;
+        let badge_y = y_base + ((slot_header_h - badge_h) * 0.5).max(0.0);
 
         // Badge background
         let [cr, cg, cb, _] = line.character_color;
@@ -2343,7 +2953,7 @@ pub fn render_studio_rythmo<'a>(
             .max(badge_min_w);
         let bc = [cr, cg, cb, 1.0];
         quads.push(QuadInstance {
-            rect: [x1, y_base, badge_w, badge_h],
+            rect: [x1, badge_y, badge_w, badge_h],
             color: bc,
             color_bottom: bc,
             border_color: [0.0; 4],
@@ -2368,7 +2978,7 @@ pub fn render_studio_rythmo<'a>(
                 text: &line.character_name,
                 bounds: Rect {
                     x: x1,
-                    y: y_base,
+                    y: badge_y,
                     width: badge_w,
                     height: badge_h,
                 },
@@ -2382,7 +2992,23 @@ pub fn render_studio_rythmo<'a>(
             });
         }
 
-        let line_y = y_base + badge_h + badge_gap;
+        render_voice_actor_icons_for_line(
+            line,
+            project,
+            zone,
+            Rect {
+                x: x1,
+                y: badge_y,
+                width: badge_w,
+                height: badge_h,
+            },
+            actor_icon_size,
+            quads,
+            labels,
+            actor_icons,
+        );
+
+        let line_y = y_base + slot_header_h + badge_gap;
 
         // Stretched text or breath arrows
         if !line.text.is_empty() && line.text != "\u{2191}" && line.text != "\u{2193}" {

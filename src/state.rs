@@ -17,6 +17,7 @@ use crate::ui::renderer::UiRenderer;
 use crate::ui::widget::{EventResponse, UiEvent};
 use crate::ui::Ui;
 use crate::video::VideoPlayer;
+use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 
 use crate::constants;
 
@@ -137,8 +138,16 @@ impl State {
         let is_none = p.is_none();
         self.ui.export_progress = p;
         if is_none {
+            self.ui.export_render_backend = None;
             self.ui.progress_prefix = String::new();
         }
+    }
+
+    pub fn set_export_render_backend(
+        &mut self,
+        status: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
+    ) {
+        self.ui.export_render_backend = status;
     }
 
     pub fn set_progress_label(&mut self, label: &str) {
@@ -228,6 +237,10 @@ impl State {
         self.ui.open_export_modal(video_width, video_height);
     }
 
+    pub fn open_voice_actor_modal(&mut self) {
+        self.ui.open_voice_actor_modal();
+    }
+
     pub fn set_export_instrumental_audio_path(&mut self, path: impl Into<String>) {
         self.ui.set_export_instrumental_audio_path(path);
     }
@@ -243,7 +256,20 @@ impl State {
     }
 
     pub fn rebuild_topbar_for_network(&mut self) {
+        let room_code = self.network.room_code.clone();
+        self.ui.set_network_room_code(room_code.as_deref());
         self.ui.rebuild_topbar(self.network.is_in_room());
+    }
+
+    pub fn begin_network_connect(&mut self) {
+        self.ui.network_status = "Connexion...".into();
+        self.ui.set_network_room_code(None);
+    }
+
+    pub fn disconnect_network(&mut self) {
+        self.network.disconnect();
+        self.ui.network_status = "Déconnecté".into();
+        self.rebuild_topbar_for_network();
     }
 
     pub fn request_redraw(&self) {
@@ -622,7 +648,7 @@ impl State {
             match msg {
                 IncomingMessage::Connected => {
                     self.network.state = ConnectionState::Connected;
-                    self.ui.network_status = "Connecté".into();
+                    self.ui.network_status = "Connecté au serveur".into();
                     log::info!("Connected and authenticated");
                 }
                 IncomingMessage::Packet(packet) => self.handle_network_packet(packet),
@@ -633,6 +659,7 @@ impl State {
                     self.network.role = None;
                     self.network.members.clear();
                     self.ui.network_status = "Déconnecté".into();
+                    self.ui.set_network_room_code(None);
                 }
                 IncomingMessage::Error(err) => {
                     log::error!("Network error: {err}");
@@ -671,7 +698,8 @@ impl State {
                 self.network.state = ConnectionState::InRoom;
                 self.network.room_code = Some(code.clone());
                 self.network.role = Some("admin".into());
-                self.ui.network_status = format!("Salon créé — Code: {code}");
+                self.ui.network_status = "Salon créé".into();
+                self.ui.set_network_room_code(Some(&code));
                 self.ui.toasts.push(
                     format!("{}{code}", crate::i18n::t("toast.room_created")),
                     5.0,
@@ -687,7 +715,8 @@ impl State {
                 self.network.room_code = Some(code.clone());
                 self.network.role = Some(role);
                 self.network.members = members;
-                self.ui.network_status = format!("Connecté au salon {code}");
+                self.ui.network_status = "Connecté au salon".into();
+                self.ui.set_network_room_code(Some(&code));
                 self.ui.toasts.push(
                     format!("{}{code}", crate::i18n::t("toast.room_joined")),
                     5.0,
@@ -699,6 +728,7 @@ impl State {
             Packet::JoinError { reason } => {
                 log::error!("Join failed: {reason}");
                 self.ui.network_status = format!("Échec: {reason}");
+                self.ui.set_network_room_code(None);
             }
             Packet::MemberJoined { username } => {
                 self.network.members.push(username.clone());
@@ -715,8 +745,8 @@ impl State {
             Packet::Sync { project: data } => {
                 self.apply_project_sync(data);
                 self.ui.sync_overlay = None;
-                if let Some(code) = &self.network.room_code {
-                    self.ui.network_status = format!("Salon {code} — synchronisé");
+                if self.network.room_code.is_some() {
+                    self.ui.network_status = "Salon synchronisé".into();
                 }
             }
             Packet::RequestSync => {
@@ -781,15 +811,24 @@ impl State {
                 line_id,
                 name,
                 color,
+                voice_actor_names,
             } => {
                 log::debug!("Remote: set character for line {}", line_id);
-                self.project.set_character(line_id, name, color);
+                self.apply_character_change(line_id, name, color, voice_actor_names);
             }
             CommandPayload::SetCharacterColor { line_id, color } => {
                 log::debug!("Remote: set character color for line {}", line_id);
                 if let Some(l) = self.project.get_line_mut(line_id) {
                     l.character_color = color;
                 }
+            }
+            CommandPayload::SetVoiceActors { changes } => {
+                log::debug!("Remote: set voice actors for {} lines", changes.len());
+                self.apply_voice_actor_changes(&changes, true);
+            }
+            CommandPayload::CreateVoiceActor { actor } => {
+                log::debug!("Remote: create voice actor {}", actor.name);
+                self.project.upsert_voice_actor(actor);
             }
             CommandPayload::AddMarker { kind, frame } => {
                 log::debug!("Remote: add marker at frame {}", frame);
@@ -849,6 +888,9 @@ impl State {
                 local.text = remote_line.text;
                 local.character_name = remote_line.character_name;
                 local.character_color = remote_line.character_color;
+                local.voice_actor_names = remote_line.voice_actor_names;
+                local.syllable_ratios = remote_line.syllable_ratios;
+                local.note = remote_line.note;
             } else {
                 self.project.insert_line(remote_line);
             }
@@ -866,6 +908,7 @@ impl State {
                 color: c.color,
             })
             .collect();
+        self.project.voice_actors = data.voice_actors;
 
         log::info!("Project synced (merged)");
     }
@@ -942,7 +985,10 @@ impl State {
             "set_character" => {
                 if let (Some(id), Some(name)) = (data["line_id"].as_u64(), data["name"].as_str()) {
                     let color = parse_color(&data["color"]);
-                    self.project.set_character(id, name.to_string(), color);
+                    let voice_actor_names =
+                        serde_json::from_value::<Vec<String>>(data["voice_actor_names"].clone())
+                            .ok();
+                    self.apply_character_change(id, name.to_string(), color, voice_actor_names);
                 }
             }
             "set_character_color" => {
@@ -951,6 +997,18 @@ impl State {
                     if let Some(l) = self.project.get_line_mut(id) {
                         l.character_color = color;
                     }
+                }
+            }
+            "set_voice_actors" => {
+                if let Ok(changes) =
+                    serde_json::from_value::<Vec<LineVoiceActorsChange>>(data["changes"].clone())
+                {
+                    self.apply_voice_actor_changes(&changes, true);
+                }
+            }
+            "create_voice_actor" => {
+                if let Ok(actor) = serde_json::from_value::<VoiceActor>(data["actor"].clone()) {
+                    self.project.upsert_voice_actor(actor);
                 }
             }
             "add_marker" => {
@@ -1061,14 +1119,21 @@ impl State {
                 line_id,
                 new_name,
                 new_color,
+                new_voice_actor_names,
                 ..
             } => {
-                serde_json::json!({ "action": "set_character", "line_id": line_id, "name": new_name, "color": new_color })
+                serde_json::json!({ "action": "set_character", "line_id": line_id, "name": new_name, "color": new_color, "voice_actor_names": new_voice_actor_names })
             }
             Command::SetCharacterColor {
                 line_id, new_color, ..
             } => {
                 serde_json::json!({ "action": "set_character_color", "line_id": line_id, "color": new_color })
+            }
+            Command::SetVoiceActors { changes } => {
+                serde_json::json!({ "action": "set_voice_actors", "changes": changes })
+            }
+            Command::CreateVoiceActor { actor } => {
+                serde_json::json!({ "action": "create_voice_actor", "actor": actor })
             }
             Command::AddMarker { index } => {
                 if let Some(m) = self.project.markers.get(*index) {
@@ -1109,6 +1174,7 @@ impl State {
                     | Command::UpdateLineText { .. }
                     | Command::SetCharacter { .. }
                     | Command::SetCharacterColor { .. }
+                    | Command::SetVoiceActors { .. }
                     | Command::MoveMarker { .. }
             ) {
                 self.broadcast_delta(cmd);
@@ -1149,6 +1215,7 @@ impl State {
         self.ui.rythmo_state.selected = None;
         self.ui.rythmo_state.dragging = None;
         self.ui.rythmo_state.ghost_preview = None;
+        self.ui.rythmo_state.context_menu = None;
         self.ui.rythmo_state.syllable_mode = false;
 
         // Save current fullscreen state and enter fullscreen
@@ -1467,19 +1534,57 @@ impl State {
     }
 
     pub fn set_character(&mut self, line_id: u64, name: String, color: [f32; 4]) {
-        let (old_name, old_color) = self
-            .project
-            .get_line(line_id)
-            .map(|l| (l.character_name.clone(), l.character_color))
-            .unwrap_or_default();
-        self.project.set_character(line_id, name.clone(), color);
+        let Some(line) = self.project.get_line(line_id) else {
+            return;
+        };
+        let old_name = line.character_name.clone();
+        let old_color = line.character_color;
+        let old_voice_actor_names = line.voice_actor_names.clone();
+        let new_voice_actor_names = self.voice_actor_names_for_character_change(line_id, &name);
+        if old_name == name && old_color == color && old_voice_actor_names == new_voice_actor_names
+        {
+            return;
+        }
+
+        self.project.set_character_with_voice_actors(
+            line_id,
+            name.clone(),
+            color,
+            new_voice_actor_names.clone(),
+        );
         self.push_and_broadcast(Command::SetCharacter {
             line_id,
             old_name,
             old_color,
+            old_voice_actor_names,
             new_name: name,
             new_color: color,
+            new_voice_actor_names,
         });
+    }
+
+    fn apply_character_change(
+        &mut self,
+        line_id: u64,
+        name: String,
+        color: [f32; 4],
+        voice_actor_names: Option<Vec<String>>,
+    ) {
+        let voice_actor_names = voice_actor_names
+            .unwrap_or_else(|| self.voice_actor_names_for_character_change(line_id, &name));
+        self.project
+            .set_character_with_voice_actors(line_id, name, color, voice_actor_names);
+    }
+
+    fn voice_actor_names_for_character_change(&self, line_id: u64, name: &str) -> Vec<String> {
+        let Some(line) = self.project.get_line(line_id) else {
+            return Vec::new();
+        };
+        if line.character_name == name {
+            line.voice_actor_names.clone()
+        } else {
+            self.project.voice_actor_names_for_character(name, line_id)
+        }
     }
 
     pub fn set_character_color(&mut self, line_id: u64, color: [f32; 4]) {
@@ -1513,6 +1618,21 @@ impl State {
     }
 
     pub fn update_character_name(&mut self, line_id: u64, name: String) {
+        let Some(current_line) = self.project.get_line(line_id) else {
+            return;
+        };
+        let old_name = current_line.character_name.clone();
+        let old_color = current_line.character_color;
+        let old_voice_actor_names = current_line.voice_actor_names.clone();
+        let new_voice_actor_names = match self.history.last() {
+            Some(Command::SetCharacter {
+                line_id: command_line_id,
+                old_name,
+                old_voice_actor_names,
+                ..
+            }) if *command_line_id == line_id && old_name == &name => old_voice_actor_names.clone(),
+            _ => self.voice_actor_names_for_character_change(line_id, &name),
+        };
         let known_color = self
             .project
             .known_characters
@@ -1530,6 +1650,7 @@ impl State {
                 if let Some(c) = known_color {
                     l.character_color = c;
                 }
+                l.voice_actor_names = new_voice_actor_names.clone();
             }
             let final_color = self
                 .project
@@ -1540,24 +1661,22 @@ impl State {
                 if let Command::SetCharacter {
                     new_name,
                     new_color,
+                    new_voice_actor_names: command_voice_actor_names,
                     ..
                 } = cmd
                 {
                     *new_name = name;
                     *new_color = final_color;
+                    *command_voice_actor_names = new_voice_actor_names;
                 }
             });
         } else {
-            let (old_name, old_color) = self
-                .project
-                .get_line(line_id)
-                .map(|l| (l.character_name.clone(), l.character_color))
-                .unwrap_or_default();
             if let Some(l) = self.project.get_line_mut(line_id) {
                 l.character_name = name.clone();
                 if let Some(c) = known_color {
                     l.character_color = c;
                 }
+                l.voice_actor_names = new_voice_actor_names.clone();
             }
             let final_color = self
                 .project
@@ -1568,8 +1687,10 @@ impl State {
                 line_id,
                 old_name,
                 old_color,
+                old_voice_actor_names,
                 new_name: name,
                 new_color: final_color,
+                new_voice_actor_names,
             });
         }
     }
@@ -1582,6 +1703,144 @@ impl State {
             _ => return,
         };
         self.project.set_character(line_id, name, color);
+    }
+
+    pub fn create_voice_actor(&mut self, name: String, icon_path: String) {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            self.show_toast(crate::i18n::t("toast.voice_actor_name_required"), 4.0);
+            return;
+        }
+        if self.project.find_voice_actor(&name).is_some() {
+            self.show_toast(crate::i18n::t("toast.voice_actor_exists"), 4.0);
+            return;
+        }
+
+        let icon_path = icon_path
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'')
+            .to_string();
+        let icon_png_base64 = if icon_path.is_empty() {
+            None
+        } else {
+            match crate::voice_actor::load_icon_png_base64(Path::new(&icon_path)) {
+                Ok(icon) => Some(icon),
+                Err(e) => {
+                    self.show_toast(
+                        format!("{} {e}", crate::i18n::t("toast.voice_actor_icon_failed")),
+                        6.0,
+                    );
+                    return;
+                }
+            }
+        };
+
+        let actor = VoiceActor {
+            name: name.clone(),
+            icon_path,
+            icon_png_base64,
+        };
+        if self.project.add_voice_actor(actor.clone()) {
+            self.push_and_broadcast(Command::CreateVoiceActor { actor });
+            self.show_toast(crate::i18n::t("toast.voice_actor_created"), 3.0);
+        }
+    }
+
+    pub fn set_voice_actor_modal_icon_path(&mut self, path: impl Into<String>) {
+        self.ui.set_voice_actor_modal_icon_path(path);
+    }
+
+    pub fn assign_voice_actor_to_line(&mut self, line_id: u64, actor_name: String) {
+        let Some(line) = self.project.get_line(line_id) else {
+            return;
+        };
+        let new_names =
+            Project::with_voice_actor_assignment(&line.voice_actor_names, &actor_name, true);
+        self.set_voice_actor_changes(vec![LineVoiceActorsChange {
+            line_id,
+            old_voice_actor_names: line.voice_actor_names.clone(),
+            new_voice_actor_names: new_names,
+        }]);
+    }
+
+    pub fn unassign_voice_actor_from_line(&mut self, line_id: u64, actor_name: String) {
+        let Some(line) = self.project.get_line(line_id) else {
+            return;
+        };
+        let new_names =
+            Project::with_voice_actor_assignment(&line.voice_actor_names, &actor_name, false);
+        self.set_voice_actor_changes(vec![LineVoiceActorsChange {
+            line_id,
+            old_voice_actor_names: line.voice_actor_names.clone(),
+            new_voice_actor_names: new_names,
+        }]);
+    }
+
+    pub fn assign_voice_actor_to_character(&mut self, line_id: u64, actor_name: String) {
+        self.set_voice_actor_for_character(line_id, actor_name, true);
+    }
+
+    pub fn unassign_voice_actor_from_character(&mut self, line_id: u64, actor_name: String) {
+        self.set_voice_actor_for_character(line_id, actor_name, false);
+    }
+
+    fn set_voice_actor_for_character(&mut self, line_id: u64, actor_name: String, assign: bool) {
+        let Some(character_name) = self
+            .project
+            .get_line(line_id)
+            .map(|line| line.character_name.clone())
+            .filter(|name| !name.trim().is_empty())
+        else {
+            return;
+        };
+
+        let changes = self
+            .project
+            .lines()
+            .filter(|line| line.character_name == character_name)
+            .filter_map(|line| {
+                let new_names = Project::with_voice_actor_assignment(
+                    &line.voice_actor_names,
+                    &actor_name,
+                    assign,
+                );
+                if new_names == line.voice_actor_names {
+                    None
+                } else {
+                    Some(LineVoiceActorsChange {
+                        line_id: line.id,
+                        old_voice_actor_names: line.voice_actor_names.clone(),
+                        new_voice_actor_names: new_names,
+                    })
+                }
+            })
+            .collect();
+        self.set_voice_actor_changes(changes);
+    }
+
+    fn set_voice_actor_changes(&mut self, changes: Vec<LineVoiceActorsChange>) {
+        let changes: Vec<_> = changes
+            .into_iter()
+            .filter(|change| change.old_voice_actor_names != change.new_voice_actor_names)
+            .collect();
+        if changes.is_empty() {
+            return;
+        }
+
+        self.apply_voice_actor_changes(&changes, true);
+        self.push_and_broadcast(Command::SetVoiceActors { changes });
+    }
+
+    fn apply_voice_actor_changes(&mut self, changes: &[LineVoiceActorsChange], use_new: bool) {
+        for change in changes {
+            let names = if use_new {
+                change.new_voice_actor_names.clone()
+            } else {
+                change.old_voice_actor_names.clone()
+            };
+            self.project
+                .set_line_voice_actor_names(change.line_id, names);
+        }
     }
 
     pub fn start_editing_note(&mut self, line_id: u64) {
@@ -1832,6 +2091,8 @@ impl State {
             if v >= 1.5 {
                 // sentinel: 2.0 means done
                 self.ui.export_progress = None;
+                self.ui.export_render_backend = None;
+                self.ui.progress_prefix = String::new();
                 log::info!("Export completed");
             }
         }
@@ -2027,6 +2288,7 @@ impl State {
             &[],
             &[],
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
+            &[],
             &[],
             &[],
             &[],

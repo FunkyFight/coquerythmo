@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
 const MAX_RECENT: usize = 10;
+const DEFAULT_SERVER_IP: &str = "38.87.117.194";
+const PREVIOUS_DEFAULT_SERVER_IP: &str = "46.225.214.44";
+const DEFAULT_SERVER_PORT: u16 = 9050;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentProject {
@@ -65,8 +68,8 @@ pub struct SavedServer {
 
 fn default_servers() -> Vec<SavedServer> {
     vec![SavedServer {
-        ip: "46.225.214.44".into(),
-        port: 9050,
+        ip: DEFAULT_SERVER_IP.into(),
+        port: DEFAULT_SERVER_PORT,
     }]
 }
 
@@ -74,7 +77,7 @@ impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
             server_ip: "127.0.0.1".into(),
-            server_port: 9050,
+            server_port: DEFAULT_SERVER_PORT,
             password: String::new(),
             username: "User".into(),
             saved_servers: default_servers(),
@@ -128,9 +131,13 @@ impl Config {
         let path = Self::config_path();
         if path.exists() {
             match fs::read_to_string(&path) {
-                Ok(contents) => match toml::from_str(&contents) {
-                    Ok(config) => {
+                Ok(contents) => match toml::from_str::<Config>(&contents) {
+                    Ok(mut config) => {
                         log::info!("Config loaded from {}", path.display());
+                        if config.migrate() {
+                            log::info!("Config migrated to latest defaults");
+                            config.save();
+                        }
                         return config;
                     }
                     Err(e) => {
@@ -164,6 +171,102 @@ impl Config {
                 log::warn!("Could not serialize config: {e}");
             }
         }
+    }
+
+    fn migrate(&mut self) -> bool {
+        self.migrate_default_server_ip()
+    }
+
+    fn migrate_default_server_ip(&mut self) -> bool {
+        let mut changed = false;
+
+        if self.network.server_ip == PREVIOUS_DEFAULT_SERVER_IP
+            && self.network.server_port == DEFAULT_SERVER_PORT
+        {
+            self.network.server_ip = DEFAULT_SERVER_IP.into();
+            changed = true;
+        }
+
+        let mut has_current_default = self
+            .network
+            .saved_servers
+            .iter()
+            .any(|s| s.ip == DEFAULT_SERVER_IP && s.port == DEFAULT_SERVER_PORT);
+
+        for server in &mut self.network.saved_servers {
+            if server.ip == PREVIOUS_DEFAULT_SERVER_IP && server.port == DEFAULT_SERVER_PORT {
+                changed = true;
+                if !has_current_default {
+                    server.ip = DEFAULT_SERVER_IP.into();
+                    has_current_default = true;
+                }
+            }
+        }
+
+        if changed {
+            self.network
+                .saved_servers
+                .retain(|s| s.ip != PREVIOUS_DEFAULT_SERVER_IP || s.port != DEFAULT_SERVER_PORT);
+        }
+
+        changed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_default_server_rewrites_active_and_saved_ip() {
+        let mut config = Config::default();
+        config.network.server_ip = PREVIOUS_DEFAULT_SERVER_IP.into();
+        config.network.server_port = DEFAULT_SERVER_PORT;
+        config.network.saved_servers = vec![SavedServer {
+            ip: PREVIOUS_DEFAULT_SERVER_IP.into(),
+            port: DEFAULT_SERVER_PORT,
+        }];
+
+        assert!(config.migrate());
+        assert_eq!(config.network.server_ip, DEFAULT_SERVER_IP);
+        assert_eq!(config.network.saved_servers.len(), 1);
+        assert_eq!(config.network.saved_servers[0].ip, DEFAULT_SERVER_IP);
+        assert_eq!(config.network.saved_servers[0].port, DEFAULT_SERVER_PORT);
+    }
+
+    #[test]
+    fn migrate_default_server_removes_duplicate_old_default() {
+        let mut config = Config::default();
+        config.network.saved_servers = vec![
+            SavedServer {
+                ip: PREVIOUS_DEFAULT_SERVER_IP.into(),
+                port: DEFAULT_SERVER_PORT,
+            },
+            SavedServer {
+                ip: DEFAULT_SERVER_IP.into(),
+                port: DEFAULT_SERVER_PORT,
+            },
+        ];
+
+        assert!(config.migrate());
+        assert_eq!(config.network.saved_servers.len(), 1);
+        assert_eq!(config.network.saved_servers[0].ip, DEFAULT_SERVER_IP);
+        assert_eq!(config.network.saved_servers[0].port, DEFAULT_SERVER_PORT);
+    }
+
+    #[test]
+    fn migrate_default_server_preserves_custom_port() {
+        let mut config = Config::default();
+        config.network.server_ip = PREVIOUS_DEFAULT_SERVER_IP.into();
+        config.network.server_port = DEFAULT_SERVER_PORT + 1;
+        config.network.saved_servers = vec![SavedServer {
+            ip: PREVIOUS_DEFAULT_SERVER_IP.into(),
+            port: DEFAULT_SERVER_PORT + 1,
+        }];
+
+        assert!(!config.migrate());
+        assert_eq!(config.network.server_ip, PREVIOUS_DEFAULT_SERVER_IP);
+        assert_eq!(config.network.saved_servers[0].ip, PREVIOUS_DEFAULT_SERVER_IP);
     }
 }
 

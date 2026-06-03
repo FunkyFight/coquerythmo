@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use crate::constants;
 use crate::project::Project;
 use crate::rythmo_line::MarkerKind;
+use crate::voice_actor::{decode_icon_rgba, icon_hash, VoiceActor, VOICE_ACTOR_ICON_SIZE};
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent,
 };
-use resvg::tiny_skia::{self, Paint, PathBuilder, Pixmap, Rect as SkRect, Transform};
+use resvg::tiny_skia::{self, Pixmap};
 
 // Local constants not shared with the UI
 const BASE_TICK_WIDTH: f32 = 1.0;
@@ -27,6 +28,7 @@ pub struct CpuRenderer {
     font_system: FontSystem,
     swash_cache: SwashCache,
     rythmo_text_cache: HashMap<u64, CachedCpuRythmoText>,
+    voice_actor_icon_cache: HashMap<u64, Vec<u8>>,
     rythmo_text_cache_bytes: usize,
     cache_tick: u64,
 }
@@ -37,6 +39,7 @@ impl CpuRenderer {
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
             rythmo_text_cache: HashMap::new(),
+            voice_actor_icon_cache: HashMap::new(),
             rythmo_text_cache_bytes: 0,
             cache_tick: 0,
         }
@@ -194,6 +197,90 @@ impl CpuRenderer {
         (pixels, w, h)
     }
 
+    fn cached_voice_actor_icon(&mut self, actor: &VoiceActor) -> Option<&[u8]> {
+        let icon = actor.icon_png_base64.as_deref()?;
+        let hash = icon_hash(icon);
+        if !self.voice_actor_icon_cache.contains_key(&hash) {
+            let rgba = decode_icon_rgba(icon).ok()?;
+            self.voice_actor_icon_cache.insert(hash, rgba);
+        }
+        self.voice_actor_icon_cache
+            .get(&hash)
+            .map(|data| data.as_slice())
+    }
+
+    fn render_voice_actor_icons(
+        &mut self,
+        pixmap: &mut Pixmap,
+        project: &Project,
+        line: &crate::rythmo_line::RythmoLine,
+        x: f32,
+        y: f32,
+        badge_w: f32,
+        icon_size: f32,
+        scale: f32,
+    ) {
+        if line.voice_actor_names.is_empty() {
+            return;
+        }
+
+        let icon_size = icon_size.max(1.0);
+        let mut icon_x = x + badge_w + 3.0 * scale;
+
+        for actor_name in &line.voice_actor_names {
+            if icon_x > pixmap.width() as f32 {
+                break;
+            }
+            blit_rect(pixmap, icon_x, y, icon_size, icon_size, [10, 10, 14, 235]);
+
+            if let Some(actor) = project.find_voice_actor(actor_name) {
+                if let Some(icon) = self.cached_voice_actor_icon(actor) {
+                    blit_actor_icon(pixmap, icon, icon_x, y, icon_size);
+                } else {
+                    self.blit_actor_fallback(pixmap, &actor.name, icon_x, y, icon_size);
+                }
+            } else {
+                self.blit_actor_fallback(pixmap, actor_name, icon_x, y, icon_size);
+            }
+            icon_x += icon_size + 3.0 * scale;
+        }
+    }
+
+    fn blit_actor_fallback(&mut self, pixmap: &mut Pixmap, text: &str, x: f32, y: f32, size: f32) {
+        let (tex, tw, th) = self.rasterize_text(text, size * 0.55);
+        if tw == 0 || th == 0 {
+            return;
+        }
+        let tx = x + (size - tw as f32) / 2.0;
+        let ty = y + (size - th as f32) / 2.0;
+        let pm_w = pixmap.width() as i32;
+        let pm_h = pixmap.height() as i32;
+        let pm_data = pixmap.data_mut();
+        for py in 0..th {
+            for px in 0..tw {
+                let dx = tx as i32 + px as i32;
+                let dy = ty as i32 + py as i32;
+                if dx < 0 || dy < 0 || dx >= pm_w || dy >= pm_h || px as f32 >= size {
+                    continue;
+                }
+                let si = ((py * tw + px) * 4) as usize;
+                let di = ((dy as u32 * pm_w as u32 + dx as u32) * 4) as usize;
+                if si + 3 >= tex.len() || di + 3 >= pm_data.len() {
+                    continue;
+                }
+                let a = tex[si + 3] as u32;
+                if a == 0 {
+                    continue;
+                }
+                let inv = 255 - a;
+                pm_data[di] = ((230u32 * a + pm_data[di] as u32 * inv) / 255) as u8;
+                pm_data[di + 1] = ((230u32 * a + pm_data[di + 1] as u32 * inv) / 255) as u8;
+                pm_data[di + 2] = ((238u32 * a + pm_data[di + 2] as u32 * inv) / 255) as u8;
+                pm_data[di + 3] = (a + (pm_data[di + 3] as u32 * inv) / 255) as u8;
+            }
+        }
+    }
+
     /// Render vector rythmo text at final size and blit it without horizontal resampling.
     fn blit_rythmo_text(
         &mut self,
@@ -282,10 +369,12 @@ impl CpuRenderer {
         let playhead_w = BASE_PLAYHEAD_WIDTH * s;
         let badge_h = constants::BADGE_HEIGHT * s;
         let badge_gap = constants::BADGE_GAP * s;
+        let actor_icon_size = constants::VOICE_ACTOR_DISPLAY_ICON_SIZE * s;
+        let slot_header_h = badge_h.max(actor_icon_size);
         let font_size = constants::RYTHMO_FONT_SIZE * s;
         let badge_font = constants::BADGE_FONT_SIZE * s;
         let badge_char_w = constants::BADGE_CHAR_W * s;
-        let height = (ruler_h + slot_count * (slot_h + badge_h + badge_gap)).ceil() as u32;
+        let height = (ruler_h + slot_count * (slot_h + slot_header_h + badge_gap)).ceil() as u32;
 
         let mut pixmap = Pixmap::new(width, height).unwrap();
         pixmap.fill(tiny_skia::Color::from_rgba8(5, 5, 8, 255));
@@ -295,8 +384,6 @@ impl CpuRenderer {
         let center_x = w / 2.0;
 
         // -- Ruler ticks --
-        let mut tick_paint = Paint::default();
-        tick_paint.set_color_rgba8(100, 100, 115, 128);
         let visible_frames = (w / ppf) as i64 + 4;
         let first_tick = ((current_frame - visible_frames / 2) / constants::TICK_GAP_FRAMES)
             * constants::TICK_GAP_FRAMES;
@@ -313,22 +400,23 @@ impl CpuRenderer {
                 } else {
                     tick_short
                 };
-                if let Some(rect) = SkRect::from_xywh(x, 0.0, tick_w, th) {
-                    pixmap.fill_rect(rect, &tick_paint, Transform::identity(), None);
-                }
+                blit_rect(&mut pixmap, x, 0.0, tick_w, th, [100, 100, 115, 128]);
             }
             tf += constants::TICK_GAP_FRAMES;
         }
 
         // -- Playhead --
-        let mut playhead_paint = Paint::default();
-        playhead_paint.set_color_rgba8(217, 38, 38, 255);
-        if let Some(rect) = SkRect::from_xywh(center_x - playhead_w / 2.0, 0.0, playhead_w, h) {
-            pixmap.fill_rect(rect, &playhead_paint, Transform::identity(), None);
-        }
+        blit_rect(
+            &mut pixmap,
+            center_x - playhead_w / 2.0,
+            0.0,
+            playhead_w,
+            h,
+            [217, 38, 38, 255],
+        );
 
         // -- Lines (no handles, no border — clean export) --
-        let total_slot_h = slot_h + badge_h + badge_gap;
+        let total_slot_h = slot_h + slot_header_h + badge_gap;
 
         for line in project.lines() {
             let x1 = center_x + (line.start_frame - current_frame) as f32 * ppf;
@@ -340,22 +428,21 @@ impl CpuRenderer {
 
             let slot_idx = (line.y_slot * slot_count).round().min(slot_count - 1.0) as usize;
             let y_base = ruler_h + slot_idx as f32 * total_slot_h;
+            let badge_y = y_base + ((slot_header_h - badge_h) * 0.5).max(0.0);
 
             // Badge
             let [cr, cg, cb, _] = line.character_color;
-            let mut badge_paint = Paint::default();
-            badge_paint.set_color_rgba8(
-                (cr * 255.0) as u8,
-                (cg * 255.0) as u8,
-                (cb * 255.0) as u8,
-                255,
-            );
             let badge_w = (line.character_name.chars().count().max(1) as f32 * badge_char_w
                 + 12.0 * s)
                 .max(16.0 * s);
-            if let Some(rect) = SkRect::from_xywh(x1, y_base, badge_w, badge_h) {
-                pixmap.fill_rect(rect, &badge_paint, Transform::identity(), None);
-            }
+            blit_rect(
+                &mut pixmap,
+                x1,
+                badge_y,
+                badge_w,
+                badge_h,
+                [color_channel(cr), color_channel(cg), color_channel(cb), 255],
+            );
 
             // Badge text
             if !line.character_name.is_empty() {
@@ -364,7 +451,7 @@ impl CpuRenderer {
                 let (tex, tw, th) = self.rasterize_text(&line.character_name, bf);
                 if tw > 0 && th > 0 {
                     let tx = x1 + (badge_w - tw as f32) / 2.0;
-                    let ty = y_base + (badge_h - th as f32) / 2.0;
+                    let ty = badge_y + (badge_h - th as f32) / 2.0;
                     // Blit with color tint
                     let pm_w = pixmap.width() as i32;
                     let pm_h = pixmap.height() as i32;
@@ -402,8 +489,19 @@ impl CpuRenderer {
                 }
             }
 
+            self.render_voice_actor_icons(
+                &mut pixmap,
+                project,
+                line,
+                x1,
+                y_base,
+                badge_w,
+                actor_icon_size,
+                s,
+            );
+
             // Line body
-            let line_y = y_base + badge_h + badge_gap;
+            let line_y = y_base + slot_header_h + badge_gap;
 
             // Rythmo text, rendered vectorially at final size.
             if !line.text.is_empty() && line.text != "↑" && line.text != "↓" {
@@ -453,24 +551,22 @@ impl CpuRenderer {
             // Breath arrows
             if line.text == "↑" || line.text == "↓" {
                 let up = line.text == "↑";
-                let mut arrow_paint = Paint::default();
-                arrow_paint.set_color_rgba8(220, 220, 230, 230);
-                arrow_paint.anti_alias = true;
-                let margin = 4.0;
-                let mut pb = PathBuilder::new();
-                if up {
-                    pb.move_to(x1 + margin, line_y + slot_h - margin);
-                    pb.line_to(x1 + lw - margin, line_y + margin);
-                } else {
-                    pb.move_to(x1 + margin, line_y + margin);
-                    pb.line_to(x1 + lw - margin, line_y + slot_h - margin);
-                }
-                if let Some(path) = pb.finish() {
-                    let stroke = tiny_skia::Stroke {
-                        width: 2.0,
-                        ..Default::default()
+                let margin = 4.0 * s.max(1.0);
+                if lw > margin * 2.0 + 1.0 && slot_h > margin * 2.0 + 1.0 {
+                    let (y0, y1) = if up {
+                        (line_y + slot_h - margin, line_y + margin)
+                    } else {
+                        (line_y + margin, line_y + slot_h - margin)
                     };
-                    pixmap.stroke_path(&path, &arrow_paint, &stroke, Transform::identity(), None);
+                    blit_thick_line(
+                        &mut pixmap,
+                        x1 + margin,
+                        y0,
+                        x1 + lw - margin,
+                        y1,
+                        2.0 * s,
+                        [220, 220, 230, 230],
+                    );
                 }
             }
 
@@ -529,94 +625,94 @@ impl CpuRenderer {
 
             match &marker.kind {
                 MarkerKind::Boucle => {
-                    let mut p = Paint::default();
-                    p.set_color_rgba8(217, 38, 38, 230);
-                    if let Some(rect) = SkRect::from_xywh(mx - 1.0 * s, 0.0, 2.0 * s, h) {
-                        pixmap.fill_rect(rect, &p, Transform::identity(), None);
-                    }
-                    p.anti_alias = true;
+                    blit_rect(
+                        &mut pixmap,
+                        mx - 1.0 * s,
+                        0.0,
+                        2.0 * s,
+                        h,
+                        [217, 38, 38, 230],
+                    );
                     let cy = h / 2.0;
                     let arm = 10.0 * s;
-                    let mut pb = PathBuilder::new();
-                    pb.move_to(mx - arm, cy - arm);
-                    pb.line_to(mx + arm, cy + arm);
-                    pb.move_to(mx - arm, cy + arm);
-                    pb.line_to(mx + arm, cy - arm);
-                    if let Some(path) = pb.finish() {
-                        pixmap.stroke_path(
-                            &path,
-                            &p,
-                            &tiny_skia::Stroke {
-                                width: 2.5 * s,
-                                ..Default::default()
-                            },
-                            Transform::identity(),
-                            None,
-                        );
-                    }
+                    blit_thick_line(
+                        &mut pixmap,
+                        mx - arm,
+                        cy - arm,
+                        mx + arm,
+                        cy + arm,
+                        2.5 * s,
+                        [217, 38, 38, 230],
+                    );
+                    blit_thick_line(
+                        &mut pixmap,
+                        mx - arm,
+                        cy + arm,
+                        mx + arm,
+                        cy - arm,
+                        2.5 * s,
+                        [217, 38, 38, 230],
+                    );
                 }
                 MarkerKind::Out => {
-                    let mut p = Paint::default();
-                    p.set_color_rgba8(217, 115, 115, 180);
-                    if let Some(rect) = SkRect::from_xywh(mx - 1.0 * s, 0.0, 2.0 * s, h) {
-                        pixmap.fill_rect(rect, &p, Transform::identity(), None);
-                    }
-                    p.anti_alias = true;
+                    blit_rect(
+                        &mut pixmap,
+                        mx - 1.0 * s,
+                        0.0,
+                        2.0 * s,
+                        h,
+                        [217, 115, 115, 180],
+                    );
                     let cy = h / 2.0;
                     let bh = h * 0.15;
                     for offset in &[-5.0_f32, 5.0] {
-                        let mut pb = PathBuilder::new();
-                        pb.move_to(mx + offset - bh * 0.3, cy - bh);
-                        pb.line_to(mx + offset + bh * 0.3, cy + bh);
-                        if let Some(path) = pb.finish() {
-                            pixmap.stroke_path(
-                                &path,
-                                &p,
-                                &tiny_skia::Stroke {
-                                    width: 2.0 * s,
-                                    ..Default::default()
-                                },
-                                Transform::identity(),
-                                None,
-                            );
-                        }
+                        blit_thick_line(
+                            &mut pixmap,
+                            mx + offset - bh * 0.3,
+                            cy - bh,
+                            mx + offset + bh * 0.3,
+                            cy + bh,
+                            2.0 * s,
+                            [217, 115, 115, 180],
+                        );
                     }
                 }
                 MarkerKind::SceneChange => {
-                    let mut p = Paint::default();
-                    p.set_color_rgba8(230, 230, 240, 200);
-                    if let Some(rect) = SkRect::from_xywh(mx - 1.0 * s, 0.0, 2.0 * s, h) {
-                        pixmap.fill_rect(rect, &p, Transform::identity(), None);
-                    }
+                    blit_rect(
+                        &mut pixmap,
+                        mx - 1.0 * s,
+                        0.0,
+                        2.0 * s,
+                        h,
+                        [230, 230, 240, 200],
+                    );
                 }
                 MarkerKind::LiaisonLeft | MarkerKind::LiaisonRight => {
-                    let mut p = Paint::default();
-                    p.set_color_rgba8(180, 180, 190, 200);
-                    p.anti_alias = true;
                     let is_left = matches!(marker.kind, MarkerKind::LiaisonLeft);
                     let ay = ruler_h / 2.0;
-                    let mut pb = PathBuilder::new();
-                    if is_left {
-                        pb.move_to(mx + 5.0 * s, ay - 4.0 * s);
-                        pb.line_to(mx - 3.0 * s, ay);
-                        pb.line_to(mx + 5.0 * s, ay + 4.0 * s);
+                    let (outer_x, tip_x) = if is_left {
+                        (mx + 5.0 * s, mx - 3.0 * s)
                     } else {
-                        pb.move_to(mx - 5.0 * s, ay - 4.0 * s);
-                        pb.line_to(mx + 3.0 * s, ay);
-                        pb.line_to(mx - 5.0 * s, ay + 4.0 * s);
-                    }
-                    if let Some(path) = pb.finish() {
-                        pixmap.stroke_path(
-                            &path,
-                            &p,
-                            &tiny_skia::Stroke {
-                                width: 1.5 * s,
-                                ..Default::default()
-                            },
-                            Transform::identity(),
-                            None,
-                        );
-                    }
+                        (mx - 5.0 * s, mx + 3.0 * s)
+                    };
+                    blit_thick_line(
+                        &mut pixmap,
+                        outer_x,
+                        ay - 4.0 * s,
+                        tip_x,
+                        ay,
+                        1.5 * s,
+                        [180, 180, 190, 200],
+                    );
+                    blit_thick_line(
+                        &mut pixmap,
+                        tip_x,
+                        ay,
+                        outer_x,
+                        ay + 4.0 * s,
+                        1.5 * s,
+                        [180, 180, 190, 200],
+                    );
                 }
             }
         }
@@ -625,14 +721,177 @@ impl CpuRenderer {
     }
 }
 
+fn color_channel(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+fn blit_rect(pixmap: &mut Pixmap, x: f32, y: f32, width: f32, height: f32, color: [u8; 4]) {
+    if !x.is_finite()
+        || !y.is_finite()
+        || !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.0
+        || height <= 0.0
+    {
+        return;
+    }
+
+    let pm_w = pixmap.width() as i32;
+    let pm_h = pixmap.height() as i32;
+    if pm_w <= 0 || pm_h <= 0 {
+        return;
+    }
+
+    let min_x = (x.floor() as i32).clamp(0, pm_w);
+    let max_x = ((x + width).ceil() as i32).clamp(0, pm_w);
+    let min_y = (y.floor() as i32).clamp(0, pm_h);
+    let max_y = ((y + height).ceil() as i32).clamp(0, pm_h);
+    if min_x >= max_x || min_y >= max_y || color[3] == 0 {
+        return;
+    }
+
+    let alpha = color[3] as u32;
+    let inv = 255 - alpha;
+    let data = pixmap.data_mut();
+    for py in min_y..max_y {
+        for px in min_x..max_x {
+            let di = ((py as u32 * pm_w as u32 + px as u32) * 4) as usize;
+            if di + 3 >= data.len() {
+                continue;
+            }
+            data[di] = ((color[0] as u32 * alpha + data[di] as u32 * inv) / 255) as u8;
+            data[di + 1] = ((color[1] as u32 * alpha + data[di + 1] as u32 * inv) / 255) as u8;
+            data[di + 2] = ((color[2] as u32 * alpha + data[di + 2] as u32 * inv) / 255) as u8;
+            data[di + 3] = (alpha + (data[di + 3] as u32 * inv) / 255).min(255) as u8;
+        }
+    }
+}
+
+fn blit_thick_line(
+    pixmap: &mut Pixmap,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    width: f32,
+    color: [u8; 4],
+) {
+    if !x0.is_finite()
+        || !y0.is_finite()
+        || !x1.is_finite()
+        || !y1.is_finite()
+        || !width.is_finite()
+        || width <= 0.0
+    {
+        return;
+    }
+
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq <= f32::EPSILON {
+        return;
+    }
+
+    let pm_w = pixmap.width() as i32;
+    let pm_h = pixmap.height() as i32;
+    if pm_w <= 0 || pm_h <= 0 {
+        return;
+    }
+
+    let half = width.max(1.0) * 0.5;
+    let aa = 1.0;
+    let min_x = ((x0.min(x1) - half - aa).floor() as i32).clamp(0, pm_w);
+    let max_x = ((x0.max(x1) + half + aa).ceil() as i32).clamp(0, pm_w);
+    let min_y = ((y0.min(y1) - half - aa).floor() as i32).clamp(0, pm_h);
+    let max_y = ((y0.max(y1) + half + aa).ceil() as i32).clamp(0, pm_h);
+    if min_x >= max_x || min_y >= max_y {
+        return;
+    }
+
+    let data = pixmap.data_mut();
+    for py in min_y..max_y {
+        let fy = py as f32 + 0.5;
+        for px in min_x..max_x {
+            let fx = px as f32 + 0.5;
+            let t = (((fx - x0) * dx + (fy - y0) * dy) / len_sq).clamp(0.0, 1.0);
+            let cx = x0 + t * dx;
+            let cy = y0 + t * dy;
+            let dist = ((fx - cx) * (fx - cx) + (fy - cy) * (fy - cy)).sqrt();
+            let coverage = (half + aa - dist).clamp(0.0, 1.0);
+            if coverage <= 0.0 {
+                continue;
+            }
+
+            let alpha = (color[3] as f32 * coverage).round().clamp(0.0, 255.0) as u32;
+            if alpha == 0 {
+                continue;
+            }
+            let inv = 255 - alpha;
+            let di = ((py as u32 * pm_w as u32 + px as u32) * 4) as usize;
+            if di + 3 >= data.len() {
+                continue;
+            }
+            data[di] = ((color[0] as u32 * alpha + data[di] as u32 * inv) / 255) as u8;
+            data[di + 1] = ((color[1] as u32 * alpha + data[di + 1] as u32 * inv) / 255) as u8;
+            data[di + 2] = ((color[2] as u32 * alpha + data[di + 2] as u32 * inv) / 255) as u8;
+            data[di + 3] = (alpha + (data[di + 3] as u32 * inv) / 255).min(255) as u8;
+        }
+    }
+}
+
+fn blit_actor_icon(pixmap: &mut Pixmap, icon: &[u8], x: f32, y: f32, size: f32) {
+    let dest_size = size.max(1.0).round() as i32;
+    let xi = x.round() as i32;
+    let yi = y.round() as i32;
+    let pm_w = pixmap.width() as i32;
+    let pm_h = pixmap.height() as i32;
+    let pm_data = pixmap.data_mut();
+    let src_size = VOICE_ACTOR_ICON_SIZE as i32;
+
+    for dy in 0..dest_size {
+        let py = yi + dy;
+        if py < 0 || py >= pm_h {
+            continue;
+        }
+        for dx in 0..dest_size {
+            let px = xi + dx;
+            if px < 0 || px >= pm_w {
+                continue;
+            }
+
+            let sx = (dx * src_size / dest_size).clamp(0, src_size - 1);
+            let sy = (dy * src_size / dest_size).clamp(0, src_size - 1);
+            let si = ((sy as u32 * VOICE_ACTOR_ICON_SIZE + sx as u32) * 4) as usize;
+            let di = ((py as u32 * pm_w as u32 + px as u32) * 4) as usize;
+            if si + 3 >= icon.len() || di + 3 >= pm_data.len() {
+                continue;
+            }
+            let a = icon[si + 3] as u32;
+            if a == 0 {
+                continue;
+            }
+            let inv = 255 - a;
+            pm_data[di] = ((icon[si] as u32 * a + pm_data[di] as u32 * inv) / 255) as u8;
+            pm_data[di + 1] =
+                ((icon[si + 1] as u32 * a + pm_data[di + 1] as u32 * inv) / 255) as u8;
+            pm_data[di + 2] =
+                ((icon[si + 2] as u32 * a + pm_data[di + 2] as u32 * inv) / 255) as u8;
+            pm_data[di + 3] = (a + (pm_data[di + 3] as u32 * inv) / 255) as u8;
+        }
+    }
+}
+
 /// Calculate the BR height in pixels based on used slots.
 pub fn br_height(project: &Project, width: u32, br_scale: f32) -> u32 {
     let s = width as f32 / constants::REF_WIDTH * br_scale;
     let used = count_used_slots(project);
     let slot_count = used.max(1) as f32;
+    let badge_h = constants::BADGE_HEIGHT * s;
+    let actor_icon_size = constants::VOICE_ACTOR_DISPLAY_ICON_SIZE * s;
+    let slot_header_h = badge_h.max(actor_icon_size);
     (constants::RULER_HEIGHT * s
-        + slot_count
-            * (constants::SLOT_HEIGHT * s + constants::BADGE_HEIGHT * s + constants::BADGE_GAP * s))
+        + slot_count * (constants::SLOT_HEIGHT * s + slot_header_h + constants::BADGE_GAP * s))
         .ceil() as u32
 }
 
@@ -643,4 +902,41 @@ fn count_used_slots(project: &Project) -> usize {
         slots.insert(idx);
     }
     slots.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rythmo_line::{MarkerKind, RythmoMarker};
+
+    #[test]
+    fn cpu_render_handles_marker_and_breath_lines() {
+        crate::config::init();
+        let mut project = Project::new();
+        project.add_line_full(0, 24, 0.0, "↑".into(), "Alice".into(), [0.8, 0.2, 0.2, 1.0]);
+        project.markers.push(RythmoMarker {
+            kind: MarkerKind::Boucle,
+            frame: 0,
+        });
+        project.markers.push(RythmoMarker {
+            kind: MarkerKind::Out,
+            frame: 1,
+        });
+        project.markers.push(RythmoMarker {
+            kind: MarkerKind::LiaisonLeft,
+            frame: 2,
+        });
+        project.markers.push(RythmoMarker {
+            kind: MarkerKind::LiaisonRight,
+            frame: 3,
+        });
+
+        let width = 320;
+        let br_scale = 0.5;
+        let height = br_height(&project, width, br_scale);
+        let mut renderer = CpuRenderer::new();
+        let pixels = renderer.render_br(&project, 0, width, 24.0, br_scale);
+
+        assert_eq!(pixels.len(), width as usize * height as usize * 4);
+    }
 }

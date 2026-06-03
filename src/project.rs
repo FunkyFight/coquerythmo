@@ -1,5 +1,6 @@
 use crate::constants::JS_MAX_SAFE_INTEGER;
 use crate::rythmo_line::{RythmoLine, RythmoMarker};
+use crate::voice_actor::VoiceActor;
 use std::collections::HashMap;
 
 const DEFAULT_COLORS: &[[f32; 4]] = &[
@@ -26,6 +27,7 @@ pub struct Project {
     line_order: Vec<u64>,
     pub markers: Vec<RythmoMarker>,
     pub known_characters: Vec<Character>,
+    pub voice_actors: Vec<VoiceActor>,
     color_index: usize,
 }
 
@@ -36,6 +38,7 @@ impl Project {
             line_order: Vec::new(),
             markers: Vec::new(),
             known_characters: Vec::new(),
+            voice_actors: Vec::new(),
             color_index: 0,
         }
     }
@@ -46,6 +49,7 @@ impl Project {
             line_order: self.line_order.clone(),
             markers: self.markers.clone(),
             known_characters: self.known_characters.clone(),
+            voice_actors: self.voice_actors.clone(),
             color_index: self.color_index,
         }
     }
@@ -83,25 +87,37 @@ impl Project {
         let color = self.next_color();
 
         // Find the last line on the same track (y_slot) that ends before this one starts
-        let (char_name, char_color) = self
+        let (char_name, char_color, voice_actor_names) = self
             .lines()
             .filter(|l| (l.y_slot - y_slot).abs() < 0.01 && l.end_frame() <= start_frame)
             .max_by_key(|l| l.end_frame())
-            .map(|l| (l.character_name.clone(), l.character_color))
+            .map(|l| {
+                (
+                    l.character_name.clone(),
+                    l.character_color,
+                    l.voice_actor_names.clone(),
+                )
+            })
             .or_else(|| {
                 // Fallback: any line on the same track
                 self.lines()
                     .filter(|l| (l.y_slot - y_slot).abs() < 0.01)
                     .last()
-                    .map(|l| (l.character_name.clone(), l.character_color))
+                    .map(|l| {
+                        (
+                            l.character_name.clone(),
+                            l.character_color,
+                            l.voice_actor_names.clone(),
+                        )
+                    })
             })
             .or_else(|| {
                 // Fallback: first known character
                 self.known_characters
                     .first()
-                    .map(|c| (c.name.clone(), c.color))
+                    .map(|c| (c.name.clone(), c.color, Vec::new()))
             })
-            .unwrap_or_else(|| ("Character".to_string(), color));
+            .unwrap_or_else(|| ("Character".to_string(), color, Vec::new()));
 
         let line = RythmoLine {
             id,
@@ -111,6 +127,7 @@ impl Project {
             text: String::new(),
             character_name: char_name,
             character_color: char_color,
+            voice_actor_names,
             syllable_ratios: Vec::new(),
             note: String::new(),
         };
@@ -128,6 +145,27 @@ impl Project {
         character_name: String,
         character_color: [f32; 4],
     ) -> u64 {
+        self.add_line_full_with_voice_actors(
+            start_frame,
+            duration_frames,
+            y_slot,
+            text,
+            character_name,
+            character_color,
+            Vec::new(),
+        )
+    }
+
+    pub fn add_line_full_with_voice_actors(
+        &mut self,
+        start_frame: i64,
+        duration_frames: i64,
+        y_slot: f32,
+        text: String,
+        character_name: String,
+        character_color: [f32; 4],
+        voice_actor_names: Vec<String>,
+    ) -> u64 {
         let id = rand::random::<u64>() % JS_MAX_SAFE_INTEGER;
         let line = RythmoLine {
             id,
@@ -137,6 +175,7 @@ impl Project {
             text,
             character_name,
             character_color,
+            voice_actor_names: Self::normalized_voice_actor_names(voice_actor_names),
             syllable_ratios: Vec::new(),
             note: String::new(),
         };
@@ -204,7 +243,10 @@ impl Project {
 
     /// Returns true if the project has no lines, no markers, and no characters.
     pub fn is_empty(&self) -> bool {
-        self.line_map.is_empty() && self.markers.is_empty() && self.known_characters.is_empty()
+        self.line_map.is_empty()
+            && self.markers.is_empty()
+            && self.known_characters.is_empty()
+            && self.voice_actors.is_empty()
     }
 
     /// Full reset: clear lines, markers, characters, and color index.
@@ -213,26 +255,47 @@ impl Project {
         self.line_order.clear();
         self.markers.clear();
         self.known_characters.clear();
+        self.voice_actors.clear();
         self.color_index = 0;
     }
 
     // -- Character management --
 
     pub fn set_character(&mut self, line_id: u64, name: String, color: [f32; 4]) {
+        self.upsert_known_character(&name, color);
+        if let Some(line) = self.get_line_mut(line_id) {
+            line.character_name = name;
+            line.character_color = color;
+        }
+    }
+
+    pub fn set_character_with_voice_actors(
+        &mut self,
+        line_id: u64,
+        name: String,
+        color: [f32; 4],
+        voice_actor_names: Vec<String>,
+    ) {
+        self.upsert_known_character(&name, color);
+        let voice_actor_names = Self::normalized_voice_actor_names(voice_actor_names);
+        if let Some(line) = self.get_line_mut(line_id) {
+            line.character_name = name;
+            line.character_color = color;
+            line.voice_actor_names = voice_actor_names;
+        }
+    }
+
+    fn upsert_known_character(&mut self, name: &str, color: [f32; 4]) {
         // Update or add to known characters
         if !name.is_empty() {
             if let Some(existing) = self.known_characters.iter_mut().find(|c| c.name == name) {
                 existing.color = color;
             } else {
                 self.known_characters.push(Character {
-                    name: name.clone(),
+                    name: name.to_string(),
                     color,
                 });
             }
-        }
-        if let Some(line) = self.get_line_mut(line_id) {
-            line.character_name = name;
-            line.character_color = color;
         }
     }
 
@@ -252,6 +315,86 @@ impl Project {
                 cl.starts_with(&lower) && cl != lower // exclude exact match
             })
             .collect()
+    }
+
+    pub fn find_voice_actor(&self, name: &str) -> Option<&VoiceActor> {
+        self.voice_actors.iter().find(|a| a.name == name)
+    }
+
+    pub fn add_voice_actor(&mut self, actor: VoiceActor) -> bool {
+        if actor.name.trim().is_empty() || self.find_voice_actor(&actor.name).is_some() {
+            return false;
+        }
+        self.voice_actors.push(actor);
+        true
+    }
+
+    pub fn upsert_voice_actor(&mut self, actor: VoiceActor) {
+        if let Some(existing) = self.voice_actors.iter_mut().find(|a| a.name == actor.name) {
+            *existing = actor;
+        } else if !actor.name.trim().is_empty() {
+            self.voice_actors.push(actor);
+        }
+    }
+
+    pub fn remove_voice_actor(&mut self, name: &str) {
+        self.voice_actors.retain(|actor| actor.name != name);
+        for line in self.line_map.values_mut() {
+            line.voice_actor_names
+                .retain(|actor_name| actor_name != name);
+        }
+    }
+
+    pub fn set_line_voice_actor_names(&mut self, line_id: u64, names: Vec<String>) {
+        if let Some(line) = self.get_line_mut(line_id) {
+            line.voice_actor_names = Self::normalized_voice_actor_names(names);
+        }
+    }
+
+    pub fn voice_actor_names_for_character(
+        &self,
+        character_name: &str,
+        exclude_line_id: u64,
+    ) -> Vec<String> {
+        if character_name.trim().is_empty() {
+            return Vec::new();
+        }
+
+        self.lines()
+            .find(|line| line.id != exclude_line_id && line.character_name == character_name)
+            .map(|line| line.voice_actor_names.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn normalized_voice_actor_names(names: Vec<String>) -> Vec<String> {
+        let mut out = Vec::new();
+        for name in names {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() && !out.iter().any(|existing| existing == trimmed) {
+                out.push(trimmed.to_string());
+            }
+        }
+        out
+    }
+
+    pub fn with_voice_actor_assignment(
+        current: &[String],
+        actor_name: &str,
+        assign: bool,
+    ) -> Vec<String> {
+        let mut next = Self::normalized_voice_actor_names(current.to_vec());
+        if assign {
+            if !next.iter().any(|name| name == actor_name) && !actor_name.trim().is_empty() {
+                next.push(actor_name.trim().to_string());
+            }
+        } else {
+            next.retain(|name| name != actor_name);
+        }
+        next
+    }
+
+    pub fn has_voice_actor_assignments(&self) -> bool {
+        self.lines().any(|line| !line.voice_actor_names.is_empty())
     }
 
     fn next_color(&mut self) -> [f32; 4] {
@@ -327,6 +470,7 @@ mod tests {
             text: String::new(),
             character_name: String::new(),
             character_color: [1.0; 4],
+            voice_actor_names: Vec::new(),
             syllable_ratios: Vec::new(),
             note: String::new(),
         };
@@ -375,6 +519,39 @@ mod tests {
         assert_eq!(p.get_line(id).unwrap().character_name, "Alice");
         assert_eq!(p.known_characters.len(), 1);
         assert_eq!(p.known_characters[0].name, "Alice");
+    }
+
+    #[test]
+    fn test_voice_actor_names_for_character() {
+        let mut p = Project::new();
+        let alice_id = p.add_line_full_with_voice_actors(
+            0,
+            48,
+            0.25,
+            "hello".into(),
+            "Alice".into(),
+            [1.0, 0.0, 0.0, 1.0],
+            vec!["Alice Actor".into()],
+        );
+        let bob_id = p.add_line_full(
+            48,
+            48,
+            0.25,
+            "world".into(),
+            "Bob".into(),
+            [0.0, 1.0, 0.0, 1.0],
+        );
+
+        assert_eq!(
+            p.voice_actor_names_for_character("Alice", bob_id),
+            vec!["Alice Actor".to_string()]
+        );
+        assert!(p
+            .voice_actor_names_for_character("Alice", alice_id)
+            .is_empty());
+        assert!(p
+            .voice_actor_names_for_character("Unknown", bob_id)
+            .is_empty());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::project::{Character, Project};
 use crate::rythmo_line::{MarkerKind, RythmoMarker};
+use crate::voice_actor::VoiceActor;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -24,8 +25,12 @@ pub struct ProjectData {
     #[serde(default = "default_fps")]
     pub source_fps: f64,
     pub lines: Vec<LineData>,
+    #[serde(default)]
     pub markers: Vec<MarkerData>,
+    #[serde(default)]
     pub characters: Vec<CharacterData>,
+    #[serde(default)]
+    pub voice_actors: Vec<VoiceActorData>,
 }
 
 fn default_fps() -> f64 {
@@ -41,6 +46,8 @@ pub struct LineData {
     pub character_name: String,
     pub character_color: [f32; 4],
     #[serde(default)]
+    pub voice_actor_names: Vec<String>,
+    #[serde(default)]
     pub note: String,
 }
 
@@ -54,6 +61,15 @@ pub struct MarkerData {
 pub struct CharacterData {
     pub name: String,
     pub color: [f32; 4],
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct VoiceActorData {
+    pub name: String,
+    #[serde(default)]
+    pub icon_path: String,
+    #[serde(default)]
+    pub icon_png_base64: Option<String>,
 }
 
 // -- Conversion --
@@ -71,6 +87,7 @@ impl ProjectData {
                     text: l.text.clone(),
                     character_name: l.character_name.clone(),
                     character_color: l.character_color,
+                    voice_actor_names: l.voice_actor_names.clone(),
                     note: l.note.clone(),
                 })
                 .collect(),
@@ -97,6 +114,15 @@ impl ProjectData {
                     color: c.color,
                 })
                 .collect(),
+            voice_actors: project
+                .voice_actors
+                .iter()
+                .map(|actor| VoiceActorData {
+                    name: actor.name.clone(),
+                    icon_path: actor.icon_path.clone(),
+                    icon_png_base64: actor.icon_png_base64.clone(),
+                })
+                .collect(),
         }
     }
 
@@ -118,11 +144,20 @@ impl ProjectData {
         project.clear_lines();
         project.markers.clear();
         project.known_characters.clear();
+        project.voice_actors.clear();
 
         for ch in &self.characters {
             project.known_characters.push(Character {
                 name: ch.name.clone(),
                 color: ch.color,
+            });
+        }
+
+        for actor in &self.voice_actors {
+            project.voice_actors.push(VoiceActor {
+                name: actor.name.clone(),
+                icon_path: actor.icon_path.clone(),
+                icon_png_base64: actor.icon_png_base64.clone(),
             });
         }
 
@@ -145,22 +180,19 @@ impl ProjectData {
                 );
                 continue;
             }
-            project.add_line_full(
+            let line_id = project.add_line_full_with_voice_actors(
                 adjusted_start,
                 adjusted_duration,
                 l.y_slot,
                 l.text.clone(),
                 l.character_name.clone(),
                 l.character_color,
+                l.voice_actor_names.clone(),
             );
             // Apply note after creation
             if !l.note.is_empty() {
-                if let Some(last_line) = project.lines().last() {
-                    let note = l.note.clone();
-                    let id = last_line.id;
-                    if let Some(line) = project.get_line_mut(id) {
-                        line.note = note;
-                    }
+                if let Some(line) = project.get_line_mut(line_id) {
+                    line.note = l.note.clone();
                 }
             }
         }
@@ -471,6 +503,7 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
                                 text: full_text,
                                 character_name: char_name,
                                 character_color: char_color,
+                                voice_actor_names: Vec::new(),
                                 note,
                             });
 
@@ -532,6 +565,7 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
         lines,
         markers,
         characters,
+        voice_actors: Vec::new(),
     })
 }
 
@@ -576,10 +610,12 @@ mod tests {
                 text: "test".into(),
                 character_name: "A".into(),
                 character_color: [1.0; 4],
+                voice_actor_names: Vec::new(),
                 note: String::new(),
             }],
             markers: vec![],
             characters: vec![],
+            voice_actors: vec![],
         };
 
         let mut project = Project::new();
@@ -608,10 +644,12 @@ mod tests {
                 text: "new".into(),
                 character_name: "X".into(),
                 character_color: [1.0; 4],
+                voice_actor_names: Vec::new(),
                 note: String::new(),
             }],
             markers: vec![],
             characters: vec![],
+            voice_actors: vec![],
         };
         data.apply_to_project(&mut project, 24.0);
         assert_eq!(project.line_count(), 1);
@@ -627,6 +665,7 @@ mod tests {
                 frame: 50,
             }],
             characters: vec![],
+            voice_actors: vec![],
         };
         let mut project = Project::new();
         data.apply_to_project(&mut project, 24.0);

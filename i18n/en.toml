@@ -44,6 +44,8 @@
 "picker.export.title" = "Export the project"
 "picker.export_mp4.title" = "Save MP4 video"
 "picker.instrumental_audio.title" = "Choose instrumental audio"
+"picker.voice_actor_icon.title" = "Choose voice actor icon"
+"picker.filter.all_files" = "All files"
 
 # Zones
 "zone.video_preview" = "Video preview"
@@ -94,6 +96,8 @@
 
 # Progress
 "progress.exporting" = "Exporting..."
+"progress.export_gpu" = "Export GPU"
+"progress.export_cpu" = "Export CPU"
 "progress.proxy" = "Creating proxy..."
 
 # Toasts
@@ -104,6 +108,27 @@
 "toast.proxy_created" = "Proxy created and loaded for playback."
 "toast.proxy_created_not_loaded" = "Proxy created, but the active video changed."
 "toast.proxy_failed" = "Proxy creation failed:"
+"toast.voice_actor_created" = "Voice actor created."
+"toast.voice_actor_exists" = "This voice actor already exists."
+"toast.voice_actor_name_required" = "Voice actor name is required."
+"toast.voice_actor_icon_failed" = "Invalid voice actor icon:"
+
+# Voice actor context menu
+"context.voice_actor.assign_to_actor" = "Assign to a voice actor"
+"context.voice_actor.create" = "Create a voice actor"
+"context.voice_actor.assign_line" = "Assign line"
+"context.voice_actor.assign_character" = "Assign all lines for this character"
+"context.voice_actor.unassign_line" = "Unassign"
+"context.voice_actor.unassign_character" = "Unassign all lines for this character"
+
+# Voice actor modal
+"voice_actor_modal.title" = "Create Voice Actor"
+"voice_actor_modal.description" = "The icon is embedded in the rythmo band as 256x256."
+"voice_actor_modal.name" = "Name"
+"voice_actor_modal.icon_path" = "Icon path"
+"voice_actor_modal.browse" = "Browse"
+"voice_actor_modal.cancel" = "Cancel"
+"voice_actor_modal.create" = "Create"
 
 # Proxy modal
 "proxy_modal.title" = "Create Proxy"

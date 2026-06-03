@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::project::Project;
 use crate::rythmo_line::{MarkerKind, RythmoLine, RythmoMarker};
+use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 
 // ---------------------------------------------------------------------------
 // Packetable trait — implemented by Command
@@ -107,10 +108,18 @@ pub enum CommandPayload {
         line_id: u64,
         name: String,
         color: [f32; 4],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voice_actor_names: Option<Vec<String>>,
     },
     SetCharacterColor {
         line_id: u64,
         color: [f32; 4],
+    },
+    SetVoiceActors {
+        changes: Vec<LineVoiceActorsChange>,
+    },
+    CreateVoiceActor {
+        actor: VoiceActor,
     },
     AddMarker {
         kind: MarkerKind,
@@ -147,6 +156,8 @@ pub struct ProjectData {
     pub lines: Vec<RythmoLine>,
     pub markers: Vec<RythmoMarker>,
     pub known_characters: Vec<CharacterData>,
+    #[serde(default)]
+    pub voice_actors: Vec<VoiceActor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,17 +234,25 @@ impl Packetable for Command {
                 line_id,
                 new_name,
                 new_color,
+                new_voice_actor_names,
                 ..
             } => CommandPayload::SetCharacter {
                 line_id: *line_id,
                 name: new_name.clone(),
                 color: *new_color,
+                voice_actor_names: Some(new_voice_actor_names.clone()),
             },
             Command::SetCharacterColor {
                 line_id, new_color, ..
             } => CommandPayload::SetCharacterColor {
                 line_id: *line_id,
                 color: *new_color,
+            },
+            Command::SetVoiceActors { changes } => CommandPayload::SetVoiceActors {
+                changes: changes.clone(),
+            },
+            Command::CreateVoiceActor { actor } => CommandPayload::CreateVoiceActor {
+                actor: actor.clone(),
             },
             Command::AddMarker { index } => {
                 let marker = &project.markers[*index];
@@ -280,6 +299,7 @@ impl ProjectData {
                     color: c.color,
                 })
                 .collect(),
+            voice_actors: project.voice_actors.clone(),
         }
     }
 }
@@ -299,6 +319,7 @@ mod tests {
                 text: "test".into(),
                 character_name: "Alice".into(),
                 character_color: [1.0, 0.0, 0.0, 1.0],
+                voice_actor_names: Vec::new(),
                 syllable_ratios: Vec::new(),
                 note: String::new(),
             },

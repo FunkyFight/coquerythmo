@@ -465,6 +465,7 @@ impl UiRenderer {
         labels: &[LabelInfo],
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         stretched_quads: &[(IconInstance, u64)],
+        base_textured: &[(IconInstance, &wgpu::BindGroup)],
         extra_textured: &[(IconInstance, &wgpu::BindGroup)],
         post_texture_quads: &[QuadInstance], // drawn after textured quads (e.g. color picker indicators)
     ) {
@@ -681,6 +682,33 @@ impl UiRenderer {
                     pass.set_vertex_buffer(0, buf.slice(..));
                     pass.draw(0..6, 0..1);
                 }
+            }
+
+            // Draw base textured quads before overlays (e.g. project actor icons)
+            let base_textured_buffer = if base_textured.is_empty() {
+                None
+            } else {
+                let instances: Vec<_> = base_textured
+                    .iter()
+                    .map(|(instance, _)| *instance)
+                    .collect();
+                Some(
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Base Textured Quad Buffer"),
+                        contents: bytemuck::cast_slice(&instances),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+                )
+            };
+            if let Some(buf) = &base_textured_buffer {
+                pass.set_pipeline(&self.icon_pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
+                pass.set_vertex_buffer(0, buf.slice(..));
+            }
+            for (index, (_, bind_group)) in base_textured.iter().enumerate() {
+                let index = index as u32;
+                pass.set_bind_group(1, *bind_group, &[]);
+                pass.draw(0..6, index..index + 1);
             }
 
             // Draw overlay quads (on top of video, icons, stretched text)

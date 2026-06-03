@@ -10,6 +10,8 @@ pub struct RythmoLine {
     pub character_name: String,
     pub character_color: [f32; 4],
     #[serde(default)]
+    pub voice_actor_names: Vec<String>,
+    #[serde(default)]
     pub syllable_ratios: Vec<f32>,
     #[serde(default)]
     pub note: String,

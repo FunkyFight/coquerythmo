@@ -1,5 +1,6 @@
 use crate::project::Project;
 use crate::rythmo_line::{RythmoLine, RythmoMarker};
+use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 
 #[derive(Clone)]
 pub struct LineMove {
@@ -49,13 +50,21 @@ pub enum Command {
         line_id: u64,
         old_name: String,
         old_color: [f32; 4],
+        old_voice_actor_names: Vec<String>,
         new_name: String,
         new_color: [f32; 4],
+        new_voice_actor_names: Vec<String>,
     },
     SetCharacterColor {
         line_id: u64,
         old_color: [f32; 4],
         new_color: [f32; 4],
+    },
+    SetVoiceActors {
+        changes: Vec<LineVoiceActorsChange>,
+    },
+    CreateVoiceActor {
+        actor: VoiceActor,
     },
     AddMarker {
         index: usize,
@@ -129,12 +138,15 @@ impl Command {
                 line_id,
                 new_name,
                 new_color,
+                new_voice_actor_names,
                 ..
             } => {
-                if let Some(l) = project.get_line_mut(*line_id) {
-                    l.character_name = new_name.clone();
-                    l.character_color = *new_color;
-                }
+                project.set_character_with_voice_actors(
+                    *line_id,
+                    new_name.clone(),
+                    *new_color,
+                    new_voice_actor_names.clone(),
+                );
             }
             Command::SetCharacterColor {
                 line_id, new_color, ..
@@ -142,6 +154,17 @@ impl Command {
                 if let Some(l) = project.get_line_mut(*line_id) {
                     l.character_color = *new_color;
                 }
+            }
+            Command::SetVoiceActors { changes } => {
+                for change in changes {
+                    project.set_line_voice_actor_names(
+                        change.line_id,
+                        change.new_voice_actor_names.clone(),
+                    );
+                }
+            }
+            Command::CreateVoiceActor { actor } => {
+                project.upsert_voice_actor(actor.clone());
             }
             Command::AddMarker { .. } => {
                 // Already added during execute — for redo
@@ -220,12 +243,15 @@ impl Command {
                 line_id,
                 old_name,
                 old_color,
+                old_voice_actor_names,
                 ..
             } => {
-                if let Some(l) = project.get_line_mut(*line_id) {
-                    l.character_name = old_name.clone();
-                    l.character_color = *old_color;
-                }
+                project.set_character_with_voice_actors(
+                    *line_id,
+                    old_name.clone(),
+                    *old_color,
+                    old_voice_actor_names.clone(),
+                );
             }
             Command::SetCharacterColor {
                 line_id, old_color, ..
@@ -233,6 +259,17 @@ impl Command {
                 if let Some(l) = project.get_line_mut(*line_id) {
                     l.character_color = *old_color;
                 }
+            }
+            Command::SetVoiceActors { changes } => {
+                for change in changes {
+                    project.set_line_voice_actor_names(
+                        change.line_id,
+                        change.old_voice_actor_names.clone(),
+                    );
+                }
+            }
+            Command::CreateVoiceActor { actor } => {
+                project.remove_voice_actor(&actor.name);
             }
             Command::AddMarker { index } => {
                 if *index < project.markers.len() {
@@ -422,6 +459,39 @@ mod tests {
 
         history.undo(&mut project);
         assert_eq!(project.get_line(id).unwrap().text, "test");
+    }
+
+    #[test]
+    fn test_undo_redo_character_voice_actors() {
+        let (mut project, id) = make_project_with_line();
+        let mut history = CommandHistory::new();
+
+        project.set_line_voice_actor_names(id, vec!["Old Actor".into()]);
+        project.set_character_with_voice_actors(
+            id,
+            "New Char".into(),
+            [0.0, 1.0, 0.0, 1.0],
+            vec!["New Actor".into()],
+        );
+        history.push(Command::SetCharacter {
+            line_id: id,
+            old_name: "Char".into(),
+            old_color: [1.0; 4],
+            old_voice_actor_names: vec!["Old Actor".into()],
+            new_name: "New Char".into(),
+            new_color: [0.0, 1.0, 0.0, 1.0],
+            new_voice_actor_names: vec!["New Actor".into()],
+        });
+
+        history.undo(&mut project);
+        let line = project.get_line(id).unwrap();
+        assert_eq!(line.character_name, "Char");
+        assert_eq!(line.voice_actor_names, vec!["Old Actor"]);
+
+        history.redo(&mut project);
+        let line = project.get_line(id).unwrap();
+        assert_eq!(line.character_name, "New Char");
+        assert_eq!(line.voice_actor_names, vec!["New Actor"]);
     }
 
     #[test]

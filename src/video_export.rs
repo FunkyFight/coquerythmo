@@ -3,11 +3,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::project::Project;
 use crate::rythmo_cpu_renderer;
 use crate::rythmo_gpu_renderer;
+
+pub const EXPORT_RENDER_BACKEND_UNKNOWN: u32 = 0;
+pub const EXPORT_RENDER_BACKEND_GPU: u32 = 1;
+pub const EXPORT_RENDER_BACKEND_CPU: u32 = 2;
 
 /// Check if ffmpeg and ffprobe are available in PATH.
 pub fn check_ffmpeg() -> bool {
@@ -178,6 +182,84 @@ fn has_cuda_filter_graph() -> bool {
         && has_filter("hwupload_cuda")
 }
 
+fn experimental_cuda_rgba_enabled() -> bool {
+    std::env::var_os("COQUERYTHMO_EXPERIMENTAL_RGBA_CUDA").is_some()
+}
+
+fn probe_cuda_rgba_br_graph() -> bool {
+    let filter = "[0:v]format=nv12,hwupload_cuda[src];[1:v]format=rgba,hwupload_cuda,scale_cuda=w=16:h=16:format=nv12:passthrough=0[br];[src][br]overlay_cuda=x=0:y=0:shortest=1[out]";
+    let mut child = match Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=16x16:r=1:d=1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-s",
+            "16x16",
+            "-r",
+            "1",
+            "-i",
+            "pipe:0",
+            "-filter_complex",
+            filter,
+            "-map",
+            "[out]",
+            "-frames:v",
+            "1",
+            "-f",
+            "null",
+            "-",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            log::warn!("CUDA RGBA graph probe could not start ffmpeg: {e}");
+            return false;
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let frame = vec![0u8; 16 * 16 * 4];
+        if let Err(e) = stdin.write_all(&frame) {
+            log::warn!("CUDA RGBA graph probe could not write frame: {e}");
+            let _ = child.kill();
+            let _ = child.wait();
+            return false;
+        }
+    }
+
+    match child.wait_with_output() {
+        Ok(output) if output.status.success() => true,
+        Ok(output) => {
+            let details = String::from_utf8_lossy(&output.stderr);
+            log::warn!(
+                "CUDA RGBA graph probe failed: {}",
+                details
+                    .trim()
+                    .lines()
+                    .next()
+                    .unwrap_or("ffmpeg rejected graph")
+            );
+            false
+        }
+        Err(e) => {
+            log::warn!("CUDA RGBA graph probe failed to wait for ffmpeg: {e}");
+            false
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExportPipeline {
     Cuda,
@@ -187,6 +269,82 @@ enum ExportPipeline {
 impl ExportPipeline {
     fn uses_cuda(self) -> bool {
         matches!(self, Self::Cuda)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Cuda => "ffmpeg CUDA scale/overlay",
+            Self::Cpu => "ffmpeg CPU filters",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BrRenderBackend {
+    GpuWgpuNv12,
+    GpuWgpuRgbaCuda,
+    Cpu,
+}
+
+impl BrRenderBackend {
+    fn label(self) -> &'static str {
+        match self {
+            Self::GpuWgpuNv12 => "GPU WGPU->NV12",
+            Self::GpuWgpuRgbaCuda => "GPU WGPU->RGBA->CUDA",
+            Self::Cpu => "CPU fallback",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BrInputFormat {
+    Nv12,
+    Rgba,
+}
+
+impl BrInputFormat {
+    fn pix_fmt(self) -> &'static str {
+        match self {
+            Self::Nv12 => "nv12",
+            Self::Rgba => "rgba",
+        }
+    }
+
+    fn frame_size(self, width: usize, height: usize) -> usize {
+        match self {
+            Self::Nv12 => width * height * 3 / 2,
+            Self::Rgba => width * height * 4,
+        }
+    }
+}
+
+struct BrFrameWriteStats {
+    backend: BrRenderBackend,
+    frames: u64,
+    total: Duration,
+    renderer_init: Duration,
+    submit: Duration,
+    finish_readback: Duration,
+    convert: Duration,
+    write: Duration,
+    cpu_render: Duration,
+    gpu_stats: Option<rythmo_gpu_renderer::GpuRenderStats>,
+}
+
+impl BrFrameWriteStats {
+    fn new() -> Self {
+        Self {
+            backend: BrRenderBackend::Cpu,
+            frames: 0,
+            total: Duration::ZERO,
+            renderer_init: Duration::ZERO,
+            submit: Duration::ZERO,
+            finish_readback: Duration::ZERO,
+            convert: Duration::ZERO,
+            write: Duration::ZERO,
+            cpu_render: Duration::ZERO,
+            gpu_stats: None,
+        }
     }
 }
 
@@ -201,6 +359,13 @@ impl StdinWriteError {
         Self {
             kind: error.kind(),
             message: format!("{context}: {error}"),
+        }
+    }
+
+    fn render_panic(context: &str) -> Self {
+        Self {
+            kind: ErrorKind::Other,
+            message: context.to_string(),
         }
     }
 
@@ -220,6 +385,7 @@ pub fn export_mp4(
     export_width: u32,
     export_height: u32,
     replacement_audio: Option<&Path>,
+    render_backend_status: Option<Arc<AtomicU32>>,
     progress_cb: impl FnMut(f32) + Send + 'static,
 ) -> Result<(), String> {
     if !check_ffmpeg() {
@@ -230,6 +396,9 @@ pub fn export_mp4(
         callback: Mutex::new(Box::new(progress_cb)),
         reported: AtomicU32::new(0.0_f32.to_bits()),
     });
+    if let Some(status) = &render_backend_status {
+        status.store(EXPORT_RENDER_BACKEND_UNKNOWN, Ordering::Relaxed);
+    }
 
     export_baked_mp4(
         project,
@@ -241,6 +410,7 @@ pub fn export_mp4(
         export_width,
         export_height,
         replacement_audio,
+        render_backend_status.as_deref(),
         &progress_cb,
     )
 }
@@ -255,10 +425,17 @@ fn export_baked_mp4(
     export_width: u32,
     export_height: u32,
     replacement_audio: Option<&Path>,
+    render_backend_status: Option<&AtomicU32>,
     progress_cb: &ProgressCallback,
 ) -> Result<(), String> {
+    let export_start = Instant::now();
     let fps = valid_export_fps(fps)?;
+    let probe_start = Instant::now();
     let info = probe(source_video)?;
+    log::info!(
+        "Export probe completed in {:.2}ms",
+        ms(probe_start.elapsed())
+    );
     let out_w = even_dimension(export_width);
     let vid_h = even_dimension(export_height);
     let br_h = rythmo_cpu_renderer::br_height(project, out_w, br_scale);
@@ -279,8 +456,13 @@ fn export_baked_mp4(
         log::info!("Replacing source audio with {}", audio.display());
     }
 
+    let capability_start = Instant::now();
     let use_cuda_graph = has_cuda_filter_graph();
     let use_nvenc = use_cuda_graph || has_nvenc();
+    log::info!(
+        "Export ffmpeg capability checks completed in {:.2}ms",
+        ms(capability_start.elapsed())
+    );
     let codec = if use_nvenc { "h264_nvenc" } else { "libx264" };
     log::info!(
         "Using {} encoding, CUDA filter graph={}",
@@ -304,7 +486,24 @@ fn export_baked_mp4(
 
     emit_progress(progress_cb, 0.01);
 
-    let cuda_filter = cuda_fit_and_stack_filter(out_w, vid_h, br_h_even, fps, info.duration_secs);
+    let use_cuda_rgba_br =
+        use_cuda_graph && experimental_cuda_rgba_enabled() && probe_cuda_rgba_br_graph();
+    if use_cuda_rgba_br {
+        log::info!("Experimental CUDA RGBA BR path enabled: GPU WGPU->RGBA->CUDA");
+    } else if use_cuda_graph && experimental_cuda_rgba_enabled() {
+        log::warn!("Experimental CUDA RGBA BR path requested but probe failed; using NV12 BR");
+    }
+
+    let cuda_filter = if use_cuda_rgba_br {
+        cuda_rgba_fit_and_stack_filter(out_w, vid_h, br_h_even, fps, info.duration_secs)
+    } else {
+        cuda_fit_and_stack_filter(out_w, vid_h, br_h_even, fps, info.duration_secs)
+    };
+    let cuda_br_input = if use_cuda_rgba_br {
+        BrInputFormat::Rgba
+    } else {
+        BrInputFormat::Nv12
+    };
     let cpu_filter = cpu_fit_and_stack_filter(out_w, vid_h, fps, info.duration_secs);
     let replacement_video = replacement_audio.map(|_| temp_video_path(output));
     let video_output = replacement_video.as_deref().unwrap_or(output);
@@ -317,6 +516,7 @@ fn export_baked_mp4(
             video_output,
             &cuda_filter,
             ExportPipeline::Cuda,
+            cuda_br_input,
             true,
             fps,
             source_fps,
@@ -327,6 +527,7 @@ fn export_baked_mp4(
             total_frames,
             info.duration_secs,
             include_source_audio,
+            render_backend_status,
             progress_cb,
         );
         if let Err(e) = r {
@@ -339,6 +540,7 @@ fn export_baked_mp4(
                 video_output,
                 &cpu_filter,
                 ExportPipeline::Cpu,
+                BrInputFormat::Nv12,
                 use_nvenc,
                 fps,
                 source_fps,
@@ -349,6 +551,7 @@ fn export_baked_mp4(
                 total_frames,
                 info.duration_secs,
                 include_source_audio,
+                render_backend_status,
                 progress_cb,
             )
         } else {
@@ -361,6 +564,7 @@ fn export_baked_mp4(
             video_output,
             &cpu_filter,
             ExportPipeline::Cpu,
+            BrInputFormat::Nv12,
             use_nvenc,
             fps,
             source_fps,
@@ -371,6 +575,7 @@ fn export_baked_mp4(
             total_frames,
             info.duration_secs,
             include_source_audio,
+            render_backend_status,
             progress_cb,
         )
     };
@@ -393,7 +598,11 @@ fn export_baked_mp4(
     }
 
     emit_progress(progress_cb, 1.0);
-    log::info!("Export complete: {}", output.display());
+    log::info!(
+        "Export complete: {} in {:.2}s",
+        output.display(),
+        export_start.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 
@@ -448,12 +657,36 @@ fn cuda_fit_and_stack_filter(
     )
 }
 
+fn cuda_rgba_fit_and_stack_filter(
+    out_w: u32,
+    vid_h: u32,
+    br_h_even: u32,
+    fps: f64,
+    duration_secs: f64,
+) -> String {
+    let total_h = vid_h + br_h_even;
+    format!(
+        "color=c=black:s={}x{}:r={}:d={},format=nv12,hwupload_cuda[canvas];[0:v]scale_cuda=w={}:h={}:format=nv12:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1[src];[1:v]format=rgba,hwupload_cuda,scale_cuda=w={}:h={}:format=nv12:passthrough=0[br];[canvas][src]overlay_cuda=x=(main_w-overlay_w)/2:y=({}-overlay_h)/2:shortest=1[tmp];[tmp][br]overlay_cuda=x=0:y={}:shortest=1[out]",
+        out_w,
+        total_h,
+        fps,
+        duration_secs,
+        out_w,
+        vid_h,
+        out_w,
+        br_h_even,
+        vid_h,
+        vid_h
+    )
+}
+
 fn run_baked_single_pass(
     project: &Project,
     source_video: &Path,
     output: &Path,
     filter: &str,
     pipeline: ExportPipeline,
+    br_input_format: BrInputFormat,
     use_nvenc: bool,
     fps: f64,
     source_fps: f64,
@@ -464,8 +697,10 @@ fn run_baked_single_pass(
     total_frames: u64,
     duration_secs: f64,
     include_source_audio: bool,
+    render_backend_status: Option<&AtomicU32>,
     progress_cb: &ProgressCallback,
 ) -> Result<(), String> {
+    let pass_start = Instant::now();
     let use_cuda = pipeline.uses_cuda();
     let codec = if use_nvenc { "h264_nvenc" } else { "libx264" };
     let raw_size = format!("{}x{}", out_w, br_h_even);
@@ -484,7 +719,7 @@ fn run_baked_single_pass(
             "-f",
             "rawvideo",
             "-pix_fmt",
-            "nv12",
+            br_input_format.pix_fmt(),
             "-s",
             &raw_size,
             "-r",
@@ -515,6 +750,7 @@ fn run_baked_single_pass(
         cmd.args(["-c:a", "copy"]);
     }
 
+    let spawn_start = Instant::now();
     let mut child = cmd
         .args(["-progress", "pipe:1", "-nostats", "-v", "warning", "-y"])
         .arg(output)
@@ -523,6 +759,11 @@ fn run_baked_single_pass(
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|e| format!("ffmpeg single-pass: {e}"))?;
+    log::info!(
+        "ffmpeg spawned for {} in {:.2}ms",
+        pipeline.label(),
+        ms(spawn_start.elapsed())
+    );
 
     let stderr_handle = child.stderr.take().map(|stderr| {
         std::thread::spawn(move || {
@@ -557,11 +798,13 @@ fn run_baked_single_pass(
 
     let w = out_w as usize;
     let h = br_h_even as usize;
-    let nv12_frame_size = w * h * 3 / 2;
-    let mut writer = std::io::BufWriter::with_capacity(nv12_frame_size * 8, br_stdin);
+    let raw_frame_size = br_input_format.frame_size(w, h);
+    let mut writer = std::io::BufWriter::with_capacity(raw_frame_size * 8, br_stdin);
+    let mut br_stats = None;
     let write_result = write_br_frames(
         project,
         &mut writer,
+        br_input_format,
         fps,
         source_fps,
         br_scale,
@@ -570,14 +813,21 @@ fn run_baked_single_pass(
         br_h_even,
         total_frames,
         &ffmpeg_progress,
+        render_backend_status,
         progress_cb,
     );
-    let write_result = if write_result.is_ok() {
-        writer
-            .flush()
-            .map_err(|e| StdinWriteError::new("ffmpeg stdin flush", e))
-    } else {
-        write_result
+    let mut flush_duration = Duration::ZERO;
+    let write_result = match write_result {
+        Ok(stats) => {
+            br_stats = Some(stats);
+            let flush_start = Instant::now();
+            let flush_result = writer
+                .flush()
+                .map_err(|e| StdinWriteError::new("ffmpeg stdin flush", e));
+            flush_duration = flush_start.elapsed();
+            flush_result
+        }
+        Err(e) => Err(e),
     };
     drop(writer);
 
@@ -585,15 +835,28 @@ fn run_baked_single_pass(
         emit_progress(progress_cb, 0.99);
     }
 
+    let wait_start = Instant::now();
     let status = child
         .wait()
         .map_err(|e| format!("ffmpeg single-pass wait: {e}"))?;
+    let ffmpeg_wait = wait_start.elapsed();
     if let Some(handle) = stdout_handle {
         let _ = handle.join();
     }
     let stderr = stderr_handle
         .and_then(|handle| handle.join().ok())
         .unwrap_or_default();
+
+    if let Some(stats) = &br_stats {
+        log_baked_export_summary(
+            stats,
+            pipeline,
+            codec,
+            pass_start.elapsed(),
+            ffmpeg_wait,
+            flush_duration,
+        );
+    }
 
     if !status.success() {
         let details = stderr.trim();
@@ -710,6 +973,7 @@ fn mux_replacement_audio(
 fn write_br_frames(
     project: &Project,
     writer: &mut impl Write,
+    br_input_format: BrInputFormat,
     fps: f64,
     source_fps: f64,
     br_scale: f32,
@@ -718,12 +982,17 @@ fn write_br_frames(
     br_h_even: u32,
     total_frames: u64,
     ffmpeg_progress: &AtomicU32,
+    render_backend_status: Option<&AtomicU32>,
     progress_cb: &ProgressCallback,
-) -> Result<(), StdinWriteError> {
+) -> Result<BrFrameWriteStats, StdinWriteError> {
+    let total_start = Instant::now();
+    let mut stats = BrFrameWriteStats::new();
     let w = out_w as usize;
     let h = br_h_even as usize;
     let nv12_frame_size = w * h * 3 / 2;
     let mut nv12_buf = vec![0u8; nv12_frame_size];
+    let mut rgba_buf = Vec::new();
+    let mut rgba_pipe_buf = Vec::new();
     let uv_off = w * h;
     let frame_ratio = if source_fps.is_finite() && source_fps > 0.0 {
         source_fps / fps
@@ -739,35 +1008,101 @@ fn write_br_frames(
         frame_ratio
     );
 
-    match rythmo_gpu_renderer::GpuRenderer::new() {
+    let gpu_init_start = Instant::now();
+    let gpu_result = rythmo_gpu_renderer::GpuRenderer::new();
+    stats.renderer_init += gpu_init_start.elapsed();
+
+    match gpu_result {
         Ok(mut gpu) => {
-            log::info!("Single-pass BR render: GPU pipelined");
-            gpu.submit_render(project, 0.0, out_w, fps, br_scale);
+            stats.backend = match br_input_format {
+                BrInputFormat::Nv12 => BrRenderBackend::GpuWgpuNv12,
+                BrInputFormat::Rgba => BrRenderBackend::GpuWgpuRgbaCuda,
+            };
+            log::info!("Single-pass BR render: {}", stats.backend.label());
+            if let Some(status) = render_backend_status {
+                status.store(EXPORT_RENDER_BACKEND_GPU, Ordering::Relaxed);
+            }
+            let scene = rythmo_gpu_renderer::GpuExportScene::new(project);
+            let submit_start = Instant::now();
+            match br_input_format {
+                BrInputFormat::Nv12 => {
+                    gpu.submit_render_nv12(&scene, 0.0, out_w, fps, br_scale, br_h_even);
+                }
+                BrInputFormat::Rgba => gpu.submit_render(&scene, 0.0, out_w, fps, br_scale),
+            }
+            stats.submit += submit_start.elapsed();
 
             for frame in 1..total_frames as i64 {
-                let rgba = gpu.finish_render(out_w, br_h);
+                let finish_start = Instant::now();
+                match br_input_format {
+                    BrInputFormat::Nv12 => gpu.finish_render_nv12_into(&mut nv12_buf),
+                    BrInputFormat::Rgba => gpu.finish_render_into(out_w, br_h, &mut rgba_buf),
+                }
+                stats.finish_readback += finish_start.elapsed();
                 let video_pos = frame as f64 * frame_ratio;
-                gpu.submit_render(project, video_pos, out_w, fps, br_scale);
+                let submit_start = Instant::now();
+                match br_input_format {
+                    BrInputFormat::Nv12 => {
+                        gpu.submit_render_nv12(&scene, video_pos, out_w, fps, br_scale, br_h_even);
+                    }
+                    BrInputFormat::Rgba => {
+                        gpu.submit_render(&scene, video_pos, out_w, fps, br_scale);
+                    }
+                }
+                stats.submit += submit_start.elapsed();
 
-                rgba_to_nv12(&rgba, &mut nv12_buf, w, h, br_h as usize, uv_off);
+                let frame_bytes = match br_input_format {
+                    BrInputFormat::Nv12 => nv12_buf.as_slice(),
+                    BrInputFormat::Rgba => {
+                        let pad_start = Instant::now();
+                        rgba_pad_to_even(&rgba_buf, &mut rgba_pipe_buf, w, br_h as usize, h);
+                        stats.convert += pad_start.elapsed();
+                        rgba_pipe_buf.as_slice()
+                    }
+                };
+                let write_start = Instant::now();
                 writer
-                    .write_all(&nv12_buf)
+                    .write_all(frame_bytes)
                     .map_err(|e| StdinWriteError::new("ffmpeg stdin", e))?;
+                stats.write += write_start.elapsed();
+                stats.frames += 1;
 
                 if frame as u64 % progress_interval == 0 {
                     report_baked_progress(frame as u64, total_frames, ffmpeg_progress, progress_cb);
                 }
             }
 
-            let rgba = gpu.finish_render(out_w, br_h);
-            rgba_to_nv12(&rgba, &mut nv12_buf, w, h, br_h as usize, uv_off);
+            let finish_start = Instant::now();
+            match br_input_format {
+                BrInputFormat::Nv12 => gpu.finish_render_nv12_into(&mut nv12_buf),
+                BrInputFormat::Rgba => gpu.finish_render_into(out_w, br_h, &mut rgba_buf),
+            }
+            stats.finish_readback += finish_start.elapsed();
+            let frame_bytes = match br_input_format {
+                BrInputFormat::Nv12 => nv12_buf.as_slice(),
+                BrInputFormat::Rgba => {
+                    let pad_start = Instant::now();
+                    rgba_pad_to_even(&rgba_buf, &mut rgba_pipe_buf, w, br_h as usize, h);
+                    stats.convert += pad_start.elapsed();
+                    rgba_pipe_buf.as_slice()
+                }
+            };
+            let write_start = Instant::now();
             writer
-                .write_all(&nv12_buf)
+                .write_all(frame_bytes)
                 .map_err(|e| StdinWriteError::new("ffmpeg stdin", e))?;
+            stats.write += write_start.elapsed();
+            stats.frames += 1;
+            stats.gpu_stats = Some(gpu.stats());
             report_baked_progress(total_frames, total_frames, ffmpeg_progress, progress_cb);
         }
         Err(e) => {
+            stats.backend = BrRenderBackend::Cpu;
             log::warn!("GPU unavailable ({}), CPU fallback", e);
+            if let Some(status) = render_backend_status {
+                status.store(EXPORT_RENDER_BACKEND_CPU, Ordering::Relaxed);
+            }
+            let cpu_init_start = Instant::now();
             let n_threads = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(4);
@@ -776,10 +1111,12 @@ fn write_br_frames(
             let mut renderers: Vec<rythmo_cpu_renderer::CpuRenderer> = (0..n_threads)
                 .map(|_| rythmo_cpu_renderer::CpuRenderer::new())
                 .collect();
+            stats.renderer_init += cpu_init_start.elapsed();
             let frame_indices: Vec<i64> = (0..total_frames as i64).collect();
 
             for batch in frame_indices.chunks(n_threads) {
-                let rendered: Vec<Vec<u8>> = std::thread::scope(|scope| {
+                let render_start = Instant::now();
+                let rendered: Result<Vec<Vec<u8>>, StdinWriteError> = std::thread::scope(|scope| {
                     let handles: Vec<_> = batch
                         .iter()
                         .zip(renderers.iter_mut())
@@ -790,15 +1127,38 @@ fn write_br_frames(
                             })
                         })
                         .collect();
-                    handles.into_iter().map(|h| h.join().unwrap()).collect()
+                    handles
+                        .into_iter()
+                        .map(|h| {
+                            h.join().map_err(|_| {
+                                StdinWriteError::render_panic("CPU BR renderer panicked")
+                            })
+                        })
+                        .collect()
                 });
+                stats.cpu_render += render_start.elapsed();
+                let rendered = rendered?;
 
                 for (i, rgba) in rendered.iter().enumerate() {
                     let frame = batch[i];
-                    rgba_to_nv12(rgba, &mut nv12_buf, w, h, br_h as usize, uv_off);
+                    let convert_start = Instant::now();
+                    let frame_bytes = match br_input_format {
+                        BrInputFormat::Nv12 => {
+                            rgba_to_nv12(rgba, &mut nv12_buf, w, h, br_h as usize, uv_off);
+                            nv12_buf.as_slice()
+                        }
+                        BrInputFormat::Rgba => {
+                            rgba_pad_to_even(rgba, &mut rgba_pipe_buf, w, br_h as usize, h);
+                            rgba_pipe_buf.as_slice()
+                        }
+                    };
+                    stats.convert += convert_start.elapsed();
+                    let write_start = Instant::now();
                     writer
-                        .write_all(&nv12_buf)
+                        .write_all(frame_bytes)
                         .map_err(|e| StdinWriteError::new("ffmpeg stdin", e))?;
+                    stats.write += write_start.elapsed();
+                    stats.frames += 1;
                     let completed = frame as u64 + 1;
                     if completed % progress_interval == 0 || completed == total_frames {
                         report_baked_progress(
@@ -813,7 +1173,8 @@ fn write_br_frames(
         }
     }
 
-    Ok(())
+    stats.total = total_start.elapsed();
+    Ok(stats)
 }
 
 fn report_baked_progress(
@@ -832,6 +1193,87 @@ fn report_baked_progress(
         progress_cb,
         writer_progress.max(pipe_progress).clamp(0.01, 0.985),
     );
+}
+
+fn ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
+}
+
+fn avg_ms(duration: Duration, frames: u64) -> f64 {
+    if frames == 0 {
+        0.0
+    } else {
+        ms(duration) / frames as f64
+    }
+}
+
+fn fps(frames: u64, duration: Duration) -> f64 {
+    let secs = duration.as_secs_f64();
+    if secs <= 0.0 {
+        0.0
+    } else {
+        frames as f64 / secs
+    }
+}
+
+fn mib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+fn log_baked_export_summary(
+    stats: &BrFrameWriteStats,
+    pipeline: ExportPipeline,
+    codec: &str,
+    ffmpeg_total: Duration,
+    ffmpeg_wait: Duration,
+    flush: Duration,
+) {
+    log::info!(
+        "Export timing summary: pipeline={}, codec={}, BR backend={}, frames={}, BR {:.2}s ({:.1} fps), ffmpeg {:.2}s ({:.1} fps)",
+        pipeline.label(),
+        codec,
+        stats.backend.label(),
+        stats.frames,
+        stats.total.as_secs_f64(),
+        fps(stats.frames, stats.total),
+        ffmpeg_total.as_secs_f64(),
+        fps(stats.frames, ffmpeg_total),
+    );
+    log::info!(
+        "Export timing detail: init {:.2}ms, submit {:.2}ms/frame, readback {:.2}ms/frame, CPU convert/pad {:.2}ms/frame, pipe write {:.2}ms/frame, CPU render {:.2}ms/frame, stdin flush {:.2}ms, ffmpeg wait {:.2}s",
+        ms(stats.renderer_init),
+        avg_ms(stats.submit, stats.frames),
+        avg_ms(stats.finish_readback, stats.frames),
+        avg_ms(stats.convert, stats.frames),
+        avg_ms(stats.write, stats.frames),
+        avg_ms(stats.cpu_render, stats.frames),
+        ms(flush),
+        ffmpeg_wait.as_secs_f64(),
+    );
+    if let Some(gpu) = &stats.gpu_stats {
+        let avg_draw_calls = if gpu.frames_submitted == 0 {
+            0.0
+        } else {
+            gpu.draw_calls as f64 / gpu.frames_submitted as f64
+        };
+        log::info!(
+            "GPU export stats: submitted={}, avg_draw_calls={:.1}, last_draw_calls={}, last_quads={}, last_icons={}, last_icon_batches={}, textures={}, bind_groups={}, text_uploads={} ({:.2}ms), icon_uploads={} ({:.2}ms), readback={:.2}MiB total (last {} bytes)",
+            gpu.frames_submitted,
+            avg_draw_calls,
+            gpu.last_frame_draw_calls,
+            gpu.last_frame_quads,
+            gpu.last_frame_icons,
+            gpu.last_frame_icon_batches,
+            gpu.texture_creations,
+            gpu.bind_groups_created,
+            gpu.text_uploads,
+            ms(gpu.text_upload_time),
+            gpu.icon_uploads,
+            ms(gpu.icon_upload_time),
+            mib(gpu.total_readback_bytes),
+            gpu.last_readback_bytes,
+        );
+    }
 }
 
 fn map_progress(progress: f32, start: f32, end: f32) -> f32 {
@@ -884,6 +1326,22 @@ fn parse_ffmpeg_time(value: &str) -> Option<f64> {
     let minutes = parts.next()?.parse::<f64>().ok()?;
     let seconds = parts.next()?.parse::<f64>().ok()?;
     Some(hours * 3600.0 + minutes * 60.0 + seconds)
+}
+
+fn rgba_pad_to_even(rgba: &[u8], out: &mut Vec<u8>, w: usize, br_h: usize, h: usize) {
+    let row_bytes = w * 4;
+    let rendered_len = row_bytes * br_h;
+    let total = row_bytes * h;
+
+    out.clear();
+    out.extend_from_slice(&rgba[..rendered_len.min(rgba.len())]);
+    if out.len() < total {
+        let first_padded_pixel = out.len() / 4;
+        out.resize(total, 0);
+        for pixel in first_padded_pixel..(total / 4) {
+            out[pixel * 4 + 3] = 255;
+        }
+    }
 }
 
 /// Convert RGBA pixels to NV12.
