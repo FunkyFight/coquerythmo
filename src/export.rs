@@ -49,6 +49,10 @@ pub struct LineData {
     #[serde(default)]
     pub voice_actor_names: Vec<String>,
     #[serde(default)]
+    pub syllable_ratios: Vec<f32>,
+    #[serde(default)]
+    pub karaoke: bool,
+    #[serde(default)]
     pub note: String,
 }
 
@@ -89,6 +93,8 @@ impl ProjectData {
                     character_name: l.character_name.clone(),
                     character_color: l.character_color,
                     voice_actor_names: l.voice_actor_names.clone(),
+                    syllable_ratios: l.syllable_ratios.clone(),
+                    karaoke: l.karaoke,
                     note: l.note.clone(),
                 })
                 .collect(),
@@ -231,6 +237,10 @@ impl ProjectData {
                     line.note = l.note.clone();
                 }
             }
+            if let Some(line) = project.get_line_mut(line_id) {
+                line.karaoke = l.karaoke;
+                line.syllable_ratios = l.syllable_ratios.clone();
+            }
         }
 
         for m in &self.markers {
@@ -364,6 +374,8 @@ fn push_srt_block(block_lines: &[&str], fps: f64, lines: &mut Vec<LineData>) -> 
         character_name: "Character".to_string(),
         character_color: [1.0, 1.0, 1.0, 1.0],
         voice_actor_names: Vec::new(),
+        syllable_ratios: Vec::new(),
+        karaoke: false,
         note: String::new(),
     });
 
@@ -649,6 +661,8 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
                                 character_name: char_name,
                                 character_color: char_color,
                                 voice_actor_names: Vec::new(),
+                                syllable_ratios: Vec::new(),
+                                karaoke: false,
                                 note,
                             });
 
@@ -756,6 +770,8 @@ mod tests {
                 character_name: "A".into(),
                 character_color: [1.0; 4],
                 voice_actor_names: Vec::new(),
+                syllable_ratios: Vec::new(),
+                karaoke: false,
                 note: String::new(),
             }],
             markers: vec![],
@@ -786,6 +802,8 @@ mod tests {
                     character_name: "A".into(),
                     character_color: [1.0; 4],
                     voice_actor_names: Vec::new(),
+                    syllable_ratios: Vec::new(),
+                    karaoke: false,
                     note: String::new(),
                 },
                 LineData {
@@ -796,6 +814,8 @@ mod tests {
                     character_name: "A".into(),
                     character_color: [1.0; 4],
                     voice_actor_names: Vec::new(),
+                    syllable_ratios: Vec::new(),
+                    karaoke: false,
                     note: String::new(),
                 },
             ],
@@ -828,6 +848,8 @@ mod tests {
                 character_name: "X".into(),
                 character_color: [1.0; 4],
                 voice_actor_names: Vec::new(),
+                syllable_ratios: Vec::new(),
+                karaoke: false,
                 note: String::new(),
             }],
             markers: vec![],
@@ -836,6 +858,50 @@ mod tests {
         };
         data.apply_to_project(&mut project, 24.0);
         assert_eq!(project.line_count(), 1);
+    }
+
+    #[test]
+    fn test_apply_preserves_karaoke_syllable_ratios() {
+        let data = ProjectData {
+            source_fps: 24.0,
+            lines: vec![
+                LineData {
+                    start_frame: 0,
+                    duration_frames: 24,
+                    y_slot: 0.25,
+                    text: "karaoke".into(),
+                    character_name: "A".into(),
+                    character_color: [1.0; 4],
+                    voice_actor_names: Vec::new(),
+                    syllable_ratios: vec![0.2, 0.8],
+                    karaoke: true,
+                    note: String::new(),
+                },
+                LineData {
+                    start_frame: 24,
+                    duration_frames: 24,
+                    y_slot: 0.5,
+                    text: "normal".into(),
+                    character_name: "B".into(),
+                    character_color: [1.0; 4],
+                    voice_actor_names: Vec::new(),
+                    syllable_ratios: vec![0.3, 0.7],
+                    karaoke: false,
+                    note: String::new(),
+                },
+            ],
+            markers: vec![],
+            characters: vec![],
+            voice_actors: vec![],
+        };
+
+        let mut project = Project::new();
+        data.apply_to_project(&mut project, 24.0);
+
+        let lines: Vec<_> = project.lines().collect();
+        assert!(lines[0].karaoke);
+        assert_eq!(lines[0].syllable_ratios, vec![0.2, 0.8]);
+        assert_eq!(lines[1].syllable_ratios, vec![0.3, 0.7]);
     }
 
     #[test]

@@ -27,6 +27,95 @@ pub struct StretchedText {
     pub line_id: u64,
     pub text: String,
     pub dest_rect: Rect,
+    pub draw_rect: Rect,
+    pub uv_rect: [f32; 4],
+    pub tint: [f32; 4],
+    pub stretch: bool,
+    pub font_scale: f32,
+    pub prewarm: bool,
+}
+
+impl StretchedText {
+    pub fn new(line_id: u64, text: String, dest_rect: Rect) -> Self {
+        Self {
+            line_id,
+            text,
+            dest_rect,
+            draw_rect: dest_rect,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            tint: [1.0, 1.0, 1.0, 1.0],
+            stretch: true,
+            font_scale: 1.0,
+            prewarm: false,
+        }
+    }
+
+    pub fn natural(
+        line_id: u64,
+        text: String,
+        dest_rect: Rect,
+        font_scale: f32,
+        tint: [f32; 4],
+    ) -> Self {
+        Self {
+            line_id,
+            text,
+            dest_rect,
+            draw_rect: dest_rect,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            tint,
+            stretch: false,
+            font_scale,
+            prewarm: false,
+        }
+    }
+
+    pub fn natural_prewarm(line_id: u64, text: String, dest_rect: Rect, font_scale: f32) -> Self {
+        Self {
+            line_id,
+            text,
+            dest_rect,
+            draw_rect: Rect {
+                x: dest_rect.x,
+                y: dest_rect.y,
+                width: 0.0,
+                height: 0.0,
+            },
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            tint: [1.0, 1.0, 1.0, 1.0],
+            stretch: false,
+            font_scale,
+            prewarm: true,
+        }
+    }
+
+    pub fn natural_clipped(
+        line_id: u64,
+        text: String,
+        dest_rect: Rect,
+        clip_ratio: f32,
+        font_scale: f32,
+        tint: [f32; 4],
+    ) -> Option<Self> {
+        let clip_ratio = clip_ratio.clamp(0.0, 1.0);
+        if clip_ratio <= 0.0 {
+            return None;
+        }
+
+        let mut draw_rect = dest_rect;
+        draw_rect.width *= clip_ratio;
+        Some(Self {
+            line_id,
+            text,
+            dest_rect,
+            draw_rect,
+            uv_rect: [0.0, 0.0, clip_ratio, 1.0],
+            tint,
+            stretch: false,
+            font_scale,
+            prewarm: false,
+        })
+    }
 }
 
 pub struct UiRenderer {
@@ -298,6 +387,32 @@ impl UiRenderer {
         None
     }
 
+    pub fn cursor_pos_from_segments(
+        &self,
+        segments: &[crate::ui::rythmo::CursorSegmentInfo],
+        x_ratio: f32,
+    ) -> Option<usize> {
+        let mut closest = None;
+        let mut min_diff = f32::MAX;
+
+        for segment in segments {
+            let Some(cached) = self.text_texture_cache.get(&segment.cache_id) else {
+                continue;
+            };
+            for (local_idx, &local_ratio) in cached.char_x_ratios.iter().enumerate() {
+                let global_ratio =
+                    (segment.start_ratio + local_ratio * segment.width_ratio).clamp(0.0, 1.0);
+                let diff = (global_ratio - x_ratio).abs();
+                if diff < min_diff {
+                    min_diff = diff;
+                    closest = Some(segment.start_char + local_idx);
+                }
+            }
+        }
+
+        closest
+    }
+
     pub fn texture_sampler(&self) -> &wgpu::Sampler {
         &self.icon_atlas.sampler
     }
@@ -311,15 +426,18 @@ impl UiRenderer {
     ) -> Vec<(IconInstance, u64)> {
         let font_size = crate::config::get().ui.font_size * 2.0;
         let mut result = Vec::new();
+        let mut remaining_prewarm_misses = 2usize;
 
         for st in stretched {
             if st.text.is_empty() {
                 continue;
             }
 
+            let effective_font_size = font_size * st.font_scale.max(0.1);
             let tex_w = st.dest_rect.width.max(1.0).ceil() as u32;
             let tex_h = st.dest_rect.height.max(1.0).ceil() as u32;
-            let cache_hash = Self::hash_stretched_text(&st.text, font_size, tex_w, tex_h);
+            let cache_hash =
+                Self::hash_stretched_text(&st.text, effective_font_size, tex_w, tex_h, st.stretch);
 
             // Check cache
             let needs_update = match self.text_texture_cache.get(&st.line_id) {
@@ -327,14 +445,32 @@ impl UiRenderer {
                 None => true,
             };
 
+            if st.prewarm && needs_update {
+                if remaining_prewarm_misses == 0 {
+                    continue;
+                }
+                remaining_prewarm_misses -= 1;
+            }
+
             if needs_update {
-                let Some(rendered) = crate::vector_text::render_rythmo_text_with_ratios(
-                    &mut self.font_system,
-                    &st.text,
-                    font_size,
-                    tex_w,
-                    tex_h,
-                ) else {
+                let rendered = if st.stretch {
+                    crate::vector_text::render_rythmo_text_with_ratios(
+                        &mut self.font_system,
+                        &st.text,
+                        effective_font_size,
+                        tex_w,
+                        tex_h,
+                    )
+                } else {
+                    crate::vector_text::render_rythmo_text_natural(
+                        &mut self.font_system,
+                        &st.text,
+                        effective_font_size,
+                        tex_w,
+                        tex_h,
+                    )
+                };
+                let Some(rendered) = rendered else {
                     continue;
                 };
                 let w = rendered.width;
@@ -404,17 +540,25 @@ impl UiRenderer {
                 );
             }
 
+            if st.prewarm {
+                continue;
+            }
+
+            if st.draw_rect.width <= 0.0 || st.draw_rect.height <= 0.0 {
+                continue;
+            }
+
             if let Some(_cached) = self.text_texture_cache.get(&st.line_id) {
                 result.push((
                     IconInstance {
                         rect: [
-                            st.dest_rect.x,
-                            st.dest_rect.y,
-                            st.dest_rect.width,
-                            st.dest_rect.height,
+                            st.draw_rect.x,
+                            st.draw_rect.y,
+                            st.draw_rect.width,
+                            st.draw_rect.height,
                         ],
-                        uv_rect: [0.0, 0.0, 1.0, 1.0],
-                        tint: [1.0, 1.0, 1.0, 1.0],
+                        uv_rect: st.uv_rect,
+                        tint: st.tint,
                     },
                     st.line_id,
                 ));
@@ -424,7 +568,13 @@ impl UiRenderer {
         result
     }
 
-    fn hash_stretched_text(text: &str, font_size: f32, dest_w: u32, dest_h: u32) -> u64 {
+    fn hash_stretched_text(
+        text: &str,
+        font_size: f32,
+        dest_w: u32,
+        dest_h: u32,
+        stretch: bool,
+    ) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         "vector-rythmo".hash(&mut hasher);
@@ -432,6 +582,7 @@ impl UiRenderer {
         font_size.to_bits().hash(&mut hasher);
         dest_w.hash(&mut hasher);
         dest_h.hash(&mut hasher);
+        stretch.hash(&mut hasher);
         crate::vector_text::rythmo_font_family_name().hash(&mut hasher);
         hasher.finish()
     }
@@ -465,6 +616,7 @@ impl UiRenderer {
         labels: &[LabelInfo],
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         stretched_quads: &[(IconInstance, u64)],
+        post_stretched_quads: &[QuadInstance],
         base_textured: &[(IconInstance, &wgpu::BindGroup)],
         extra_textured: &[(IconInstance, &wgpu::BindGroup)],
         post_texture_quads: &[QuadInstance], // drawn after textured quads (e.g. color picker indicators)
@@ -682,6 +834,19 @@ impl UiRenderer {
                     pass.set_vertex_buffer(0, buf.slice(..));
                     pass.draw(0..6, 0..1);
                 }
+            }
+
+            if !post_stretched_quads.is_empty() {
+                let post_stretched_buf =
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Post-Stretched Quad Buffer"),
+                        contents: bytemuck::cast_slice(post_stretched_quads),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    });
+                pass.set_pipeline(&self.quad_pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_vertex_buffer(0, post_stretched_buf.slice(..));
+                pass.draw(0..6, 0..post_stretched_quads.len() as u32);
             }
 
             // Draw base textured quads before overlays (e.g. project actor icons)

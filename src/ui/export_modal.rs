@@ -3,7 +3,7 @@ use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VA
 use crate::i18n::t;
 
 const CARD_W: f32 = 430.0;
-const CARD_H: f32 = 342.0;
+const CARD_H: f32 = 398.0;
 
 #[derive(Clone, Copy, PartialEq)]
 enum ActiveField {
@@ -32,6 +32,8 @@ pub struct ExportModal {
     pub fps_text: String,
     pub br_scale: f32,
     pub br_scale_text: String,
+    pub karaoke_text_scale: f32,
+    pub karaoke_text_scale_text: String,
     pub export_width: u32,
     pub export_width_text: String,
     pub export_height: u32,
@@ -47,6 +49,7 @@ pub enum ExportModalResult {
     Export {
         fps: f64,
         br_scale: f32,
+        karaoke_text_scale: f32,
         export_width: u32,
         export_height: u32,
         instrumental_audio_path: Option<std::path::PathBuf>,
@@ -64,6 +67,8 @@ impl ExportModal {
             fps_text: fps.to_string(),
             br_scale: 1.0,
             br_scale_text: "100%".to_string(),
+            karaoke_text_scale: 1.0,
+            karaoke_text_scale_text: "100%".to_string(),
             export_width,
             export_width_text: export_width.to_string(),
             export_height,
@@ -84,6 +89,11 @@ impl ExportModal {
         self.br_scale_text = format!("{}%", (self.br_scale * 100.0).round() as u32);
     }
 
+    fn update_karaoke_text_scale_text(&mut self) {
+        self.karaoke_text_scale_text =
+            format!("{}%", (self.karaoke_text_scale * 100.0).round() as u32);
+    }
+
     fn card_rect(screen_w: f32, screen_h: f32) -> Rect {
         Rect {
             x: (screen_w - CARD_W) / 2.0,
@@ -94,7 +104,7 @@ impl ExportModal {
     }
 
     fn instrumental_audio_rects(card: Rect) -> (Rect, Rect) {
-        let audio_y = card.y + 210.0;
+        let audio_y = card.y + 266.0;
         let browse_w = 88.0;
         let audio_gap = 8.0;
         let audio_field_w = card.width - 40.0 - browse_w - audio_gap;
@@ -155,6 +165,7 @@ impl ExportModal {
         ExportModalResult::Export {
             fps: self.fps as f64,
             br_scale: self.br_scale,
+            karaoke_text_scale: self.karaoke_text_scale,
             export_width: self.export_width,
             export_height: self.export_height,
             instrumental_audio_path,
@@ -354,6 +365,30 @@ impl ExportModal {
                 if scale_plus.contains(*x, *y) {
                     self.br_scale = (self.br_scale + 0.25).min(2.0);
                     self.update_scale_text();
+                    return ExportModalResult::Consumed;
+                }
+
+                let karaoke_scale_y = card.y + 210.0;
+                let karaoke_scale_minus = Rect {
+                    x: card.x + 20.0,
+                    y: karaoke_scale_y,
+                    width: btn_sz,
+                    height: 30.0,
+                };
+                let karaoke_scale_plus = Rect {
+                    x: card.x + 20.0 + btn_sz + val_w,
+                    y: karaoke_scale_y,
+                    width: btn_sz,
+                    height: 30.0,
+                };
+                if karaoke_scale_minus.contains(*x, *y) {
+                    self.karaoke_text_scale = (self.karaoke_text_scale - 0.10).max(0.5);
+                    self.update_karaoke_text_scale_text();
+                    return ExportModalResult::Consumed;
+                }
+                if karaoke_scale_plus.contains(*x, *y) {
+                    self.karaoke_text_scale = (self.karaoke_text_scale + 0.10).min(2.0);
+                    self.update_karaoke_text_scale_text();
                     return ExportModalResult::Consumed;
                 }
 
@@ -764,12 +799,118 @@ impl ExportModal {
             font_family_override: None,
         });
 
+        labels.push(LabelInfo {
+            text: t("export_modal.karaoke_text_scale"),
+            bounds: Rect {
+                x: fx,
+                y: card.y + 190.0,
+                width: fw,
+                height: 18.0,
+            },
+            h_align: HAlign::Left,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(12.0),
+            color_override: Some([180, 180, 195]),
+            font_family_override: None,
+        });
+
+        let karaoke_scale_y = card.y + 210.0;
+        overlay_quads.push(QuadInstance {
+            rect: [fx, karaoke_scale_y, btn_size, 30.0],
+            color: [0.15, 0.15, 0.18, 1.0],
+            color_bottom: [0.15, 0.15, 0.18, 1.0],
+            border_color: [0.30, 0.30, 0.36, 0.5],
+            border_width: 1.0,
+            border_radius: 4.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+        labels.push(LabelInfo {
+            text: "\u{2212}",
+            bounds: Rect {
+                x: fx,
+                y: karaoke_scale_y,
+                width: btn_size,
+                height: 30.0,
+            },
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(14.0),
+            color_override: None,
+            font_family_override: None,
+        });
+        overlay_quads.push(QuadInstance {
+            rect: [fx + btn_size, karaoke_scale_y, value_w, 30.0],
+            color: [0.08, 0.08, 0.10, 1.0],
+            color_bottom: [0.08, 0.08, 0.10, 1.0],
+            border_color: [0.30, 0.30, 0.36, 0.3],
+            border_width: 1.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+        labels.push(LabelInfo {
+            text: &self.karaoke_text_scale_text,
+            bounds: Rect {
+                x: fx + btn_size,
+                y: karaoke_scale_y,
+                width: value_w,
+                height: 30.0,
+            },
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(12.0),
+            color_override: None,
+            font_family_override: None,
+        });
+        overlay_quads.push(QuadInstance {
+            rect: [fx + btn_size + value_w, karaoke_scale_y, btn_size, 30.0],
+            color: [0.15, 0.15, 0.18, 1.0],
+            color_bottom: [0.15, 0.15, 0.18, 1.0],
+            border_color: [0.30, 0.30, 0.36, 0.5],
+            border_width: 1.0,
+            border_radius: 4.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+        labels.push(LabelInfo {
+            text: "+",
+            bounds: Rect {
+                x: fx + btn_size + value_w,
+                y: karaoke_scale_y,
+                width: btn_size,
+                height: 30.0,
+            },
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(14.0),
+            color_override: None,
+            font_family_override: None,
+        });
+
         // --- Optional instrumental audio ---
         labels.push(LabelInfo {
             text: t("export_modal.instrumental_audio"),
             bounds: Rect {
                 x: fx,
-                y: card.y + 190.0,
+                y: card.y + 246.0,
                 width: fw,
                 height: 18.0,
             },
@@ -859,7 +1000,7 @@ impl ExportModal {
             text: t("export_modal.instrumental_audio_hint"),
             bounds: Rect {
                 x: fx,
-                y: card.y + 242.0,
+                y: card.y + 298.0,
                 width: fw,
                 height: 18.0,
             },

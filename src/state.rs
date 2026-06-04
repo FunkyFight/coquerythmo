@@ -226,10 +226,44 @@ impl State {
         self.ui.open_save_prompt();
     }
 
-    pub fn toggle_syllable_mode(&mut self) {
-        self.ui.rythmo_state.syllable_mode = !self.ui.rythmo_state.syllable_mode;
-        self.ui.rebuild_toolbar();
-        log::info!("Syllable mode: {}", self.ui.rythmo_state.syllable_mode);
+    pub fn toggle_karaoke_for_selection(&mut self) {
+        let line_id = match self.ui.rythmo_state.selected {
+            Some(crate::ui::rythmo::Selection::Line(id)) => Some(id),
+            _ => self.ui.rythmo_state.hovered_line,
+        };
+        let Some(line_id) = line_id else {
+            self.show_toast(crate::i18n::t("toast.karaoke_select_line"), 3.0);
+            return;
+        };
+
+        let Some(line) = self.project.get_line(line_id) else {
+            return;
+        };
+        let old_karaoke = line.karaoke;
+        let old_ratios = line.syllable_ratios.clone();
+        let new_karaoke = !old_karaoke;
+        let new_ratios = if new_karaoke {
+            crate::syllable::timing_ratios(
+                &line.text,
+                &line.syllable_ratios,
+                &crate::config::get().lang,
+            )
+        } else {
+            old_ratios.clone()
+        };
+
+        if let Some(line) = self.project.get_line_mut(line_id) {
+            line.karaoke = new_karaoke;
+            line.syllable_ratios = new_ratios.clone();
+        }
+        self.ui.rythmo_state.selected = Some(crate::ui::rythmo::Selection::Line(line_id));
+        self.push_and_broadcast(Command::SetLineKaraoke {
+            line_id,
+            old_karaoke,
+            old_ratios,
+            new_karaoke,
+            new_ratios,
+        });
     }
 
     pub fn open_export_modal(&mut self) {
@@ -811,6 +845,23 @@ impl State {
                     l.text = text;
                 }
             }
+            CommandPayload::SetLineKaraoke {
+                line_id,
+                karaoke,
+                syllable_ratios,
+            } => {
+                log::debug!("Remote: set karaoke for line {}", line_id);
+                if let Some(l) = self.project.get_line_mut(line_id) {
+                    l.karaoke = karaoke;
+                    l.syllable_ratios = syllable_ratios;
+                }
+            }
+            CommandPayload::SetSyllableRatios { line_id, ratios } => {
+                log::debug!("Remote: set syllable ratios for line {}", line_id);
+                if let Some(l) = self.project.get_line_mut(line_id) {
+                    l.syllable_ratios = ratios;
+                }
+            }
             CommandPayload::SetCharacter {
                 line_id,
                 name,
@@ -893,6 +944,7 @@ impl State {
                 local.character_name = remote_line.character_name;
                 local.character_color = remote_line.character_color;
                 local.voice_actor_names = remote_line.voice_actor_names;
+                local.karaoke = remote_line.karaoke;
                 local.syllable_ratios = remote_line.syllable_ratios;
                 local.note = remote_line.note;
             } else {
@@ -983,6 +1035,36 @@ impl State {
                 if let (Some(id), Some(text)) = (data["line_id"].as_u64(), data["text"].as_str()) {
                     if let Some(l) = self.project.get_line_mut(id) {
                         l.text = text.to_string();
+                    }
+                }
+            }
+            "update_note" => {
+                if let (Some(id), Some(note)) = (data["line_id"].as_u64(), data["note"].as_str()) {
+                    if let Some(l) = self.project.get_line_mut(id) {
+                        l.note = note.to_string();
+                    }
+                }
+            }
+            "set_line_karaoke" => {
+                if let (Some(id), Some(karaoke)) =
+                    (data["line_id"].as_u64(), data["karaoke"].as_bool())
+                {
+                    if let Some(l) = self.project.get_line_mut(id) {
+                        l.karaoke = karaoke;
+                        if let Ok(ratios) =
+                            serde_json::from_value::<Vec<f32>>(data["syllable_ratios"].clone())
+                        {
+                            l.syllable_ratios = ratios;
+                        }
+                    }
+                }
+            }
+            "set_syllable_ratios" => {
+                if let Some(id) = data["line_id"].as_u64() {
+                    if let Ok(ratios) = serde_json::from_value::<Vec<f32>>(data["ratios"].clone()) {
+                        if let Some(l) = self.project.get_line_mut(id) {
+                            l.syllable_ratios = ratios;
+                        }
                     }
                 }
             }
@@ -1119,6 +1201,21 @@ impl State {
             } => {
                 serde_json::json!({ "action": "update_note", "line_id": line_id, "note": new_note })
             }
+            Command::SetLineKaraoke {
+                line_id,
+                new_karaoke,
+                new_ratios,
+                ..
+            } => {
+                serde_json::json!({ "action": "set_line_karaoke", "line_id": line_id, "karaoke": new_karaoke, "syllable_ratios": new_ratios })
+            }
+            Command::SetSyllableRatios {
+                line_id,
+                new_ratios,
+                ..
+            } => {
+                serde_json::json!({ "action": "set_syllable_ratios", "line_id": line_id, "ratios": new_ratios })
+            }
             Command::SetCharacter {
                 line_id,
                 new_name,
@@ -1178,6 +1275,8 @@ impl State {
                     | Command::UpdateLineText { .. }
                     | Command::SetCharacter { .. }
                     | Command::SetCharacterColor { .. }
+                    | Command::SetLineKaraoke { .. }
+                    | Command::SetSyllableRatios { .. }
                     | Command::SetVoiceActors { .. }
                     | Command::MoveMarker { .. }
             ) {
@@ -1220,7 +1319,6 @@ impl State {
         self.ui.rythmo_state.dragging = None;
         self.ui.rythmo_state.ghost_preview = None;
         self.ui.rythmo_state.context_menu = None;
-        self.ui.rythmo_state.syllable_mode = false;
 
         // Save current fullscreen state and enter fullscreen
         self.fullscreen_before_studio = self.window.fullscreen();
@@ -1535,6 +1633,25 @@ impl State {
                 new_text: text,
             });
         }
+    }
+
+    pub fn set_syllable_ratios(&mut self, line_id: u64, ratios: Vec<f32>) {
+        let Some(line) = self.project.get_line(line_id) else {
+            return;
+        };
+        let old_ratios = line.syllable_ratios.clone();
+        if old_ratios == ratios {
+            return;
+        }
+
+        if let Some(line) = self.project.get_line_mut(line_id) {
+            line.syllable_ratios = ratios.clone();
+        }
+        self.push_and_broadcast(Command::SetSyllableRatios {
+            line_id,
+            old_ratios,
+            new_ratios: ratios,
+        });
     }
 
     pub fn set_character(&mut self, line_id: u64, name: String, color: [f32; 4]) {
@@ -2132,6 +2249,7 @@ impl State {
             .as_deref()
             .map(Vec::as_slice)
             .unwrap_or(empty_waveform);
+        let fps = self.fps();
         self.ui.render(
             &mut self.ui_renderer,
             &self.gfx.device,
@@ -2143,6 +2261,7 @@ impl State {
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
             &self.project,
             current_frame,
+            fps,
             waveform,
         );
 
@@ -2209,6 +2328,7 @@ impl State {
             .video_player
             .as_ref()
             .map_or(0, |p| p.current_frame_interpolated());
+        let fps = self.fps();
 
         self.ui.render_studio(
             &mut self.ui_renderer,
@@ -2221,6 +2341,7 @@ impl State {
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
             &self.project,
             current_frame,
+            fps,
         );
 
         self.gfx.queue.submit(std::iter::once(encoder.finish()));
@@ -2292,6 +2413,7 @@ impl State {
             &[],
             &[],
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
+            &[],
             &[],
             &[],
             &[],

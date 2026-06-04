@@ -129,6 +129,7 @@ impl Project {
             character_color: char_color,
             voice_actor_names,
             syllable_ratios: Vec::new(),
+            karaoke: false,
             note: String::new(),
         };
         self.line_map.insert(id, line);
@@ -177,6 +178,7 @@ impl Project {
             character_color,
             voice_actor_names: Self::normalized_voice_actor_names(voice_actor_names),
             syllable_ratios: Vec::new(),
+            karaoke: false,
             note: String::new(),
         };
         self.line_map.insert(id, line);
@@ -472,6 +474,7 @@ mod tests {
             character_color: [1.0; 4],
             voice_actor_names: Vec::new(),
             syllable_ratios: Vec::new(),
+            karaoke: false,
             note: String::new(),
         };
         p.insert_line_at(1, line);

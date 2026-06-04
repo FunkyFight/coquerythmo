@@ -11,6 +11,7 @@ mod packet;
 mod project;
 mod rythmo_cpu_renderer;
 mod rythmo_gpu_renderer;
+mod rythmo_layout;
 mod rythmo_line;
 mod state;
 mod syllable;
@@ -405,6 +406,7 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
         UiAction::StartExport {
             fps,
             br_scale,
+            karaoke_text_scale,
             export_width,
             export_height,
             instrumental_audio_path,
@@ -435,6 +437,7 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
                             fps,
                             source_fps,
                             br_scale,
+                            karaoke_text_scale,
                             export_width,
                             export_height,
                             instrumental_audio_path.as_deref(),
@@ -528,13 +531,11 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
                 log::warn!("Recent project files missing, skipping");
             }
         }
-        UiAction::ToggleSyllableMode => {
-            state.toggle_syllable_mode();
+        UiAction::ToggleKaraokeForSelection => {
+            state.toggle_karaoke_for_selection();
         }
         UiAction::SetSyllableRatios { line_id, ratios } => {
-            if let Some(line) = state.project.get_line_mut(line_id) {
-                line.syllable_ratios = ratios;
-            }
+            state.set_syllable_ratios(line_id, ratios);
         }
         UiAction::OpenServerBrowser => {
             state.open_server_browser();
