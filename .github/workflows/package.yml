@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version ex: 1.1.0"
+        description: "Version ex: 3.0.2"
         required: true
         type: string
 
@@ -16,15 +16,15 @@ jobs:
         include:
           - os: windows-latest
             platform: windows
-            binary: coquerythmo.exe
+            exe_suffix: ".exe"
 
           - os: ubuntu-latest
             platform: linux
-            binary: coquerythmo
+            exe_suffix: ""
 
-          - os: macos-15
+          - os: macos-latest
             platform: macos
-            binary: coquerythmo
+            exe_suffix: ""
 
     runs-on: ${{ matrix.os }}
 
@@ -35,22 +35,12 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
       - name: Set version
         shell: pwsh
         run: |
-          $version = "${{ inputs.version }}"
-          if ([string]::IsNullOrWhiteSpace($version)) {
-            throw "Version requise."
-          }
+          ./set_version.ps1 "${{ inputs.version }}"
 
-          ./set_version.ps1 $version
-
-      - name: Install Linux build dependencies for wgpu/winit
+      - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         shell: bash
         run: |
@@ -58,6 +48,7 @@ jobs:
           sudo apt-get install -y \
             g++ \
             pkg-config \
+            zip \
             libx11-dev \
             libxi-dev \
             libxcursor-dev \
@@ -70,7 +61,7 @@ jobs:
             libgl1-mesa-dev \
             mesa-vulkan-drivers
 
-      - name: Install bundled FFmpeg packages
+      - name: Install FFmpeg static packages
         shell: bash
         run: |
           npm init -y
@@ -79,27 +70,18 @@ jobs:
       - name: Build coquerythmo
         run: cargo build --release
 
-      - name: Build updater on Windows only
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cd updater
-          cargo build --release
-          cd ..
+      - name: Build updater
+        run: cargo build --release --manifest-path updater/Cargo.toml
 
-      - name: Prepare dist folder
+      - name: Prepare dist
         shell: bash
         run: |
           mkdir -p dist
-          cp "target/release/${{ matrix.binary }}" dist/
 
-      - name: Copy updater on Windows only
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Copy-Item -Force "updater\target\release\updater.exe" "dist\updater.exe"
+          cp "target/release/coquerythmo${{ matrix.exe_suffix }}" "dist/"
+          cp "updater/target/release/updater${{ matrix.exe_suffix }}" "dist/"
 
-      - name: Copy FFmpeg and FFprobe next to app
+      - name: Copy FFmpeg and FFprobe
         shell: bash
         run: |
           node <<'NODE'
@@ -109,17 +91,10 @@ jobs:
           const ffmpeg = require("ffmpeg-static");
           const ffprobe = require("ffprobe-static").path;
 
-          if (!ffmpeg) {
-            throw new Error("ffmpeg-static did not return a binary path");
-          }
-
-          if (!ffprobe) {
-            throw new Error("ffprobe-static did not return a binary path");
-          }
+          if (!ffmpeg) throw new Error("ffmpeg-static did not return a binary path");
+          if (!ffprobe) throw new Error("ffprobe-static did not return a binary path");
 
           const dist = path.resolve("dist");
-          fs.mkdirSync(dist, { recursive: true });
-
           const exe = process.platform === "win32" ? ".exe" : "";
 
           const ffmpegDest = path.join(dist, `ffmpeg${exe}`);
@@ -133,10 +108,33 @@ jobs:
             fs.chmodSync(ffprobeDest, 0o755);
           }
 
-          console.log("Copied:");
-          console.log(ffmpegDest);
-          console.log(ffprobeDest);
+          console.log("FFmpeg:", ffmpegDest);
+          console.log("FFprobe:", ffprobeDest);
           NODE
+
+      - name: Make Unix binaries executable
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          chmod +x dist/coquerythmo
+          chmod +x dist/updater
+          chmod +x dist/ffmpeg
+          chmod +x dist/ffprobe
+
+      - name: Detect Rust target arch
+        shell: bash
+        run: |
+          HOST="$(rustc -vV | awk '/host:/ { print $2 }')"
+
+          case "$HOST" in
+            x86_64-*) ARCH="x86_64" ;;
+            aarch64-*) ARCH="aarch64" ;;
+            i686-*|i586-*|i486-*) ARCH="x86" ;;
+            *) ARCH="$(uname -m)" ;;
+          esac
+
+          echo "ARCH=$ARCH" >> "$GITHUB_ENV"
+          echo "PACKAGE_NAME=coquerythmo-v${{ inputs.version }}-${{ matrix.platform }}-$ARCH-portable.zip" >> "$GITHUB_ENV"
 
       - name: Test bundled FFmpeg
         shell: bash
@@ -149,33 +147,31 @@ jobs:
             ./dist/ffprobe -version
           fi
 
-      - name: Create Windows portable zip
+      - name: Create Windows zip
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $version = "${{ inputs.version }}"
-          $zip = "coquerythmo-v$version-windows-portable.zip"
-
           Compress-Archive `
             -Force `
             -CompressionLevel Fastest `
             -Path "dist\*" `
-            -DestinationPath $zip
+            -DestinationPath "$env:PACKAGE_NAME"
 
-      - name: Create Linux/macOS portable archive
+      - name: Create Linux/macOS zip
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          VERSION="${{ inputs.version }}"
-          PLATFORM="${{ matrix.platform }}"
-          ARCHIVE="coquerythmo-v${VERSION}-${PLATFORM}-portable.tar.gz"
+          cd dist
+          zip -r "../$PACKAGE_NAME" .
 
-          tar -czf "$ARCHIVE" -C dist .
-
-      - name: Upload package
+      - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: coquerythmo-v${{ inputs.version }}-${{ matrix.platform }}-portable
-          path: |
-            coquerythmo-v${{ inputs.version }}-${{ matrix.platform }}-portable.zip
-            coquerythmo-v${{ inputs.version }}-${{ matrix.platform }}-portable.tar.gz
+          name: ${{ env.PACKAGE_NAME }}
+          path: ${{ env.PACKAGE_NAME }}
+
+      - name: Download a Build Artifact
+        uses: actions/download-artifact@v3.1.0
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: ${{ env.PACKAGE_NAME }}
