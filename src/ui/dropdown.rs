@@ -280,7 +280,9 @@ impl Widget for Dropdown {
                     EventResponse::Ignored
                 } else {
                     let inside = self.bounds.contains(*x, *y);
-                    let new_state = if inside {
+                    let new_state = if inside && self.trigger_state == DropdownState::Pressed {
+                        DropdownState::Pressed
+                    } else if inside {
                         DropdownState::Hovered
                     } else {
                         DropdownState::Normal
