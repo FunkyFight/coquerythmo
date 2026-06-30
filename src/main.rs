@@ -917,7 +917,9 @@ fn app_window_builder() -> WindowBuilder {
 
 #[cfg(target_os = "macos")]
 fn configure_platform_window(builder: WindowBuilder) -> WindowBuilder {
-    builder.with_accepts_first_mouse(true)
+    builder
+        .with_accepts_first_mouse(true)
+        .with_disallow_hidpi(true)
 }
 
 #[cfg(not(target_os = "macos"))]
