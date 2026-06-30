@@ -3,6 +3,9 @@ use std::process::Command;
 const GITHUB_RELEASES_API: &str =
     "https://api.github.com/repos/funkyfight/coquerythmo-releases/releases";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const PROMOTE_UPDATER_ARG: &str = "--coquerythmo-promote-updater";
+const PROMOTE_UPDATER_ATTEMPTS: usize = 50;
+const PROMOTE_UPDATER_RETRY_MS: u64 = 100;
 
 #[derive(Debug, Clone)]
 pub struct ReleaseInfo {
@@ -23,6 +26,91 @@ fn updater_executable_name() -> &'static str {
         "updater.exe"
     } else {
         "updater"
+    }
+}
+
+pub fn promote_pending_updater_from_args() {
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg != std::ffi::OsStr::new(PROMOTE_UPDATER_ARG) {
+            continue;
+        }
+
+        let Some(pending) = args.next() else {
+            log::warn!("{} passed without path", PROMOTE_UPDATER_ARG);
+            continue;
+        };
+
+        let pending = std::path::PathBuf::from(pending);
+        match promote_pending_updater(&pending) {
+            Ok(()) => log::info!("Promoted updater from {}", pending.display()),
+            Err(e) => log::warn!(
+                "Failed to promote updater from {}: {}",
+                pending.display(),
+                e
+            ),
+        }
+    }
+}
+
+fn promote_pending_updater(pending: &std::path::Path) -> Result<(), String> {
+    if !pending.is_file() {
+        return Err(format!("pending updater not found: {}", pending.display()));
+    }
+
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| format!("Cannot find exe path: {e}"))?
+        .parent()
+        .ok_or("Cannot get exe directory")?
+        .to_path_buf();
+    let target = exe_dir.join(updater_executable_name());
+    let backup = exe_dir.join(format!("{}.old", updater_executable_name()));
+
+    let mut last_error = None;
+    for attempt in 0..PROMOTE_UPDATER_ATTEMPTS {
+        match try_promote_pending_updater(pending, &target, &backup) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last_error = Some(e);
+                if attempt + 1 < PROMOTE_UPDATER_ATTEMPTS {
+                    std::thread::sleep(std::time::Duration::from_millis(PROMOTE_UPDATER_RETRY_MS));
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| "unknown updater promotion error".to_string()))
+}
+
+fn try_promote_pending_updater(
+    pending: &std::path::Path,
+    target: &std::path::Path,
+    backup: &std::path::Path,
+) -> Result<(), String> {
+    let backup_created = if target.exists() {
+        if backup.exists() {
+            std::fs::remove_file(backup)
+                .map_err(|e| format!("remove previous updater backup: {e}"))?;
+        }
+        std::fs::rename(target, backup).map_err(|e| format!("move current updater aside: {e}"))?;
+        true
+    } else {
+        backup.exists()
+    };
+
+    match std::fs::rename(pending, target) {
+        Ok(()) => {
+            if backup_created {
+                let _ = std::fs::remove_file(backup);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if backup_created && !target.exists() && backup.exists() {
+                let _ = std::fs::rename(backup, target);
+            }
+            Err(format!("install pending updater: {e}"))
+        }
     }
 }
 

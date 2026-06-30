@@ -1074,6 +1074,7 @@ fn main() {
     env_logger::init();
     config::init();
     i18n::init(&config::get().lang);
+    update::promote_pending_updater_from_args();
 
     // Check for updates (blocks briefly on network, shows dialog if update available)
     if update::check() {

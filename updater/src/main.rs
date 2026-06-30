@@ -9,6 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 const APP_NAME: &str = "coquerythmo";
+const PROMOTE_UPDATER_ARG: &str = "--coquerythmo-promote-updater";
 const GITHUB_API: &str =
     "https://api.github.com/repos/funkyfight/coquerythmo-releases/releases/tags";
 
@@ -66,18 +67,23 @@ fn run() -> Result<(), String> {
 
     // Download to temp file
     let temp_zip = update_archive_path(&tag);
+    let pending_updater = pending_updater_path(&exe_dir);
     let _ = fs::remove_file(&temp_zip);
+    let _ = fs::remove_file(&pending_updater);
     download_file(download_url, &temp_zip)?;
     println!("Download complete");
 
     // Extract zip
     println!("Extracting files...");
-    extract_zip(&temp_zip, &exe_dir)?;
+    let has_pending_updater = extract_zip(&temp_zip, &exe_dir, &pending_updater)?;
 
     // Clean up temp file
     let _ = fs::remove_file(&temp_zip);
 
-    launch_app(&exe_dir)?;
+    launch_app(
+        &exe_dir,
+        has_pending_updater.then_some(pending_updater.as_path()),
+    )?;
 
     println!("Update complete!");
     Ok(())
@@ -178,6 +184,10 @@ fn update_archive_path(tag: &str) -> PathBuf {
     ))
 }
 
+fn pending_updater_path(exe_dir: &Path) -> PathBuf {
+    exe_dir.join(format!("{}.pending", updater_executable_name()))
+}
+
 fn sanitize_file_component(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -210,13 +220,19 @@ fn updater_executable_name() -> &'static str {
     }
 }
 
-fn launch_app(exe_dir: &Path) -> Result<(), String> {
+fn launch_app(exe_dir: &Path, pending_updater: Option<&Path>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     if let Some(bundle) = macos_app_bundle_from_exe_dir(exe_dir) {
         println!("Launching {}...", bundle.display());
-        return Command::new("open")
-            .arg("-n")
-            .arg(&bundle)
+        let mut command = Command::new("open");
+        command.arg("-n").arg(&bundle);
+        if let Some(pending_updater) = pending_updater {
+            command
+                .arg("--args")
+                .arg(PROMOTE_UPDATER_ARG)
+                .arg(pending_updater);
+        }
+        return command
             .spawn()
             .map(|_| ())
             .map_err(|e| format!("Failed to launch macOS app bundle: {e}"));
@@ -225,7 +241,12 @@ fn launch_app(exe_dir: &Path) -> Result<(), String> {
     let coquerythmo = exe_dir.join(application_executable_name());
     println!("Launching {}...", coquerythmo.display());
 
-    Command::new(&coquerythmo)
+    let mut command = Command::new(&coquerythmo);
+    if let Some(pending_updater) = pending_updater {
+        command.arg(PROMOTE_UPDATER_ARG).arg(pending_updater);
+    }
+
+    command
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("Failed to launch coquerythmo: {e}"))
@@ -270,7 +291,7 @@ fn download_file(url: &str, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
+fn extract_zip(zip_path: &Path, dest_dir: &Path, pending_updater: &Path) -> Result<bool, String> {
     let file = fs::File::open(zip_path).map_err(|e| format!("Cannot open zip: {e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Invalid zip: {e}"))?;
 
@@ -281,6 +302,7 @@ fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
     } else {
         dest_dir.to_path_buf()
     };
+    let mut has_pending_updater = false;
 
     for i in 0..archive.len() {
         let mut entry = archive
@@ -297,12 +319,13 @@ fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
             continue;
         }
 
-        // Don't overwrite ourselves while running
-        if is_running_updater_entry(&name) {
-            continue;
-        }
-
-        let out_path = long_dest.join(&name);
+        // A running updater cannot replace itself on Windows. Keep the new one for the app to promote.
+        let out_path = if is_running_updater_entry(&name) {
+            has_pending_updater = true;
+            pending_updater.to_path_buf()
+        } else {
+            long_dest.join(&name)
+        };
 
         // Create parent directories — if a file blocks the path, nuke it
         if let Some(parent) = out_path.parent() {
@@ -338,7 +361,11 @@ fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
                             fs::Permissions::from_mode(mode & 0o777),
                         );
                     }
-                    println!("  {}", name.display());
+                    if is_running_updater_entry(&name) {
+                        println!("  {} -> {}", name.display(), out_path.display());
+                    } else {
+                        println!("  {}", name.display());
+                    }
                 }
             }
             Err(_) => {
@@ -347,7 +374,7 @@ fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
         }
     }
 
-    Ok(())
+    Ok(has_pending_updater)
 }
 
 fn is_running_updater_entry(path: &Path) -> bool {
