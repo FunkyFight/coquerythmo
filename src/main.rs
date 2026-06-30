@@ -1078,7 +1078,7 @@ fn show_untested_platform_warning() {
         "Linux"
     };
     let message = format!(
-        "Cette version {platform} de Coquerythmo n'a pas pu être testée correctement.\n\nElle peut fonctionner comme prévu, mais elle peut aussi ne pas fonctionner ou comporter des bugs spécifiques à cette plateforme."
+        "Cette version {platform} de Coquerythmo n'a pas pu être testée correctement, car je n'ai pas d'appareil Linux ni macOS pour la tester.\n\nElle peut fonctionner comme prévu, mais elle peut aussi ne pas fonctionner ou comporter des bugs spécifiques à cette plateforme."
     );
 
     let _ = rfd::MessageDialog::new()
@@ -1093,6 +1093,12 @@ fn show_untested_platform_warning() {}
 
 fn main() {
     env_logger::init();
+
+    let event_loop = EventLoopBuilder::<AppEvent>::with_user_event()
+        .build()
+        .expect("Failed to create event loop");
+    let event_loop_proxy = event_loop.create_proxy();
+
     config::init();
     i18n::init(&config::get().lang);
     update::promote_pending_updater_from_args();
@@ -1105,11 +1111,6 @@ fn main() {
     }
 
     let cfg = config::get().clone();
-
-    let event_loop = EventLoopBuilder::<AppEvent>::with_user_event()
-        .build()
-        .expect("Failed to create event loop");
-    let event_loop_proxy = event_loop.create_proxy();
 
     let window_icon = {
         let ico_data = include_bytes!("icons/app.ico");
