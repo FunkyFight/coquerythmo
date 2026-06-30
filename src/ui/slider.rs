@@ -75,7 +75,7 @@ impl Widget for Slider {
                     EventResponse::Ignored
                 }
             }
-            UiEvent::MousePress { x, y } => {
+            UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 if self.bounds.contains(*x, *y) {
                     self.dragging = true;
                     self.value = self.value_from_x(*x);

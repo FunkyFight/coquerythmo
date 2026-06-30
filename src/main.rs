@@ -32,6 +32,9 @@ use winit::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoop
 use winit::keyboard::{Key, NamedKey};
 use winit::window::WindowBuilder;
 
+#[cfg(target_os = "macos")]
+use winit::platform::macos::WindowBuilderExtMacOS;
+
 use state::State;
 use ui::file_explorer_modal::{
     FileExplorerMode, FileExplorerRequest, FileFilterSpec, FilePickerIntent,
@@ -688,7 +691,7 @@ fn handle_action(
             } else if state.has_secondary_display() {
                 state.request_secondary_redraw();
             } else {
-                match WindowBuilder::new()
+                match app_window_builder()
                     .with_title(i18n::t("menu.tools.secondary_display"))
                     .with_inner_size(LogicalSize::new(1280.0, 720.0))
                     .with_window_icon(parse_ico_to_winit_icon(include_bytes!("icons/app.ico")))
@@ -907,6 +910,21 @@ fn dispatch(
     state.request_redraw();
 }
 
+fn app_window_builder() -> WindowBuilder {
+    let builder = WindowBuilder::new();
+    configure_platform_window(builder)
+}
+
+#[cfg(target_os = "macos")]
+fn configure_platform_window(builder: WindowBuilder) -> WindowBuilder {
+    builder.with_accepts_first_mouse(true)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_platform_window(builder: WindowBuilder) -> WindowBuilder {
+    builder
+}
+
 /// Parse an ICO file and return a winit Icon (RGBA pixels).
 /// Picks the largest image entry, renders it via resvg's tiny-skia PNG decoder if PNG,
 /// or falls back to raw BMP parsing.
@@ -1118,7 +1136,7 @@ fn main() {
     };
 
     let window = Arc::new(
-        WindowBuilder::new()
+        app_window_builder()
             .with_title(&cfg.window.title)
             .with_inner_size(LogicalSize::new(cfg.window.width, cfg.window.height))
             .with_window_icon(window_icon)
@@ -1132,7 +1150,7 @@ fn main() {
     }
     state.show_toast(i18n::t("toast.welcome"), 10.0);
     let mut cursor_pos = (0.0_f32, 0.0_f32);
-    let mut last_click_time = Instant::now();
+    let mut last_click_time = None;
     let mut ctrl_held = false;
     let mut shift_held = false;
 
@@ -1355,8 +1373,10 @@ fn main() {
                         match button_state {
                             ElementState::Pressed => {
                                 let now = Instant::now();
-                                let is_double = now.duration_since(last_click_time).as_millis() < 400;
-                                last_click_time = now;
+                                let is_double = last_click_time
+                                    .map(|last| now.duration_since(last).as_millis() < 400)
+                                    .unwrap_or(false);
+                                last_click_time = Some(now);
 
                                 if ctrl_held {
                                     dispatch(UiEvent::CtrlClick {

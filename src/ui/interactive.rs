@@ -45,7 +45,7 @@ impl InteractiveState {
                     InteractiveResult::None
                 }
             }
-            UiEvent::MousePress { x, y } => {
+            UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 if bounds.contains(*x, *y) {
                     *self = Self::Pressed;
                     InteractiveResult::StateChanged
