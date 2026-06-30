@@ -1070,11 +1070,33 @@ fn clipboard_paste() -> Option<String> {
     None
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn show_untested_platform_warning() {
+    let platform = if cfg!(target_os = "macos") {
+        "macOS"
+    } else {
+        "Linux"
+    };
+    let message = format!(
+        "Cette version {platform} de Coquerythmo n'a pas pu être testée correctement.\n\nElle peut fonctionner comme prévu, mais elle peut aussi ne pas fonctionner ou comporter des bugs spécifiques à cette plateforme."
+    );
+
+    let _ = rfd::MessageDialog::new()
+        .set_title("Version non testée")
+        .set_description(&message)
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn show_untested_platform_warning() {}
+
 fn main() {
     env_logger::init();
     config::init();
     i18n::init(&config::get().lang);
     update::promote_pending_updater_from_args();
+    show_untested_platform_warning();
 
     // Check for updates (blocks briefly on network, shows dialog if update available)
     if update::check() {
