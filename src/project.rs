@@ -22,6 +22,13 @@ pub struct Character {
     pub color: [f32; 4],
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LineCharacterNameChange {
+    pub line_id: u64,
+    pub old_name: String,
+    pub new_name: String,
+}
+
 pub struct Project {
     line_map: HashMap<u64, RythmoLine>,
     line_order: Vec<u64>,
@@ -29,6 +36,7 @@ pub struct Project {
     pub known_characters: Vec<Character>,
     pub voice_actors: Vec<VoiceActor>,
     color_index: usize,
+    revision: u64,
 }
 
 impl Project {
@@ -40,6 +48,7 @@ impl Project {
             known_characters: Vec::new(),
             voice_actors: Vec::new(),
             color_index: 0,
+            revision: 0,
         }
     }
 
@@ -51,7 +60,16 @@ impl Project {
             known_characters: self.known_characters.clone(),
             voice_actors: self.voice_actors.clone(),
             color_index: self.color_index,
+            revision: self.revision,
         }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn bump_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     // -- Line access (O(1) via HashMap) --
@@ -61,6 +79,9 @@ impl Project {
     }
 
     pub fn get_line_mut(&mut self, id: u64) -> Option<&mut RythmoLine> {
+        if self.line_map.contains_key(&id) {
+            self.bump_revision();
+        }
         self.line_map.get_mut(&id)
     }
 
@@ -78,6 +99,19 @@ impl Project {
 
     pub fn line_count(&self) -> usize {
         self.line_map.len()
+    }
+
+    pub fn line_index(&self, id: u64) -> Option<usize> {
+        self.line_order.iter().position(|&line_id| line_id == id)
+    }
+
+    pub fn generate_line_id(&self) -> u64 {
+        loop {
+            let id = rand::random::<u64>() % JS_MAX_SAFE_INTEGER;
+            if !self.line_map.contains_key(&id) {
+                return id;
+            }
+        }
     }
 
     // -- Line mutation --
@@ -134,6 +168,7 @@ impl Project {
         };
         self.line_map.insert(id, line);
         self.line_order.push(id);
+        self.bump_revision();
         id
     }
 
@@ -183,6 +218,7 @@ impl Project {
         };
         self.line_map.insert(id, line);
         self.line_order.push(id);
+        self.bump_revision();
         id
     }
 
@@ -206,6 +242,7 @@ impl Project {
         if !self.line_order.contains(&id) {
             self.line_order.push(id);
         }
+        self.bump_revision();
     }
 
     /// Insert a line at a specific position (for undo).
@@ -214,6 +251,17 @@ impl Project {
         self.line_map.insert(id, line);
         let idx = index.min(self.line_order.len());
         self.line_order.insert(idx, id);
+        self.bump_revision();
+    }
+
+    pub fn upsert_line_at(&mut self, index: usize, line: RythmoLine) {
+        let id = line.id;
+        if self.line_map.contains_key(&id) {
+            self.line_map.insert(id, line);
+            self.bump_revision();
+        } else {
+            self.insert_line_at(index, line);
+        }
     }
 
     /// Remove a line by ID. Returns the line and its index if found.
@@ -221,6 +269,7 @@ impl Project {
         let line = self.line_map.remove(&id)?;
         let index = self.line_order.iter().position(|&i| i == id).unwrap_or(0);
         self.line_order.remove(index);
+        self.bump_revision();
         Some((line, index))
     }
 
@@ -235,12 +284,54 @@ impl Project {
             false
         });
         self.line_map.retain(|_, line| f(line));
+        self.bump_revision();
     }
 
     /// Clear all lines.
     pub fn clear_lines(&mut self) {
         self.line_map.clear();
         self.line_order.clear();
+        self.bump_revision();
+    }
+
+    pub fn add_marker(&mut self, marker: RythmoMarker) -> usize {
+        self.markers.push(marker);
+        self.bump_revision();
+        self.markers.len() - 1
+    }
+
+    pub fn insert_marker(&mut self, index: usize, marker: RythmoMarker) {
+        let index = index.min(self.markers.len());
+        self.markers.insert(index, marker);
+        self.bump_revision();
+    }
+
+    pub fn remove_marker_at(&mut self, index: usize) -> Option<RythmoMarker> {
+        if index >= self.markers.len() {
+            return None;
+        }
+        let marker = self.markers.remove(index);
+        self.bump_revision();
+        Some(marker)
+    }
+
+    pub fn move_marker(&mut self, index: usize, frame: i64) -> bool {
+        let Some(marker) = self.markers.get_mut(index) else {
+            return false;
+        };
+        marker.frame = frame;
+        self.bump_revision();
+        true
+    }
+
+    pub fn retain_markers<F: FnMut(&RythmoMarker) -> bool>(&mut self, f: F) {
+        self.markers.retain(f);
+        self.bump_revision();
+    }
+
+    pub fn set_markers(&mut self, markers: Vec<RythmoMarker>) {
+        self.markers = markers;
+        self.bump_revision();
     }
 
     /// Returns true if the project has no lines, no markers, and no characters.
@@ -259,6 +350,7 @@ impl Project {
         self.known_characters.clear();
         self.voice_actors.clear();
         self.color_index = 0;
+        self.bump_revision();
     }
 
     // -- Character management --
@@ -292,17 +384,64 @@ impl Project {
         if !name.is_empty() {
             if let Some(existing) = self.known_characters.iter_mut().find(|c| c.name == name) {
                 existing.color = color;
+                self.bump_revision();
             } else {
                 self.known_characters.push(Character {
                     name: name.to_string(),
                     color,
                 });
+                self.bump_revision();
             }
         }
     }
 
     pub fn find_character(&self, name: &str) -> Option<&Character> {
         self.known_characters.iter().find(|c| c.name == name)
+    }
+
+    pub fn set_known_characters(&mut self, known_characters: Vec<Character>) {
+        self.known_characters = known_characters;
+        self.bump_revision();
+    }
+
+    pub fn character_names_from_lines(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        for line in self.lines() {
+            if line.character_name.trim().is_empty() {
+                continue;
+            }
+            if !names
+                .iter()
+                .any(|existing| existing == &line.character_name)
+            {
+                names.push(line.character_name.clone());
+            }
+        }
+        names
+    }
+
+    pub fn apply_character_name_changes(
+        &mut self,
+        changes: &[LineCharacterNameChange],
+        use_new: bool,
+    ) {
+        let mut changed = false;
+        for change in changes {
+            if let Some(line) = self.line_map.get_mut(&change.line_id) {
+                let target_name = if use_new {
+                    &change.new_name
+                } else {
+                    &change.old_name
+                };
+                if line.character_name != *target_name {
+                    line.character_name = target_name.clone();
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.bump_revision();
+        }
     }
 
     pub fn autocomplete(&self, prefix: &str) -> Vec<&Character> {
@@ -328,14 +467,17 @@ impl Project {
             return false;
         }
         self.voice_actors.push(actor);
+        self.bump_revision();
         true
     }
 
     pub fn upsert_voice_actor(&mut self, actor: VoiceActor) {
         if let Some(existing) = self.voice_actors.iter_mut().find(|a| a.name == actor.name) {
             *existing = actor;
+            self.bump_revision();
         } else if !actor.name.trim().is_empty() {
             self.voice_actors.push(actor);
+            self.bump_revision();
         }
     }
 
@@ -345,6 +487,7 @@ impl Project {
             line.voice_actor_names
                 .retain(|actor_name| actor_name != name);
         }
+        self.bump_revision();
     }
 
     pub fn set_line_voice_actor_names(&mut self, line_id: u64, names: Vec<String>) {
@@ -500,6 +643,29 @@ mod tests {
         let id = p.add_line(0, 48, 0.5);
         p.get_line_mut(id).unwrap().text = "modified".into();
         assert_eq!(p.get_line(id).unwrap().text, "modified");
+    }
+
+    #[test]
+    fn test_revision_changes_on_mutations() {
+        let mut p = Project::new();
+        let initial = p.revision();
+        let id = p.add_line(0, 48, 0.5);
+        assert_ne!(p.revision(), initial);
+
+        let after_add = p.revision();
+        p.get_line_mut(id).unwrap().text = "modified".into();
+        assert_ne!(p.revision(), after_add);
+
+        let after_line_mut = p.revision();
+        p.add_marker(crate::rythmo_line::RythmoMarker {
+            kind: crate::rythmo_line::MarkerKind::Boucle,
+            frame: 12,
+        });
+        assert_ne!(p.revision(), after_line_mut);
+
+        let after_marker = p.revision();
+        p.reset();
+        assert_ne!(p.revision(), after_marker);
     }
 
     #[test]

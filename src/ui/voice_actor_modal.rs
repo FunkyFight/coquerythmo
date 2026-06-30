@@ -1,10 +1,12 @@
-use super::text_input::{TextInputAction, TextInputState};
+use super::text_input::{self, TextInputAction, TextInputMetrics, TextInputState};
 use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 
 use crate::i18n::t;
 
 const CARD_W: f32 = 520.0;
 const CARD_H: f32 = 260.0;
+const FIELD_FONT_SIZE: f32 = 12.0;
+const FIELD_PADDING_X: f32 = 10.0;
 
 #[derive(Clone, Copy, PartialEq)]
 enum ActiveField {
@@ -151,9 +153,7 @@ impl VoiceActorModal {
     }
 
     fn cursor_pos_from_x(value: &str, field: Rect, x: f32) -> usize {
-        let char_w = 7.0;
-        let pos = ((x - field.x - 10.0) / char_w).round().max(0.0) as usize;
-        pos.min(value.chars().count())
+        text_input::cursor_pos_from_x(value, field, x, input_metrics())
     }
 
     fn start_mouse_selection(&mut self, field: ActiveField, card: Rect, x: f32, double: bool) {
@@ -534,8 +534,8 @@ impl VoiceActorModal {
             h_align: HAlign::Left,
             v_align: VAlign::Center,
             overflow: Overflow::Ellipsis,
-            padding: 10.0,
-            font_size_override: Some(12.0),
+            padding: FIELD_PADDING_X,
+            font_size_override: Some(FIELD_FONT_SIZE),
             color_override: Some([226, 226, 235]),
             font_family_override: None,
         });
@@ -601,51 +601,22 @@ fn render_text_selection_and_cursor(
     input: &TextInputState,
     active: bool,
 ) {
-    if !active {
-        return;
-    }
-    let char_w = 7.0;
-    let text_x = rect.x + 10.0;
-    let max_x = rect.x + rect.width - 10.0;
+    text_input::render_selection_and_cursor(
+        overlay_quads,
+        rect,
+        value,
+        input,
+        active,
+        input_metrics(),
+        6.0,
+        6.0,
+        [0.25, 0.45, 0.95, 0.42],
+        [0.90, 0.90, 0.96, 1.0],
+    );
+}
 
-    if let Some((start, end)) = input.selection_range() {
-        let sx = (text_x + start as f32 * char_w).clamp(text_x, max_x);
-        let ex = (text_x + end as f32 * char_w).clamp(text_x, max_x);
-        if ex > sx {
-            overlay_quads.push(QuadInstance {
-                rect: [sx, rect.y + 6.0, ex - sx, rect.height - 12.0],
-                color: [0.25, 0.45, 0.95, 0.42],
-                color_bottom: [0.25, 0.45, 0.95, 0.42],
-                border_color: [0.0; 4],
-                border_width: 0.0,
-                border_radius: 2.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-        }
-    }
-
-    if input.cursor_visible() {
-        let max_cursor = value.chars().count();
-        let pos = input.cursor_pos.min(max_cursor);
-        let cx = (text_x + pos as f32 * char_w).clamp(text_x, max_x);
-        overlay_quads.push(QuadInstance {
-            rect: [cx, rect.y + 6.0, 1.5, rect.height - 12.0],
-            color: [0.90, 0.90, 0.96, 1.0],
-            color_bottom: [0.90, 0.90, 0.96, 1.0],
-            border_color: [0.0; 4],
-            border_width: 0.0,
-            border_radius: 0.0,
-            shadow_offset: [0.0; 2],
-            shadow_color: [0.0; 4],
-            shadow_blur: 0.0,
-            rotation: 0.0,
-            _padding: [0.0; 2],
-        });
-    }
+fn input_metrics() -> TextInputMetrics {
+    TextInputMetrics::left(FIELD_FONT_SIZE, FIELD_PADDING_X)
 }
 
 fn render_button<'a>(

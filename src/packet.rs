@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::project::Project;
+use crate::project::{LineCharacterNameChange, Project};
 use crate::rythmo_line::{MarkerKind, RythmoLine, RythmoMarker};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 
@@ -83,6 +83,11 @@ pub enum CommandPayload {
     DeleteLine {
         line_id: u64,
     },
+    SplitLine {
+        first_line: RythmoLine,
+        second_line: RythmoLine,
+        second_index: usize,
+    },
     MoveLine {
         line_id: u64,
         start_frame: i64,
@@ -123,6 +128,10 @@ pub enum CommandPayload {
     SetCharacterColor {
         line_id: u64,
         color: [f32; 4],
+    },
+    RenameCharacter {
+        changes: Vec<LineCharacterNameChange>,
+        known_characters: Vec<CharacterData>,
     },
     SetVoiceActors {
         changes: Vec<LineVoiceActorsChange>,
@@ -196,6 +205,16 @@ impl Packetable for Command {
             },
             Command::DeleteLine { snapshot, .. } => CommandPayload::DeleteLine {
                 line_id: snapshot.id,
+            },
+            Command::SplitLine {
+                first_line,
+                second_line,
+                second_index,
+                ..
+            } => CommandPayload::SplitLine {
+                first_line: first_line.clone(),
+                second_line: second_line.clone(),
+                second_index: *second_index,
             },
             Command::MoveLine {
                 line_id,
@@ -274,6 +293,20 @@ impl Packetable for Command {
             } => CommandPayload::SetCharacterColor {
                 line_id: *line_id,
                 color: *new_color,
+            },
+            Command::RenameCharacter {
+                changes,
+                new_known_characters,
+                ..
+            } => CommandPayload::RenameCharacter {
+                changes: changes.clone(),
+                known_characters: new_known_characters
+                    .iter()
+                    .map(|c| CharacterData {
+                        name: c.name.clone(),
+                        color: c.color,
+                    })
+                    .collect(),
             },
             Command::SetVoiceActors { changes } => CommandPayload::SetVoiceActors {
                 changes: changes.clone(),

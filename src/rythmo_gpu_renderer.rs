@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::constants;
 use crate::project::Project;
+use crate::render_index::ProjectRenderIndex;
 use crate::rythmo_layout;
 use crate::rythmo_line::{MarkerKind, RythmoLine};
 use crate::ui::widget::{IconInstance, QuadInstance};
@@ -641,11 +642,14 @@ pub struct GpuRenderStats {
 
 pub struct GpuExportScene<'a> {
     project: &'a Project,
+    render_index: ProjectRenderIndex,
     voice_actors_by_name: HashMap<&'a str, &'a VoiceActor>,
 }
 
 impl<'a> GpuExportScene<'a> {
     pub fn new(project: &'a Project) -> Self {
+        let mut render_index = ProjectRenderIndex::new();
+        render_index.refresh(project);
         let voice_actors_by_name = project
             .voice_actors
             .iter()
@@ -653,6 +657,7 @@ impl<'a> GpuExportScene<'a> {
             .collect();
         Self {
             project,
+            render_index,
             voice_actors_by_name,
         }
     }
@@ -1792,7 +1797,7 @@ impl GpuRenderer {
         all_icons: &mut Vec<IconInstance>,
         icon_batches: &mut Vec<IconBatch>,
     ) {
-        if line.voice_actor_names.is_empty() {
+        if line.karaoke || line.voice_actor_names.is_empty() {
             return;
         }
 
@@ -2063,6 +2068,11 @@ impl GpuRenderer {
 
         let karaoke_max_gap_frames = karaoke_adjacent_max_gap_frames(source_fps);
         let karaoke_count_in_frame_count = karaoke_count_in_frames(source_fps);
+        let render_margin_frames =
+            ((source_fps.max(1.0) * 10.0).round() as i64).max(karaoke_max_gap_frames);
+        let half_visible_frames = (w / ppf / 2.0).ceil() as i64 + render_margin_frames;
+        let first_visible_frame = cf_i64.saturating_sub(half_visible_frames);
+        let last_visible_frame = cf_i64.saturating_add(half_visible_frames);
 
         // ── Playhead, split around active karaoke lines ──
         let playhead_gaps = playhead_skip_ranges(
@@ -2084,7 +2094,14 @@ impl GpuRenderer {
         );
 
         // ── Lines ──
-        for line in scene.project.lines() {
+        for line_id in scene.render_index.visible_line_ids(
+            scene.project,
+            first_visible_frame,
+            last_visible_frame,
+        ) {
+            let Some(line) = scene.project.get_line(line_id) else {
+                continue;
+            };
             let karaoke_active = line.karaoke_active(current_frame);
             let karaoke_count_in =
                 karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
@@ -2360,7 +2377,18 @@ impl GpuRenderer {
         }
 
         // ── Markers ──
-        for marker in &scene.project.markers {
+        let marker_margin_frames = (10.0 * s / ppf).ceil() as i64 + 1;
+        let first_marker_frame =
+            cf_i64.saturating_sub((w / ppf / 2.0).ceil() as i64 + marker_margin_frames);
+        let last_marker_frame =
+            cf_i64.saturating_add((w / ppf / 2.0).ceil() as i64 + marker_margin_frames);
+        for marker_index in scene
+            .render_index
+            .visible_marker_indices(first_marker_frame, last_marker_frame)
+        {
+            let Some(marker) = scene.project.markers.get(marker_index) else {
+                continue;
+            };
             let mx = center_x + (marker.frame as f64 - current_frame) as f32 * ppf;
             if mx < -10.0 * s || mx > w + 10.0 * s {
                 continue;

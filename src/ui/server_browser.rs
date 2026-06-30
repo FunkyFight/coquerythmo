@@ -8,6 +8,8 @@ const SERVER_ITEM_H: f32 = 52.0;
 const LIST_H: f32 = 260.0;
 const BTN_H: f32 = 28.0;
 const BTN_GAP: f32 = 6.0;
+const FIELD_FONT_SIZE: f32 = 13.0;
+const FIELD_PADDING_X: f32 = 8.0;
 
 #[derive(Clone)]
 pub struct ServerInfo {
@@ -587,6 +589,7 @@ impl AddServerModal {
                 AddServerResult::Consumed
             }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
+                let double = matches!(event, UiEvent::DoubleClick { .. });
                 if !card.contains(*x, *y) {
                     return AddServerResult::Close;
                 }
@@ -609,10 +612,28 @@ impl AddServerModal {
                 if ip_rect.contains(*x, *y) {
                     self.focused = 0;
                     self.input.activate(&self.ip);
+                    if double {
+                        self.input.select_all(&self.ip);
+                    } else {
+                        let pos =
+                            text_input::cursor_pos_from_x(&self.ip, ip_rect, *x, field_metrics());
+                        self.input.set_cursor_pos(pos);
+                    }
                 }
                 if port_rect.contains(*x, *y) {
                     self.focused = 1;
                     self.input.activate(&self.port);
+                    if double {
+                        self.input.select_all(&self.port);
+                    } else {
+                        let pos = text_input::cursor_pos_from_x(
+                            &self.port,
+                            port_rect,
+                            *x,
+                            field_metrics(),
+                        );
+                        self.input.set_cursor_pos(pos);
+                    }
                 }
                 // Add button
                 let btn = Rect {
@@ -745,28 +766,29 @@ impl AddServerModal {
                     h_align: HAlign::Left,
                     v_align: VAlign::Center,
                     overflow: Overflow::Clip,
-                    padding: 8.0,
-                    font_size_override: Some(13.0),
+                    padding: FIELD_PADDING_X,
+                    font_size_override: Some(FIELD_FONT_SIZE),
                     color_override: None,
                     font_family_override: None,
                 });
             }
-            if self.focused == i && self.input.cursor_visible() {
-                let cx = fx + 8.0 + self.input.cursor_pos as f32 * 7.8;
-                quads.push(QuadInstance {
-                    rect: [cx, iy + 4.0, 1.5, fh - 8.0],
-                    color: [0.9, 0.9, 0.95, 1.0],
-                    color_bottom: [0.9, 0.9, 0.95, 1.0],
-                    border_color: [0.0; 4],
-                    border_width: 0.0,
-                    border_radius: 0.0,
-                    shadow_offset: [0.0; 2],
-                    shadow_color: [0.0; 4],
-                    shadow_blur: 0.0,
-                    rotation: 0.0,
-                    _padding: [0.0; 2],
-                });
-            }
+            text_input::render_selection_and_cursor(
+                quads,
+                Rect {
+                    x: fx,
+                    y: iy,
+                    width: fw,
+                    height: fh,
+                },
+                value,
+                &self.input,
+                self.focused == i,
+                field_metrics(),
+                4.0,
+                4.0,
+                [0.25, 0.45, 0.95, 0.42],
+                [0.90, 0.90, 0.96, 1.0],
+            );
         }
         // Add button
         let btn = Rect {
@@ -805,4 +827,8 @@ impl AddServerModal {
             font_family_override: None,
         });
     }
+}
+
+fn field_metrics() -> text_input::TextInputMetrics {
+    text_input::TextInputMetrics::left(FIELD_FONT_SIZE, FIELD_PADDING_X)
 }

@@ -3,7 +3,7 @@ use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VA
 use crate::i18n::t;
 
 const CARD_W: f32 = 430.0;
-const CARD_H: f32 = 398.0;
+const CARD_H: f32 = 424.0;
 
 #[derive(Clone, Copy, PartialEq)]
 enum ActiveField {
@@ -39,6 +39,7 @@ pub struct ExportModal {
     pub export_height: u32,
     pub export_height_text: String,
     pub instrumental_audio_path: String,
+    pub double_export_instrumental: bool,
     active_field: Option<ActiveField>,
     replace_active_field: bool,
 }
@@ -53,6 +54,7 @@ pub enum ExportModalResult {
         export_width: u32,
         export_height: u32,
         instrumental_audio_path: Option<std::path::PathBuf>,
+        double_export_instrumental: bool,
     },
     PickInstrumentalAudio,
 }
@@ -74,6 +76,7 @@ impl ExportModal {
             export_height,
             export_height_text: export_height.to_string(),
             instrumental_audio_path: String::new(),
+            double_export_instrumental: false,
             active_field: None,
             replace_active_field: false,
         }
@@ -123,6 +126,15 @@ impl ExportModal {
         (audio_rect, browse_rect)
     }
 
+    fn double_export_rect(card: Rect) -> Rect {
+        Rect {
+            x: card.x + 20.0,
+            y: card.y + 318.0,
+            width: card.width - 40.0,
+            height: 24.0,
+        }
+    }
+
     fn export_width(&self) -> u32 {
         let value = self
             .export_width_text
@@ -169,6 +181,7 @@ impl ExportModal {
             export_width: self.export_width,
             export_height: self.export_height,
             instrumental_audio_path,
+            double_export_instrumental: self.double_export_instrumental,
         }
     }
 
@@ -402,6 +415,13 @@ impl ExportModal {
                     self.active_field = None;
                     self.replace_active_field = false;
                     return ExportModalResult::PickInstrumentalAudio;
+                }
+
+                if Self::double_export_rect(card).contains(*x, *y) {
+                    self.double_export_instrumental = !self.double_export_instrumental;
+                    self.active_field = None;
+                    self.replace_active_field = false;
+                    return ExportModalResult::Consumed;
                 }
 
                 // Export button (bigger hitbox)
@@ -1010,6 +1030,69 @@ impl ExportModal {
             padding: 0.0,
             font_size_override: Some(10.0),
             color_override: Some([145, 145, 160]),
+            font_family_override: None,
+        });
+
+        let checkbox = Self::double_export_rect(card);
+        let box_size = 16.0;
+        let box_rect = Rect {
+            x: checkbox.x,
+            y: checkbox.y + (checkbox.height - box_size) / 2.0,
+            width: box_size,
+            height: box_size,
+        };
+        overlay_quads.push(QuadInstance {
+            rect: [box_rect.x, box_rect.y, box_rect.width, box_rect.height],
+            color: if self.double_export_instrumental {
+                [0.30, 0.45, 0.85, 1.0]
+            } else {
+                [0.08, 0.08, 0.10, 1.0]
+            },
+            color_bottom: if self.double_export_instrumental {
+                [0.22, 0.34, 0.70, 1.0]
+            } else {
+                [0.08, 0.08, 0.10, 1.0]
+            },
+            border_color: if self.double_export_instrumental {
+                [0.55, 0.68, 1.0, 0.9]
+            } else {
+                [0.30, 0.30, 0.36, 0.6]
+            },
+            border_width: 1.0,
+            border_radius: 3.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+        if self.double_export_instrumental {
+            labels.push(LabelInfo {
+                text: "✓",
+                bounds: box_rect,
+                h_align: HAlign::Center,
+                v_align: VAlign::Center,
+                overflow: Overflow::Clip,
+                padding: 0.0,
+                font_size_override: Some(13.0),
+                color_override: Some([245, 245, 255]),
+                font_family_override: None,
+            });
+        }
+        labels.push(LabelInfo {
+            text: t("export_modal.double_export_instrumental"),
+            bounds: Rect {
+                x: checkbox.x + box_size + 8.0,
+                y: checkbox.y,
+                width: checkbox.width - box_size - 8.0,
+                height: checkbox.height,
+            },
+            h_align: HAlign::Left,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(11.0),
+            color_override: Some([190, 190, 205]),
             font_family_override: None,
         });
 

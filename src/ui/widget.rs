@@ -125,6 +125,21 @@ pub enum UiAction {
         export_width: u32,
         export_height: u32,
         instrumental_audio_path: Option<std::path::PathBuf>,
+        double_export_instrumental: bool,
+    },
+    StartExportToPath {
+        output_path: std::path::PathBuf,
+        fps: f64,
+        br_scale: f32,
+        karaoke_text_scale: f32,
+        export_width: u32,
+        export_height: u32,
+        instrumental_audio_path: Option<std::path::PathBuf>,
+        double_export_instrumental: bool,
+    },
+    FilePickerSelected {
+        intent: crate::ui::file_explorer_modal::FilePickerIntent,
+        path: std::path::PathBuf,
     },
     PickExportInstrumentalAudio,
     OpenProxyModal,
@@ -132,6 +147,11 @@ pub enum UiAction {
         width: u32,
         height: u32,
         crf: u8,
+    },
+    OpenRenameCharacterModal,
+    RenameCharacter {
+        old_name: String,
+        new_name: String,
     },
     QuickSave,
     CancelExport,
@@ -225,6 +245,7 @@ pub enum UiAction {
         line_id: u64,
         ratios: Vec<f32>,
     },
+    SplitDialogue,
     // Network
     OpenServerBrowser,
     OpenConnectModal {

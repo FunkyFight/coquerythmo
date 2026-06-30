@@ -21,6 +21,7 @@
 "menu.tools" = "Tools"
 "menu.tools.create_proxy" = "Create Proxy"
 "menu.tools.secondary_display" = "Secondary Display"
+"menu.tools.rename_character" = "Rename Character"
 
 "menu.connect" = "Connect"
 "menu.connect.servers" = "Servers"
@@ -116,6 +117,21 @@
 "toast.voice_actor_name_required" = "Voice actor name is required."
 "toast.voice_actor_icon_failed" = "Invalid voice actor icon:"
 "toast.karaoke_select_line" = "Select a line before toggling karaoke mode."
+"toast.no_character_to_rename" = "No character to rename in the rythmo band."
+"toast.rename_character_select" = "Select a character to rename."
+"toast.rename_character_name_required" = "The new character name is required."
+"toast.character_renamed" = "Character renamed."
+"toast.export_completed" = "MP4 export completed."
+"toast.export_failed" = "MP4 export failed:"
+
+# What's new modal
+"whats_new.title" = "What's New"
+"whats_new.kicker" = "UPDATE INSTALLED"
+"whats_new.subtitle" = "Summary loaded from the GitHub release description."
+"whats_new.version" = "Version"
+"whats_new.close" = "Close"
+"whats_new.empty" = "No release description is available."
+"whats_new.scroll_hint" = "Use the mouse wheel to keep reading"
 
 # Voice actor context menu
 "context.voice_actor.assign_to_actor" = "Assign to a voice actor"
@@ -133,6 +149,17 @@
 "voice_actor_modal.browse" = "Browse"
 "voice_actor_modal.cancel" = "Cancel"
 "voice_actor_modal.create" = "Create"
+
+# Rename character modal
+"rename_character_modal.title" = "Rename Character"
+"rename_character_modal.description" = "The new name will replace this character in every rythmo band line."
+"rename_character_modal.character" = "Character"
+"rename_character_modal.new_name" = "New name"
+"rename_character_modal.cancel" = "Cancel"
+"rename_character_modal.rename" = "Rename"
+"rename_character_modal.error_select" = "Select a character."
+"rename_character_modal.error_name_required" = "Enter a new name."
+"rename_character_modal.error_same_name" = "The new name must be different."
 
 # Proxy modal
 "proxy_modal.title" = "Create Proxy"
@@ -160,7 +187,8 @@
 "export_modal.karaoke_text_scale" = "Karaoke text size"
 "export_modal.instrumental_audio" = "Instrumental audio (optional)"
 "export_modal.instrumental_audio_placeholder" = "Original audio if empty"
-"export_modal.instrumental_audio_hint" = "Leave empty to keep the video's original audio."
+"export_modal.instrumental_audio_hint" = "Unchecked: instrumental only. Checked: normal + _instrumental."
+"export_modal.double_export_instrumental" = "Instrumental double export"
 "export_modal.browse" = "Browse"
 "export_modal.export" = "Export"
 

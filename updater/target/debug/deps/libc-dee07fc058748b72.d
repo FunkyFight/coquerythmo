@@ -1,0 +1,13 @@
+D:\serious rust projects\coquerythmo\updater\target\debug\deps\libc-dee07fc058748b72.d: D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\lib.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\macros.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\new\mod.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\new\common\mod.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\new\ucrt\mod.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\primitives.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\windows\mod.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\windows\msvc\mod.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\types.rs
+
+D:\serious rust projects\coquerythmo\updater\target\debug\deps\liblibc-dee07fc058748b72.rmeta: D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\lib.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\macros.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\new\mod.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\new\common\mod.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\new\ucrt\mod.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\primitives.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\windows\mod.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\windows\msvc\mod.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\types.rs
+
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\lib.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\macros.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\new\mod.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\new\common\mod.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\new\ucrt\mod.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\primitives.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\windows\mod.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\windows\msvc\mod.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.184\src\types.rs:

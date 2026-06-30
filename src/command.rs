@@ -1,4 +1,4 @@
-use crate::project::Project;
+use crate::project::{Character, LineCharacterNameChange, Project};
 use crate::rythmo_line::{RythmoLine, RythmoMarker};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 
@@ -23,6 +23,13 @@ pub enum Command {
     DeleteLine {
         snapshot: RythmoLine,
         index: usize,
+    },
+    SplitLine {
+        old_line: RythmoLine,
+        old_index: usize,
+        first_line: RythmoLine,
+        second_line: RythmoLine,
+        second_index: usize,
     },
     MoveLine {
         line_id: u64,
@@ -72,6 +79,11 @@ pub enum Command {
         old_color: [f32; 4],
         new_color: [f32; 4],
     },
+    RenameCharacter {
+        changes: Vec<LineCharacterNameChange>,
+        old_known_characters: Vec<Character>,
+        new_known_characters: Vec<Character>,
+    },
     SetVoiceActors {
         changes: Vec<LineVoiceActorsChange>,
     },
@@ -108,6 +120,16 @@ impl Command {
             }
             Command::DeleteLine { snapshot, .. } => {
                 project.remove_line(snapshot.id);
+            }
+            Command::SplitLine {
+                first_line,
+                second_line,
+                second_index,
+                ..
+            } => {
+                project.remove_line(second_line.id);
+                project.upsert_line_at(second_index.saturating_sub(1), first_line.clone());
+                project.insert_line_at(*second_index, second_line.clone());
             }
             Command::MoveLine {
                 line_id,
@@ -187,6 +209,14 @@ impl Command {
                     l.character_color = *new_color;
                 }
             }
+            Command::RenameCharacter {
+                changes,
+                new_known_characters,
+                ..
+            } => {
+                project.apply_character_name_changes(changes, true);
+                project.set_known_characters(new_known_characters.clone());
+            }
             Command::SetVoiceActors { changes } => {
                 for change in changes {
                     project.set_line_voice_actor_names(
@@ -202,16 +232,12 @@ impl Command {
                 // Already added during execute — for redo
             }
             Command::RemoveMarker { index, .. } => {
-                if *index < project.markers.len() {
-                    project.markers.remove(*index);
-                }
+                let _ = project.remove_marker_at(*index);
             }
             Command::MoveMarker {
                 index, new_frame, ..
             } => {
-                if let Some(m) = project.markers.get_mut(*index) {
-                    m.frame = *new_frame;
-                }
+                project.move_marker(*index, *new_frame);
             }
             Command::UpdateLineNote {
                 line_id, new_note, ..
@@ -233,6 +259,15 @@ impl Command {
             }
             Command::DeleteLine { snapshot, index } => {
                 project.insert_line_at(*index, snapshot.clone());
+            }
+            Command::SplitLine {
+                old_line,
+                old_index,
+                second_line,
+                ..
+            } => {
+                project.remove_line(second_line.id);
+                project.upsert_line_at(*old_index, old_line.clone());
             }
             Command::MoveLine {
                 line_id,
@@ -312,6 +347,14 @@ impl Command {
                     l.character_color = *old_color;
                 }
             }
+            Command::RenameCharacter {
+                changes,
+                old_known_characters,
+                ..
+            } => {
+                project.apply_character_name_changes(changes, false);
+                project.set_known_characters(old_known_characters.clone());
+            }
             Command::SetVoiceActors { changes } => {
                 for change in changes {
                     project.set_line_voice_actor_names(
@@ -324,20 +367,15 @@ impl Command {
                 project.remove_voice_actor(&actor.name);
             }
             Command::AddMarker { index } => {
-                if *index < project.markers.len() {
-                    project.markers.remove(*index);
-                }
+                let _ = project.remove_marker_at(*index);
             }
             Command::RemoveMarker { marker, index } => {
-                let idx = (*index).min(project.markers.len());
-                project.markers.insert(idx, marker.clone());
+                project.insert_marker(*index, marker.clone());
             }
             Command::MoveMarker {
                 index, old_frame, ..
             } => {
-                if let Some(m) = project.markers.get_mut(*index) {
-                    m.frame = *old_frame;
-                }
+                project.move_marker(*index, *old_frame);
             }
             Command::UpdateLineNote {
                 line_id, old_note, ..
@@ -514,6 +552,47 @@ mod tests {
     }
 
     #[test]
+    fn test_undo_redo_split_line() {
+        let (mut project, id) = make_project_with_line();
+        let mut history = CommandHistory::new();
+        let old_line = project.get_line(id).unwrap().clone();
+        let old_index = project.line_index(id).unwrap();
+
+        let mut first_line = old_line.clone();
+        first_line.text = "te-".into();
+        first_line.duration_frames = 24;
+
+        let mut second_line = old_line.clone();
+        second_line.id = id + 1;
+        second_line.text = "-st".into();
+        second_line.start_frame = 24;
+        second_line.duration_frames = 24;
+
+        *project.get_line_mut(id).unwrap() = first_line.clone();
+        project.insert_line_at(old_index + 1, second_line.clone());
+        history.push(Command::SplitLine {
+            old_line: old_line.clone(),
+            old_index,
+            first_line: first_line.clone(),
+            second_line: second_line.clone(),
+            second_index: old_index + 1,
+        });
+
+        assert_eq!(project.line_count(), 2);
+        assert_eq!(project.get_line(id).unwrap().text, "te-");
+
+        history.undo(&mut project);
+        assert_eq!(project.line_count(), 1);
+        assert_eq!(project.get_line(id).unwrap().text, "test");
+        assert!(project.get_line(second_line.id).is_none());
+
+        history.redo(&mut project);
+        assert_eq!(project.line_count(), 2);
+        assert_eq!(project.get_line(id).unwrap().text, "te-");
+        assert_eq!(project.get_line(second_line.id).unwrap().text, "-st");
+    }
+
+    #[test]
     fn test_undo_redo_character_voice_actors() {
         let (mut project, id) = make_project_with_line();
         let mut history = CommandHistory::new();
@@ -544,6 +623,78 @@ mod tests {
         let line = project.get_line(id).unwrap();
         assert_eq!(line.character_name, "New Char");
         assert_eq!(line.voice_actor_names, vec!["New Actor"]);
+    }
+
+    #[test]
+    fn test_undo_redo_rename_character() {
+        let mut project = Project::new();
+        let alice_1 = project.add_line_full(0, 48, 0.25, "hello".into(), "Alice".into(), [1.0; 4]);
+        let alice_2 = project.add_line_full(48, 48, 0.50, "again".into(), "Alice".into(), [1.0; 4]);
+        let bob = project.add_line_full(96, 48, 0.75, "world".into(), "Bob".into(), [0.0; 4]);
+        let old_known_characters = vec![
+            Character {
+                name: "Alice".into(),
+                color: [1.0; 4],
+            },
+            Character {
+                name: "Bob".into(),
+                color: [0.0; 4],
+            },
+        ];
+        let new_known_characters = vec![
+            Character {
+                name: "Alicia".into(),
+                color: [1.0; 4],
+            },
+            Character {
+                name: "Bob".into(),
+                color: [0.0; 4],
+            },
+        ];
+        project.set_known_characters(old_known_characters.clone());
+        let changes = vec![
+            LineCharacterNameChange {
+                line_id: alice_1,
+                old_name: "Alice".into(),
+                new_name: "Alicia".into(),
+            },
+            LineCharacterNameChange {
+                line_id: alice_2,
+                old_name: "Alice".into(),
+                new_name: "Alicia".into(),
+            },
+        ];
+
+        project.apply_character_name_changes(&changes, true);
+        project.set_known_characters(new_known_characters.clone());
+        let mut history = CommandHistory::new();
+        history.push(Command::RenameCharacter {
+            changes,
+            old_known_characters,
+            new_known_characters,
+        });
+
+        history.undo(&mut project);
+        assert_eq!(project.get_line(alice_1).unwrap().character_name, "Alice");
+        assert_eq!(project.get_line(alice_2).unwrap().character_name, "Alice");
+        assert_eq!(project.get_line(bob).unwrap().character_name, "Bob");
+        let known_names: Vec<_> = project
+            .known_characters
+            .iter()
+            .map(|character| character.name.as_str())
+            .collect();
+        assert_eq!(known_names, vec!["Alice", "Bob"]);
+
+        history.redo(&mut project);
+        assert_eq!(project.get_line(alice_1).unwrap().character_name, "Alicia");
+        assert_eq!(project.get_line(alice_2).unwrap().character_name, "Alicia");
+        assert_eq!(project.get_line(bob).unwrap().character_name, "Bob");
+        let known_names: Vec<_> = project
+            .known_characters
+            .iter()
+            .map(|character| character.name.as_str())
+            .collect();
+        assert_eq!(known_names, vec!["Alicia", "Bob"]);
     }
 
     #[test]

@@ -2,13 +2,13 @@ mod command;
 mod config;
 mod constants;
 mod export;
-mod file_dialog;
 mod graphics;
 mod i18n;
 mod network;
 mod observer;
 mod packet;
 mod project;
+mod render_index;
 mod rythmo_cpu_renderer;
 mod rythmo_gpu_renderer;
 mod rythmo_layout;
@@ -25,17 +25,61 @@ mod voice_actor;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Event, MouseButton, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop, EventLoopWindowTarget};
+use winit::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::WindowBuilder;
 
 use state::State;
+use ui::file_explorer_modal::{
+    FileExplorerMode, FileExplorerRequest, FileFilterSpec, FilePickerIntent,
+};
 use ui::widget::{EventResponse, UiAction, UiEvent};
 
-fn new_project_reset_and_pick_video(state: &mut State, elwt: &EventLoopWindowTarget<()>) {
+#[derive(Debug)]
+enum AppEvent {
+    WhatsNewFetched {
+        version: String,
+        result: Result<update::ReleaseInfo, String>,
+    },
+}
+
+fn start_whats_new_fetch(version: String, proxy: EventLoopProxy<AppEvent>) {
+    let tag = format!("v{version}");
+    std::thread::spawn(move || {
+        let result = update::fetch_release_by_tag(&tag);
+        let _ = proxy.send_event(AppEvent::WhatsNewFetched { version, result });
+    });
+}
+
+fn handle_whats_new_result(
+    version: String,
+    result: Result<update::ReleaseInfo, String>,
+    state: &mut State,
+) {
+    match result {
+        Ok(release) => {
+            let expected_tag = format!("v{version}");
+            if release.tag_name != expected_tag {
+                log::warn!(
+                    "Ignoring release notes for {}, expected {}",
+                    release.tag_name,
+                    expected_tag
+                );
+                return;
+            }
+            state.open_whats_new_modal(version.clone(), release.body);
+            config::mark_whats_new_seen(&version);
+        }
+        Err(e) => {
+            log::warn!("Could not fetch release notes for version {version}: {e}");
+        }
+    }
+}
+
+fn new_project_reset_and_pick_video(state: &mut State, elwt: &EventLoopWindowTarget<AppEvent>) {
     state.project.reset();
     state.project_path = None;
     state.dirty = false;
@@ -43,35 +87,17 @@ fn new_project_reset_and_pick_video(state: &mut State, elwt: &EventLoopWindowTar
     handle_action(UiAction::AddVideo, state, elwt);
 }
 
-fn open_dialog_filters<'a>(
-    filter_name: &'a str,
-    extensions: &'a [&'a str],
-) -> [file_dialog::FileFilter<'a>; 2] {
-    [
-        file_dialog::FileFilter {
-            name: i18n::t("picker.filter.all_files"),
-            extensions: &["*"],
-        },
-        file_dialog::FileFilter {
-            name: filter_name,
-            extensions,
-        },
+fn open_dialog_filters(filter_name: &str, extensions: &[&str]) -> Vec<FileFilterSpec> {
+    vec![
+        FileFilterSpec::new(i18n::t("picker.filter.all_files"), &["*"]),
+        FileFilterSpec::new(filter_name, extensions),
     ]
 }
 
-fn save_dialog_filters<'a>(
-    filter_name: &'a str,
-    extensions: &'a [&'a str],
-) -> [file_dialog::FileFilter<'a>; 2] {
-    [
-        file_dialog::FileFilter {
-            name: filter_name,
-            extensions,
-        },
-        file_dialog::FileFilter {
-            name: i18n::t("picker.filter.all_files"),
-            extensions: &["*"],
-        },
+fn save_dialog_filters(filter_name: &str, extensions: &[&str]) -> Vec<FileFilterSpec> {
+    vec![
+        FileFilterSpec::new(filter_name, extensions),
+        FileFilterSpec::new(i18n::t("picker.filter.all_files"), &["*"]),
     ]
 }
 
@@ -79,159 +105,301 @@ fn downloads_or_home_dir() -> Option<PathBuf> {
     dirs::download_dir().or_else(dirs::home_dir)
 }
 
-fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarget<()>) -> bool {
+fn project_or_video_dir(state: &State) -> Option<PathBuf> {
+    state
+        .project_path
+        .as_ref()
+        .and_then(|prev| prev.parent().map(PathBuf::from))
+        .or_else(|| {
+            state
+                .video_path()
+                .and_then(|video| video.parent().map(PathBuf::from))
+        })
+        .or_else(downloads_or_home_dir)
+}
+
+fn video_or_project_dir(state: &State) -> Option<PathBuf> {
+    state
+        .video_path()
+        .and_then(|video| video.parent().map(PathBuf::from))
+        .or_else(|| {
+            state
+                .project_path
+                .as_ref()
+                .and_then(|prev| prev.parent().map(PathBuf::from))
+        })
+        .or_else(downloads_or_home_dir)
+}
+
+fn picker_extra_locations(state: &State) -> Vec<(String, PathBuf)> {
+    let mut locations = Vec::new();
+    if let Some(path) = state
+        .project_path
+        .as_ref()
+        .and_then(|prev| prev.parent().map(PathBuf::from))
+    {
+        locations.push((i18n::t("file_explorer.sidebar.project").to_string(), path));
+    }
+    if let Some(path) = state
+        .video_path()
+        .and_then(|video| video.parent().map(PathBuf::from))
+    {
+        if !locations.iter().any(|(_, existing)| {
+            existing
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&path.to_string_lossy())
+        }) {
+            locations.push((i18n::t("file_explorer.sidebar.video").to_string(), path));
+        }
+    }
+    locations
+}
+
+fn open_file_picker(
+    state: &mut State,
+    title: &str,
+    mode: FileExplorerMode,
+    intent: FilePickerIntent,
+    filters: Vec<FileFilterSpec>,
+    initial_dir: Option<PathBuf>,
+    default_extension: Option<&str>,
+) {
+    state.open_file_explorer(FileExplorerRequest {
+        title: title.to_string(),
+        mode,
+        intent,
+        filters,
+        initial_dir,
+        default_extension: default_extension.map(str::to_string),
+        initial_filename: None,
+        extra_locations: picker_extra_locations(state),
+    });
+}
+
+fn save_project_as(state: &mut State, path: PathBuf) -> bool {
+    use export::{JsonExporter, ProjectExporter};
+    let fps = state.fps();
+    if let Err(e) = JsonExporter.export(&state.project, fps, &path) {
+        log::error!("Export failed: {e}");
+        false
+    } else {
+        state.project_path = Some(path);
+        state.dirty = false;
+        state.show_toast(i18n::t("toast.saved"), 3.0);
+        state.reload_linked_proxy();
+        true
+    }
+}
+
+fn quick_save_existing(state: &mut State) -> bool {
+    use export::{JsonExporter, ProjectExporter};
+    let Some(path) = state.project_path.clone() else {
+        return false;
+    };
+    let fps = state.fps();
+    if let Err(e) = JsonExporter.export(&state.project, fps, &path) {
+        log::error!("Quick save failed: {e}");
+        false
+    } else {
+        log::info!("Quick saved to {}", path.display());
+        state.dirty = false;
+        state.show_toast(i18n::t("toast.saved"), 3.0);
+        true
+    }
+}
+
+fn import_project_from_path(state: &mut State, path: PathBuf) {
+    use export::{JsonImporter, ProjectImporter};
+    let importer = JsonImporter;
+    match importer.import(&path) {
+        Ok(data) => {
+            let fps = state.fps();
+            data.apply_to_project(&mut state.project, fps);
+            state.project_path = Some(path.clone());
+            state.reload_linked_proxy();
+            if let Some(video) = state.video_path() {
+                config::add_recent_project(video, path);
+                state.rebuild_topbar_for_network();
+            }
+        }
+        Err(e) => log::error!("Import failed: {e}"),
+    }
+}
+
+fn import_cappela_from_path(state: &mut State, path: PathBuf) {
+    let fps = state.fps();
+    match export::import_cappela(&path, fps) {
+        Ok(data) => {
+            data.apply_to_project(&mut state.project, fps);
+            state.project_path = None;
+            state.dirty = true;
+        }
+        Err(e) => log::error!("Cappela import failed: {e}"),
+    }
+}
+
+fn import_srt_from_path(state: &mut State, path: PathBuf) {
+    let fps = state.fps();
+    let total_frames = state.total_frames();
+    match export::import_srt(&path, fps) {
+        Ok(mut data) => {
+            let (clipped, skipped) = data.clamp_to_total_frames(total_frames);
+            if clipped > 0 || skipped > 0 {
+                log::warn!(
+                    "SRT import clipped to video duration: {clipped} shortened, {skipped} skipped"
+                );
+            }
+            data.apply_to_project(&mut state.project, fps);
+            state.project_path = None;
+            state.dirty = true;
+        }
+        Err(e) => log::error!("SRT import failed: {e}"),
+    }
+}
+
+fn handle_file_picker_selected(
+    intent: FilePickerIntent,
+    path: PathBuf,
+    state: &mut State,
+    elwt: &EventLoopWindowTarget<AppEvent>,
+) {
+    match intent {
+        FilePickerIntent::AddVideo => state.load_video(&path),
+        FilePickerIntent::ImportProject => import_project_from_path(state, path),
+        FilePickerIntent::ImportCappelaProject => import_cappela_from_path(state, path),
+        FilePickerIntent::ImportSrtProject => import_srt_from_path(state, path),
+        FilePickerIntent::ExportProject | FilePickerIntent::QuickSave => {
+            save_project_as(state, path);
+        }
+        FilePickerIntent::NewProjectSave => {
+            if save_project_as(state, path) {
+                new_project_reset_and_pick_video(state, elwt);
+            }
+        }
+        FilePickerIntent::VoiceActorIcon => {
+            state.set_voice_actor_modal_icon_path(path.to_string_lossy().into_owned());
+        }
+        FilePickerIntent::ExportInstrumentalAudio => {
+            state.set_export_instrumental_audio_path(path.to_string_lossy().into_owned());
+        }
+        FilePickerIntent::ExportMp4 {
+            fps,
+            br_scale,
+            karaoke_text_scale,
+            export_width,
+            export_height,
+            instrumental_audio_path,
+            double_export_instrumental,
+        } => {
+            let _ = handle_action(
+                UiAction::StartExportToPath {
+                    output_path: path,
+                    fps,
+                    br_scale,
+                    karaoke_text_scale,
+                    export_width,
+                    export_height,
+                    instrumental_audio_path,
+                    double_export_instrumental,
+                },
+                state,
+                elwt,
+            );
+        }
+    }
+}
+
+fn handle_action(
+    action: UiAction,
+    state: &mut State,
+    elwt: &EventLoopWindowTarget<AppEvent>,
+) -> bool {
     match action {
         UiAction::CloseApp => return true,
         UiAction::AddVideo => {
             let filters = open_dialog_filters("Video", &["mp4", "mov", "avi", "mkv", "webm"]);
-            let start_dir = state
-                .project_path
-                .as_ref()
-                .and_then(|prev| prev.parent().map(PathBuf::from))
-                .or_else(downloads_or_home_dir);
-            let file = file_dialog::open_file(
+            open_file_picker(
+                state,
                 i18n::t("picker.video.title"),
-                &filters,
-                start_dir.as_deref(),
+                FileExplorerMode::Open,
+                FilePickerIntent::AddVideo,
+                filters,
+                project_or_video_dir(state),
+                None,
             );
-            if let Some(path) = file {
-                state.load_video(&path);
-            }
         }
         UiAction::ExportProject => {
             use export::{JsonExporter, ProjectExporter};
             let exporter = JsonExporter;
             let extensions = [exporter.extension()];
             let filters = save_dialog_filters(exporter.description(), &extensions);
-            let file = file_dialog::save_file(
+            open_file_picker(
+                state,
                 i18n::t("picker.export.title"),
-                &filters,
-                None,
-                exporter.extension(),
+                FileExplorerMode::Save,
+                FilePickerIntent::ExportProject,
+                filters,
+                project_or_video_dir(state),
+                Some(exporter.extension()),
             );
-            if let Some(path) = file {
-                let fps = state.fps();
-                if let Err(e) = exporter.export(&state.project, fps, &path) {
-                    log::error!("Export failed: {e}");
-                } else {
-                    state.project_path = Some(path);
-                    state.dirty = false;
-                    state.show_toast(i18n::t("toast.saved"), 3.0);
-                    state.reload_linked_proxy();
-                }
-            }
         }
         UiAction::ImportProject => {
-            use export::{JsonImporter, ProjectImporter};
             let filters = open_dialog_filters("Bande rythmo JSON", &["json"]);
-            let start_dir = downloads_or_home_dir();
-            let file = file_dialog::open_file(
+            open_file_picker(
+                state,
                 i18n::t("picker.import.title"),
-                &filters,
-                start_dir.as_deref(),
+                FileExplorerMode::Open,
+                FilePickerIntent::ImportProject,
+                filters,
+                project_or_video_dir(state),
+                None,
             );
-            if let Some(path) = file {
-                let importer = JsonImporter;
-                match importer.import(&path) {
-                    Ok(data) => {
-                        let fps = state.fps();
-                        data.apply_to_project(&mut state.project, fps);
-                        state.project_path = Some(path.clone());
-                        state.reload_linked_proxy();
-                        // Save to recent projects if video is loaded
-                        if let Some(video) = state.video_path() {
-                            config::add_recent_project(video, path);
-                            state.rebuild_topbar_for_network();
-                        }
-                    }
-                    Err(e) => log::error!("Import failed: {e}"),
-                }
-            }
         }
         UiAction::ImportCappelaProject => {
             let filters = open_dialog_filters("Cappela DETX", &["detx"]);
-            let start_dir = downloads_or_home_dir();
-            let file = file_dialog::open_file(
+            open_file_picker(
+                state,
                 i18n::t("picker.import.cappela.title"),
-                &filters,
-                start_dir.as_deref(),
+                FileExplorerMode::Open,
+                FilePickerIntent::ImportCappelaProject,
+                filters,
+                project_or_video_dir(state),
+                None,
             );
-            if let Some(path) = file {
-                let fps = state.fps();
-                match export::import_cappela(&path, fps) {
-                    Ok(data) => {
-                        data.apply_to_project(&mut state.project, fps);
-                        // On ne sauvegarde pas le path puisqu'on a importé un format qu'on va sauvegarder en .json
-                        state.project_path = None;
-                        state.dirty = true;
-                    }
-                    Err(e) => log::error!("Cappela import failed: {e}"),
-                }
-            }
         }
         UiAction::ImportSrtProject => {
             let filters = open_dialog_filters("SubRip SRT", &["srt"]);
-            let start_dir = downloads_or_home_dir();
-            let file = file_dialog::open_file(
+            open_file_picker(
+                state,
                 i18n::t("picker.import.srt.title"),
-                &filters,
-                start_dir.as_deref(),
+                FileExplorerMode::Open,
+                FilePickerIntent::ImportSrtProject,
+                filters,
+                project_or_video_dir(state),
+                None,
             );
-            if let Some(path) = file {
-                let fps = state.fps();
-                let total_frames = state.total_frames();
-                match export::import_srt(&path, fps) {
-                    Ok(mut data) => {
-                        let (clipped, skipped) = data.clamp_to_total_frames(total_frames);
-                        if clipped > 0 || skipped > 0 {
-                            log::warn!(
-                                "SRT import clipped to video duration: {clipped} shortened, {skipped} skipped"
-                            );
-                        }
-                        data.apply_to_project(&mut state.project, fps);
-                        // On ne sauvegarde pas le path puisqu'on a importé un format qu'on va sauvegarder en .json
-                        state.project_path = None;
-                        state.dirty = true;
-                    }
-                    Err(e) => log::error!("SRT import failed: {e}"),
-                }
-            }
         }
         UiAction::QuickSave => {
             use export::{JsonExporter, ProjectExporter};
-            if let Some(path) = &state.project_path {
-                let path = path.clone();
-                let fps = state.fps();
-                if let Err(e) = JsonExporter.export(&state.project, fps, &path) {
-                    log::error!("Quick save failed: {e}");
-                } else {
-                    log::info!("Quick saved to {}", path.display());
-                    state.dirty = false;
-                    state.show_toast(i18n::t("toast.saved"), 3.0);
-                }
+            if state.project_path.is_some() {
+                quick_save_existing(state);
             } else {
-                // No path yet — fall back to save dialog
                 let exporter = JsonExporter;
                 let extensions = [exporter.extension()];
                 let filters = save_dialog_filters(exporter.description(), &extensions);
-                let file = file_dialog::save_file(
+                open_file_picker(
+                    state,
                     i18n::t("picker.export.title"),
-                    &filters,
-                    None,
-                    exporter.extension(),
+                    FileExplorerMode::Save,
+                    FilePickerIntent::QuickSave,
+                    filters,
+                    project_or_video_dir(state),
+                    Some(exporter.extension()),
                 );
-                if let Some(path) = file {
-                    let fps = state.fps();
-                    if let Err(e) = exporter.export(&state.project, fps, &path) {
-                        log::error!("Export failed: {e}");
-                    } else {
-                        state.project_path = Some(path);
-                        state.dirty = false;
-                        state.show_toast(i18n::t("toast.saved"), 3.0);
-                        state.reload_linked_proxy();
-                    }
-                }
             }
+        }
+        UiAction::FilePickerSelected { intent, path } => {
+            handle_file_picker_selected(intent, path, state, elwt);
         }
         UiAction::TogglePlayPause => {
             state.toggle_play_pause();
@@ -300,22 +468,26 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
         UiAction::OpenVoiceActorModal => {
             state.open_voice_actor_modal();
         }
+        UiAction::OpenRenameCharacterModal => {
+            state.open_rename_character_modal();
+        }
+        UiAction::RenameCharacter { old_name, new_name } => {
+            state.rename_character_everywhere(old_name, new_name);
+        }
         UiAction::PickVoiceActorIcon => {
             let filters = open_dialog_filters(
                 "Image",
                 &["png", "jpg", "jpeg", "webp", "bmp", "ico", "gif", "svg"],
             );
-            let start_dir = state
-                .video_path()
-                .and_then(|source| source.parent().map(PathBuf::from))
-                .or_else(downloads_or_home_dir);
-            if let Some(path) = file_dialog::open_file(
+            open_file_picker(
+                state,
                 i18n::t("picker.voice_actor_icon.title"),
-                &filters,
-                start_dir.as_deref(),
-            ) {
-                state.set_voice_actor_modal_icon_path(path.to_string_lossy().into_owned());
-            }
+                FileExplorerMode::Open,
+                FilePickerIntent::VoiceActorIcon,
+                filters,
+                video_or_project_dir(state),
+                None,
+            );
         }
         UiAction::CreateVoiceActor { name, icon_path } => {
             state.create_voice_actor(name, icon_path);
@@ -379,6 +551,8 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
             let progress =
                 std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0.01_f32.to_bits()));
             let progress_for_ui = progress.clone();
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let cancel_for_job = cancel.clone();
             let (tx, rx) = std::sync::mpsc::channel();
             let source_for_job = source.clone();
             let br_for_job = br_path.clone();
@@ -391,6 +565,7 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
                     width,
                     height,
                     crf,
+                    cancel_for_job,
                     move |v| {
                         p.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
                     },
@@ -401,6 +576,7 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
 
             state.set_progress_label(i18n::t("progress.proxy"));
             state.set_export_progress(Some(progress_for_ui));
+            state.set_export_cancel(Some(cancel));
             state.watch_proxy_job(source, rx);
         }
         UiAction::StartExport {
@@ -410,6 +586,36 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
             export_width,
             export_height,
             instrumental_audio_path,
+            double_export_instrumental,
+        } => {
+            let filters = save_dialog_filters("MP4 Video", &["mp4"]);
+            open_file_picker(
+                state,
+                i18n::t("picker.export_mp4.title"),
+                FileExplorerMode::Save,
+                FilePickerIntent::ExportMp4 {
+                    fps,
+                    br_scale,
+                    karaoke_text_scale,
+                    export_width,
+                    export_height,
+                    instrumental_audio_path,
+                    double_export_instrumental,
+                },
+                filters,
+                video_or_project_dir(state),
+                Some("mp4"),
+            );
+        }
+        UiAction::StartExportToPath {
+            output_path,
+            fps,
+            br_scale,
+            karaoke_text_scale,
+            export_width,
+            export_height,
+            instrumental_audio_path,
+            double_export_instrumental,
         } => {
             if let Some(source) = state.video_path() {
                 let source_fps = state.fps();
@@ -421,40 +627,39 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
                     video_export::EXPORT_RENDER_BACKEND_UNKNOWN,
                 ));
                 let render_backend_for_ui = render_backend_status.clone();
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let cancel_for_job = cancel.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
 
-                let title = i18n::t("picker.export_mp4.title").to_string();
                 std::thread::spawn(move || {
-                    let filters = save_dialog_filters("MP4 Video", &["mp4"]);
-                    let file = file_dialog::save_file(&title, &filters, None, "mp4");
-                    if let Some(output) = file {
-                        // Signal that export is starting (progress overlay appears now)
-                        progress.store(0.01_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                        let p = progress.clone();
-                        let result = video_export::export_mp4(
-                            &project_snap,
-                            &source,
-                            &output,
-                            fps,
-                            source_fps,
-                            br_scale,
-                            karaoke_text_scale,
-                            export_width,
-                            export_height,
-                            instrumental_audio_path.as_deref(),
-                            Some(render_backend_status.clone()),
-                            move |v| {
-                                p.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                            },
-                        );
-                        if let Err(e) = result {
-                            log::error!("MP4 export failed: {e}");
-                        }
-                    }
+                    progress.store(0.01_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                    let p = progress.clone();
+                    let result = video_export::export_mp4(
+                        &project_snap,
+                        &source,
+                        &output_path,
+                        fps,
+                        source_fps,
+                        br_scale,
+                        karaoke_text_scale,
+                        export_width,
+                        export_height,
+                        instrumental_audio_path.as_deref(),
+                        double_export_instrumental,
+                        Some(render_backend_status.clone()),
+                        cancel_for_job,
+                        move |v| {
+                            p.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                        },
+                    );
+                    let _ = tx.send(result);
                     progress.store(2.0_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
                 });
                 // Set progress tracker — overlay only visible once progress > 0
                 state.set_export_render_backend(Some(render_backend_for_ui));
                 state.set_export_progress(Some(progress_for_ui));
+                state.set_export_cancel(Some(cancel));
+                state.watch_export_job(rx);
             } else {
                 log::warn!("No video loaded — cannot export MP4");
             }
@@ -464,17 +669,15 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
                 "Audio",
                 &["wav", "mp3", "m4a", "aac", "flac", "ogg", "opus"],
             );
-            let start_dir = state
-                .video_path()
-                .and_then(|source| source.parent().map(PathBuf::from))
-                .or_else(downloads_or_home_dir);
-            if let Some(path) = file_dialog::open_file(
+            open_file_picker(
+                state,
                 i18n::t("picker.instrumental_audio.title"),
-                &filters,
-                start_dir.as_deref(),
-            ) {
-                state.set_export_instrumental_audio_path(path.to_string_lossy().into_owned());
-            }
+                FileExplorerMode::Open,
+                FilePickerIntent::ExportInstrumentalAudio,
+                filters,
+                video_or_project_dir(state),
+                None,
+            );
         }
         UiAction::OpenDropdown(dropdown) => {
             state.open_toolbar_dropdown(dropdown);
@@ -503,7 +706,7 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
             state.move_marker(index, frame);
         }
         UiAction::CancelExport => {
-            state.set_export_progress(None);
+            state.cancel_export();
         }
         UiAction::StopEditing => {
             state.broadcast_finalize();
@@ -536,6 +739,9 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
         }
         UiAction::SetSyllableRatios { line_id, ratios } => {
             state.set_syllable_ratios(line_id, ratios);
+        }
+        UiAction::SplitDialogue => {
+            state.split_dialogue();
         }
         UiAction::OpenServerBrowser => {
             state.open_server_browser();
@@ -613,8 +819,25 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
             }
         }
         UiAction::NewProjectSave => {
-            handle_action(UiAction::QuickSave, state, elwt);
-            new_project_reset_and_pick_video(state, elwt);
+            if state.project_path.is_some() {
+                if quick_save_existing(state) {
+                    new_project_reset_and_pick_video(state, elwt);
+                }
+            } else {
+                use export::{JsonExporter, ProjectExporter};
+                let exporter = JsonExporter;
+                let extensions = [exporter.extension()];
+                let filters = save_dialog_filters(exporter.description(), &extensions);
+                open_file_picker(
+                    state,
+                    i18n::t("picker.export.title"),
+                    FileExplorerMode::Save,
+                    FilePickerIntent::NewProjectSave,
+                    filters,
+                    project_or_video_dir(state),
+                    Some(exporter.extension()),
+                );
+            }
         }
         UiAction::NewProjectDiscard => {
             new_project_reset_and_pick_video(state, elwt);
@@ -674,7 +897,7 @@ fn handle_action(action: UiAction, state: &mut State, elwt: &EventLoopWindowTarg
 fn dispatch(
     ui_event: UiEvent,
     state: &mut State,
-    elwt: &winit::event_loop::EventLoopWindowTarget<()>,
+    elwt: &winit::event_loop::EventLoopWindowTarget<AppEvent>,
 ) {
     if let EventResponse::Action(action) = state.handle_ui_event(&ui_event) {
         if handle_action(action, state, elwt) {
@@ -860,7 +1083,10 @@ fn main() {
 
     let cfg = config::get().clone();
 
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
+    let event_loop = EventLoopBuilder::<AppEvent>::with_user_event()
+        .build()
+        .expect("Failed to create event loop");
+    let event_loop_proxy = event_loop.create_proxy();
 
     let window_icon = {
         let ico_data = include_bytes!("icons/app.ico");
@@ -877,6 +1103,9 @@ fn main() {
     );
 
     let mut state = pollster::block_on(State::new(window.clone()));
+    if config::should_show_whats_new(update::current_version()) {
+        start_whats_new_fetch(update::current_version().to_string(), event_loop_proxy);
+    }
     state.show_toast(i18n::t("toast.welcome"), 10.0);
     let mut cursor_pos = (0.0_f32, 0.0_f32);
     let mut last_click_time = Instant::now();
@@ -885,16 +1114,11 @@ fn main() {
 
     event_loop
         .run(move |event, elwt| {
-            let secondary_video_running = state.has_secondary_display() && state.is_video_playing();
-            if secondary_video_running {
-                elwt.set_control_flow(ControlFlow::WaitUntil(
-                    Instant::now() + Duration::from_millis(16),
-                ));
-            } else {
-                elwt.set_control_flow(ControlFlow::Wait);
-            }
-
             match event {
+                Event::UserEvent(AppEvent::WhatsNewFetched { version, result }) => {
+                    handle_whats_new_result(version, result, &mut state);
+                    state.request_redraw();
+                }
                 Event::WindowEvent { window_id, event } => {
                 if state.is_secondary_window(window_id) {
                     match event {
@@ -916,7 +1140,9 @@ fn main() {
                         }
                         WindowEvent::RedrawRequested => {
                             state.render_secondary_display(window_id);
-                            state.request_secondary_redraw();
+                            if state.secondary_needs_continuous_redraw() {
+                                state.request_secondary_redraw();
+                            }
                         }
                         _ => {}
                     }
@@ -931,6 +1157,7 @@ fn main() {
                 WindowEvent::CloseRequested => elwt.exit(),
                 WindowEvent::Resized(physical_size) => {
                     state.resize(physical_size);
+                    state.request_redraw();
                 }
                 WindowEvent::ModifiersChanged(modifiers) => {
                     ctrl_held = modifiers.state().control_key();
@@ -958,10 +1185,20 @@ fn main() {
                             Key::Named(NamedKey::Backspace) => Some("\x08"),
                             Key::Named(NamedKey::Enter) => Some("\r"),
                             Key::Named(NamedKey::Space) => Some(" "),
+                            Key::Named(NamedKey::Tab) => Some("\t"),
                             _ => None,
                         };
 
-                        if state.is_editing_text() {
+                        if state.is_studio_mode() {
+                            // In studio mode: only Space (play/pause) is allowed
+                            if matches!(event.logical_key, Key::Named(NamedKey::Space)) {
+                                state.toggle_play_pause();
+                                state.request_redraw();
+                            }
+                        } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("k")) {
+                            handle_action(UiAction::SplitDialogue, &mut state, elwt);
+                            state.request_redraw();
+                        } else if state.is_editing_text() {
                             if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "a") {
                                 // Ctrl+A — select all text
                                 dispatch(UiEvent::SelectAll, &mut state, elwt);
@@ -992,18 +1229,14 @@ fn main() {
                                 dispatch(UiEvent::CursorUp, &mut state, elwt);
                             } else if matches!(event.logical_key, Key::Named(NamedKey::ArrowDown)) {
                                 dispatch(UiEvent::CursorDown, &mut state, elwt);
+                            } else if matches!(event.logical_key, Key::Named(NamedKey::Delete)) {
+                                dispatch(UiEvent::KeyInput { text: "\x7f".into() }, &mut state, elwt);
                             } else if let Some(t) = key_text {
                                 dispatch(UiEvent::KeyInput { text: t.into() }, &mut state, elwt);
                             } else if let Key::Character(ch) = &event.logical_key {
                                 if !ctrl_held {
                                     dispatch(UiEvent::KeyInput { text: ch.to_string() }, &mut state, elwt);
                                 }
-                            }
-                        } else if state.is_studio_mode() {
-                            // In studio mode: only Space (play/pause) is allowed
-                            if matches!(event.logical_key, Key::Named(NamedKey::Space)) {
-                                state.toggle_play_pause();
-                                state.request_redraw();
                             }
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "s") {
                             handle_action(UiAction::QuickSave, &mut state, elwt);
@@ -1162,8 +1395,10 @@ fn main() {
                 }
                 WindowEvent::RedrawRequested => {
                     state.render();
-                    state.request_redraw();
-                    if !state.is_video_playing() {
+                    if state.needs_continuous_redraw() {
+                        state.request_redraw();
+                    }
+                    if state.secondary_needs_continuous_redraw() {
                         state.request_secondary_redraw();
                     }
                 }
@@ -1174,20 +1409,29 @@ fn main() {
                         .unwrap_or_default();
                     if ["mp4", "mov", "avi", "mkv", "webm"].contains(&ext.as_str()) {
                         state.load_video(&path);
+                        state.request_redraw();
                     }
                 }
                 _ => {}
                 }
             }
-                Event::AboutToWait => {
-                if state.has_secondary_display() && state.is_video_playing() {
-                    if let Some(window_id) = state.secondary_window_id() {
-                        state.render_secondary_display(window_id);
+            Event::AboutToWait => {
+                let changed = state.tick_background();
+                if changed || state.needs_redraw_now() {
+                    state.request_redraw();
+                    if state.has_secondary_display() {
+                        state.request_secondary_redraw();
                     }
-                } else {
+                } else if state.secondary_needs_continuous_redraw() {
                     state.request_secondary_redraw();
                 }
-                state.request_redraw();
+
+                if let Some(deadline) = state.next_wake_deadline() {
+                    let now = Instant::now();
+                    elwt.set_control_flow(ControlFlow::WaitUntil(deadline.max(now)));
+                } else {
+                    elwt.set_control_flow(ControlFlow::Wait);
+                }
             }
             _ => {}
             }

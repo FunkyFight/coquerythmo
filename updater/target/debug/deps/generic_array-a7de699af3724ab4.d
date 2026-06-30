@@ -1,0 +1,11 @@
+D:\serious rust projects\coquerythmo\updater\target\debug\deps\generic_array-a7de699af3724ab4.d: D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\lib.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\hex.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\impls.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\arr.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\functional.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\iter.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\sequence.rs
+
+D:\serious rust projects\coquerythmo\updater\target\debug\deps\libgeneric_array-a7de699af3724ab4.rmeta: D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\lib.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\hex.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\impls.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\arr.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\functional.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\iter.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\sequence.rs
+
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\lib.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\hex.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\impls.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\arr.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\functional.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\iter.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\generic-array-0.14.7\src\sequence.rs:

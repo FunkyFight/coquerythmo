@@ -1,4 +1,5 @@
 use super::renderer::StretchedText;
+use super::text_input::{self, TextInputMetrics};
 use super::widget::{
     EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction,
     UiEvent, VAlign,
@@ -23,7 +24,6 @@ const HANDLE_COLOR: [f32; 4] = [0.9, 0.9, 0.95, 0.8];
 const LINE_BORDER: [f32; 4] = [0.5, 0.5, 0.55, 0.3];
 const LINE_BORDER_HOVER: [f32; 4] = [0.6, 0.6, 0.65, 0.5];
 const LINE_RADIUS: f32 = 2.0;
-const CURSOR_WIDTH: f32 = 1.5;
 const CURSOR_COLOR: [f32; 4] = [0.9, 0.9, 0.95, 1.0];
 const KARAOKE_TEXTURE_PREWARM_LOOKAHEAD_SECONDS: f64 = 60.0;
 const KARAOKE_TEXTURE_PREWARM_CANDIDATES_PER_FRAME: usize = 32;
@@ -191,7 +191,7 @@ impl RythmoState {
         project: &Project,
         max_gap_frames: i64,
     ) -> Ref<'_, KaraokeUiIndex> {
-        let signature = karaoke_ui_index_signature(project, max_gap_frames);
+        let signature = karaoke_ui_index_revision_signature(project, max_gap_frames);
         {
             let cache = self.karaoke_index_cache.borrow();
             if cache
@@ -326,6 +326,24 @@ impl RythmoState {
         self.editing_line.is_some()
             || self.editing_character.is_some()
             || self.editing_note.is_some()
+    }
+
+    pub fn needs_animation_or_interaction(&self) -> bool {
+        self.dragging.is_some()
+            || self.panning
+            || self.ghost_preview.is_some()
+            || self.syllable_drag.is_some()
+    }
+
+    pub fn next_cursor_blink_deadline(&self) -> Option<std::time::Instant> {
+        [
+            self.line_input.next_cursor_blink_deadline(),
+            self.char_input.next_cursor_blink_deadline(),
+            self.note_input.next_cursor_blink_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     pub fn stop_line_editing(&mut self) {
@@ -1297,8 +1315,15 @@ fn line_rect_with_karaoke_preview(
 }
 
 fn badge_width(name: &str) -> f32 {
-    let chars = name.chars().count().max(1) as f32;
-    (chars * BADGE_CHAR_W + BADGE_PADDING_H * 2.0).max(BADGE_MIN_W)
+    (text_input::text_width(name, BADGE_FONT_SIZE) + BADGE_PADDING_H * 2.0).max(BADGE_MIN_W)
+}
+
+fn badge_text_metrics() -> TextInputMetrics {
+    TextInputMetrics::center(BADGE_FONT_SIZE, BADGE_PADDING_H)
+}
+
+fn note_text_metrics() -> TextInputMetrics {
+    TextInputMetrics::left(9.0, 0.0)
 }
 
 fn push_playhead_segments(
@@ -1472,7 +1497,6 @@ const BADGE_HEIGHT: f32 = 16.0;
 const BADGE_PADDING_H: f32 = 6.0;
 const BADGE_GAP: f32 = 2.0;
 const BADGE_RADIUS: f32 = 2.0;
-const BADGE_CHAR_W: f32 = 6.0; // approximate char width at font size 10
 const BADGE_MIN_W: f32 = 16.0;
 const BADGE_FONT_SIZE: f32 = 10.0;
 const ACTOR_ICON_SIZE: f32 = constants::VOICE_ACTOR_DISPLAY_ICON_SIZE;
@@ -1635,6 +1659,7 @@ fn karaoke_signature_mix(hash: &mut u64, value: u64) {
     *hash = hash.wrapping_mul(KARAOKE_UI_SIGNATURE_PRIME);
 }
 
+#[cfg(test)]
 fn karaoke_signature_mix_str(hash: &mut u64, value: &str) {
     karaoke_signature_mix(hash, value.len() as u64);
     for &byte in value.as_bytes() {
@@ -1642,6 +1667,14 @@ fn karaoke_signature_mix_str(hash: &mut u64, value: &str) {
     }
 }
 
+fn karaoke_ui_index_revision_signature(project: &Project, max_gap_frames: i64) -> u64 {
+    let mut hash = KARAOKE_UI_SIGNATURE_OFFSET;
+    karaoke_signature_mix(&mut hash, project.revision());
+    karaoke_signature_mix(&mut hash, max_gap_frames as u64);
+    hash
+}
+
+#[cfg(test)]
 fn karaoke_ui_index_signature(project: &Project, max_gap_frames: i64) -> u64 {
     let mut hash = KARAOKE_UI_SIGNATURE_OFFSET;
     karaoke_signature_mix(&mut hash, project.line_count() as u64);
@@ -2788,53 +2821,18 @@ pub fn render_lines<'a>(
             actor_icons,
         );
 
-        if is_editing_char {
-            if let Some((start, end)) = state.char_input.selection_range() {
-                let char_count = line.character_name.chars().count();
-                let total_text_w = char_count as f32 * BADGE_CHAR_W;
-                let text_start_x = br.x + (br.width - total_text_w) / 2.0;
-                let sx = text_start_x + start as f32 * BADGE_CHAR_W;
-                let ex = text_start_x + end as f32 * BADGE_CHAR_W;
-                quads.push(QuadInstance {
-                    rect: [sx, br.y + 3.0, (ex - sx).max(1.0), br.height - 6.0],
-                    color: [0.25, 0.45, 0.95, 0.45],
-                    color_bottom: [0.25, 0.45, 0.95, 0.45],
-                    border_color: [0.0; 4],
-                    border_width: 0.0,
-                    border_radius: 2.0,
-                    shadow_offset: [0.0; 2],
-                    shadow_color: [0.0; 4],
-                    shadow_blur: 0.0,
-                    rotation: 0.0,
-                    _padding: [0.0; 2],
-                });
-            }
-        }
-
-        // Character name editing cursor
-        if is_editing_char && state.char_input.cursor_visible() {
-            let char_count = line.character_name.chars().count();
-            let cursor_pos = state.char_input.cursor_pos;
-            let _text_area_w = br.width - BADGE_PADDING_H * 2.0;
-            // Approximate: center the text, then position cursor
-            let total_text_w = char_count as f32 * BADGE_CHAR_W;
-            let text_start_x = br.x + (br.width - total_text_w) / 2.0;
-            let cx = text_start_x + cursor_pos as f32 * BADGE_CHAR_W;
-            let margin = 3.0;
-            quads.push(QuadInstance {
-                rect: [cx, br.y + margin, CURSOR_WIDTH, br.height - margin * 2.0],
-                color: CURSOR_COLOR,
-                color_bottom: CURSOR_COLOR,
-                border_color: [0.0; 4],
-                border_width: 0.0,
-                border_radius: 0.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-        }
+        text_input::render_selection_and_cursor(
+            quads,
+            br,
+            &line.character_name,
+            &state.char_input,
+            is_editing_char,
+            badge_text_metrics(),
+            3.0,
+            3.0,
+            [0.25, 0.45, 0.95, 0.45],
+            CURSOR_COLOR,
+        );
 
         // Note indicator: small icon at the end of the badge if line has a note
         if !line.note.is_empty() {
@@ -2852,17 +2850,18 @@ pub fn render_lines<'a>(
         }
 
         // Note text: small italic label at the bottom of the line
+        let note_label_h = 12.0;
+        let note_y = r.y + r.height - note_label_h - 1.0;
+        let note_rect = Rect {
+            x: r.x + 4.0,
+            y: note_y,
+            width: r.width - 8.0,
+            height: note_label_h,
+        };
         if !line.note.is_empty() {
-            let note_label_h = 12.0;
-            let note_y = r.y + r.height - note_label_h - 1.0;
             labels.push(LabelInfo {
                 text: &line.note,
-                bounds: Rect {
-                    x: r.x + 4.0,
-                    y: note_y,
-                    width: r.width - 8.0,
-                    height: note_label_h,
-                },
+                bounds: note_rect,
                 h_align: HAlign::Left,
                 v_align: VAlign::Center,
                 overflow: Overflow::Ellipsis,
@@ -2873,28 +2872,19 @@ pub fn render_lines<'a>(
             });
         }
 
-        // Note editing cursor
         let is_editing_note = state.editing_note == Some(line.id);
-        if is_editing_note && state.note_input.cursor_visible() {
-            let note_label_h = 12.0;
-            let note_y = r.y + r.height - note_label_h - 1.0;
-            let cursor_pos = state.note_input.cursor_pos;
-            let note_char_w = 5.0; // approximate at font size 9
-            let cx = r.x + 4.0 + cursor_pos as f32 * note_char_w;
-            quads.push(QuadInstance {
-                rect: [cx, note_y + 1.0, CURSOR_WIDTH, note_label_h - 2.0],
-                color: CURSOR_COLOR,
-                color_bottom: CURSOR_COLOR,
-                border_color: [0.0; 4],
-                border_width: 0.0,
-                border_radius: 0.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-        }
+        text_input::render_selection_and_cursor(
+            quads,
+            note_rect,
+            &line.note,
+            &state.note_input,
+            is_editing_note,
+            note_text_metrics(),
+            1.0,
+            1.0,
+            [0.25, 0.45, 0.95, 0.45],
+            CURSOR_COLOR,
+        );
     }
 
     push_editor_karaoke_texture_prewarm_texts(

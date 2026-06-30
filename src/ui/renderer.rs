@@ -1,11 +1,11 @@
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use glyphon::{
     cosmic_text::{Align, Ellipsize, EllipsizeHeightLimit},
     Attrs, Buffer as GlyphonBuffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics,
     Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Wrap,
 };
-use wgpu::util::DeviceExt;
 use wgpu::MultisampleState;
 
 use super::icons::IconAtlas;
@@ -21,6 +21,72 @@ struct CachedTextTexture {
     bind_group: wgpu::BindGroup,
     cache_hash: u64,
     char_x_ratios: Vec<f32>, // ratio 0.0-1.0 for each char boundary (len = char_count + 1)
+}
+
+struct DynamicBuffer {
+    buffer: Option<wgpu::Buffer>,
+    capacity_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct UiTextKey {
+    text_hash: u64,
+    text_len: usize,
+    font_size_bits: u32,
+    line_height_bits: u32,
+    inner_width_bits: u32,
+    height_bits: u32,
+    h_align: u8,
+    overflow: u8,
+    font_family_hash: u64,
+    font_family_len: usize,
+}
+
+struct CachedUiTextBuffer {
+    buffer: GlyphonBuffer,
+    text_height: f32,
+    last_used_frame: u64,
+}
+
+impl DynamicBuffer {
+    fn new() -> Self {
+        Self {
+            buffer: None,
+            capacity_bytes: 0,
+        }
+    }
+
+    fn upload<T: bytemuck::Pod>(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &str,
+        data: &[T],
+    ) {
+        if data.is_empty() {
+            return;
+        }
+
+        let required = std::mem::size_of_val(data) as u64;
+        if required > self.capacity_bytes {
+            let capacity = required.next_power_of_two().max(1);
+            self.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: capacity,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.capacity_bytes = capacity;
+        }
+
+        if let Some(buffer) = &self.buffer {
+            queue.write_buffer(buffer, 0, bytemuck::cast_slice(data));
+        }
+    }
+
+    fn buffer(&self) -> Option<&wgpu::Buffer> {
+        self.buffer.as_ref()
+    }
 }
 
 pub struct StretchedText {
@@ -134,6 +200,17 @@ pub struct UiRenderer {
     viewport: Viewport,
 
     text_texture_cache: HashMap<u64, CachedTextTexture>,
+    ui_text_cache: HashMap<UiTextKey, CachedUiTextBuffer>,
+    ui_text_frame: u64,
+    quad_buffer: DynamicBuffer,
+    icon_buffer: DynamicBuffer,
+    video_quad_buffer: DynamicBuffer,
+    stretched_text_buffer: DynamicBuffer,
+    post_stretched_quad_buffer: DynamicBuffer,
+    base_textured_buffer: DynamicBuffer,
+    overlay_quad_buffer: DynamicBuffer,
+    extra_textured_buffer: DynamicBuffer,
+    post_texture_quad_buffer: DynamicBuffer,
 }
 
 impl UiRenderer {
@@ -352,6 +429,17 @@ impl UiRenderer {
             text_renderer,
             viewport,
             text_texture_cache: HashMap::new(),
+            ui_text_cache: HashMap::new(),
+            ui_text_frame: 0,
+            quad_buffer: DynamicBuffer::new(),
+            icon_buffer: DynamicBuffer::new(),
+            video_quad_buffer: DynamicBuffer::new(),
+            stretched_text_buffer: DynamicBuffer::new(),
+            post_stretched_quad_buffer: DynamicBuffer::new(),
+            base_textured_buffer: DynamicBuffer::new(),
+            overlay_quad_buffer: DynamicBuffer::new(),
+            extra_textured_buffer: DynamicBuffer::new(),
+            post_texture_quad_buffer: DynamicBuffer::new(),
         }
     }
 
@@ -602,6 +690,138 @@ impl UiRenderer {
         families.into_iter().collect()
     }
 
+    fn hash_text(value: &str) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn h_align_key(align: HAlign) -> u8 {
+        match align {
+            HAlign::Left => 0,
+            HAlign::Center => 1,
+            HAlign::Right => 2,
+        }
+    }
+
+    fn overflow_key(overflow: Overflow) -> u8 {
+        match overflow {
+            Overflow::Clip => 0,
+            Overflow::Ellipsis => 1,
+            Overflow::Visible => 2,
+        }
+    }
+
+    fn ui_text_key(label: &LabelInfo, default_font_size: f32) -> (UiTextKey, f32, f32, f32) {
+        let rect = &label.bounds;
+        let padding = label.padding;
+        let inner_width = (rect.width - padding * 2.0).max(0.0);
+        let fs = label.font_size_override.unwrap_or(default_font_size);
+        let lh = (fs * 1.3).ceil();
+        let family = label.font_family_override.unwrap_or("");
+        let key = UiTextKey {
+            text_hash: Self::hash_text(label.text),
+            text_len: label.text.len(),
+            font_size_bits: fs.to_bits(),
+            line_height_bits: lh.to_bits(),
+            inner_width_bits: inner_width.to_bits(),
+            height_bits: rect.height.max(0.0).to_bits(),
+            h_align: Self::h_align_key(label.h_align),
+            overflow: Self::overflow_key(label.overflow),
+            font_family_hash: Self::hash_text(family),
+            font_family_len: family.len(),
+        };
+        (key, inner_width, fs, lh)
+    }
+
+    fn build_ui_text_buffer(
+        font_system: &mut FontSystem,
+        label: &LabelInfo,
+        inner_width: f32,
+        fs: f32,
+        lh: f32,
+        frame: u64,
+    ) -> CachedUiTextBuffer {
+        let rect = &label.bounds;
+        let mut buffer = GlyphonBuffer::new(font_system, Metrics::new(fs, lh));
+        buffer.set_size(font_system, Some(inner_width), Some(rect.height));
+
+        let cosmic_align = match label.h_align {
+            HAlign::Left => Align::Left,
+            HAlign::Center => Align::Center,
+            HAlign::Right => Align::Right,
+        };
+
+        match label.overflow {
+            Overflow::Clip | Overflow::Visible => {
+                buffer.set_wrap(font_system, Wrap::None);
+            }
+            Overflow::Ellipsis => {
+                buffer.set_wrap(font_system, Wrap::None);
+                buffer.set_ellipsize(font_system, Ellipsize::End(EllipsizeHeightLimit::Lines(1)));
+            }
+        }
+
+        let label_family = match label.font_family_override {
+            Some(name) => Family::Name(name),
+            None => Family::SansSerif,
+        };
+        buffer.set_text(
+            font_system,
+            label.text,
+            &Attrs::new().family(label_family),
+            Shaping::Advanced,
+            None,
+        );
+
+        for line in buffer.lines.iter_mut() {
+            line.set_align(Some(cosmic_align));
+        }
+        buffer.shape_until_scroll(font_system, false);
+
+        let mut text_height = 0.0_f32;
+        for run in buffer.layout_runs() {
+            text_height = run.line_top + run.line_height;
+        }
+        if text_height == 0.0 {
+            text_height = lh;
+        }
+
+        CachedUiTextBuffer {
+            buffer,
+            text_height,
+            last_used_frame: frame,
+        }
+    }
+
+    fn evict_ui_text_cache(&mut self) {
+        const MAX_UI_TEXT_CACHE_ENTRIES: usize = 2048;
+        const UI_TEXT_CACHE_RETAIN_FRAMES: u64 = 180;
+
+        if self.ui_text_cache.len() <= MAX_UI_TEXT_CACHE_ENTRIES {
+            return;
+        }
+
+        let min_frame = self
+            .ui_text_frame
+            .saturating_sub(UI_TEXT_CACHE_RETAIN_FRAMES);
+        self.ui_text_cache
+            .retain(|_, cached| cached.last_used_frame >= min_frame);
+
+        if self.ui_text_cache.len() > MAX_UI_TEXT_CACHE_ENTRIES {
+            let remove_count = self.ui_text_cache.len() - MAX_UI_TEXT_CACHE_ENTRIES;
+            let mut oldest: Vec<_> = self
+                .ui_text_cache
+                .iter()
+                .map(|(key, cached)| (cached.last_used_frame, key.clone()))
+                .collect();
+            oldest.sort_unstable_by_key(|(last_used_frame, _)| *last_used_frame);
+            for (_, key) in oldest.into_iter().take(remove_count) {
+                self.ui_text_cache.remove(&key);
+            }
+        }
+    }
+
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -636,71 +856,39 @@ impl UiRenderer {
 
         let default_font_size = crate::config::get().ui.font_size;
 
-        // Prepare text buffers
-        let mut text_buffers: Vec<GlyphonBuffer> = Vec::new();
+        self.ui_text_frame = self.ui_text_frame.wrapping_add(1);
+        let ui_text_frame = self.ui_text_frame;
+        let mut text_keys = Vec::with_capacity(labels.len());
         for label in labels {
-            let rect = &label.bounds;
-            let padding = label.padding;
-            let inner_width = (rect.width - padding * 2.0).max(0.0);
-            let fs = label.font_size_override.unwrap_or(default_font_size);
-            let lh = (fs * 1.3).ceil();
-
-            let mut buffer = GlyphonBuffer::new(&mut self.font_system, Metrics::new(fs, lh));
-            buffer.set_size(&mut self.font_system, Some(inner_width), Some(rect.height));
-
-            let cosmic_align = match label.h_align {
-                HAlign::Left => Align::Left,
-                HAlign::Center => Align::Center,
-                HAlign::Right => Align::Right,
-            };
-
-            match label.overflow {
-                Overflow::Clip | Overflow::Visible => {
-                    buffer.set_wrap(&mut self.font_system, Wrap::None);
+            let (key, inner_width, fs, lh) = Self::ui_text_key(label, default_font_size);
+            match self.ui_text_cache.entry(key.clone()) {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().last_used_frame = ui_text_frame;
                 }
-                Overflow::Ellipsis => {
-                    buffer.set_wrap(&mut self.font_system, Wrap::None);
-                    buffer.set_ellipsize(
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let cached = Self::build_ui_text_buffer(
                         &mut self.font_system,
-                        Ellipsize::End(EllipsizeHeightLimit::Lines(1)),
+                        label,
+                        inner_width,
+                        fs,
+                        lh,
+                        ui_text_frame,
                     );
+                    entry.insert(cached);
                 }
             }
-
-            let label_family = match label.font_family_override {
-                Some(name) => Family::Name(name),
-                None => Family::SansSerif,
-            };
-            buffer.set_text(
-                &mut self.font_system,
-                label.text,
-                &Attrs::new().family(label_family),
-                Shaping::Advanced,
-                None,
-            );
-
-            for line in buffer.lines.iter_mut() {
-                line.set_align(Some(cosmic_align));
-            }
-            buffer.shape_until_scroll(&mut self.font_system, false);
-            text_buffers.push(buffer);
+            text_keys.push(key);
         }
+        self.evict_ui_text_cache();
 
-        let text_areas: Vec<TextArea> = text_buffers
+        let text_areas: Vec<TextArea> = text_keys
             .iter()
             .zip(labels.iter())
-            .map(|(buffer, label)| {
+            .filter_map(|(key, label)| {
+                let cached = self.ui_text_cache.get(key)?;
                 let rect = &label.bounds;
                 let padding = label.padding;
-
-                let mut text_height = 0.0_f32;
-                for run in buffer.layout_runs() {
-                    text_height = run.line_top + run.line_height;
-                }
-                if text_height == 0.0 {
-                    let fs = label.font_size_override.unwrap_or(default_font_size);
-                    text_height = (fs * 1.3).ceil();
-                }
+                let text_height = cached.text_height;
 
                 let y_offset = match label.v_align {
                     VAlign::Top => 0.0,
@@ -728,15 +916,15 @@ impl UiRenderer {
                     None => GlyphonColor::rgb(224, 224, 224),
                 };
 
-                TextArea {
-                    buffer,
+                Some(TextArea {
+                    buffer: &cached.buffer,
                     left: rect.x + padding,
                     top: rect.y + y_offset,
                     scale: 1.0,
                     bounds,
                     default_color: text_color,
                     custom_glyphs: &[],
-                }
+                })
             })
             .collect();
 
@@ -752,24 +940,65 @@ impl UiRenderer {
             )
             .unwrap();
 
-        // Buffers
-        let quad_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Quad Instance Buffer"),
-            contents: bytemuck::cast_slice(quads),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        // Upload dynamic instance buffers once per group. Draws that need different
+        // bind groups reuse the same uploaded instance buffer with instance ranges.
+        self.quad_buffer
+            .upload(device, queue, "UI Quad Instance Buffer", quads);
+        self.icon_buffer
+            .upload(device, queue, "UI Icon Instance Buffer", icons);
+        if let Some((_, instance)) = video_quad.as_ref() {
+            self.video_quad_buffer.upload(
+                device,
+                queue,
+                "UI Video Quad Buffer",
+                std::slice::from_ref(instance),
+            );
+        }
 
-        let icon_buffer = if !icons.is_empty() {
-            Some(
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Icon Instance Buffer"),
-                    contents: bytemuck::cast_slice(icons),
-                    usage: wgpu::BufferUsages::VERTEX,
-                }),
-            )
-        } else {
-            None
-        };
+        let stretched_instances: Vec<IconInstance> = stretched_quads
+            .iter()
+            .map(|(instance, _)| *instance)
+            .collect();
+        self.stretched_text_buffer.upload(
+            device,
+            queue,
+            "UI Stretched Text Quad Buffer",
+            &stretched_instances,
+        );
+        self.post_stretched_quad_buffer.upload(
+            device,
+            queue,
+            "UI Post-Stretched Quad Buffer",
+            post_stretched_quads,
+        );
+        let base_textured_instances: Vec<IconInstance> = base_textured
+            .iter()
+            .map(|(instance, _)| *instance)
+            .collect();
+        self.base_textured_buffer.upload(
+            device,
+            queue,
+            "UI Base Textured Quad Buffer",
+            &base_textured_instances,
+        );
+        self.overlay_quad_buffer
+            .upload(device, queue, "UI Overlay Quad Buffer", overlay_quads);
+        let extra_textured_instances: Vec<IconInstance> = extra_textured
+            .iter()
+            .map(|(instance, _)| *instance)
+            .collect();
+        self.extra_textured_buffer.upload(
+            device,
+            queue,
+            "UI Extra Textured Quad Buffer",
+            &extra_textured_instances,
+        );
+        self.post_texture_quad_buffer.upload(
+            device,
+            queue,
+            "UI Post-Texture Quad Buffer",
+            post_texture_quads,
+        );
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -793,127 +1022,107 @@ impl UiRenderer {
             if !quads.is_empty() {
                 pass.set_pipeline(&self.quad_pipeline);
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                pass.set_vertex_buffer(0, quad_buffer.slice(..));
-                pass.draw(0..6, 0..quads.len() as u32);
+                if let Some(buffer) = self.quad_buffer.buffer() {
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    pass.draw(0..6, 0..quads.len() as u32);
+                }
             }
 
             // Draw video quad (before icons so icons render on top)
             if let Some((video_bg, video_instance)) = video_quad {
-                let video_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Video Quad Buffer"),
-                    contents: bytemuck::cast_slice(&[video_instance]),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
                 pass.set_pipeline(&self.icon_pipeline);
                 pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
                 pass.set_bind_group(1, video_bg, &[]);
-                pass.set_vertex_buffer(0, video_buf.slice(..));
-                pass.draw(0..6, 0..1);
+                if let Some(buffer) = self.video_quad_buffer.buffer() {
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    pass.draw(0..6, 0..1);
+                }
+                let _ = video_instance;
             }
 
             // Draw icons
-            if let Some(buf) = &icon_buffer {
+            if !icons.is_empty() {
                 pass.set_pipeline(&self.icon_pipeline);
                 pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
                 pass.set_bind_group(1, &self.icon_atlas.bind_group, &[]);
-                pass.set_vertex_buffer(0, buf.slice(..));
-                pass.draw(0..6, 0..icons.len() as u32);
+                if let Some(buffer) = self.icon_buffer.buffer() {
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    pass.draw(0..6, 0..icons.len() as u32);
+                }
             }
 
             // Draw stretched text textures (rythmo lines)
-            for (instance, line_id) in stretched_quads {
-                if let Some(cached) = self.text_texture_cache.get(line_id) {
-                    let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Stretched Text Quad"),
-                        contents: bytemuck::cast_slice(&[*instance]),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
-                    pass.set_pipeline(&self.icon_pipeline);
-                    pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
+            if !stretched_quads.is_empty() {
+                pass.set_pipeline(&self.icon_pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
+                if let Some(buffer) = self.stretched_text_buffer.buffer() {
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                }
+                for (index, (_, line_id)) in stretched_quads.iter().enumerate() {
+                    let Some(cached) = self.text_texture_cache.get(line_id) else {
+                        continue;
+                    };
+                    let index = index as u32;
                     pass.set_bind_group(1, &cached.bind_group, &[]);
-                    pass.set_vertex_buffer(0, buf.slice(..));
-                    pass.draw(0..6, 0..1);
+                    pass.draw(0..6, index..index + 1);
                 }
             }
 
             if !post_stretched_quads.is_empty() {
-                let post_stretched_buf =
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Post-Stretched Quad Buffer"),
-                        contents: bytemuck::cast_slice(post_stretched_quads),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
                 pass.set_pipeline(&self.quad_pipeline);
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                pass.set_vertex_buffer(0, post_stretched_buf.slice(..));
-                pass.draw(0..6, 0..post_stretched_quads.len() as u32);
+                if let Some(buffer) = self.post_stretched_quad_buffer.buffer() {
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    pass.draw(0..6, 0..post_stretched_quads.len() as u32);
+                }
             }
 
             // Draw base textured quads before overlays (e.g. project actor icons)
-            let base_textured_buffer = if base_textured.is_empty() {
-                None
-            } else {
-                let instances: Vec<_> = base_textured
-                    .iter()
-                    .map(|(instance, _)| *instance)
-                    .collect();
-                Some(
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Base Textured Quad Buffer"),
-                        contents: bytemuck::cast_slice(&instances),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    }),
-                )
-            };
-            if let Some(buf) = &base_textured_buffer {
+            if !base_textured.is_empty() {
                 pass.set_pipeline(&self.icon_pipeline);
                 pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
-                pass.set_vertex_buffer(0, buf.slice(..));
-            }
-            for (index, (_, bind_group)) in base_textured.iter().enumerate() {
-                let index = index as u32;
-                pass.set_bind_group(1, *bind_group, &[]);
-                pass.draw(0..6, index..index + 1);
+                if let Some(buffer) = self.base_textured_buffer.buffer() {
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    for (index, (_, bind_group)) in base_textured.iter().enumerate() {
+                        let index = index as u32;
+                        pass.set_bind_group(1, *bind_group, &[]);
+                        pass.draw(0..6, index..index + 1);
+                    }
+                }
             }
 
             // Draw overlay quads (on top of video, icons, stretched text)
             if !overlay_quads.is_empty() {
-                let overlay_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Overlay Quad Buffer"),
-                    contents: bytemuck::cast_slice(overlay_quads),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
                 pass.set_pipeline(&self.quad_pipeline);
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                pass.set_vertex_buffer(0, overlay_buf.slice(..));
-                pass.draw(0..6, 0..overlay_quads.len() as u32);
+                if let Some(buffer) = self.overlay_quad_buffer.buffer() {
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    pass.draw(0..6, 0..overlay_quads.len() as u32);
+                }
             }
 
             // Draw extra textured quads (color picker gradients — after overlay background)
-            for (instance, bind_group) in extra_textured {
-                let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Extra Textured Quad"),
-                    contents: bytemuck::cast_slice(&[*instance]),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
+            if !extra_textured.is_empty() {
                 pass.set_pipeline(&self.icon_pipeline);
                 pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
-                pass.set_bind_group(1, *bind_group, &[]);
-                pass.set_vertex_buffer(0, buf.slice(..));
-                pass.draw(0..6, 0..1);
+                if let Some(buffer) = self.extra_textured_buffer.buffer() {
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    for (index, (_, bind_group)) in extra_textured.iter().enumerate() {
+                        let index = index as u32;
+                        pass.set_bind_group(1, *bind_group, &[]);
+                        pass.draw(0..6, index..index + 1);
+                    }
+                }
             }
 
             // Draw post-texture quads (color picker indicators on top of gradients)
             if !post_texture_quads.is_empty() {
-                let pt_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Post-Texture Quad Buffer"),
-                    contents: bytemuck::cast_slice(post_texture_quads),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
                 pass.set_pipeline(&self.quad_pipeline);
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                pass.set_vertex_buffer(0, pt_buf.slice(..));
-                pass.draw(0..6, 0..post_texture_quads.len() as u32);
+                if let Some(buffer) = self.post_texture_quad_buffer.buffer() {
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    pass.draw(0..6, 0..post_texture_quads.len() as u32);
+                }
             }
 
             // Draw text

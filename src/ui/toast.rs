@@ -74,6 +74,10 @@ impl ToastManager {
         self.toasts.retain(|t| !t.expired());
     }
 
+    pub fn has_active(&self) -> bool {
+        !self.toasts.is_empty()
+    }
+
     pub fn handle_event(&mut self, event: &UiEvent, screen_w: f32, screen_h: f32) -> bool {
         match event {
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {

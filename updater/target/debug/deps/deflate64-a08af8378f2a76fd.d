@@ -1,0 +1,11 @@
+D:\serious rust projects\coquerythmo\updater\target\debug\deps\deflate64-a08af8378f2a76fd.d: D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\lib.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\buffer.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\huffman_tree.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\inflater_managed.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\input_buffer.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\output_window.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\stream.rs
+
+D:\serious rust projects\coquerythmo\updater\target\debug\deps\libdeflate64-a08af8378f2a76fd.rmeta: D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\lib.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\buffer.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\huffman_tree.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\inflater_managed.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\input_buffer.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\output_window.rs D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\stream.rs
+
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\lib.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\buffer.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\huffman_tree.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\inflater_managed.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\input_buffer.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\output_window.rs:
+D:\envs\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\deflate64-0.1.12\src\stream.rs:

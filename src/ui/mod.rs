@@ -3,12 +3,14 @@ pub mod color_picker;
 pub mod connect_modal;
 pub mod dropdown;
 pub mod export_modal;
+pub mod file_explorer_modal;
 pub mod icon_button;
 pub mod icons;
 pub mod interactive;
 pub mod layout;
 pub mod proxy_error_modal;
 pub mod proxy_modal;
+pub mod rename_character_modal;
 pub mod renderer;
 pub mod rythmo;
 pub mod save_prompt_modal;
@@ -21,6 +23,7 @@ pub mod theme;
 pub mod toast;
 pub mod tooltip;
 pub mod voice_actor_modal;
+pub mod whats_new_modal;
 pub mod widget;
 
 use layout::{Layout, PROPS_DEFAULT_W, PROPS_DRAG_ZONE, PROPS_MAX_W, PROPS_MIN_W};
@@ -66,13 +69,16 @@ pub struct Ui {
     connect_modal: Option<connect_modal::ConnectModal>,
     settings_modal: Option<settings_modal::SettingsModal>,
     export_modal: Option<export_modal::ExportModal>,
+    file_explorer_modal: Option<file_explorer_modal::FileExplorerModal>,
     proxy_modal: Option<proxy_modal::ProxyModal>,
+    rename_character_modal: Option<rename_character_modal::RenameCharacterModal>,
     proxy_error_modal: Option<proxy_error_modal::ProxyErrorModal>,
     server_browser: Option<server_browser::ServerBrowserModal>,
     add_server_modal: Option<server_browser::AddServerModal>,
     save_prompt_modal: Option<save_prompt_modal::SavePromptModal>,
     studio_warning_modal: Option<studio_warning_modal::StudioWarningModal>,
     voice_actor_modal: Option<voice_actor_modal::VoiceActorModal>,
+    whats_new_modal: Option<whats_new_modal::WhatsNewModal>,
     actor_icon_cache: ActorIconCache,
     network_in_room: bool,
     pub network_status: String,
@@ -146,13 +152,16 @@ impl Ui {
             connect_modal: None,
             settings_modal: None,
             export_modal: None,
+            file_explorer_modal: None,
             proxy_modal: None,
+            rename_character_modal: None,
             proxy_error_modal: None,
             server_browser: None,
             add_server_modal: None,
             save_prompt_modal: None,
             studio_warning_modal: None,
             voice_actor_modal: None,
+            whats_new_modal: None,
             actor_icon_cache: ActorIconCache::new(),
             network_in_room: false,
             network_status: "Déconnecté".into(),
@@ -293,18 +302,20 @@ impl Ui {
             vec![
                 t("menu.tools.create_proxy").into(),
                 t("menu.tools.secondary_display").into(),
+                t("menu.tools.rename_character").into(),
             ],
             |index, _label| match index {
                 0 => EventResponse::Action(UiAction::OpenProxyModal),
                 1 => EventResponse::Action(UiAction::OpenSecondaryDisplay),
+                2 => EventResponse::Action(UiAction::OpenRenameCharacterModal),
                 _ => EventResponse::Consumed,
             },
         )
         .with_arrow(false)
         .with_trigger_bg(false)
         .with_trigger_label(t("menu.tools"))
-        .with_panel_width(250.0)
-        .with_disabled_items(vec![!has_video, !has_video]);
+        .with_panel_width(280.0)
+        .with_disabled_items(vec![!has_video, !has_video, false]);
 
         let connect_menu = Dropdown::new(
             Rect {
@@ -594,9 +605,19 @@ impl Ui {
             self.cursor_pos = (*x, *y);
         }
 
+        // File explorer is topmost and keeps parent modals alive underneath.
+        if self.file_explorer_modal.is_some() {
+            return self.handle_file_explorer_event(event);
+        }
+
         // Proxy error modal blocks all input, including toast dismissal.
         if self.proxy_error_modal.is_some() {
             return self.handle_proxy_error_modal_event(event);
+        }
+
+        // Whats-new modal blocks all regular input while release notes are shown.
+        if self.whats_new_modal.is_some() {
+            return self.handle_whats_new_modal_event(event);
         }
 
         // Toast click to dismiss
@@ -635,6 +656,11 @@ impl Ui {
         // Voice actor creation modal intercepts all input
         if self.voice_actor_modal.is_some() {
             return self.handle_voice_actor_modal_event(event);
+        }
+
+        // Character rename modal intercepts all input
+        if self.rename_character_modal.is_some() {
+            return self.handle_rename_character_modal_event(event);
         }
 
         // Proxy modal intercepts all input
@@ -861,6 +887,45 @@ impl Ui {
         self.playing
     }
 
+    pub fn has_active_progress(&self) -> bool {
+        self.export_progress.is_some()
+    }
+
+    pub fn needs_animation_or_interaction(&self) -> bool {
+        self.playing
+            || self.dragging_props
+            || self.scrubbing
+            || self.toasts.has_active()
+            || self.rythmo_state.needs_animation_or_interaction()
+    }
+
+    pub fn needs_background_poll(&self) -> bool {
+        self.server_browser.is_some()
+            || self
+                .file_explorer_modal
+                .as_ref()
+                .is_some_and(|modal| modal.needs_background_poll())
+    }
+
+    pub fn next_cursor_blink_deadline(&self) -> Option<std::time::Instant> {
+        let mut deadline = self.rythmo_state.next_cursor_blink_deadline();
+        if let Some(modal_deadline) = self
+            .file_explorer_modal
+            .as_ref()
+            .and_then(|modal| modal.next_cursor_blink_deadline())
+        {
+            deadline = Some(deadline.map_or(modal_deadline, |current| current.min(modal_deadline)));
+        }
+        if let Some(modal_deadline) = self
+            .rename_character_modal
+            .as_ref()
+            .and_then(|modal| modal.next_cursor_blink_deadline())
+        {
+            deadline = Some(deadline.map_or(modal_deadline, |current| current.min(modal_deadline)));
+        }
+        deadline
+    }
+
     pub fn toggle_toolbar_dropdown(&mut self, dd: widget::ToolbarDropdown) {
         if self.active_dropdown == Some(dd.clone()) {
             self.active_dropdown = None;
@@ -973,7 +1038,7 @@ impl Ui {
         for (text, tooltip_key) in &items {
             // Item label
             labels.push(LabelInfo {
-                text,
+                text: *text,
                 bounds: Rect {
                     x: rect.x + 8.0,
                     y: iy,
@@ -1011,11 +1076,17 @@ impl Ui {
 
     pub fn is_editing_text(&self) -> bool {
         self.rythmo_state.is_editing()
+            || self
+                .file_explorer_modal
+                .as_ref()
+                .is_some_and(|modal| modal.is_editing_text())
             || self.connect_modal.is_some()
             || self.export_modal.is_some()
             || self.proxy_modal.is_some()
             || self.proxy_error_modal.is_some()
             || self.voice_actor_modal.is_some()
+            || self.rename_character_modal.is_some()
+            || self.whats_new_modal.is_some()
     }
 
     fn handle_connect_modal_event(&mut self, event: &UiEvent) -> EventResponse {
@@ -1092,6 +1163,7 @@ impl Ui {
                 export_width,
                 export_height,
                 instrumental_audio_path,
+                double_export_instrumental,
             } => {
                 self.export_modal = None;
                 EventResponse::Action(UiAction::StartExport {
@@ -1101,10 +1173,32 @@ impl Ui {
                     export_width,
                     export_height,
                     instrumental_audio_path,
+                    double_export_instrumental,
                 })
             }
             export_modal::ExportModalResult::PickInstrumentalAudio => {
                 EventResponse::Action(UiAction::PickExportInstrumentalAudio)
+            }
+        }
+    }
+
+    fn handle_file_explorer_event(&mut self, event: &UiEvent) -> EventResponse {
+        let modal = match &mut self.file_explorer_modal {
+            Some(m) => m,
+            None => return EventResponse::Ignored,
+        };
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            file_explorer_modal::FileExplorerResult::Consumed => EventResponse::Consumed,
+            file_explorer_modal::FileExplorerResult::Close => {
+                self.file_explorer_modal = None;
+                EventResponse::Consumed
+            }
+            file_explorer_modal::FileExplorerResult::Clipboard(text) => {
+                EventResponse::Action(UiAction::SetClipboard(text))
+            }
+            file_explorer_modal::FileExplorerResult::Selected { intent, path } => {
+                self.file_explorer_modal = None;
+                EventResponse::Action(UiAction::FilePickerSelected { intent, path })
             }
         }
     }
@@ -1129,6 +1223,27 @@ impl Ui {
             voice_actor_modal::VoiceActorModalResult::Create { name, icon_path } => {
                 self.voice_actor_modal = None;
                 EventResponse::Action(UiAction::CreateVoiceActor { name, icon_path })
+            }
+        }
+    }
+
+    fn handle_rename_character_modal_event(&mut self, event: &UiEvent) -> EventResponse {
+        let modal = match &mut self.rename_character_modal {
+            Some(m) => m,
+            None => return EventResponse::Ignored,
+        };
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            rename_character_modal::RenameCharacterModalResult::Consumed => EventResponse::Consumed,
+            rename_character_modal::RenameCharacterModalResult::Close => {
+                self.rename_character_modal = None;
+                EventResponse::Consumed
+            }
+            rename_character_modal::RenameCharacterModalResult::Clipboard(text) => {
+                EventResponse::Action(UiAction::SetClipboard(text))
+            }
+            rename_character_modal::RenameCharacterModalResult::Rename { old_name, new_name } => {
+                self.rename_character_modal = None;
+                EventResponse::Action(UiAction::RenameCharacter { old_name, new_name })
             }
         }
     }
@@ -1169,8 +1284,24 @@ impl Ui {
         self.export_modal = Some(export_modal::ExportModal::new(video_width, video_height));
     }
 
+    pub fn open_file_explorer(&mut self, request: file_explorer_modal::FileExplorerRequest) {
+        self.file_explorer_modal = Some(file_explorer_modal::FileExplorerModal::new(request));
+    }
+
+    pub fn poll_file_explorer(&mut self) -> bool {
+        self.file_explorer_modal
+            .as_mut()
+            .is_some_and(|modal| modal.poll_background())
+    }
+
     pub fn open_voice_actor_modal(&mut self) {
         self.voice_actor_modal = Some(voice_actor_modal::VoiceActorModal::new());
+    }
+
+    pub fn open_rename_character_modal(&mut self, characters: Vec<String>) {
+        self.rename_character_modal = Some(rename_character_modal::RenameCharacterModal::new(
+            characters,
+        ));
     }
 
     pub fn set_voice_actor_modal_icon_path(&mut self, path: impl Into<String>) {
@@ -1191,6 +1322,24 @@ impl Ui {
 
     pub fn open_proxy_error_modal(&mut self, detail: impl Into<String>) {
         self.proxy_error_modal = Some(proxy_error_modal::ProxyErrorModal::new(detail));
+    }
+
+    pub fn open_whats_new_modal(&mut self, version: impl Into<String>, body: impl Into<String>) {
+        self.whats_new_modal = Some(whats_new_modal::WhatsNewModal::new(version, body));
+    }
+
+    fn handle_whats_new_modal_event(&mut self, event: &UiEvent) -> EventResponse {
+        let modal = match &mut self.whats_new_modal {
+            Some(m) => m,
+            None => return EventResponse::Ignored,
+        };
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            whats_new_modal::WhatsNewResult::Consumed => EventResponse::Consumed,
+            whats_new_modal::WhatsNewResult::Close => {
+                self.whats_new_modal = None;
+                EventResponse::Consumed
+            }
+        }
     }
 
     fn handle_server_browser_event(&mut self, event: &UiEvent) -> EventResponse {
@@ -1426,7 +1575,6 @@ impl Ui {
             };
             self.export_label = format!("{} {}%", prefix, pct);
         }
-
         // Consume pending cursor click if any before starting to collect labels referencing self
         let pending_click = self.rythmo_state.pending_cursor_click.take();
 
@@ -1810,6 +1958,15 @@ impl Ui {
             );
         }
 
+        if let Some(modal) = &self.rename_character_modal {
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
+        }
+
         // Proxy modal
         if let Some(modal) = &self.proxy_modal {
             modal.render(
@@ -1944,8 +2101,31 @@ impl Ui {
             self.screen_h,
         );
 
+        // Whats-new modal is rendered above toasts so the release notes stay readable.
+        if let Some(modal) = &self.whats_new_modal {
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
+        }
+
         // Proxy error modal is rendered last so it stays above toasts and progress.
         if let Some(modal) = &self.proxy_error_modal {
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
+        }
+
+        // File explorer is rendered last so it stays above parent modals.
+        if let Some(modal) = &self.file_explorer_modal {
+            // Text is rendered in one final pass, so clear underlying labels here.
+            // Otherwise parent-modal text can appear above the picker card.
+            labels.clear();
             modal.render(
                 &mut overlay_quads,
                 &mut labels,

@@ -3,6 +3,9 @@ use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VA
 
 use crate::i18n::t;
 
+const FIELD_FONT_SIZE: f32 = 13.0;
+const FIELD_PADDING_X: f32 = 8.0;
+
 pub struct ConnectModal {
     pub join: bool,
     pub ip: String,
@@ -127,6 +130,7 @@ impl ConnectModal {
                 ConnectModalResult::Consumed
             }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
+                let double = matches!(event, UiEvent::DoubleClick { .. });
                 let field_count = self.field_count();
                 let label_h = 16.0;
                 let field_h = 28.0;
@@ -152,6 +156,17 @@ impl ConnectModal {
                     if field_rect.contains(*x, *y) {
                         self.focused = i;
                         self.input.activate(&self.fields[i]);
+                        if double {
+                            self.input.select_all(&self.fields[i]);
+                        } else {
+                            let pos = text_input::cursor_pos_from_x(
+                                &self.fields[i],
+                                field_rect,
+                                *x,
+                                field_metrics(),
+                            );
+                            self.input.set_cursor_pos(pos);
+                        }
                         hit = true;
                         break;
                     }
@@ -319,31 +334,36 @@ impl ConnectModal {
                     h_align: HAlign::Left,
                     v_align: VAlign::Center,
                     overflow: Overflow::Clip,
-                    padding: 8.0,
-                    font_size_override: Some(13.0),
+                    padding: FIELD_PADDING_X,
+                    font_size_override: Some(FIELD_FONT_SIZE),
                     color_override: None,
                     font_family_override: None,
                 });
             }
 
-            if is_focused && self.input.cursor_visible() {
-                let cursor_x = fx + 8.0 + self.input.cursor_pos as f32 * 7.8;
-                overlay_quads.push(QuadInstance {
-                    rect: [cursor_x, iy + 4.0, 1.5, field_h - 8.0],
-                    color: [0.9, 0.9, 0.95, 1.0],
-                    color_bottom: [0.9, 0.9, 0.95, 1.0],
-                    border_color: [0.0; 4],
-                    border_width: 0.0,
-                    border_radius: 0.0,
-                    shadow_offset: [0.0; 2],
-                    shadow_color: [0.0; 4],
-                    shadow_blur: 0.0,
-                    rotation: 0.0,
-                    _padding: [0.0; 2],
-                });
-            }
+            text_input::render_selection_and_cursor(
+                overlay_quads,
+                Rect {
+                    x: fx,
+                    y: iy,
+                    width: fw,
+                    height: field_h,
+                },
+                &self.fields[i],
+                &self.input,
+                is_focused,
+                field_metrics(),
+                4.0,
+                4.0,
+                [0.25, 0.45, 0.95, 0.42],
+                [0.90, 0.90, 0.96, 1.0],
+            );
         }
     }
+}
+
+fn field_metrics() -> text_input::TextInputMetrics {
+    text_input::TextInputMetrics::left(FIELD_FONT_SIZE, FIELD_PADDING_X)
 }
 
 pub enum ConnectModalResult {

@@ -463,7 +463,7 @@ impl CpuRenderer {
         icon_size: f32,
         scale: f32,
     ) {
-        if line.voice_actor_names.is_empty() {
+        if line.karaoke || line.voice_actor_names.is_empty() {
             return;
         }
 
@@ -1562,19 +1562,19 @@ mod tests {
         crate::config::init();
         let mut project = Project::new();
         project.add_line_full(0, 24, 0.0, "↑".into(), "Alice".into(), [0.8, 0.2, 0.2, 1.0]);
-        project.markers.push(RythmoMarker {
+        project.add_marker(RythmoMarker {
             kind: MarkerKind::Boucle,
             frame: 0,
         });
-        project.markers.push(RythmoMarker {
+        project.add_marker(RythmoMarker {
             kind: MarkerKind::Out,
             frame: 1,
         });
-        project.markers.push(RythmoMarker {
+        project.add_marker(RythmoMarker {
             kind: MarkerKind::LiaisonLeft,
             frame: 2,
         });
-        project.markers.push(RythmoMarker {
+        project.add_marker(RythmoMarker {
             kind: MarkerKind::LiaisonRight,
             frame: 3,
         });

@@ -1,4 +1,6 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use super::widget::{HAlign, QuadInstance, Rect};
 
 pub enum TextInputAction {
     Changed(String),
@@ -17,6 +19,31 @@ pub struct TextInputState {
     cursor_blink: Instant,
     pub selection: Option<(usize, usize)>,
     undo_stack: Vec<TextEditSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TextInputMetrics {
+    pub padding_x: f32,
+    pub font_size: f32,
+    pub h_align: HAlign,
+}
+
+impl TextInputMetrics {
+    pub const fn new(font_size: f32, padding_x: f32, h_align: HAlign) -> Self {
+        Self {
+            padding_x,
+            font_size,
+            h_align,
+        }
+    }
+
+    pub const fn left(font_size: f32, padding_x: f32) -> Self {
+        Self::new(font_size, padding_x, HAlign::Left)
+    }
+
+    pub const fn center(font_size: f32, padding_x: f32) -> Self {
+        Self::new(font_size, padding_x, HAlign::Center)
+    }
 }
 
 impl TextInputState {
@@ -48,6 +75,22 @@ impl TextInputState {
 
     pub fn cursor_visible(&self) -> bool {
         self.active && self.cursor_blink.elapsed().as_millis() % 1000 < 500
+    }
+
+    pub fn next_cursor_blink_deadline(&self) -> Option<Instant> {
+        if !self.active {
+            return None;
+        }
+
+        let elapsed_ms = self
+            .cursor_blink
+            .elapsed()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        let next_ms = (elapsed_ms / 500 + 1) * 500;
+        self.cursor_blink
+            .checked_add(Duration::from_millis(next_ms))
+            .or_else(|| Some(Instant::now()))
     }
 
     pub fn has_selection(&self) -> bool {
@@ -344,4 +387,170 @@ impl TextInputState {
 
 fn is_word_separator(ch: char) -> bool {
     ch.is_whitespace() || ch.is_ascii_punctuation()
+}
+
+pub fn cursor_pos_from_x(value: &str, rect: Rect, x: f32, metrics: TextInputMetrics) -> usize {
+    let target = x - text_start_x(value, rect, metrics);
+    let mut width = 0.0;
+    for (index, ch) in value.chars().enumerate() {
+        let next = width + char_advance(ch, metrics.font_size);
+        if target < (width + next) * 0.5 {
+            return index;
+        }
+        width = next;
+    }
+    value.chars().count()
+}
+
+pub fn cursor_x(value: &str, char_pos: usize, rect: Rect, metrics: TextInputMetrics) -> f32 {
+    text_start_x(value, rect, metrics) + text_width_until(value, char_pos, metrics.font_size)
+}
+
+pub fn text_width_until(value: &str, char_pos: usize, font_size: f32) -> f32 {
+    value
+        .chars()
+        .take(char_pos.min(value.chars().count()))
+        .map(|ch| char_advance(ch, font_size))
+        .sum()
+}
+
+pub fn text_width(value: &str, font_size: f32) -> f32 {
+    value.chars().map(|ch| char_advance(ch, font_size)).sum()
+}
+
+pub fn render_selection_and_cursor(
+    quads: &mut Vec<QuadInstance>,
+    rect: Rect,
+    value: &str,
+    input: &TextInputState,
+    focused: bool,
+    metrics: TextInputMetrics,
+    selection_inset_y: f32,
+    cursor_inset_y: f32,
+    selection_color: [f32; 4],
+    cursor_color: [f32; 4],
+) {
+    if !focused {
+        return;
+    }
+
+    let content_left = rect.x + metrics.padding_x;
+    let content_right = rect.x + rect.width - metrics.padding_x;
+
+    if let Some((start, end)) = input.selection_range() {
+        let x1 = cursor_x(value, start, rect, metrics);
+        let x2 = cursor_x(value, end, rect, metrics);
+        let left = x1.min(x2).clamp(content_left, content_right);
+        let right = x1.max(x2).clamp(content_left, content_right);
+        if right - left > 1.0 {
+            quads.push(plain_quad(
+                Rect {
+                    x: left,
+                    y: rect.y + selection_inset_y,
+                    width: right - left,
+                    height: rect.height - selection_inset_y * 2.0,
+                },
+                selection_color,
+                2.0,
+            ));
+        }
+    }
+
+    if input.cursor_visible() {
+        let x = cursor_x(value, input.cursor_pos, rect, metrics).clamp(content_left, content_right);
+        quads.push(plain_quad(
+            Rect {
+                x,
+                y: rect.y + cursor_inset_y,
+                width: 1.5,
+                height: rect.height - cursor_inset_y * 2.0,
+            },
+            cursor_color,
+            0.0,
+        ));
+    }
+}
+
+fn text_start_x(value: &str, rect: Rect, metrics: TextInputMetrics) -> f32 {
+    let content_left = rect.x + metrics.padding_x;
+    let content_width = (rect.width - metrics.padding_x * 2.0).max(0.0);
+    let width = text_width(value, metrics.font_size);
+    match metrics.h_align {
+        HAlign::Left => content_left,
+        HAlign::Center => content_left + (content_width - width) * 0.5,
+        HAlign::Right => content_left + content_width - width,
+    }
+}
+
+fn char_advance(ch: char, font_size: f32) -> f32 {
+    let ratio = match ch {
+        'i' | 'l' | 'I' | '!' | '|' | '.' | ',' | ':' | ';' | '\'' | '`' => 0.30,
+        'j' | 'f' | 'r' | 't' | ' ' => 0.40,
+        'm' | 'w' | 'M' | 'W' => 0.82,
+        '0'..='9' => 0.55,
+        '\u{0000}'..='\u{007f}' => 0.52,
+        _ => 0.62,
+    };
+    font_size * ratio
+}
+
+fn plain_quad(rect: Rect, color: [f32; 4], radius: f32) -> QuadInstance {
+    QuadInstance {
+        rect: [rect.x, rect.y, rect.width, rect.height],
+        color,
+        color_bottom: color,
+        border_color: [0.0; 4],
+        border_width: 0.0,
+        border_radius: radius,
+        shadow_offset: [0.0; 2],
+        shadow_color: [0.0; 4],
+        shadow_blur: 0.0,
+        rotation: 0.0,
+        _padding: [0.0; 2],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect() -> Rect {
+        Rect {
+            x: 100.0,
+            y: 0.0,
+            width: 120.0,
+            height: 24.0,
+        }
+    }
+
+    fn assert_approx_eq(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn cursor_x_uses_variable_character_widths() {
+        let metrics = TextInputMetrics::left(10.0, 8.0);
+        assert_approx_eq(cursor_x("iii", 3, rect(), metrics), 117.0);
+        assert_approx_eq(cursor_x("www", 3, rect(), metrics), 132.6);
+    }
+
+    #[test]
+    fn cursor_pos_from_x_matches_cursor_geometry() {
+        let metrics = TextInputMetrics::left(10.0, 8.0);
+        let value = "mi.w";
+        for pos in 0..=value.chars().count() {
+            let x = cursor_x(value, pos, rect(), metrics);
+            assert_eq!(cursor_pos_from_x(value, rect(), x, metrics), pos);
+        }
+    }
+
+    #[test]
+    fn centered_cursor_uses_centered_text_start() {
+        let metrics = TextInputMetrics::center(10.0, 8.0);
+        let centered_start = 100.0 + 8.0 + ((120.0 - 16.0) - text_width("ii", 10.0)) * 0.5;
+        assert_approx_eq(cursor_x("ii", 0, rect(), metrics), centered_start);
+    }
 }

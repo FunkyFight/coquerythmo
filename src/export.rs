@@ -187,6 +187,7 @@ impl ProjectData {
         project.markers.clear();
         project.known_characters.clear();
         project.voice_actors.clear();
+        project.bump_revision();
 
         for ch in &self.characters {
             project.known_characters.push(Character {
@@ -255,7 +256,7 @@ impl ProjectData {
                     continue;
                 }
             };
-            project.markers.push(RythmoMarker {
+            project.add_marker(RythmoMarker {
                 kind,
                 frame: (m.frame as f64 * fps_ratio) as i64,
             });
@@ -743,7 +744,7 @@ mod tests {
             "Alice".into(),
             [1.0, 0.0, 0.0, 1.0],
         );
-        project.markers.push(crate::rythmo_line::RythmoMarker {
+        project.add_marker(crate::rythmo_line::RythmoMarker {
             kind: crate::rythmo_line::MarkerKind::Boucle,
             frame: 100,
         });

@@ -1,17 +1,19 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::Arc;
 use wgpu::CurrentSurfaceTexture;
 use winit::window::{Window, WindowId};
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::command::{Command, CommandHistory, CommandKind, LineMove};
 use crate::graphics::{GraphicsContext, WindowSurface};
 use crate::network::{ConnectionState, IncomingMessage, NetworkClient};
 use crate::observer::{TimelineBus, TimelineEvent};
 use crate::packet::{CommandPayload, Packet, ProjectData};
-use crate::project::Project;
+use crate::project::{Character, LineCharacterNameChange, Project};
+use crate::render_index::ProjectRenderIndex;
 use crate::rythmo_line::RythmoLine;
 use crate::ui::renderer::UiRenderer;
 use crate::ui::widget::{EventResponse, UiEvent};
@@ -49,6 +51,15 @@ struct PendingProxyJob {
     receiver: Receiver<Result<PathBuf, String>>,
 }
 
+struct PendingExportJob {
+    receiver: Receiver<Result<(), String>>,
+}
+
+enum DialogueSplitTarget {
+    Cursor { line_id: u64, cursor_pos: usize },
+    Playhead { line_id: u64, progress: f32 },
+}
+
 pub struct State {
     pub gfx: GraphicsContext,
     window: Arc<Window>,
@@ -59,7 +70,10 @@ pub struct State {
     source_video_size: Option<(u32, u32)>,
     proxy_video_path: Option<PathBuf>,
     pending_proxy_job: Option<PendingProxyJob>,
+    pending_export_job: Option<PendingExportJob>,
+    active_export_cancel: Option<Arc<AtomicBool>>,
     pub project: Project,
+    render_index: ProjectRenderIndex,
     pub project_path: Option<PathBuf>,
     pub dirty: bool,
     history: CommandHistory,
@@ -69,6 +83,7 @@ pub struct State {
     scroll_needs_decode: bool,
     ping_results: std::sync::Arc<std::sync::Mutex<Vec<PingResult>>>,
     last_autosave: Instant,
+    last_redraw: Instant,
     studio_mode: bool,
     fullscreen_before_studio: Option<winit::window::Fullscreen>,
     show_studio_warning: bool,
@@ -94,7 +109,10 @@ impl State {
             source_video_size: None,
             proxy_video_path: None,
             pending_proxy_job: None,
+            pending_export_job: None,
+            active_export_cancel: None,
             project: Project::new(),
+            render_index: ProjectRenderIndex::new(),
             project_path: None,
             dirty: false,
             history: CommandHistory::new(),
@@ -104,6 +122,7 @@ impl State {
             scroll_needs_decode: false,
             ping_results: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             last_autosave: Instant::now(),
+            last_redraw: Instant::now(),
             studio_mode: false,
             fullscreen_before_studio: None,
             show_studio_warning: false,
@@ -140,6 +159,18 @@ impl State {
         if is_none {
             self.ui.export_render_backend = None;
             self.ui.progress_prefix = String::new();
+            self.active_export_cancel = None;
+        }
+    }
+
+    pub fn set_export_cancel(&mut self, cancel: Option<Arc<AtomicBool>>) {
+        self.active_export_cancel = cancel;
+    }
+
+    pub fn cancel_export(&mut self) {
+        if let Some(cancel) = &self.active_export_cancel {
+            cancel.store(true, Ordering::Relaxed);
+            self.ui.progress_prefix = "Annulation...".to_string();
         }
     }
 
@@ -222,6 +253,10 @@ impl State {
         self.ui.open_proxy_error_modal(detail);
     }
 
+    pub fn open_whats_new_modal(&mut self, version: impl Into<String>, body: impl Into<String>) {
+        self.ui.open_whats_new_modal(version, body);
+    }
+
     pub fn open_save_prompt(&mut self) {
         self.ui.open_save_prompt();
     }
@@ -269,6 +304,17 @@ impl State {
     pub fn open_export_modal(&mut self) {
         let (video_width, video_height) = self.source_video_size().unwrap_or((1920, 1080));
         self.ui.open_export_modal(video_width, video_height);
+    }
+
+    pub fn open_file_explorer(
+        &mut self,
+        request: crate::ui::file_explorer_modal::FileExplorerRequest,
+    ) {
+        self.ui.open_file_explorer(request);
+    }
+
+    pub fn poll_file_explorer(&mut self) -> bool {
+        self.ui.poll_file_explorer()
     }
 
     pub fn open_voice_actor_modal(&mut self) {
@@ -467,6 +513,10 @@ impl State {
         });
     }
 
+    pub fn watch_export_job(&mut self, receiver: Receiver<Result<(), String>>) {
+        self.pending_export_job = Some(PendingExportJob { receiver });
+    }
+
     fn load_video_for_playback(
         &mut self,
         source_path: &Path,
@@ -662,9 +712,9 @@ impl State {
         }
     }
 
-    fn tick_scroll_decode(&mut self) {
+    fn tick_scroll_decode(&mut self) -> bool {
         if !self.scroll_needs_decode {
-            return;
+            return false;
         }
         if let Some(t) = self.last_scroll_time {
             if t.elapsed().as_millis() >= constants::SCROLL_DECODE_DELAY_MS {
@@ -674,15 +724,20 @@ impl State {
                 if let Some(player) = &mut self.video_player {
                     player.decode_current_frame(&self.gfx.device, &self.gfx.queue, bgl, sampler);
                 }
+                return true;
             }
         }
+
+        false
     }
 
     // -- Network --
 
-    pub fn tick_network(&mut self) {
+    pub fn tick_network(&mut self) -> bool {
         let prev_state = self.network.state;
+        let mut changed = false;
         while let Some(msg) = self.network.try_recv() {
+            changed = true;
             match msg {
                 IncomingMessage::Connected => {
                     self.network.state = ConnectionState::Connected;
@@ -727,7 +782,10 @@ impl State {
         // Rebuild topbar if connection state changed
         if self.network.state != prev_state {
             self.ui.rebuild_topbar(self.network.is_in_room());
+            changed = true;
         }
+
+        changed
     }
 
     fn handle_network_packet(&mut self, packet: Packet) {
@@ -808,6 +866,16 @@ impl State {
                 log::debug!("Remote: delete line {}", line_id);
                 self.project.remove_line(line_id);
             }
+            CommandPayload::SplitLine {
+                first_line,
+                second_line,
+                second_index,
+            } => {
+                log::debug!("Remote: split line {}", first_line.id);
+                self.project
+                    .upsert_line_at(second_index.saturating_sub(1), first_line);
+                self.project.upsert_line_at(second_index, second_line);
+            }
             CommandPayload::MoveLine {
                 line_id,
                 start_frame,
@@ -877,6 +945,20 @@ impl State {
                     l.character_color = color;
                 }
             }
+            CommandPayload::RenameCharacter {
+                changes,
+                known_characters,
+            } => {
+                log::debug!("Remote: rename character on {} lines", changes.len());
+                let known_characters = known_characters
+                    .into_iter()
+                    .map(|c| Character {
+                        name: c.name,
+                        color: c.color,
+                    })
+                    .collect();
+                self.apply_character_rename_changes(&changes, known_characters);
+            }
             CommandPayload::SetVoiceActors { changes } => {
                 log::debug!("Remote: set voice actors for {} lines", changes.len());
                 self.apply_voice_actor_changes(&changes, true);
@@ -888,14 +970,12 @@ impl State {
             CommandPayload::AddMarker { kind, frame } => {
                 log::debug!("Remote: add marker at frame {}", frame);
                 self.project
-                    .markers
-                    .push(crate::rythmo_line::RythmoMarker { kind, frame });
+                    .add_marker(crate::rythmo_line::RythmoMarker { kind, frame });
             }
             CommandPayload::RemoveMarker { kind, frame } => {
                 log::debug!("Remote: remove marker at frame {}", frame);
                 self.project
-                    .markers
-                    .retain(|m| !(m.kind == kind && m.frame == frame));
+                    .retain_markers(|m| !(m.kind == kind && m.frame == frame));
             }
             CommandPayload::MoveMarker {
                 kind,
@@ -907,11 +987,13 @@ impl State {
                     old_frame,
                     new_frame
                 );
-                for m in &mut self.project.markers {
-                    if m.kind == kind && m.frame == old_frame {
-                        m.frame = new_frame;
-                        break;
-                    }
+                if let Some(index) = self
+                    .project
+                    .markers
+                    .iter()
+                    .position(|m| m.kind == kind && m.frame == old_frame)
+                {
+                    self.project.move_marker(index, new_frame);
                 }
             }
             CommandPayload::LoadVideo { .. } => {
@@ -953,7 +1035,7 @@ impl State {
         }
 
         // Merge markers (replace — markers don't have stable IDs)
-        self.project.markers = data.markers;
+        self.project.set_markers(data.markers);
 
         // Merge known characters
         self.project.known_characters = data
@@ -965,6 +1047,7 @@ impl State {
             })
             .collect();
         self.project.voice_actors = data.voice_actors;
+        self.project.bump_revision();
 
         log::info!("Project synced (merged)");
     }
@@ -989,6 +1072,22 @@ impl State {
             "delete_line" => {
                 if let Some(id) = data["line_id"].as_u64() {
                     self.project.remove_line(id);
+                }
+            }
+            "split_line" => {
+                if let (Ok(first_line), Ok(second_line), Some(second_index)) = (
+                    serde_json::from_value::<crate::rythmo_line::RythmoLine>(
+                        data["first_line"].clone(),
+                    ),
+                    serde_json::from_value::<crate::rythmo_line::RythmoLine>(
+                        data["second_line"].clone(),
+                    ),
+                    data["second_index"].as_u64(),
+                ) {
+                    let second_index = second_index as usize;
+                    self.project
+                        .upsert_line_at(second_index.saturating_sub(1), first_line);
+                    self.project.upsert_line_at(second_index, second_line);
                 }
             }
             "move_line" => {
@@ -1085,6 +1184,14 @@ impl State {
                     }
                 }
             }
+            "rename_character" => {
+                if let (Ok(changes), Ok(known_characters)) = (
+                    serde_json::from_value::<Vec<LineCharacterNameChange>>(data["changes"].clone()),
+                    serde_json::from_value::<Vec<Character>>(data["known_characters"].clone()),
+                ) {
+                    self.apply_character_rename_changes(&changes, known_characters);
+                }
+            }
             "set_voice_actors" => {
                 if let Ok(changes) =
                     serde_json::from_value::<Vec<LineVoiceActorsChange>>(data["changes"].clone())
@@ -1103,8 +1210,7 @@ impl State {
                     serde_json::from_value::<crate::rythmo_line::MarkerKind>(data["kind"].clone()),
                 ) {
                     self.project
-                        .markers
-                        .push(crate::rythmo_line::RythmoMarker { kind, frame });
+                        .add_marker(crate::rythmo_line::RythmoMarker { kind, frame });
                 }
             }
             "remove_marker" => {
@@ -1113,8 +1219,7 @@ impl State {
                     serde_json::from_value::<crate::rythmo_line::MarkerKind>(data["kind"].clone()),
                 ) {
                     self.project
-                        .markers
-                        .retain(|m| !(m.kind == kind && m.frame == frame));
+                        .retain_markers(|m| !(m.kind == kind && m.frame == frame));
                 }
             }
             "move_marker" => {
@@ -1123,11 +1228,13 @@ impl State {
                     data["new_frame"].as_i64(),
                     serde_json::from_value::<crate::rythmo_line::MarkerKind>(data["kind"].clone()),
                 ) {
-                    for m in &mut self.project.markers {
-                        if m.kind == kind && m.frame == old_frame {
-                            m.frame = new_frame;
-                            break;
-                        }
+                    if let Some(index) = self
+                        .project
+                        .markers
+                        .iter()
+                        .position(|m| m.kind == kind && m.frame == old_frame)
+                    {
+                        self.project.move_marker(index, new_frame);
                     }
                 }
             }
@@ -1161,6 +1268,19 @@ impl State {
             }
             Command::DeleteLine { snapshot, .. } => {
                 serde_json::json!({ "action": "delete_line", "line_id": snapshot.id })
+            }
+            Command::SplitLine {
+                first_line,
+                second_line,
+                second_index,
+                ..
+            } => {
+                serde_json::json!({
+                    "action": "split_line",
+                    "first_line": serde_json::to_value(first_line).unwrap_or_default(),
+                    "second_line": serde_json::to_value(second_line).unwrap_or_default(),
+                    "second_index": second_index,
+                })
             }
             Command::MoveLine {
                 line_id,
@@ -1229,6 +1349,13 @@ impl State {
                 line_id, new_color, ..
             } => {
                 serde_json::json!({ "action": "set_character_color", "line_id": line_id, "color": new_color })
+            }
+            Command::RenameCharacter {
+                changes,
+                new_known_characters,
+                ..
+            } => {
+                serde_json::json!({ "action": "rename_character", "changes": changes, "known_characters": new_known_characters })
             }
             Command::SetVoiceActors { changes } => {
                 serde_json::json!({ "action": "set_voice_actors", "changes": changes })
@@ -1366,6 +1493,104 @@ impl State {
         self.ui.toggle_toolbar_dropdown(dropdown);
     }
 
+    pub fn open_rename_character_modal(&mut self) {
+        let mut characters = self.project.character_names_from_lines();
+        characters.sort_by_key(|name| name.to_lowercase());
+        if characters.is_empty() {
+            self.show_toast(crate::i18n::t("toast.no_character_to_rename"), 4.0);
+            return;
+        }
+        self.ui.open_rename_character_modal(characters);
+    }
+
+    pub fn rename_character_everywhere(&mut self, old_name: String, new_name: String) {
+        if old_name.trim().is_empty() {
+            self.show_toast(crate::i18n::t("toast.rename_character_select"), 4.0);
+            return;
+        }
+
+        let new_name = new_name.trim().to_string();
+        if new_name.is_empty() {
+            self.show_toast(crate::i18n::t("toast.rename_character_name_required"), 4.0);
+            return;
+        }
+        if old_name == new_name {
+            return;
+        }
+
+        let changes: Vec<_> = self
+            .project
+            .lines()
+            .filter(|line| line.character_name == old_name)
+            .map(|line| LineCharacterNameChange {
+                line_id: line.id,
+                old_name: old_name.clone(),
+                new_name: new_name.clone(),
+            })
+            .collect();
+        if changes.is_empty() {
+            self.show_toast(crate::i18n::t("toast.no_character_to_rename"), 4.0);
+            return;
+        }
+
+        let old_known_characters = self.project.known_characters.clone();
+        let new_known_characters = self.known_characters_after_rename(&old_name, &new_name);
+        self.project.apply_character_name_changes(&changes, true);
+        self.project
+            .set_known_characters(new_known_characters.clone());
+        self.push_and_broadcast(Command::RenameCharacter {
+            changes,
+            old_known_characters,
+            new_known_characters,
+        });
+        self.show_toast(crate::i18n::t("toast.character_renamed"), 3.0);
+    }
+
+    fn known_characters_after_rename(&self, old_name: &str, new_name: &str) -> Vec<Character> {
+        let mut known_characters = self.project.known_characters.clone();
+        let old_index = known_characters
+            .iter()
+            .position(|character| character.name == old_name);
+        let new_index = known_characters
+            .iter()
+            .position(|character| character.name == new_name);
+
+        if new_index.is_some() {
+            if let Some(old_index) = old_index {
+                known_characters.remove(old_index);
+            }
+            return known_characters;
+        }
+
+        if let Some(old_index) = old_index {
+            known_characters[old_index].name = new_name.to_string();
+            return known_characters;
+        }
+
+        if let Some(color) = self
+            .project
+            .lines()
+            .find(|line| line.character_name == old_name)
+            .map(|line| line.character_color)
+        {
+            known_characters.push(Character {
+                name: new_name.to_string(),
+                color,
+            });
+        }
+
+        known_characters
+    }
+
+    fn apply_character_rename_changes(
+        &mut self,
+        changes: &[LineCharacterNameChange],
+        known_characters: Vec<Character>,
+    ) {
+        self.project.apply_character_name_changes(changes, true);
+        self.project.set_known_characters(known_characters);
+    }
+
     pub fn delete_selected(&mut self) {
         use crate::ui::rythmo::Selection;
         if let Some(sel) = self.ui.rythmo_state().selected {
@@ -1376,8 +1601,7 @@ impl State {
                     }
                 }
                 Selection::Marker(idx) => {
-                    if idx < self.project.markers.len() {
-                        let marker = self.project.markers.remove(idx);
+                    if let Some(marker) = self.project.remove_marker_at(idx) {
                         self.push_and_broadcast(Command::RemoveMarker { marker, index: idx });
                     }
                 }
@@ -1413,6 +1637,134 @@ impl State {
         });
     }
 
+    pub fn split_dialogue(&mut self) -> bool {
+        let Some(target) = self.dialogue_split_target() else {
+            self.show_toast("Sélectionne un dialogue et place le curseur dedans.", 3.0);
+            return false;
+        };
+        let line_id = match &target {
+            DialogueSplitTarget::Cursor { line_id, .. }
+            | DialogueSplitTarget::Playhead { line_id, .. } => *line_id,
+        };
+        let Some(old_line) = self.project.get_line(line_id).cloned() else {
+            return false;
+        };
+        if old_line.duration_frames <= 1 {
+            self.show_toast("Dialogue trop court pour être coupé.", 3.0);
+            return false;
+        }
+
+        let lang = crate::config::get().lang.clone();
+        let split = match target {
+            DialogueSplitTarget::Cursor { cursor_pos, .. } => {
+                crate::syllable::split_dialogue_at_syllable_cursor(
+                    &old_line.text,
+                    &old_line.syllable_ratios,
+                    &lang,
+                    cursor_pos,
+                )
+            }
+            DialogueSplitTarget::Playhead { progress, .. } => {
+                crate::syllable::split_dialogue_at_syllable_progress(
+                    &old_line.text,
+                    &old_line.syllable_ratios,
+                    &lang,
+                    progress,
+                )
+            }
+        };
+        let Some(split) = split else {
+            self.show_toast("Aucune coupure syllabique disponible.", 3.0);
+            return false;
+        };
+
+        let first_duration =
+            ((old_line.duration_frames as f32) * split.split_progress).round() as i64;
+        let first_duration = first_duration.clamp(1, old_line.duration_frames - 1);
+        let second_duration = old_line.duration_frames - first_duration;
+        let old_index = self
+            .project
+            .line_index(line_id)
+            .unwrap_or_else(|| self.project.line_count());
+        let second_index = old_index + 1;
+
+        let mut first_line = old_line.clone();
+        first_line.duration_frames = first_duration;
+        first_line.text = split.first_text;
+        first_line.syllable_ratios = split.first_ratios;
+
+        let mut second_line = old_line.clone();
+        second_line.id = self.project.generate_line_id();
+        second_line.start_frame = old_line.start_frame + first_duration;
+        second_line.duration_frames = second_duration;
+        second_line.text = split.second_text;
+        second_line.syllable_ratios = split.second_ratios;
+
+        if let Some(line) = self.project.get_line_mut(line_id) {
+            *line = first_line.clone();
+        } else {
+            return false;
+        }
+        self.project
+            .insert_line_at(second_index, second_line.clone());
+        self.ui.rythmo_state.stop_line_editing();
+        self.ui.rythmo_state.stop_char_editing();
+        self.ui.rythmo_state.stop_note_editing();
+        self.ui.rythmo_state.dragging = None;
+        self.ui.rythmo_state.syllable_drag = None;
+        self.ui.rythmo_state.context_menu = None;
+        self.ui.rythmo_state.selected = Some(crate::ui::rythmo::Selection::Line(second_line.id));
+
+        self.push_and_broadcast(Command::SplitLine {
+            old_line,
+            old_index,
+            first_line,
+            second_line,
+            second_index,
+        });
+        true
+    }
+
+    fn dialogue_split_target(&self) -> Option<DialogueSplitTarget> {
+        if let Some(line_id) = self.ui.rythmo_state.editing_line {
+            return Some(DialogueSplitTarget::Cursor {
+                line_id,
+                cursor_pos: self.ui.rythmo_state.line_input.cursor_pos,
+            });
+        }
+        if self.ui.rythmo_state.editing_character.is_some()
+            || self.ui.rythmo_state.editing_note.is_some()
+        {
+            return None;
+        }
+
+        let frame = self.current_frame();
+        let line_id = match self.ui.rythmo_state.selected {
+            Some(crate::ui::rythmo::Selection::Line(line_id)) => Some(line_id),
+            _ => self.ui.rythmo_state.hovered_line.or_else(|| {
+                let mut active = self
+                    .project
+                    .lines()
+                    .filter(|line| frame > line.start_frame && frame < line.end_frame())
+                    .map(|line| line.id);
+                let first = active.next()?;
+                if active.next().is_none() {
+                    Some(first)
+                } else {
+                    None
+                }
+            }),
+        }?;
+
+        let line = self.project.get_line(line_id)?;
+        if frame <= line.start_frame || frame >= line.end_frame() {
+            return None;
+        }
+        let progress =
+            ((frame - line.start_frame) as f32 / line.duration_frames as f32).clamp(0.0, 1.0);
+        Some(DialogueSplitTarget::Playhead { line_id, progress })
+    }
+
     pub fn move_marker(&mut self, index: usize, frame: i64) {
         if index >= self.project.markers.len() {
             return;
@@ -1423,18 +1775,16 @@ impl State {
             old_frame,
             new_frame: frame,
         });
-        self.project.markers[index].frame = frame;
+        self.project.move_marker(index, frame);
         self.dirty = true;
     }
 
     pub fn add_marker(&mut self, kind: crate::rythmo_line::MarkerKind) {
         let frame = self.current_frame();
-        self.project
-            .markers
-            .push(crate::rythmo_line::RythmoMarker { kind, frame });
-        self.push_and_broadcast(Command::AddMarker {
-            index: self.project.markers.len() - 1,
-        });
+        let index = self
+            .project
+            .add_marker(crate::rythmo_line::RythmoMarker { kind, frame });
+        self.push_and_broadcast(Command::AddMarker { index });
     }
 
     pub fn add_quick_line(&mut self, text: String) {
@@ -2087,7 +2437,7 @@ impl State {
         }
     }
 
-    fn poll_proxy_job(&mut self) {
+    fn poll_proxy_job(&mut self) -> bool {
         let result = match self.pending_proxy_job.as_ref() {
             Some(job) => match job.receiver.try_recv() {
                 Ok(result) => Some(result),
@@ -2098,11 +2448,11 @@ impl State {
         };
 
         let Some(result) = result else {
-            return;
+            return false;
         };
 
         let Some(job) = self.pending_proxy_job.take() else {
-            return;
+            return false;
         };
 
         self.set_export_progress(None);
@@ -2122,14 +2472,58 @@ impl State {
                 }
             }
             Err(e) => {
-                log::error!("Proxy creation failed: {e}");
-                self.show_proxy_error(e);
+                if crate::video_proxy::is_cancelled_error(&e) {
+                    log::info!("Proxy creation canceled");
+                } else {
+                    log::error!("Proxy creation failed: {e}");
+                    self.show_proxy_error(e);
+                }
             }
         }
+
+        true
     }
 
-    pub fn render(&mut self) {
-        // Poll ping results
+    fn poll_export_job(&mut self) -> bool {
+        let result = match self.pending_export_job.as_ref() {
+            Some(job) => match job.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err("Export job disconnected".into())),
+            },
+            None => None,
+        };
+
+        let Some(result) = result else {
+            return false;
+        };
+
+        self.pending_export_job = None;
+        self.set_export_progress(None);
+        match result {
+            Ok(()) => {
+                log::info!("MP4 export completed");
+                self.show_toast(crate::i18n::t("toast.export_completed"), 4.0);
+            }
+            Err(e) => {
+                if crate::video_export::is_cancelled_error(&e) {
+                    log::info!("MP4 export canceled");
+                } else {
+                    log::error!("MP4 export failed: {e}");
+                    self.show_toast(
+                        format!("{} {e}", crate::i18n::t("toast.export_failed")),
+                        8.0,
+                    );
+                }
+            }
+        }
+
+        true
+    }
+
+    pub fn tick_background(&mut self) -> bool {
+        let mut changed = false;
+
         if let Ok(mut results) = self.ping_results.try_lock() {
             for r in results.drain(..) {
                 if let Some(browser) = self.ui.server_browser_mut() {
@@ -2145,16 +2539,119 @@ impl State {
                     } else {
                         browser.mark_offline(&r.ip, r.port);
                     }
+                    changed = true;
                 }
             }
         }
 
-        // Auto-save every 60 seconds if project is dirty
+        // Auto-save every 60 seconds if project is dirty. This is not directly visible,
+        // but it needs a timer now that idle redraw no longer drives render calls.
         if self.dirty && self.last_autosave.elapsed().as_secs() >= 60 {
             self.save_backup();
             self.last_autosave = Instant::now();
         }
 
+        if let Some(progress) = &self.ui.export_progress {
+            use std::sync::atomic::Ordering;
+            let v = f32::from_bits(progress.load(Ordering::Relaxed));
+            if v >= 1.5 {
+                // Sentinel: 2.0 means the worker thread has actually exited.
+                self.ui.export_progress = None;
+                self.ui.export_render_backend = None;
+                self.ui.progress_prefix = String::new();
+                self.active_export_cancel = None;
+                log::info!("Export completed");
+                changed = true;
+            }
+        }
+
+        changed |= self.tick_network();
+        changed |= self.tick_scroll_decode();
+        changed |= self.poll_export_job();
+        changed |= self.poll_proxy_job();
+        changed |= self.poll_file_explorer();
+        changed
+    }
+
+    fn scroll_decode_due(&self, now: Instant) -> bool {
+        self.scroll_needs_decode
+            && self.last_scroll_time.is_some_and(|last| {
+                now.duration_since(last).as_millis() >= constants::SCROLL_DECODE_DELAY_MS
+            })
+    }
+
+    fn periodic_redraw_due(&self, now: Instant) -> bool {
+        if self.ui.has_active_progress() || self.pending_proxy_job.is_some() {
+            return now.duration_since(self.last_redraw) >= Duration::from_millis(100);
+        }
+
+        if self.ui.is_editing_text() {
+            return self
+                .ui
+                .next_cursor_blink_deadline()
+                .is_some_and(|deadline| deadline <= now)
+                || now.duration_since(self.last_redraw) >= Duration::from_millis(500);
+        }
+
+        false
+    }
+
+    pub fn needs_redraw_now(&self) -> bool {
+        let now = Instant::now();
+        self.scroll_decode_due(now) || self.periodic_redraw_due(now)
+    }
+
+    pub fn needs_continuous_redraw(&self) -> bool {
+        self.is_video_playing() || self.ui.needs_animation_or_interaction()
+    }
+
+    pub fn secondary_needs_continuous_redraw(&self) -> bool {
+        self.has_secondary_display() && self.is_video_playing()
+    }
+
+    pub fn next_wake_deadline(&self) -> Option<Instant> {
+        let now = Instant::now();
+        let mut deadline: Option<Instant> = None;
+        let mut push_deadline = |candidate: Instant| {
+            deadline = Some(deadline.map_or(candidate, |current| current.min(candidate)));
+        };
+
+        if self.needs_continuous_redraw() || self.secondary_needs_continuous_redraw() {
+            push_deadline(now + Duration::from_millis(16));
+        }
+
+        if self.ui.has_active_progress() || self.pending_proxy_job.is_some() {
+            push_deadline(self.last_redraw + Duration::from_millis(100));
+        }
+
+        if self.ui.is_editing_text() {
+            if let Some(cursor_deadline) = self.ui.next_cursor_blink_deadline() {
+                push_deadline(cursor_deadline);
+            } else {
+                push_deadline(self.last_redraw + Duration::from_millis(500));
+            }
+        }
+
+        if self.scroll_needs_decode {
+            if let Some(last_scroll) = self.last_scroll_time {
+                push_deadline(
+                    last_scroll + Duration::from_millis(constants::SCROLL_DECODE_DELAY_MS as u64),
+                );
+            }
+        }
+
+        if self.dirty {
+            push_deadline(self.last_autosave + Duration::from_secs(60));
+        }
+
+        if self.network.state != ConnectionState::Disconnected || self.ui.needs_background_poll() {
+            push_deadline(now + Duration::from_millis(100));
+        }
+
+        deadline
+    }
+
+    pub fn render(&mut self) {
         if self.studio_mode {
             self.render_studio();
             return;
@@ -2205,27 +2702,6 @@ impl State {
         // Drain timeline events
         let _events = self.timeline.drain();
 
-        // Check if export finished
-        if let Some(progress) = &self.ui.export_progress {
-            use std::sync::atomic::Ordering;
-            let v = f32::from_bits(progress.load(Ordering::Relaxed));
-            if v >= 1.5 {
-                // sentinel: 2.0 means done
-                self.ui.export_progress = None;
-                self.ui.export_render_backend = None;
-                self.ui.progress_prefix = String::new();
-                log::info!("Export completed");
-            }
-        }
-
-        // Network tick
-        self.tick_network();
-
-        // Debounced scroll decode
-        self.tick_scroll_decode();
-
-        self.poll_proxy_job();
-
         self.tick_video();
 
         // Video quad — skip when export modal is showing (it would cover the modal)
@@ -2250,6 +2726,7 @@ impl State {
             .map(Vec::as_slice)
             .unwrap_or(empty_waveform);
         let fps = self.fps();
+        self.render_index.refresh(&self.project);
         self.ui.render(
             &mut self.ui_renderer,
             &self.gfx.device,
@@ -2267,6 +2744,7 @@ impl State {
 
         self.gfx.queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
+        self.last_redraw = Instant::now();
     }
 
     fn render_studio(&mut self) {
@@ -2312,9 +2790,8 @@ impl State {
             });
         }
 
-        // Drain timeline, tick video, tick scroll decode
+        // Drain timeline and tick video. Background work is handled from AboutToWait.
         let _events = self.timeline.drain();
-        self.tick_scroll_decode();
         self.tick_video();
 
         let rythmo_h = crate::ui::rythmo::studio_br_height(&self.project, self.ui.screen_w());
@@ -2329,6 +2806,7 @@ impl State {
             .as_ref()
             .map_or(0, |p| p.current_frame_interpolated());
         let fps = self.fps();
+        self.render_index.refresh(&self.project);
 
         self.ui.render_studio(
             &mut self.ui_renderer,
@@ -2346,6 +2824,7 @@ impl State {
 
         self.gfx.queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
+        self.last_redraw = Instant::now();
     }
 
     pub fn render_secondary_display(&mut self, window_id: WindowId) {
@@ -2422,6 +2901,7 @@ impl State {
 
         self.gfx.queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
+        self.last_redraw = Instant::now();
     }
 }
 

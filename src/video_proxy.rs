@@ -3,8 +3,16 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
+
+pub const PROXY_CANCELLED_MESSAGE: &str = "Proxy canceled";
+
+pub fn is_cancelled_error(error: &str) -> bool {
+    error == PROXY_CANCELLED_MESSAGE
+}
 
 #[derive(Clone, Debug)]
 pub struct VideoInfo {
@@ -138,6 +146,7 @@ pub fn create_proxy(
     target_width: u32,
     target_height: u32,
     crf: u8,
+    cancel: Arc<AtomicBool>,
     mut progress_cb: impl FnMut(f32),
 ) -> Result<PathBuf, String> {
     if !crate::video_export::check_ffmpeg() {
@@ -212,7 +221,7 @@ pub fn create_proxy(
         .spawn()
         .map_err(|e| format!("ffmpeg proxy: {e}"))?;
 
-    let stderr_handle = child.stderr.take().map(|stderr| {
+    let mut stderr_handle = child.stderr.take().map(|stderr| {
         thread::spawn(move || {
             let mut text = String::new();
             let _ = BufReader::new(stderr).read_to_string(&mut text);
@@ -220,19 +229,52 @@ pub fn create_proxy(
         })
     });
 
-    if let Some(stdout) = child.stdout.take() {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            if let Some(progress) = progress_from_ffmpeg_line(&line, info.duration_secs) {
-                progress_cb(progress.clamp(0.01, 0.99));
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+    let mut stdout_handle = child.stdout.take().map(|stdout| {
+        thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Some(progress) = progress_from_ffmpeg_line(&line, info.duration_secs) {
+                    let _ = progress_tx.send(progress.clamp(0.01, 0.99));
+                }
             }
-        }
-    }
+        })
+    });
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("ffmpeg proxy wait: {e}"))?;
+    let status = loop {
+        while let Ok(progress) = progress_rx.try_recv() {
+            progress_cb(progress);
+        }
+
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Some(handle) = stdout_handle.take() {
+                let _ = handle.join();
+            }
+            let _ = stderr_handle.take().and_then(|handle| handle.join().ok());
+            let _ = fs::remove_file(&proxy_path);
+            return Err(PROXY_CANCELLED_MESSAGE.into());
+        }
+
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("ffmpeg proxy wait: {e}"))?
+        {
+            break status;
+        }
+
+        thread::sleep(Duration::from_millis(50));
+    };
+
+    while let Ok(progress) = progress_rx.try_recv() {
+        progress_cb(progress);
+    }
+    if let Some(handle) = stdout_handle.take() {
+        let _ = handle.join();
+    }
     let stderr = stderr_handle
+        .take()
         .and_then(|handle| handle.join().ok())
         .unwrap_or_default();
 

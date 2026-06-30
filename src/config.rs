@@ -26,6 +26,7 @@ pub struct Config {
     pub ui: UiConfig,
     pub lang: String,
     pub network: NetworkConfig,
+    pub last_whats_new_version: Option<String>,
     #[serde(default)]
     pub recent_projects: Vec<RecentProject>,
 }
@@ -92,6 +93,7 @@ impl Default for Config {
             ui: UiConfig::default(),
             lang: "fr-fr".into(),
             network: NetworkConfig::default(),
+            last_whats_new_version: None,
             recent_projects: Vec::new(),
         }
     }
@@ -151,7 +153,8 @@ impl Config {
         } else {
             log::info!("No config file found, using defaults");
         }
-        let config = Config::default();
+        let mut config = Config::default();
+        config.last_whats_new_version = Some(env!("CARGO_PKG_VERSION").to_string());
         config.save();
         config
     }
@@ -307,6 +310,17 @@ pub fn add_recent_project(video_path: PathBuf, br_path: PathBuf) {
 
 pub fn recent_projects() -> Vec<RecentProject> {
     get().recent_projects.clone()
+}
+
+pub fn should_show_whats_new(version: &str) -> bool {
+    get().last_whats_new_version.as_deref() != Some(version)
+}
+
+pub fn mark_whats_new_seen(version: &str) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    cfg.last_whats_new_version = Some(version.to_string());
+    cfg.save();
 }
 
 pub fn saved_servers() -> Vec<SavedServer> {

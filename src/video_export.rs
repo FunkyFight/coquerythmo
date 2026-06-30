@@ -1,7 +1,7 @@
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -12,6 +12,23 @@ use crate::rythmo_gpu_renderer;
 pub const EXPORT_RENDER_BACKEND_UNKNOWN: u32 = 0;
 pub const EXPORT_RENDER_BACKEND_GPU: u32 = 1;
 pub const EXPORT_RENDER_BACKEND_CPU: u32 = 2;
+pub const EXPORT_CANCELLED_MESSAGE: &str = "Export canceled";
+
+pub fn is_cancelled_error(error: &str) -> bool {
+    error == EXPORT_CANCELLED_MESSAGE
+}
+
+fn export_cancelled(cancel: &AtomicBool) -> bool {
+    cancel.load(Ordering::Relaxed)
+}
+
+fn check_export_cancel(cancel: &AtomicBool) -> Result<(), String> {
+    if export_cancelled(cancel) {
+        Err(EXPORT_CANCELLED_MESSAGE.into())
+    } else {
+        Ok(())
+    }
+}
 
 /// Check if ffmpeg and ffprobe are available in PATH.
 pub fn check_ffmpeg() -> bool {
@@ -369,12 +386,36 @@ impl StdinWriteError {
         }
     }
 
+    fn cancelled() -> Self {
+        Self {
+            kind: ErrorKind::Interrupted,
+            message: EXPORT_CANCELLED_MESSAGE.to_string(),
+        }
+    }
+
     fn is_broken_pipe(&self) -> bool {
         self.kind == ErrorKind::BrokenPipe
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.kind == ErrorKind::Interrupted && self.message == EXPORT_CANCELLED_MESSAGE
+    }
+}
+
+fn check_stdin_cancel(cancel: &AtomicBool) -> Result<(), StdinWriteError> {
+    if export_cancelled(cancel) {
+        Err(StdinWriteError::cancelled())
+    } else {
+        Ok(())
     }
 }
 
 /// Export MP4 with the BR strip baked into the video.
+///
+/// When `instrumental_audio` is provided, the selected output uses that audio.
+/// If `double_export_instrumental` is true, a normal source-audio output is also
+/// written at the selected path and the instrumental output is written next to
+/// it with an `_instrumental` suffix.
 pub fn export_mp4(
     project: &Project,
     source_video: &Path,
@@ -385,8 +426,10 @@ pub fn export_mp4(
     karaoke_text_scale: f32,
     export_width: u32,
     export_height: u32,
-    replacement_audio: Option<&Path>,
+    instrumental_audio: Option<&Path>,
+    double_export_instrumental: bool,
     render_backend_status: Option<Arc<AtomicU32>>,
+    cancel: Arc<AtomicBool>,
     progress_cb: impl FnMut(f32) + Send + 'static,
 ) -> Result<(), String> {
     if !check_ffmpeg() {
@@ -405,6 +448,7 @@ pub fn export_mp4(
     if let Some(status) = &render_backend_status {
         status.store(EXPORT_RENDER_BACKEND_UNKNOWN, Ordering::Relaxed);
     }
+    check_export_cancel(&cancel)?;
 
     export_baked_mp4(
         project,
@@ -416,8 +460,10 @@ pub fn export_mp4(
         karaoke_text_scale,
         export_width,
         export_height,
-        replacement_audio,
+        instrumental_audio,
+        double_export_instrumental,
         render_backend_status.as_deref(),
+        &cancel,
         &progress_cb,
     )
 }
@@ -432,14 +478,18 @@ fn export_baked_mp4(
     karaoke_text_scale: f32,
     export_width: u32,
     export_height: u32,
-    replacement_audio: Option<&Path>,
+    instrumental_audio: Option<&Path>,
+    double_export_instrumental: bool,
     render_backend_status: Option<&AtomicU32>,
+    cancel: &AtomicBool,
     progress_cb: &ProgressCallback,
 ) -> Result<(), String> {
     let export_start = Instant::now();
+    check_export_cancel(cancel)?;
     let fps = valid_export_fps(fps)?;
     let probe_start = Instant::now();
     let info = probe(source_video)?;
+    check_export_cancel(cancel)?;
     log::info!(
         "Export probe completed in {:.2}ms",
         ms(probe_start.elapsed())
@@ -454,14 +504,26 @@ fn export_baked_mp4(
         return Err("Video has no duration".into());
     }
 
-    if let Some(audio) = replacement_audio {
+    if let Some(audio) = instrumental_audio {
         if !audio.is_file() {
             return Err(format!(
-                "Replacement audio file not found: {}",
+                "Instrumental audio file not found: {}",
                 audio.display()
             ));
         }
-        log::info!("Replacing source audio with {}", audio.display());
+        if double_export_instrumental {
+            log::info!(
+                "Double MP4 export enabled: normal output={}, instrumental audio={}",
+                output.display(),
+                audio.display()
+            );
+        } else {
+            log::info!(
+                "Instrumental-only MP4 export enabled: output={}, instrumental audio={}",
+                output.display(),
+                audio.display()
+            );
+        }
     }
 
     let capability_start = Instant::now();
@@ -493,6 +555,7 @@ fn export_baked_mp4(
     );
 
     emit_progress(progress_cb, 0.01);
+    check_export_cancel(cancel)?;
 
     let use_cuda_rgba_br =
         use_cuda_graph && experimental_cuda_rgba_enabled() && probe_cuda_rgba_br_graph();
@@ -513,9 +576,9 @@ fn export_baked_mp4(
         BrInputFormat::Nv12
     };
     let cpu_filter = cpu_fit_and_stack_filter(out_w, vid_h, fps, info.duration_secs);
-    let replacement_video = replacement_audio.map(|_| temp_video_path(output));
-    let video_output = replacement_video.as_deref().unwrap_or(output);
-    let include_source_audio = replacement_audio.is_none();
+    let temp_video = instrumental_audio.map(|_| temp_video_path(output));
+    let video_output = temp_video.as_deref().unwrap_or(output);
+    let include_source_audio = instrumental_audio.is_none();
 
     let result = if use_cuda_graph {
         let r = run_baked_single_pass(
@@ -537,12 +600,17 @@ fn export_baked_mp4(
             info.duration_secs,
             include_source_audio,
             render_backend_status,
+            cancel,
             progress_cb,
         );
         if let Err(e) = r {
+            if is_cancelled_error(&e) {
+                return Err(e);
+            }
             log::warn!("CUDA graph export failed, falling back to CPU filters: {e}");
             emit_progress(progress_cb, 0.01);
             let _ = std::fs::remove_file(video_output);
+            check_export_cancel(cancel)?;
             run_baked_single_pass(
                 project,
                 source_video,
@@ -562,6 +630,7 @@ fn export_baked_mp4(
                 info.duration_secs,
                 include_source_audio,
                 render_backend_status,
+                cancel,
                 progress_cb,
             )
         } else {
@@ -587,25 +656,47 @@ fn export_baked_mp4(
             info.duration_secs,
             include_source_audio,
             render_backend_status,
+            cancel,
             progress_cb,
         )
     };
 
     if let Err(e) = result {
-        if let Some(temp) = &replacement_video {
+        if let Some(temp) = &temp_video {
             let _ = std::fs::remove_file(temp);
         }
         return Err(e);
     }
 
-    if let (Some(audio), Some(temp_video)) = (replacement_audio, replacement_video.as_deref()) {
-        if let Err(e) =
-            mux_replacement_audio(temp_video, audio, output, info.duration_secs, progress_cb)
-        {
-            let _ = std::fs::remove_file(temp_video);
+    if let (Some(audio), Some(temp)) = (instrumental_audio, temp_video.as_deref()) {
+        check_export_cancel(cancel)?;
+        let instrumental_output = if double_export_instrumental {
+            let output_path = instrumental_output_path(output);
+            if let Err(e) = mux_source_audio(temp, source_video, output, info.duration_secs, cancel)
+            {
+                let _ = std::fs::remove_file(temp);
+                return Err(e);
+            }
+            output_path
+        } else {
+            output.to_path_buf()
+        };
+        if let Err(e) = mux_instrumental_audio(
+            temp,
+            audio,
+            &instrumental_output,
+            info.duration_secs,
+            cancel,
+            progress_cb,
+        ) {
+            let _ = std::fs::remove_file(temp);
             return Err(e);
         }
-        let _ = std::fs::remove_file(temp_video);
+        let _ = std::fs::remove_file(temp);
+        log::info!(
+            "Instrumental MP4 export complete: {}",
+            instrumental_output.display()
+        );
     }
 
     emit_progress(progress_cb, 1.0);
@@ -638,13 +729,28 @@ fn temp_video_path(output: &Path) -> PathBuf {
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
+        .map(|duration| duration.as_millis())
         .unwrap_or(0);
     parent.join(format!(
         ".coquerythmo_export_{}_{}.video.mp4",
         std::process::id(),
         stamp
     ))
+}
+
+fn instrumental_output_path(output: &Path) -> PathBuf {
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let stem = output
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("export");
+    let extension = output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| !extension.is_empty())
+        .unwrap_or("mp4");
+    parent.join(format!("{stem}_instrumental.{extension}"))
 }
 
 fn cpu_fit_and_stack_filter(out_w: u32, vid_h: u32, fps: f64, duration_secs: f64) -> String {
@@ -710,9 +816,11 @@ fn run_baked_single_pass(
     duration_secs: f64,
     include_source_audio: bool,
     render_backend_status: Option<&AtomicU32>,
+    cancel: &AtomicBool,
     progress_cb: &ProgressCallback,
 ) -> Result<(), String> {
     let pass_start = Instant::now();
+    check_export_cancel(cancel)?;
     let use_cuda = pipeline.uses_cuda();
     let codec = if use_nvenc { "h264_nvenc" } else { "libx264" };
     let raw_size = format!("{}x{}", out_w, br_h_even);
@@ -827,6 +935,7 @@ fn run_baked_single_pass(
         total_frames,
         &ffmpeg_progress,
         render_backend_status,
+        cancel,
         progress_cb,
     );
     let mut flush_duration = Duration::ZERO;
@@ -844,7 +953,16 @@ fn run_baked_single_pass(
     };
     drop(writer);
 
-    if write_result.is_ok() {
+    let cancelled = write_result
+        .as_ref()
+        .err()
+        .is_some_and(StdinWriteError::is_cancelled)
+        || export_cancelled(cancel);
+    if cancelled {
+        let _ = child.kill();
+    }
+
+    if write_result.is_ok() && !cancelled {
         emit_progress(progress_cb, 0.99);
     }
 
@@ -869,6 +987,11 @@ fn run_baked_single_pass(
             ffmpeg_wait,
             flush_duration,
         );
+    }
+
+    if cancelled {
+        let _ = std::fs::remove_file(output);
+        return Err(EXPORT_CANCELLED_MESSAGE.into());
     }
 
     if !status.success() {
@@ -899,11 +1022,94 @@ fn run_baked_single_pass(
     }
 }
 
-fn mux_replacement_audio(
+fn mux_source_audio(
     video_only: &Path,
-    replacement_audio: &Path,
+    source_video: &Path,
     output: &Path,
     duration_secs: f64,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    check_export_cancel(cancel)?;
+    let duration_arg = duration_secs.to_string();
+
+    let mut child = Command::new("ffmpeg")
+        .arg("-i")
+        .arg(video_only)
+        .arg("-i")
+        .arg(source_video)
+        .args([
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a?",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "copy",
+            "-t",
+            &duration_arg,
+            "-movflags",
+            "+faststart",
+            "-nostats",
+            "-v",
+            "warning",
+            "-y",
+        ])
+        .arg(output)
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("ffmpeg mux source audio: {e}"))?;
+
+    let mut stderr_handle = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = BufReader::new(stderr).read_to_string(&mut text);
+            text
+        })
+    });
+
+    let status = loop {
+        if export_cancelled(cancel) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stderr_handle.take().and_then(|handle| handle.join().ok());
+            let _ = std::fs::remove_file(output);
+            return Err(EXPORT_CANCELLED_MESSAGE.into());
+        }
+
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("ffmpeg mux source audio wait: {e}"))?
+        {
+            break status;
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let stderr = stderr_handle
+        .take()
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+
+    if status.success() {
+        Ok(())
+    } else {
+        let details = stderr.trim();
+        if details.is_empty() {
+            Err("ffmpeg mux source audio failed".into())
+        } else {
+            Err(format!("ffmpeg mux source audio failed: {details}"))
+        }
+    }
+}
+
+fn mux_instrumental_audio(
+    normal_video: &Path,
+    instrumental_audio: &Path,
+    output: &Path,
+    duration_secs: f64,
+    cancel: &AtomicBool,
     progress_cb: &ProgressCallback,
 ) -> Result<(), String> {
     let duration_arg = duration_secs.to_string();
@@ -911,12 +1117,13 @@ fn mux_replacement_audio(
         format!("apad=whole_dur={duration_arg},atrim=duration={duration_arg},asetpts=PTS-STARTPTS");
 
     emit_progress(progress_cb, 0.99);
+    check_export_cancel(cancel)?;
 
     let mut child = Command::new("ffmpeg")
         .arg("-i")
-        .arg(video_only)
+        .arg(normal_video)
         .arg("-i")
-        .arg(replacement_audio)
+        .arg(instrumental_audio)
         .args([
             "-map",
             "0:v:0",
@@ -945,9 +1152,9 @@ fn mux_replacement_audio(
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("ffmpeg mux replacement audio: {e}"))?;
+        .map_err(|e| format!("ffmpeg mux instrumental audio: {e}"))?;
 
-    let stderr_handle = child.stderr.take().map(|stderr| {
+    let mut stderr_handle = child.stderr.take().map(|stderr| {
         std::thread::spawn(move || {
             let mut text = String::new();
             let _ = BufReader::new(stderr).read_to_string(&mut text);
@@ -955,19 +1162,44 @@ fn mux_replacement_audio(
         })
     });
 
-    if let Some(stdout) = child.stdout.take() {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            if let Some(progress) = ffmpeg_progress_from_line(&line, duration_secs) {
-                emit_progress(progress_cb, map_progress(progress, 0.99, 0.999));
+    let mut stdout_handle = child.stdout.take().map(|stdout| {
+        let progress_cb = progress_cb.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Some(progress) = ffmpeg_progress_from_line(&line, duration_secs) {
+                    emit_progress(&progress_cb, map_progress(progress, 0.99, 0.999));
+                }
             }
-        }
-    }
+        })
+    });
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("ffmpeg mux replacement audio wait: {e}"))?;
+    let status = loop {
+        if export_cancelled(cancel) {
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Some(handle) = stdout_handle.take() {
+                let _ = handle.join();
+            }
+            let _ = stderr_handle.take().and_then(|handle| handle.join().ok());
+            let _ = std::fs::remove_file(output);
+            return Err(EXPORT_CANCELLED_MESSAGE.into());
+        }
+
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("ffmpeg mux instrumental audio wait: {e}"))?
+        {
+            break status;
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    if let Some(handle) = stdout_handle.take() {
+        let _ = handle.join();
+    }
     let stderr = stderr_handle
+        .take()
         .and_then(|handle| handle.join().ok())
         .unwrap_or_default();
 
@@ -976,9 +1208,9 @@ fn mux_replacement_audio(
     } else {
         let details = stderr.trim();
         if details.is_empty() {
-            Err("ffmpeg mux replacement audio failed".into())
+            Err("ffmpeg mux instrumental audio failed".into())
         } else {
-            Err(format!("ffmpeg mux replacement audio failed: {details}"))
+            Err(format!("ffmpeg mux instrumental audio failed: {details}"))
         }
     }
 }
@@ -997,9 +1229,11 @@ fn write_br_frames(
     total_frames: u64,
     ffmpeg_progress: &AtomicU32,
     render_backend_status: Option<&AtomicU32>,
+    cancel: &AtomicBool,
     progress_cb: &ProgressCallback,
 ) -> Result<BrFrameWriteStats, StdinWriteError> {
     let total_start = Instant::now();
+    check_stdin_cancel(cancel)?;
     let mut stats = BrFrameWriteStats::new();
     let w = out_w as usize;
     let h = br_h_even as usize;
@@ -1025,6 +1259,7 @@ fn write_br_frames(
     let gpu_init_start = Instant::now();
     let gpu_result = rythmo_gpu_renderer::GpuRenderer::new();
     stats.renderer_init += gpu_init_start.elapsed();
+    check_stdin_cancel(cancel)?;
 
     match gpu_result {
         Ok(mut gpu) => {
@@ -1037,6 +1272,7 @@ fn write_br_frames(
                 status.store(EXPORT_RENDER_BACKEND_GPU, Ordering::Relaxed);
             }
             let scene = rythmo_gpu_renderer::GpuExportScene::new(project);
+            check_stdin_cancel(cancel)?;
             let submit_start = Instant::now();
             match br_input_format {
                 BrInputFormat::Nv12 => {
@@ -1064,51 +1300,69 @@ fn write_br_frames(
             stats.submit += submit_start.elapsed();
 
             for frame in 1..total_frames as i64 {
-                let finish_start = Instant::now();
-                match br_input_format {
-                    BrInputFormat::Nv12 => gpu.finish_render_nv12_into(&mut nv12_buf),
-                    BrInputFormat::Rgba => gpu.finish_render_into(out_w, br_h, &mut rgba_buf),
+                check_stdin_cancel(cancel)?;
+                if br_input_format == BrInputFormat::Nv12 {
+                    let finish_start = Instant::now();
+                    gpu.finish_render_nv12_into(&mut nv12_buf);
+                    stats.finish_readback += finish_start.elapsed();
+
+                    check_stdin_cancel(cancel)?;
+                    let video_pos = frame as f64 * frame_ratio;
+                    let submit_start = Instant::now();
+                    gpu.submit_render_nv12(
+                        &scene,
+                        video_pos,
+                        out_w,
+                        fps,
+                        source_fps,
+                        br_scale,
+                        karaoke_text_scale,
+                        br_h_even,
+                    );
+                    stats.submit += submit_start.elapsed();
+
+                    let write_start = Instant::now();
+                    check_stdin_cancel(cancel)?;
+                    writer
+                        .write_all(nv12_buf.as_slice())
+                        .map_err(|e| StdinWriteError::new("ffmpeg stdin", e))?;
+                    stats.write += write_start.elapsed();
+                    stats.frames += 1;
+
+                    if frame as u64 % progress_interval == 0 {
+                        report_baked_progress(
+                            frame as u64,
+                            total_frames,
+                            ffmpeg_progress,
+                            progress_cb,
+                        );
+                    }
+                    continue;
                 }
+
+                let finish_start = Instant::now();
+                gpu.finish_render_into(out_w, br_h, &mut rgba_buf);
                 stats.finish_readback += finish_start.elapsed();
+                check_stdin_cancel(cancel)?;
                 let video_pos = frame as f64 * frame_ratio;
                 let submit_start = Instant::now();
-                match br_input_format {
-                    BrInputFormat::Nv12 => {
-                        gpu.submit_render_nv12(
-                            &scene,
-                            video_pos,
-                            out_w,
-                            fps,
-                            source_fps,
-                            br_scale,
-                            karaoke_text_scale,
-                            br_h_even,
-                        );
-                    }
-                    BrInputFormat::Rgba => {
-                        gpu.submit_render(
-                            &scene,
-                            video_pos,
-                            out_w,
-                            fps,
-                            source_fps,
-                            br_scale,
-                            karaoke_text_scale,
-                        );
-                    }
-                }
+                gpu.submit_render(
+                    &scene,
+                    video_pos,
+                    out_w,
+                    fps,
+                    source_fps,
+                    br_scale,
+                    karaoke_text_scale,
+                );
                 stats.submit += submit_start.elapsed();
 
-                let frame_bytes = match br_input_format {
-                    BrInputFormat::Nv12 => nv12_buf.as_slice(),
-                    BrInputFormat::Rgba => {
-                        let pad_start = Instant::now();
-                        rgba_pad_to_even(&rgba_buf, &mut rgba_pipe_buf, w, br_h as usize, h);
-                        stats.convert += pad_start.elapsed();
-                        rgba_pipe_buf.as_slice()
-                    }
-                };
+                let pad_start = Instant::now();
+                rgba_pad_to_even(&rgba_buf, &mut rgba_pipe_buf, w, br_h as usize, h);
+                stats.convert += pad_start.elapsed();
+                let frame_bytes = rgba_pipe_buf.as_slice();
                 let write_start = Instant::now();
+                check_stdin_cancel(cancel)?;
                 writer
                     .write_all(frame_bytes)
                     .map_err(|e| StdinWriteError::new("ffmpeg stdin", e))?;
@@ -1120,26 +1374,31 @@ fn write_br_frames(
                 }
             }
 
-            let finish_start = Instant::now();
-            match br_input_format {
-                BrInputFormat::Nv12 => gpu.finish_render_nv12_into(&mut nv12_buf),
-                BrInputFormat::Rgba => gpu.finish_render_into(out_w, br_h, &mut rgba_buf),
+            check_stdin_cancel(cancel)?;
+            if br_input_format == BrInputFormat::Nv12 {
+                let finish_start = Instant::now();
+                gpu.finish_render_nv12_into(&mut nv12_buf);
+                stats.finish_readback += finish_start.elapsed();
+                let write_start = Instant::now();
+                check_stdin_cancel(cancel)?;
+                writer
+                    .write_all(nv12_buf.as_slice())
+                    .map_err(|e| StdinWriteError::new("ffmpeg stdin", e))?;
+                stats.write += write_start.elapsed();
+            } else {
+                let finish_start = Instant::now();
+                gpu.finish_render_into(out_w, br_h, &mut rgba_buf);
+                stats.finish_readback += finish_start.elapsed();
+                let pad_start = Instant::now();
+                rgba_pad_to_even(&rgba_buf, &mut rgba_pipe_buf, w, br_h as usize, h);
+                stats.convert += pad_start.elapsed();
+                let write_start = Instant::now();
+                check_stdin_cancel(cancel)?;
+                writer
+                    .write_all(rgba_pipe_buf.as_slice())
+                    .map_err(|e| StdinWriteError::new("ffmpeg stdin", e))?;
+                stats.write += write_start.elapsed();
             }
-            stats.finish_readback += finish_start.elapsed();
-            let frame_bytes = match br_input_format {
-                BrInputFormat::Nv12 => nv12_buf.as_slice(),
-                BrInputFormat::Rgba => {
-                    let pad_start = Instant::now();
-                    rgba_pad_to_even(&rgba_buf, &mut rgba_pipe_buf, w, br_h as usize, h);
-                    stats.convert += pad_start.elapsed();
-                    rgba_pipe_buf.as_slice()
-                }
-            };
-            let write_start = Instant::now();
-            writer
-                .write_all(frame_bytes)
-                .map_err(|e| StdinWriteError::new("ffmpeg stdin", e))?;
-            stats.write += write_start.elapsed();
             stats.frames += 1;
             stats.gpu_stats = Some(gpu.stats());
             report_baked_progress(total_frames, total_frames, ffmpeg_progress, progress_cb);
@@ -1163,6 +1422,7 @@ fn write_br_frames(
             let frame_indices: Vec<i64> = (0..total_frames as i64).collect();
 
             for batch in frame_indices.chunks(n_threads) {
+                check_stdin_cancel(cancel)?;
                 let render_start = Instant::now();
                 let rendered: Result<Vec<Vec<u8>>, StdinWriteError> = std::thread::scope(|scope| {
                     let handles: Vec<_> = batch
@@ -1195,6 +1455,7 @@ fn write_br_frames(
                 let rendered = rendered?;
 
                 for (i, rgba) in rendered.iter().enumerate() {
+                    check_stdin_cancel(cancel)?;
                     let frame = batch[i];
                     let convert_start = Instant::now();
                     let frame_bytes = match br_input_format {
@@ -1209,6 +1470,7 @@ fn write_br_frames(
                     };
                     stats.convert += convert_start.elapsed();
                     let write_start = Instant::now();
+                    check_stdin_cancel(cancel)?;
                     writer
                         .write_all(frame_bytes)
                         .map_err(|e| StdinWriteError::new("ffmpeg stdin", e))?;
@@ -1439,5 +1701,26 @@ fn rgba_to_nv12(rgba: &[u8], nv12_buf: &mut [u8], w: usize, h: usize, br_h: usiz
             nv12_buf[uv_i + 1] =
                 (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(16, 240) as u8;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn instrumental_output_path_adds_suffix_before_extension() {
+        assert_eq!(
+            instrumental_output_path(Path::new("movie.mp4")),
+            PathBuf::from("movie_instrumental.mp4")
+        );
+    }
+
+    #[test]
+    fn instrumental_output_path_defaults_to_mp4_extension() {
+        assert_eq!(
+            instrumental_output_path(Path::new("movie")),
+            PathBuf::from("movie_instrumental.mp4")
+        );
     }
 }

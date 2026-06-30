@@ -87,35 +87,203 @@ fn hyphenate_word(
 ) {
     // Strip apostrophes for hypher (it doesn't handle them)
     let clean: String = word.chars().filter(|c| c.is_alphabetic()).collect();
-    if clean.len() <= 1 {
+    let clean_len = clean.chars().count();
+    if clean_len <= 1 {
         return;
     }
 
+    let mut clean_breaks = Vec::new();
     let syllables: Vec<&str> = hyphenate(&clean, hypher_lang).collect();
     if syllables.len() > 1 {
-        // hypher found breaks — map back to original positions
-        let mut pos = offset;
+        // hypher found breaks. English dictionaries can leave large chunks like
+        // "bourine", so refine each returned chunk before mapping positions back.
+        let mut clean_pos = 0;
         for (si, syl) in syllables.iter().enumerate() {
             let syl_len = syl.chars().count();
-            let mut counted = 0;
-            while counted < syl_len && pos < offset + word.chars().count() {
-                let ch = word.chars().nth(pos - offset).unwrap_or(' ');
-                pos += 1;
-                if ch.is_alphabetic() {
-                    counted += 1;
+
+            if !is_french {
+                for inner_break in english_syllable_breaks(syl) {
+                    clean_breaks.push(clean_pos + inner_break);
                 }
             }
+
+            clean_pos += syl_len;
             if si < syllables.len() - 1 {
-                raw_breaks.push(pos);
+                clean_breaks.push(clean_pos);
             }
         }
-    } else if is_french && clean.len() >= 3 {
+    } else if is_french && clean_len >= 3 {
         // Fallback: French CV-based syllable splitting
-        let fb = french_syllable_breaks(&clean);
-        for b in fb {
-            raw_breaks.push(offset + b);
+        clean_breaks.extend(french_syllable_breaks(&clean));
+    } else if !is_french && clean_len >= 4 {
+        clean_breaks.extend(english_syllable_breaks(&clean));
+    }
+
+    push_clean_breaks(word, offset, clean_len, clean_breaks, raw_breaks);
+}
+
+fn push_clean_breaks(
+    word: &str,
+    offset: usize,
+    clean_len: usize,
+    mut clean_breaks: Vec<usize>,
+    raw_breaks: &mut Vec<usize>,
+) {
+    clean_breaks.sort_unstable();
+    clean_breaks.dedup();
+    clean_breaks.retain(|&b| b > 0 && b < clean_len);
+
+    let mut breaks = clean_breaks.into_iter().peekable();
+    if breaks.peek().is_none() {
+        return;
+    }
+
+    let mut alpha_count = 0;
+    for (idx, ch) in word.chars().enumerate() {
+        if !ch.is_alphabetic() {
+            continue;
+        }
+
+        alpha_count += 1;
+        while breaks.peek().copied() == Some(alpha_count) {
+            raw_breaks.push(offset + idx + 1);
+            breaks.next();
         }
     }
+}
+
+/// Conservative English fallback: split only between separate vowel nuclei.
+fn english_syllable_breaks(word: &str) -> Vec<usize> {
+    let chars: Vec<char> = word.chars().collect();
+    let n = chars.len();
+    if n < 4 {
+        return Vec::new();
+    }
+
+    let nuclei = english_vowel_nuclei(&chars);
+    if nuclei.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut breaks = Vec::new();
+    for pair in nuclei.windows(2) {
+        let prev_end = pair[0].1;
+        let next_start = pair[1].0;
+        if next_start <= prev_end {
+            continue;
+        }
+
+        let consonant_count = next_start - prev_end;
+        let break_pos =
+            if consonant_count <= 1 || is_english_onset_cluster(&chars[prev_end..next_start]) {
+                prev_end
+            } else {
+                prev_end + 1
+            };
+
+        if break_pos > 0 && break_pos < n {
+            breaks.push(break_pos);
+        }
+    }
+
+    breaks
+}
+
+fn english_vowel_nuclei(chars: &[char]) -> Vec<(usize, usize)> {
+    let mut nuclei = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_english_vowel_at(chars, i) {
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        i += 1;
+        while i < chars.len() && is_english_vowel_at(chars, i) {
+            i += 1;
+        }
+        nuclei.push((start, i));
+    }
+
+    nuclei
+}
+
+fn is_english_vowel_at(chars: &[char], i: usize) -> bool {
+    let ch = lower_ascii(chars[i]);
+    if ch == 'e' && is_silent_final_e(chars, i) {
+        return false;
+    }
+
+    if is_basic_english_vowel(ch) {
+        return true;
+    }
+
+    if ch != 'y' || i == 0 {
+        return false;
+    }
+
+    let prev_is_vowel = i > 0 && is_basic_english_vowel(lower_ascii(chars[i - 1]));
+    let next_is_vowel = i + 1 < chars.len() && is_basic_english_vowel(lower_ascii(chars[i + 1]));
+    !prev_is_vowel && !next_is_vowel
+}
+
+fn is_silent_final_e(chars: &[char], i: usize) -> bool {
+    i + 1 == chars.len()
+        && chars.len() > 2
+        && lower_ascii(chars[i]) == 'e'
+        && !is_basic_english_vowel(lower_ascii(chars[i - 1]))
+        && chars[..i]
+            .iter()
+            .any(|&ch| is_basic_english_vowel(lower_ascii(ch)) || lower_ascii(ch) == 'y')
+}
+
+fn is_basic_english_vowel(ch: char) -> bool {
+    matches!(ch, 'a' | 'e' | 'i' | 'o' | 'u')
+}
+
+fn is_english_onset_cluster(cluster: &[char]) -> bool {
+    let cluster: String = cluster.iter().map(|&ch| lower_ascii(ch)).collect();
+    matches!(
+        cluster.as_str(),
+        "bl" | "br"
+            | "ch"
+            | "cl"
+            | "cr"
+            | "dr"
+            | "fl"
+            | "fr"
+            | "gl"
+            | "gr"
+            | "ph"
+            | "pl"
+            | "pr"
+            | "qu"
+            | "sc"
+            | "sh"
+            | "sk"
+            | "sl"
+            | "sm"
+            | "sn"
+            | "sp"
+            | "st"
+            | "sw"
+            | "th"
+            | "tr"
+            | "tw"
+            | "wh"
+            | "wr"
+            | "scr"
+            | "shr"
+            | "spl"
+            | "spr"
+            | "str"
+            | "thr"
+    )
+}
+
+fn lower_ascii(ch: char) -> char {
+    ch.to_ascii_lowercase()
 }
 
 /// Simple French syllable rules as fallback when hypher returns no breaks.
@@ -345,6 +513,139 @@ pub fn visual_progress_from_timing(
     1.0
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DialogueSplit {
+    pub split_char: usize,
+    pub split_progress: f32,
+    pub first_text: String,
+    pub second_text: String,
+    pub first_ratios: Vec<f32>,
+    pub second_ratios: Vec<f32>,
+}
+
+pub fn split_dialogue_at_syllable_progress(
+    text: &str,
+    saved_ratios: &[f32],
+    lang: &str,
+    progress: f32,
+) -> Option<DialogueSplit> {
+    let breaks = syllable_breaks(text, lang);
+    let ratios = timing_ratios(text, saved_ratios, lang);
+    let break_index = nearest_break_index_for_progress(&ratios, progress)?;
+    split_dialogue_at_break_index(text, saved_ratios, lang, &breaks, break_index)
+}
+
+pub fn split_dialogue_at_syllable_cursor(
+    text: &str,
+    saved_ratios: &[f32],
+    lang: &str,
+    cursor_pos: usize,
+) -> Option<DialogueSplit> {
+    let breaks = syllable_breaks(text, lang);
+    let break_index = breaks
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, split_char)| split_char.abs_diff(cursor_pos))
+        .map(|(index, _)| index)?;
+    split_dialogue_at_break_index(text, saved_ratios, lang, &breaks, break_index)
+}
+
+fn nearest_break_index_for_progress(ratios: &[f32], progress: f32) -> Option<usize> {
+    if ratios.len() <= 1 {
+        return None;
+    }
+
+    let progress = progress.clamp(0.0, 1.0);
+    let ratios = normalized_ratios(ratios);
+    let mut cumulative = 0.0;
+    let mut best: Option<(usize, f32)> = None;
+    for (index, ratio) in ratios.iter().take(ratios.len() - 1).enumerate() {
+        cumulative = (cumulative + ratio).min(1.0);
+        let distance = (progress - cumulative).abs();
+        if best.map_or(true, |(_, best_distance)| distance < best_distance) {
+            best = Some((index, distance));
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
+fn split_dialogue_at_break_index(
+    text: &str,
+    saved_ratios: &[f32],
+    lang: &str,
+    breaks: &[usize],
+    break_index: usize,
+) -> Option<DialogueSplit> {
+    let split_char = *breaks.get(break_index)?;
+    let chars: Vec<char> = text.chars().collect();
+    if split_char == 0 || split_char >= chars.len() {
+        return None;
+    }
+
+    let ratios = timing_ratios(text, saved_ratios, lang);
+    if ratios.len() != breaks.len() + 1 {
+        return None;
+    }
+
+    let normalized = normalized_ratios(&ratios);
+    let split_progress = normalized
+        .iter()
+        .take(break_index + 1)
+        .sum::<f32>()
+        .clamp(0.0, 1.0);
+
+    let inside_word = split_is_inside_word(&chars, split_char);
+    let mut first_text = chars[..split_char].iter().collect::<String>();
+    let mut second_text = chars[split_char..].iter().collect::<String>();
+    first_text = first_text.trim_end().to_string();
+    second_text = second_text.trim_start().to_string();
+
+    if inside_word {
+        if !first_text.ends_with('-') {
+            first_text.push('-');
+        }
+        if !second_text.starts_with('-') {
+            second_text.insert(0, '-');
+        }
+    }
+
+    if first_text.is_empty() || second_text.is_empty() {
+        return None;
+    }
+
+    let first_ratios = ratios_for_split_piece(&first_text, &normalized[..=break_index], lang);
+    let second_ratios = ratios_for_split_piece(&second_text, &normalized[break_index + 1..], lang);
+
+    Some(DialogueSplit {
+        split_char,
+        split_progress,
+        first_text,
+        second_text,
+        first_ratios,
+        second_ratios,
+    })
+}
+
+fn ratios_for_split_piece(text: &str, ratios: &[f32], lang: &str) -> Vec<f32> {
+    if ratios.is_empty() {
+        return Vec::new();
+    }
+
+    let ratios = normalized_ratios(ratios);
+    if syllable_count(text, lang) == ratios.len() {
+        ratios
+    } else {
+        Vec::new()
+    }
+}
+
+fn split_is_inside_word(chars: &[char], split_char: usize) -> bool {
+    split_char > 0
+        && split_char < chars.len()
+        && is_word_char(chars[split_char - 1])
+        && is_word_char(chars[split_char])
+}
+
 fn normalized_ratios(ratios: &[f32]) -> Vec<f32> {
     let sum: f32 = ratios
         .iter()
@@ -421,6 +722,17 @@ mod tests {
     }
 
     #[test]
+    fn test_english_tambourine() {
+        let breaks = syllable_breaks("tambourine", "en-us");
+        assert_eq!(
+            breaks,
+            vec![3, 6],
+            "tambourine should split as tam|bou|rine, got {:?}",
+            breaks
+        );
+    }
+
+    #[test]
     fn test_default_ratios() {
         assert!(default_ratios(0).is_empty());
         assert!(default_ratios(1).is_empty());
@@ -446,5 +758,28 @@ mod tests {
             progress < 0.2,
             "visual progress should linger on stretched first syllable, got {progress}"
         );
+    }
+
+    #[test]
+    fn test_split_dialogue_adds_hyphens_inside_word() {
+        let split = split_dialogue_at_syllable_progress("tambourine", &[], "en-us", 0.31)
+            .expect("tambourine should split on a syllable");
+
+        assert_eq!(split.first_text, "tam-");
+        assert_eq!(split.second_text, "-bourine");
+        assert_eq!(split.split_char, 3);
+    }
+
+    #[test]
+    fn test_split_dialogue_sentence_boundary_has_no_hyphens() {
+        let text = "Bonjour. Ça va";
+        let cursor_pos = text.chars().position(|ch| ch == 'Ç').unwrap();
+        let split = split_dialogue_at_syllable_cursor(text, &[], "fr-fr", cursor_pos)
+            .expect("sentence boundary should split");
+
+        assert_eq!(split.first_text, "Bonjour.");
+        assert_eq!(split.second_text, "Ça va");
+        assert!(!split.first_text.ends_with('-'));
+        assert!(!split.second_text.starts_with('-'));
     }
 }
