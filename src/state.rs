@@ -561,6 +561,11 @@ impl State {
             Ok(()) => {}
             Err(e) => {
                 log::error!("Failed to load video: {e}");
+                let detail = e.lines().next().unwrap_or(&e);
+                self.show_toast(
+                    format!("{} {detail}", crate::i18n::t("toast.video_load_failed")),
+                    6.0,
+                );
                 return;
             }
         }

@@ -14,6 +14,57 @@ const VIDEO_PIX_FMT: &str = "bgra";
 const VIDEO_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 const AUDIO_DECODE_CHANNELS: usize = 2;
 
+fn ffmpeg_command() -> Command {
+    media_command("ffmpeg")
+}
+
+fn ffprobe_command() -> Command {
+    media_command("ffprobe")
+}
+
+fn media_command(binary: &str) -> Command {
+    media_binary_path(binary).map_or_else(|| Command::new(binary), Command::new)
+}
+
+#[cfg(target_os = "macos")]
+fn media_binary_path(binary: &str) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            candidates.push(exe_dir.join(binary));
+        }
+
+        if let Some(app_bundle) = current_exe.ancestors().find(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+        }) {
+            candidates.push(app_bundle.join("Contents").join("Resources").join(binary));
+            if let Some(app_parent) = app_bundle.parent() {
+                candidates.push(app_parent.join(binary));
+            }
+        }
+    }
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        candidates.push(current_dir.join(binary));
+    }
+
+    candidates.extend(
+        ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
+            .iter()
+            .map(|dir| Path::new(dir).join(binary)),
+    );
+
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn media_binary_path(_binary: &str) -> Option<PathBuf> {
+    None
+}
+
 pub struct VideoFrame {
     pub data: Vec<u8>,
     pub width: u32,
@@ -775,7 +826,7 @@ fn recycle_frame(frame: VideoFrame, recycler: Option<&SyncSender<Vec<u8>>>) {
 // --- ffmpeg subprocess functions ---
 
 fn probe_video(path: &Path) -> Result<(u32, u32, f64, i64), String> {
-    let output = Command::new("ffprobe")
+    let output = ffprobe_command()
         .args([
             "-v",
             "error",
@@ -853,7 +904,7 @@ fn decode_frame_at(
     timestamp: f64,
 ) -> Result<VideoFrame, String> {
     let ts = format!("{:.6}", timestamp);
-    let output = Command::new("ffmpeg")
+    let output = ffmpeg_command()
         .args(["-ss", &ts])
         .arg("-i")
         .arg(path)
@@ -906,7 +957,7 @@ fn decode_video_stream_from(
     kill: Arc<AtomicBool>,
 ) {
     let ts = format!("{:.6}", timestamp);
-    let mut child = match Command::new("ffmpeg")
+    let mut child = match ffmpeg_command()
         .args(["-ss", &ts])
         .arg("-i")
         .arg(&path)
@@ -983,7 +1034,7 @@ fn decode_audio_stream_from(
     tx: SyncSender<Vec<f32>>,
 ) {
     let ts = format!("{:.6}", timestamp);
-    let mut child = match Command::new("ffmpeg")
+    let mut child = match ffmpeg_command()
         .args(["-threads", "1"])
         .args(["-ss", &ts])
         .arg("-i")
@@ -1046,7 +1097,7 @@ const WAVEFORM_SUBDIVISIONS: usize = 4;
 
 fn decode_waveform_peaks(path: &Path, fps: f64, total_frames: usize) -> Result<Vec<f32>, String> {
     let sr = 22050u32;
-    let mut child = Command::new("ffmpeg")
+    let mut child = ffmpeg_command()
         .args(["-threads", "1"])
         .arg("-i")
         .arg(path)

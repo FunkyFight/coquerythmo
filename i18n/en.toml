@@ -121,6 +121,7 @@
 "toast.rename_character_select" = "Select a character to rename."
 "toast.rename_character_name_required" = "The new character name is required."
 "toast.character_renamed" = "Character renamed."
+"toast.video_load_failed" = "Video loading failed:"
 "toast.export_completed" = "MP4 export completed."
 "toast.export_failed" = "MP4 export failed:"
 
