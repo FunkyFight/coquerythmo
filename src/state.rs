@@ -63,6 +63,7 @@ enum DialogueSplitTarget {
 pub struct State {
     pub gfx: GraphicsContext,
     window: Arc<Window>,
+    ui_scale: f32,
     ui: Ui,
     ui_renderer: UiRenderer,
     video_player: Option<VideoPlayer>,
@@ -97,11 +98,14 @@ impl State {
         let gfx = GraphicsContext::new(window.clone()).await;
         let format = gfx.surface_format();
         let ui_renderer = UiRenderer::new(&gfx.device, &gfx.queue, format);
-        let ui = Ui::new(gfx.size.width, gfx.size.height, &ui_renderer.icon_atlas);
+        let ui_scale = Self::window_ui_scale(&window);
+        let (ui_width, ui_height) = Self::logical_ui_size(gfx.size, ui_scale);
+        let ui = Ui::new(ui_width, ui_height, &ui_renderer.icon_atlas);
 
         Self {
             gfx,
             window,
+            ui_scale,
             ui,
             ui_renderer,
             video_player: None,
@@ -132,6 +136,24 @@ impl State {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn window_ui_scale(window: &Window) -> f32 {
+        (window.scale_factor() as f32).max(1.0)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn window_ui_scale(_window: &Window) -> f32 {
+        1.0
+    }
+
+    fn logical_ui_size(physical_size: winit::dpi::PhysicalSize<u32>, ui_scale: f32) -> (u32, u32) {
+        let ui_scale = ui_scale.max(1.0);
+        (
+            ((physical_size.width as f32 / ui_scale).round() as u32).max(1),
+            ((physical_size.height as f32 / ui_scale).round() as u32).max(1),
+        )
+    }
+
     // -- Delegation helpers --
 
     fn renderer_refs(&self) -> (&wgpu::BindGroupLayout, &wgpu::Sampler) {
@@ -145,7 +167,13 @@ impl State {
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         self.gfx.resize(new_size);
-        self.ui.resize(new_size.width, new_size.height);
+        self.ui_scale = Self::window_ui_scale(&self.window);
+        let (ui_width, ui_height) = Self::logical_ui_size(new_size, self.ui_scale);
+        self.ui.resize(ui_width, ui_height);
+    }
+
+    pub fn window_to_ui_position(&self, x: f32, y: f32) -> (f32, f32) {
+        (x / self.ui_scale, y / self.ui_scale)
     }
 
     pub fn handle_ui_event(&mut self, event: &UiEvent) -> EventResponse {
@@ -2740,6 +2768,7 @@ impl State {
             &view,
             self.gfx.config.width,
             self.gfx.config.height,
+            self.ui_scale,
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
             &self.project,
             current_frame,
@@ -2821,6 +2850,7 @@ impl State {
             &view,
             self.gfx.config.width,
             self.gfx.config.height,
+            self.ui_scale,
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
             &self.project,
             current_frame,
@@ -2892,6 +2922,7 @@ impl State {
             &view,
             width,
             height,
+            1.0,
             &[],
             &[],
             &[],

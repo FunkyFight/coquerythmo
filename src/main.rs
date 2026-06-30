@@ -917,9 +917,7 @@ fn app_window_builder() -> WindowBuilder {
 
 #[cfg(target_os = "macos")]
 fn configure_platform_window(builder: WindowBuilder) -> WindowBuilder {
-    builder
-        .with_accepts_first_mouse(true)
-        .with_disallow_hidpi(true)
+    builder.with_accepts_first_mouse(true)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1203,6 +1201,10 @@ fn main() {
                     state.resize(physical_size);
                     state.request_redraw();
                 }
+                WindowEvent::ScaleFactorChanged { .. } => {
+                    state.resize(window.inner_size());
+                    state.request_redraw();
+                }
                 WindowEvent::ModifiersChanged(modifiers) => {
                     ctrl_held = modifiers.state().control_key();
                     shift_held = modifiers.state().shift_key();
@@ -1341,7 +1343,7 @@ fn main() {
                     }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
-                    cursor_pos = (position.x as f32, position.y as f32);
+                    cursor_pos = state.window_to_ui_position(position.x as f32, position.y as f32);
                     // Always dispatch mouse move (needed for panning in studio mode)
                     dispatch(UiEvent::MouseMove {
                         x: cursor_pos.0, y: cursor_pos.1,

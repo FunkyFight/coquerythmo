@@ -830,6 +830,7 @@ impl UiRenderer {
         view: &wgpu::TextureView,
         screen_width: u32,
         screen_height: u32,
+        ui_scale: f32,
         quads: &[QuadInstance],         // base layer (behind video)
         overlay_quads: &[QuadInstance], // overlay layer (on top of video)
         icons: &[IconInstance],
@@ -841,8 +842,12 @@ impl UiRenderer {
         extra_textured: &[(IconInstance, &wgpu::BindGroup)],
         post_texture_quads: &[QuadInstance], // drawn after textured quads (e.g. color picker indicators)
     ) {
+        let ui_scale = ui_scale.max(1.0);
         let uniforms = Uniforms {
-            screen_size: [screen_width as f32, screen_height as f32],
+            screen_size: [
+                screen_width as f32 / ui_scale,
+                screen_height as f32 / ui_scale,
+            ],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
@@ -904,10 +909,10 @@ impl UiRenderer {
                         bottom: i32::MAX,
                     },
                     _ => TextBounds {
-                        left: rect.x as i32,
-                        top: rect.y as i32,
-                        right: (rect.x + rect.width) as i32,
-                        bottom: (rect.y + rect.height) as i32,
+                        left: (rect.x * ui_scale).floor() as i32,
+                        top: (rect.y * ui_scale).floor() as i32,
+                        right: ((rect.x + rect.width) * ui_scale).ceil() as i32,
+                        bottom: ((rect.y + rect.height) * ui_scale).ceil() as i32,
                     },
                 };
 
@@ -918,9 +923,9 @@ impl UiRenderer {
 
                 Some(TextArea {
                     buffer: &cached.buffer,
-                    left: rect.x + padding,
-                    top: rect.y + y_offset,
-                    scale: 1.0,
+                    left: (rect.x + padding) * ui_scale,
+                    top: (rect.y + y_offset) * ui_scale,
+                    scale: ui_scale,
                     bounds,
                     default_color: text_color,
                     custom_glyphs: &[],

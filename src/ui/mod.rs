@@ -1520,6 +1520,7 @@ impl Ui {
         view: &wgpu::TextureView,
         screen_width: u32,
         screen_height: u32,
+        ui_scale: f32,
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         project: &Project,
         current_frame: i64,
@@ -2141,6 +2142,7 @@ impl Ui {
             view,
             screen_width,
             screen_height,
+            ui_scale,
             &quads,
             &overlay_quads,
             &icons,
@@ -2454,6 +2456,7 @@ impl Ui {
         view: &wgpu::TextureView,
         screen_width: u32,
         screen_height: u32,
+        ui_scale: f32,
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         project: &Project,
         current_frame: i64,
@@ -2540,6 +2543,7 @@ impl Ui {
             view,
             screen_width,
             screen_height,
+            ui_scale,
             &quads, // base layer
             &[],    // no overlay quads
             &[],    // no icons (markers use quads)
