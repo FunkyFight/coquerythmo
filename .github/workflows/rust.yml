@@ -8,14 +8,15 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            artifact_name: linux
+            name: linux
           - os: macos-latest
-            artifact_name: macos
+            name: macos
           - os: windows-latest
-            artifact_name: windows
+            name: windows
 
     runs-on: ${{ matrix.os }}
 
@@ -26,12 +27,31 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            g++ \
+            pkg-config \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libasound2-dev \
+            libudev-dev \
+            libgl1-mesa-dev \
+            mesa-vulkan-drivers
+
       - name: Build release
         run: cargo build --release
 
-      - name: Upload binary
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-${{ matrix.artifact_name }}
+          name: app-${{ matrix.name }}
           path: |
             target/release/*
