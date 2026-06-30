@@ -72,6 +72,7 @@
 "toolbar.stretcher" = "Syllable stretcher"
 "toolbar.back_to_edit" = "Back to editing"
 "toolbar.note" = "Add a note"
+"toolbar.karaoke" = "Toggle karaoke mode"
 
 # Respirations
 "resp.up" = "Inhale"
@@ -114,6 +115,7 @@
 "toast.voice_actor_exists" = "This voice actor already exists."
 "toast.voice_actor_name_required" = "Voice actor name is required."
 "toast.voice_actor_icon_failed" = "Invalid voice actor icon:"
+"toast.karaoke_select_line" = "Select a line before toggling karaoke mode."
 
 # Voice actor context menu
 "context.voice_actor.assign_to_actor" = "Assign to a voice actor"
@@ -155,6 +157,7 @@
 "export_modal.fps" = "Rythmo band FPS"
 "export_modal.resolution" = "Video resolution"
 "export_modal.br_scale" = "Rythmo band zoom"
+"export_modal.karaoke_text_scale" = "Karaoke text size"
 "export_modal.instrumental_audio" = "Instrumental audio (optional)"
 "export_modal.instrumental_audio_placeholder" = "Original audio if empty"
 "export_modal.instrumental_audio_hint" = "Leave empty to keep the video's original audio."

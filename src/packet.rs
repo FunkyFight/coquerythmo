@@ -104,6 +104,15 @@ pub enum CommandPayload {
         line_id: u64,
         note: String,
     },
+    SetLineKaraoke {
+        line_id: u64,
+        karaoke: bool,
+        syllable_ratios: Vec<f32>,
+    },
+    SetSyllableRatios {
+        line_id: u64,
+        ratios: Vec<f32>,
+    },
     SetCharacter {
         line_id: u64,
         name: String,
@@ -230,6 +239,24 @@ impl Packetable for Command {
                 line_id: *line_id,
                 note: new_note.clone(),
             },
+            Command::SetLineKaraoke {
+                line_id,
+                new_karaoke,
+                new_ratios,
+                ..
+            } => CommandPayload::SetLineKaraoke {
+                line_id: *line_id,
+                karaoke: *new_karaoke,
+                syllable_ratios: new_ratios.clone(),
+            },
+            Command::SetSyllableRatios {
+                line_id,
+                new_ratios,
+                ..
+            } => CommandPayload::SetSyllableRatios {
+                line_id: *line_id,
+                ratios: new_ratios.clone(),
+            },
             Command::SetCharacter {
                 line_id,
                 new_name,
@@ -321,6 +348,7 @@ mod tests {
                 character_color: [1.0, 0.0, 0.0, 1.0],
                 voice_actor_names: Vec::new(),
                 syllable_ratios: Vec::new(),
+                karaoke: false,
                 note: String::new(),
             },
         };

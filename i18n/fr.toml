@@ -72,6 +72,7 @@
 "toolbar.stretcher" = "Étireur de syllabes"
 "toolbar.back_to_edit" = "Retour à l'édition"
 "toolbar.note" = "Ajouter une note"
+"toolbar.karaoke" = "Activer/désactiver le karaoké"
 
 # Respirations
 "resp.up" = "Inspiration"
@@ -114,6 +115,7 @@
 "toast.voice_actor_exists" = "Ce comédien existe déjà."
 "toast.voice_actor_name_required" = "Le nom du comédien est obligatoire."
 "toast.voice_actor_icon_failed" = "Icône du comédien invalide :"
+"toast.karaoke_select_line" = "Sélectionne une ligne avant d'activer le karaoké."
 
 # Voice actor context menu
 "context.voice_actor.assign_to_actor" = "Attribuer à un comédien"
@@ -155,6 +157,7 @@
 "export_modal.fps" = "FPS de la bande rythmo"
 "export_modal.resolution" = "Résolution vidéo"
 "export_modal.br_scale" = "Zoom bande rythmo"
+"export_modal.karaoke_text_scale" = "Taille texte karaoké"
 "export_modal.instrumental_audio" = "Audio instrumental (optionnel)"
 "export_modal.instrumental_audio_placeholder" = "Audio original si vide"
 "export_modal.instrumental_audio_hint" = "Laisse vide pour conserver l'audio original de la vidéo."

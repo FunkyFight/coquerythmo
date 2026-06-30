@@ -46,6 +46,18 @@ pub enum Command {
         old_text: String,
         new_text: String,
     },
+    SetLineKaraoke {
+        line_id: u64,
+        old_karaoke: bool,
+        old_ratios: Vec<f32>,
+        new_karaoke: bool,
+        new_ratios: Vec<f32>,
+    },
+    SetSyllableRatios {
+        line_id: u64,
+        old_ratios: Vec<f32>,
+        new_ratios: Vec<f32>,
+    },
     SetCharacter {
         line_id: u64,
         old_name: String,
@@ -132,6 +144,26 @@ impl Command {
             } => {
                 if let Some(l) = project.get_line_mut(*line_id) {
                     l.text = new_text.clone();
+                }
+            }
+            Command::SetLineKaraoke {
+                line_id,
+                new_karaoke,
+                new_ratios,
+                ..
+            } => {
+                if let Some(l) = project.get_line_mut(*line_id) {
+                    l.karaoke = *new_karaoke;
+                    l.syllable_ratios = new_ratios.clone();
+                }
+            }
+            Command::SetSyllableRatios {
+                line_id,
+                new_ratios,
+                ..
+            } => {
+                if let Some(l) = project.get_line_mut(*line_id) {
+                    l.syllable_ratios = new_ratios.clone();
                 }
             }
             Command::SetCharacter {
@@ -237,6 +269,26 @@ impl Command {
             } => {
                 if let Some(l) = project.get_line_mut(*line_id) {
                     l.text = old_text.clone();
+                }
+            }
+            Command::SetLineKaraoke {
+                line_id,
+                old_karaoke,
+                old_ratios,
+                ..
+            } => {
+                if let Some(l) = project.get_line_mut(*line_id) {
+                    l.karaoke = *old_karaoke;
+                    l.syllable_ratios = old_ratios.clone();
+                }
+            }
+            Command::SetSyllableRatios {
+                line_id,
+                old_ratios,
+                ..
+            } => {
+                if let Some(l) = project.get_line_mut(*line_id) {
+                    l.syllable_ratios = old_ratios.clone();
                 }
             }
             Command::SetCharacter {

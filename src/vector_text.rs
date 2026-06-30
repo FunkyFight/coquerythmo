@@ -1,9 +1,14 @@
+use std::cell::RefCell;
 use std::sync::{Arc, OnceLock};
 
 use glyphon::{Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping};
 use resvg::tiny_skia::{Pixmap, Transform};
 
 static SYSTEM_FONT_DB: OnceLock<Arc<resvg::usvg::fontdb::Database>> = OnceLock::new();
+
+thread_local! {
+    static MEASURE_FONT_SYSTEM: RefCell<FontSystem> = RefCell::new(FontSystem::new());
+}
 
 pub struct VectorTextPixmap {
     pub pixels: Vec<u8>,
@@ -27,7 +32,17 @@ pub fn render_rythmo_text(
     dest_w: u32,
     dest_h: u32,
 ) -> Option<VectorTextPixmap> {
-    render_rythmo_text_impl(font_system, text, font_size, dest_w, dest_h, false)
+    render_rythmo_text_impl(font_system, text, font_size, dest_w, dest_h, false, true)
+}
+
+pub fn render_rythmo_text_natural(
+    font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+    dest_w: u32,
+    dest_h: u32,
+) -> Option<VectorTextPixmap> {
+    render_rythmo_text_impl(font_system, text, font_size, dest_w, dest_h, false, false)
 }
 
 pub fn render_rythmo_text_tile(
@@ -38,6 +53,30 @@ pub fn render_rythmo_text_tile(
     dest_h: u32,
     tile_x: u32,
     tile_w: u32,
+) -> Option<VectorTextPixmap> {
+    render_rythmo_text_tile_impl(text, font_size, full_w, dest_h, tile_x, tile_w, true)
+}
+
+pub fn render_rythmo_text_tile_natural(
+    _font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+    full_w: u32,
+    dest_h: u32,
+    tile_x: u32,
+    tile_w: u32,
+) -> Option<VectorTextPixmap> {
+    render_rythmo_text_tile_impl(text, font_size, full_w, dest_h, tile_x, tile_w, false)
+}
+
+fn render_rythmo_text_tile_impl(
+    text: &str,
+    font_size: f32,
+    full_w: u32,
+    dest_h: u32,
+    tile_x: u32,
+    tile_w: u32,
+    stretch: bool,
 ) -> Option<VectorTextPixmap> {
     if text.is_empty() || full_w == 0 || dest_h == 0 || tile_w == 0 || tile_x >= full_w {
         return None;
@@ -55,6 +94,7 @@ pub fn render_rythmo_text_tile(
         dest_h,
         tile_x,
         tile_w,
+        stretch,
     );
     let mut options = resvg::usvg::Options::default();
     options.font_family = font_family;
@@ -80,7 +120,27 @@ pub fn render_rythmo_text_with_ratios(
     dest_w: u32,
     dest_h: u32,
 ) -> Option<VectorTextPixmap> {
-    render_rythmo_text_impl(font_system, text, font_size, dest_w, dest_h, true)
+    render_rythmo_text_impl(font_system, text, font_size, dest_w, dest_h, true, true)
+}
+
+pub fn measure_rythmo_text_width(
+    font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+) -> Option<f32> {
+    if text.is_empty() {
+        return None;
+    }
+
+    let font_family = rythmo_font_family_name();
+    let line_height = (font_size * 1.4).ceil().max(1.0);
+    Some(measure_text(font_system, text, font_size, line_height, &font_family).0)
+}
+
+pub fn measure_rythmo_text_width_standalone(text: &str, font_size: f32) -> Option<f32> {
+    MEASURE_FONT_SYSTEM.with(|font_system| {
+        measure_rythmo_text_width(&mut font_system.borrow_mut(), text, font_size)
+    })
 }
 
 fn render_rythmo_text_impl(
@@ -90,6 +150,7 @@ fn render_rythmo_text_impl(
     dest_w: u32,
     dest_h: u32,
     include_ratios: bool,
+    stretch: bool,
 ) -> Option<VectorTextPixmap> {
     if text.is_empty() || dest_w == 0 || dest_h == 0 {
         return None;
@@ -103,7 +164,15 @@ fn render_rythmo_text_impl(
         Vec::new()
     };
 
-    let svg = build_svg(text, &font_family, font_size, line_height, dest_w, dest_h);
+    let svg = build_svg(
+        text,
+        &font_family,
+        font_size,
+        line_height,
+        dest_w,
+        dest_h,
+        stretch,
+    );
     let mut options = resvg::usvg::Options::default();
     options.font_family = font_family;
     options.font_size = font_size;
@@ -197,14 +266,20 @@ fn build_svg(
     line_height: f32,
     dest_w: u32,
     dest_h: u32,
+    stretch: bool,
 ) -> String {
     let escaped_text = escape_xml(text);
     let escaped_family = escape_xml(font_family);
     let baseline = font_size;
+    let stretch_attrs = if stretch {
+        format!(r#" textLength="{dest_w}" lengthAdjust="spacingAndGlyphs""#)
+    } else {
+        String::new()
+    };
 
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{dest_w}" height="{dest_h}" viewBox="0 0 {dest_w} {line_height:.3}" preserveAspectRatio="none">
-<text x="0" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white" textLength="{dest_w}" lengthAdjust="spacingAndGlyphs" xml:space="preserve">{escaped_text}</text>
+<text x="0" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white"{stretch_attrs} xml:space="preserve">{escaped_text}</text>
 </svg>"#
     )
 }
@@ -218,14 +293,20 @@ fn build_svg_tile(
     dest_h: u32,
     tile_x: u32,
     tile_w: u32,
+    stretch: bool,
 ) -> String {
     let escaped_text = escape_xml(text);
     let escaped_family = escape_xml(font_family);
     let baseline = font_size;
+    let stretch_attrs = if stretch {
+        format!(r#" textLength="{full_w}" lengthAdjust="spacingAndGlyphs""#)
+    } else {
+        String::new()
+    };
 
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{tile_w}" height="{dest_h}" viewBox="{tile_x} 0 {tile_w} {line_height:.3}" preserveAspectRatio="none">
-<text x="0" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white" textLength="{full_w}" lengthAdjust="spacingAndGlyphs" xml:space="preserve">{escaped_text}</text>
+<text x="0" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white"{stretch_attrs} xml:space="preserve">{escaped_text}</text>
 </svg>"#
     )
 }

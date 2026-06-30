@@ -382,6 +382,7 @@ pub fn export_mp4(
     fps: f64,
     source_fps: f64,
     br_scale: f32,
+    karaoke_text_scale: f32,
     export_width: u32,
     export_height: u32,
     replacement_audio: Option<&Path>,
@@ -391,6 +392,11 @@ pub fn export_mp4(
     if !check_ffmpeg() {
         return Err("ffmpeg/ffprobe not found in PATH".into());
     }
+    let karaoke_text_scale = if karaoke_text_scale.is_finite() {
+        karaoke_text_scale.clamp(0.5, 2.0)
+    } else {
+        1.0
+    };
 
     let progress_cb: ProgressCallback = Arc::new(ProgressState {
         callback: Mutex::new(Box::new(progress_cb)),
@@ -407,6 +413,7 @@ pub fn export_mp4(
         fps,
         source_fps,
         br_scale,
+        karaoke_text_scale,
         export_width,
         export_height,
         replacement_audio,
@@ -422,6 +429,7 @@ fn export_baked_mp4(
     fps: f64,
     source_fps: f64,
     br_scale: f32,
+    karaoke_text_scale: f32,
     export_width: u32,
     export_height: u32,
     replacement_audio: Option<&Path>,
@@ -521,6 +529,7 @@ fn export_baked_mp4(
             fps,
             source_fps,
             br_scale,
+            karaoke_text_scale,
             out_w,
             br_h,
             br_h_even,
@@ -545,6 +554,7 @@ fn export_baked_mp4(
                 fps,
                 source_fps,
                 br_scale,
+                karaoke_text_scale,
                 out_w,
                 br_h,
                 br_h_even,
@@ -569,6 +579,7 @@ fn export_baked_mp4(
             fps,
             source_fps,
             br_scale,
+            karaoke_text_scale,
             out_w,
             br_h,
             br_h_even,
@@ -691,6 +702,7 @@ fn run_baked_single_pass(
     fps: f64,
     source_fps: f64,
     br_scale: f32,
+    karaoke_text_scale: f32,
     out_w: u32,
     br_h: u32,
     br_h_even: u32,
@@ -808,6 +820,7 @@ fn run_baked_single_pass(
         fps,
         source_fps,
         br_scale,
+        karaoke_text_scale,
         out_w,
         br_h,
         br_h_even,
@@ -977,6 +990,7 @@ fn write_br_frames(
     fps: f64,
     source_fps: f64,
     br_scale: f32,
+    karaoke_text_scale: f32,
     out_w: u32,
     br_h: u32,
     br_h_even: u32,
@@ -1026,9 +1040,26 @@ fn write_br_frames(
             let submit_start = Instant::now();
             match br_input_format {
                 BrInputFormat::Nv12 => {
-                    gpu.submit_render_nv12(&scene, 0.0, out_w, fps, br_scale, br_h_even);
+                    gpu.submit_render_nv12(
+                        &scene,
+                        0.0,
+                        out_w,
+                        fps,
+                        source_fps,
+                        br_scale,
+                        karaoke_text_scale,
+                        br_h_even,
+                    );
                 }
-                BrInputFormat::Rgba => gpu.submit_render(&scene, 0.0, out_w, fps, br_scale),
+                BrInputFormat::Rgba => gpu.submit_render(
+                    &scene,
+                    0.0,
+                    out_w,
+                    fps,
+                    source_fps,
+                    br_scale,
+                    karaoke_text_scale,
+                ),
             }
             stats.submit += submit_start.elapsed();
 
@@ -1043,10 +1074,27 @@ fn write_br_frames(
                 let submit_start = Instant::now();
                 match br_input_format {
                     BrInputFormat::Nv12 => {
-                        gpu.submit_render_nv12(&scene, video_pos, out_w, fps, br_scale, br_h_even);
+                        gpu.submit_render_nv12(
+                            &scene,
+                            video_pos,
+                            out_w,
+                            fps,
+                            source_fps,
+                            br_scale,
+                            karaoke_text_scale,
+                            br_h_even,
+                        );
                     }
                     BrInputFormat::Rgba => {
-                        gpu.submit_render(&scene, video_pos, out_w, fps, br_scale);
+                        gpu.submit_render(
+                            &scene,
+                            video_pos,
+                            out_w,
+                            fps,
+                            source_fps,
+                            br_scale,
+                            karaoke_text_scale,
+                        );
                     }
                 }
                 stats.submit += submit_start.elapsed();
@@ -1123,7 +1171,14 @@ fn write_br_frames(
                         .map(|(&frame, renderer)| {
                             let vf = (frame as f64 * frame_ratio) as i64;
                             scope.spawn(move || {
-                                renderer.render_br(project, vf, out_w, source_fps, br_scale)
+                                renderer.render_br(
+                                    project,
+                                    vf,
+                                    out_w,
+                                    source_fps,
+                                    br_scale,
+                                    karaoke_text_scale,
+                                )
                             })
                         })
                         .collect();

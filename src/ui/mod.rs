@@ -108,6 +108,7 @@ impl Ui {
             "stretcher",
             "br-edit",
             "note",
+            "karaoke",
             "sound",
             "mute",
         ];
@@ -530,22 +531,12 @@ impl Ui {
 
         x += gap * 2.0; // separator
 
-        // Syllable stretcher (toggles between stretcher and br-edit icons)
-        let stretcher_icon = if self.rythmo_state.syllable_mode {
-            "br-edit"
-        } else {
-            "stretcher"
-        };
-        let stretcher_tip = if self.rythmo_state.syllable_mode {
-            "toolbar.back_to_edit"
-        } else {
-            "toolbar.stretcher"
-        };
         btn!(
-            stretcher_icon,
-            || EventResponse::Action(UiAction::ToggleSyllableMode),
-            stretcher_tip
+            "karaoke",
+            || EventResponse::Action(UiAction::ToggleKaraokeForSelection),
+            "toolbar.karaoke"
         );
+        let _ = x;
 
         // Right side: mute button + volume slider
         let slider_w = SLIDER_W;
@@ -766,6 +757,7 @@ impl Ui {
             &self.layout.rythmo,
             project,
             current_frame,
+            self.playing,
             fps,
             &mut self.rythmo_state,
         );
@@ -1096,6 +1088,7 @@ impl Ui {
             export_modal::ExportModalResult::Export {
                 fps,
                 br_scale,
+                karaoke_text_scale,
                 export_width,
                 export_height,
                 instrumental_audio_path,
@@ -1104,6 +1097,7 @@ impl Ui {
                 EventResponse::Action(UiAction::StartExport {
                     fps,
                     br_scale,
+                    karaoke_text_scale,
                     export_width,
                     export_height,
                     instrumental_audio_path,
@@ -1380,6 +1374,7 @@ impl Ui {
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         project: &Project,
         current_frame: i64,
+        fps: f64,
         waveform: &[f32],
     ) {
         // Update frame info for progress bar
@@ -1406,11 +1401,6 @@ impl Ui {
         let mut base_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
         let mut extra_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
         let mut color_picker_fg_quads: Vec<QuadInstance> = Vec::new();
-        self.rythmo_state.color_picker.render(
-            &mut color_picker_bg_quads,
-            &mut extra_textured,
-            &mut color_picker_fg_quads,
-        );
 
         // Update export label BEFORE borrowing self via labels
         if let Some(progress_atomic) = &self.export_progress {
@@ -1448,7 +1438,28 @@ impl Ui {
         // We can't mutate self after borrowing labels. So process click before ANY render stuff borrowing self.
         if let Some((ratio, is_shift)) = pending_click {
             if let Some(line_id) = self.rythmo_state.editing_line {
-                if let Some(closest_idx) = renderer.cursor_pos_from_x_ratio(line_id, ratio) {
+                let segmented_idx = project.get_line(line_id).and_then(|line| {
+                    let lang = crate::config::get().lang.clone();
+                    rythmo::cursor_segments_for_line(
+                        line,
+                        self.rythmo_state.syllable_drag.as_ref(),
+                        &lang,
+                        self.playing,
+                    )
+                    .and_then(|segments| renderer.cursor_pos_from_segments(&segments, ratio))
+                    .or_else(|| {
+                        rythmo::segmented_cursor_index_for_line_at_ratio(
+                            line,
+                            self.rythmo_state.syllable_drag.as_ref(),
+                            &lang,
+                            self.playing,
+                            ratio,
+                        )
+                    })
+                });
+                if let Some(closest_idx) =
+                    segmented_idx.or_else(|| renderer.cursor_pos_from_x_ratio(line_id, ratio))
+                {
                     if is_shift {
                         self.rythmo_state.line_input.update_selection(closest_idx);
                     } else {
@@ -1459,23 +1470,35 @@ impl Ui {
         }
 
         // Zone backgrounds
-        self.render_zones(&mut quads, &mut labels, current_frame, waveform);
+        self.render_zones(
+            &mut quads,
+            &mut labels,
+            project,
+            current_frame,
+            fps,
+            waveform,
+        );
 
         // Rythmo lines
         let mut stretched_texts: Vec<StretchedText> = Vec::new();
+        let mut syllable_quads: Vec<QuadInstance> = Vec::new();
         let mut note_icons: Vec<IconInstance> = Vec::new();
         let mut actor_icon_draws: Vec<rythmo::VoiceActorIconDraw> = Vec::new();
+        let note_uv = self.uv("note");
         let cursor_info = rythmo::render_lines(
             &self.layout.rythmo,
             project,
             current_frame,
+            self.playing,
+            fps,
             &self.rythmo_state,
             &mut quads,
+            &mut syllable_quads,
             &mut labels,
             &mut stretched_texts,
             &mut note_icons,
             &mut actor_icon_draws,
-            self.uv("note"),
+            note_uv,
         );
         icons.extend(note_icons);
         for draw in actor_icon_draws {
@@ -1511,13 +1534,32 @@ impl Ui {
         let stretched_quads = renderer.prepare_stretched_texts(device, queue, &stretched_texts);
 
         // Render cursor and selection using real glyph positions from the renderer cache
-        if let Some((line_id, cursor_pos, selection, text_x, text_w, ry, rh)) = cursor_info {
+        if let Some((line_id, cursor_pos, selection, text_x, text_w, ry, rh, cursor_segments)) =
+            cursor_info
+        {
             let margin = rh * 0.25;
+            let cursor_ratio = |pos: usize| {
+                cursor_segments
+                    .as_ref()
+                    .and_then(|segments| {
+                        segments
+                            .iter()
+                            .find(|segment| pos >= segment.start_char && pos <= segment.end_char)
+                            .map(|segment| {
+                                let local_pos = pos.saturating_sub(segment.start_char);
+                                let local_ratio =
+                                    renderer.cursor_x_ratio(segment.cache_id, local_pos);
+                                (segment.start_ratio + local_ratio * segment.width_ratio)
+                                    .clamp(0.0, 1.0)
+                            })
+                    })
+                    .unwrap_or_else(|| renderer.cursor_x_ratio(line_id, pos))
+            };
 
             // Draw selection highlight if any (blueish rect)
             if let Some((start_idx, end_idx)) = selection {
-                let start_ratio = renderer.cursor_x_ratio(line_id, start_idx);
-                let end_ratio = renderer.cursor_x_ratio(line_id, end_idx);
+                let start_ratio = cursor_ratio(start_idx);
+                let end_ratio = cursor_ratio(end_idx);
                 let sx = text_x + start_ratio * text_w;
                 let sw = (end_ratio - start_ratio) * text_w;
                 if sw > 0.0 {
@@ -1539,7 +1581,7 @@ impl Ui {
 
             // Draw blinking cursor (only if it should be visible based on timer, handled by rythmo)
             if self.rythmo_state.line_input.cursor_visible() {
-                let ratio = renderer.cursor_x_ratio(line_id, cursor_pos);
+                let ratio = cursor_ratio(cursor_pos);
                 let cx = text_x + ratio * text_w;
                 quads.push(QuadInstance {
                     rect: [cx, ry + margin, 1.5, rh - margin * 2.0],
@@ -1591,6 +1633,12 @@ impl Ui {
             &self.rythmo_state,
             &mut quads,
             &mut labels,
+        );
+
+        self.rythmo_state.color_picker.render(
+            &mut color_picker_bg_quads,
+            &mut extra_textured,
+            &mut color_picker_fg_quads,
         );
 
         // Color picker quads → overlay
@@ -1919,6 +1967,7 @@ impl Ui {
             &labels,
             video_quad,
             &stretched_quads,
+            &syllable_quads,
             &base_textured,
             &extra_textured,
             &color_picker_fg_quads,
@@ -1929,7 +1978,9 @@ impl Ui {
         &'a self,
         quads: &mut Vec<QuadInstance>,
         labels: &mut Vec<LabelInfo<'a>>,
+        project: &Project,
         current_frame: i64,
+        fps: f64,
         waveform: &[f32],
     ) {
         let l = &self.layout;
@@ -1958,15 +2009,16 @@ impl Ui {
             if available >= 140.0 {
                 let y = 0.0;
                 let h = TOPBAR_HEIGHT;
-                let dot_color = if status_text.starts_with("Erreur") || status_text.starts_with("Échec") {
-                    [0.90, 0.28, 0.28, 1.0]
-                } else if status_text == "Connexion..." {
-                    [0.95, 0.68, 0.30, 1.0]
-                } else if self.network_in_room {
-                    [0.38, 0.78, 0.48, 1.0]
-                } else {
-                    [0.46, 0.48, 0.55, 1.0]
-                };
+                let dot_color =
+                    if status_text.starts_with("Erreur") || status_text.starts_with("Échec") {
+                        [0.90, 0.28, 0.28, 1.0]
+                    } else if status_text == "Connexion..." {
+                        [0.95, 0.68, 0.30, 1.0]
+                    } else if self.network_in_room {
+                        [0.38, 0.78, 0.48, 1.0]
+                    } else {
+                        [0.46, 0.48, 0.55, 1.0]
+                    };
 
                 let has_status = !status_text.is_empty();
                 let has_room = !room_text.is_empty();
@@ -2156,8 +2208,12 @@ impl Ui {
         });
         quads.extend(rythmo::render_rythmo_base(
             &l.rythmo,
+            project,
             current_frame,
             waveform,
+            self.playing,
+            fps,
+            &self.rythmo_state,
         ));
 
         // Properties panel
@@ -2221,6 +2277,7 @@ impl Ui {
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         project: &Project,
         current_frame: i64,
+        fps: f64,
     ) {
         let mut quads: Vec<QuadInstance> = Vec::new();
         let mut labels: Vec<LabelInfo> = Vec::new();
@@ -2269,6 +2326,8 @@ impl Ui {
             &rythmo_zone,
             project,
             current_frame,
+            fps,
+            &self.rythmo_state,
             &mut quads,
             &mut labels,
             &mut stretched_texts,
@@ -2307,6 +2366,7 @@ impl Ui {
             &labels,
             video_quad,
             &stretched_quads,
+            &[],
             &base_textured,
             &[],
             &[], // no post_texture_quads

@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::constants;
 use crate::project::Project;
+use crate::rythmo_layout;
 use crate::rythmo_line::{MarkerKind, RythmoLine};
 use crate::ui::widget::{IconInstance, QuadInstance};
 use crate::voice_actor::{decode_icon_rgba, VoiceActor, VOICE_ACTOR_ICON_SIZE};
@@ -52,6 +53,344 @@ fn rotated_line(
     );
     q.rotation = angle;
     q
+}
+
+fn same_karaoke_track(a: &RythmoLine, b: &RythmoLine) -> bool {
+    rythmo_layout::track_index_for_y_slot(a.y_slot)
+        == rythmo_layout::track_index_for_y_slot(b.y_slot)
+}
+
+fn karaoke_adjacent_max_gap_frames(fps: f64) -> i64 {
+    let fps = if fps.is_finite() && fps > 0.0 {
+        fps
+    } else {
+        24.0
+    };
+    (constants::KARAOKE_ADJACENT_MAX_GAP_SECONDS * fps).round() as i64
+}
+
+fn karaoke_count_in_frames(fps: f64) -> i64 {
+    let fps = if fps.is_finite() && fps > 0.0 {
+        fps
+    } else {
+        24.0
+    };
+    (constants::KARAOKE_COUNT_IN_SECONDS * fps).round().max(1.0) as i64
+}
+
+fn karaoke_count_in_progress(
+    line: &RythmoLine,
+    current_frame: f64,
+    count_in_frames: i64,
+) -> Option<f32> {
+    if !line.karaoke || current_frame >= line.start_frame as f64 || count_in_frames <= 0 {
+        return None;
+    }
+
+    let count_in_start = line.start_frame as f64 - count_in_frames as f64;
+    if current_frame < count_in_start {
+        return None;
+    }
+
+    Some(((current_frame - count_in_start) / count_in_frames as f64).clamp(0.0, 1.0) as f32)
+}
+
+fn karaoke_count_in_visible(line: &RythmoLine, current_frame: f64, count_in_frames: i64) -> bool {
+    karaoke_count_in_progress(line, current_frame, count_in_frames).is_some()
+}
+
+fn previous_line_on_same_track_before<'a>(
+    project: &'a Project,
+    line: &RythmoLine,
+) -> Option<&'a RythmoLine> {
+    project
+        .lines()
+        .filter(|candidate| {
+            candidate.id != line.id
+                && same_karaoke_track(candidate, line)
+                && (candidate.start_frame < line.start_frame
+                    || (candidate.start_frame == line.start_frame && candidate.id < line.id))
+        })
+        .max_by_key(|candidate| (candidate.start_frame, candidate.id))
+}
+
+fn previous_karaoke_line_before<'a>(
+    project: &'a Project,
+    line: &RythmoLine,
+    max_gap_frames: i64,
+) -> Option<&'a RythmoLine> {
+    let previous = previous_line_on_same_track_before(project, line)?;
+    if previous.karaoke && (line.start_frame - previous.end_frame()).max(0) <= max_gap_frames {
+        Some(previous)
+    } else {
+        None
+    }
+}
+
+fn karaoke_prestart_scroll_visible(
+    project: &Project,
+    line: &RythmoLine,
+    current_frame: f64,
+    max_gap_frames: i64,
+    count_in_frames: i64,
+) -> bool {
+    line.karaoke
+        && karaoke_count_in_visible(line, current_frame, count_in_frames)
+        && previous_karaoke_line_before(project, line, max_gap_frames).is_none()
+}
+
+fn karaoke_upcoming_stack_visible(
+    project: &Project,
+    line: &RythmoLine,
+    current_frame: f64,
+    max_gap_frames: i64,
+) -> bool {
+    if !line.karaoke || current_frame >= line.start_frame as f64 {
+        return false;
+    }
+
+    previous_karaoke_line_before(project, line, max_gap_frames)
+        .is_some_and(|previous| current_frame >= previous.start_frame as f64)
+}
+
+fn karaoke_island_index(project: &Project, line: &RythmoLine, max_gap_frames: i64) -> usize {
+    let mut index = 0;
+    let mut current = line;
+    while let Some(previous) = previous_karaoke_line_before(project, current, max_gap_frames) {
+        index += 1;
+        current = previous;
+    }
+    if previous_line_on_same_track_before(project, current)
+        .is_some_and(|previous| !previous.karaoke)
+    {
+        index += 1;
+    }
+    index
+}
+
+fn karaoke_stack_row(project: &Project, line: &RythmoLine, max_gap_frames: i64) -> usize {
+    karaoke_island_index(project, line, max_gap_frames) % 2
+}
+
+fn karaoke_stack_height(height: f32, scale: f32) -> f32 {
+    ((height - rythmo_layout::karaoke_stack_gap(height, scale)).max(1.0) / 2.0).max(1.0)
+}
+
+fn karaoke_stack_y(y: f32, height: f32, row: usize, scale: f32) -> f32 {
+    let row_h = karaoke_stack_height(height, scale);
+    y + row.min(1) as f32 * (row_h + rythmo_layout::karaoke_stack_gap(height, scale))
+}
+
+fn karaoke_character_label_visible(
+    project: &Project,
+    line: &RythmoLine,
+    max_gap_frames: i64,
+) -> bool {
+    if !line.karaoke || line.character_name.is_empty() {
+        return false;
+    }
+
+    previous_karaoke_line_before(project, line, max_gap_frames)
+        .map(|previous| previous.character_name != line.character_name)
+        .unwrap_or(true)
+}
+
+fn playhead_skip_ranges(
+    project: &Project,
+    current_frame: f64,
+    layouts: &[rythmo_layout::TrackLayout],
+    ruler_h: f32,
+    slot_header_h: f32,
+    badge_gap: f32,
+    max_gap_frames: i64,
+    scale: f32,
+) -> Vec<(f32, f32)> {
+    project
+        .lines()
+        .filter(|line| line.karaoke && line.karaoke_active(current_frame))
+        .filter_map(|line| {
+            let track = rythmo_layout::track_for_y_slot(layouts, line.y_slot)?;
+            let body_y = ruler_h + track.top + slot_header_h + badge_gap;
+            let line_y = karaoke_stack_y(
+                body_y,
+                track.body_h,
+                karaoke_stack_row(project, line, max_gap_frames),
+                scale,
+            );
+            Some((line_y, line_y + karaoke_stack_height(track.body_h, scale)))
+        })
+        .collect()
+}
+
+fn push_playhead_segments(
+    quads: &mut Vec<QuadInstance>,
+    x: f32,
+    width: f32,
+    height: f32,
+    skip_ranges: &[(f32, f32)],
+) {
+    let mut ranges: Vec<(f32, f32)> = skip_ranges
+        .iter()
+        .map(|(start, end)| (start.max(0.0), end.min(height)))
+        .filter(|(start, end)| end > start)
+        .collect();
+    ranges.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut y = 0.0;
+    for (skip_start, skip_end) in ranges {
+        if skip_start > y {
+            quads.push(quad(
+                x,
+                y,
+                width,
+                skip_start - y,
+                217.0 / 255.0,
+                38.0 / 255.0,
+                38.0 / 255.0,
+                1.0,
+            ));
+        }
+        y = y.max(skip_end);
+    }
+    if y < height {
+        quads.push(quad(
+            x,
+            y,
+            width,
+            height - y,
+            217.0 / 255.0,
+            38.0 / 255.0,
+            38.0 / 255.0,
+            1.0,
+        ));
+    }
+}
+
+fn push_karaoke_dot(
+    quads: &mut Vec<QuadInstance>,
+    line: &RythmoLine,
+    current_frame: f64,
+    x: f32,
+    y: f32,
+    width: f32,
+    scale: f32,
+) {
+    let Some(progress) = line.karaoke_progress(current_frame) else {
+        return;
+    };
+    let ratios = crate::syllable::timing_ratios(
+        &line.text,
+        &line.syllable_ratios,
+        &crate::config::get().lang,
+    );
+    let local_progress = crate::syllable::active_syllable_local_progress(&ratios, progress)
+        .unwrap_or(progress)
+        .clamp(0.0, 1.0);
+    let visual_progress = crate::syllable::visual_progress_from_timing(
+        &line.text,
+        &line.syllable_ratios,
+        &crate::config::get().lang,
+        progress as f32,
+    );
+    let bounce = (local_progress * std::f32::consts::PI).sin().max(0.0);
+    let size = constants::KARAOKE_DOT_SIZE * scale.max(0.5);
+    let center_x = if width > size {
+        x + size / 2.0 + visual_progress.clamp(0.0, 1.0) * (width - size)
+    } else {
+        x + width / 2.0
+    };
+    let dx = center_x - size / 2.0;
+    let dy = y + 3.0 * scale.max(0.5) - bounce * size * constants::KARAOKE_DOT_BOUNCE_AMPLITUDE;
+
+    let mut shadow = quad(
+        dx - 1.5,
+        dy - 1.5,
+        size + 3.0,
+        size + 3.0,
+        0.0,
+        0.0,
+        0.0,
+        0.35,
+    );
+    shadow.border_radius = (size + 3.0) / 2.0;
+    quads.push(shadow);
+
+    let mut dot = quad(
+        dx,
+        dy,
+        size,
+        size,
+        line.character_color[0].clamp(0.0, 1.0),
+        line.character_color[1].clamp(0.0, 1.0),
+        line.character_color[2].clamp(0.0, 1.0),
+        1.0,
+    );
+    dot.color_bottom = dot.color;
+    dot.border_color = [1.0, 1.0, 1.0, 0.85];
+    dot.border_width = 1.0;
+    dot.border_radius = size / 2.0;
+    quads.push(dot);
+}
+
+fn karaoke_count_in_dot_rect(
+    x: f32,
+    y: f32,
+    count_in_progress: f32,
+    scale: f32,
+) -> (f32, f32, f32) {
+    let size = constants::KARAOKE_DOT_SIZE * scale.max(0.5);
+    let progress = count_in_progress.clamp(0.0, 1.0);
+    let bounce_progress = (progress * constants::KARAOKE_COUNT_IN_BOUNCES).fract();
+    let bounce = (bounce_progress * std::f32::consts::PI).sin().max(0.0);
+    let travel = constants::KARAOKE_NEXT_PREVIEW_GAP * 4.0 * scale + size * 2.0;
+    let dx = x - travel + travel * progress;
+    let dy = y + 3.0 * scale.max(0.5) - bounce * size * constants::KARAOKE_DOT_BOUNCE_AMPLITUDE;
+    (dx, dy, size)
+}
+
+fn push_karaoke_count_in_dot(
+    quads: &mut Vec<QuadInstance>,
+    line: &RythmoLine,
+    current_frame: f64,
+    x: f32,
+    y: f32,
+    count_in_frames: i64,
+    scale: f32,
+) {
+    let Some(count_in_progress) = karaoke_count_in_progress(line, current_frame, count_in_frames)
+    else {
+        return;
+    };
+
+    let (dx, dy, size) = karaoke_count_in_dot_rect(x, y, count_in_progress, scale);
+    let mut shadow = quad(
+        dx - 1.5,
+        dy - 1.5,
+        size + 3.0,
+        size + 3.0,
+        0.0,
+        0.0,
+        0.0,
+        0.35,
+    );
+    shadow.border_radius = (size + 3.0) / 2.0;
+    quads.push(shadow);
+
+    let mut dot = quad(
+        dx,
+        dy,
+        size,
+        size,
+        line.character_color[0].clamp(0.0, 1.0),
+        line.character_color[1].clamp(0.0, 1.0),
+        line.character_color[2].clamp(0.0, 1.0),
+        1.0,
+    );
+    dot.color_bottom = dot.color;
+    dot.border_color = [1.0, 1.0, 1.0, 0.85];
+    dot.border_width = 1.0;
+    dot.border_radius = size / 2.0;
+    quads.push(dot);
 }
 
 fn text_hash(
@@ -1098,16 +1437,42 @@ impl GpuRenderer {
         tile_x: u32,
         tile_w: u32,
     ) -> u64 {
+        self.get_or_upload_rythmo_text_tile_with_mode(
+            text, font_size, full_w, dest_h, tile_x, tile_w, true,
+        )
+    }
+
+    fn get_or_upload_rythmo_text_tile_natural(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        full_w: u32,
+        dest_h: u32,
+        tile_x: u32,
+        tile_w: u32,
+    ) -> u64 {
+        self.get_or_upload_rythmo_text_tile_with_mode(
+            text, font_size, full_w, dest_h, tile_x, tile_w, false,
+        )
+    }
+
+    fn get_or_upload_rythmo_text_tile_with_mode(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        full_w: u32,
+        dest_h: u32,
+        tile_x: u32,
+        tile_w: u32,
+        stretch: bool,
+    ) -> u64 {
         let tile_w = tile_w.min(full_w.saturating_sub(tile_x)).max(1);
-        let hash = text_tile_hash(
-            "vector-rythmo-tile",
-            text,
-            font_size,
-            full_w,
-            dest_h,
-            tile_x,
-            tile_w,
-        );
+        let kind = if stretch {
+            "vector-rythmo-tile"
+        } else {
+            "vector-rythmo-tile-natural"
+        };
+        let hash = text_tile_hash(kind, text, font_size, full_w, dest_h, tile_x, tile_w);
         if self.text_cache.contains_key(&hash) {
             return hash;
         }
@@ -1123,15 +1488,28 @@ impl GpuRenderer {
         }
 
         let upload_start = Instant::now();
-        let Some(rendered) = crate::vector_text::render_rythmo_text_tile(
-            &mut self.font_system,
-            text,
-            font_size,
-            full_w,
-            dest_h,
-            tile_x,
-            tile_w,
-        ) else {
+        let rendered = if stretch {
+            crate::vector_text::render_rythmo_text_tile(
+                &mut self.font_system,
+                text,
+                font_size,
+                full_w,
+                dest_h,
+                tile_x,
+                tile_w,
+            )
+        } else {
+            crate::vector_text::render_rythmo_text_tile_natural(
+                &mut self.font_system,
+                text,
+                font_size,
+                full_w,
+                dest_h,
+                tile_x,
+                tile_w,
+            )
+        };
+        let Some(rendered) = rendered else {
             return hash;
         };
         if rendered.width == 0 || rendered.height == 0 {
@@ -1217,8 +1595,96 @@ impl GpuRenderer {
         all_icons: &mut Vec<IconInstance>,
         icon_batches: &mut Vec<IconBatch>,
     ) {
+        self.push_rythmo_text_icons_tinted_clipped(
+            text,
+            font_size,
+            x,
+            y,
+            w,
+            h,
+            [1.0, 1.0, 1.0, 1.0],
+            1.0,
+            all_icons,
+            icon_batches,
+        );
+    }
+
+    fn push_rythmo_text_icons_tinted_clipped(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        tint: [f32; 4],
+        clip_ratio: f32,
+        all_icons: &mut Vec<IconInstance>,
+        icon_batches: &mut Vec<IconBatch>,
+    ) {
+        self.push_rythmo_text_icons_tinted_clipped_with_mode(
+            text,
+            font_size,
+            x,
+            y,
+            w,
+            h,
+            tint,
+            clip_ratio,
+            true,
+            all_icons,
+            icon_batches,
+        );
+    }
+
+    fn push_rythmo_text_icons_natural_tinted_clipped(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        tint: [f32; 4],
+        clip_ratio: f32,
+        all_icons: &mut Vec<IconInstance>,
+        icon_batches: &mut Vec<IconBatch>,
+    ) {
+        self.push_rythmo_text_icons_tinted_clipped_with_mode(
+            text,
+            font_size,
+            x,
+            y,
+            w,
+            h,
+            tint,
+            clip_ratio,
+            false,
+            all_icons,
+            icon_batches,
+        );
+    }
+
+    fn push_rythmo_text_icons_tinted_clipped_with_mode(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        tint: [f32; 4],
+        clip_ratio: f32,
+        stretch: bool,
+        all_icons: &mut Vec<IconInstance>,
+        icon_batches: &mut Vec<IconBatch>,
+    ) {
         let full_w = w.max(1.0).ceil() as u32;
         let full_h = h.max(1.0).ceil() as u32;
+        let clip_px = (full_w as f32 * clip_ratio.clamp(0.0, 1.0)).ceil() as u32;
+        if clip_px == 0 {
+            return;
+        }
         if full_h > MAX_TEXT_TEXTURE_DIMENSION {
             log::warn!(
                 "Skipping export rythmo text taller than GPU texture limit: {}px",
@@ -1230,16 +1696,26 @@ impl GpuRenderer {
         let mut tile_x = 0;
         while tile_x < full_w {
             let tile_w = (full_w - tile_x).min(MAX_TEXT_TEXTURE_DIMENSION);
-            let hash = self
-                .get_or_upload_rythmo_text_tile(text, font_size, full_w, full_h, tile_x, tile_w);
+            if tile_x >= clip_px {
+                break;
+            }
+            let visible_tile_w = tile_w.min(clip_px - tile_x).max(1);
+            let hash = if stretch {
+                self.get_or_upload_rythmo_text_tile(text, font_size, full_w, full_h, tile_x, tile_w)
+            } else {
+                self.get_or_upload_rythmo_text_tile_natural(
+                    text, font_size, full_w, full_h, tile_x, tile_w,
+                )
+            };
             if self.text_cache.contains_key(&hash) {
                 let draw_x = x + (tile_x as f32 / full_w as f32) * w;
-                let draw_w = (tile_w as f32 / full_w as f32) * w;
+                let draw_w = (visible_tile_w as f32 / full_w as f32) * w;
+                let uv_end = (visible_tile_w as f32 / tile_w as f32).clamp(0.0, 1.0);
                 let start = all_icons.len() as u32;
                 all_icons.push(IconInstance {
                     rect: [draw_x, y, draw_w, h],
-                    uv_rect: [0.0, 0.0, 1.0, 1.0],
-                    tint: [1.0; 4],
+                    uv_rect: [0.0, 0.0, uv_end, 1.0],
+                    tint,
                 });
                 icon_batches.push(IconBatch {
                     hash,
@@ -1249,6 +1725,17 @@ impl GpuRenderer {
             }
             tile_x += tile_w;
         }
+    }
+
+    fn karaoke_text_width(&mut self, text: &str, font_size: f32, karaoke_text_scale: f32) -> f32 {
+        let font_size = font_size * constants::KARAOKE_TEXT_FONT_SCALE * karaoke_text_scale;
+        crate::vector_text::measure_rythmo_text_width(&mut self.font_system, text, font_size)
+            .map(|width| width.ceil() + 1.0)
+            .unwrap_or_else(|| {
+                let char_count = text.chars().count().max(1) as f32;
+                char_count * font_size * 0.62 + font_size * 0.7
+            })
+            .max(2.0)
     }
 
     fn push_actor_fallback_text(
@@ -1451,14 +1938,18 @@ impl GpuRenderer {
         current_frame: f64,
         width: u32,
         fps: f64,
+        source_fps: f64,
         br_scale: f32,
+        karaoke_text_scale: f32,
     ) {
         self.submit_render_inner(
             scene,
             current_frame,
             width,
             fps,
+            source_fps,
             br_scale,
+            karaoke_text_scale,
             ReadbackMode::Rgba,
         );
     }
@@ -1470,7 +1961,9 @@ impl GpuRenderer {
         current_frame: f64,
         width: u32,
         fps: f64,
+        source_fps: f64,
         br_scale: f32,
+        karaoke_text_scale: f32,
         padded_height: u32,
     ) {
         self.submit_render_inner(
@@ -1478,7 +1971,9 @@ impl GpuRenderer {
             current_frame,
             width,
             fps,
+            source_fps,
             br_scale,
+            karaoke_text_scale,
             ReadbackMode::Nv12 { padded_height },
         );
     }
@@ -1489,14 +1984,14 @@ impl GpuRenderer {
         current_frame: f64,
         width: u32,
         _fps: f64,
+        source_fps: f64,
         br_scale: f32,
+        karaoke_text_scale: f32,
         readback: ReadbackMode,
     ) {
         // Build quads + icons using the same logic as render_br
         let s = width as f32 / constants::REF_WIDTH * br_scale;
-        let used_slots = count_used_slots(scene.project);
-        let slot_count = used_slots.max(1) as f32;
-        let slot_h = constants::SLOT_HEIGHT * s;
+        let normal_slot_h = constants::SLOT_HEIGHT * s;
         let ruler_h = constants::RULER_HEIGHT * s;
         let ppf = constants::PIXELS_PER_FRAME * s * crate::config::scroll_speed();
         let tick_long = constants::TICK_LONG * s;
@@ -1510,8 +2005,16 @@ impl GpuRenderer {
         let font_size = constants::RYTHMO_FONT_SIZE * s;
         let badge_font = constants::BADGE_FONT_SIZE * s;
         let badge_char_w = constants::BADGE_CHAR_W * s;
-        let total_slot_h = slot_h + slot_header_h + badge_gap;
-        let height = (ruler_h + slot_count * total_slot_h).ceil() as u32;
+        let track_indices = rythmo_layout::used_track_indices(scene.project);
+        let track_layouts = rythmo_layout::build_track_layouts(
+            scene.project,
+            &track_indices,
+            normal_slot_h,
+            slot_header_h,
+            badge_gap,
+            s,
+        );
+        let height = (ruler_h + rythmo_layout::total_tracks_height(&track_layouts)).ceil() as u32;
 
         self.ensure_offscreen(width, height);
 
@@ -1558,139 +2061,248 @@ impl GpuRenderer {
             tf += constants::TICK_GAP_FRAMES;
         }
 
-        // ── Playhead ──
-        quads.push(quad(
+        let karaoke_max_gap_frames = karaoke_adjacent_max_gap_frames(source_fps);
+        let karaoke_count_in_frame_count = karaoke_count_in_frames(source_fps);
+
+        // ── Playhead, split around active karaoke lines ──
+        let playhead_gaps = playhead_skip_ranges(
+            scene.project,
+            current_frame,
+            &track_layouts,
+            ruler_h,
+            slot_header_h,
+            badge_gap,
+            karaoke_max_gap_frames,
+            s,
+        );
+        push_playhead_segments(
+            &mut quads,
             center_x - playhead_w / 2.0,
-            0.0,
             playhead_w,
             h,
-            217.0 / 255.0,
-            38.0 / 255.0,
-            38.0 / 255.0,
-            1.0,
-        ));
+            &playhead_gaps,
+        );
 
         // ── Lines ──
         for line in scene.project.lines() {
-            let x1 = center_x + (line.start_frame as f64 - current_frame) as f32 * ppf;
-            let x2 = center_x + (line.end_frame() as f64 - current_frame) as f32 * ppf;
-            let lw = (x2 - x1).max(2.0);
+            let karaoke_active = line.karaoke_active(current_frame);
+            let karaoke_count_in =
+                karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
+            let karaoke_prestart_scroll = karaoke_prestart_scroll_visible(
+                scene.project,
+                line,
+                current_frame,
+                karaoke_max_gap_frames,
+                karaoke_count_in_frame_count,
+            );
+            let karaoke_upcoming_stack = karaoke_upcoming_stack_visible(
+                scene.project,
+                line,
+                current_frame,
+                karaoke_max_gap_frames,
+            );
+            if line.karaoke
+                && !karaoke_active
+                && !karaoke_prestart_scroll
+                && !karaoke_upcoming_stack
+            {
+                continue;
+            }
+
+            let (x1, lw) = if line.karaoke
+                && (karaoke_active || karaoke_prestart_scroll || karaoke_upcoming_stack)
+            {
+                let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
+                (center_x - width / 2.0, width)
+            } else {
+                line.visual_x_width(current_frame, center_x, ppf, w, s)
+            };
             if x1 + lw < 0.0 || x1 > w {
                 continue;
             }
 
-            let slot_idx = (line.y_slot * slot_count).round().min(slot_count - 1.0) as usize;
-            let y_base = ruler_h + slot_idx as f32 * total_slot_h;
-            let badge_y = y_base + ((slot_header_h - badge_h) * 0.5).max(0.0);
+            let Some(track) = rythmo_layout::track_for_y_slot(&track_layouts, line.y_slot) else {
+                continue;
+            };
+            let y_base = ruler_h + track.top;
+            let body_y = y_base + slot_header_h + badge_gap;
+            let mut line_y = body_y;
+            let mut body_h = normal_slot_h;
+            if line.karaoke {
+                line_y = karaoke_stack_y(
+                    body_y,
+                    track.body_h,
+                    karaoke_stack_row(scene.project, line, karaoke_max_gap_frames),
+                    s,
+                );
+                body_h = karaoke_stack_height(track.body_h, s);
+            }
 
             let [cr, cg, cb, _] = line.character_color;
             let badge_w = (line.character_name.chars().count().max(1) as f32 * badge_char_w
                 + 12.0 * s)
                 .max(16.0 * s);
-            quads.push(quad(x1, badge_y, badge_w, badge_h, cr, cg, cb, 1.0));
+            let badge_x = if line.karaoke {
+                x1 - badge_w - constants::KARAOKE_NEXT_PREVIEW_GAP * 0.5 * s
+            } else {
+                x1
+            };
+            let badge_y = if line.karaoke {
+                line_y + (body_h - badge_h) * 0.5
+            } else {
+                y_base + ((slot_header_h - badge_h) * 0.5).max(0.0)
+            };
+            let show_badge = !line.karaoke
+                || karaoke_character_label_visible(scene.project, line, karaoke_max_gap_frames);
+            if show_badge {
+                quads.push(quad(badge_x, badge_y, badge_w, badge_h, cr, cg, cb, 1.0));
 
-            if !line.character_name.is_empty() {
-                let luminance = 0.299 * cr + 0.587 * cg + 0.114 * cb;
-                let (tr, tg, tb) = if luminance > 0.55 {
-                    (0.0_f32, 0.0, 0.0)
-                } else {
-                    (224.0 / 255.0, 224.0 / 255.0, 230.0 / 255.0)
-                };
-                let hash = self.get_or_upload_text(&line.character_name, badge_font);
-                if let Some(cached) = self.text_cache.get(&hash) {
-                    let tw = cached.width as f32;
-                    let th = cached.height as f32;
-                    let start = all_icons.len() as u32;
-                    all_icons.push(IconInstance {
-                        rect: [
-                            x1 + (badge_w - tw) / 2.0,
-                            badge_y + (badge_h - th) / 2.0,
-                            tw,
-                            th,
-                        ],
-                        uv_rect: [0.0, 0.0, 1.0, 1.0],
-                        tint: [tr, tg, tb, 1.0],
-                    });
-                    icon_batches.push(IconBatch {
-                        hash,
-                        start,
-                        count: 1,
-                    });
+                if !line.character_name.is_empty() {
+                    let luminance = 0.299 * cr + 0.587 * cg + 0.114 * cb;
+                    let (tr, tg, tb) = if luminance > 0.55 {
+                        (0.0_f32, 0.0, 0.0)
+                    } else {
+                        (224.0 / 255.0, 224.0 / 255.0, 230.0 / 255.0)
+                    };
+                    let hash = self.get_or_upload_text(&line.character_name, badge_font);
+                    if let Some(cached) = self.text_cache.get(&hash) {
+                        let tw = cached.width as f32;
+                        let th = cached.height as f32;
+                        let start = all_icons.len() as u32;
+                        all_icons.push(IconInstance {
+                            rect: [
+                                badge_x + (badge_w - tw) / 2.0,
+                                badge_y + (badge_h - th) / 2.0,
+                                tw,
+                                th,
+                            ],
+                            uv_rect: [0.0, 0.0, 1.0, 1.0],
+                            tint: [tr, tg, tb, 1.0],
+                        });
+                        icon_batches.push(IconBatch {
+                            hash,
+                            start,
+                            count: 1,
+                        });
+                    }
                 }
+
+                self.push_voice_actor_icons(
+                    scene,
+                    line,
+                    badge_x,
+                    badge_y,
+                    badge_w,
+                    actor_icon_size,
+                    s,
+                    w,
+                    &mut quads,
+                    &mut all_icons,
+                    &mut icon_batches,
+                );
             }
 
-            self.push_voice_actor_icons(
-                scene,
-                line,
-                x1,
-                y_base,
-                badge_w,
-                actor_icon_size,
-                s,
-                w,
-                &mut quads,
-                &mut all_icons,
-                &mut icon_batches,
-            );
-
-            let line_y = y_base + slot_header_h + badge_gap;
-
             if !line.text.is_empty() && line.text != "\u{2191}" && line.text != "\u{2193}" {
-                let lang = &crate::config::get().lang;
-                let breaks = crate::syllable::syllable_breaks(&line.text, lang);
-                let use_segments =
-                    !breaks.is_empty() && line.syllable_ratios.len() == breaks.len() + 1;
-
-                if use_segments {
-                    let chars: Vec<char> = line.text.chars().collect();
-                    let mut seg_x = x1;
-                    let mut prev_break = 0usize;
-                    for (i, &ratio) in line.syllable_ratios.iter().enumerate() {
-                        let seg_w = ratio * lw;
-                        let end_break = if i < breaks.len() {
-                            breaks[i]
-                        } else {
-                            chars.len()
-                        };
-                        let segment: String = chars[prev_break..end_break].iter().collect();
-                        if !segment.is_empty() && seg_w > 0.5 {
-                            self.push_rythmo_text_icons(
-                                &segment,
-                                font_size,
-                                seg_x,
-                                line_y,
-                                seg_w,
-                                slot_h,
-                                &mut all_icons,
-                                &mut icon_batches,
-                            );
-                        }
-                        seg_x += seg_w;
-                        prev_break = end_break;
-                    }
-                } else {
-                    self.push_rythmo_text_icons(
+                if line.karaoke {
+                    let karaoke_font_size =
+                        font_size * constants::KARAOKE_TEXT_FONT_SCALE * karaoke_text_scale;
+                    self.push_rythmo_text_icons_natural_tinted_clipped(
                         &line.text,
-                        font_size,
+                        karaoke_font_size,
                         x1,
                         line_y,
                         lw,
-                        slot_h,
+                        body_h,
+                        [1.0, 1.0, 1.0, 1.0],
+                        1.0,
                         &mut all_icons,
                         &mut icon_batches,
                     );
+                    if let Some(progress) = line.karaoke_progress(current_frame) {
+                        let visual_progress = crate::syllable::visual_progress_from_timing(
+                            &line.text,
+                            &line.syllable_ratios,
+                            &crate::config::get().lang,
+                            progress,
+                        );
+                        self.push_rythmo_text_icons_natural_tinted_clipped(
+                            &line.text,
+                            karaoke_font_size,
+                            x1,
+                            line_y,
+                            lw,
+                            body_h,
+                            [
+                                line.character_color[0].clamp(0.0, 1.0),
+                                line.character_color[1].clamp(0.0, 1.0),
+                                line.character_color[2].clamp(0.0, 1.0),
+                                1.0,
+                            ],
+                            visual_progress,
+                            &mut all_icons,
+                            &mut icon_batches,
+                        );
+                    }
+                } else {
+                    let lang = &crate::config::get().lang;
+                    let breaks = crate::syllable::syllable_breaks(&line.text, lang);
+                    let ratios = if line.syllable_ratios.len() == breaks.len() + 1 {
+                        line.syllable_ratios.clone()
+                    } else {
+                        Vec::new()
+                    };
+
+                    if !ratios.is_empty() {
+                        let chars: Vec<char> = line.text.chars().collect();
+                        let mut seg_x = x1;
+                        let mut prev_break = 0usize;
+                        for (i, &ratio) in ratios.iter().enumerate() {
+                            let seg_w = ratio * lw;
+                            let end_break = if i < breaks.len() {
+                                breaks[i]
+                            } else {
+                                chars.len()
+                            };
+                            let segment: String = chars[prev_break..end_break].iter().collect();
+                            if !segment.is_empty() && seg_w > 0.5 {
+                                self.push_rythmo_text_icons(
+                                    &segment,
+                                    font_size,
+                                    seg_x,
+                                    line_y,
+                                    seg_w,
+                                    body_h,
+                                    &mut all_icons,
+                                    &mut icon_batches,
+                                );
+                            }
+                            seg_x += seg_w;
+                            prev_break = end_break;
+                        }
+                    } else {
+                        self.push_rythmo_text_icons(
+                            &line.text,
+                            font_size,
+                            x1,
+                            line_y,
+                            lw,
+                            body_h,
+                            &mut all_icons,
+                            &mut icon_batches,
+                        );
+                    }
                 }
             }
 
             if line.text == "\u{2191}" || line.text == "\u{2193}" {
                 let up = line.text == "\u{2191}";
                 let margin = 4.0;
-                if lw > margin * 2.0 + 1.0 && slot_h > margin * 2.0 + 1.0 {
+                if lw > margin * 2.0 + 1.0 && body_h > margin * 2.0 + 1.0 {
                     let dx = lw - margin * 2.0;
-                    let dy = slot_h - margin * 2.0;
+                    let dy = body_h - margin * 2.0;
                     let length = (dx * dx + dy * dy).sqrt();
                     let cx = x1 + lw / 2.0;
-                    let cy = line_y + slot_h / 2.0;
+                    let cy = line_y + body_h / 2.0;
                     let angle = if up { (-dy).atan2(dx) } else { dy.atan2(dx) };
                     quads.push(rotated_line(
                         cx,
@@ -1706,6 +2318,20 @@ impl GpuRenderer {
                 }
             }
 
+            if karaoke_count_in {
+                push_karaoke_count_in_dot(
+                    &mut quads,
+                    line,
+                    current_frame,
+                    x1,
+                    line_y,
+                    karaoke_count_in_frame_count,
+                    s,
+                );
+            } else {
+                push_karaoke_dot(&mut quads, line, current_frame, x1, line_y, lw, s);
+            }
+
             // Note text (discrete, gray, at the bottom of the line)
             if !line.note.is_empty() {
                 let note_font = badge_font * 0.9;
@@ -1714,7 +2340,7 @@ impl GpuRenderer {
                     let tw = cached.width as f32;
                     let _th = cached.height as f32;
                     let note_h = (note_font * 1.3).ceil();
-                    let note_y = line_y + slot_h - note_h - 1.0;
+                    let note_y = line_y + body_h - note_h - 1.0;
                     let max_note_w = lw - 8.0 * s;
                     let draw_w = tw.min(max_note_w);
                     let uv_end = (draw_w / tw).min(1.0);
@@ -2042,11 +2668,31 @@ impl GpuRenderer {
     }
 }
 
-fn count_used_slots(project: &Project) -> usize {
-    let mut slots = std::collections::HashSet::new();
-    for line in project.lines() {
-        let idx = (line.y_slot * 4.0).round() as i32;
-        slots.insert(idx);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpu_export_karaoke_island_after_normal_line_continues_alternating_rows() {
+        let mut project = Project::new();
+        let normal_id = project.add_line(0, 24, 0.25);
+        let first_karaoke_id = project.add_line(24 * 2, 24, 0.25);
+        let second_karaoke_id = project.add_line(24 * 4, 24, 0.25);
+        project.get_line_mut(normal_id).unwrap().karaoke = false;
+        project.get_line_mut(first_karaoke_id).unwrap().karaoke = true;
+        project.get_line_mut(second_karaoke_id).unwrap().karaoke = true;
+
+        let max_gap_frames = karaoke_adjacent_max_gap_frames(24.0);
+        let first_karaoke = project.get_line(first_karaoke_id).unwrap();
+        let second_karaoke = project.get_line(second_karaoke_id).unwrap();
+
+        assert_eq!(
+            karaoke_stack_row(&project, first_karaoke, max_gap_frames),
+            1
+        );
+        assert_eq!(
+            karaoke_stack_row(&project, second_karaoke, max_gap_frames),
+            0
+        );
     }
-    slots.len()
 }

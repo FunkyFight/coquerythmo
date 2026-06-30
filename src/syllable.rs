@@ -260,6 +260,103 @@ pub fn default_ratios(count: usize) -> Vec<f32> {
     vec![r; count]
 }
 
+pub fn timing_ratios(text: &str, saved_ratios: &[f32], lang: &str) -> Vec<f32> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    let breaks = syllable_breaks(text, lang);
+    let count = breaks.len() + 1;
+    if saved_ratios.len() == count
+        && saved_ratios
+            .iter()
+            .all(|ratio| ratio.is_finite() && *ratio > 0.0)
+    {
+        return normalized_ratios(saved_ratios);
+    }
+
+    if breaks.is_empty() {
+        vec![1.0]
+    } else {
+        default_ratios_from_breaks(text, &breaks)
+    }
+}
+
+pub fn active_syllable_local_progress(ratios: &[f32], progress: f32) -> Option<f32> {
+    if ratios.is_empty() {
+        return None;
+    }
+
+    let ratios = normalized_ratios(ratios);
+    let progress = progress.clamp(0.0, 1.0);
+    let mut start = 0.0;
+    for ratio in ratios {
+        let end = (start + ratio).min(1.0);
+        if progress <= end {
+            let width = (end - start).max(f32::EPSILON);
+            return Some(((progress - start) / width).clamp(0.0, 1.0));
+        }
+        start = end;
+    }
+
+    Some(1.0)
+}
+
+pub fn visual_progress_from_timing(
+    text: &str,
+    saved_ratios: &[f32],
+    lang: &str,
+    progress: f32,
+) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+
+    let progress = progress.clamp(0.0, 1.0);
+    let breaks = syllable_breaks(text, lang);
+    if breaks.is_empty() {
+        return progress;
+    }
+
+    let timing = timing_ratios(text, saved_ratios, lang);
+    let visual = default_ratios_from_breaks(text, &breaks);
+    if timing.len() != visual.len() || timing.is_empty() {
+        return progress;
+    }
+
+    let timing = normalized_ratios(&timing);
+    let visual = normalized_ratios(&visual);
+    let mut timing_start = 0.0;
+    let mut visual_start = 0.0;
+    for (timing_ratio, visual_ratio) in timing.iter().zip(visual.iter()) {
+        let timing_end = (timing_start + timing_ratio).min(1.0);
+        if progress <= timing_end {
+            let local = if timing_end > timing_start {
+                (progress - timing_start) / (timing_end - timing_start)
+            } else {
+                0.0
+            };
+            return (visual_start + local.clamp(0.0, 1.0) * visual_ratio).clamp(0.0, 1.0);
+        }
+        timing_start = timing_end;
+        visual_start = (visual_start + visual_ratio).min(1.0);
+    }
+
+    1.0
+}
+
+fn normalized_ratios(ratios: &[f32]) -> Vec<f32> {
+    let sum: f32 = ratios
+        .iter()
+        .copied()
+        .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
+        .sum();
+    if sum <= f32::EPSILON {
+        return vec![1.0 / ratios.len().max(1) as f32; ratios.len()];
+    }
+    ratios.iter().map(|ratio| (*ratio).max(0.0) / sum).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +437,14 @@ mod tests {
         assert!(r[0] < r[1], "J' should be smaller than adore: {:?}", r);
         let sum: f32 = r.iter().sum();
         assert!((sum - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_visual_progress_uses_timing_ratios() {
+        let progress = visual_progress_from_timing("adore", &[0.8, 0.1, 0.1], "fr-fr", 0.4);
+        assert!(
+            progress < 0.2,
+            "visual progress should linger on stretched first syllable, got {progress}"
+        );
     }
 }
