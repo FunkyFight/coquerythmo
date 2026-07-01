@@ -4,6 +4,7 @@ mod constants;
 mod export;
 mod graphics;
 mod i18n;
+mod media_binary;
 mod network;
 mod observer;
 mod packet;

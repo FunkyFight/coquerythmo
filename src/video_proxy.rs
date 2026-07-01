@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -40,7 +40,7 @@ struct ProxyMetadata {
 }
 
 pub fn probe_video(path: &Path) -> Result<VideoInfo, String> {
-    let out = Command::new("ffprobe")
+    let out = crate::media_binary::command("ffprobe")
         .args([
             "-v",
             "error",
@@ -150,7 +150,7 @@ pub fn create_proxy(
     mut progress_cb: impl FnMut(f32),
 ) -> Result<PathBuf, String> {
     if !crate::video_export::check_ffmpeg() {
-        return Err("ffmpeg/ffprobe not found in PATH".into());
+        return Err("ffmpeg/ffprobe not found beside app or in PATH".into());
     }
 
     let info = probe_video(source_video)?;
@@ -183,7 +183,7 @@ pub fn create_proxy(
         proxy_path.display()
     );
 
-    let mut child = Command::new("ffmpeg")
+    let mut child = crate::media_binary::command("ffmpeg")
         .args(["-v", "error", "-y"])
         .arg("-i")
         .arg(source_video)

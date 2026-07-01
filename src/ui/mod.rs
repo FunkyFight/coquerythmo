@@ -1778,7 +1778,8 @@ impl Ui {
         icons.extend(liaison_icons);
 
         // Prepare stretched text textures
-        let stretched_quads = renderer.prepare_stretched_texts(device, queue, &stretched_texts);
+        let stretched_quads =
+            renderer.prepare_stretched_texts(device, queue, ui_scale, &stretched_texts);
 
         // Render cursor and selection using real glyph positions from the renderer cache
         if let Some((line_id, cursor_pos, selection, text_x, text_w, ry, rh, cursor_segments)) =
@@ -2629,7 +2630,8 @@ impl Ui {
         );
 
         // Prepare stretched text textures
-        let stretched_quads = renderer.prepare_stretched_texts(device, queue, &stretched_texts);
+        let stretched_quads =
+            renderer.prepare_stretched_texts(device, queue, ui_scale, &stretched_texts);
         let mut base_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
         for draw in actor_icon_draws {
             if let Some(actor) = project.find_voice_actor(&draw.actor_name) {

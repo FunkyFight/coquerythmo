@@ -510,9 +510,11 @@ impl UiRenderer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        ui_scale: f32,
         stretched: &[StretchedText],
     ) -> Vec<(IconInstance, u64)> {
-        let font_size = crate::config::get().ui.font_size * 2.0;
+        let ui_scale = ui_scale.max(1.0);
+        let font_size = crate::config::get().ui.font_size * 2.0 * ui_scale;
         let mut result = Vec::new();
         let mut remaining_prewarm_misses = 2usize;
 
@@ -522,8 +524,8 @@ impl UiRenderer {
             }
 
             let effective_font_size = font_size * st.font_scale.max(0.1);
-            let tex_w = st.dest_rect.width.max(1.0).ceil() as u32;
-            let tex_h = st.dest_rect.height.max(1.0).ceil() as u32;
+            let tex_w = (st.dest_rect.width.max(1.0) * ui_scale).ceil() as u32;
+            let tex_h = (st.dest_rect.height.max(1.0) * ui_scale).ceil() as u32;
             let cache_hash =
                 Self::hash_stretched_text(&st.text, effective_font_size, tex_w, tex_h, st.stretch);
 

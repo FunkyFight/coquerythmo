@@ -21,54 +21,11 @@ pub enum AudioTrack {
 }
 
 fn ffmpeg_command() -> Command {
-    media_command("ffmpeg")
+    crate::media_binary::command("ffmpeg")
 }
 
 fn ffprobe_command() -> Command {
-    media_command("ffprobe")
-}
-
-fn media_command(binary: &str) -> Command {
-    media_binary_path(binary).map_or_else(|| Command::new(binary), Command::new)
-}
-
-#[cfg(target_os = "macos")]
-fn media_binary_path(binary: &str) -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(exe_dir) = current_exe.parent() {
-            candidates.push(exe_dir.join(binary));
-        }
-
-        if let Some(app_bundle) = current_exe.ancestors().find(|path| {
-            path.extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
-        }) {
-            candidates.push(app_bundle.join("Contents").join("Resources").join(binary));
-            if let Some(app_parent) = app_bundle.parent() {
-                candidates.push(app_parent.join(binary));
-            }
-        }
-    }
-
-    if let Ok(current_dir) = std::env::current_dir() {
-        candidates.push(current_dir.join(binary));
-    }
-
-    candidates.extend(
-        ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
-            .iter()
-            .map(|dir| Path::new(dir).join(binary)),
-    );
-
-    candidates.into_iter().find(|path| path.is_file())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn media_binary_path(_binary: &str) -> Option<PathBuf> {
-    None
+    crate::media_binary::command("ffprobe")
 }
 
 pub struct VideoFrame {

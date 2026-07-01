@@ -1,10 +1,11 @@
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::media_binary;
 use crate::project::Project;
 use crate::rythmo_cpu_renderer;
 use crate::rythmo_gpu_renderer;
@@ -30,27 +31,15 @@ fn check_export_cancel(cancel: &AtomicBool) -> Result<(), String> {
     }
 }
 
-/// Check if ffmpeg and ffprobe are available in PATH.
+/// Check if ffmpeg and ffprobe are available beside the app or in PATH.
 pub fn check_ffmpeg() -> bool {
-    let ffmpeg_ok = std::process::Command::new("ffmpeg")
-        .arg("-version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    let ffprobe_ok = std::process::Command::new("ffprobe")
-        .arg("-version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let ffmpeg_ok = media_binary::can_run("ffmpeg");
+    let ffprobe_ok = media_binary::can_run("ffprobe");
     if !ffmpeg_ok {
-        log::error!("ffmpeg not found in PATH — video features unavailable");
+        log::error!("ffmpeg not found beside app or in PATH - video features unavailable");
     }
     if !ffprobe_ok {
-        log::error!("ffprobe not found in PATH — video features unavailable");
+        log::error!("ffprobe not found beside app or in PATH - video features unavailable");
     }
     ffmpeg_ok && ffprobe_ok
 }
@@ -93,7 +82,7 @@ fn emit_progress(progress_cb: &ProgressCallback, progress: f32) {
 }
 
 fn probe_video_duration(path: &Path) -> Option<f64> {
-    let out = Command::new("ffprobe")
+    let out = media_binary::command("ffprobe")
         .args([
             "-v",
             "error",
@@ -120,7 +109,7 @@ fn probe_video_duration(path: &Path) -> Option<f64> {
 }
 
 fn probe(path: &Path) -> Result<VideoInfo, String> {
-    let out = Command::new("ffprobe")
+    let out = media_binary::command("ffprobe")
         .args([
             "-v",
             "error",
@@ -161,7 +150,7 @@ fn probe(path: &Path) -> Result<VideoInfo, String> {
 
 /// Check if nvenc is available.
 fn has_nvenc() -> bool {
-    Command::new("ffmpeg")
+    media_binary::command("ffmpeg")
         .args(["-hide_banner", "-encoders"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("h264_nvenc"))
@@ -170,7 +159,7 @@ fn has_nvenc() -> bool {
 
 /// Check if CUDA hardware-accelerated decoding is available.
 fn has_cuda_hwaccel() -> bool {
-    Command::new("ffmpeg")
+    media_binary::command("ffmpeg")
         .args(["-hide_banner", "-hwaccels"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("cuda"))
@@ -179,7 +168,7 @@ fn has_cuda_hwaccel() -> bool {
 
 /// Check if an ffmpeg filter is available.
 fn has_filter(name: &str) -> bool {
-    Command::new("ffmpeg")
+    media_binary::command("ffmpeg")
         .args(["-hide_banner", "-filters"])
         .output()
         .map(|o| {
@@ -205,7 +194,7 @@ fn experimental_cuda_rgba_enabled() -> bool {
 
 fn probe_cuda_rgba_br_graph() -> bool {
     let filter = "[0:v]format=nv12,hwupload_cuda[src];[1:v]format=rgba,hwupload_cuda,scale_cuda=w=16:h=16:format=nv12:passthrough=0[br];[src][br]overlay_cuda=x=0:y=0:shortest=1[out]";
-    let mut child = match Command::new("ffmpeg")
+    let mut child = match media_binary::command("ffmpeg")
         .args([
             "-hide_banner",
             "-v",
@@ -435,7 +424,7 @@ pub fn export_mp4(
     progress_cb: impl FnMut(f32) + Send + 'static,
 ) -> Result<(), String> {
     if !check_ffmpeg() {
-        return Err("ffmpeg/ffprobe not found in PATH".into());
+        return Err("ffmpeg/ffprobe not found beside app or in PATH".into());
     }
     let karaoke_text_scale = if karaoke_text_scale.is_finite() {
         karaoke_text_scale.clamp(0.5, 2.0)
@@ -857,7 +846,7 @@ fn run_baked_single_pass(
     let raw_size = format!("{}x{}", out_w, br_h_even);
     let fps_arg = fps.to_string();
 
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = media_binary::command("ffmpeg");
     if use_cuda {
         cmd.args(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]);
     }
@@ -1066,7 +1055,7 @@ fn mux_source_audio(
     let duration_arg = duration_secs.to_string();
     let audio_filter = audio_offset_filter(duration_secs, offset_frames, fps);
 
-    let mut child = Command::new("ffmpeg")
+    let mut child = media_binary::command("ffmpeg")
         .arg("-i")
         .arg(video_only)
         .arg("-i")
@@ -1158,7 +1147,7 @@ fn mux_instrumental_audio(
     emit_progress(progress_cb, 0.99);
     check_export_cancel(cancel)?;
 
-    let mut child = Command::new("ffmpeg")
+    let mut child = media_binary::command("ffmpeg")
         .arg("-i")
         .arg(normal_video)
         .arg("-i")

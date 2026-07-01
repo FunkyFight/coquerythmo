@@ -102,8 +102,8 @@ impl Default for Config {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            width: 800,
-            height: 600,
+            width: 1024,
+            height: 720,
             title: "coquerythmo".into(),
             vsync: true,
         }
