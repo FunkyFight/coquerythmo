@@ -9,7 +9,6 @@ const CARD_H: f32 = 424.0;
 enum ActiveField {
     Width,
     Height,
-    InstrumentalAudio,
 }
 
 #[derive(Clone, Copy)]
@@ -27,6 +26,84 @@ fn sanitize_dimension(value: u32) -> u32 {
     }
 }
 
+fn push_checkbox<'a>(
+    overlay_quads: &mut Vec<QuadInstance>,
+    labels: &mut Vec<LabelInfo<'a>>,
+    rect: Rect,
+    checked: bool,
+    enabled: bool,
+    text: &'a str,
+) {
+    let box_size = 16.0;
+    let box_rect = Rect {
+        x: rect.x,
+        y: rect.y + (rect.height - box_size) / 2.0,
+        width: box_size,
+        height: box_size,
+    };
+    let active = checked && enabled;
+    overlay_quads.push(QuadInstance {
+        rect: [box_rect.x, box_rect.y, box_rect.width, box_rect.height],
+        color: if active {
+            [0.30, 0.45, 0.85, 1.0]
+        } else {
+            [0.08, 0.08, 0.10, 1.0]
+        },
+        color_bottom: if active {
+            [0.22, 0.34, 0.70, 1.0]
+        } else {
+            [0.08, 0.08, 0.10, 1.0]
+        },
+        border_color: if active {
+            [0.55, 0.68, 1.0, 0.9]
+        } else if enabled {
+            [0.30, 0.30, 0.36, 0.6]
+        } else {
+            [0.22, 0.22, 0.26, 0.5]
+        },
+        border_width: 1.0,
+        border_radius: 3.0,
+        shadow_offset: [0.0; 2],
+        shadow_color: [0.0; 4],
+        shadow_blur: 0.0,
+        rotation: 0.0,
+        _padding: [0.0; 2],
+    });
+    if active {
+        labels.push(LabelInfo {
+            text: "✓",
+            bounds: box_rect,
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(13.0),
+            color_override: Some([245, 245, 255]),
+            font_family_override: None,
+        });
+    }
+    labels.push(LabelInfo {
+        text,
+        bounds: Rect {
+            x: rect.x + box_size + 8.0,
+            y: rect.y,
+            width: rect.width - box_size - 8.0,
+            height: rect.height,
+        },
+        h_align: HAlign::Left,
+        v_align: VAlign::Center,
+        overflow: Overflow::Clip,
+        padding: 0.0,
+        font_size_override: Some(11.0),
+        color_override: if enabled {
+            Some([190, 190, 205])
+        } else {
+            Some([115, 115, 130])
+        },
+        font_family_override: None,
+    });
+}
+
 pub struct ExportModal {
     pub fps: u32,
     pub fps_text: String,
@@ -38,8 +115,9 @@ pub struct ExportModal {
     pub export_width_text: String,
     pub export_height: u32,
     pub export_height_text: String,
-    pub instrumental_audio_path: String,
-    pub double_export_instrumental: bool,
+    pub export_original_audio: bool,
+    pub export_instrumental_audio: bool,
+    has_project_instrumental_audio: bool,
     active_field: Option<ActiveField>,
     replace_active_field: bool,
 }
@@ -53,14 +131,13 @@ pub enum ExportModalResult {
         karaoke_text_scale: f32,
         export_width: u32,
         export_height: u32,
-        instrumental_audio_path: Option<std::path::PathBuf>,
-        double_export_instrumental: bool,
+        export_original_audio: bool,
+        export_instrumental_audio: bool,
     },
-    PickInstrumentalAudio,
 }
 
 impl ExportModal {
-    pub fn new(video_width: u32, video_height: u32) -> Self {
+    pub fn new(video_width: u32, video_height: u32, has_project_instrumental_audio: bool) -> Self {
         let export_width = sanitize_dimension(video_width);
         let export_height = sanitize_dimension(video_height);
         let fps = crate::constants::DEFAULT_EXPORT_FPS;
@@ -75,17 +152,12 @@ impl ExportModal {
             export_width_text: export_width.to_string(),
             export_height,
             export_height_text: export_height.to_string(),
-            instrumental_audio_path: String::new(),
-            double_export_instrumental: false,
+            export_original_audio: true,
+            export_instrumental_audio: false,
+            has_project_instrumental_audio,
             active_field: None,
             replace_active_field: false,
         }
-    }
-
-    pub fn set_instrumental_audio_path(&mut self, path: impl Into<String>) {
-        self.instrumental_audio_path = path.into();
-        self.active_field = Some(ActiveField::InstrumentalAudio);
-        self.replace_active_field = false;
     }
 
     fn update_scale_text(&mut self) {
@@ -106,30 +178,19 @@ impl ExportModal {
         }
     }
 
-    fn instrumental_audio_rects(card: Rect) -> (Rect, Rect) {
-        let audio_y = card.y + 266.0;
-        let browse_w = 88.0;
-        let audio_gap = 8.0;
-        let audio_field_w = card.width - 40.0 - browse_w - audio_gap;
-        let audio_rect = Rect {
-            x: card.x + 20.0,
-            y: audio_y,
-            width: audio_field_w,
-            height: 30.0,
-        };
-        let browse_rect = Rect {
-            x: audio_rect.x + audio_rect.width + audio_gap,
-            y: audio_y,
-            width: browse_w,
-            height: 30.0,
-        };
-        (audio_rect, browse_rect)
-    }
-
-    fn double_export_rect(card: Rect) -> Rect {
+    fn original_audio_rect(card: Rect) -> Rect {
         Rect {
             x: card.x + 20.0,
-            y: card.y + 318.0,
+            y: card.y + 266.0,
+            width: card.width - 40.0,
+            height: 24.0,
+        }
+    }
+
+    fn instrumental_audio_rect(card: Rect) -> Rect {
+        Rect {
+            x: card.x + 20.0,
+            y: card.y + 294.0,
             width: card.width - 40.0,
             height: 24.0,
         }
@@ -155,33 +216,23 @@ impl ExportModal {
         sanitize_dimension(value)
     }
 
-    fn instrumental_audio_path(&self) -> Option<std::path::PathBuf> {
-        let path = self
-            .instrumental_audio_path
-            .trim()
-            .trim_matches(|c| c == '"' || c == '\'')
-            .trim();
-        if path.is_empty() {
-            None
-        } else {
-            Some(std::path::PathBuf::from(path))
-        }
-    }
-
     fn export_result(&mut self) -> ExportModalResult {
         self.export_width = self.export_width();
         self.export_height = self.export_height();
         self.export_width_text = self.export_width.to_string();
         self.export_height_text = self.export_height.to_string();
-        let instrumental_audio_path = self.instrumental_audio_path();
+        if !self.export_original_audio && !self.export_instrumental_audio {
+            self.export_original_audio = true;
+        }
         ExportModalResult::Export {
             fps: self.fps as f64,
             br_scale: self.br_scale,
             karaoke_text_scale: self.karaoke_text_scale,
             export_width: self.export_width,
             export_height: self.export_height,
-            instrumental_audio_path,
-            double_export_instrumental: self.double_export_instrumental,
+            export_original_audio: self.export_original_audio,
+            export_instrumental_audio: self.export_instrumental_audio
+                && self.has_project_instrumental_audio,
         }
     }
 
@@ -227,31 +278,6 @@ impl ExportModal {
         true
     }
 
-    fn handle_instrumental_audio_key(&mut self, text: &str) -> bool {
-        if text == "\x08" || text == "\x7f" {
-            if self.replace_active_field {
-                self.instrumental_audio_path.clear();
-                self.replace_active_field = false;
-                return true;
-            }
-            self.instrumental_audio_path.pop();
-            return true;
-        }
-
-        if text.chars().all(|c| !c.is_control())
-            && self.instrumental_audio_path.len() + text.len() <= 1024
-        {
-            if self.replace_active_field {
-                self.instrumental_audio_path.clear();
-                self.replace_active_field = false;
-            }
-            self.instrumental_audio_path.push_str(text);
-            return true;
-        }
-
-        true
-    }
-
     fn handle_active_field_key(&mut self, text: &str) -> bool {
         let Some(active_field) = self.active_field else {
             return false;
@@ -265,7 +291,6 @@ impl ExportModal {
         match active_field {
             ActiveField::Width => self.handle_dimension_field_key(DimensionField::Width, text),
             ActiveField::Height => self.handle_dimension_field_key(DimensionField::Height, text),
-            ActiveField::InstrumentalAudio => self.handle_instrumental_audio_key(text),
         }
     }
 
@@ -405,20 +430,21 @@ impl ExportModal {
                     return ExportModalResult::Consumed;
                 }
 
-                let (audio_rect, browse_rect) = Self::instrumental_audio_rects(card);
-                if audio_rect.contains(*x, *y) {
-                    self.active_field = Some(ActiveField::InstrumentalAudio);
-                    self.replace_active_field = true;
-                    return ExportModalResult::Consumed;
-                }
-                if browse_rect.contains(*x, *y) {
+                if Self::original_audio_rect(card).contains(*x, *y) {
+                    if self.export_instrumental_audio || !self.export_original_audio {
+                        self.export_original_audio = !self.export_original_audio;
+                    }
                     self.active_field = None;
                     self.replace_active_field = false;
-                    return ExportModalResult::PickInstrumentalAudio;
+                    return ExportModalResult::Consumed;
                 }
 
-                if Self::double_export_rect(card).contains(*x, *y) {
-                    self.double_export_instrumental = !self.double_export_instrumental;
+                if Self::instrumental_audio_rect(card).contains(*x, *y) {
+                    if self.has_project_instrumental_audio
+                        && (self.export_original_audio || !self.export_instrumental_audio)
+                    {
+                        self.export_instrumental_audio = !self.export_instrumental_audio;
+                    }
                     self.active_field = None;
                     self.replace_active_field = false;
                     return ExportModalResult::Consumed;
@@ -925,9 +951,9 @@ impl ExportModal {
             font_family_override: None,
         });
 
-        // --- Optional instrumental audio ---
+        // --- Audio outputs ---
         labels.push(LabelInfo {
-            text: t("export_modal.instrumental_audio"),
+            text: t("export_modal.audio_outputs"),
             bounds: Rect {
                 x: fx,
                 y: card.y + 246.0,
@@ -943,84 +969,32 @@ impl ExportModal {
             font_family_override: None,
         });
 
-        let (audio_rect, browse_rect) = Self::instrumental_audio_rects(card);
-        let audio_active = self.active_field == Some(ActiveField::InstrumentalAudio);
-        let audio_text = if self.instrumental_audio_path.is_empty() {
-            t("export_modal.instrumental_audio_placeholder")
-        } else {
-            &self.instrumental_audio_path
-        };
-        overlay_quads.push(QuadInstance {
-            rect: [
-                audio_rect.x,
-                audio_rect.y,
-                audio_rect.width,
-                audio_rect.height,
-            ],
-            color: [0.08, 0.08, 0.10, 1.0],
-            color_bottom: [0.08, 0.08, 0.10, 1.0],
-            border_color: if audio_active {
-                [0.50, 0.65, 0.95, 0.9]
+        push_checkbox(
+            overlay_quads,
+            labels,
+            Self::original_audio_rect(card),
+            self.export_original_audio,
+            true,
+            t("export_modal.export_original_audio"),
+        );
+        push_checkbox(
+            overlay_quads,
+            labels,
+            Self::instrumental_audio_rect(card),
+            self.export_instrumental_audio,
+            self.has_project_instrumental_audio,
+            t("export_modal.export_instrumental_audio"),
+        );
+
+        labels.push(LabelInfo {
+            text: if self.has_project_instrumental_audio {
+                t("export_modal.audio_outputs_hint")
             } else {
-                [0.30, 0.30, 0.36, 0.5]
+                t("export_modal.no_project_instrumental_audio")
             },
-            border_width: if audio_active { 1.5 } else { 1.0 },
-            border_radius: 4.0,
-            shadow_offset: [0.0; 2],
-            shadow_color: [0.0; 4],
-            shadow_blur: 0.0,
-            rotation: 0.0,
-            _padding: [0.0; 2],
-        });
-        labels.push(LabelInfo {
-            text: audio_text,
-            bounds: audio_rect,
-            h_align: HAlign::Left,
-            v_align: VAlign::Center,
-            overflow: Overflow::Ellipsis,
-            padding: 8.0,
-            font_size_override: Some(11.0),
-            color_override: if self.instrumental_audio_path.is_empty() {
-                Some([130, 130, 145])
-            } else {
-                None
-            },
-            font_family_override: None,
-        });
-        overlay_quads.push(QuadInstance {
-            rect: [
-                browse_rect.x,
-                browse_rect.y,
-                browse_rect.width,
-                browse_rect.height,
-            ],
-            color: [0.15, 0.15, 0.18, 1.0],
-            color_bottom: [0.15, 0.15, 0.18, 1.0],
-            border_color: [0.30, 0.30, 0.36, 0.5],
-            border_width: 1.0,
-            border_radius: 4.0,
-            shadow_offset: [0.0; 2],
-            shadow_color: [0.0; 4],
-            shadow_blur: 0.0,
-            rotation: 0.0,
-            _padding: [0.0; 2],
-        });
-        labels.push(LabelInfo {
-            text: t("export_modal.browse"),
-            bounds: browse_rect,
-            h_align: HAlign::Center,
-            v_align: VAlign::Center,
-            overflow: Overflow::Clip,
-            padding: 0.0,
-            font_size_override: Some(11.0),
-            color_override: None,
-            font_family_override: None,
-        });
-        labels.push(LabelInfo {
-            text: t("export_modal.instrumental_audio_hint"),
             bounds: Rect {
                 x: fx,
-                y: card.y + 298.0,
+                y: card.y + 322.0,
                 width: fw,
                 height: 18.0,
             },
@@ -1030,69 +1004,6 @@ impl ExportModal {
             padding: 0.0,
             font_size_override: Some(10.0),
             color_override: Some([145, 145, 160]),
-            font_family_override: None,
-        });
-
-        let checkbox = Self::double_export_rect(card);
-        let box_size = 16.0;
-        let box_rect = Rect {
-            x: checkbox.x,
-            y: checkbox.y + (checkbox.height - box_size) / 2.0,
-            width: box_size,
-            height: box_size,
-        };
-        overlay_quads.push(QuadInstance {
-            rect: [box_rect.x, box_rect.y, box_rect.width, box_rect.height],
-            color: if self.double_export_instrumental {
-                [0.30, 0.45, 0.85, 1.0]
-            } else {
-                [0.08, 0.08, 0.10, 1.0]
-            },
-            color_bottom: if self.double_export_instrumental {
-                [0.22, 0.34, 0.70, 1.0]
-            } else {
-                [0.08, 0.08, 0.10, 1.0]
-            },
-            border_color: if self.double_export_instrumental {
-                [0.55, 0.68, 1.0, 0.9]
-            } else {
-                [0.30, 0.30, 0.36, 0.6]
-            },
-            border_width: 1.0,
-            border_radius: 3.0,
-            shadow_offset: [0.0; 2],
-            shadow_color: [0.0; 4],
-            shadow_blur: 0.0,
-            rotation: 0.0,
-            _padding: [0.0; 2],
-        });
-        if self.double_export_instrumental {
-            labels.push(LabelInfo {
-                text: "✓",
-                bounds: box_rect,
-                h_align: HAlign::Center,
-                v_align: VAlign::Center,
-                overflow: Overflow::Clip,
-                padding: 0.0,
-                font_size_override: Some(13.0),
-                color_override: Some([245, 245, 255]),
-                font_family_override: None,
-            });
-        }
-        labels.push(LabelInfo {
-            text: t("export_modal.double_export_instrumental"),
-            bounds: Rect {
-                x: checkbox.x + box_size + 8.0,
-                y: checkbox.y,
-                width: checkbox.width - box_size - 8.0,
-                height: checkbox.height,
-            },
-            h_align: HAlign::Left,
-            v_align: VAlign::Center,
-            overflow: Overflow::Clip,
-            padding: 0.0,
-            font_size_override: Some(11.0),
-            color_override: Some([190, 190, 205]),
             font_family_override: None,
         });
 

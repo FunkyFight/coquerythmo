@@ -360,7 +360,15 @@ impl State {
 
     pub fn open_export_modal(&mut self) {
         let (video_width, video_height) = self.source_video_size().unwrap_or((1920, 1080));
-        self.ui.open_export_modal(video_width, video_height);
+        self.ui.open_export_modal(
+            video_width,
+            video_height,
+            self.project
+                .settings
+                .instrumental_audio_path
+                .as_deref()
+                .is_some_and(|path| !path.trim().is_empty()),
+        );
     }
 
     pub fn open_file_explorer(
@@ -376,10 +384,6 @@ impl State {
 
     pub fn open_voice_actor_modal(&mut self) {
         self.ui.open_voice_actor_modal();
-    }
-
-    pub fn set_export_instrumental_audio_path(&mut self, path: impl Into<String>) {
-        self.ui.set_export_instrumental_audio_path(path);
     }
 
     pub fn open_proxy_modal(&mut self) {

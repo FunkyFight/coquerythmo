@@ -124,6 +124,8 @@
 "toast.video_load_failed" = "Video loading failed:"
 "toast.export_completed" = "MP4 export completed."
 "toast.export_failed" = "MP4 export failed:"
+"toast.no_audio_export_selected" = "Select at least one audio output to export."
+"toast.no_instrumental_audio" = "No instrumental audio is configured in project settings."
 
 # What's new modal
 "whats_new.title" = "What's New"
@@ -186,11 +188,11 @@
 "export_modal.resolution" = "Video resolution"
 "export_modal.br_scale" = "Rythmo band zoom"
 "export_modal.karaoke_text_scale" = "Karaoke text size"
-"export_modal.instrumental_audio" = "Instrumental audio (optional)"
-"export_modal.instrumental_audio_placeholder" = "Original audio if empty"
-"export_modal.instrumental_audio_hint" = "Unchecked: instrumental only. Checked: normal + _instrumental."
-"export_modal.double_export_instrumental" = "Instrumental double export"
-"export_modal.browse" = "Browse"
+"export_modal.audio_outputs" = "Audio outputs"
+"export_modal.export_original_audio" = "Export with original audio"
+"export_modal.export_instrumental_audio" = "Export with instrumental audio"
+"export_modal.audio_outputs_hint" = "When both are checked, the instrumental file is written with the _instrumental suffix."
+"export_modal.no_project_instrumental_audio" = "No instrumental audio is configured in project settings."
 "export_modal.export" = "Export"
 
 # Settings

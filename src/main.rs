@@ -283,9 +283,6 @@ fn handle_file_picker_selected(
         FilePickerIntent::VoiceActorIcon => {
             state.set_voice_actor_modal_icon_path(path.to_string_lossy().into_owned());
         }
-        FilePickerIntent::ExportInstrumentalAudio => {
-            state.set_export_instrumental_audio_path(path.to_string_lossy().into_owned());
-        }
         FilePickerIntent::ProjectInstrumentalAudio => {
             let path = path.to_string_lossy().into_owned();
             state.set_project_instrumental_audio_path(path.clone());
@@ -298,8 +295,8 @@ fn handle_file_picker_selected(
             karaoke_text_scale,
             export_width,
             export_height,
-            instrumental_audio_path,
-            double_export_instrumental,
+            export_original_audio,
+            export_instrumental_audio,
         } => {
             let _ = handle_action(
                 UiAction::StartExportToPath {
@@ -309,8 +306,8 @@ fn handle_file_picker_selected(
                     karaoke_text_scale,
                     export_width,
                     export_height,
-                    instrumental_audio_path,
-                    double_export_instrumental,
+                    export_original_audio,
+                    export_instrumental_audio,
                 },
                 state,
                 elwt,
@@ -595,8 +592,8 @@ fn handle_action(
             karaoke_text_scale,
             export_width,
             export_height,
-            instrumental_audio_path,
-            double_export_instrumental,
+            export_original_audio,
+            export_instrumental_audio,
         } => {
             let filters = save_dialog_filters("MP4 Video", &["mp4"]);
             open_file_picker(
@@ -609,8 +606,8 @@ fn handle_action(
                     karaoke_text_scale,
                     export_width,
                     export_height,
-                    instrumental_audio_path,
-                    double_export_instrumental,
+                    export_original_audio,
+                    export_instrumental_audio,
                 },
                 filters,
                 video_or_project_dir(state),
@@ -624,19 +621,31 @@ fn handle_action(
             karaoke_text_scale,
             export_width,
             export_height,
-            instrumental_audio_path,
-            double_export_instrumental,
+            export_original_audio,
+            export_instrumental_audio,
         } => {
             if let Some(source) = state.video_path() {
                 let source_fps = state.fps();
                 let project_snap = state.project.snapshot();
-                let instrumental_audio_path = instrumental_audio_path.or_else(|| {
-                    project_snap
-                        .settings
-                        .instrumental_audio_path
-                        .as_ref()
-                        .map(std::path::PathBuf::from)
-                });
+                if !export_original_audio && !export_instrumental_audio {
+                    state.show_toast(i18n::t("toast.no_audio_export_selected"), 3.0);
+                    return false;
+                }
+                let instrumental_audio_path = export_instrumental_audio
+                    .then(|| {
+                        project_snap
+                            .settings
+                            .instrumental_audio_path
+                            .as_ref()
+                            .filter(|path| !path.trim().is_empty())
+                            .map(std::path::PathBuf::from)
+                    })
+                    .flatten();
+                if export_instrumental_audio && instrumental_audio_path.is_none() {
+                    state.show_toast(i18n::t("toast.no_instrumental_audio"), 3.0);
+                    return false;
+                }
+                let double_export_instrumental = export_original_audio && export_instrumental_audio;
                 let source_audio_offset_frames = project_snap.settings.source_audio_offset_frames;
                 let instrumental_audio_offset_frames =
                     project_snap.settings.instrumental_audio_offset_frames;
@@ -685,21 +694,6 @@ fn handle_action(
             } else {
                 log::warn!("No video loaded — cannot export MP4");
             }
-        }
-        UiAction::PickExportInstrumentalAudio => {
-            let filters = open_dialog_filters(
-                "Audio",
-                &["wav", "mp3", "m4a", "aac", "flac", "ogg", "opus"],
-            );
-            open_file_picker(
-                state,
-                i18n::t("picker.instrumental_audio.title"),
-                FileExplorerMode::Open,
-                FilePickerIntent::ExportInstrumentalAudio,
-                filters,
-                video_or_project_dir(state),
-                None,
-            );
         }
         UiAction::PickProjectInstrumentalAudio => {
             let filters = open_dialog_filters(

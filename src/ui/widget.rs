@@ -124,8 +124,8 @@ pub enum UiAction {
         karaoke_text_scale: f32,
         export_width: u32,
         export_height: u32,
-        instrumental_audio_path: Option<std::path::PathBuf>,
-        double_export_instrumental: bool,
+        export_original_audio: bool,
+        export_instrumental_audio: bool,
     },
     StartExportToPath {
         output_path: std::path::PathBuf,
@@ -134,14 +134,13 @@ pub enum UiAction {
         karaoke_text_scale: f32,
         export_width: u32,
         export_height: u32,
-        instrumental_audio_path: Option<std::path::PathBuf>,
-        double_export_instrumental: bool,
+        export_original_audio: bool,
+        export_instrumental_audio: bool,
     },
     FilePickerSelected {
         intent: crate::ui::file_explorer_modal::FilePickerIntent,
         path: std::path::PathBuf,
     },
-    PickExportInstrumentalAudio,
     PickProjectInstrumentalAudio,
     OpenProxyModal,
     CreateProxy {

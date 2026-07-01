@@ -1239,8 +1239,8 @@ impl Ui {
                 karaoke_text_scale,
                 export_width,
                 export_height,
-                instrumental_audio_path,
-                double_export_instrumental,
+                export_original_audio,
+                export_instrumental_audio,
             } => {
                 self.export_modal = None;
                 EventResponse::Action(UiAction::StartExport {
@@ -1249,12 +1249,9 @@ impl Ui {
                     karaoke_text_scale,
                     export_width,
                     export_height,
-                    instrumental_audio_path,
-                    double_export_instrumental,
+                    export_original_audio,
+                    export_instrumental_audio,
                 })
-            }
-            export_modal::ExportModalResult::PickInstrumentalAudio => {
-                EventResponse::Action(UiAction::PickExportInstrumentalAudio)
             }
         }
     }
@@ -1357,8 +1354,17 @@ impl Ui {
         }
     }
 
-    pub fn open_export_modal(&mut self, video_width: u32, video_height: u32) {
-        self.export_modal = Some(export_modal::ExportModal::new(video_width, video_height));
+    pub fn open_export_modal(
+        &mut self,
+        video_width: u32,
+        video_height: u32,
+        has_project_instrumental_audio: bool,
+    ) {
+        self.export_modal = Some(export_modal::ExportModal::new(
+            video_width,
+            video_height,
+            has_project_instrumental_audio,
+        ));
     }
 
     pub fn open_file_explorer(&mut self, request: file_explorer_modal::FileExplorerRequest) {
@@ -1384,12 +1390,6 @@ impl Ui {
     pub fn set_voice_actor_modal_icon_path(&mut self, path: impl Into<String>) {
         if let Some(modal) = &mut self.voice_actor_modal {
             modal.set_icon_path(path);
-        }
-    }
-
-    pub fn set_export_instrumental_audio_path(&mut self, path: impl Into<String>) {
-        if let Some(modal) = &mut self.export_modal {
-            modal.set_instrumental_audio_path(path);
         }
     }
 

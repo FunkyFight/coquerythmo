@@ -160,6 +160,8 @@
 "toast.video_load_failed" = "Chargement vidéo échoué :"
 "toast.export_completed" = "Export MP4 terminé."
 "toast.export_failed" = "Export MP4 échoué :"
+"toast.no_audio_export_selected" = "Sélectionne au moins une sortie audio à exporter."
+"toast.no_instrumental_audio" = "Aucune version instrumentale dans les paramètres du projet."
 
 # What's new modal
 "whats_new.title" = "Nouveautés"
@@ -222,11 +224,11 @@
 "export_modal.resolution" = "Résolution vidéo"
 "export_modal.br_scale" = "Zoom bande rythmo"
 "export_modal.karaoke_text_scale" = "Taille texte karaoké"
-"export_modal.instrumental_audio" = "Audio instrumental (optionnel)"
-"export_modal.instrumental_audio_placeholder" = "Audio original si vide"
-"export_modal.instrumental_audio_hint" = "Décoché : export instrumental uniquement. Coché : normal + _instrumental."
-"export_modal.double_export_instrumental" = "Double export instrumental"
-"export_modal.browse" = "Choisir"
+"export_modal.audio_outputs" = "Sorties audio"
+"export_modal.export_original_audio" = "Exporter avec audio original"
+"export_modal.export_instrumental_audio" = "Exporter avec audio instrumental"
+"export_modal.audio_outputs_hint" = "Si les deux sont cochés, l'instrumental est écrit avec le suffixe _instrumental."
+"export_modal.no_project_instrumental_audio" = "Aucune version instrumentale renseignée dans les paramètres du projet."
 "export_modal.export" = "Exporter"
 
 # Settings

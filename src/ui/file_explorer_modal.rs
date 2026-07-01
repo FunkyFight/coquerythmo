@@ -58,7 +58,6 @@ pub enum FilePickerIntent {
     QuickSave,
     NewProjectSave,
     VoiceActorIcon,
-    ExportInstrumentalAudio,
     ProjectInstrumentalAudio,
     ExportMp4 {
         fps: f64,
@@ -66,8 +65,8 @@ pub enum FilePickerIntent {
         karaoke_text_scale: f32,
         export_width: u32,
         export_height: u32,
-        instrumental_audio_path: Option<PathBuf>,
-        double_export_instrumental: bool,
+        export_original_audio: bool,
+        export_instrumental_audio: bool,
     },
 }
 
