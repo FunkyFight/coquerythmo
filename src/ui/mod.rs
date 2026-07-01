@@ -46,6 +46,29 @@ use self::slider::Slider;
 
 use theme::*;
 
+pub(crate) fn scroll_delta_to_frames(delta: f32, multiplier: f32) -> i32 {
+    scroll_delta_to_frames_impl(delta, multiplier)
+}
+
+#[cfg(target_os = "macos")]
+fn scroll_delta_to_frames_impl(delta: f32, multiplier: f32) -> i32 {
+    let frames = (delta * multiplier).round() as i32;
+    if frames == 0 && delta.abs() > f32::EPSILON {
+        if delta > 0.0 {
+            1
+        } else {
+            -1
+        }
+    } else {
+        frames
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn scroll_delta_to_frames_impl(delta: f32, multiplier: f32) -> i32 {
+    (delta * multiplier) as i32
+}
+
 pub struct Ui {
     topbar_widgets: Vec<Box<dyn Widget>>,
     toolbar_widgets: Vec<Box<dyn Widget>>,
@@ -807,7 +830,7 @@ impl Ui {
                     return EventResponse::Action(UiAction::SeekToNextBoucle { direction });
                 }
                 let multiplier = if *fast { 60.0 } else { 15.0 };
-                let frames = (delta * multiplier) as i32;
+                let frames = scroll_delta_to_frames(*delta, multiplier);
                 if frames != 0 {
                     return EventResponse::Action(UiAction::SeekRelative(frames));
                 }

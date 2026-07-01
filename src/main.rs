@@ -910,6 +910,11 @@ fn dispatch(
     state.request_redraw();
 }
 
+fn is_space_key(key: &Key) -> bool {
+    matches!(key, Key::Named(NamedKey::Space))
+        || matches!(key, Key::Character(text) if text.as_str() == " ")
+}
+
 fn app_window_builder() -> WindowBuilder {
     let builder = WindowBuilder::new();
     configure_platform_window(builder)
@@ -1167,7 +1172,7 @@ fn main() {
                         WindowEvent::CloseRequested => state.close_secondary_display(),
                         WindowEvent::KeyboardInput { event, .. } => {
                             if event.state == ElementState::Pressed {
-                                if matches!(event.logical_key, Key::Named(NamedKey::Space)) {
+                                if is_space_key(&event.logical_key) {
                                     state.toggle_play_pause();
                                     state.request_redraw();
                                     state.request_secondary_redraw();
@@ -1230,14 +1235,18 @@ fn main() {
                             Key::Named(NamedKey::Escape) => Some("\x1b"),
                             Key::Named(NamedKey::Backspace) => Some("\x08"),
                             Key::Named(NamedKey::Enter) => Some("\r"),
-                            Key::Named(NamedKey::Space) => Some(" "),
                             Key::Named(NamedKey::Tab) => Some("\t"),
                             _ => None,
+                        };
+                        let key_text = if is_space_key(&event.logical_key) {
+                            Some(" ")
+                        } else {
+                            key_text
                         };
 
                         if state.is_studio_mode() {
                             // In studio mode: only Space (play/pause) is allowed
-                            if matches!(event.logical_key, Key::Named(NamedKey::Space)) {
+                            if is_space_key(&event.logical_key) {
                                 state.toggle_play_pause();
                                 state.request_redraw();
                             }
@@ -1312,7 +1321,7 @@ fn main() {
                             state.request_redraw();
                         } else if matches!(event.logical_key, Key::Named(NamedKey::Delete)) {
                             dispatch(UiEvent::Delete, &mut state, elwt);
-                        } else if matches!(event.logical_key, Key::Named(NamedKey::Space)) {
+                        } else if is_space_key(&event.logical_key) {
                             state.toggle_play_pause();
                             state.request_redraw();
                         }
@@ -1332,8 +1341,10 @@ fn main() {
                             handle_action(UiAction::SeekToNextBoucle { direction }, &mut state, elwt);
                         } else {
                             // Regular scroll: seek by frames
-                            let frame_delta = (scroll_delta.abs() * 10.0) as i32 * direction;
-                            handle_action(UiAction::SeekRelative(frame_delta), &mut state, elwt);
+                            let frame_delta = ui::scroll_delta_to_frames(scroll_delta, 10.0);
+                            if frame_delta != 0 {
+                                handle_action(UiAction::SeekRelative(frame_delta), &mut state, elwt);
+                            }
                         }
                         state.request_redraw();
                     } else {
@@ -1418,6 +1429,9 @@ fn main() {
                     // Allow middle click panning in both editor and studio modes
                     match button_state {
                         ElementState::Pressed => {
+                            if state.is_studio_mode() {
+                                state.begin_timeline_pan(cursor_pos.0);
+                            }
                             dispatch(UiEvent::MiddlePress {
                                 x: cursor_pos.0, y: cursor_pos.1,
                             }, &mut state, elwt);

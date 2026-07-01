@@ -176,6 +176,12 @@ impl State {
         (x / self.ui_scale, y / self.ui_scale)
     }
 
+    pub fn begin_timeline_pan(&mut self, x: f32) {
+        self.ui.rythmo_state.panning = true;
+        self.ui.rythmo_state.pan_last_x = x;
+        self.ui.rythmo_state.pan_accum = 0.0;
+    }
+
     pub fn handle_ui_event(&mut self, event: &UiEvent) -> EventResponse {
         self.ui
             .handle_event(event, &self.project, self.current_frame(), self.fps())
