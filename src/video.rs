@@ -111,6 +111,8 @@ pub struct VideoPlayer {
     audio_thread: Option<JoinHandle<()>>,
     pub waveform: Arc<RwLock<Vec<f32>>>,
     pub instrumental_waveform: Arc<RwLock<Vec<f32>>>,
+    waveform_revision: Arc<AtomicU64>,
+    waveform_jobs: Arc<AtomicU32>,
 }
 
 struct AudioClockSnapshot {
@@ -223,6 +225,8 @@ impl VideoPlayer {
             audio_thread: None,
             waveform: Arc::new(RwLock::new(Vec::new())),
             instrumental_waveform: Arc::new(RwLock::new(Vec::new())),
+            waveform_revision: Arc::new(AtomicU64::new(0)),
+            waveform_jobs: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -328,17 +332,18 @@ impl VideoPlayer {
     }
 
     pub fn waveform_for_render(&self) -> Arc<RwLock<Vec<f32>>> {
-        if self.active_audio_track == AudioTrack::Instrumental {
-            let has_instrumental_waveform = self
-                .instrumental_waveform
-                .read()
-                .map(|waveform| !waveform.is_empty())
-                .unwrap_or(false);
-            if has_instrumental_waveform {
-                return self.instrumental_waveform.clone();
-            }
+        match self.active_audio_track {
+            AudioTrack::Source => self.waveform.clone(),
+            AudioTrack::Instrumental => self.instrumental_waveform.clone(),
         }
-        self.waveform.clone()
+    }
+
+    pub fn waveform_revision(&self) -> u64 {
+        self.waveform_revision.load(Ordering::Relaxed)
+    }
+
+    pub fn is_waveform_decoding(&self) -> bool {
+        self.waveform_jobs.load(Ordering::Relaxed) > 0
     }
 
     pub fn toggle(&mut self) -> bool {
@@ -675,8 +680,15 @@ impl VideoPlayer {
     }
 
     fn decode_source_waveform(&mut self) {
-        if let Ok(mut w) = self.waveform.write() {
+        let had_data = if let Ok(mut w) = self.waveform.write() {
+            let had_data = !w.is_empty();
             w.clear();
+            had_data
+        } else {
+            false
+        };
+        if had_data {
+            self.waveform_revision.fetch_add(1, Ordering::Relaxed);
         }
         let Some(wave_path) = self.source_audio_path.clone() else {
             return;
@@ -685,8 +697,15 @@ impl VideoPlayer {
     }
 
     fn decode_instrumental_waveform(&mut self) {
-        if let Ok(mut w) = self.instrumental_waveform.write() {
+        let had_data = if let Ok(mut w) = self.instrumental_waveform.write() {
+            let had_data = !w.is_empty();
             w.clear();
+            had_data
+        } else {
+            false
+        };
+        if had_data {
+            self.waveform_revision.fetch_add(1, Ordering::Relaxed);
         }
         let Some(wave_path) = self.instrumental_audio_path.clone() else {
             return;
@@ -697,16 +716,22 @@ impl VideoPlayer {
     fn spawn_waveform_decode(&self, wave_path: PathBuf, waveform: Arc<RwLock<Vec<f32>>>) {
         let wave_fps = self.fps;
         let wave_total = self.total_frames;
+        let waveform_revision = self.waveform_revision.clone();
+        let waveform_jobs = self.waveform_jobs.clone();
+        waveform_jobs.fetch_add(1, Ordering::Relaxed);
         thread::spawn(move || {
             match decode_waveform_peaks(&wave_path, wave_fps, wave_total as usize) {
                 Ok(data) => {
+                    let decoded_len = data.len();
                     if let Ok(mut w) = waveform.write() {
                         *w = data;
+                        waveform_revision.fetch_add(1, Ordering::Relaxed);
                     }
-                    log::info!("Waveform decoded: {} peaks", wave_total);
+                    log::info!("Waveform decoded: {} peaks", decoded_len);
                 }
                 Err(e) => log::warn!("Waveform decode failed for {}: {e}", wave_path.display()),
             }
+            waveform_jobs.fetch_sub(1, Ordering::Relaxed);
         });
     }
 

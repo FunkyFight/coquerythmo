@@ -916,6 +916,43 @@ mod tests {
         assert!(mid.x < line_rect.x);
         assert!((end.x - line_rect.x).abs() < 0.01);
     }
+
+    #[test]
+    fn waveform_offset_keeps_visible_audio_peaks_rendered() {
+        crate::config::init();
+        let project = Project::new();
+        let state = RythmoState::new();
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 240.0,
+        };
+        let current_frame = 10_000;
+        let waveform_offset_frames = 9_000;
+        let visible_audio_frame = current_frame - waveform_offset_frames;
+        let mut waveform = vec![0.0; (visible_audio_frame as usize + 1) * 4];
+        waveform[visible_audio_frame as usize * 4] = 1.0;
+
+        let quads = render_rythmo_base(
+            &zone,
+            &project,
+            current_frame,
+            &waveform,
+            waveform_offset_frames,
+            true,
+            false,
+            24.0,
+            &state,
+        );
+
+        assert!(quads.iter().any(|quad| {
+            quad.color == [0.30, 0.90, 0.45, 0.85]
+                && quad.rect[0] >= zone.x
+                && quad.rect[0] <= zone.x + zone.width
+                && (quad.rect[3] - constants::RULER_HEIGHT).abs() < 0.01
+        }));
+    }
 }
 
 fn ppf() -> f32 {
@@ -1455,8 +1492,15 @@ pub fn render_rythmo_base(
         let visible_frames = (zone.width / ppf()) as i64 + 4;
         let first_frame = current_frame - visible_frames / 2;
         let last_frame = current_frame + visible_frames / 2;
-        let first_sub = (first_frame * subs as i64).max(0);
-        let last_sub = ((last_frame + 1) * subs as i64).min(waveform.len() as i64);
+        let first_wave_frame = first_frame.saturating_sub(waveform_offset_frames);
+        let last_wave_frame = last_frame.saturating_sub(waveform_offset_frames);
+        let first_sub = first_wave_frame
+            .saturating_mul(subs as i64)
+            .clamp(0, waveform.len() as i64);
+        let last_sub = last_wave_frame
+            .saturating_add(1)
+            .saturating_mul(subs as i64)
+            .clamp(0, waveform.len() as i64);
 
         for si in first_sub..last_sub {
             let amp = waveform[si as usize].min(1.0);
@@ -1466,7 +1510,7 @@ pub fn render_rythmo_base(
             }
 
             // Position: which video frame + sub offset
-            let frame = si / subs as i64 + waveform_offset_frames;
+            let frame = (si / subs as i64).saturating_add(waveform_offset_frames);
             let sub_offset = (si % subs as i64) as f32;
             let x = frame_to_x(frame, current_frame, zone) + sub_offset * sub_ppf;
             if x < zone.x || x > zone.x + zone.width {

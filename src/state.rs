@@ -85,7 +85,7 @@ pub struct State {
     ping_results: std::sync::Arc<std::sync::Mutex<Vec<PingResult>>>,
     last_autosave: Instant,
     last_redraw: Instant,
-    last_waveform_len: usize,
+    last_waveform_revision: u64,
     studio_mode: bool,
     fullscreen_before_studio: Option<winit::window::Fullscreen>,
     show_studio_warning: bool,
@@ -128,7 +128,7 @@ impl State {
             ping_results: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             last_autosave: Instant::now(),
             last_redraw: Instant::now(),
-            last_waveform_len: 0,
+            last_waveform_revision: 0,
             studio_mode: false,
             fullscreen_before_studio: None,
             show_studio_warning: false,
@@ -2699,28 +2699,29 @@ impl State {
     }
 
     fn poll_waveform_change(&mut self) -> bool {
-        let len = self
-            .video_player
-            .as_ref()
-            .map(|player| {
-                let source_len = player
-                    .waveform
-                    .read()
-                    .map(|waveform| waveform.len())
-                    .unwrap_or(0);
-                let instrumental_len = player
-                    .instrumental_waveform
-                    .read()
-                    .map(|waveform| waveform.len())
-                    .unwrap_or(0);
-                source_len.wrapping_add(instrumental_len)
-            })
-            .unwrap_or(0);
-        if len != self.last_waveform_len {
-            self.last_waveform_len = len;
+        let revision = self.current_waveform_revision();
+        if revision != self.last_waveform_revision {
+            self.last_waveform_revision = revision;
             return true;
         }
         false
+    }
+
+    fn current_waveform_revision(&self) -> u64 {
+        self.video_player
+            .as_ref()
+            .map(|player| player.waveform_revision())
+            .unwrap_or(0)
+    }
+
+    fn waveform_redraw_pending(&self) -> bool {
+        self.current_waveform_revision() != self.last_waveform_revision
+    }
+
+    fn waveform_decode_pending(&self) -> bool {
+        self.video_player
+            .as_ref()
+            .is_some_and(|player| player.is_waveform_decoding())
     }
 
     fn scroll_decode_due(&self, now: Instant) -> bool {
@@ -2748,7 +2749,9 @@ impl State {
 
     pub fn needs_redraw_now(&self) -> bool {
         let now = Instant::now();
-        self.scroll_decode_due(now) || self.periodic_redraw_due(now)
+        self.scroll_decode_due(now)
+            || self.periodic_redraw_due(now)
+            || self.waveform_redraw_pending()
     }
 
     pub fn needs_continuous_redraw(&self) -> bool {
@@ -2792,6 +2795,10 @@ impl State {
 
         if self.dirty {
             push_deadline(self.last_autosave + Duration::from_secs(60));
+        }
+
+        if self.waveform_decode_pending() || self.waveform_redraw_pending() {
+            push_deadline(now + Duration::from_millis(100));
         }
 
         if self.network.state != ConnectionState::Disconnected || self.ui.needs_background_poll() {
