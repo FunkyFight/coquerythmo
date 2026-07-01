@@ -142,6 +142,7 @@ pub enum UiAction {
         path: std::path::PathBuf,
     },
     PickExportInstrumentalAudio,
+    PickProjectInstrumentalAudio,
     OpenProxyModal,
     CreateProxy {
         width: u32,
@@ -270,12 +271,18 @@ pub enum UiAction {
     NetworkDisconnect,
     // Settings
     OpenSettings,
+    OpenProjectSettings,
     RestoreBackup,
     SaveSettings {
         lang: String,
         rythmo_font: Option<String>,
         scroll_speed: f32,
     },
+    SaveProjectSettings {
+        instrumental_audio_path: Option<String>,
+    },
+    ToggleActiveAudio,
+    OffsetActiveAudioBy(i64),
     // New project
     NewProject,
     NewProjectSave,

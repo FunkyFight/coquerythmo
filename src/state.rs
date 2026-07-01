@@ -18,7 +18,7 @@ use crate::rythmo_line::RythmoLine;
 use crate::ui::renderer::UiRenderer;
 use crate::ui::widget::{EventResponse, UiEvent};
 use crate::ui::Ui;
-use crate::video::VideoPlayer;
+use crate::video::{AudioTrack, VideoPlayer};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 
 use crate::constants;
@@ -85,6 +85,7 @@ pub struct State {
     ping_results: std::sync::Arc<std::sync::Mutex<Vec<PingResult>>>,
     last_autosave: Instant,
     last_redraw: Instant,
+    last_waveform_len: usize,
     studio_mode: bool,
     fullscreen_before_studio: Option<winit::window::Fullscreen>,
     show_studio_warning: bool,
@@ -127,6 +128,7 @@ impl State {
             ping_results: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             last_autosave: Instant::now(),
             last_redraw: Instant::now(),
+            last_waveform_len: 0,
             studio_mode: false,
             fullscreen_before_studio: None,
             show_studio_warning: false,
@@ -277,6 +279,27 @@ impl State {
     pub fn open_settings_modal(&mut self) {
         let fonts = self.ui_renderer.enumerate_font_families();
         self.ui.open_settings_modal(fonts);
+    }
+
+    pub fn open_project_settings_modal(&mut self) {
+        self.ui
+            .open_project_settings_modal(self.project.settings.instrumental_audio_path.clone());
+    }
+
+    pub fn set_project_instrumental_audio_path(&mut self, path: impl Into<String>) {
+        self.ui.set_project_instrumental_audio_path(path);
+    }
+
+    pub fn close_project_settings_modal(&mut self) {
+        self.ui.close_project_settings_modal();
+    }
+
+    pub fn save_project_settings(&mut self, instrumental_audio_path: Option<String>) {
+        let mut settings = self.project.settings.clone();
+        settings.instrumental_audio_path = instrumental_audio_path;
+        self.project.set_settings(settings);
+        self.dirty = true;
+        self.sync_audio_settings_to_player();
     }
 
     pub fn show_toast(&mut self, message: impl Into<String>, duration_secs: f32) {
@@ -490,6 +513,7 @@ impl State {
             .as_ref()
             .and_then(|br_path| crate::video_proxy::linked_proxy_path(br_path, path));
         self.load_video_for_playback(path, proxy_path.as_deref(), None);
+        self.sync_audio_settings_to_player();
     }
 
     pub fn reload_linked_proxy(&mut self) {
@@ -632,6 +656,7 @@ impl State {
         self.source_video_size = source_size;
         self.proxy_video_path = active_proxy_path;
         self.video_player = Some(player);
+        self.sync_audio_settings_to_player();
         self.timeline.emit(TimelineEvent::VideoLoaded {
             fps,
             total_frames: total,
@@ -658,6 +683,66 @@ impl State {
                 self.timeline.emit(TimelineEvent::PlaybackStopped);
             }
         }
+    }
+
+    pub fn toggle_active_audio(&mut self) {
+        let Some(player) = &mut self.video_player else {
+            return;
+        };
+        if player.toggle_audio_track() {
+            let label = match player.active_audio_track() {
+                AudioTrack::Source => "Audio original",
+                AudioTrack::Instrumental => "Audio instrumental",
+            };
+            self.show_toast(label, 1.5);
+        } else {
+            self.show_toast("Aucune version instrumentale", 2.5);
+        }
+    }
+
+    pub fn active_audio_offset_frames(&self) -> i64 {
+        self.video_player
+            .as_ref()
+            .map(|player| player.active_audio_offset_frames())
+            .unwrap_or(0)
+    }
+
+    pub fn active_audio_is_instrumental(&self) -> bool {
+        self.video_player
+            .as_ref()
+            .is_some_and(|player| player.active_audio_track() == AudioTrack::Instrumental)
+    }
+
+    pub fn offset_active_audio_by(&mut self, delta_frames: i64) {
+        if delta_frames == 0 {
+            return;
+        }
+        let Some(player) = &mut self.video_player else {
+            return;
+        };
+        match player.active_audio_track() {
+            AudioTrack::Source => self.project.adjust_source_audio_offset(delta_frames),
+            AudioTrack::Instrumental => self.project.adjust_instrumental_audio_offset(delta_frames),
+        }
+        player.adjust_active_audio_offset(delta_frames);
+        self.dirty = true;
+    }
+
+    pub fn sync_audio_settings_to_player(&mut self) {
+        let Some(player) = &mut self.video_player else {
+            return;
+        };
+        let settings = &self.project.settings;
+        player.set_instrumental_audio_path(
+            settings
+                .instrumental_audio_path
+                .as_ref()
+                .map(std::path::PathBuf::from),
+        );
+        player.set_audio_offsets(
+            settings.source_audio_offset_frames,
+            settings.instrumental_audio_offset_frames,
+        );
     }
 
     pub fn set_volume(&mut self, vol: f32) {
@@ -2609,7 +2694,33 @@ impl State {
         changed |= self.poll_export_job();
         changed |= self.poll_proxy_job();
         changed |= self.poll_file_explorer();
+        changed |= self.poll_waveform_change();
         changed
+    }
+
+    fn poll_waveform_change(&mut self) -> bool {
+        let len = self
+            .video_player
+            .as_ref()
+            .map(|player| {
+                let source_len = player
+                    .waveform
+                    .read()
+                    .map(|waveform| waveform.len())
+                    .unwrap_or(0);
+                let instrumental_len = player
+                    .instrumental_waveform
+                    .read()
+                    .map(|waveform| waveform.len())
+                    .unwrap_or(0);
+                source_len.wrapping_add(instrumental_len)
+            })
+            .unwrap_or(0);
+        if len != self.last_waveform_len {
+            self.last_waveform_len = len;
+            return true;
+        }
+        false
     }
 
     fn scroll_decode_due(&self, now: Instant) -> bool {
@@ -2755,7 +2866,7 @@ impl State {
         let waveform_arc = self
             .video_player
             .as_ref()
-            .map(|player| player.waveform.clone());
+            .map(|player| player.waveform_for_render());
         let waveform_guard = waveform_arc
             .as_ref()
             .and_then(|waveform| waveform.read().ok());
@@ -2765,6 +2876,8 @@ impl State {
             .map(Vec::as_slice)
             .unwrap_or(empty_waveform);
         let fps = self.fps();
+        let waveform_offset_frames = self.active_audio_offset_frames();
+        let waveform_is_instrumental = self.active_audio_is_instrumental();
         self.render_index.refresh(&self.project);
         self.ui.render(
             &mut self.ui_renderer,
@@ -2780,6 +2893,8 @@ impl State {
             current_frame,
             fps,
             waveform,
+            waveform_offset_frames,
+            waveform_is_instrumental,
         );
 
         self.gfx.queue.submit(std::iter::once(encoder.finish()));

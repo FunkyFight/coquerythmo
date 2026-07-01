@@ -239,6 +239,12 @@
 "settings.restart_required" = "(redémarrage nécessaire)"
 "settings.scroll_speed" = "Vitesse de défilement"
 "settings.tooltip" = "Paramètres"
+"project_settings.title" = "Paramètres du projet"
+"project_settings.tooltip" = "Paramètres du projet"
+"project_settings.instrumental_version" = "Version instrumentale"
+"project_settings.no_file" = "Aucun fichier sélectionné"
+"project_settings.browse" = "Parcourir"
+"project_settings.clear" = "Effacer"
 
 # Save prompt (new project)
 "save_prompt.title" = "Modifications non sauvegardées"

@@ -59,6 +59,7 @@ pub enum FilePickerIntent {
     NewProjectSave,
     VoiceActorIcon,
     ExportInstrumentalAudio,
+    ProjectInstrumentalAudio,
     ExportMp4 {
         fps: f64,
         br_scale: f32,

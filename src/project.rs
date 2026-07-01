@@ -16,6 +16,16 @@ const DEFAULT_COLORS: &[[f32; 4]] = &[
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProjectSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrumental_audio_path: Option<String>,
+    #[serde(default)]
+    pub source_audio_offset_frames: i64,
+    #[serde(default)]
+    pub instrumental_audio_offset_frames: i64,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Character {
     pub name: String,
@@ -37,6 +47,7 @@ pub struct Project {
     pub voice_actors: Vec<VoiceActor>,
     color_index: usize,
     revision: u64,
+    pub settings: ProjectSettings,
 }
 
 impl Project {
@@ -49,6 +60,7 @@ impl Project {
             voice_actors: Vec::new(),
             color_index: 0,
             revision: 0,
+            settings: ProjectSettings::default(),
         }
     }
 
@@ -61,6 +73,7 @@ impl Project {
             voice_actors: self.voice_actors.clone(),
             color_index: self.color_index,
             revision: self.revision,
+            settings: self.settings.clone(),
         }
     }
 
@@ -349,8 +362,30 @@ impl Project {
         self.markers.clear();
         self.known_characters.clear();
         self.voice_actors.clear();
+        self.settings = ProjectSettings::default();
         self.color_index = 0;
         self.bump_revision();
+    }
+
+    pub fn set_settings(&mut self, settings: ProjectSettings) {
+        if self.settings != settings {
+            self.settings = settings;
+            self.bump_revision();
+        }
+    }
+
+    pub fn adjust_source_audio_offset(&mut self, delta_frames: i64) {
+        if delta_frames != 0 {
+            self.settings.source_audio_offset_frames += delta_frames;
+            self.bump_revision();
+        }
+    }
+
+    pub fn adjust_instrumental_audio_offset(&mut self, delta_frames: i64) {
+        if delta_frames != 0 {
+            self.settings.instrumental_audio_offset_frames += delta_frames;
+            self.bump_revision();
+        }
     }
 
     // -- Character management --

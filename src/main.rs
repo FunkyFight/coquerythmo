@@ -218,6 +218,7 @@ fn import_project_from_path(state: &mut State, path: PathBuf) {
         Ok(data) => {
             let fps = state.fps();
             data.apply_to_project(&mut state.project, fps);
+            state.sync_audio_settings_to_player();
             state.project_path = Some(path.clone());
             state.reload_linked_proxy();
             if let Some(video) = state.video_path() {
@@ -284,6 +285,12 @@ fn handle_file_picker_selected(
         }
         FilePickerIntent::ExportInstrumentalAudio => {
             state.set_export_instrumental_audio_path(path.to_string_lossy().into_owned());
+        }
+        FilePickerIntent::ProjectInstrumentalAudio => {
+            let path = path.to_string_lossy().into_owned();
+            state.set_project_instrumental_audio_path(path.clone());
+            state.save_project_settings(Some(path));
+            state.close_project_settings_modal();
         }
         FilePickerIntent::ExportMp4 {
             fps,
@@ -623,6 +630,16 @@ fn handle_action(
             if let Some(source) = state.video_path() {
                 let source_fps = state.fps();
                 let project_snap = state.project.snapshot();
+                let instrumental_audio_path = instrumental_audio_path.or_else(|| {
+                    project_snap
+                        .settings
+                        .instrumental_audio_path
+                        .as_ref()
+                        .map(std::path::PathBuf::from)
+                });
+                let source_audio_offset_frames = project_snap.settings.source_audio_offset_frames;
+                let instrumental_audio_offset_frames =
+                    project_snap.settings.instrumental_audio_offset_frames;
                 let progress =
                     std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0.0_f32.to_bits()));
                 let progress_for_ui = progress.clone();
@@ -648,6 +665,8 @@ fn handle_action(
                         export_width,
                         export_height,
                         instrumental_audio_path.as_deref(),
+                        source_audio_offset_frames,
+                        instrumental_audio_offset_frames,
                         double_export_instrumental,
                         Some(render_backend_status.clone()),
                         cancel_for_job,
@@ -677,6 +696,21 @@ fn handle_action(
                 i18n::t("picker.instrumental_audio.title"),
                 FileExplorerMode::Open,
                 FilePickerIntent::ExportInstrumentalAudio,
+                filters,
+                video_or_project_dir(state),
+                None,
+            );
+        }
+        UiAction::PickProjectInstrumentalAudio => {
+            let filters = open_dialog_filters(
+                "Audio",
+                &["wav", "mp3", "m4a", "aac", "flac", "ogg", "opus"],
+            );
+            open_file_picker(
+                state,
+                i18n::t("picker.instrumental_audio.title"),
+                FileExplorerMode::Open,
+                FilePickerIntent::ProjectInstrumentalAudio,
                 filters,
                 video_or_project_dir(state),
                 None,
@@ -727,6 +761,7 @@ fn handle_action(
                     Ok(data) => {
                         let fps = state.fps();
                         data.apply_to_project(&mut state.project, fps);
+                        state.sync_audio_settings_to_player();
                         config::add_recent_project(video_path, br_path);
                         state.rebuild_topbar_for_network();
                         log::info!("Loaded recent project");
@@ -806,6 +841,9 @@ fn handle_action(
         UiAction::OpenSettings => {
             state.open_settings_modal();
         }
+        UiAction::OpenProjectSettings => {
+            state.open_project_settings_modal();
+        }
         UiAction::SaveSettings {
             lang,
             rythmo_font,
@@ -813,6 +851,17 @@ fn handle_action(
         } => {
             crate::config::save_settings(lang, rythmo_font, scroll_speed);
             state.close_settings_modal();
+        }
+        UiAction::SaveProjectSettings {
+            instrumental_audio_path,
+        } => {
+            state.save_project_settings(instrumental_audio_path);
+        }
+        UiAction::ToggleActiveAudio => {
+            state.toggle_active_audio();
+        }
+        UiAction::OffsetActiveAudioBy(delta_frames) => {
+            state.offset_active_audio_by(delta_frames);
         }
         UiAction::NewProject => {
             if state.dirty && !state.project.is_empty() {
@@ -1321,6 +1370,9 @@ fn main() {
                             state.request_redraw();
                         } else if matches!(event.logical_key, Key::Named(NamedKey::Delete)) {
                             dispatch(UiEvent::Delete, &mut state, elwt);
+                        } else if matches!(event.logical_key, Key::Named(NamedKey::Tab)) {
+                            handle_action(UiAction::ToggleActiveAudio, &mut state, elwt);
+                            state.request_redraw();
                         } else if is_space_key(&event.logical_key) {
                             state.toggle_play_pause();
                             state.request_redraw();

@@ -14,6 +14,12 @@ const VIDEO_PIX_FMT: &str = "bgra";
 const VIDEO_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 const AUDIO_DECODE_CHANNELS: usize = 2;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioTrack {
+    Source,
+    Instrumental,
+}
+
 fn ffmpeg_command() -> Command {
     media_command("ffmpeg")
 }
@@ -89,7 +95,11 @@ pub struct VideoPlayer {
     decoder_handle: Option<JoinHandle<()>>,
     kill_signal: Arc<AtomicBool>,
     path: Option<PathBuf>,
-    audio_path: Option<PathBuf>,
+    source_audio_path: Option<PathBuf>,
+    instrumental_audio_path: Option<PathBuf>,
+    active_audio_track: AudioTrack,
+    source_audio_offset_frames: i64,
+    instrumental_audio_offset_frames: i64,
     finished: bool,
     current_frame: i64,
     interpolated_frame: i64,
@@ -100,6 +110,7 @@ pub struct VideoPlayer {
     audio_clock: Option<Arc<AudioOutputState>>,
     audio_thread: Option<JoinHandle<()>>,
     pub waveform: Arc<RwLock<Vec<f32>>>,
+    pub instrumental_waveform: Arc<RwLock<Vec<f32>>>,
 }
 
 struct AudioClockSnapshot {
@@ -197,7 +208,11 @@ impl VideoPlayer {
             decoder_handle: None,
             kill_signal: Arc::new(AtomicBool::new(false)),
             path: None,
-            audio_path: None,
+            source_audio_path: None,
+            instrumental_audio_path: None,
+            active_audio_track: AudioTrack::Source,
+            source_audio_offset_frames: 0,
+            instrumental_audio_offset_frames: 0,
             finished: false,
             current_frame: 0,
             interpolated_frame: 0,
@@ -207,6 +222,7 @@ impl VideoPlayer {
             audio_clock: None,
             audio_thread: None,
             waveform: Arc::new(RwLock::new(Vec::new())),
+            instrumental_waveform: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -229,7 +245,8 @@ impl VideoPlayer {
         self.current_frame = 0;
         self.interpolated_frame = 0;
         self.path = Some(video_path.to_path_buf());
-        self.audio_path = Some(audio_path.to_path_buf());
+        self.source_audio_path = Some(audio_path.to_path_buf());
+        self.active_audio_track = AudioTrack::Source;
         self.finished = false;
 
         log::info!(
@@ -247,19 +264,7 @@ impl VideoPlayer {
 
         self.start_decoders_at(0.0);
 
-        // Decode waveform in background (peak amplitude per video frame)
-        let waveform = self.waveform.clone();
-        let wave_path = audio_path.to_path_buf();
-        let wave_fps = fps;
-        let wave_total = total_frames;
-        thread::spawn(move || {
-            if let Ok(data) = decode_waveform_peaks(&wave_path, wave_fps, wave_total as usize) {
-                if let Ok(mut w) = waveform.write() {
-                    *w = data;
-                }
-                log::info!("Waveform decoded: {} peaks", wave_total);
-            }
-        });
+        self.decode_source_waveform();
 
         Ok(())
     }
@@ -269,6 +274,71 @@ impl VideoPlayer {
         if let Some(clock) = &self.audio_clock {
             clock.set_volume(if vol < 0.01 { 0.0 } else { vol });
         }
+    }
+
+    pub fn active_audio_track(&self) -> AudioTrack {
+        self.active_audio_track
+    }
+
+    pub fn active_audio_offset_frames(&self) -> i64 {
+        match self.active_audio_track {
+            AudioTrack::Source => self.source_audio_offset_frames,
+            AudioTrack::Instrumental => self.instrumental_audio_offset_frames,
+        }
+    }
+
+    pub fn set_instrumental_audio_path(&mut self, path: Option<PathBuf>) {
+        self.instrumental_audio_path = path;
+        if self.active_audio_track == AudioTrack::Instrumental
+            && self.instrumental_audio_path.is_none()
+        {
+            self.active_audio_track = AudioTrack::Source;
+        }
+        self.decode_instrumental_waveform();
+        if self.active_audio_track == AudioTrack::Instrumental {
+            self.reload_audio_at_current_frame();
+        }
+    }
+
+    pub fn set_audio_offsets(&mut self, source_frames: i64, instrumental_frames: i64) {
+        self.source_audio_offset_frames = source_frames;
+        self.instrumental_audio_offset_frames = instrumental_frames;
+        self.reload_audio_at_current_frame();
+    }
+
+    pub fn adjust_active_audio_offset(&mut self, delta_frames: i64) {
+        match self.active_audio_track {
+            AudioTrack::Source => self.source_audio_offset_frames += delta_frames,
+            AudioTrack::Instrumental => self.instrumental_audio_offset_frames += delta_frames,
+        }
+        self.reload_audio_at_current_frame();
+    }
+
+    pub fn toggle_audio_track(&mut self) -> bool {
+        if self.instrumental_audio_path.is_none() {
+            return false;
+        }
+        self.active_audio_track = match self.active_audio_track {
+            AudioTrack::Source => AudioTrack::Instrumental,
+            AudioTrack::Instrumental => AudioTrack::Source,
+        };
+        self.ensure_active_waveform();
+        self.reload_audio_at_current_frame();
+        true
+    }
+
+    pub fn waveform_for_render(&self) -> Arc<RwLock<Vec<f32>>> {
+        if self.active_audio_track == AudioTrack::Instrumental {
+            let has_instrumental_waveform = self
+                .instrumental_waveform
+                .read()
+                .map(|waveform| !waveform.is_empty())
+                .unwrap_or(false);
+            if has_instrumental_waveform {
+                return self.instrumental_waveform.clone();
+            }
+        }
+        self.waveform.clone()
     }
 
     pub fn toggle(&mut self) -> bool {
@@ -495,7 +565,7 @@ impl VideoPlayer {
             Some(p) => p.clone(),
             None => return,
         };
-        let audio_path = self.audio_path.clone().unwrap_or_else(|| path.clone());
+        let audio_path = self.active_audio_path().unwrap_or_else(|| path.clone());
 
         // Fresh kill signal for new decoders
         self.kill_signal = Arc::new(AtomicBool::new(false));
@@ -521,7 +591,8 @@ impl VideoPlayer {
         self.decoder_handle = Some(vid_handle);
 
         // Audio decoder
-        if self.setup_audio_from(&audio_path, timestamp).is_ok() {
+        let audio_timestamp = self.audio_timestamp_for_video_timestamp(timestamp);
+        if self.setup_audio_from(&audio_path, audio_timestamp).is_ok() {
             self.set_volume(self.volume);
             if !self.playing {
                 if let Some(stream) = &self.audio_stream {
@@ -529,6 +600,114 @@ impl VideoPlayer {
                 }
             }
         }
+    }
+
+    fn active_audio_path(&self) -> Option<PathBuf> {
+        match self.active_audio_track {
+            AudioTrack::Source => self.source_audio_path.clone(),
+            AudioTrack::Instrumental => self
+                .instrumental_audio_path
+                .clone()
+                .or_else(|| self.source_audio_path.clone()),
+        }
+    }
+
+    fn audio_timestamp_for_video_timestamp(&self, timestamp: f64) -> f64 {
+        let offset_secs = self.active_audio_offset_frames() as f64 / self.fps.max(1.0);
+        (timestamp - offset_secs).max(0.0)
+    }
+
+    fn reload_audio_at_current_frame(&mut self) {
+        let Some(audio_path) = self.active_audio_path() else {
+            return;
+        };
+        let was_playing = self.playing;
+        if let Some(clock) = &self.audio_clock {
+            clock.freeze();
+        }
+        if let Some(stream) = &self.audio_stream {
+            let _ = stream.pause();
+        }
+        self.audio_stream = None;
+        self.audio_clock = None;
+        self.audio_thread.take();
+
+        let timestamp =
+            self.audio_timestamp_for_video_timestamp(self.current_frame as f64 / self.fps);
+        if self.setup_audio_from(&audio_path, timestamp).is_ok() {
+            self.set_volume(self.volume);
+            if was_playing {
+                self.playback_start_time = Some(Instant::now());
+                self.playback_start_frame = self.current_frame;
+                self.playback_start_audio_frame = self
+                    .audio_clock
+                    .as_ref()
+                    .map(|clock| clock.audible_frame())
+                    .unwrap_or(0);
+                if let Some(stream) = &self.audio_stream {
+                    let _ = stream.play();
+                }
+            } else if let Some(stream) = &self.audio_stream {
+                let _ = stream.pause();
+            }
+        }
+    }
+
+    fn ensure_active_waveform(&mut self) {
+        match self.active_audio_track {
+            AudioTrack::Source => {
+                let is_empty = self.waveform.read().map(|w| w.is_empty()).unwrap_or(true);
+                if is_empty {
+                    self.decode_source_waveform();
+                }
+            }
+            AudioTrack::Instrumental => {
+                let is_empty = self
+                    .instrumental_waveform
+                    .read()
+                    .map(|w| w.is_empty())
+                    .unwrap_or(true);
+                if is_empty {
+                    self.decode_instrumental_waveform();
+                }
+            }
+        }
+    }
+
+    fn decode_source_waveform(&mut self) {
+        if let Ok(mut w) = self.waveform.write() {
+            w.clear();
+        }
+        let Some(wave_path) = self.source_audio_path.clone() else {
+            return;
+        };
+        self.spawn_waveform_decode(wave_path, self.waveform.clone());
+    }
+
+    fn decode_instrumental_waveform(&mut self) {
+        if let Ok(mut w) = self.instrumental_waveform.write() {
+            w.clear();
+        }
+        let Some(wave_path) = self.instrumental_audio_path.clone() else {
+            return;
+        };
+        self.spawn_waveform_decode(wave_path, self.instrumental_waveform.clone());
+    }
+
+    fn spawn_waveform_decode(&self, wave_path: PathBuf, waveform: Arc<RwLock<Vec<f32>>>) {
+        let wave_fps = self.fps;
+        let wave_total = self.total_frames;
+        thread::spawn(move || {
+            match decode_waveform_peaks(&wave_path, wave_fps, wave_total as usize) {
+                Ok(data) => {
+                    if let Ok(mut w) = waveform.write() {
+                        *w = data;
+                    }
+                    log::info!("Waveform decoded: {} peaks", wave_total);
+                }
+                Err(e) => log::warn!("Waveform decode failed for {}: {e}", wave_path.display()),
+            }
+        });
     }
 
     fn setup_audio_from(&mut self, path: &Path, timestamp: f64) -> Result<(), String> {

@@ -1,5 +1,5 @@
 use crate::constants::Y_SLOTS;
-use crate::project::{Character, Project};
+use crate::project::{Character, Project, ProjectSettings};
 use crate::rythmo_line::{MarkerKind, RythmoMarker};
 use crate::voice_actor::VoiceActor;
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,8 @@ pub struct ProjectData {
     pub characters: Vec<CharacterData>,
     #[serde(default)]
     pub voice_actors: Vec<VoiceActorData>,
+    #[serde(default)]
+    pub settings: ProjectSettings,
 }
 
 fn default_fps() -> f64 {
@@ -130,6 +132,7 @@ impl ProjectData {
                     icon_png_base64: actor.icon_png_base64.clone(),
                 })
                 .collect(),
+            settings: project.settings.clone(),
         }
     }
 
@@ -187,6 +190,12 @@ impl ProjectData {
         project.markers.clear();
         project.known_characters.clear();
         project.voice_actors.clear();
+        let mut settings = self.settings.clone();
+        settings.source_audio_offset_frames =
+            (settings.source_audio_offset_frames as f64 * fps_ratio) as i64;
+        settings.instrumental_audio_offset_frames =
+            (settings.instrumental_audio_offset_frames as f64 * fps_ratio) as i64;
+        project.settings = settings;
         project.bump_revision();
 
         for ch in &self.characters {
@@ -413,6 +422,7 @@ pub fn import_srt(path: &Path, fps: f64) -> Result<ProjectData, String> {
             color: [1.0, 1.0, 1.0, 1.0],
         }],
         voice_actors: Vec::new(),
+        settings: ProjectSettings::default(),
     })
 }
 
@@ -726,6 +736,7 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
         markers,
         characters,
         voice_actors: Vec::new(),
+        settings: ProjectSettings::default(),
     })
 }
 
@@ -778,6 +789,7 @@ mod tests {
             markers: vec![],
             characters: vec![],
             voice_actors: vec![],
+            settings: ProjectSettings::default(),
         };
 
         let mut project = Project::new();
@@ -823,6 +835,7 @@ mod tests {
             markers: vec![],
             characters: vec![],
             voice_actors: vec![],
+            settings: ProjectSettings::default(),
         };
 
         let (clipped, skipped) = data.clamp_to_total_frames(100);
@@ -856,6 +869,7 @@ mod tests {
             markers: vec![],
             characters: vec![],
             voice_actors: vec![],
+            settings: ProjectSettings::default(),
         };
         data.apply_to_project(&mut project, 24.0);
         assert_eq!(project.line_count(), 1);
@@ -894,6 +908,7 @@ mod tests {
             markers: vec![],
             characters: vec![],
             voice_actors: vec![],
+            settings: ProjectSettings::default(),
         };
 
         let mut project = Project::new();
@@ -916,6 +931,7 @@ mod tests {
             }],
             characters: vec![],
             voice_actors: vec![],
+            settings: ProjectSettings::default(),
         };
         let mut project = Project::new();
         data.apply_to_project(&mut project, 24.0);

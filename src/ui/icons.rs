@@ -83,6 +83,11 @@ impl IconAtlas {
                 flip_h: false,
             },
             SvgEntry {
+                name: "project",
+                data: include_bytes!("../icons/project.svg"),
+                flip_h: false,
+            },
+            SvgEntry {
                 name: "stretcher",
                 data: include_bytes!("../icons/stretcher.svg"),
                 flip_h: false,

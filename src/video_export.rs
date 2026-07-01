@@ -427,6 +427,8 @@ pub fn export_mp4(
     export_width: u32,
     export_height: u32,
     instrumental_audio: Option<&Path>,
+    source_audio_offset_frames: i64,
+    instrumental_audio_offset_frames: i64,
     double_export_instrumental: bool,
     render_backend_status: Option<Arc<AtomicU32>>,
     cancel: Arc<AtomicBool>,
@@ -461,6 +463,8 @@ pub fn export_mp4(
         export_width,
         export_height,
         instrumental_audio,
+        source_audio_offset_frames,
+        instrumental_audio_offset_frames,
         double_export_instrumental,
         render_backend_status.as_deref(),
         &cancel,
@@ -479,6 +483,8 @@ fn export_baked_mp4(
     export_width: u32,
     export_height: u32,
     instrumental_audio: Option<&Path>,
+    source_audio_offset_frames: i64,
+    instrumental_audio_offset_frames: i64,
     double_export_instrumental: bool,
     render_backend_status: Option<&AtomicU32>,
     cancel: &AtomicBool,
@@ -576,9 +582,10 @@ fn export_baked_mp4(
         BrInputFormat::Nv12
     };
     let cpu_filter = cpu_fit_and_stack_filter(out_w, vid_h, fps, info.duration_secs);
-    let temp_video = instrumental_audio.map(|_| temp_video_path(output));
+    let needs_audio_mux = instrumental_audio.is_some() || source_audio_offset_frames != 0;
+    let temp_video = needs_audio_mux.then(|| temp_video_path(output));
     let video_output = temp_video.as_deref().unwrap_or(output);
-    let include_source_audio = instrumental_audio.is_none();
+    let include_source_audio = !needs_audio_mux;
 
     let result = if use_cuda_graph {
         let r = run_baked_single_pass(
@@ -668,35 +675,59 @@ fn export_baked_mp4(
         return Err(e);
     }
 
-    if let (Some(audio), Some(temp)) = (instrumental_audio, temp_video.as_deref()) {
+    if let Some(temp) = temp_video.as_deref() {
         check_export_cancel(cancel)?;
-        let instrumental_output = if double_export_instrumental {
-            let output_path = instrumental_output_path(output);
-            if let Err(e) = mux_source_audio(temp, source_video, output, info.duration_secs, cancel)
-            {
+        if let Some(audio) = instrumental_audio {
+            let instrumental_output = if double_export_instrumental {
+                let output_path = instrumental_output_path(output);
+                if let Err(e) = mux_source_audio(
+                    temp,
+                    source_video,
+                    output,
+                    info.duration_secs,
+                    source_audio_offset_frames,
+                    fps,
+                    cancel,
+                ) {
+                    let _ = std::fs::remove_file(temp);
+                    return Err(e);
+                }
+                output_path
+            } else {
+                output.to_path_buf()
+            };
+            if let Err(e) = mux_instrumental_audio(
+                temp,
+                audio,
+                &instrumental_output,
+                info.duration_secs,
+                instrumental_audio_offset_frames,
+                fps,
+                cancel,
+                progress_cb,
+            ) {
                 let _ = std::fs::remove_file(temp);
                 return Err(e);
             }
-            output_path
+            log::info!(
+                "Instrumental MP4 export complete: {}",
+                instrumental_output.display()
+            );
         } else {
-            output.to_path_buf()
-        };
-        if let Err(e) = mux_instrumental_audio(
-            temp,
-            audio,
-            &instrumental_output,
-            info.duration_secs,
-            cancel,
-            progress_cb,
-        ) {
-            let _ = std::fs::remove_file(temp);
-            return Err(e);
+            if let Err(e) = mux_source_audio(
+                temp,
+                source_video,
+                output,
+                info.duration_secs,
+                source_audio_offset_frames,
+                fps,
+                cancel,
+            ) {
+                let _ = std::fs::remove_file(temp);
+                return Err(e);
+            }
         }
         let _ = std::fs::remove_file(temp);
-        log::info!(
-            "Instrumental MP4 export complete: {}",
-            instrumental_output.display()
-        );
     }
 
     emit_progress(progress_cb, 1.0);
@@ -1027,10 +1058,13 @@ fn mux_source_audio(
     source_video: &Path,
     output: &Path,
     duration_secs: f64,
+    offset_frames: i64,
+    fps: f64,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     check_export_cancel(cancel)?;
     let duration_arg = duration_secs.to_string();
+    let audio_filter = audio_offset_filter(duration_secs, offset_frames, fps);
 
     let mut child = Command::new("ffmpeg")
         .arg("-i")
@@ -1045,7 +1079,11 @@ fn mux_source_audio(
             "-c:v",
             "copy",
             "-c:a",
-            "copy",
+            "aac",
+            "-b:a",
+            "192k",
+            "-af",
+            &audio_filter,
             "-t",
             &duration_arg,
             "-movflags",
@@ -1109,12 +1147,13 @@ fn mux_instrumental_audio(
     instrumental_audio: &Path,
     output: &Path,
     duration_secs: f64,
+    offset_frames: i64,
+    fps: f64,
     cancel: &AtomicBool,
     progress_cb: &ProgressCallback,
 ) -> Result<(), String> {
     let duration_arg = duration_secs.to_string();
-    let audio_filter =
-        format!("apad=whole_dur={duration_arg},atrim=duration={duration_arg},asetpts=PTS-STARTPTS");
+    let audio_filter = audio_offset_filter(duration_secs, offset_frames, fps);
 
     emit_progress(progress_cb, 0.99);
     check_export_cancel(cancel)?;
@@ -1212,6 +1251,28 @@ fn mux_instrumental_audio(
         } else {
             Err(format!("ffmpeg mux instrumental audio failed: {details}"))
         }
+    }
+}
+
+fn audio_offset_filter(duration_secs: f64, offset_frames: i64, fps: f64) -> String {
+    let duration_arg = duration_secs.to_string();
+    let offset_secs = if fps.is_finite() && fps > 0.0 {
+        offset_frames as f64 / fps
+    } else {
+        0.0
+    };
+    if offset_secs > 0.0 {
+        let delay_ms = (offset_secs * 1000.0).round().max(0.0) as i64;
+        format!(
+            "adelay={delay_ms}:all=1,apad=whole_dur={duration_arg},atrim=duration={duration_arg},asetpts=PTS-STARTPTS"
+        )
+    } else if offset_secs < 0.0 {
+        let start = (-offset_secs).to_string();
+        format!(
+            "atrim=start={start},apad=whole_dur={duration_arg},atrim=duration={duration_arg},asetpts=PTS-STARTPTS"
+        )
+    } else {
+        format!("apad=whole_dur={duration_arg},atrim=duration={duration_arg},asetpts=PTS-STARTPTS")
     }
 }
 

@@ -8,6 +8,7 @@ pub mod icon_button;
 pub mod icons;
 pub mod interactive;
 pub mod layout;
+pub mod project_settings_modal;
 pub mod proxy_error_modal;
 pub mod proxy_modal;
 pub mod rename_character_modal;
@@ -91,6 +92,7 @@ pub struct Ui {
     pub progress_prefix: String,
     connect_modal: Option<connect_modal::ConnectModal>,
     settings_modal: Option<settings_modal::SettingsModal>,
+    project_settings_modal: Option<project_settings_modal::ProjectSettingsModal>,
     export_modal: Option<export_modal::ExportModal>,
     file_explorer_modal: Option<file_explorer_modal::FileExplorerModal>,
     proxy_modal: Option<proxy_modal::ProxyModal>,
@@ -134,6 +136,7 @@ impl Ui {
             "liaison_left",
             "liaison_right",
             "settings",
+            "project",
             "stretcher",
             "br-edit",
             "note",
@@ -152,8 +155,9 @@ impl Ui {
             .collect();
 
         let settings_uv = icon_uvs.get("settings").copied().unwrap_or([0.0; 4]);
+        let project_uv = icon_uvs.get("project").copied().unwrap_or([0.0; 4]);
         let mut ui = Self {
-            topbar_widgets: Self::build_topbar(false, false, sw, settings_uv),
+            topbar_widgets: Self::build_topbar(false, false, sw, settings_uv, project_uv),
             toolbar_widgets: vec![],
             layout,
             screen_w: sw,
@@ -174,6 +178,7 @@ impl Ui {
             progress_prefix: String::new(),
             connect_modal: None,
             settings_modal: None,
+            project_settings_modal: None,
             export_modal: None,
             file_explorer_modal: None,
             proxy_modal: None,
@@ -216,6 +221,7 @@ impl Ui {
         has_video: bool,
         screen_w: f32,
         settings_uv: [f32; 4],
+        project_uv: [f32; 4],
     ) -> Vec<Box<dyn Widget>> {
         // Build project menu with "Récent" submenu
         let recents = crate::config::recent_projects();
@@ -366,6 +372,19 @@ impl Ui {
         let settings_size = 24.0;
         let settings_x = screen_w - settings_size - 8.0;
         let settings_y = (TOPBAR_HEIGHT - settings_size) / 2.0;
+        let project_x = settings_x - settings_size - 8.0;
+        let project_btn = IconButton::new(
+            Rect {
+                x: project_x,
+                y: settings_y,
+                width: settings_size,
+                height: settings_size,
+            },
+            "",
+            project_uv,
+            || EventResponse::Action(UiAction::OpenProjectSettings),
+        )
+        .with_tooltip(t("project_settings.tooltip"));
         let settings_btn = IconButton::new(
             Rect {
                 x: settings_x,
@@ -384,14 +403,20 @@ impl Ui {
             Box::new(export_menu),
             Box::new(tools_menu),
             Box::new(connect_menu),
+            Box::new(project_btn),
             Box::new(settings_btn),
         ]
     }
 
     pub fn rebuild_topbar(&mut self, in_room: bool) {
         self.network_in_room = in_room;
-        self.topbar_widgets =
-            Self::build_topbar(in_room, self.has_video, self.screen_w, self.uv("settings"));
+        self.topbar_widgets = Self::build_topbar(
+            in_room,
+            self.has_video,
+            self.screen_w,
+            self.uv("settings"),
+            self.uv("project"),
+        );
     }
 
     pub fn set_network_room_code(&mut self, code: Option<&str>) {
@@ -659,6 +684,10 @@ impl Ui {
         // Settings modal intercepts all input
         if self.settings_modal.is_some() {
             return self.handle_settings_modal_event(event);
+        }
+
+        if self.project_settings_modal.is_some() {
+            return self.handle_project_settings_modal_event(event);
         }
 
         // Studio warning modal
@@ -1168,6 +1197,31 @@ impl Ui {
         }
     }
 
+    fn handle_project_settings_modal_event(&mut self, event: &UiEvent) -> EventResponse {
+        let modal = match &mut self.project_settings_modal {
+            Some(m) => m,
+            None => return EventResponse::Ignored,
+        };
+        match modal.handle_event(event, self.screen_w, self.screen_h) {
+            project_settings_modal::ProjectSettingsModalResult::Consumed => EventResponse::Consumed,
+            project_settings_modal::ProjectSettingsModalResult::Close => {
+                self.project_settings_modal = None;
+                EventResponse::Consumed
+            }
+            project_settings_modal::ProjectSettingsModalResult::PickInstrumentalAudio => {
+                EventResponse::Action(UiAction::PickProjectInstrumentalAudio)
+            }
+            project_settings_modal::ProjectSettingsModalResult::Save {
+                instrumental_audio_path,
+            } => {
+                self.project_settings_modal = None;
+                EventResponse::Action(UiAction::SaveProjectSettings {
+                    instrumental_audio_path,
+                })
+            }
+        }
+    }
+
     fn handle_export_modal_event(&mut self, event: &UiEvent) -> EventResponse {
         let modal = match &mut self.export_modal {
             Some(m) => m,
@@ -1490,6 +1544,22 @@ impl Ui {
         self.settings_modal = Some(settings_modal::SettingsModal::new(fonts));
     }
 
+    pub fn open_project_settings_modal(&mut self, instrumental_audio_path: Option<String>) {
+        self.project_settings_modal = Some(project_settings_modal::ProjectSettingsModal::new(
+            instrumental_audio_path,
+        ));
+    }
+
+    pub fn set_project_instrumental_audio_path(&mut self, path: impl Into<String>) {
+        if let Some(modal) = &mut self.project_settings_modal {
+            modal.set_instrumental_audio_path(path);
+        }
+    }
+
+    pub fn close_project_settings_modal(&mut self) {
+        self.project_settings_modal = None;
+    }
+
     pub fn close_settings_modal(&mut self) {
         self.settings_modal = None;
     }
@@ -1530,6 +1600,7 @@ impl Ui {
             self.has_video,
             self.screen_w,
             self.uv("settings"),
+            self.uv("project"),
         );
         self.rebuild_layout();
     }
@@ -1549,6 +1620,8 @@ impl Ui {
         current_frame: i64,
         fps: f64,
         waveform: &[f32],
+        waveform_offset_frames: i64,
+        waveform_is_instrumental: bool,
     ) {
         // Update frame info for progress bar
         self.current_frame = current_frame;
@@ -1649,6 +1722,8 @@ impl Ui {
             current_frame,
             fps,
             waveform,
+            waveform_offset_frames,
+            waveform_is_instrumental,
         );
 
         // Rythmo lines
@@ -1933,6 +2008,15 @@ impl Ui {
             );
         }
 
+        if let Some(modal) = &self.project_settings_modal {
+            modal.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
+        }
+
         // Connect modal
         if let Some(modal) = &self.connect_modal {
             modal.render(
@@ -2187,6 +2271,8 @@ impl Ui {
         current_frame: i64,
         fps: f64,
         waveform: &[f32],
+        waveform_offset_frames: i64,
+        waveform_is_instrumental: bool,
     ) {
         let l = &self.layout;
 
@@ -2416,6 +2502,8 @@ impl Ui {
             project,
             current_frame,
             waveform,
+            waveform_offset_frames,
+            waveform_is_instrumental,
             self.playing,
             fps,
             &self.rythmo_state,

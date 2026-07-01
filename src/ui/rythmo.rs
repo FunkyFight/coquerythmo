@@ -96,6 +96,8 @@ pub struct RythmoState {
     pub ghost_preview: Option<GhostPreview>,
     pub ctrl_held: bool,
     pub panning: bool,
+    pub audio_offset_mode: bool,
+    pub audio_offset_drag: Option<AudioOffsetDrag>,
     pub pending_cursor_click: Option<(f32, bool)>, // (x_ratio, is_shift_click)
     pub pan_last_x: f32,
     pub pan_accum: f32,
@@ -112,6 +114,12 @@ pub struct SyllableDrag {
     pub ratios: Vec<f32>,       // working copy of ratios
     pub drag_start_x: f32,
     pub line_rect: Rect,
+}
+
+#[derive(Clone, Copy)]
+pub struct AudioOffsetDrag {
+    pub last_x: f32,
+    pub accum_px: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -175,6 +183,8 @@ impl RythmoState {
             ghost_preview: None,
             ctrl_held: false,
             panning: false,
+            audio_offset_mode: false,
+            audio_offset_drag: None,
             pending_cursor_click: None,
             pan_last_x: 0.0,
             pan_accum: 0.0,
@@ -1422,6 +1432,8 @@ pub fn render_rythmo_base(
     project: &Project,
     current_frame: i64,
     waveform: &[f32],
+    waveform_offset_frames: i64,
+    waveform_is_instrumental: bool,
     karaoke_preview: bool,
     fps: f64,
     state: &RythmoState,
@@ -1430,6 +1442,11 @@ pub fn render_rythmo_base(
 
     // Waveform (rendered first, behind playhead)
     // waveform has WAVEFORM_SUBDIVISIONS (4) entries per video frame
+    let (wave_top, wave_bottom) = if waveform_is_instrumental {
+        ([0.30, 0.90, 0.45, 0.85], [0.10, 0.62, 0.25, 0.4])
+    } else {
+        ([0.4, 0.65, 1.0, 0.85], [0.2, 0.45, 0.85, 0.4])
+    };
     if !waveform.is_empty() {
         let subs = 4usize; // must match WAVEFORM_SUBDIVISIONS in video.rs
         let ruler_h = constants::RULER_HEIGHT;
@@ -1449,7 +1466,7 @@ pub fn render_rythmo_base(
             }
 
             // Position: which video frame + sub offset
-            let frame = si / subs as i64;
+            let frame = si / subs as i64 + waveform_offset_frames;
             let sub_offset = (si % subs as i64) as f32;
             let x = frame_to_x(frame, current_frame, zone) + sub_offset * sub_ppf;
             if x < zone.x || x > zone.x + zone.width {
@@ -1458,8 +1475,8 @@ pub fn render_rythmo_base(
 
             quads.push(QuadInstance {
                 rect: [x, zone.y + ruler_h - bar_h, bar_w, bar_h],
-                color: [0.4, 0.65, 1.0, 0.85],
-                color_bottom: [0.2, 0.45, 0.85, 0.4],
+                color: wave_top,
+                color_bottom: wave_bottom,
                 border_color: [0.0; 4],
                 border_width: 0.0,
                 border_radius: 0.0,
@@ -1470,6 +1487,47 @@ pub fn render_rythmo_base(
                 _padding: [0.0; 2],
             });
         }
+    } else if waveform_is_instrumental {
+        let ruler_h = constants::RULER_HEIGHT;
+        let bar_w = 3.0;
+        let step = 8.0;
+        let mut x = zone.x;
+        let mut i = 0.0_f32;
+        while x < zone.x + zone.width {
+            let amp = (0.25 + (i * 0.55).sin().abs() * 0.55).clamp(0.0, 1.0);
+            let bar_h = amp * ruler_h;
+            quads.push(QuadInstance {
+                rect: [x, zone.y + ruler_h - bar_h, bar_w, bar_h],
+                color: wave_top,
+                color_bottom: wave_bottom,
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 0.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
+            x += step;
+            i += 1.0;
+        }
+    }
+
+    if state.audio_offset_mode {
+        quads.push(QuadInstance {
+            rect: [zone.x, zone.y, zone.width, constants::RULER_HEIGHT],
+            color: [1.0, 0.55, 0.10, 0.10],
+            color_bottom: [1.0, 0.55, 0.10, 0.10],
+            border_color: [1.0, 0.62, 0.18, 0.9],
+            border_width: 1.5,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
     }
 
     // Ticks removed from UI (kept in CPU/GPU export renderers)
@@ -3569,6 +3627,57 @@ pub fn handle_rythmo_event(
         karaoke_preview,
         fps,
     };
+
+    match event {
+        UiEvent::DoubleClick { x, y }
+            if *x >= ctx.zone.x
+                && *x <= ctx.zone.x + ctx.zone.width
+                && *y >= ctx.zone.y
+                && *y <= ctx.zone.y + constants::RULER_HEIGHT =>
+        {
+            state.audio_offset_mode = !state.audio_offset_mode;
+            state.audio_offset_drag = None;
+            return EventResponse::Consumed;
+        }
+        UiEvent::MousePress { x, y }
+            if state.audio_offset_mode
+                && *x >= ctx.zone.x
+                && *x <= ctx.zone.x + ctx.zone.width
+                && *y >= ctx.zone.y
+                && *y <= ctx.zone.y + constants::RULER_HEIGHT =>
+        {
+            state.audio_offset_drag = Some(AudioOffsetDrag {
+                last_x: *x,
+                accum_px: 0.0,
+            });
+            return EventResponse::Consumed;
+        }
+        UiEvent::MousePress { .. } if state.audio_offset_mode => {
+            state.audio_offset_mode = false;
+            state.audio_offset_drag = None;
+            return EventResponse::Consumed;
+        }
+        UiEvent::MouseMove { x, .. } => {
+            if let Some(drag) = &mut state.audio_offset_drag {
+                let dx = *x - drag.last_x;
+                drag.last_x = *x;
+                drag.accum_px += dx;
+                let frames = (drag.accum_px / ppf()).round() as i64;
+                if frames != 0 {
+                    drag.accum_px -= frames as f32 * ppf();
+                    return EventResponse::Action(UiAction::OffsetActiveAudioBy(frames));
+                }
+                return EventResponse::Consumed;
+            }
+        }
+        UiEvent::MouseRelease { .. } => {
+            if state.audio_offset_drag.is_some() {
+                state.audio_offset_drag = None;
+                return EventResponse::Consumed;
+            }
+        }
+        _ => {}
+    }
 
     // Autocomplete click has highest priority (before color picker eats it)
     if let UiEvent::MousePress { x, y } = event {

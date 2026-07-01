@@ -203,6 +203,12 @@
 "settings.restart_required" = "(restart required)"
 "settings.scroll_speed" = "Scroll speed"
 "settings.tooltip" = "Settings"
+"project_settings.title" = "Project settings"
+"project_settings.tooltip" = "Project settings"
+"project_settings.instrumental_version" = "Instrumental version"
+"project_settings.no_file" = "No file selected"
+"project_settings.browse" = "Browse"
+"project_settings.clear" = "Clear"
 
 # Save prompt (new project)
 "save_prompt.title" = "Unsaved changes"
