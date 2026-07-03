@@ -15,6 +15,13 @@ pub const REF_WIDTH: f32 = 800.0;
 /// Default export framerate.
 pub const DEFAULT_EXPORT_FPS: u32 = 60;
 
+/// Target app redraw cadence while playback or UI animation is active.
+///
+/// This only controls interactive app refresh. MP4 export remains controlled
+/// independently by `DEFAULT_EXPORT_FPS` / the export modal FPS.
+pub const APP_REFRESH_HZ: u64 = 240;
+pub const APP_REFRESH_INTERVAL_NS: u64 = 1_000_000_000 / APP_REFRESH_HZ;
+
 /// Delay (ms) before decoding a frame after scrolling stops.
 pub const SCROLL_DECODE_DELAY_MS: u128 = 100;
 

@@ -2728,6 +2728,9 @@ impl State {
             .is_some_and(|player| player.is_waveform_decoding())
     }
 
+    fn app_refresh_interval() -> Duration {
+        Duration::from_nanos(constants::APP_REFRESH_INTERVAL_NS)
+    }
     fn scroll_decode_due(&self, now: Instant) -> bool {
         self.scroll_needs_decode
             && self.last_scroll_time.is_some_and(|last| {
@@ -2751,11 +2754,16 @@ impl State {
         false
     }
 
+    fn continuous_redraw_due(&self, now: Instant) -> bool {
+        (self.needs_continuous_redraw() || self.secondary_needs_continuous_redraw())
+            && now.saturating_duration_since(self.last_redraw) >= Self::app_refresh_interval()
+    }
     pub fn needs_redraw_now(&self) -> bool {
         let now = Instant::now();
         self.scroll_decode_due(now)
             || self.periodic_redraw_due(now)
             || self.waveform_redraw_pending()
+            || self.continuous_redraw_due(now)
     }
 
     pub fn needs_continuous_redraw(&self) -> bool {
@@ -2774,7 +2782,7 @@ impl State {
         };
 
         if self.needs_continuous_redraw() || self.secondary_needs_continuous_redraw() {
-            push_deadline(now + Duration::from_millis(16));
+            push_deadline(self.last_redraw + Self::app_refresh_interval());
         }
 
         if self.ui.has_active_progress() || self.pending_proxy_job.is_some() {

@@ -1231,9 +1231,6 @@ fn main() {
                         }
                         WindowEvent::RedrawRequested => {
                             state.render_secondary_display(window_id);
-                            if state.secondary_needs_continuous_redraw() {
-                                state.request_secondary_redraw();
-                            }
                         }
                         _ => {}
                     }
@@ -1504,9 +1501,6 @@ fn main() {
                 }
                 WindowEvent::RedrawRequested => {
                     state.render();
-                    if state.needs_continuous_redraw() {
-                        state.request_redraw();
-                    }
                     if state.secondary_needs_continuous_redraw() {
                         state.request_secondary_redraw();
                     }
@@ -1531,8 +1525,6 @@ fn main() {
                     if state.has_secondary_display() {
                         state.request_secondary_redraw();
                     }
-                } else if state.secondary_needs_continuous_redraw() {
-                    state.request_secondary_redraw();
                 }
 
                 if let Some(deadline) = state.next_wake_deadline() {

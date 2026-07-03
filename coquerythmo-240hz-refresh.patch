@@ -1,0 +1,93 @@
+diff --git a/src/constants.rs b/src/constants.rs
+index 605934c..0000000 100644
+--- a/src/constants.rs
++++ b/src/constants.rs
+@@ -17,6 +17,13 @@ pub const REF_WIDTH: f32 = 800.0;
+ /// Default export framerate.
+ pub const DEFAULT_EXPORT_FPS: u32 = 60;
+ 
++/// Target app redraw cadence while playback or UI animation is active.
++///
++/// This only controls interactive app refresh. MP4 export remains controlled
++/// independently by `DEFAULT_EXPORT_FPS` / the export modal FPS.
++pub const APP_REFRESH_HZ: u64 = 240;
++pub const APP_REFRESH_INTERVAL_NS: u64 = 1_000_000_000 / APP_REFRESH_HZ;
++
+ /// Delay (ms) before decoding a frame after scrolling stops.
+ pub const SCROLL_DECODE_DELAY_MS: u128 = 100;
+ 
+diff --git a/src/state.rs b/src/state.rs
+index 153fb5c..0000000 100644
+--- a/src/state.rs
++++ b/src/state.rs
+@@ -2727,6 +2727,10 @@ impl State {
+         }
+     }
+ 
++    fn app_refresh_interval() -> Duration {
++        Duration::from_nanos(constants::APP_REFRESH_INTERVAL_NS)
++    }
++
+     fn scroll_decode_due(&self, now: Instant) -> bool {
+         self.scroll_needs_decode
+             && self.last_scroll_time.is_some_and(|last| {
+@@ -2750,11 +2754,17 @@ impl State {
+         false
+     }
+ 
++    fn continuous_redraw_due(&self, now: Instant) -> bool {
++        (self.needs_continuous_redraw() || self.secondary_needs_continuous_redraw())
++            && now.saturating_duration_since(self.last_redraw) >= Self::app_refresh_interval()
++    }
++
+     pub fn needs_redraw_now(&self) -> bool {
+         let now = Instant::now();
+         self.scroll_decode_due(now)
+             || self.periodic_redraw_due(now)
+             || self.waveform_redraw_pending()
++            || self.continuous_redraw_due(now)
+     }
+ 
+     pub fn needs_continuous_redraw(&self) -> bool {
+@@ -2776,7 +2786,7 @@ impl State {
+         };
+ 
+         if self.needs_continuous_redraw() || self.secondary_needs_continuous_redraw() {
+-            push_deadline(now + Duration::from_millis(16));
++            push_deadline(self.last_redraw + Self::app_refresh_interval());
+         }
+ 
+         if self.ui.has_active_progress() || self.pending_proxy_job.is_some() {
+diff --git a/src/main.rs b/src/main.rs
+index 289d858..0000000 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1235,9 +1235,6 @@ fn main() {
+                         }
+                         WindowEvent::RedrawRequested => {
+                             state.render_secondary_display(window_id);
+-                            if state.secondary_needs_continuous_redraw() {
+-                                state.request_secondary_redraw();
+-                            }
+                         }
+                         _ => {}
+                     }
+@@ -1486,9 +1483,6 @@ fn main() {
+                 }
+                 WindowEvent::RedrawRequested => {
+                     state.render();
+-                    if state.needs_continuous_redraw() {
+-                        state.request_redraw();
+-                    }
+                     if state.secondary_needs_continuous_redraw() {
+                         state.request_secondary_redraw();
+                     }
+@@ -1507,8 +1501,6 @@ fn main() {
+                         if state.has_secondary_display() {
+                             state.request_secondary_redraw();
+                         }
+-                    } else if state.secondary_needs_continuous_redraw() {
+-                        state.request_secondary_redraw();
+                     }
+ 
+                     if let Some(deadline) = state.next_wake_deadline() {
