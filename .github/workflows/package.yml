@@ -135,6 +135,7 @@ jobs:
 
           echo "ARCH=$ARCH" >> "$GITHUB_ENV"
           echo "PACKAGE_NAME=coquerythmo-v${{ inputs.version }}-${{ matrix.platform }}-$ARCH-portable.zip" >> "$GITHUB_ENV"
+          echo "APP_PACKAGE_NAME=coquerythmo-v${{ inputs.version }}-${{ matrix.platform }}-$ARCH-app.zip" >> "$GITHUB_ENV"
 
       - name: Test bundled FFmpeg
         shell: bash
@@ -146,6 +147,65 @@ jobs:
             ./dist/ffmpeg -version
             ./dist/ffprobe -version
           fi
+
+      - name: Create macOS app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP="dist-app/Coquerythmo.app"
+          MACOS_DIR="$APP/Contents/MacOS"
+          RESOURCES_BIN_DIR="$APP/Contents/Resources/bin"
+
+          mkdir -p "$MACOS_DIR" "$RESOURCES_BIN_DIR"
+
+          cp dist/coquerythmo "$MACOS_DIR/coquerythmo"
+          cp dist/updater "$MACOS_DIR/updater"
+          cp dist/ffmpeg dist/ffprobe "$RESOURCES_BIN_DIR/"
+
+          chmod +x \
+            "$MACOS_DIR/coquerythmo" \
+            "$MACOS_DIR/updater" \
+            "$RESOURCES_BIN_DIR/ffmpeg" \
+            "$RESOURCES_BIN_DIR/ffprobe"
+
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>en</string>
+            <key>CFBundleExecutable</key>
+            <string>coquerythmo</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.coquerythmo.Coquerythmo</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundleName</key>
+            <string>Coquerythmo</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${{ inputs.version }}</string>
+            <key>CFBundleVersion</key>
+            <string>${{ inputs.version }}</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+
+          "$RESOURCES_BIN_DIR/ffmpeg" -version
+          "$RESOURCES_BIN_DIR/ffprobe" -version
+
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+
+      - name: Create macOS app zip
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "dist-app/Coquerythmo.app" "$APP_PACKAGE_NAME"
 
       - name: Create Windows zip
         if: runner.os == 'Windows'
@@ -169,3 +229,10 @@ jobs:
         with:
           name: ${{ env.PACKAGE_NAME }}
           path: ${{ env.PACKAGE_NAME }}
+
+      - name: Upload macOS app artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_PACKAGE_NAME }}
+          path: ${{ env.APP_PACKAGE_NAME }}

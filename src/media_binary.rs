@@ -2,7 +2,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub(crate) fn command(binary: &str) -> Command {
-    path(binary).map_or_else(|| Command::new(binary), Command::new)
+    if let Some(path) = path(binary) {
+        log::info!("Using {binary}: {}", path.display());
+        Command::new(path)
+    } else {
+        log::warn!(
+            "{binary} not found. current_exe={:?}, current_dir={:?}, COQUERYTHMO_FFMPEG_DIR={:?}",
+            std::env::current_exe(),
+            std::env::current_dir(),
+            std::env::var_os("COQUERYTHMO_FFMPEG_DIR")
+        );
+        Command::new(binary)
+    }
 }
 
 pub(crate) fn can_run(binary: &str) -> bool {
@@ -17,6 +28,10 @@ pub(crate) fn can_run(binary: &str) -> bool {
 
 pub(crate) fn path(binary: &str) -> Option<PathBuf> {
     let mut candidates = Vec::new();
+
+    if let Some(dir) = std::env::var_os("COQUERYTHMO_FFMPEG_DIR") {
+        push_binary_candidates(&mut candidates, Path::new(&dir), binary);
+    }
 
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(exe_dir) = current_exe.parent() {
