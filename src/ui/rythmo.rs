@@ -7,6 +7,7 @@ use super::widget::{
 use crate::constants;
 use crate::i18n::t;
 use crate::project::Project;
+use crate::render_index::ProjectRenderIndex;
 use crate::rythmo_layout;
 use crate::rythmo_line::MarkerKind;
 use std::cell::{Ref, RefCell};
@@ -507,28 +508,28 @@ mod tests {
         assert!(!karaoke_prestart_scroll_visible(
             &project,
             first,
-            0,
+            0.0,
             max_gap_frames,
             count_in_frames
         ));
         assert!(karaoke_prestart_scroll_visible(
             &project,
             first,
-            first.start_frame - count_in_frames,
+            (first.start_frame - count_in_frames) as f64,
             max_gap_frames,
             count_in_frames
         ));
         assert!(!karaoke_prestart_scroll_visible(
             &project,
             second,
-            0,
+            0.0,
             max_gap_frames,
             count_in_frames
         ));
         assert!(!karaoke_prestart_scroll_visible(
             &project,
             first,
-            first.start_frame,
+            first.start_frame as f64,
             max_gap_frames,
             count_in_frames
         ));
@@ -554,7 +555,7 @@ mod tests {
         assert!(karaoke_prestart_scroll_visible(
             &project,
             next_karaoke,
-            next_karaoke.start_frame - count_in_frames,
+            (next_karaoke.start_frame - count_in_frames) as f64,
             max_gap_frames,
             count_in_frames
         ));
@@ -628,25 +629,25 @@ mod tests {
         assert!(!karaoke_upcoming_stack_visible(
             &project,
             second,
-            first.start_frame - 1,
+            (first.start_frame - 1) as f64,
             max_gap_frames
         ));
         assert!(karaoke_upcoming_stack_visible(
             &project,
             second,
-            first.start_frame,
+            first.start_frame as f64,
             max_gap_frames
         ));
         assert!(karaoke_upcoming_stack_visible(
             &project,
             second,
-            first.end_frame() + 1,
+            (first.end_frame() + 1) as f64,
             max_gap_frames
         ));
         assert!(!karaoke_upcoming_stack_visible(
             &project,
             second,
-            second.start_frame,
+            second.start_frame as f64,
             max_gap_frames
         ));
     }
@@ -687,12 +688,12 @@ mod tests {
         };
 
         let normal_body_h = editor_normal_body_height(&project, &zone);
-        let normal_rect = line_rect(&project, project.get_line(normal_id).unwrap(), 0, &zone);
+        let normal_rect = line_rect(&project, project.get_line(normal_id).unwrap(), 0.0, &zone);
         let karaoke_body = editor_track_body_rect(&project, 0.5, &zone);
         let karaoke_rect = karaoke_preview_line_rect(
             &project,
             project.get_line(karaoke_id).unwrap(),
-            24,
+            24.0,
             &zone,
             karaoke_adjacent_max_gap_frames(24.0),
         );
@@ -805,10 +806,10 @@ mod tests {
 
         assert_eq!(index.previous_adjacent_karaoke_id(next_karaoke), None);
         assert_eq!(index.stack_row(next_karaoke), 1);
-        assert!(!index.prestart_scroll_visible(next_karaoke, 0, count_in_frames));
+        assert!(!index.prestart_scroll_visible(next_karaoke, 0.0, count_in_frames));
         assert!(index.prestart_scroll_visible(
             next_karaoke,
-            next_karaoke.start_frame - count_in_frames,
+            (next_karaoke.start_frame - count_in_frames) as f64,
             count_in_frames
         ));
     }
@@ -856,12 +857,12 @@ mod tests {
         assert_rect_approx_eq(
             ctx.line_rect_with_karaoke_width(
                 project.get_line(normal_id).unwrap(),
-                0,
+                0.0,
                 &zone,
                 false,
                 None,
             ),
-            line_rect(&project, project.get_line(normal_id).unwrap(), 0, &zone),
+            line_rect(&project, project.get_line(normal_id).unwrap(), 0.0, &zone),
         );
 
         let max_gap_frames = karaoke_adjacent_max_gap_frames(24.0);
@@ -871,14 +872,14 @@ mod tests {
             karaoke_preview_line_rect_with_state(
                 &ctx,
                 karaoke,
-                24,
+                24.0,
                 &zone,
                 false,
-                index.upcoming_stack_visible(karaoke, 24),
+                index.upcoming_stack_visible(karaoke, 24.0),
                 index.stack_row(karaoke),
                 None,
             ),
-            karaoke_preview_line_rect(&project, karaoke, 24, &zone, max_gap_frames),
+            karaoke_preview_line_rect(&project, karaoke, 24.0, &zone, max_gap_frames),
         );
     }
 
@@ -918,9 +919,29 @@ mod tests {
     }
 
     #[test]
+    fn fractional_frame_geometry_shifts_by_subframe_amounts() {
+        crate::config::init();
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 240.0,
+        };
+
+        let whole_frame_x = frame_to_x(100, 100.0, &zone);
+        let half_frame_x = frame_to_x(100, 100.5, &zone);
+
+        assert!((half_frame_x - (whole_frame_x - ppf() * 0.5)).abs() < 0.01);
+        assert_eq!(x_to_frame(half_frame_x, 100.5, &zone), 100);
+        assert_eq!(x_to_frame(frame_to_x(101, 100.5, &zone), 100.5, &zone), 101);
+    }
+
+    #[test]
     fn waveform_offset_keeps_visible_audio_peaks_rendered() {
         crate::config::init();
         let project = Project::new();
+        let mut render_index = ProjectRenderIndex::new();
+        render_index.refresh(&project);
         let state = RythmoState::new();
         let zone = Rect {
             x: 0.0,
@@ -937,7 +958,8 @@ mod tests {
         let quads = render_rythmo_base(
             &zone,
             &project,
-            current_frame,
+            &render_index,
+            current_frame as f64,
             &waveform,
             waveform_offset_frames,
             true,
@@ -959,14 +981,72 @@ fn ppf() -> f32 {
     constants::PIXELS_PER_FRAME * crate::config::scroll_speed()
 }
 
-fn frame_to_x(frame: i64, current_frame: i64, zone: &Rect) -> f32 {
-    let center_x = zone.x + zone.width / 2.0;
-    center_x + (frame - current_frame) as f32 * ppf()
+fn f64_floor_to_i64(value: f64) -> i64 {
+    if !value.is_finite() {
+        0
+    } else if value <= i64::MIN as f64 {
+        i64::MIN
+    } else if value >= i64::MAX as f64 {
+        i64::MAX
+    } else {
+        value.floor() as i64
+    }
 }
 
-fn x_to_frame(x: f32, current_frame: i64, zone: &Rect) -> i64 {
+fn f64_ceil_to_i64(value: f64) -> i64 {
+    if !value.is_finite() {
+        0
+    } else if value <= i64::MIN as f64 {
+        i64::MIN
+    } else if value >= i64::MAX as f64 {
+        i64::MAX
+    } else {
+        value.ceil() as i64
+    }
+}
+
+fn f64_round_to_i64(value: f64) -> i64 {
+    if !value.is_finite() {
+        0
+    } else if value <= i64::MIN as f64 {
+        i64::MIN
+    } else if value >= i64::MAX as f64 {
+        i64::MAX
+    } else {
+        value.round() as i64
+    }
+}
+
+fn visual_frame_to_i64(current_frame: f64) -> i64 {
+    f64_floor_to_i64(current_frame)
+}
+
+fn render_window(zone: &Rect, current_frame: f64, margin_frames: i64) -> (i64, i64) {
+    let half_visible_frames = zone.width as f64 / ppf().max(0.001) as f64 / 2.0;
+    let margin_frames = margin_frames.max(0);
+    let first_frame =
+        f64_floor_to_i64(current_frame - half_visible_frames).saturating_sub(margin_frames);
+    let last_frame =
+        f64_ceil_to_i64(current_frame + half_visible_frames).saturating_add(margin_frames);
+    (first_frame, last_frame.max(first_frame))
+}
+
+fn interactive_render_margin_frames(fps: f64, render_index: &ProjectRenderIndex) -> i64 {
+    let fps = fps.max(1.0);
+    karaoke_adjacent_max_gap_frames(fps)
+        .max(karaoke_count_in_frames(fps))
+        .max((fps * 10.0).round() as i64)
+        .saturating_add(render_index.max_duration_frames())
+}
+
+fn frame_to_x(frame: i64, current_frame: f64, zone: &Rect) -> f32 {
     let center_x = zone.x + zone.width / 2.0;
-    current_frame + ((x - center_x) / ppf()) as i64
+    center_x + (frame as f64 - current_frame) as f32 * ppf()
+}
+
+fn x_to_frame(x: f32, current_frame: f64, zone: &Rect) -> i64 {
+    let center_x = zone.x + zone.width / 2.0;
+    f64_round_to_i64(current_frame + (x - center_x) as f64 / ppf().max(0.001) as f64)
 }
 
 fn clamped_new_line_duration(project: &Project, frame: i64, y_slot: f32, fps: f64) -> i64 {
@@ -1023,7 +1103,7 @@ fn karaoke_ui_text_width(text: &str) -> f32 {
 
 fn line_visual_x_width(
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: i64,
+    current_frame: f64,
     zone: &Rect,
     karaoke_preview: bool,
 ) -> (f32, f32) {
@@ -1032,17 +1112,17 @@ fn line_visual_x_width(
 
 fn line_visual_x_width_with_karaoke_width(
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: i64,
+    current_frame: f64,
     zone: &Rect,
     karaoke_preview: bool,
     active_karaoke_width: Option<f32>,
 ) -> (f32, f32) {
     let center_x = zone.x + zone.width / 2.0;
-    if karaoke_preview && line.karaoke_active(current_frame as f64) {
+    if karaoke_preview && line.karaoke_active(current_frame) {
         let width = active_karaoke_width.unwrap_or_else(|| karaoke_ui_text_width(&line.text));
         return (center_x - width / 2.0, width);
     } else if karaoke_preview {
-        return line.visual_x_width(current_frame as f64, center_x, ppf(), zone.width, 1.0);
+        return line.visual_x_width(current_frame, center_x, ppf(), zone.width, 1.0);
     }
 
     let x1 = frame_to_x(line.start_frame, current_frame, zone);
@@ -1053,7 +1133,7 @@ fn line_visual_x_width_with_karaoke_width(
 fn badge_rect_for_line(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: i64,
+    current_frame: f64,
     zone: &Rect,
 ) -> Rect {
     badge_rect_for_line_with_karaoke_preview(project, line, current_frame, zone, false)
@@ -1062,7 +1142,7 @@ fn badge_rect_for_line(
 fn badge_rect_for_line_with_karaoke_preview(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: i64,
+    current_frame: f64,
     zone: &Rect,
     karaoke_preview: bool,
 ) -> Rect {
@@ -1080,7 +1160,7 @@ fn badge_rect_for_name(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
     name: &str,
-    current_frame: i64,
+    current_frame: f64,
     zone: &Rect,
 ) -> Rect {
     badge_rect_for_name_with_karaoke_preview(project, line, name, current_frame, zone, false)
@@ -1090,7 +1170,7 @@ fn badge_rect_for_name_with_karaoke_preview(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
     name: &str,
-    current_frame: i64,
+    current_frame: f64,
     zone: &Rect,
     karaoke_preview: bool,
 ) -> Rect {
@@ -1287,7 +1367,7 @@ impl EditorLayoutCtx {
     fn line_rect_with_karaoke_width(
         &self,
         line: &crate::rythmo_line::RythmoLine,
-        current_frame: i64,
+        current_frame: f64,
         zone: &Rect,
         karaoke_preview: bool,
         active_karaoke_width: Option<f32>,
@@ -1339,7 +1419,7 @@ fn editor_track_body_rect(project: &Project, y_slot: f32, zone: &Rect) -> Rect {
 fn line_rect(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: i64,
+    current_frame: f64,
     zone: &Rect,
 ) -> Rect {
     line_rect_with_karaoke_preview(project, line, current_frame, zone, false)
@@ -1348,7 +1428,7 @@ fn line_rect(
 fn line_rect_with_karaoke_preview(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: i64,
+    current_frame: f64,
     zone: &Rect,
     karaoke_preview: bool,
 ) -> Rect {
@@ -1431,7 +1511,8 @@ fn push_playhead_segments(
 
 fn active_karaoke_skip_ranges(
     project: &Project,
-    current_frame: i64,
+    render_index: &ProjectRenderIndex,
+    current_frame: f64,
     zone: &Rect,
     karaoke_preview: bool,
     fps: f64,
@@ -1444,9 +1525,13 @@ fn active_karaoke_skip_ranges(
     let max_gap_frames = karaoke_adjacent_max_gap_frames(fps);
     let karaoke_index = state.cached_karaoke_ui_index(project, max_gap_frames);
     let layout_ctx = EditorLayoutCtx::from_karaoke_tracks(karaoke_index.karaoke_tracks(), zone);
-    project
-        .lines()
-        .filter(|line| line.karaoke && line.karaoke_active(current_frame as f64))
+    let first_frame = f64_floor_to_i64(current_frame);
+    let last_frame = f64_ceil_to_i64(current_frame);
+    render_index
+        .visible_line_ids(project, first_frame, last_frame)
+        .into_iter()
+        .filter_map(|line_id| project.get_line(line_id))
+        .filter(|line| line.karaoke && line.karaoke_active(current_frame))
         .map(|line| {
             let body_rect = layout_ctx.track_body_rect(line.y_slot, zone);
             let rect = karaoke_stack_rect(
@@ -1467,7 +1552,8 @@ fn active_karaoke_skip_ranges(
 pub fn render_rythmo_base(
     zone: &Rect,
     project: &Project,
-    current_frame: i64,
+    render_index: &ProjectRenderIndex,
+    current_frame: f64,
     waveform: &[f32],
     waveform_offset_frames: i64,
     waveform_is_instrumental: bool,
@@ -1490,8 +1576,9 @@ pub fn render_rythmo_base(
         let sub_ppf = ppf() / subs as f32; // pixels per sub-frame
         let bar_w = sub_ppf.max(1.0);
         let visible_frames = (zone.width / ppf()) as i64 + 4;
-        let first_frame = current_frame - visible_frames / 2;
-        let last_frame = current_frame + visible_frames / 2;
+        let current_frame_i64 = visual_frame_to_i64(current_frame);
+        let first_frame = current_frame_i64 - visible_frames / 2;
+        let last_frame = current_frame_i64 + visible_frames / 2;
         let first_wave_frame = first_frame.saturating_sub(waveform_offset_frames);
         let last_wave_frame = last_frame.saturating_sub(waveform_offset_frames);
         let first_sub = first_wave_frame
@@ -1577,8 +1664,15 @@ pub fn render_rythmo_base(
     // Ticks removed from UI (kept in CPU/GPU export renderers)
 
     let playhead_x = zone.x + (zone.width - PLAYHEAD_WIDTH) / 2.0;
-    let skip_ranges =
-        active_karaoke_skip_ranges(project, current_frame, zone, karaoke_preview, fps, state);
+    let skip_ranges = active_karaoke_skip_ranges(
+        project,
+        render_index,
+        current_frame,
+        zone,
+        karaoke_preview,
+        fps,
+        state,
+    );
     push_playhead_segments(
         &mut quads,
         playhead_x,
@@ -1715,14 +1809,14 @@ fn karaoke_count_in_frames(fps: f64) -> i64 {
 
 fn karaoke_count_in_progress(
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: i64,
+    current_frame: f64,
     count_in_frames: i64,
 ) -> Option<f32> {
-    if !line.karaoke || current_frame >= line.start_frame || count_in_frames <= 0 {
+    if !line.karaoke || current_frame >= line.start_frame as f64 || count_in_frames <= 0 {
         return None;
     }
 
-    let count_in_start = line.start_frame - count_in_frames;
+    let count_in_start = (line.start_frame - count_in_frames) as f64;
     if current_frame < count_in_start {
         return None;
     }
@@ -1732,7 +1826,7 @@ fn karaoke_count_in_progress(
 
 fn karaoke_count_in_visible(
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: i64,
+    current_frame: f64,
     count_in_frames: i64,
 ) -> bool {
     karaoke_count_in_progress(line, current_frame, count_in_frames).is_some()
@@ -1931,7 +2025,7 @@ impl KaraokeUiIndex {
     fn prestart_scroll_visible(
         &self,
         line: &crate::rythmo_line::RythmoLine,
-        current_frame: i64,
+        current_frame: f64,
         count_in_frames: i64,
     ) -> bool {
         line.karaoke
@@ -1942,15 +2036,15 @@ impl KaraokeUiIndex {
     fn upcoming_stack_visible(
         &self,
         line: &crate::rythmo_line::RythmoLine,
-        current_frame: i64,
+        current_frame: f64,
     ) -> bool {
-        if !line.karaoke || current_frame >= line.start_frame {
+        if !line.karaoke || current_frame >= line.start_frame as f64 {
             return false;
         }
 
         self.line_state(line)
             .previous_adjacent_start_frame
-            .is_some_and(|start_frame| current_frame >= start_frame)
+            .is_some_and(|start_frame| current_frame >= start_frame as f64)
     }
 
     fn character_label_visible(&self, line: &crate::rythmo_line::RythmoLine) -> bool {
@@ -2019,7 +2113,7 @@ fn next_karaoke_line_after<'a>(
 fn karaoke_prestart_scroll_visible(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: i64,
+    current_frame: f64,
     max_gap_frames: i64,
     count_in_frames: i64,
 ) -> bool {
@@ -2031,15 +2125,15 @@ fn karaoke_prestart_scroll_visible(
 fn karaoke_upcoming_stack_visible(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: i64,
+    current_frame: f64,
     max_gap_frames: i64,
 ) -> bool {
-    if !line.karaoke || current_frame >= line.start_frame {
+    if !line.karaoke || current_frame >= line.start_frame as f64 {
         return false;
     }
 
     previous_karaoke_line_before(project, line, max_gap_frames)
-        .is_some_and(|previous| current_frame >= previous.start_frame)
+        .is_some_and(|previous| current_frame >= previous.start_frame as f64)
 }
 
 fn karaoke_island_index(
@@ -2099,20 +2193,19 @@ fn karaoke_centered_x_width_with_width(zone: &Rect, width: f32) -> (f32, f32) {
 fn karaoke_preview_line_rect_with_state(
     layout_ctx: &EditorLayoutCtx,
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: i64,
+    current_frame: f64,
     zone: &Rect,
     prestart_count_in: bool,
     upcoming_stack: bool,
     stack_row: usize,
     centered_karaoke_width: Option<f32>,
 ) -> Rect {
-    let (x1, width) =
-        if line.karaoke_active(current_frame as f64) || prestart_count_in || upcoming_stack {
-            let width = centered_karaoke_width.unwrap_or_else(|| karaoke_ui_text_width(&line.text));
-            karaoke_centered_x_width_with_width(zone, width)
-        } else {
-            line_visual_x_width(line, current_frame, zone, true)
-        };
+    let (x1, width) = if line.karaoke_active(current_frame) || prestart_count_in || upcoming_stack {
+        let width = centered_karaoke_width.unwrap_or_else(|| karaoke_ui_text_width(&line.text));
+        karaoke_centered_x_width_with_width(zone, width)
+    } else {
+        line_visual_x_width(line, current_frame, zone, true)
+    };
     let body_rect = layout_ctx.track_body_rect(line.y_slot, zone);
     let rect = Rect {
         x: x1,
@@ -2126,7 +2219,7 @@ fn karaoke_preview_line_rect_with_state(
 fn karaoke_preview_line_rect(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: i64,
+    current_frame: f64,
     zone: &Rect,
     max_gap_frames: i64,
 ) -> Rect {
@@ -2545,7 +2638,8 @@ fn render_syllable_handles(
 pub fn render_lines<'a>(
     zone: &Rect,
     project: &'a Project,
-    current_frame: i64,
+    render_index: &ProjectRenderIndex,
+    current_frame: f64,
     karaoke_preview: bool,
     fps: f64,
     state: &RythmoState,
@@ -2569,10 +2663,11 @@ pub fn render_lines<'a>(
     state.prune_karaoke_text_width_cache(project);
     let karaoke_max_gap_frames = karaoke_adjacent_max_gap_frames(fps);
     let karaoke_index = state.cached_karaoke_ui_index(project, karaoke_max_gap_frames);
+    let current_frame_i64 = visual_frame_to_i64(current_frame);
     state.prewarm_karaoke_text_widths(
         project,
         &karaoke_index,
-        current_frame,
+        current_frame_i64,
         (fps.max(1.0) * 10.0).round() as i64,
         if karaoke_preview { 2 } else { 8 },
     );
@@ -2601,8 +2696,16 @@ pub fn render_lines<'a>(
 
     let mut cursor_info = None;
     let karaoke_lang = crate::config::get().lang.clone();
-    for line in project.lines() {
-        let karaoke_active = line.karaoke_active(current_frame as f64);
+    let margin_frames = interactive_render_margin_frames(fps, render_index);
+    let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames);
+    let mut visible_line_ids = render_index.visible_line_ids(project, first_frame, last_frame);
+    visible_line_ids.sort_by_key(|id| project.line_index(*id).unwrap_or(usize::MAX));
+
+    for line_id in visible_line_ids {
+        let Some(line) = project.get_line(line_id) else {
+            continue;
+        };
+        let karaoke_active = line.karaoke_active(current_frame);
         let karaoke_count_in = karaoke_preview
             && karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
         let karaoke_prestart_count_in = karaoke_preview
@@ -2661,7 +2764,7 @@ pub fn render_lines<'a>(
         let is_editing = state.editing_line == Some(line.id);
         let karaoke_playback_line = karaoke_preview && line.karaoke;
         let karaoke_progress_info = if karaoke_playback_line {
-            karaoke_progress_render_info(line, current_frame as f64, &karaoke_lang)
+            karaoke_progress_render_info(line, current_frame, &karaoke_lang)
         } else {
             None
         };
@@ -2711,10 +2814,8 @@ pub fn render_lines<'a>(
                     .syllable_drag
                     .as_ref()
                     .filter(|d| d.line_id == line.id);
-                let lang_cfg = crate::config::get().lang.clone();
-
                 if let Some((breaks, ratios)) =
-                    visible_syllable_segments(line, drag_ratios, &lang_cfg, karaoke_preview)
+                    visible_syllable_segments(line, drag_ratios, &karaoke_lang, karaoke_preview)
                 {
                     let chars: Vec<char> = line.text.chars().collect();
                     let mut seg_x = r.x;
@@ -2803,9 +2904,8 @@ pub fn render_lines<'a>(
         let is_syllable_drag_line =
             state.syllable_drag.as_ref().map(|d| d.line_id) == Some(line.id);
         if !(karaoke_preview && line.karaoke) && (is_hovered || is_syllable_drag_line) {
-            let lang = crate::config::get().lang.clone();
             if let Some(ratios) =
-                syllable_ratios_for_line(line, state.syllable_drag.as_ref(), &lang)
+                syllable_ratios_for_line(line, state.syllable_drag.as_ref(), &karaoke_lang)
             {
                 render_syllable_handles(&r, &ratios, true, syllable_quads);
             }
@@ -2995,7 +3095,7 @@ pub fn render_lines<'a>(
         project,
         &karaoke_index,
         &layout_ctx,
-        current_frame,
+        current_frame_i64,
         fps,
         zone,
     );
@@ -3241,7 +3341,7 @@ fn karaoke_count_in_dot_rect(line_rect: &Rect, count_in_progress: f32, scale: f3
 
 fn render_karaoke_count_in_dot_scaled(
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: i64,
+    current_frame: f64,
     line_rect: &Rect,
     count_in_frames: i64,
     scale: f32,
@@ -3338,7 +3438,7 @@ fn render_karaoke_dot_scaled(
 pub fn render_autocomplete<'a>(
     zone: &Rect,
     project: &'a Project,
-    current_frame: i64,
+    current_frame: f64,
     state: &RythmoState,
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
@@ -3450,14 +3550,20 @@ pub fn render_autocomplete<'a>(
 pub fn render_markers<'a>(
     zone: &Rect,
     project: &'a Project,
-    current_frame: i64,
+    render_index: &ProjectRenderIndex,
+    current_frame: f64,
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
     liaison_icons: &mut Vec<IconInstance>,
     liaison_left_uv: [f32; 4],
     liaison_right_uv: [f32; 4],
 ) {
-    for marker in &project.markers {
+    let margin_frames = f64_ceil_to_i64(20.0 / ppf().max(0.001) as f64).saturating_add(1);
+    let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames);
+    for marker_index in render_index.visible_marker_indices(first_frame, last_frame) {
+        let Some(marker) = project.markers.get(marker_index) else {
+            continue;
+        };
         let x = frame_to_x(marker.frame, current_frame, zone);
         if x < zone.x - 20.0 || x > zone.x + zone.width + 20.0 {
             continue;
@@ -3612,7 +3718,7 @@ pub fn render_markers<'a>(
 pub fn autocomplete_hit(
     zone: &Rect,
     project: &Project,
-    current_frame: i64,
+    current_frame: f64,
     state: &RythmoState,
     click_x: f32,
     click_y: f32,
@@ -3650,7 +3756,7 @@ pub fn autocomplete_hit(
 struct RythmoCtx<'a> {
     zone: &'a Rect,
     project: &'a Project,
-    current_frame: i64,
+    current_frame: f64,
     karaoke_preview: bool,
     fps: f64,
 }
@@ -3659,7 +3765,7 @@ pub fn handle_rythmo_event(
     event: &UiEvent,
     zone: &Rect,
     project: &Project,
-    current_frame: i64,
+    current_frame: f64,
     karaoke_preview: bool,
     fps: f64,
     state: &mut RythmoState,
@@ -3838,7 +3944,7 @@ const MENU_MAX_ACTOR_H: f32 = 260.0;
 pub fn handle_context_menu_event(
     event: &UiEvent,
     project: &Project,
-    current_frame: i64,
+    current_frame: f64,
     zone: &Rect,
     screen_w: f32,
     screen_h: f32,
@@ -5380,7 +5486,8 @@ pub fn studio_br_height(_project: &Project, _width: f32) -> f32 {
 pub fn render_studio_rythmo<'a>(
     zone: &Rect,
     project: &'a Project,
-    current_frame: i64,
+    render_index: &ProjectRenderIndex,
+    current_frame: f64,
     fps: f64,
     rythmo_state: &RythmoState,
     quads: &mut Vec<QuadInstance>,
@@ -5427,14 +5534,15 @@ pub fn render_studio_rythmo<'a>(
     let playhead_w = 2.0 * scale;
     let center_x = zone.x + zone.width / 2.0;
     let karaoke_count_in_frame_count = karaoke_count_in_frames(fps);
+    let current_frame_i64 = visual_frame_to_i64(current_frame);
 
     // Ruler ticks (alternating long/short — export style)
     let visible_frames = (zone.width / ppf) as i64 + 4;
-    let first_tick = ((current_frame - visible_frames / 2) / constants::TICK_GAP_FRAMES)
+    let first_tick = ((current_frame_i64 - visible_frames / 2) / constants::TICK_GAP_FRAMES)
         * constants::TICK_GAP_FRAMES;
     let mut tf = first_tick;
     loop {
-        let x = center_x + (tf - current_frame) as f32 * ppf;
+        let x = center_x + (tf as f64 - current_frame) as f32 * ppf;
         if x > zone.x + zone.width {
             break;
         }
@@ -5463,9 +5571,13 @@ pub fn render_studio_rythmo<'a>(
         tf += constants::TICK_GAP_FRAMES;
     }
 
-    let studio_skip_ranges: Vec<(f32, f32)> = project
-        .lines()
-        .filter(|line| line.karaoke && line.karaoke_active(current_frame as f64))
+    let first_active_frame = f64_floor_to_i64(current_frame);
+    let last_active_frame = f64_ceil_to_i64(current_frame);
+    let studio_skip_ranges: Vec<(f32, f32)> = render_index
+        .visible_line_ids(project, first_active_frame, last_active_frame)
+        .into_iter()
+        .filter_map(|line_id| project.get_line(line_id))
+        .filter(|line| line.karaoke && line.karaoke_active(current_frame))
         .filter_map(|line| {
             let track = rythmo_layout::track_for_y_slot(&track_layouts, line.y_slot)?;
             let body_y = zone.y + ruler_h + track.top + slot_header_h + badge_gap;
@@ -5499,8 +5611,16 @@ pub fn render_studio_rythmo<'a>(
 
     // Lines (export style: no handles, no borders, no hover effects)
     let karaoke_lang = crate::config::get().lang.clone();
-    for line in project.lines() {
-        let karaoke_active = line.karaoke_active(current_frame as f64);
+    let margin_frames = interactive_render_margin_frames(fps, render_index);
+    let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames);
+    let mut visible_line_ids = render_index.visible_line_ids(project, first_frame, last_frame);
+    visible_line_ids.sort_by_key(|id| project.line_index(*id).unwrap_or(usize::MAX));
+
+    for line_id in visible_line_ids {
+        let Some(line) = project.get_line(line_id) else {
+            continue;
+        };
+        let karaoke_active = line.karaoke_active(current_frame);
         let karaoke_count_in =
             karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
         let karaoke_prestart_count_in = karaoke_index.prestart_scroll_visible(
@@ -5520,7 +5640,7 @@ pub fn render_studio_rythmo<'a>(
             let width = rythmo_state.karaoke_ui_text_width_for_render(line);
             (center_x - width / 2.0, width)
         } else {
-            line.visual_x_width(current_frame as f64, center_x, ppf, zone.width, scale)
+            line.visual_x_width(current_frame, center_x, ppf, zone.width, scale)
         };
         if x1 + lw < zone.x || x1 > zone.x + zone.width {
             continue;
@@ -5628,7 +5748,7 @@ pub fn render_studio_rythmo<'a>(
             height: body_h,
         };
         let karaoke_progress_info = if line.karaoke {
-            karaoke_progress_render_info(line, current_frame as f64, &karaoke_lang)
+            karaoke_progress_render_info(line, current_frame, &karaoke_lang)
         } else {
             None
         };
@@ -5638,8 +5758,7 @@ pub fn render_studio_rythmo<'a>(
             if line.karaoke {
                 push_karaoke_rythmo_text(stretched, line, body_rect, karaoke_progress_info);
             } else {
-                let lang_cfg = crate::config::get().lang.clone();
-                let breaks = crate::syllable::syllable_breaks(&line.text, &lang_cfg);
+                let breaks = crate::syllable::syllable_breaks(&line.text, &karaoke_lang);
                 let ratios = if line.syllable_ratios.len() == breaks.len() + 1 {
                     line.syllable_ratios.clone()
                 } else {
@@ -5743,7 +5862,7 @@ pub fn render_studio_rythmo<'a>(
         project,
         &karaoke_index,
         &track_layouts,
-        current_frame,
+        current_frame_i64,
         fps,
         zone,
         ruler_h,
@@ -5753,8 +5872,14 @@ pub fn render_studio_rythmo<'a>(
     );
 
     // Markers (export-style: use center_x + frame offset with studio ppf)
-    for marker in &project.markers {
-        let marker_x = center_x + (marker.frame - current_frame) as f32 * ppf;
+    let marker_margin_frames = f64_ceil_to_i64(20.0 / ppf.max(0.001) as f64).saturating_add(1);
+    let (first_marker_frame, last_marker_frame) =
+        render_window(zone, current_frame, marker_margin_frames);
+    for marker_index in render_index.visible_marker_indices(first_marker_frame, last_marker_frame) {
+        let Some(marker) = project.markers.get(marker_index) else {
+            continue;
+        };
+        let marker_x = center_x + (marker.frame as f64 - current_frame) as f32 * ppf;
         if marker_x < zone.x - 20.0 || marker_x > zone.x + zone.width + 20.0 {
             continue;
         }

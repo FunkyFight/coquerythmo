@@ -59,7 +59,6 @@ pub struct VideoPlayer {
     instrumental_audio_offset_frames: i64,
     finished: bool,
     current_frame: i64,
-    interpolated_frame: i64,
     total_frames: i64,
     volume: f32,
 
@@ -174,7 +173,6 @@ impl VideoPlayer {
             instrumental_audio_offset_frames: 0,
             finished: false,
             current_frame: 0,
-            interpolated_frame: 0,
             total_frames: 0,
             volume: 0.75,
             audio_stream: None,
@@ -204,7 +202,6 @@ impl VideoPlayer {
         self.fps = fps;
         self.total_frames = total_frames;
         self.current_frame = 0;
-        self.interpolated_frame = 0;
         self.path = Some(video_path.to_path_buf());
         self.source_audio_path = Some(audio_path.to_path_buf());
         self.active_audio_track = AudioTrack::Source;
@@ -364,7 +361,6 @@ impl VideoPlayer {
             target
         };
         self.current_frame = target;
-        self.interpolated_frame = target;
     }
 
     /// Decode and display the frame at current_frame. Call after scroll stabilizes.
@@ -435,23 +431,10 @@ impl VideoPlayer {
             return;
         }
 
-        // Wall-clock sync: compute which frame we SHOULD be on
-        let start_time = match self.playback_start_time {
-            Some(t) => t,
-            None => return,
+        let Some(target_render_frame) = self.playback_render_frame_at(Instant::now()) else {
+            return;
         };
-        let elapsed = if let Some(clock) = &self.audio_clock {
-            let audio_frames = clock
-                .audible_frame()
-                .saturating_sub(self.playback_start_audio_frame);
-            audio_frames as f64 / clock.sample_rate as f64
-        } else {
-            Instant::now().duration_since(start_time).as_secs_f64()
-        };
-        let target_frame = self.playback_start_frame + (elapsed * self.fps) as i64;
-
-        // Store interpolated frame for smooth playback even with discrete frame updates
-        self.interpolated_frame = target_frame;
+        let target_frame = target_render_frame.floor() as i64;
 
         // Already at or ahead of target — nothing to do
         if self.current_frame >= target_frame {
@@ -496,10 +479,38 @@ impl VideoPlayer {
         self.current_frame
     }
 
-    /// Get interpolated frame based on elapsed time since playback started.
-    /// This provides smooth motion even with low-fps video (e.g., 24fps source).
-    pub fn current_frame_interpolated(&self) -> i64 {
-        self.interpolated_frame
+    fn playback_elapsed_seconds_at(&self, now: Instant) -> Option<f64> {
+        let start_time = self.playback_start_time?;
+        if let Some(clock) = &self.audio_clock {
+            let audio_frames = clock
+                .audible_frame()
+                .saturating_sub(self.playback_start_audio_frame);
+            Some(audio_frames as f64 / clock.sample_rate as f64)
+        } else {
+            Some(now.duration_since(start_time).as_secs_f64())
+        }
+    }
+
+    fn clamp_render_frame(&self, frame: f64) -> f64 {
+        if self.total_frames > 0 {
+            frame.clamp(0.0, (self.total_frames - 1) as f64)
+        } else {
+            frame.max(0.0)
+        }
+    }
+
+    fn playback_render_frame_at(&self, now: Instant) -> Option<f64> {
+        let elapsed = self.playback_elapsed_seconds_at(now)?;
+        Some(self.clamp_render_frame(self.playback_start_frame as f64 + elapsed * self.fps))
+    }
+
+    /// Visual frame for UI rendering. Decoded-frame and timeline state remain integer-based.
+    pub fn current_frame_for_render(&self) -> f64 {
+        if !self.playing {
+            return self.current_frame as f64;
+        }
+        self.playback_render_frame_at(Instant::now())
+            .unwrap_or(self.current_frame as f64)
     }
 
     pub fn fps(&self) -> f64 {

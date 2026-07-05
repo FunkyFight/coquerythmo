@@ -37,6 +37,7 @@ use widget::{
 
 use crate::i18n::t;
 use crate::project::Project;
+use crate::render_index::ProjectRenderIndex;
 
 use self::actor_icon_cache::ActorIconCache;
 use self::dropdown::Dropdown;
@@ -635,8 +636,7 @@ impl Ui {
             },
             self.volume,
             |val| EventResponse::Action(UiAction::SetVolume(val)),
-        )
-        .with_tooltip(t("toolbar.volume"));
+        );
         widgets.push(Box::new(volume));
 
         widgets
@@ -646,7 +646,7 @@ impl Ui {
         &mut self,
         event: &UiEvent,
         project: &Project,
-        current_frame: i64,
+        render_frame: f64,
         fps: f64,
     ) -> EventResponse {
         if let UiEvent::MouseMove { x, y } = event {
@@ -740,7 +740,7 @@ impl Ui {
             let response = rythmo::handle_context_menu_event(
                 event,
                 project,
-                current_frame,
+                render_frame,
                 &self.layout.rythmo,
                 self.screen_w,
                 self.screen_h,
@@ -834,7 +834,7 @@ impl Ui {
             event,
             &self.layout.rythmo,
             project,
-            current_frame,
+            render_frame,
             self.playing,
             fps,
             &mut self.rythmo_state,
@@ -1617,7 +1617,9 @@ impl Ui {
         ui_scale: f32,
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         project: &Project,
+        render_index: &ProjectRenderIndex,
         current_frame: i64,
+        render_frame: f64,
         fps: f64,
         waveform: &[f32],
         waveform_offset_frames: i64,
@@ -1719,7 +1721,8 @@ impl Ui {
             &mut quads,
             &mut labels,
             project,
-            current_frame,
+            render_frame,
+            render_index,
             fps,
             waveform,
             waveform_offset_frames,
@@ -1735,7 +1738,8 @@ impl Ui {
         let cursor_info = rythmo::render_lines(
             &self.layout.rythmo,
             project,
-            current_frame,
+            render_index,
+            render_frame,
             self.playing,
             fps,
             &self.rythmo_state,
@@ -1768,7 +1772,8 @@ impl Ui {
         rythmo::render_markers(
             &self.layout.rythmo,
             project,
-            current_frame,
+            render_index,
+            render_frame,
             &mut quads,
             &mut labels,
             &mut liaison_icons,
@@ -1877,7 +1882,7 @@ impl Ui {
         rythmo::render_autocomplete(
             &self.layout.rythmo,
             project,
-            current_frame,
+            render_frame,
             &self.rythmo_state,
             &mut quads,
             &mut labels,
@@ -2269,7 +2274,8 @@ impl Ui {
         quads: &mut Vec<QuadInstance>,
         labels: &mut Vec<LabelInfo<'a>>,
         project: &Project,
-        current_frame: i64,
+        render_frame: f64,
+        render_index: &ProjectRenderIndex,
         fps: f64,
         waveform: &[f32],
         waveform_offset_frames: i64,
@@ -2501,7 +2507,8 @@ impl Ui {
         quads.extend(rythmo::render_rythmo_base(
             &l.rythmo,
             project,
-            current_frame,
+            render_index,
+            render_frame,
             waveform,
             waveform_offset_frames,
             waveform_is_instrumental,
@@ -2571,7 +2578,8 @@ impl Ui {
         ui_scale: f32,
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         project: &Project,
-        current_frame: i64,
+        render_index: &ProjectRenderIndex,
+        render_frame: f64,
         fps: f64,
     ) {
         let mut quads: Vec<QuadInstance> = Vec::new();
@@ -2620,7 +2628,8 @@ impl Ui {
         rythmo::render_studio_rythmo(
             &rythmo_zone,
             project,
-            current_frame,
+            render_index,
+            render_frame,
             fps,
             &self.rythmo_state,
             &mut quads,

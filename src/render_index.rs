@@ -91,6 +91,10 @@ impl ProjectRenderIndex {
             .map(|&(_, index)| index)
             .collect()
     }
+
+    pub fn max_duration_frames(&self) -> i64 {
+        self.max_duration_frames
+    }
 }
 
 #[cfg(test)]
@@ -118,6 +122,17 @@ mod tests {
         index.refresh(&project);
 
         assert_eq!(index.visible_line_ids(&project, 20, 30), vec![visible]);
+    }
+
+    #[test]
+    fn render_index_tracks_max_duration() {
+        let mut project = Project::new();
+        project.add_line(0, 10, 0.0);
+        project.add_line(20, 42, 0.0);
+        let mut index = ProjectRenderIndex::new();
+        index.refresh(&project);
+
+        assert_eq!(index.max_duration_frames(), 42);
     }
 
     #[test]

@@ -188,74 +188,19 @@ impl WhatsNewModal {
             1.0,
             18.0,
         );
-        push_quad(
-            overlay_quads,
-            Rect {
-                x: card.x + 1.0,
-                y: card.y + 1.0,
-                width: card.width - 2.0,
-                height: 5.0,
-            },
-            [0.92, 0.64, 0.28, 0.95],
-            [0.78, 0.38, 0.22, 0.95],
-            [0.0; 4],
-            0.0,
-            18.0,
-        );
 
-        push_quad(
-            overlay_quads,
-            Rect {
-                x: card.x + card.width - 142.0,
-                y: card.y + 22.0,
-                width: 108.0,
-                height: 30.0,
-            },
-            [0.19, 0.17, 0.12, 0.92],
-            [0.13, 0.12, 0.10, 0.92],
-            [0.88, 0.66, 0.34, 0.55],
-            1.0,
-            15.0,
-        );
-
-        push_label(
-            labels,
-            t("whats_new.kicker"),
-            Rect {
-                x: card.x + 34.0,
-                y: card.y + 24.0,
-                width: card.width - 230.0,
-                height: 16.0,
-            },
-            HAlign::Left,
-            Some(9.0),
-            Some([216, 173, 103]),
-        );
         push_label(
             labels,
             t("whats_new.title"),
             Rect {
                 x: card.x + 32.0,
-                y: card.y + 43.0,
-                width: card.width - 220.0,
+                y: card.y + 28.0,
+                width: card.width - 64.0,
                 height: 32.0,
             },
             HAlign::Left,
             Some(22.0),
             Some([246, 240, 226]),
-        );
-        push_label(
-            labels,
-            t("whats_new.subtitle"),
-            Rect {
-                x: card.x + 34.0,
-                y: card.y + 78.0,
-                width: card.width - 68.0,
-                height: 18.0,
-            },
-            HAlign::Left,
-            Some(10.0),
-            Some([165, 168, 181]),
         );
         push_label(
             labels,
@@ -266,9 +211,9 @@ impl WhatsNewModal {
                 width: 108.0,
                 height: 18.0,
             },
-            HAlign::Center,
+            HAlign::Right,
             Some(10.0),
-            Some([242, 220, 176]),
+            Some([165, 168, 181]),
         );
 
         push_quad(

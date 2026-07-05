@@ -186,7 +186,7 @@ impl State {
 
     pub fn handle_ui_event(&mut self, event: &UiEvent) -> EventResponse {
         self.ui
-            .handle_event(event, &self.project, self.current_frame(), self.fps())
+            .handle_event(event, &self.project, self.render_frame(), self.fps())
     }
 
     pub fn set_export_progress(&mut self, p: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>) {
@@ -487,6 +487,14 @@ impl State {
 
     pub fn current_frame(&self) -> i64 {
         self.video_player.as_ref().map_or(0, |p| p.current_frame())
+    }
+
+    pub fn render_frame(&self) -> f64 {
+        self.video_player
+            .as_ref()
+            .map_or(self.current_frame() as f64, |p| {
+                p.current_frame_for_render()
+            })
     }
 
     pub fn fps(&self) -> f64 {
@@ -2880,6 +2888,7 @@ impl State {
             build_video_quad(&self.video_player, &self.ui)
         };
         let current_frame = self.current_frame();
+        let render_frame = self.render_frame();
 
         // UI render. Keep a read guard instead of cloning the waveform every frame.
         let waveform_arc = self
@@ -2909,7 +2918,9 @@ impl State {
             self.ui_scale,
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
             &self.project,
+            &self.render_index,
             current_frame,
+            render_frame,
             fps,
             waveform,
             waveform_offset_frames,
@@ -2974,11 +2985,7 @@ impl State {
         } else {
             build_studio_video_quad(&self.video_player, &self.ui, rythmo_h)
         };
-        // Use interpolated frame for smooth playback in studio mode (handles low-fps source video)
-        let current_frame = self
-            .video_player
-            .as_ref()
-            .map_or(0, |p| p.current_frame_interpolated());
+        let render_frame = self.render_frame();
         let fps = self.fps();
         self.render_index.refresh(&self.project);
 
@@ -2993,7 +3000,8 @@ impl State {
             self.ui_scale,
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
             &self.project,
-            current_frame,
+            &self.render_index,
+            render_frame,
             fps,
         );
 
