@@ -209,6 +209,7 @@ pub struct UiRenderer {
     post_stretched_quad_buffer: DynamicBuffer,
     base_textured_buffer: DynamicBuffer,
     overlay_quad_buffer: DynamicBuffer,
+    modal_quad_buffer: DynamicBuffer,
     extra_textured_buffer: DynamicBuffer,
     post_texture_quad_buffer: DynamicBuffer,
 }
@@ -438,6 +439,7 @@ impl UiRenderer {
             post_stretched_quad_buffer: DynamicBuffer::new(),
             base_textured_buffer: DynamicBuffer::new(),
             overlay_quad_buffer: DynamicBuffer::new(),
+            modal_quad_buffer: DynamicBuffer::new(),
             extra_textured_buffer: DynamicBuffer::new(),
             post_texture_quad_buffer: DynamicBuffer::new(),
         }
@@ -824,42 +826,21 @@ impl UiRenderer {
         }
     }
 
-    pub fn render(
+    /// Build glyph geometry for the given labels and upload it to the text
+    /// renderer. Caller is responsible for issuing the matching
+    /// `text_renderer.render(...)` inside a render pass. Note: this CLEARS the
+    /// previously prepared glyphs (glyphon keeps a single vertex buffer), so it
+    /// must be paired with a render call before preparing another layer.
+    fn prepare_text_layer(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        screen_width: u32,
-        screen_height: u32,
-        ui_scale: f32,
-        quads: &[QuadInstance],         // base layer (behind video)
-        overlay_quads: &[QuadInstance], // overlay layer (on top of video)
-        icons: &[IconInstance],
         labels: &[LabelInfo],
-        video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
-        stretched_quads: &[(IconInstance, u64)],
-        post_stretched_quads: &[QuadInstance],
-        base_textured: &[(IconInstance, &wgpu::BindGroup)],
-        extra_textured: &[(IconInstance, &wgpu::BindGroup)],
-        post_texture_quads: &[QuadInstance], // drawn after textured quads (e.g. color picker indicators)
+        ui_scale: f32,
     ) {
-        let ui_scale = ui_scale.max(1.0);
-        let uniforms = Uniforms {
-            screen_size: [
-                screen_width as f32 / ui_scale,
-                screen_height as f32 / ui_scale,
-            ],
-        };
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-
-        self.viewport.update(
-            queue,
-            Resolution {
-                width: screen_width,
-                height: screen_height,
-            },
-        );
+        if labels.is_empty() {
+            return;
+        }
 
         let default_font_size = crate::config::get().ui.font_size;
 
@@ -946,6 +927,48 @@ impl UiRenderer {
                 &mut self.swash_cache,
             )
             .unwrap();
+    }
+
+    pub fn render(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        screen_width: u32,
+        screen_height: u32,
+        ui_scale: f32,
+        quads: &[QuadInstance],         // base layer (behind video)
+        overlay_quads: &[QuadInstance], // overlay layer (on top of video)
+        icons: &[IconInstance],
+        labels: &[LabelInfo],
+        video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
+        stretched_quads: &[(IconInstance, u64)],
+        post_stretched_quads: &[QuadInstance],
+        base_textured: &[(IconInstance, &wgpu::BindGroup)],
+        extra_textured: &[(IconInstance, &wgpu::BindGroup)],
+        post_texture_quads: &[QuadInstance], // drawn after textured quads (e.g. color picker indicators)
+        modal_quads: &[QuadInstance],        // modal backgrounds (above normal text)
+        modal_labels: &[LabelInfo],         // modal text (above modal backgrounds)
+    ) {
+        let ui_scale = ui_scale.max(1.0);
+        let uniforms = Uniforms {
+            screen_size: [
+                screen_width as f32 / ui_scale,
+                screen_height as f32 / ui_scale,
+            ],
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+
+        self.viewport.update(
+            queue,
+            Resolution {
+                width: screen_width,
+                height: screen_height,
+            },
+        );
+
+        self.prepare_text_layer(device, queue, labels, ui_scale);
 
         // Upload dynamic instance buffers once per group. Draws that need different
         // bind groups reuse the same uploaded instance buffer with instance ranges.
@@ -1006,6 +1029,8 @@ impl UiRenderer {
             "UI Post-Texture Quad Buffer",
             post_texture_quads,
         );
+        self.modal_quad_buffer
+            .upload(device, queue, "UI Modal Quad Buffer", modal_quads);
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1132,7 +1157,45 @@ impl UiRenderer {
                 }
             }
 
-            // Draw text
+            // Draw text (normal UI layer)
+            self.text_renderer
+                .render(&self.text_atlas, &self.viewport, &mut pass)
+                .unwrap();
+        }
+
+        // Second pass: modals on top of everything (quads + text). LoadOp::Load
+        // preserves the first pass's output.
+        if !modal_quads.is_empty() || !modal_labels.is_empty() {
+            self.prepare_text_layer(device, queue, modal_labels, ui_scale);
+
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("UI Modal Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            // Draw modal quads (dim + cards), above the normal text layer.
+            if !modal_quads.is_empty() {
+                pass.set_pipeline(&self.quad_pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                if let Some(buffer) = self.modal_quad_buffer.buffer() {
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    pass.draw(0..6, 0..modal_quads.len() as u32);
+                }
+            }
+
+            // Draw modal text
             self.text_renderer
                 .render(&self.text_atlas, &self.viewport, &mut pass)
                 .unwrap();

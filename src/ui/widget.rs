@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -314,6 +314,15 @@ pub enum UiAction {
     CopySelectedLine,
     CutSelectedLine,
     PasteLine,
+    // Pricing / support page
+    OpenPricingPage,
+    OpenDiscord,
+    SubscribePlan {
+        plan: String,
+    },
+    ActivateLicense {
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

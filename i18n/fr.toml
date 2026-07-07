@@ -262,3 +262,47 @@
 "studio_warning.message_3" = "Pour une lecture fluide, exporte ta vidéo avec la bande rythmo."
 "studio_warning.continue" = "Continuer"
 "studio_warning.cancel" = "Annuler"
+
+# Topbar — Soutenir
+"topbar.support" = "Soutenir Coquerythmo"
+"topbar.discord" = "Discord"
+
+# Pricing (page de soutien)
+"pricing.title" = "Coquerythmo est gratuit pour tous."
+"pricing.paragraph" = """
+Vous pouvez utiliser l'intégralité du logiciel gratuitement, sans limitation de fonctionnalités, aussi bien pour un usage personnel que professionnel.
+
+Si vous utilisez Coquerythmo dans un cadre professionnel, associatif ou institutionnel, nous vous invitons à souscrire une licence de soutien annuelle. Celle-ci ne déverrouille aucune fonctionnalité supplémentaire : elle permet de financer le développement du logiciel, les corrections de bugs, les mises à jour, le support utilisateur ainsi que la pérennité du projet.
+
+Votre contribution garantit que Coquerythmo puisse continuer à évoluer et à rester gratuit pour tous.
+"""
+"pricing.plan_independent" = "Professionnel indépendant"
+"pricing.plan_independent_price" = "100 €"
+"pricing.plan_studio" = "Studio"
+"pricing.plan_studio_price" = "200 €"
+"pricing.plan_school" = "École / organisme de formation"
+"pricing.plan_school_price" = "300 €"
+"pricing.plan_enterprise" = "Grande structure"
+"pricing.plan_enterprise_price" = "À partir de 500 €"
+"pricing.plan_enterprise_note" = "Sur devis"
+"pricing.yearly" = "Facturation annuelle"
+"pricing.select" = "Choisir"
+"pricing.request_quote" = "Demander un devis"
+"pricing.activate_license" = "Vous possédez déjà une licence ?"
+"pricing.activate_button" = "Activer la licence"
+
+# Pricing — modal plan
+"pricing.plan_modal.title" = "Souscrire une licence de soutien"
+"pricing.plan_modal.desc" = "Cette licence annuelle ne déverrouille aucune fonctionnalité : elle finance le développement et la pérennité de Coquerythmo."
+"pricing.plan_modal.confirm" = "Souscrire"
+"pricing.plan_modal.quote" = "Envoyer la demande de devis"
+"pricing.plan_modal.close" = "Fermer"
+
+# Pricing — modal licence
+"pricing.license_modal.title" = "Activer une licence"
+"pricing.license_modal.desc" = "Saisissez la clé de licence que vous avez reçue après votre souscription."
+"pricing.license_modal.key" = "Clé de licence"
+"pricing.license_modal.activate" = "Activer"
+"pricing.license_modal.close" = "Fermer"
+"pricing.license_modal.error_required" = "Saisissez une clé de licence."
+"pricing.license_modal.activated" = "Licence activée. Merci de votre soutien !"

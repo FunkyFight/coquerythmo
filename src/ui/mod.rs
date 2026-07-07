@@ -8,7 +8,11 @@ pub mod icon_button;
 pub mod icons;
 pub mod interactive;
 pub mod layout;
+pub mod license_badge;
 pub mod project_settings_modal;
+pub mod pricing_page;
+pub mod pricing_plan_modal;
+pub mod pricing_license_modal;
 pub mod proxy_error_modal;
 pub mod proxy_modal;
 pub mod rename_character_modal;
@@ -19,6 +23,7 @@ pub mod server_browser;
 pub mod settings_modal;
 pub mod slider;
 pub mod studio_warning_modal;
+pub mod text_button;
 pub mod text_input;
 pub mod theme;
 pub mod toast;
@@ -45,6 +50,7 @@ use self::icon_button::IconButton;
 use self::icons::IconAtlas;
 use self::renderer::UiRenderer;
 use self::slider::Slider;
+use self::text_button::TextButton;
 
 use theme::*;
 
@@ -105,6 +111,9 @@ pub struct Ui {
     studio_warning_modal: Option<studio_warning_modal::StudioWarningModal>,
     voice_actor_modal: Option<voice_actor_modal::VoiceActorModal>,
     whats_new_modal: Option<whats_new_modal::WhatsNewModal>,
+    pricing_page: Option<pricing_page::PricingPage>,
+    pricing_plan_modal: Option<pricing_plan_modal::PricingPlanModal>,
+    pricing_license_modal: Option<pricing_license_modal::PricingLicenseModal>,
     actor_icon_cache: ActorIconCache,
     network_in_room: bool,
     pub network_status: String,
@@ -191,9 +200,12 @@ impl Ui {
             studio_warning_modal: None,
             voice_actor_modal: None,
             whats_new_modal: None,
+            pricing_page: None,
+            pricing_plan_modal: None,
+            pricing_license_modal: None,
             actor_icon_cache: ActorIconCache::new(),
             network_in_room: false,
-            network_status: "Déconnecté".into(),
+            network_status: "".into(),
             network_room_label: String::new(),
             sync_overlay: None,
             sync_progress: 0.0,
@@ -399,14 +411,76 @@ impl Ui {
         )
         .with_tooltip(t("settings.tooltip"));
 
-        vec![
+        let mut topbar_widgets: Vec<Box<dyn Widget>> = vec![
             Box::new(project_menu),
             Box::new(export_menu),
             Box::new(tools_menu),
             Box::new(connect_menu),
-            Box::new(project_btn),
-            Box::new(settings_btn),
-        ]
+        ];
+
+        let discord_w = 80.0;
+        let discord_h = 24.0;
+        let discord_x = if crate::config::dev_mode() {
+            let lic_key = crate::config::license_key();
+            let lic_type = crate::config::license_type();
+            let support_x = if !lic_key.is_empty() || !lic_type.is_empty() {
+                let badge_w = 200.0;
+                let badge_h = 24.0;
+                let badge_x = project_x - badge_w - 8.0;
+                let badge_y = (TOPBAR_HEIGHT - badge_h) / 2.0;
+                    let badge_label = crate::config::license_display_label();
+                    let badge = license_badge::LicenseBadge::new(
+                        Rect {
+                            x: badge_x,
+                            y: badge_y,
+                            width: badge_w,
+                            height: badge_h,
+                        },
+                        badge_label,
+                    );
+                topbar_widgets.push(Box::new(badge));
+                badge_x - discord_w - 8.0
+            } else {
+                let support_w = 160.0;
+                let support_h = 24.0;
+                let support_x = project_x - support_w - 8.0;
+                let support_y = (TOPBAR_HEIGHT - support_h) / 2.0;
+                let support_btn = TextButton::new(
+                    Rect {
+                        x: support_x,
+                        y: support_y,
+                        width: support_w,
+                        height: support_h,
+                    },
+                    t("topbar.support"),
+                    || EventResponse::Action(UiAction::OpenPricingPage),
+                )
+                .with_accent()
+                .with_tooltip(t("topbar.support"));
+                topbar_widgets.push(Box::new(support_btn));
+                support_x - discord_w - 8.0
+            };
+            support_x
+        } else {
+            project_x - discord_w - 8.0
+        };
+        let discord_y = (TOPBAR_HEIGHT - discord_h) / 2.0;
+        let discord_btn = TextButton::new(
+            Rect {
+                x: discord_x,
+                y: discord_y,
+                width: discord_w,
+                height: discord_h,
+            },
+            t("topbar.discord"),
+            || EventResponse::Action(UiAction::OpenDiscord),
+        )
+        .with_tooltip(t("topbar.discord"));
+
+        topbar_widgets.push(Box::new(discord_btn));
+        topbar_widgets.push(Box::new(project_btn));
+        topbar_widgets.push(Box::new(settings_btn));
+        topbar_widgets
     }
 
     pub fn rebuild_topbar(&mut self, in_room: bool) {
@@ -651,6 +725,11 @@ impl Ui {
     ) -> EventResponse {
         if let UiEvent::MouseMove { x, y } = event {
             self.cursor_pos = (*x, *y);
+        }
+
+        // Pricing / support page replaces the entire layout while active.
+        if self.pricing_page.is_some() {
+            return self.handle_pricing_event(event);
         }
 
         // File explorer is topmost and keeps parent modals alive underneath.
@@ -975,6 +1054,13 @@ impl Ui {
         {
             deadline = Some(deadline.map_or(modal_deadline, |current| current.min(modal_deadline)));
         }
+        if let Some(modal_deadline) = self
+            .pricing_license_modal
+            .as_ref()
+            .map(|modal| modal.next_cursor_blink_deadline())
+        {
+            deadline = Some(deadline.map_or(modal_deadline, |current| current.min(modal_deadline)));
+        }
         deadline
     }
 
@@ -1139,6 +1225,9 @@ impl Ui {
             || self.voice_actor_modal.is_some()
             || self.rename_character_modal.is_some()
             || self.whats_new_modal.is_some()
+            || self.pricing_page.is_some()
+            || self.pricing_plan_modal.is_some()
+            || self.pricing_license_modal.is_some()
     }
 
     fn handle_connect_modal_event(&mut self, event: &UiEvent) -> EventResponse {
@@ -1524,6 +1613,71 @@ impl Ui {
         self.studio_warning_modal = Some(studio_warning_modal::StudioWarningModal::new());
     }
 
+    pub fn open_pricing_page(&mut self) {
+        self.pricing_page = Some(pricing_page::PricingPage::new());
+    }
+
+    pub fn close_pricing_page(&mut self) {
+        self.pricing_page = None;
+        self.pricing_plan_modal = None;
+        self.pricing_license_modal = None;
+    }
+
+    fn handle_pricing_event(&mut self, event: &UiEvent) -> EventResponse {
+        if let Some(modal) = &mut self.pricing_license_modal {
+            return match modal.handle_event(event, self.screen_w, self.screen_h) {
+                pricing_license_modal::PricingLicenseModalResult::Consumed => EventResponse::Consumed,
+                pricing_license_modal::PricingLicenseModalResult::Close => {
+                    self.pricing_license_modal = None;
+                    EventResponse::Consumed
+                }
+                pricing_license_modal::PricingLicenseModalResult::Activate(key) => {
+                    self.pricing_license_modal = None;
+                    EventResponse::Action(UiAction::ActivateLicense { key })
+                }
+            };
+        }
+
+        if let Some(modal) = &mut self.pricing_plan_modal {
+            return match modal.handle_event(event, self.screen_w, self.screen_h) {
+                pricing_plan_modal::PricingPlanModalResult::Consumed => EventResponse::Consumed,
+                pricing_plan_modal::PricingPlanModalResult::Close => {
+                    self.pricing_plan_modal = None;
+                    EventResponse::Consumed
+                }
+                pricing_plan_modal::PricingPlanModalResult::Confirm(plan) => {
+                    self.pricing_plan_modal = None;
+                    EventResponse::Action(UiAction::SubscribePlan { plan })
+                }
+            };
+        }
+
+        let result = self
+            .pricing_page
+            .as_mut()
+            .unwrap()
+            .handle_event(event, self.screen_w, self.screen_h);
+        match result {
+            pricing_page::PricingResult::Consumed => EventResponse::Consumed,
+            pricing_page::PricingResult::Close => {
+                self.pricing_page = None;
+                EventResponse::Consumed
+            }
+            pricing_page::PricingResult::SelectPlan(plan) => {
+                self.pricing_plan_modal = Some(pricing_plan_modal::PricingPlanModal::new(
+                    plan.name().to_string(),
+                    plan.price().to_string(),
+                    plan.is_enterprise(),
+                ));
+                EventResponse::Consumed
+            }
+            pricing_page::PricingResult::ActivateLicense => {
+                self.pricing_license_modal = Some(pricing_license_modal::PricingLicenseModal::new());
+                EventResponse::Consumed
+            }
+        }
+    }
+
     pub fn open_server_browser(&mut self) {
         self.server_browser = Some(server_browser::ServerBrowserModal::new());
     }
@@ -1681,6 +1835,63 @@ impl Ui {
         let mut overlay_quads = Vec::new(); // overlay layer (on top of video)
         let mut icons: Vec<IconInstance> = Vec::new();
         let mut labels: Vec<LabelInfo> = Vec::new();
+        let mut modal_quads: Vec<QuadInstance> = Vec::new(); // modal backgrounds (above normal text)
+        let mut modal_labels: Vec<LabelInfo> = Vec::new(); // modal text (above modal backgrounds)
+
+        // Pricing / support page replaces the entire layout while active.
+        if self.pricing_page.is_some() {
+            // Page content is the "normal" layer; modals render into the modal
+            // layer so their backgrounds and text always sit above the page text.
+            if let Some(page) = &self.pricing_page {
+                page.render(
+                    &mut quads,
+                    &mut overlay_quads,
+                    &mut labels,
+                    self.screen_w,
+                    self.screen_h,
+                );
+            }
+            if let Some(m) = &self.pricing_plan_modal {
+                m.render(&mut modal_quads, &mut modal_labels, self.screen_w, self.screen_h);
+            }
+            if let Some(m) = &self.pricing_license_modal {
+                m.render(&mut modal_quads, &mut modal_labels, self.screen_w, self.screen_h);
+            }
+            // Toasts (e.g. confirmation after subscribing / activating)
+            self.toasts.render(
+                &mut overlay_quads,
+                &mut labels,
+                self.screen_w,
+                self.screen_h,
+            );
+            let stretched_quads: Vec<(IconInstance, u64)> = Vec::new();
+            let syllable_quads: Vec<QuadInstance> = Vec::new();
+            let base_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
+            let extra_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
+            let color_picker_fg_quads: Vec<QuadInstance> = Vec::new();
+            renderer.render(
+                device,
+                queue,
+                encoder,
+                view,
+                screen_width,
+                screen_height,
+                ui_scale,
+                &quads,
+                &overlay_quads,
+                &icons,
+                &labels,
+                None,
+                &stretched_quads,
+                &syllable_quads,
+                &base_textured,
+                &extra_textured,
+                &color_picker_fg_quads,
+                &modal_quads,
+                &modal_labels,
+            );
+            return;
+        }
 
         // We can't mutate self after borrowing labels. So process click before ANY render stuff borrowing self.
         if let Some((ratio, is_shift)) = pending_click {
@@ -2007,8 +2218,8 @@ impl Ui {
         // Settings modal
         if let Some(modal) = &self.settings_modal {
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2016,8 +2227,8 @@ impl Ui {
 
         if let Some(modal) = &self.project_settings_modal {
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2026,8 +2237,8 @@ impl Ui {
         // Connect modal
         if let Some(modal) = &self.connect_modal {
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2036,8 +2247,8 @@ impl Ui {
         // Server browser
         if let Some(modal) = &self.server_browser {
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2046,8 +2257,8 @@ impl Ui {
         // Add server modal (on top of browser)
         if let Some(modal) = &self.add_server_modal {
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2056,8 +2267,8 @@ impl Ui {
         // Export modal
         if let Some(modal) = &self.export_modal {
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2065,8 +2276,8 @@ impl Ui {
 
         if let Some(modal) = &self.voice_actor_modal {
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2074,8 +2285,8 @@ impl Ui {
 
         if let Some(modal) = &self.rename_character_modal {
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2084,8 +2295,8 @@ impl Ui {
         // Proxy modal
         if let Some(modal) = &self.proxy_modal {
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2094,8 +2305,8 @@ impl Ui {
         // Save prompt modal
         if let Some(modal) = &self.save_prompt_modal {
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2104,8 +2315,8 @@ impl Ui {
         // Studio warning modal
         if let Some(modal) = &self.studio_warning_modal {
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2218,8 +2429,8 @@ impl Ui {
         // Whats-new modal is rendered above toasts so the release notes stay readable.
         if let Some(modal) = &self.whats_new_modal {
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2228,8 +2439,8 @@ impl Ui {
         // Proxy error modal is rendered last so it stays above toasts and progress.
         if let Some(modal) = &self.proxy_error_modal {
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2241,8 +2452,8 @@ impl Ui {
             // Otherwise parent-modal text can appear above the picker card.
             labels.clear();
             modal.render(
-                &mut overlay_quads,
-                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -2266,6 +2477,8 @@ impl Ui {
             &base_textured,
             &extra_textured,
             &color_picker_fg_quads,
+            &modal_quads,
+            &modal_labels,
         );
     }
 
@@ -2672,10 +2885,12 @@ impl Ui {
             &labels,
             video_quad,
             &stretched_quads,
-            &[],
+            &[], // post_stretched_quads
             &base_textured,
-            &[],
-            &[], // no post_texture_quads
+            &[], // extra_textured
+            &[], // post_texture_quads
+            &[], // modal_quads
+            &[], // modal_labels
         );
     }
 }

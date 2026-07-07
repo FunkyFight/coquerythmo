@@ -15,6 +15,11 @@ pub struct RecentProject {
 }
 
 static INSTANCE: OnceLock<RwLock<Config>> = OnceLock::new();
+static DEV_MODE: bool = false;
+
+pub fn dev_mode() -> bool {
+    DEV_MODE
+}
 
 const APP_NAME: &str = "coquerythmo";
 const CONFIG_FILE: &str = "config.toml";
@@ -29,6 +34,10 @@ pub struct Config {
     pub last_whats_new_version: Option<String>,
     #[serde(default)]
     pub recent_projects: Vec<RecentProject>,
+    #[serde(default)]
+    pub license_key: String,
+    #[serde(default)]
+    pub license_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +104,8 @@ impl Default for Config {
             network: NetworkConfig::default(),
             last_whats_new_version: None,
             recent_projects: Vec::new(),
+            license_key: String::new(),
+            license_type: String::new(),
         }
     }
 }
@@ -360,4 +371,42 @@ pub fn get() -> std::sync::RwLockReadGuard<'static, Config> {
         .expect("config not initialized, call config::init() first")
         .read()
         .unwrap()
+}
+
+pub fn license_key() -> String {
+    get().license_key.clone()
+}
+
+pub fn license_type() -> String {
+    get().license_type.clone()
+}
+
+pub fn set_license(key: String, lic_type: String) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    cfg.license_key = key;
+    cfg.license_type = lic_type;
+    cfg.save();
+}
+
+pub fn license_display_label() -> String {
+    let t = license_type();
+    let lower = t.to_lowercase();
+    if lower.starts_with("licence") || lower.starts_with("license") {
+        t
+    } else if lower.contains("école")
+        || lower.contains("school")
+        || lower.contains("escuela")
+        || lower.contains("organisme")
+        || lower.contains("organization")
+        || lower.contains("organización")
+        || lower.contains("structure")
+        || lower.contains("enterprise")
+    {
+        "License organisme".into()
+    } else if lower.contains("professionnel") || lower.contains("professional") {
+        "License professionnelle".into()
+    } else {
+        format!("License {}", t)
+    }
 }

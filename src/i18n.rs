@@ -6,6 +6,7 @@ static INSTANCE: OnceLock<I18n> = OnceLock::new();
 // Embed translation files at compile time — no runtime file dependency.
 const FR_TOML: &str = include_str!("../i18n/fr.toml");
 const EN_TOML: &str = include_str!("../i18n/en.toml");
+const ES_TOML: &str = include_str!("../i18n/es.toml");
 
 struct I18n {
     translations: HashMap<String, String>,
@@ -27,13 +28,18 @@ fn load_toml(source: &str) -> HashMap<String, String> {
 
 impl I18n {
     fn new(lang: &str) -> Self {
-        let (primary, fallback_src) = match lang {
-            "en-us" | "en" => (EN_TOML, FR_TOML),
-            _ => (FR_TOML, EN_TOML),
+        let primary = match lang {
+            "en-us" | "en" => EN_TOML,
+            "es-es" | "es" => ES_TOML,
+            _ => FR_TOML,
         };
+        // Fallback merges every other language so any missing key still resolves.
+        let mut fallback = load_toml(FR_TOML);
+        fallback.extend(load_toml(EN_TOML));
+        fallback.extend(load_toml(ES_TOML));
         Self {
             translations: load_toml(primary),
-            fallback: load_toml(fallback_src),
+            fallback,
         }
     }
 }

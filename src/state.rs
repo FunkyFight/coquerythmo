@@ -314,6 +314,14 @@ impl State {
         self.ui.open_whats_new_modal(version, body);
     }
 
+    pub fn open_pricing_page(&mut self) {
+        self.ui.open_pricing_page();
+    }
+
+    pub fn close_pricing_page(&mut self) {
+        self.ui.close_pricing_page();
+    }
+
     pub fn open_save_prompt(&mut self) {
         self.ui.open_save_prompt();
     }
@@ -402,15 +410,40 @@ impl State {
         self.ui.rebuild_topbar(self.network.is_in_room());
     }
 
+    pub fn rebuild_topbar(&mut self) {
+        self.ui.rebuild_topbar(self.network.is_in_room());
+    }
+
     pub fn begin_network_connect(&mut self) {
-        self.ui.network_status = "Connexion...".into();
+        self.set_network_status("Connexion...");
         self.ui.set_network_room_code(None);
     }
 
     pub fn disconnect_network(&mut self) {
         self.network.disconnect();
-        self.ui.network_status = "Déconnecté".into();
+        self.set_network_status("");
         self.rebuild_topbar_for_network();
+    }
+
+    pub fn set_network_status(&mut self, status: impl Into<String>) {
+        self.ui.network_status = status.into();
+        let display = if self.ui.network_status.is_empty() {
+            "Déconnecté"
+        } else {
+            &self.ui.network_status
+        };
+        self.window
+            .set_title(&format!("Coquerythmo v{} - {}", crate::update::current_version(), display));
+    }
+
+    pub fn update_window_title(&self) {
+        let display = if self.ui.network_status.is_empty() {
+            "Déconnecté"
+        } else {
+            &self.ui.network_status
+        };
+        self.window
+            .set_title(&format!("Coquerythmo v{} - {}", crate::update::current_version(), display));
     }
 
     pub fn request_redraw(&self) {
@@ -877,7 +910,7 @@ impl State {
             match msg {
                 IncomingMessage::Connected => {
                     self.network.state = ConnectionState::Connected;
-                    self.ui.network_status = "Connecté au serveur".into();
+                    self.set_network_status("Connecté au serveur");
                     log::info!("Connected and authenticated");
                 }
                 IncomingMessage::Packet(packet) => self.handle_network_packet(packet),
@@ -887,12 +920,12 @@ impl State {
                     self.network.room_code = None;
                     self.network.role = None;
                     self.network.members.clear();
-                    self.ui.network_status = "Déconnecté".into();
+                    self.set_network_status("");
                     self.ui.set_network_room_code(None);
                 }
                 IncomingMessage::Error(err) => {
                     log::error!("Network error: {err}");
-                    self.ui.network_status = format!("Erreur: {err}");
+                    self.set_network_status(format!("Erreur: {err}"));
                 }
                 IncomingMessage::Delta(data) => {
                     // Ignore network updates in studio mode (read-only playback)
@@ -930,7 +963,7 @@ impl State {
                 self.network.state = ConnectionState::InRoom;
                 self.network.room_code = Some(code.clone());
                 self.network.role = Some("admin".into());
-                self.ui.network_status = "Salon créé".into();
+                self.set_network_status("Salon créé");
                 self.ui.set_network_room_code(Some(&code));
                 self.ui.toasts.push(
                     format!("{}{code}", crate::i18n::t("toast.room_created")),
@@ -947,7 +980,7 @@ impl State {
                 self.network.room_code = Some(code.clone());
                 self.network.role = Some(role);
                 self.network.members = members;
-                self.ui.network_status = "Connecté au salon".into();
+                self.set_network_status("Connecté au salon");
                 self.ui.set_network_room_code(Some(&code));
                 self.ui.toasts.push(
                     format!("{}{code}", crate::i18n::t("toast.room_joined")),
@@ -959,7 +992,7 @@ impl State {
             }
             Packet::JoinError { reason } => {
                 log::error!("Join failed: {reason}");
-                self.ui.network_status = format!("Échec: {reason}");
+                self.set_network_status(format!("Échec: {reason}"));
                 self.ui.set_network_room_code(None);
             }
             Packet::MemberJoined { username } => {
@@ -978,7 +1011,7 @@ impl State {
                 self.apply_project_sync(data);
                 self.ui.sync_overlay = None;
                 if self.network.room_code.is_some() {
-                    self.ui.network_status = "Salon synchronisé".into();
+                    self.set_network_status("Salon synchronisé");
                 }
             }
             Packet::RequestSync => {
@@ -986,7 +1019,7 @@ impl State {
             }
             Packet::Error { message } => {
                 log::error!("Server error: {message}");
-                self.ui.network_status = format!("Erreur: {message}");
+                self.set_network_status(format!("Erreur: {message}"));
             }
             _ => {} // Client-only packets (Auth, CreateRoom, etc.) ignored here
         }
@@ -3081,6 +3114,8 @@ impl State {
             &[],
             &[],
             &[],
+            &[], // no modal quads
+            &[], // no modal labels
         );
 
         self.gfx.queue.submit(std::iter::once(encoder.finish()));

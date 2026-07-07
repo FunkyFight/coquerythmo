@@ -1,0 +1,272 @@
+# Coquerythmo — Traducción al español
+
+# Topbar menus
+"menu.project" = "Proyecto"
+"menu.project.add_video" = "Añadir un vídeo"
+"menu.project.import" = "Importar una banda rythmo"
+"menu.project.import.coquerythmo" = "Coquerythmo (.json)"
+"menu.project.import.cappela" = "Cappela (.detx)"
+"menu.project.import.srt" = "SRT (.srt)"
+"menu.project.export" = "Exportar una banda rythmo"
+"menu.project.recent" = "Recientes"
+"menu.project.restore_backup" = "Restaurar la última banda rythmo perdida"
+"toast.backup_restored" = "Banda rythmo restaurada desde la copia de seguridad"
+"toast.saved" = "Banda rythmo guardada."
+"toast.no_backup" = "No se encontró ninguna copia de seguridad"
+
+"menu.export" = "Exportar"
+"menu.export.mp4" = "Exportar el proyecto como MP4"
+"menu.export.studio_mode" = "Modo Estudio"
+
+"menu.tools" = "Herramientas"
+"menu.tools.create_proxy" = "Crear proxy"
+"menu.tools.secondary_display" = "Pantalla secundaria"
+"menu.tools.rename_character" = "Renombrar personaje"
+
+"menu.connect" = "Conectar"
+"menu.connect.servers" = "Servidores"
+"menu.connect.create_room" = "Crear una sala"
+"menu.connect.join_room" = "Unirse a una sala"
+"menu.connect.disconnect" = "Desconectar"
+
+# Server browser
+"server_browser.title" = "Servidores"
+"server_browser.close" = "Cerrar"
+"server_browser.create" = "Crear"
+"server_browser.join" = "Unirse"
+"server_browser.remove" = "Eliminar"
+"server_browser.add" = "Añadir"
+"server_browser.refresh" = "Actualizar"
+"server_browser.add_title" = "Añadir un servidor"
+
+# File pickers
+"picker.video.title" = "Elegir un vídeo"
+"picker.import.title" = "Importar un proyecto"
+"picker.import.cappela.title" = "Importar una banda rythmo Cappela"
+"picker.import.srt.title" = "Importar una banda rythmo SRT"
+"picker.export.title" = "Exportar el proyecto"
+"picker.export_mp4.title" = "Guardar vídeo MP4"
+"picker.instrumental_audio.title" = "Elegir audio instrumental"
+"picker.voice_actor_icon.title" = "Elegir el icono del actor de voz"
+"picker.filter.all_files" = "Todos los archivos"
+
+# Zones
+"zone.video_preview" = "Vista previa del vídeo"
+"zone.rythmo" = "Banda rythmo"
+"zone.properties" = "Propiedades"
+
+# Toolbar
+"toolbar.play" = "Reproducir"
+"toolbar.stop" = "Pausar"
+"toolbar.volume" = "Volumen"
+"toolbar.mute" = "Silenciar"
+"toolbar.unmute" = "Reactivar sonido"
+"toolbar.prev_frame" = "Fotograma anterior"
+"toolbar.next_frame" = "Fotograma siguiente"
+"toolbar.boucle" = "Añadir un bucle"
+"toolbar.out" = "Añadir un final"
+"toolbar.scene" = "Cambio de escena"
+"toolbar.respirations" = "Respiración"
+"toolbar.reactions" = "Reacciones"
+"toolbar.liaison_left" = "Unión izquierda"
+"toolbar.liaison_right" = "Unión derecha"
+"toolbar.stretcher" = "Estirador de sílabas"
+"toolbar.back_to_edit" = "Volver a la edición"
+"toolbar.note" = "Añadir una nota"
+"toolbar.karaoke" = "Activar modo karaoke"
+
+# Respirations
+"resp.up" = "Inhalar"
+"resp.down" = "Exhalar"
+"resp.h" = "Boca abierta, inhalar"
+"resp.hh" = "Boca abierta, exhalar"
+"resp.mh" = "Boca cerrada, inhalar"
+"resp.mhh" = "Boca cerrada, exhalar"
+
+# Reactions
+"react.x" = "Ruido de boca"
+"react.mts" = "Chasquido de lengua al abrir"
+"react.tsc" = "Chasquido de boca, boca abierta"
+"react.ah" = "Sorpresa"
+"react.oh" = "Asombro"
+"react.ih" = "Asco"
+"react.mhm" = "Acuerdo"
+"react.hm" = "Duda"
+"react.ptt" = "Desprecio"
+"react.pff" = "Exasperación"
+"react.unh" = "Esfuerzo"
+"react.hun" = "Pregunta"
+"react.psst" = "Llamar la atención"
+
+# Progress
+"progress.exporting" = "Exportando..."
+"progress.export_gpu" = "Exportar GPU"
+"progress.export_cpu" = "Exportar CPU"
+"progress.proxy" = "Creando proxy..."
+
+# Toasts
+"toast.welcome" = "Esta aplicación es gratuita para que cualquiera pueda crear sus bandas rythmo. Por favor, menciona el software si te sirve en tus proyectos."
+"toast.room_created" = "¡Sala creada! Código: "
+"toast.room_joined" = "Conectado a la sala "
+"toast.proxy_requires_saved_br" = "Guarda la banda rythmo antes de crear un proxy."
+"toast.proxy_created" = "Proxy creado y cargado para la reproducción."
+"toast.proxy_created_not_loaded" = "Proxy creado, pero el vídeo activo ha cambiado."
+"toast.proxy_failed" = "Error al crear el proxy:"
+"toast.voice_actor_created" = "Actor de voz creado."
+"toast.voice_actor_exists" = "Este actor de voz ya existe."
+"toast.voice_actor_name_required" = "El nombre del actor de voz es obligatorio."
+"toast.voice_actor_icon_failed" = "Icono de actor de voz no válido:"
+"toast.karaoke_select_line" = "Selecciona una línea antes de activar el modo karaoke."
+"toast.no_character_to_rename" = "No hay ningún personaje que renombrar en la banda rythmo."
+"toast.rename_character_select" = "Selecciona un personaje para renombrar."
+"toast.rename_character_name_required" = "El nuevo nombre del personaje es obligatorio."
+"toast.character_renamed" = "Personaje renombrado."
+"toast.video_load_failed" = "Error al cargar el vídeo:"
+"toast.export_completed" = "Exportación MP4 completada."
+"toast.export_failed" = "Error al exportar MP4:"
+"toast.no_audio_export_selected" = "Selecciona al menos una salida de audio para exportar."
+"toast.no_instrumental_audio" = "No hay audio instrumental configurado en los ajustes del proyecto."
+
+# What's new modal
+"whats_new.title" = "Novedades"
+"whats_new.kicker" = "ACTUALIZACIÓN INSTALADA"
+"whats_new.subtitle" = "Resumen cargado desde la descripción de la versión de GitHub."
+"whats_new.version" = "Versión"
+"whats_new.close" = "Cerrar"
+"whats_new.empty" = "No hay descripción de la versión disponible."
+"whats_new.scroll_hint" = "Usa la rueda del ratón para seguir leyendo"
+
+# Voice actor context menu
+"context.voice_actor.assign_to_actor" = "Asignar a un actor de voz"
+"context.voice_actor.create" = "Crear un actor de voz"
+"context.voice_actor.assign_line" = "Asignar línea"
+"context.voice_actor.assign_character" = "Asignar todas las líneas de este personaje"
+"context.voice_actor.unassign_line" = "Desasignar"
+"context.voice_actor.unassign_character" = "Desasignar todas las líneas de este personaje"
+
+# Voice actor modal
+"voice_actor_modal.title" = "Crear actor de voz"
+"voice_actor_modal.description" = "El icono se incrusta en la banda rythmo como 256x256."
+"voice_actor_modal.name" = "Nombre"
+"voice_actor_modal.icon_path" = "Ruta del icono"
+"voice_actor_modal.browse" = "Examinar"
+"voice_actor_modal.cancel" = "Cancelar"
+"voice_actor_modal.create" = "Crear"
+
+# Rename character modal
+"rename_character_modal.title" = "Renombrar personaje"
+"rename_character_modal.description" = "El nuevo nombre reemplazará a este personaje en cada línea de la banda rythmo."
+"rename_character_modal.character" = "Personaje"
+"rename_character_modal.new_name" = "Nuevo nombre"
+"rename_character_modal.cancel" = "Cancelar"
+"rename_character_modal.rename" = "Renombrar"
+"rename_character_modal.error_select" = "Selecciona un personaje."
+"rename_character_modal.error_name_required" = "Introduce un nuevo nombre."
+"rename_character_modal.error_same_name" = "El nuevo nombre debe ser diferente."
+
+# Proxy modal
+"proxy_modal.title" = "Crear proxy"
+"proxy_modal.description" = "El proxy se guardará en la carpeta de proxies vinculada a esta banda rythmo. La exportación sigue usando el vídeo original."
+"proxy_modal.description_1" = "Guardado en proxies, vinculado a esta banda rythmo."
+"proxy_modal.description_2" = "La exportación sigue usando el vídeo original."
+"proxy_modal.resolution" = "Resolución máxima"
+"proxy_modal.target" = "Destino"
+"proxy_modal.quality" = "Calidad"
+"proxy_modal.quality_hint" = "CRF más bajo = mejor calidad, archivo mayor."
+"proxy_modal.create" = "Crear proxy"
+
+# Proxy error modal
+"proxy_error.title" = "Error de proxy"
+"proxy_error.message" = "Error al crear el proxy."
+"proxy_error.close" = "Cerrar"
+"proxy_error.unknown" = "Error desconocido"
+
+# Export modal
+"export_modal.title" = "Exportar MP4"
+"export_modal.filename" = "Nombre del archivo"
+"export_modal.fps" = "FPS de la banda rythmo"
+"export_modal.resolution" = "Resolución del vídeo"
+"export_modal.br_scale" = "Zoom de la banda rythmo"
+"export_modal.karaoke_text_scale" = "Tamaño del texto karaoke"
+"export_modal.audio_outputs" = "Salidas de audio"
+"export_modal.export_original_audio" = "Exportar con audio original"
+"export_modal.export_instrumental_audio" = "Exportar con audio instrumental"
+"export_modal.audio_outputs_hint" = "Si se marcan ambas, el archivo instrumental se escribe con el sufijo _instrumental."
+"export_modal.no_project_instrumental_audio" = "No hay audio instrumental configurado en los ajustes del proyecto."
+"export_modal.export" = "Exportar"
+
+# Settings
+"settings.title" = "Ajustes"
+"settings.language" = "Idioma"
+"settings.rythmo_font" = "Fuente de la banda rythmo"
+"settings.save" = "Guardar"
+"settings.default_font" = "Fuente predeterminada"
+"settings.preview" = "Vista previa"
+"settings.restart_required" = "(reinicio requerido)"
+"settings.scroll_speed" = "Velocidad de desplazamiento"
+"settings.tooltip" = "Ajustes"
+"project_settings.title" = "Ajustes del proyecto"
+"project_settings.tooltip" = "Ajustes del proyecto"
+"project_settings.instrumental_version" = "Versión instrumental"
+"project_settings.no_file" = "Ningún archivo seleccionado"
+"project_settings.browse" = "Examinar"
+"project_settings.clear" = "Limpiar"
+
+# Save prompt (new project)
+"save_prompt.title" = "Cambios sin guardar"
+"save_prompt.message" = "¿Guardar antes de empezar un proyecto nuevo?"
+"save_prompt.save" = "Guardar"
+"save_prompt.discard" = "No guardar"
+"save_prompt.cancel" = "Cancelar"
+
+# Studio warning
+"studio_warning.title" = "Modo Estudio (Alfa)"
+"studio_warning.message_1" = "El modo estudio está en alfa: la reproducción puede ser entrecortada"
+"studio_warning.message_2" = "y tu banda rythmo puede ser difícil de leer."
+"studio_warning.message_3" = "Para una reproducción fluida, exporta tu vídeo con la banda rythmo."
+"studio_warning.continue" = "Continuar"
+"studio_warning.cancel" = "Cancelar"
+
+# Topbar — Support
+"topbar.support" = "Apoya Coquerythmo"
+"topbar.discord" = "Discord"
+
+# Pricing (support page)
+"pricing.title" = "Coquerythmo es gratuito para todos."
+"pricing.paragraph" = """
+Puedes usar todo el software de forma gratuita, sin limitaciones de funciones, tanto para uso personal como profesional.
+
+Si usas Coquerythmo en un contexto profesional, asociativo o institucional, te invitamos a suscribirte a una licencia de soporte anual. No desbloquea ninguna función adicional: financia el desarrollo del software, la corrección de errores, las actualizaciones, el soporte a los usuarios y la sostenibilidad del proyecto.
+
+Tu contribución garantiza que Coquerythmo pueda seguir evolucionando y seguir siendo gratuito para todos.
+"""
+"pricing.plan_independent" = "Profesional autónomo"
+"pricing.plan_independent_price" = "100 €"
+"pricing.plan_studio" = "Estudio"
+"pricing.plan_studio_price" = "200 €"
+"pricing.plan_school" = "Escuela / centro de formación"
+"pricing.plan_school_price" = "300 €"
+"pricing.plan_enterprise" = "Gran organización"
+"pricing.plan_enterprise_price" = "Desde 500 €"
+"pricing.plan_enterprise_note" = "Bajo presupuesto"
+"pricing.yearly" = "Facturado anualmente"
+"pricing.select" = "Elegir"
+"pricing.request_quote" = "Solicitar presupuesto"
+"pricing.activate_license" = "¿Ya tienes una licencia?"
+"pricing.activate_button" = "Activar licencia"
+
+# Pricing — plan modal
+"pricing.plan_modal.title" = "Suscribirse a una licencia de soporte"
+"pricing.plan_modal.desc" = "Esta licencia anual no desbloquea funciones: financia el desarrollo y la sostenibilidad de Coquerythmo."
+"pricing.plan_modal.confirm" = "Suscribirse"
+"pricing.plan_modal.quote" = "Enviar solicitud de presupuesto"
+"pricing.plan_modal.close" = "Cerrar"
+
+# Pricing — licence modal
+"pricing.license_modal.title" = "Activar una licencia"
+"pricing.license_modal.desc" = "Introduce la clave de licencia que recibiste tras suscribirte."
+"pricing.license_modal.key" = "Clave de licencia"
+"pricing.license_modal.activate" = "Activar"
+"pricing.license_modal.close" = "Cerrar"
+"pricing.license_modal.error_required" = "Introduce una clave de licencia."
+"pricing.license_modal.activated" = "Licencia activada. ¡Gracias por tu apoyo!"

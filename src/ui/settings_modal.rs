@@ -114,7 +114,7 @@ impl SettingsModal {
 
                 // Language buttons
                 let lang_y = card.y + 62.0;
-                let btn_w = 120.0;
+                let btn_w = 90.0;
                 let btn_h = 30.0;
                 let fr_rect = Rect {
                     x: card.x + 20.0,
@@ -128,6 +128,12 @@ impl SettingsModal {
                     width: btn_w,
                     height: btn_h,
                 };
+                let es_rect = Rect {
+                    x: card.x + 20.0 + (btn_w + 10.0) * 2.0,
+                    y: lang_y,
+                    width: btn_w,
+                    height: btn_h,
+                };
 
                 if fr_rect.contains(*x, *y) {
                     self.lang = "fr-fr".to_string();
@@ -135,6 +141,10 @@ impl SettingsModal {
                 }
                 if en_rect.contains(*x, *y) {
                     self.lang = "en-us".to_string();
+                    return SettingsModalResult::Consumed;
+                }
+                if es_rect.contains(*x, *y) {
+                    self.lang = "es-es".to_string();
                     return SettingsModalResult::Consumed;
                 }
 
@@ -301,10 +311,11 @@ impl SettingsModal {
         });
 
         let lang_y = card.y + 62.0;
-        let btn_w = 120.0;
+        let btn_w = 90.0;
         let btn_h = 30.0;
         let is_fr = self.lang.starts_with("fr");
-        let is_en = !is_fr;
+        let is_en = self.lang.starts_with("en");
+        let is_es = self.lang.starts_with("es");
 
         // Français button
         let fr_bg = if is_fr {
@@ -388,13 +399,54 @@ impl SettingsModal {
             font_family_override: None,
         });
 
+        // Spanish button
+        let es_bg = if is_es {
+            [0.30, 0.28, 0.60, 1.0]
+        } else {
+            [0.15, 0.15, 0.18, 1.0]
+        };
+        let es_border = if is_es {
+            [0.50, 0.45, 0.85, 0.9]
+        } else {
+            [0.30, 0.30, 0.36, 0.5]
+        };
+        overlay_quads.push(QuadInstance {
+            rect: [card.x + 20.0 + (btn_w + 10.0) * 2.0, lang_y, btn_w, btn_h],
+            color: es_bg,
+            color_bottom: es_bg,
+            border_color: es_border,
+            border_width: 1.0,
+            border_radius: 6.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+        labels.push(LabelInfo {
+            text: "Español",
+            bounds: Rect {
+                x: card.x + 20.0 + (btn_w + 10.0) * 2.0,
+                y: lang_y,
+                width: btn_w,
+                height: btn_h,
+            },
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(13.0),
+            color_override: None,
+            font_family_override: None,
+        });
+
         // Restart required note
         labels.push(LabelInfo {
             text: t("settings.restart_required"),
             bounds: Rect {
-                x: card.x + 20.0 + btn_w * 2.0 + 20.0,
+                x: card.x + 20.0 + (btn_w + 10.0) * 3.0,
                 y: lang_y,
-                width: 180.0,
+                width: card.width - 40.0 - (btn_w + 10.0) * 3.0,
                 height: btn_h,
             },
             h_align: HAlign::Left,

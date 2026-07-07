@@ -836,6 +836,38 @@ fn handle_action(
         UiAction::OpenSettings => {
             state.open_settings_modal();
         }
+        UiAction::OpenPricingPage => {
+            state.open_pricing_page();
+        }
+        UiAction::OpenDiscord => {
+            if let Err(e) = open::that("https://discord.gg/fpdsUyWuwN") {
+                log::warn!("Failed to open Discord link: {e}");
+            }
+        }
+        UiAction::SubscribePlan { plan } => {
+            let lower = plan.to_lowercase();
+            let lic_type = if lower.contains("école")
+                || lower.contains("school")
+                || lower.contains("escuela")
+                || lower.contains("organisme")
+                || lower.contains("organization")
+                || lower.contains("organización")
+                || lower.contains("structure")
+                || lower.contains("enterprise")
+            {
+                "organisme".into()
+            } else {
+                plan.clone()
+            };
+            crate::config::set_license("subscribed".into(), lic_type);
+            state.rebuild_topbar();
+            state.show_toast(format!("{} — merci pour votre soutien !", plan), 5.0);
+        }
+        UiAction::ActivateLicense { key } => {
+            crate::config::set_license(key.clone(), "professionnelle".into());
+            state.rebuild_topbar();
+            state.show_toast(i18n::t("pricing.license_modal.activated").to_string(), 4.0);
+        }
         UiAction::OpenProjectSettings => {
             state.open_project_settings_modal();
         }
@@ -1194,6 +1226,7 @@ fn main() {
     );
 
     let mut state = pollster::block_on(State::new(window.clone()));
+    state.update_window_title();
     if config::should_show_whats_new(update::current_version()) {
         start_whats_new_fetch(update::current_version().to_string(), event_loop_proxy);
     }

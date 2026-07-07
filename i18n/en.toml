@@ -226,3 +226,47 @@
 "studio_warning.message_3" = "For smooth playback, export your video with the rythmo band."
 "studio_warning.continue" = "Continue"
 "studio_warning.cancel" = "Cancel"
+
+# Topbar — Support
+"topbar.support" = "Support Coquerythmo"
+"topbar.discord" = "Discord"
+
+# Pricing (support page)
+"pricing.title" = "Coquerythmo is free for everyone."
+"pricing.paragraph" = """
+You can use the entire software for free, with no feature limitations, for both personal and professional use.
+
+If you use Coquerythmo in a professional, associative or institutional context, we invite you to subscribe to an annual support licence. It unlocks no additional features: it funds the software's development, bug fixes, updates, user support and the project's sustainability.
+
+Your contribution guarantees that Coquerythmo can keep evolving and remain free for everyone.
+"""
+"pricing.plan_independent" = "Self-employed professional"
+"pricing.plan_independent_price" = "100 €"
+"pricing.plan_studio" = "Studio"
+"pricing.plan_studio_price" = "200 €"
+"pricing.plan_school" = "School / training organization"
+"pricing.plan_school_price" = "300 €"
+"pricing.plan_enterprise" = "Large organization"
+"pricing.plan_enterprise_price" = "From 500 €"
+"pricing.plan_enterprise_note" = "On quote"
+"pricing.yearly" = "Billed annually"
+"pricing.select" = "Choose"
+"pricing.request_quote" = "Request a quote"
+"pricing.activate_license" = "Already have a licence?"
+"pricing.activate_button" = "Activate licence"
+
+# Pricing — plan modal
+"pricing.plan_modal.title" = "Subscribe to a support licence"
+"pricing.plan_modal.desc" = "This annual licence unlocks no features: it funds the development and sustainability of Coquerythmo."
+"pricing.plan_modal.confirm" = "Subscribe"
+"pricing.plan_modal.quote" = "Send quote request"
+"pricing.plan_modal.close" = "Close"
+
+# Pricing — licence modal
+"pricing.license_modal.title" = "Activate a licence"
+"pricing.license_modal.desc" = "Enter the licence key you received after subscribing."
+"pricing.license_modal.key" = "Licence key"
+"pricing.license_modal.activate" = "Activate"
+"pricing.license_modal.close" = "Close"
+"pricing.license_modal.error_required" = "Enter a licence key."
+"pricing.license_modal.activated" = "Licence activated. Thank you for your support!"
