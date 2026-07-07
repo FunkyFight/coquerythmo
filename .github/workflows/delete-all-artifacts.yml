@@ -1,0 +1,44 @@
+name: Delete All Artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  delete-artifacts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete all artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              {
+                owner,
+                repo,
+                per_page: 100
+              }
+            );
+
+            if (artifacts.length === 0) {
+              console.log("No artifacts found.");
+              return;
+            }
+
+            for (const artifact of artifacts) {
+              console.log(`Deleting ${artifact.name} (${artifact.id})`);
+              await github.rest.actions.deleteArtifact({
+                owner,
+                repo,
+                artifact_id: artifact.id
+              });
+            }
+
+            console.log(`Deleted ${artifacts.length} artifact(s).`);
