@@ -224,15 +224,31 @@ jobs:
           cd dist
           zip -r "../$PACKAGE_NAME" .
 
-      - name: Upload package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.PACKAGE_NAME }}
-          path: ${{ env.PACKAGE_NAME }}
-
-      - name: Upload macOS app artifact
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APP_PACKAGE_NAME }}
-          path: ${{ env.APP_PACKAGE_NAME }}
+      - name: Upload to Gofile
+        shell: bash
+        run: |
+          echo "### 🚀 Liens Gofile (${{ matrix.platform }})" >> $GITHUB_STEP_SUMMARY
+          
+          # Upload du fichier portable principal
+          echo "Uploading $PACKAGE_NAME to Gofile..."
+          RES1=$(curl -s -F "file=@${PACKAGE_NAME}" https://upload.gofile.io/uploadfile)
+          
+          # Extraction des données avec jq
+          DOWNLOAD_LINK=$(echo $RES1 | jq -r '.data.downloadPage')
+          TOKEN=$(echo $RES1 | jq -r '.data.guestToken')
+          FOLDER_ID=$(echo $RES1 | jq -r '.data.parentFolder')
+          
+          echo "- 📦 **Portable** : [Télécharger $PACKAGE_NAME]($DOWNLOAD_LINK)" >> $GITHUB_STEP_SUMMARY
+          
+          # Si on est sur macOS, on upload aussi le dossier .app dans le MÊME dossier Gofile
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            echo "Uploading $APP_PACKAGE_NAME to the same Gofile folder..."
+            RES2=$(curl -s -F "file=@${APP_PACKAGE_NAME}" -F "token=$TOKEN" -F "folderId=$FOLDER_ID" https://upload.gofile.io/uploadfile)
+            APP_DOWNLOAD_LINK=$(echo $RES2 | jq -r '.data.downloadPage')
+            
+            echo "- 🍏 **App Bundle** : [Télécharger $APP_PACKAGE_NAME]($APP_DOWNLOAD_LINK)" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Le lien principal est le même que celui du premier fichier uploadé
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📂 **[Accéder au dossier Gofile]($DOWNLOAD_LINK)**" >> $GITHUB_STEP_SUMMARY
