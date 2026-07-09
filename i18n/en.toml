@@ -124,6 +124,8 @@
 "toast.video_load_failed" = "Video loading failed:"
 "toast.export_completed" = "MP4 export completed."
 "toast.export_failed" = "MP4 export failed:"
+"toast.import_failed" = "Rythmo band load failed:"
+"loading_project.title" = "Loading project..."
 "toast.no_audio_export_selected" = "Select at least one audio output to export."
 "toast.no_instrumental_audio" = "No instrumental audio is configured in project settings."
 

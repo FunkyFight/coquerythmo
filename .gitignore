@@ -1,2 +1,7 @@
 /target
 /reports
+graphify-out
+graphify-out/**
+.kilo/**
+.github/**
+.claude/**

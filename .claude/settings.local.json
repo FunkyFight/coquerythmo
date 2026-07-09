@@ -12,7 +12,9 @@
       "Bash(cargo fetch:*)",
       "Bash(cargo check:*)",
       "Bash(sed:*)",
-      "WebFetch(domain:docs.rs)"
+      "WebFetch(domain:docs.rs)",
+      "Bash(git checkout *)",
+      "Bash(python -c ' *)"
     ]
   }
 }

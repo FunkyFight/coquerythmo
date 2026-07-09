@@ -213,22 +213,7 @@ fn quick_save_existing(state: &mut State) -> bool {
 }
 
 fn import_project_from_path(state: &mut State, path: PathBuf) {
-    use export::{JsonImporter, ProjectImporter};
-    let importer = JsonImporter;
-    match importer.import(&path) {
-        Ok(data) => {
-            let fps = state.fps();
-            data.apply_to_project(&mut state.project, fps);
-            state.sync_audio_settings_to_player();
-            state.project_path = Some(path.clone());
-            state.reload_linked_proxy();
-            if let Some(video) = state.video_path() {
-                config::add_recent_project(video, path);
-                state.rebuild_topbar_for_network();
-            }
-        }
-        Err(e) => log::error!("Import failed: {e}"),
-    }
+    state.start_br_import(path);
 }
 
 fn import_cappela_from_path(state: &mut State, path: PathBuf) {
@@ -747,22 +732,11 @@ fn handle_action(
             video_path,
             br_path,
         } => {
-            use export::{JsonImporter, ProjectImporter};
             if video_path.exists() && br_path.exists() {
                 state.project_path = Some(br_path.clone());
                 state.load_video(&video_path);
-                let importer = JsonImporter;
-                match importer.import(&br_path) {
-                    Ok(data) => {
-                        let fps = state.fps();
-                        data.apply_to_project(&mut state.project, fps);
-                        state.sync_audio_settings_to_player();
-                        config::add_recent_project(video_path, br_path);
-                        state.rebuild_topbar_for_network();
-                        log::info!("Loaded recent project");
-                    }
-                    Err(e) => log::error!("Failed to load recent BR: {e}"),
-                }
+                state.start_br_import(br_path);
+                log::info!("Loading recent project");
             } else {
                 log::warn!("Recent project files missing, skipping");
             }

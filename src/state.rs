@@ -55,6 +55,12 @@ struct PendingExportJob {
     receiver: Receiver<Result<(), String>>,
 }
 
+struct PendingImportJob {
+    br_path: PathBuf,
+    started: Instant,
+    receiver: Receiver<Result<crate::export::ProjectData, String>>,
+}
+
 enum DialogueSplitTarget {
     Cursor { line_id: u64, cursor_pos: usize },
     Playhead { line_id: u64, progress: f32 },
@@ -72,6 +78,7 @@ pub struct State {
     proxy_video_path: Option<PathBuf>,
     pending_proxy_job: Option<PendingProxyJob>,
     pending_export_job: Option<PendingExportJob>,
+    pending_import_job: Option<PendingImportJob>,
     active_export_cancel: Option<Arc<AtomicBool>>,
     pub project: Project,
     render_index: ProjectRenderIndex,
@@ -115,6 +122,7 @@ impl State {
             proxy_video_path: None,
             pending_proxy_job: None,
             pending_export_job: None,
+            pending_import_job: None,
             active_export_cancel: None,
             project: Project::new(),
             render_index: ProjectRenderIndex::new(),
@@ -266,12 +274,17 @@ impl State {
             }
         }
         let servers = crate::config::saved_servers();
+        // ponytail: server rejects handshakes without a valid password (auth middleware),
+        // so the ping must authenticate just like a real connection — else every server
+        // with a password shows Offline despite being up.
+        let password = crate::config::get().network.password.clone();
         for s in servers {
             let ip = s.ip.clone();
             let port = s.port;
             let ping_results = self.ping_results.clone();
+            let pw = password.clone();
             std::thread::spawn(move || {
-                ping_server_socketio(&ip, port, ping_results);
+                ping_server_socketio(&ip, port, pw, ping_results);
             });
         }
     }
@@ -618,6 +631,31 @@ impl State {
 
     pub fn watch_export_job(&mut self, receiver: Receiver<Result<(), String>>) {
         self.pending_export_job = Some(PendingExportJob { receiver });
+    }
+
+    /// Kick off a background parse of a bande rythmo file and show a loading
+    /// modal while it runs. `apply_to_project` (main-thread) happens on completion.
+    pub fn start_br_import(&mut self, br_path: PathBuf) {
+        use crate::export::{JsonImporter, ProjectImporter};
+        use std::sync::mpsc;
+
+        let label = br_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let (tx, rx) = mpsc::channel();
+        let thread_path = br_path.clone();
+        std::thread::spawn(move || {
+            let result = JsonImporter.import(&thread_path);
+            let _ = tx.send(result);
+        });
+        self.pending_import_job = Some(PendingImportJob {
+            br_path,
+            started: Instant::now(),
+            receiver: rx,
+        });
+        self.ui.loading_project = Some((label, Instant::now()));
+        self.request_redraw();
     }
 
     fn load_video_for_playback(
@@ -2690,6 +2728,50 @@ impl State {
         true
     }
 
+    fn poll_import_job(&mut self) -> bool {
+        let result = match self.pending_import_job.as_ref() {
+            Some(job) => match job.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err("Import job disconnected".into())),
+            },
+            None => None,
+        };
+
+        let Some(result) = result else {
+            return false;
+        };
+
+        let Some(job) = self.pending_import_job.take() else {
+            return false;
+        };
+        self.ui.loading_project = None;
+
+        match result {
+            Ok(data) => {
+                let fps = self.fps();
+                data.apply_to_project(&mut self.project, fps);
+                self.sync_audio_settings_to_player();
+                self.project_path = Some(job.br_path.clone());
+                self.reload_linked_proxy();
+                if let Some(video) = self.video_path() {
+                    crate::config::add_recent_project(video, job.br_path.clone());
+                    self.rebuild_topbar_for_network();
+                }
+                log::info!("Project imported from {}", job.br_path.display());
+            }
+            Err(e) => {
+                log::error!("Import failed: {e}");
+                self.show_toast(
+                    format!("{} {e}", crate::i18n::t("toast.import_failed")),
+                    6.0,
+                );
+            }
+        }
+
+        true
+    }
+
     pub fn tick_background(&mut self) -> bool {
         let mut changed = false;
 
@@ -2738,6 +2820,7 @@ impl State {
         changed |= self.tick_scroll_decode();
         changed |= self.poll_export_job();
         changed |= self.poll_proxy_job();
+        changed |= self.poll_import_job();
         changed |= self.poll_file_explorer();
         changed |= self.poll_waveform_change();
         changed
@@ -2780,7 +2863,10 @@ impl State {
     }
 
     fn periodic_redraw_due(&self, now: Instant) -> bool {
-        if self.ui.has_active_progress() || self.pending_proxy_job.is_some() {
+        if self.ui.has_active_progress()
+            || self.pending_proxy_job.is_some()
+            || self.pending_import_job.is_some()
+        {
             return now.duration_since(self.last_redraw) >= Duration::from_millis(100);
         }
 
@@ -2826,7 +2912,10 @@ impl State {
             push_deadline(self.last_redraw + Self::app_refresh_interval());
         }
 
-        if self.ui.has_active_progress() || self.pending_proxy_job.is_some() {
+        if self.ui.has_active_progress()
+            || self.pending_proxy_job.is_some()
+            || self.pending_import_job.is_some()
+        {
             push_deadline(self.last_redraw + Duration::from_millis(100));
         }
 
@@ -3227,6 +3316,7 @@ fn build_full_window_video_quad<'a>(
 fn ping_server_socketio(
     ip: &str,
     port: u16,
+    password: String,
     results: std::sync::Arc<std::sync::Mutex<Vec<PingResult>>>,
 ) {
     use rust_socketio::{ClientBuilder, Event, Payload};
@@ -3244,6 +3334,7 @@ fn ping_server_socketio(
     let results_disc = results.clone();
 
     let client = ClientBuilder::new(&url)
+        .auth(serde_json::json!({ "password": password }))
         .on("server_info", move |payload, _client| {
             if let Payload::Text(values) = payload {
                 if let Some(info) = values.first() {

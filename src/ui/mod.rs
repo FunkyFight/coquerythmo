@@ -125,6 +125,9 @@ pub struct Ui {
     pub sync_overlay: Option<String>,
     pub sync_progress: f32,
     pub toasts: toast::ToastManager,
+    /// Active bande rythmo import (label, start instant). Set by State while a
+    /// background parse runs; the modal blocks input + shows a spinner.
+    pub loading_project: Option<(String, std::time::Instant)>,
 }
 
 impl Ui {
@@ -214,6 +217,7 @@ impl Ui {
             total_frames: 0,
             scrubbing: false,
             toasts: toast::ToastManager::new(),
+            loading_project: None,
         };
         ui.toolbar_widgets = ui.build_toolbar();
         ui
@@ -725,6 +729,11 @@ impl Ui {
     ) -> EventResponse {
         if let UiEvent::MouseMove { x, y } = event {
             self.cursor_pos = (*x, *y);
+        }
+
+        // Project loading modal blocks all input while a BR is being parsed.
+        if self.loading_project.is_some() {
+            return EventResponse::Consumed;
         }
 
         // Pricing / support page replaces the entire layout while active.
@@ -2320,6 +2329,112 @@ impl Ui {
                 self.screen_w,
                 self.screen_h,
             );
+        }
+
+        // Bande rythmo import loading modal (on top while a background parse runs)
+        if let Some((label, started)) = &self.loading_project {
+            let dw = 420.0;
+            let dh = 130.0;
+            let dx = (self.screen_w - dw) / 2.0;
+            let dy = (self.screen_h - dh) / 2.0;
+
+            // Dim
+            overlay_quads.push(QuadInstance {
+                rect: [0.0, 0.0, self.screen_w, self.screen_h],
+                color: [0.0, 0.0, 0.0, 0.75],
+                color_bottom: [0.0, 0.0, 0.0, 0.75],
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 0.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
+            // Card
+            overlay_quads.push(QuadInstance {
+                rect: [dx, dy, dw, dh],
+                color: [0.22, 0.22, 0.26, 1.0],
+                color_bottom: [0.16, 0.16, 0.19, 1.0],
+                border_color: [0.45, 0.45, 0.52, 0.8],
+                border_width: 1.5,
+                border_radius: 14.0,
+                shadow_offset: [0.0, 4.0],
+                shadow_color: [0.0, 0.0, 0.0, 0.5],
+                shadow_blur: 10.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
+            // Title
+            labels.push(LabelInfo {
+                text: t("loading_project.title"),
+                bounds: Rect {
+                    x: dx,
+                    y: dy + 22.0,
+                    width: dw,
+                    height: 26.0,
+                },
+                h_align: HAlign::Center,
+                v_align: VAlign::Center,
+                overflow: Overflow::Clip,
+                padding: 0.0,
+                font_size_override: Some(17.0),
+                color_override: None,
+                font_family_override: None,
+            });
+            // File name
+            labels.push(LabelInfo {
+                text: label.as_str(),
+                bounds: Rect {
+                    x: dx + 20.0,
+                    y: dy + 52.0,
+                    width: dw - 40.0,
+                    height: 18.0,
+                },
+                h_align: HAlign::Center,
+                v_align: VAlign::Center,
+                overflow: Overflow::Clip,
+                padding: 0.0,
+                font_size_override: Some(12.0),
+                color_override: Some([180, 180, 190]),
+                font_family_override: None,
+            });
+            // Indeterminate sliding bar
+            let bx = dx + 30.0;
+            let by = dy + 88.0;
+            let bw = dw - 60.0;
+            let bh = 10.0;
+            overlay_quads.push(QuadInstance {
+                rect: [bx, by, bw, bh],
+                color: [0.10, 0.10, 0.13, 1.0],
+                color_bottom: [0.10, 0.10, 0.13, 1.0],
+                border_color: [0.30, 0.30, 0.38, 0.8],
+                border_width: 1.0,
+                border_radius: 5.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
+            let track = bw - 4.0;
+            let fill_w = track * 0.35;
+            let p = (started.elapsed().as_secs_f32() * 1.2).sin() * 0.5 + 0.5;
+            let fill_x = bx + 2.0 + (track - fill_w) * p;
+            overlay_quads.push(QuadInstance {
+                rect: [fill_x, by + 2.0, fill_w, bh - 4.0],
+                color: [0.35, 0.60, 1.0, 1.0],
+                color_bottom: [0.25, 0.45, 0.85, 1.0],
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 3.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
         }
 
         // Export progress modal (rendered last so it's always on top)

@@ -124,6 +124,8 @@
 "toast.video_load_failed" = "Error al cargar el vídeo:"
 "toast.export_completed" = "Exportación MP4 completada."
 "toast.export_failed" = "Error al exportar MP4:"
+"toast.import_failed" = "Error al cargar la banda rythmo:"
+"loading_project.title" = "Cargando proyecto..."
 "toast.no_audio_export_selected" = "Selecciona al menos una salida de audio para exportar."
 "toast.no_instrumental_audio" = "No hay audio instrumental configurado en los ajustes del proyecto."
 
