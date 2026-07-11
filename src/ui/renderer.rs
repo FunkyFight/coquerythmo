@@ -197,6 +197,7 @@ pub struct UiRenderer {
     swash_cache: SwashCache,
     text_atlas: TextAtlas,
     text_renderer: TextRenderer,
+    modal_text_renderer: TextRenderer,
     viewport: Viewport,
 
     text_texture_cache: HashMap<u64, CachedTextTexture>,
@@ -416,6 +417,8 @@ impl UiRenderer {
         let mut text_atlas = TextAtlas::new(device, queue, &cache, format);
         let text_renderer =
             TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
+        let modal_text_renderer =
+            TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
 
         Self {
             quad_pipeline,
@@ -428,6 +431,7 @@ impl UiRenderer {
             swash_cache,
             text_atlas,
             text_renderer,
+            modal_text_renderer,
             viewport,
             text_texture_cache: HashMap::new(),
             ui_text_cache: HashMap::new(),
@@ -837,6 +841,7 @@ impl UiRenderer {
         queue: &wgpu::Queue,
         labels: &[LabelInfo],
         ui_scale: f32,
+        is_modal: bool,
     ) {
         if labels.is_empty() {
             return;
@@ -916,17 +921,31 @@ impl UiRenderer {
             })
             .collect();
 
-        self.text_renderer
-            .prepare(
-                device,
-                queue,
-                &mut self.font_system,
-                &mut self.text_atlas,
-                &self.viewport,
-                text_areas,
-                &mut self.swash_cache,
-            )
-            .unwrap();
+        if is_modal {
+            self.modal_text_renderer
+                .prepare(
+                    device,
+                    queue,
+                    &mut self.font_system,
+                    &mut self.text_atlas,
+                    &self.viewport,
+                    text_areas,
+                    &mut self.swash_cache,
+                )
+                .unwrap();
+        } else {
+            self.text_renderer
+                .prepare(
+                    device,
+                    queue,
+                    &mut self.font_system,
+                    &mut self.text_atlas,
+                    &self.viewport,
+                    text_areas,
+                    &mut self.swash_cache,
+                )
+                .unwrap();
+        }
     }
 
     pub fn render(
@@ -968,7 +987,7 @@ impl UiRenderer {
             },
         );
 
-        self.prepare_text_layer(device, queue, labels, ui_scale);
+        self.prepare_text_layer(device, queue, labels, ui_scale, false);
 
         // Upload dynamic instance buffers once per group. Draws that need different
         // bind groups reuse the same uploaded instance buffer with instance ranges.
@@ -1166,7 +1185,7 @@ impl UiRenderer {
         // Second pass: modals on top of everything (quads + text). LoadOp::Load
         // preserves the first pass's output.
         if !modal_quads.is_empty() || !modal_labels.is_empty() {
-            self.prepare_text_layer(device, queue, modal_labels, ui_scale);
+            self.prepare_text_layer(device, queue, modal_labels, ui_scale, true);
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("UI Modal Pass"),
@@ -1196,7 +1215,7 @@ impl UiRenderer {
             }
 
             // Draw modal text
-            self.text_renderer
+            self.modal_text_renderer
                 .render(&self.text_atlas, &self.viewport, &mut pass)
                 .unwrap();
         }
