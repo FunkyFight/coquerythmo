@@ -10,9 +10,23 @@ Tous les trucs de Voxdub qui comparent intégrés
 F9 qui, selon le contexte (intelligent) affiche à gauche tous les raccourcis claviers possibles (catégorisés selon le panel)
 Fichier .coquerythmo qui contient : la BR, la vidéo, les audios, les configurations, la police même, tout.
     => Passer le .json tout seul en legacy
+Export to anything
+    Pré-format : 16:9 (YouTube), 9:16 (Shorts / TikTok), Same as Source
+    Qualité : 720p, 1080p, 1440p, 4k, 8k, custom
+    Exports avec quels audios
+    Exports avec quelles langues
+Exports possibles :
+    Vidéo
+    Sous-titres : JSON, SRT, ASS, DETX
+    Audio : mp3, wav, bwf stems
+    Référence croisée : CSV, PDF
+    Grille de croisillées (Grille de présence, boucles) https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQkSPDwVRmkXZFyXFbooHqTWDFPm-QIGwJOJB18RNKsw4rSKMhTcL8CfMfs&s=10
+Compte à rebours / Pre-roll (maybe deux choses différentes)
 DAW basique.
 Bug : Lancer la vidéo, naviguer avec la barre : La vidéo freeze
 Bug : la ligne karaoké défile 2s avant de venir au centre.
+Bug : l'image de comédien est sur la ligne.
+Bug : Dans le rendu export, les graduations semblent être buggées
 
 
 
