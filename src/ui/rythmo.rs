@@ -1175,13 +1175,15 @@ fn badge_rect_for_name_with_karaoke_preview(
     karaoke_preview: bool,
 ) -> Rect {
     let (x1, _) = line_visual_x_width(line, current_frame, zone, karaoke_preview);
-    let y_base = editor_track_y_base(project, line.y_slot, zone);
+    let body_rect = editor_track_body_rect(project, line.y_slot, zone);
     let w = badge_width(name);
+    // Right edge a few px to the left of the line's top-left corner, top-aligned.
+    let right = x1 - BADGE_GAP;
     Rect {
-        x: x1,
-        y: badge_y_from_slot_top(y_base),
+        x: right - w,
+        y: body_rect.y,
         width: w,
-        height: BADGE_HEIGHT,
+        height: body_rect.height * BADGE_OVERLAP_HEIGHT_RATIO,
     }
 }
 
@@ -1395,21 +1397,23 @@ impl EditorLayoutCtx {
         x: f32,
         zone: &Rect,
     ) -> Rect {
+        let body_rect = self.track_body_rect(line.y_slot, zone);
+        let badge_h = body_rect.height * BADGE_OVERLAP_HEIGHT_RATIO;
+        let w = badge_width(name);
+        // Right edge a few px to the left of the line's top-left corner;
+        // badge extends leftward from there, top-aligned to the line.
+        let right = x - BADGE_GAP;
         Rect {
-            x,
-            y: badge_y_from_slot_top(self.track_y_base(line.y_slot, zone)),
-            width: badge_width(name),
-            height: BADGE_HEIGHT,
+            x: right - w,
+            y: body_rect.y,
+            width: w,
+            height: badge_h,
         }
     }
 }
 
 fn editor_track_layouts(project: &Project, zone: &Rect) -> Vec<rythmo_layout::TrackLayout> {
     EditorLayoutCtx::new(project, zone).track_layouts
-}
-
-fn editor_track_y_base(project: &Project, y_slot: f32, zone: &Rect) -> f32 {
-    EditorLayoutCtx::new(project, zone).track_y_base(y_slot, zone)
 }
 
 fn editor_track_body_rect(project: &Project, y_slot: f32, zone: &Rect) -> Rect {
@@ -1443,6 +1447,10 @@ fn line_rect_with_karaoke_preview(
 
 fn badge_width(name: &str) -> f32 {
     (text_input::text_width(name, BADGE_FONT_SIZE) + BADGE_PADDING_H * 2.0).max(BADGE_MIN_W)
+}
+
+fn rects_overlap(a: &Rect, b: &Rect) -> bool {
+    a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
 }
 
 fn badge_text_metrics() -> TextInputMetrics {
@@ -1689,21 +1697,19 @@ pub fn render_rythmo_base(
 }
 
 /// Returns optional (line_id, cursor_pos, text_x, text_w, rect_y, rect_h) for cursor rendering.
-const BADGE_HEIGHT: f32 = 16.0;
-const BADGE_PADDING_H: f32 = 6.0;
+const BADGE_HEIGHT: f32 = 13.0;
+const BADGE_PADDING_H: f32 = 8.0;
 const BADGE_GAP: f32 = 2.0;
-const BADGE_RADIUS: f32 = 2.0;
-const BADGE_MIN_W: f32 = 16.0;
-const BADGE_FONT_SIZE: f32 = 10.0;
+const BADGE_MIN_W: f32 = 24.0;
+const BADGE_FONT_SIZE: f32 = 11.0;
+
+// Badge height ~1/3 of line height, positioned at line left edge
+const BADGE_OVERLAP_HEIGHT_RATIO: f32 = constants::BADGE_OVERLAP_HEIGHT_RATIO;
 const ACTOR_ICON_SIZE: f32 = constants::VOICE_ACTOR_DISPLAY_ICON_SIZE;
 const ACTOR_ICON_GAP: f32 = 3.0;
 
 fn slot_header_height() -> f32 {
     BADGE_HEIGHT.max(ACTOR_ICON_SIZE)
-}
-
-fn badge_y_from_slot_top(y_base: f32) -> f32 {
-    y_base + ((slot_header_height() - BADGE_HEIGHT) * 0.5).max(0.0)
 }
 
 fn line_color_tint(line: &crate::rythmo_line::RythmoLine) -> [f32; 4] {
@@ -2240,11 +2246,13 @@ fn karaoke_preview_line_rect(
 
 fn badge_rect_for_karaoke_rect(line: &crate::rythmo_line::RythmoLine, line_rect: &Rect) -> Rect {
     let width = badge_width(&line.character_name);
+    let badge_h = line_rect.height * BADGE_OVERLAP_HEIGHT_RATIO;
+    // Right edge a few px to the left of the line's top-left corner, top-aligned.
     Rect {
-        x: line_rect.x - width - constants::KARAOKE_NEXT_PREVIEW_GAP * 0.5,
-        y: line_rect.y + (line_rect.height - BADGE_HEIGHT) * 0.5,
+        x: line_rect.x - width - BADGE_GAP,
+        y: line_rect.y,
         width,
-        height: BADGE_HEIGHT,
+        height: badge_h,
     }
 }
 
@@ -2701,13 +2709,58 @@ pub fn render_lines<'a>(
     let mut visible_line_ids = render_index.visible_line_ids(project, first_frame, last_frame);
     visible_line_ids.sort_by_key(|id| project.line_index(*id).unwrap_or(usize::MAX));
 
+    // Precompute every visible line's rect + character name so a badge can be tested
+    // against OTHER lines (same char → hide, different char → 50% opacity).
+    let line_rects: std::collections::HashMap<u64, (Rect, String)> = {
+        let compute_r = |line: &crate::rythmo_line::RythmoLine| -> Rect {
+            let karaoke_active = line.karaoke_active(current_frame);
+            let karaoke_count_in = karaoke_preview
+                && karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
+            let karaoke_prestart_count_in = karaoke_preview
+                && karaoke_index
+                    .prestart_scroll_visible(line, current_frame, karaoke_count_in_frame_count);
+            let karaoke_upcoming_stack =
+                karaoke_preview && karaoke_index.upcoming_stack_visible(line, current_frame);
+            let centered_karaoke_width = if karaoke_preview
+                && line.karaoke
+                && (karaoke_active || karaoke_prestart_count_in || karaoke_upcoming_stack)
+            {
+                Some(state.karaoke_ui_text_width_for_render(line))
+            } else {
+                None
+            };
+            if karaoke_preview && line.karaoke {
+                karaoke_preview_line_rect_with_state(
+                    &layout_ctx,
+                    line,
+                    current_frame,
+                    zone,
+                    karaoke_prestart_count_in,
+                    karaoke_upcoming_stack,
+                    karaoke_index.stack_row(line),
+                    centered_karaoke_width,
+                )
+            } else {
+                layout_ctx.line_rect_with_karaoke_width(line, current_frame, zone, karaoke_preview, None)
+            }
+        };
+        let mut map = std::collections::HashMap::new();
+        for &lid in &visible_line_ids {
+            if let Some(l) = project.get_line(lid) {
+                map.insert(lid, (compute_r(l), l.character_name.clone()));
+            }
+        }
+        map
+    };
+
     for line_id in visible_line_ids {
         let Some(line) = project.get_line(line_id) else {
             continue;
         };
         let karaoke_active = line.karaoke_active(current_frame);
-        let karaoke_count_in = karaoke_preview
-            && karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
+        let karaoke_count_in =
+            karaoke_preview
+                && karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
         let karaoke_prestart_count_in = karaoke_preview
             && karaoke_index.prestart_scroll_visible(
                 line,
@@ -2952,6 +3005,24 @@ pub fn render_lines<'a>(
         } else {
             layout_ctx.badge_rect_for_name(line, &line.character_name, r.x, zone)
         };
+
+        // Overlap detection vs OTHER lines: hide if same character, 50% opacity if different
+        let mut badge_hidden = false;
+        let mut badge_overlap_alpha: f32 = 1.0;
+        for (&oid, (other_rect, other_name)) in &line_rects {
+            if oid == line.id {
+                continue;
+            }
+            if rects_overlap(&br, other_rect) {
+                if other_name == &line.character_name {
+                    badge_hidden = true;
+                    break;
+                } else {
+                    badge_overlap_alpha = 0.5;
+                }
+            }
+        }
+
         let is_editing_char = state.editing_character == Some(line.id);
         if karaoke_playback_line {
             if karaoke_index.character_label_visible(line) {
@@ -2970,6 +3041,9 @@ pub fn render_lines<'a>(
             continue;
         }
 
+        if !badge_hidden {
+        let mut badge_color = line.character_color;
+        badge_color[3] *= badge_overlap_alpha;
         let badge_border = if is_editing_char {
             [0.8, 0.8, 0.85, 0.8]
         } else {
@@ -2977,11 +3051,11 @@ pub fn render_lines<'a>(
         };
         quads.push(QuadInstance {
             rect: [br.x, br.y, br.width, br.height],
-            color: line.character_color,
-            color_bottom: line.character_color,
+            color: badge_color,
+            color_bottom: badge_color,
             border_color: badge_border,
             border_width: if is_editing_char { 1.0 } else { 0.0 },
-            border_radius: BADGE_RADIUS,
+            border_radius: 0.0,
             shadow_offset: [0.0; 2],
             shadow_color: [0.0; 4],
             shadow_blur: 0.0,
@@ -3050,6 +3124,7 @@ pub fn render_lines<'a>(
                 tint: [0.7, 0.7, 0.75, 0.9],
             });
         }
+        }
 
         // Note text: small italic label at the bottom of the line
         let note_label_h = 12.0;
@@ -3100,10 +3175,9 @@ pub fn render_lines<'a>(
         zone,
     );
 
-    // Ghost preview line when holding click on empty space
-    if let Some(ghost) = &state.ghost_preview {
-        let y_base = layout_ctx.track_y_base(ghost.y_slot, zone);
-        let body_rect = layout_ctx.track_body_rect(ghost.y_slot, zone);
+        // Ghost preview line when holding click on empty space
+        if let Some(ghost) = &state.ghost_preview {
+            let body_rect = layout_ctx.track_body_rect(ghost.y_slot, zone);
         let ghost_rect_x = frame_to_x(ghost.frame, current_frame, zone);
         let ghost_w = (ghost.duration_frames as f32 * ppf()).max(2.0);
 
@@ -3123,20 +3197,22 @@ pub fn render_lines<'a>(
             _padding: [0.0; 2],
         });
 
-        // Ghost badge
+        // Ghost badge — rectangular, top-aligned, right edge a few px left of line
         let ghost_badge_w = BADGE_MIN_W;
+        let ghost_badge_h = body_rect.height * BADGE_OVERLAP_HEIGHT_RATIO;
+        let ghost_badge_x = ghost_rect_x - BADGE_GAP - ghost_badge_w;
         quads.push(QuadInstance {
             rect: [
-                ghost_rect_x,
-                badge_y_from_slot_top(y_base),
+                ghost_badge_x,
+                body_rect.y,
                 ghost_badge_w,
-                BADGE_HEIGHT,
+                ghost_badge_h,
             ],
             color: [0.4, 0.4, 0.5, 0.2],
             color_bottom: [0.4, 0.4, 0.5, 0.2],
             border_color: ghost_border,
             border_width: 1.0,
-            border_radius: BADGE_RADIUS,
+            border_radius: 0.0,
             shadow_offset: [0.0; 2],
             shadow_color: [0.0; 4],
             shadow_blur: 0.0,

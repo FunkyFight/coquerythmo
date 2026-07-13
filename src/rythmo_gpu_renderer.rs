@@ -6,7 +6,7 @@ use crate::project::Project;
 use crate::render_index::ProjectRenderIndex;
 use crate::rythmo_layout;
 use crate::rythmo_line::{MarkerKind, RythmoLine};
-use crate::ui::widget::{IconInstance, QuadInstance};
+use crate::ui::widget::{IconInstance, QuadInstance, Rect};
 use crate::voice_actor::{decode_icon_rgba, VoiceActor, VOICE_ACTOR_ICON_SIZE};
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent,
@@ -29,6 +29,12 @@ fn quad(x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: f32, a: f32) -> QuadI
         rotation: 0.0,
         _padding: [0.0; 2],
     }
+}
+
+fn quad_rounded(x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: f32, a: f32, border_radius: f32) -> QuadInstance {
+    let mut q = quad(x, y, w, h, r, g, b, a);
+    q.border_radius = border_radius;
+    q
 }
 
 fn rotated_line(
@@ -2094,6 +2100,72 @@ impl GpuRenderer {
         );
 
         // ── Lines ──
+        // Precompute every visible line's rect + character name so a badge can be tested
+        // against OTHER lines (same char → hide, different char → 50% opacity).
+        let mut compute_line_rect = |line: &RythmoLine| -> Option<Rect> {
+            let karaoke_active = line.karaoke_active(current_frame);
+            let karaoke_count_in =
+                karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
+            let karaoke_prestart_scroll = karaoke_prestart_scroll_visible(
+                scene.project,
+                line,
+                current_frame,
+                karaoke_max_gap_frames,
+                karaoke_count_in_frame_count,
+            );
+            let karaoke_upcoming_stack =
+                karaoke_upcoming_stack_visible(scene.project, line, current_frame, karaoke_max_gap_frames);
+            if line.karaoke
+                && !karaoke_active
+                && !karaoke_prestart_scroll
+                && !karaoke_upcoming_stack
+            {
+                return None;
+            }
+            let (x1, lw) = if line.karaoke
+                && (karaoke_active || karaoke_prestart_scroll || karaoke_upcoming_stack)
+            {
+                let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
+                (center_x - width / 2.0, width)
+            } else {
+                line.visual_x_width(current_frame, center_x, ppf, w, s)
+            };
+            if x1 + lw < 0.0 || x1 > w {
+                return None;
+            }
+            let track = rythmo_layout::track_for_y_slot(&track_layouts, line.y_slot)?;
+            let y_base = ruler_h + track.top;
+            let body_y = y_base + slot_header_h + badge_gap;
+            let mut line_y = body_y;
+            let mut body_h = normal_slot_h;
+            if line.karaoke {
+                line_y = karaoke_stack_y(
+                    body_y,
+                    track.body_h,
+                    karaoke_stack_row(scene.project, line, karaoke_max_gap_frames),
+                    s,
+                );
+                body_h = karaoke_stack_height(track.body_h, s);
+            }
+            Some(Rect {
+                x: x1,
+                y: line_y,
+                width: lw,
+                height: body_h,
+            })
+        };
+        let mut line_rects: HashMap<u64, (Rect, String)> = HashMap::new();
+        for line_id in scene.render_index.visible_line_ids(
+            scene.project,
+            first_visible_frame,
+            last_visible_frame,
+        ) {
+            if let Some(line) = scene.project.get_line(line_id) {
+                if let Some(r) = compute_line_rect(line) {
+                    line_rects.insert(line.id, (r, line.character_name.clone()));
+                }
+            }
+        }
         for line_id in scene.render_index.visible_line_ids(
             scene.project,
             first_visible_frame,
@@ -2156,68 +2228,66 @@ impl GpuRenderer {
             }
 
             let [cr, cg, cb, _] = line.character_color;
+            let badge_h = body_h * constants::BADGE_OVERLAP_HEIGHT_RATIO;
             let badge_w = (line.character_name.chars().count().max(1) as f32 * badge_char_w
                 + 12.0 * s)
                 .max(16.0 * s);
-            let badge_x = if line.karaoke {
-                x1 - badge_w - constants::KARAOKE_NEXT_PREVIEW_GAP * 0.5 * s
-            } else {
-                x1
-            };
-            let badge_y = if line.karaoke {
-                line_y + (body_h - badge_h) * 0.5
-            } else {
-                y_base + ((slot_header_h - badge_h) * 0.5).max(0.0)
-            };
+            // Rectangular, top-aligned, right edge a few px left of the line's left edge.
+            let badge_x = x1 - badge_w - constants::BADGE_GAP * s;
+            let badge_y = line_y;
             let show_badge = !line.karaoke
                 || karaoke_character_label_visible(scene.project, line, karaoke_max_gap_frames);
-            if show_badge {
-                quads.push(quad(badge_x, badge_y, badge_w, badge_h, cr, cg, cb, 1.0));
 
-                if !line.character_name.is_empty() {
-                    let luminance = 0.299 * cr + 0.587 * cg + 0.114 * cb;
-                    let (tr, tg, tb) = if luminance > 0.55 {
-                        (0.0_f32, 0.0, 0.0)
+            // Overlap detection vs OTHER lines: hide if same character, 50% opacity if different
+            let mut badge_hidden = false;
+            let mut badge_overlap_alpha = 1.0_f32;
+            for (&oid, (other_rect, other_name)) in &line_rects {
+                if oid == line.id {
+                    continue;
+                }
+                let overlap = badge_x < other_rect.x + other_rect.width
+                    && badge_x + badge_w > other_rect.x
+                    && badge_y < other_rect.y + other_rect.height
+                    && badge_y + badge_h > other_rect.y;
+                if overlap {
+                    if other_name == &line.character_name {
+                        badge_hidden = true;
+                        break;
                     } else {
-                        (224.0 / 255.0, 224.0 / 255.0, 230.0 / 255.0)
-                    };
-                    let hash = self.get_or_upload_text(&line.character_name, badge_font);
-                    if let Some(cached) = self.text_cache.get(&hash) {
-                        let tw = cached.width as f32;
-                        let th = cached.height as f32;
-                        let start = all_icons.len() as u32;
-                        all_icons.push(IconInstance {
-                            rect: [
-                                badge_x + (badge_w - tw) / 2.0,
-                                badge_y + (badge_h - th) / 2.0,
-                                tw,
-                                th,
-                            ],
-                            uv_rect: [0.0, 0.0, 1.0, 1.0],
-                            tint: [tr, tg, tb, 1.0],
-                        });
-                        icon_batches.push(IconBatch {
-                            hash,
-                            start,
-                            count: 1,
-                        });
+                        badge_overlap_alpha = 0.5;
                     }
                 }
+            }
 
-                self.push_voice_actor_icons(
-                    scene,
-                    line,
+            // Store badge info for later drawing (after text)
+            let badge_info = if show_badge
+                && !badge_hidden
+                && !line.character_name.is_empty()
+            {
+                let luminance = 0.299 * cr + 0.587 * cg + 0.114 * cb;
+                let (tr, tg, tb) = if luminance > 0.55 {
+                    (0.0_f32, 0.0, 0.0)
+                } else {
+                    (224.0 / 255.0, 224.0 / 255.0, 230.0 / 255.0)
+                };
+                let hash = self.get_or_upload_text(&line.character_name, badge_font);
+                Some((
                     badge_x,
                     badge_y,
                     badge_w,
-                    actor_icon_size,
-                    s,
-                    w,
-                    &mut quads,
-                    &mut all_icons,
-                    &mut icon_batches,
-                );
-            }
+                    badge_h,
+                    cr,
+                    cg,
+                    cb,
+                    badge_overlap_alpha,
+                    hash,
+                    tr,
+                    tg,
+                    tb,
+                ))
+            } else {
+                None
+            };
 
             if !line.text.is_empty() && line.text != "\u{2191}" && line.text != "\u{2193}" {
                 if line.karaoke {
@@ -2309,6 +2379,47 @@ impl GpuRenderer {
                         );
                     }
                 }
+            }
+
+            // Draw badge AFTER text so it appears on top
+            if let Some((badge_x, badge_y, badge_w, badge_h, cr, cg, cb, ba, hash, tr, tg, tb)) = badge_info {
+                let badge_radius = 0.0; // rectangular badge (no rounding)
+                quads.push(quad_rounded(badge_x, badge_y, badge_w, badge_h, cr, cg, cb, ba, badge_radius));
+
+                if let Some(cached) = self.text_cache.get(&hash) {
+                    let tw = cached.width as f32;
+                    let th = cached.height as f32;
+                    let start = all_icons.len() as u32;
+                    all_icons.push(IconInstance {
+                        rect: [
+                            badge_x + (badge_w - tw) / 2.0,
+                            badge_y + (badge_h - th) / 2.0,
+                            tw,
+                            th,
+                        ],
+                        uv_rect: [0.0, 0.0, 1.0, 1.0],
+                        tint: [tr, tg, tb, ba],
+                    });
+                    icon_batches.push(IconBatch {
+                        hash,
+                        start,
+                        count: 1,
+                    });
+                }
+
+                self.push_voice_actor_icons(
+                    scene,
+                    line,
+                    badge_x,
+                    badge_y,
+                    badge_w,
+                    actor_icon_size,
+                    s,
+                    w,
+                    &mut quads,
+                    &mut all_icons,
+                    &mut icon_batches,
+                );
             }
 
             if line.text == "\u{2191}" || line.text == "\u{2193}" {

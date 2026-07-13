@@ -4,6 +4,7 @@ use crate::constants;
 use crate::project::Project;
 use crate::rythmo_layout;
 use crate::rythmo_line::{MarkerKind, RythmoLine};
+use crate::ui::widget::Rect;
 use crate::voice_actor::{decode_icon_rgba, icon_hash, VoiceActor, VOICE_ACTOR_ICON_SIZE};
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent,
@@ -702,7 +703,7 @@ impl CpuRenderer {
         let mut pixmap = Pixmap::new(width, height).unwrap();
         pixmap.fill(tiny_skia::Color::from_rgba8(5, 5, 8, 255));
 
-        let w = width as f32;
+let w = width as f32;
         let h = height as f32;
         let center_x = w / 2.0;
 
@@ -750,7 +751,67 @@ impl CpuRenderer {
             &playhead_gaps,
         );
 
-        // -- Lines (no handles, no border — clean export) --
+        // -- Lines (no handles, no border -- clean export) --
+        // Precompute every visible line's rect + character name so a badge can be tested
+        // against OTHER lines (same char → hide, different char → 50% opacity).
+        let mut compute_line_rect = |line: &RythmoLine| -> Option<Rect> {
+            let karaoke_active = line.karaoke_active(current_frame as f64);
+            let karaoke_count_in =
+                karaoke_count_in_visible(line, current_frame as f64, karaoke_count_in_frame_count);
+            let karaoke_prestart_scroll = karaoke_prestart_scroll_visible(
+                project,
+                line,
+                current_frame as f64,
+                karaoke_max_gap_frames,
+                karaoke_count_in_frame_count,
+            );
+            let karaoke_upcoming_stack =
+                karaoke_upcoming_stack_visible(project, line, current_frame as f64, karaoke_max_gap_frames);
+            if line.karaoke
+                && !karaoke_active
+                && !karaoke_prestart_scroll
+                && !karaoke_upcoming_stack
+            {
+                return None;
+            }
+            let (x1, lw) = if line.karaoke
+                && (karaoke_active || karaoke_prestart_scroll || karaoke_upcoming_stack)
+            {
+                let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
+                (center_x - width / 2.0, width)
+            } else {
+                line.visual_x_width(current_frame as f64, center_x, ppf, w, s)
+            };
+            if x1 + lw < 0.0 || x1 > w {
+                return None;
+            }
+            let track = rythmo_layout::track_for_y_slot(&track_layouts, line.y_slot)?;
+            let y_base = ruler_h + track.top;
+            let body_y = y_base + slot_header_h + badge_gap;
+            let mut line_y = body_y;
+            let mut body_h = normal_slot_h;
+            if line.karaoke {
+                line_y = karaoke_stack_y(
+                    body_y,
+                    track.body_h,
+                    karaoke_stack_row(project, line, karaoke_max_gap_frames),
+                    s,
+                );
+                body_h = karaoke_stack_height(track.body_h, s);
+            }
+            Some(Rect {
+                x: x1,
+                y: line_y,
+                width: lw,
+                height: body_h,
+            })
+        };
+        let mut line_rects: HashMap<u64, (Rect, String)> = HashMap::new();
+        for line in project.lines() {
+            if let Some(r) = compute_line_rect(line) {
+                line_rects.insert(line.id, (r, line.character_name.clone()));
+            }
+        }
         for line in project.lines() {
             let karaoke_active = line.karaoke_active(current_frame as f64);
             let karaoke_count_in =
@@ -805,90 +866,17 @@ impl CpuRenderer {
                 body_h = karaoke_stack_height(track.body_h, s);
             }
 
-            // Badge
+            // Calculate badge position/size for later drawing (on top of text)
+            // Rectangular, top-aligned, with right edge a few px left of the line's left edge.
+            let badge_h = body_h * constants::BADGE_OVERLAP_HEIGHT_RATIO;
             let [cr, cg, cb, _] = line.character_color;
             let badge_w = (line.character_name.chars().count().max(1) as f32 * badge_char_w
                 + 12.0 * s)
                 .max(16.0 * s);
-            let badge_x = if line.karaoke {
-                x1 - badge_w - constants::KARAOKE_NEXT_PREVIEW_GAP * 0.5 * s
-            } else {
-                x1
-            };
-            let badge_y = if line.karaoke {
-                line_y + (body_h - badge_h) * 0.5
-            } else {
-                y_base + ((slot_header_h - badge_h) * 0.5).max(0.0)
-            };
+            let badge_x = x1 - badge_w - constants::BADGE_GAP * s;
+            let badge_y = line_y;
             let show_badge = !line.karaoke
                 || karaoke_character_label_visible(project, line, karaoke_max_gap_frames);
-            if show_badge {
-                blit_rect(
-                    &mut pixmap,
-                    badge_x,
-                    badge_y,
-                    badge_w,
-                    badge_h,
-                    [color_channel(cr), color_channel(cg), color_channel(cb), 255],
-                );
-
-                // Badge text
-                if !line.character_name.is_empty() {
-                    let luminance = 0.299 * cr + 0.587 * cg + 0.114 * cb;
-                    let bf = badge_font;
-                    let (tex, tw, th) = self.rasterize_text(&line.character_name, bf);
-                    if tw > 0 && th > 0 {
-                        let tx = badge_x + (badge_w - tw as f32) / 2.0;
-                        let ty = badge_y + (badge_h - th as f32) / 2.0;
-                        // Blit with color tint
-                        let pm_w = pixmap.width() as i32;
-                        let pm_h = pixmap.height() as i32;
-                        let pm_data = pixmap.data_mut();
-                        let (tr, tg, tb) = if luminance > 0.55 {
-                            (0u8, 0, 0)
-                        } else {
-                            (224, 224, 230)
-                        };
-                        for py in 0..th {
-                            for px in 0..tw {
-                                let dx = tx as i32 + px as i32;
-                                let dy = ty as i32 + py as i32;
-                                if dx < 0 || dy < 0 || dx >= pm_w || dy >= pm_h {
-                                    continue;
-                                }
-                                let si = ((py * tw + px) * 4) as usize;
-                                let di = ((dy as u32 * pm_w as u32 + dx as u32) * 4) as usize;
-                                if si + 3 >= tex.len() || di + 3 >= pm_data.len() {
-                                    continue;
-                                }
-                                let a = tex[si + 3] as u32;
-                                if a == 0 {
-                                    continue;
-                                }
-                                let inv = 255 - a;
-                                pm_data[di] =
-                                    ((tr as u32 * a + pm_data[di] as u32 * inv) / 255) as u8;
-                                pm_data[di + 1] =
-                                    ((tg as u32 * a + pm_data[di + 1] as u32 * inv) / 255) as u8;
-                                pm_data[di + 2] =
-                                    ((tb as u32 * a + pm_data[di + 2] as u32 * inv) / 255) as u8;
-                                pm_data[di + 3] = (a + (pm_data[di + 3] as u32 * inv) / 255) as u8;
-                            }
-                        }
-                    }
-                }
-
-                self.render_voice_actor_icons(
-                    &mut pixmap,
-                    project,
-                    line,
-                    badge_x,
-                    badge_y,
-                    badge_w,
-                    actor_icon_size,
-                    s,
-                );
-            }
 
             // Rythmo text, rendered vectorially at final size.
             if !line.text.is_empty() && line.text != "↑" && line.text != "↓" {
@@ -977,6 +965,100 @@ impl CpuRenderer {
                 }
             }
 
+            // Overlap detection vs OTHER lines: hide if same character, 50% opacity if different
+            let mut badge_hidden = false;
+            let mut badge_overlap_alpha = 255u8;
+            for (&oid, (other_rect, other_name)) in &line_rects {
+                if oid == line.id {
+                    continue;
+                }
+                let overlap = badge_x < other_rect.x + other_rect.width
+                    && badge_x + badge_w > other_rect.x
+                    && badge_y < other_rect.y + other_rect.height
+                    && badge_y + badge_h > other_rect.y;
+                if overlap {
+                    if other_name == &line.character_name {
+                        badge_hidden = true;
+                        break;
+                    } else {
+                        badge_overlap_alpha = 128;
+                    }
+                }
+            }
+
+            // Badge - drawn AFTER text so it appears on top
+            if show_badge && !badge_hidden {
+                blit_rect(
+                    &mut pixmap,
+                    badge_x,
+                    badge_y,
+                    badge_w,
+                    badge_h,
+                    [color_channel(cr), color_channel(cg), color_channel(cb), badge_overlap_alpha],
+                );
+
+                // Badge text
+                if !line.character_name.is_empty() {
+                    let luminance = 0.299 * cr + 0.587 * cg + 0.114 * cb;
+                    let bf = badge_font;
+                    let (tex, tw, th) = self.rasterize_text(&line.character_name, bf);
+                    if tw > 0 && th > 0 {
+                        let tx = badge_x + (badge_w - tw as f32) / 2.0;
+                        let ty = badge_y + (badge_h - th as f32) / 2.0;
+                        // Blit with color tint
+                        let pm_w = pixmap.width() as i32;
+                        let pm_h = pixmap.height() as i32;
+                        let pm_data = pixmap.data_mut();
+                        let (tr, tg, tb) = if luminance > 0.55 {
+                            (0u8, 0, 0)
+                        } else {
+                            (224, 224, 230)
+                        };
+                        for py in 0..th {
+                            for px in 0..tw {
+                                let dx = tx as i32 + px as i32;
+                                let dy = ty as i32 + py as i32;
+                                if dx < 0 || dy < 0 || dx >= pm_w || dy >= pm_h {
+                                    continue;
+                                }
+                                let si = ((py * tw + px) * 4) as usize;
+                                let di = ((dy as u32 * pm_w as u32 + dx as u32) * 4) as usize;
+                                if si + 3 >= tex.len() || di + 3 >= pm_data.len() {
+                                    continue;
+                                }
+                                let mut a = tex[si + 3] as u32;
+                                if badge_overlap_alpha < 255 {
+                                    a = a * badge_overlap_alpha as u32 / 255;
+                                }
+                                if a == 0 {
+                                    continue;
+                                }
+                                let inv = 255 - a;
+                                pm_data[di] =
+                                    ((tr as u32 * a + pm_data[di] as u32 * inv) / 255) as u8;
+                                pm_data[di + 1] =
+                                    ((tg as u32 * a + pm_data[di + 1] as u32 * inv) / 255) as u8;
+                                pm_data[di + 2] =
+                                    ((tb as u32 * a + pm_data[di + 2] as u32 * inv) / 255) as u8;
+                                pm_data[di + 3] = (a + (pm_data[di + 3] as u32 * inv) / 255) as u8;
+                            }
+                        }
+                    }
+                }
+
+                self.render_voice_actor_icons(
+                    &mut pixmap,
+                    project,
+                    line,
+                    badge_x,
+                    badge_y,
+                    badge_w,
+                    actor_icon_size,
+                    s,
+                );
+
+            }
+
             // Breath arrows
             if line.text == "↑" || line.text == "↓" {
                 let up = line.text == "↑";
@@ -1049,113 +1131,12 @@ impl CpuRenderer {
                             let sg = (160u32 * a / 255) as u32;
                             let sb = (170u32 * a / 255) as u32;
                             let inv = 255 - a;
-                            pm_data[di] = ((sr + pm_data[di] as u32 * inv) / 255) as u8;
+pm_data[di] = ((sr + pm_data[di] as u32 * inv) / 255) as u8;
                             pm_data[di + 1] = ((sg + pm_data[di + 1] as u32 * inv) / 255) as u8;
                             pm_data[di + 2] = ((sb + pm_data[di + 2] as u32 * inv) / 255) as u8;
                             pm_data[di + 3] = (a + (pm_data[di + 3] as u32 * inv) / 255) as u8;
                         }
                     }
-                }
-            }
-        }
-
-        // -- Markers --
-        for marker in &project.markers {
-            let mx = center_x + (marker.frame - current_frame) as f32 * ppf;
-            if mx < -10.0 * s || mx > w + 10.0 * s {
-                continue;
-            }
-
-            match &marker.kind {
-                MarkerKind::Boucle => {
-                    blit_rect(
-                        &mut pixmap,
-                        mx - 1.0 * s,
-                        0.0,
-                        2.0 * s,
-                        h,
-                        [217, 38, 38, 230],
-                    );
-                    let cy = h / 2.0;
-                    let arm = 10.0 * s;
-                    blit_thick_line(
-                        &mut pixmap,
-                        mx - arm,
-                        cy - arm,
-                        mx + arm,
-                        cy + arm,
-                        2.5 * s,
-                        [217, 38, 38, 230],
-                    );
-                    blit_thick_line(
-                        &mut pixmap,
-                        mx - arm,
-                        cy + arm,
-                        mx + arm,
-                        cy - arm,
-                        2.5 * s,
-                        [217, 38, 38, 230],
-                    );
-                }
-                MarkerKind::Out => {
-                    blit_rect(
-                        &mut pixmap,
-                        mx - 1.0 * s,
-                        0.0,
-                        2.0 * s,
-                        h,
-                        [217, 115, 115, 180],
-                    );
-                    let cy = h / 2.0;
-                    let bh = h * 0.15;
-                    for offset in &[-5.0_f32, 5.0] {
-                        blit_thick_line(
-                            &mut pixmap,
-                            mx + offset - bh * 0.3,
-                            cy - bh,
-                            mx + offset + bh * 0.3,
-                            cy + bh,
-                            2.0 * s,
-                            [217, 115, 115, 180],
-                        );
-                    }
-                }
-                MarkerKind::SceneChange => {
-                    blit_rect(
-                        &mut pixmap,
-                        mx - 1.0 * s,
-                        0.0,
-                        2.0 * s,
-                        h,
-                        [230, 230, 240, 200],
-                    );
-                }
-                MarkerKind::LiaisonLeft | MarkerKind::LiaisonRight => {
-                    let is_left = matches!(marker.kind, MarkerKind::LiaisonLeft);
-                    let ay = ruler_h / 2.0;
-                    let (outer_x, tip_x) = if is_left {
-                        (mx + 5.0 * s, mx - 3.0 * s)
-                    } else {
-                        (mx - 5.0 * s, mx + 3.0 * s)
-                    };
-                    blit_thick_line(
-                        &mut pixmap,
-                        outer_x,
-                        ay - 4.0 * s,
-                        tip_x,
-                        ay,
-                        1.5 * s,
-                        [180, 180, 190, 200],
-                    );
-                    blit_thick_line(
-                        &mut pixmap,
-                        tip_x,
-                        ay,
-                        outer_x,
-                        ay + 4.0 * s,
-                        1.5 * s,
-                        [180, 180, 190, 200],
-                    );
                 }
             }
         }

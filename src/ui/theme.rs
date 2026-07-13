@@ -103,13 +103,13 @@ pub const RYTHMO_PLAYHEAD_WIDTH: f32 = 2.0;
 pub const RYTHMO_CURSOR_WIDTH: f32 = 1.5;
 
 // -- Badge --
-pub const BADGE_HEIGHT: f32 = 16.0;
-pub const BADGE_PADDING_H: f32 = 6.0;
+pub const BADGE_HEIGHT: f32 = 13.0;
+pub const BADGE_PADDING_H: f32 = 8.0;
 pub const BADGE_GAP: f32 = 2.0;
-pub const BADGE_RADIUS: f32 = 2.0;
+pub const BADGE_RADIUS: f32 = 6.5;
 pub const BADGE_CHAR_W: f32 = 6.0;
-pub const BADGE_MIN_W: f32 = 16.0;
-pub const BADGE_FONT_SIZE: f32 = 10.0;
+pub const BADGE_MIN_W: f32 = 24.0;
+pub const BADGE_FONT_SIZE: f32 = 11.0;
 
 // -- Timing --
 pub const DOUBLE_CLICK_MS: u128 = 400;
