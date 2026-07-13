@@ -240,6 +240,14 @@ impl State {
         self.ui.is_editing_text()
     }
 
+    pub fn hovering_resize_handle(&self) -> bool {
+        self.ui.hovering_split_handle()
+    }
+
+    pub fn dragging_resize_handle(&self) -> bool {
+        self.ui.dragging_split_handle()
+    }
+
     pub fn hovered_line(&self) -> Option<u64> {
         self.ui.rythmo_state.hovered_line
     }

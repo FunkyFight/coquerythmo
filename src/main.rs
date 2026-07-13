@@ -1424,7 +1424,11 @@ fn main() {
                         res
                     };
 
-                    if is_text_cursor {
+                    let resize_cursor = state.hovering_resize_handle() || state.dragging_resize_handle();
+
+                    if resize_cursor {
+                        window.set_cursor_icon(winit::window::CursorIcon::NsResize);
+                    } else if is_text_cursor {
                         window.set_cursor_icon(winit::window::CursorIcon::Text);
                     } else {
                         window.set_cursor_icon(winit::window::CursorIcon::Default);

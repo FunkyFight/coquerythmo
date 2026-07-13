@@ -32,7 +32,10 @@ pub mod voice_actor_modal;
 pub mod whats_new_modal;
 pub mod widget;
 
-use layout::{Layout, PROPS_DEFAULT_W, PROPS_DRAG_ZONE, PROPS_MAX_W, PROPS_MIN_W};
+use layout::{
+    Layout, PROPS_DEFAULT_W, PROPS_DRAG_ZONE, PROPS_MAX_W, PROPS_MIN_W, RYTHMO_MIN_H, TOOLBAR_H,
+    TOPBAR_H, VIDEO_MIN_H,
+};
 use renderer::StretchedText;
 use tooltip::TooltipState;
 use widget::{
@@ -77,6 +80,12 @@ fn scroll_delta_to_frames_impl(delta: f32, multiplier: f32) -> i32 {
     (delta * multiplier) as i32
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SplitHandle {
+    Video,
+    Rythmo,
+}
+
 pub struct Ui {
     topbar_widgets: Vec<Box<dyn Widget>>,
     toolbar_widgets: Vec<Box<dyn Widget>>,
@@ -86,6 +95,9 @@ pub struct Ui {
     props_visible: bool,
     props_width: f32,
     dragging_props: bool,
+    /// Fraction of the free area given to the video preview (rest goes to bande rythmo).
+    video_split: f32,
+    dragging_split: Option<SplitHandle>,
     tooltip: Option<TooltipState>,
     cursor_pos: (f32, f32),
     playing: bool,
@@ -134,7 +146,8 @@ impl Ui {
     pub fn new(screen_width: u32, screen_height: u32, icon_atlas: &IconAtlas) -> Self {
         let sw = screen_width as f32;
         let sh = screen_height as f32;
-        let layout = Layout::compute(sw, sh, false, PROPS_DEFAULT_W);
+        let video_split = crate::config::video_split();
+        let layout = Layout::compute(sw, sh, false, PROPS_DEFAULT_W, video_split);
 
         let icon_names = [
             "resume",
@@ -178,6 +191,8 @@ impl Ui {
             props_visible: false,
             props_width: PROPS_DEFAULT_W,
             dragging_props: false,
+            video_split,
+            dragging_split: None,
             tooltip: None,
             cursor_pos: (0.0, 0.0),
             playing: false,
@@ -229,6 +244,7 @@ impl Ui {
             self.screen_h,
             self.props_visible,
             self.props_width,
+            self.video_split,
         );
         self.toolbar_widgets = self.build_toolbar();
     }
@@ -849,6 +865,10 @@ impl Ui {
             }
         }
 
+        if let Some(response) = self.handle_split_drag(event) {
+            return response;
+        }
+
         if let Some(response) = self.handle_props_drag(event) {
             return response;
         }
@@ -997,6 +1017,63 @@ impl Ui {
         }
     }
 
+    fn handle_split_drag(&mut self, event: &UiEvent) -> Option<EventResponse> {
+        let content_h = self.screen_h - TOPBAR_H;
+        let free_h = (content_h - TOOLBAR_H).max(0.0);
+        match event {
+            UiEvent::MousePress { x, y } => {
+                if self.layout.video_split_handle_rect().contains(*x, *y) {
+                    self.dragging_split = Some(SplitHandle::Video);
+                    return Some(EventResponse::Consumed);
+                }
+                if self.layout.rythmo_split_handle_rect().contains(*x, *y) {
+                    self.dragging_split = Some(SplitHandle::Rythmo);
+                    return Some(EventResponse::Consumed);
+                }
+                None
+            }
+            UiEvent::MouseMove { x, y } => {
+                if let Some(handle) = self.dragging_split {
+                    let requested = match handle {
+                        SplitHandle::Video => (*y) - TOPBAR_H,
+                        SplitHandle::Rythmo => free_h - (self.screen_h - *y),
+                    };
+                    let min_video = VIDEO_MIN_H.min(free_h);
+                    let max_video = (free_h - RYTHMO_MIN_H).max(min_video);
+                    let video_h = requested.clamp(min_video, max_video);
+                    let split = if free_h > 0.0 {
+                        (video_h / free_h).clamp(0.0, 1.0)
+                    } else {
+                        self.video_split
+                    };
+                    self.video_split = split;
+                    self.rebuild_layout();
+                    return Some(EventResponse::Consumed);
+                }
+                None
+            }
+            UiEvent::MouseRelease { .. } => {
+                if self.dragging_split.is_some() {
+                    self.dragging_split = None;
+                    crate::config::set_video_split(self.video_split);
+                    return Some(EventResponse::Consumed);
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn hovering_split_handle(&self) -> bool {
+        let (cx, cy) = self.cursor_pos;
+        self.layout.video_split_handle_rect().contains(cx, cy)
+            || self.layout.rythmo_split_handle_rect().contains(cx, cy)
+    }
+
+    pub(crate) fn dragging_split_handle(&self) -> bool {
+        self.dragging_split.is_some()
+    }
+
     fn update_tooltip(&mut self) {
         let (cx, cy) = self.cursor_pos;
         for widget in self
@@ -1034,6 +1111,7 @@ impl Ui {
     pub fn needs_animation_or_interaction(&self) -> bool {
         self.playing
             || self.dragging_props
+            || self.dragging_split.is_some()
             || self.scrubbing
             || self.toasts.has_active()
             || self.rythmo_state.needs_animation_or_interaction()
@@ -2844,6 +2922,47 @@ impl Ui {
             fps,
             &self.rythmo_state,
         ));
+
+        // Resize handles between video/toolbar and toolbar/rythmo.
+        let (hover_video, hover_rythmo) = (
+            self.layout
+                .video_split_handle_rect()
+                .contains(self.cursor_pos.0, self.cursor_pos.1),
+            self.layout
+                .rythmo_split_handle_rect()
+                .contains(self.cursor_pos.0, self.cursor_pos.1),
+        );
+        let handles: [(Rect, bool); 2] = [
+            (
+                l.video_split_handle_rect(),
+                self.dragging_split == Some(SplitHandle::Video) || hover_video,
+            ),
+            (
+                l.rythmo_split_handle_rect(),
+                self.dragging_split == Some(SplitHandle::Rythmo) || hover_rythmo,
+            ),
+        ];
+        for (rect, active) in handles {
+            let color: [f32; 4] = if active {
+                [0.45, 0.55, 0.95, 0.95]
+            } else {
+                [0.20, 0.20, 0.24, 0.55]
+            };
+            let y = rect.y + rect.height / 2.0 - 1.0;
+            quads.push(QuadInstance {
+                rect: [rect.x, y, rect.width, 2.0],
+                color,
+                color_bottom: color,
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 0.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
+        }
 
         // Properties panel
         if let Some(props) = &l.properties {
