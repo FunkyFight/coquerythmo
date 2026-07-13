@@ -33,6 +33,16 @@ impl IconAtlas {
                 flip_h: false,
             },
             SvgEntry {
+                name: "select-mode",
+                data: include_bytes!("../icons/select-mode.svg"),
+                flip_h: false,
+            },
+            SvgEntry {
+                name: "draw-mode",
+                data: include_bytes!("../icons/draw-mode.svg"),
+                flip_h: false,
+            },
+            SvgEntry {
                 name: "prev_frame",
                 data: include_bytes!("../icons/goto.svg"),
                 flip_h: false,
@@ -115,6 +125,16 @@ impl IconAtlas {
             SvgEntry {
                 name: "mute",
                 data: include_bytes!("../icons/mute-svgrepo-com (1).svg"),
+                flip_h: false,
+            },
+            SvgEntry {
+                name: "select-mode",
+                data: include_bytes!("../icons/select-mode.svg"),
+                flip_h: false,
+            },
+            SvgEntry {
+                name: "draw-mode",
+                data: include_bytes!("../icons/draw-mode.svg"),
                 flip_h: false,
             },
         ];

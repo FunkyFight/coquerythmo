@@ -1531,6 +1531,7 @@ fn main() {
             }
             Event::AboutToWait => {
                 let changed = state.tick_background();
+                let needs_continuous = state.needs_continuous_redraw();
                 if changed || state.needs_redraw_now() {
                     state.request_redraw();
                     if state.has_secondary_display() {
@@ -1538,7 +1539,11 @@ fn main() {
                     }
                 }
 
-                if let Some(deadline) = state.next_wake_deadline() {
+                if needs_continuous {
+                    // Use Poll for continuous rendering at monitor refresh rate (60fps+)
+                    // The OS/window system will throttle to vsync automatically
+                    elwt.set_control_flow(ControlFlow::Poll);
+                } else if let Some(deadline) = state.next_wake_deadline() {
                     let now = Instant::now();
                     elwt.set_control_flow(ControlFlow::WaitUntil(deadline.max(now)));
                 } else {

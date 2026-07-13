@@ -86,6 +86,12 @@ enum SplitHandle {
     Rythmo,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ToolMode {
+    Select,
+    Draw,
+}
+
 pub struct Ui {
     topbar_widgets: Vec<Box<dyn Widget>>,
     toolbar_widgets: Vec<Box<dyn Widget>>,
@@ -136,10 +142,13 @@ pub struct Ui {
     pub scrubbing: bool,
     pub sync_overlay: Option<String>,
     pub sync_progress: f32,
+    active_mode: Option<ToolMode>,
     pub toasts: toast::ToastManager,
     /// Active bande rythmo import (label, start instant). Set by State while a
     /// background parse runs; the modal blocks input + shows a spinner.
     pub loading_project: Option<(String, std::time::Instant)>,
+    /// Active tool mode (select/draw). Clicking one deselects the other.
+    active_mode: Option<ToolMode>,
 }
 
 impl Ui {
@@ -169,6 +178,8 @@ impl Ui {
             "karaoke",
             "sound",
             "mute",
+            "select-mode",
+            "draw-mode",
         ];
         let icon_uvs: std::collections::HashMap<String, [f32; 4]> = icon_names
             .iter()
@@ -233,6 +244,7 @@ impl Ui {
             scrubbing: false,
             toasts: toast::ToastManager::new(),
             loading_project: None,
+            active_mode: None,
         };
         ui.toolbar_widgets = ui.build_toolbar();
         ui
@@ -1990,6 +2002,7 @@ impl Ui {
                         self.rythmo_state.syllable_drag.as_ref(),
                         &lang,
                         self.playing,
+                        &self.rythmo_state,
                     )
                     .and_then(|segments| renderer.cursor_pos_from_segments(&segments, ratio))
                     .or_else(|| {
@@ -1998,6 +2011,7 @@ impl Ui {
                             self.rythmo_state.syllable_drag.as_ref(),
                             &lang,
                             self.playing,
+                            &self.rythmo_state,
                             ratio,
                         )
                     })

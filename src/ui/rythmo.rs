@@ -107,6 +107,9 @@ pub struct RythmoState {
     karaoke_text_width_cache: RefCell<HashMap<u64, KaraokeTextWidthCacheEntry>>,
     karaoke_index_cache: RefCell<Option<CachedKaraokeUiIndex>>,
     karaoke_width_prewarm: RefCell<KaraokeWidthPrewarmState>,
+    cached_layout_signature: RefCell<u64>,
+    cached_layout_ctx: RefCell<Option<EditorLayoutCtx>>,
+    syllable_breaks_cache: RefCell<HashMap<u64, (Vec<usize>, u64)>>, // line_id -> (breaks, text_hash)
 }
 
 pub struct SyllableDrag {
@@ -194,6 +197,9 @@ impl RythmoState {
             karaoke_text_width_cache: RefCell::new(HashMap::new()),
             karaoke_index_cache: RefCell::new(None),
             karaoke_width_prewarm: RefCell::new(KaraokeWidthPrewarmState::default()),
+            cached_layout_signature: RefCell::new(0),
+            cached_layout_ctx: RefCell::new(None),
+            syllable_breaks_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -218,6 +224,85 @@ impl RythmoState {
         Ref::map(self.karaoke_index_cache.borrow(), |cache| {
             &cache.as_ref().unwrap().index
         })
+    }
+
+    fn layout_signature(project: &Project, zone: &Rect) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        // Track usage (which tracks have lines)
+        let track_count = rythmo_layout::track_count();
+        let mut used_tracks = vec![false; track_count];
+        let mut karaoke_tracks = vec![false; track_count];
+        for line in project.lines() {
+            let track_index = rythmo_layout::track_index_for_y_slot(line.y_slot);
+            used_tracks[track_index] = true;
+            if line.karaoke {
+                karaoke_tracks[track_index] = true;
+            }
+        }
+        for (i, (used, karaoke)) in used_tracks.iter().zip(karaoke_tracks.iter()).enumerate() {
+            if *used {
+                i.hash(&mut hasher);
+                karaoke.hash(&mut hasher);
+            }
+        }
+        zone.height.to_bits().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn get_or_create_layout_ctx(
+        &self,
+        project: &Project,
+        karaoke_tracks: &[bool],
+        zone: &Rect,
+    ) -> std::cell::Ref<'_, EditorLayoutCtx> {
+        let signature = Self::layout_signature(project, zone);
+        {
+            let cached_sig = self.cached_layout_signature.borrow();
+            let cached_ctx = self.cached_layout_ctx.borrow();
+            if *cached_sig == signature && cached_ctx.is_some() {
+                return Ref::map(cached_ctx, |ctx| ctx.as_ref().unwrap());
+            }
+        }
+
+        let karaoke_track_count = karaoke_tracks.iter().filter(|&&k| k).count();
+        let normal_body_h = editor_normal_body_height_for_karaoke_tracks(karaoke_track_count, zone);
+        let track_layouts = build_track_layouts_from_karaoke_flags(
+            &rythmo_layout::all_track_indices(),
+            karaoke_tracks,
+            normal_body_h,
+            slot_header_height(),
+            BADGE_GAP,
+            1.0,
+        );
+        let layout_ctx = EditorLayoutCtx::from_track_layouts(normal_body_h, track_layouts);
+
+        *self.cached_layout_signature.borrow_mut() = signature;
+        *self.cached_layout_ctx.borrow_mut() = Some(layout_ctx);
+        
+        Ref::map(self.cached_layout_ctx.borrow(), |ctx| ctx.as_ref().unwrap())
+    }
+
+    fn get_syllable_breaks(&self, line: &crate::rythmo_line::RythmoLine, lang: &str) -> Vec<usize> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let mut hasher = DefaultHasher::new();
+        line.text.hash(&mut hasher);
+        lang.hash(&mut hasher);
+        let text_hash = hasher.finish();
+        
+        let mut cache = self.syllable_breaks_cache.borrow_mut();
+        if let Some((cached_breaks, cached_hash)) = cache.get(&line.id) {
+            if *cached_hash == text_hash {
+                return cached_breaks.clone();
+            }
+        }
+        
+        let breaks = crate::syllable::syllable_breaks(&line.text, lang);
+        cache.insert(line.id, (breaks.clone(), text_hash));
+        breaks
     }
 
     fn karaoke_ui_text_width_for_render(&self, line: &crate::rythmo_line::RythmoLine) -> f32 {
@@ -1584,9 +1669,9 @@ pub fn render_rythmo_base(
         let sub_ppf = ppf() / subs as f32; // pixels per sub-frame
         let bar_w = sub_ppf.max(1.0);
         let visible_frames = (zone.width / ppf()) as i64 + 4;
-        let current_frame_i64 = visual_frame_to_i64(current_frame);
-        let first_frame = current_frame_i64 - visible_frames / 2;
-        let last_frame = current_frame_i64 + visible_frames / 2;
+        let half_visible_frames = visible_frames as f64 / 2.0;
+        let first_frame = f64_floor_to_i64(current_frame - half_visible_frames);
+        let last_frame = f64_ceil_to_i64(current_frame + half_visible_frames);
         let first_wave_frame = first_frame.saturating_sub(waveform_offset_frames);
         let last_wave_frame = last_frame.saturating_sub(waveform_offset_frames);
         let first_sub = first_wave_frame
@@ -2261,12 +2346,13 @@ fn visible_syllable_segments(
     drag: Option<&SyllableDrag>,
     lang: &str,
     karaoke_preview: bool,
+    state: &RythmoState,
 ) -> Option<(Vec<usize>, Vec<f32>)> {
     if line.text.is_empty() || line.text == "↑" || line.text == "↓" {
         return None;
     }
 
-    let breaks = crate::syllable::syllable_breaks(&line.text, lang);
+    let breaks = state.get_syllable_breaks(line, lang);
     if breaks.is_empty() {
         return None;
     }
@@ -2341,8 +2427,9 @@ fn segmented_cursor_ratios_for_line(
     drag: Option<&SyllableDrag>,
     lang: &str,
     karaoke_preview: bool,
+    state: &RythmoState,
 ) -> Option<Vec<f32>> {
-    let (breaks, ratios) = visible_syllable_segments(line, drag, lang, karaoke_preview)?;
+    let (breaks, ratios) = visible_syllable_segments(line, drag, lang, karaoke_preview, state)?;
     Some(cursor_ratios_from_segments(&line.text, &breaks, &ratios))
 }
 
@@ -2351,8 +2438,9 @@ pub(super) fn cursor_segments_for_line(
     drag: Option<&SyllableDrag>,
     lang: &str,
     karaoke_preview: bool,
+    state: &RythmoState,
 ) -> Option<Vec<CursorSegmentInfo>> {
-    let (breaks, ratios) = visible_syllable_segments(line, drag, lang, karaoke_preview)?;
+    let (breaks, ratios) = visible_syllable_segments(line, drag, lang, karaoke_preview, state)?;
     let mut start_char = 0usize;
     let mut start_ratio = 0.0;
     let mut segments = Vec::new();
@@ -2388,9 +2476,10 @@ pub(super) fn segmented_cursor_index_for_line_at_ratio(
     drag: Option<&SyllableDrag>,
     lang: &str,
     karaoke_preview: bool,
+    state: &RythmoState,
     x_ratio: f32,
 ) -> Option<usize> {
-    let ratios = segmented_cursor_ratios_for_line(line, drag, lang, karaoke_preview)?;
+    let ratios = segmented_cursor_ratios_for_line(line, drag, lang, karaoke_preview, state)?;
     closest_cursor_index_from_ratios(&ratios, x_ratio)
 }
 
@@ -2399,10 +2488,11 @@ fn cursor_index_for_line_at_ratio(
     drag: Option<&SyllableDrag>,
     lang: &str,
     karaoke_preview: bool,
+    state: &RythmoState,
     x_ratio: f32,
 ) -> usize {
     if let Some(idx) =
-        segmented_cursor_index_for_line_at_ratio(line, drag, lang, karaoke_preview, x_ratio)
+        segmented_cursor_index_for_line_at_ratio(line, drag, lang, karaoke_preview, state, x_ratio)
     {
         idx
     } else {
@@ -2680,7 +2770,7 @@ pub fn render_lines<'a>(
         if karaoke_preview { 2 } else { 8 },
     );
     let karaoke_count_in_frame_count = karaoke_count_in_frames(fps);
-    let layout_ctx = EditorLayoutCtx::from_karaoke_tracks(karaoke_index.karaoke_tracks(), zone);
+    let layout_ctx = state.get_or_create_layout_ctx(project, karaoke_index.karaoke_tracks(), zone);
 
     // Rend le highlight de la track survolée (s'il y en a une et qu'elle est valide)
     if let Some(track_idx) = state.hovered_track {
@@ -2688,7 +2778,7 @@ pub fn render_lines<'a>(
             let y_base = zone.y + constants::RULER_HEIGHT + track.top;
             quads.push(QuadInstance {
                 rect: [zone.x, y_base, zone.width, track.total_h],
-                color: [1.0, 1.0, 1.0, 0.03], // Highlight très léger
+                color: [1.0, 1.0, 1.0, 0.03],
                 color_bottom: [1.0, 1.0, 1.0, 0.03],
                 border_color: [0.0; 4],
                 border_width: 0.0,
@@ -2709,79 +2799,32 @@ pub fn render_lines<'a>(
     let mut visible_line_ids = render_index.visible_line_ids(project, first_frame, last_frame);
     visible_line_ids.sort_by_key(|id| project.line_index(*id).unwrap_or(usize::MAX));
 
-    // Precompute every visible line's rect + character name so a badge can be tested
-    // against OTHER lines (same char → hide, different char → 50% opacity).
-    let line_rects: std::collections::HashMap<u64, (Rect, String)> = {
-        let compute_r = |line: &crate::rythmo_line::RythmoLine| -> Rect {
-            let karaoke_active = line.karaoke_active(current_frame);
-            let karaoke_count_in = karaoke_preview
-                && karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
-            let karaoke_prestart_count_in = karaoke_preview
-                && karaoke_index
-                    .prestart_scroll_visible(line, current_frame, karaoke_count_in_frame_count);
-            let karaoke_upcoming_stack =
-                karaoke_preview && karaoke_index.upcoming_stack_visible(line, current_frame);
-            let centered_karaoke_width = if karaoke_preview
-                && line.karaoke
-                && (karaoke_active || karaoke_prestart_count_in || karaoke_upcoming_stack)
-            {
-                Some(state.karaoke_ui_text_width_for_render(line))
-            } else {
-                None
-            };
-            if karaoke_preview && line.karaoke {
-                karaoke_preview_line_rect_with_state(
-                    &layout_ctx,
-                    line,
-                    current_frame,
-                    zone,
-                    karaoke_prestart_count_in,
-                    karaoke_upcoming_stack,
-                    karaoke_index.stack_row(line),
-                    centered_karaoke_width,
-                )
-            } else {
-                layout_ctx.line_rect_with_karaoke_width(line, current_frame, zone, karaoke_preview, None)
-            }
-        };
-        let mut map = std::collections::HashMap::new();
-        for &lid in &visible_line_ids {
-            if let Some(l) = project.get_line(lid) {
-                map.insert(lid, (compute_r(l), l.character_name.clone()));
-            }
-        }
-        map
-    };
+    // Precompute line data ONCE - rect, karaoke flags, badge rect, character name
+    #[derive(Clone, Copy)]
+    struct LineRenderData {
+        rect: Rect,
+        badge_rect: Rect,
+        karaoke_count_in: bool,
+        karaoke_progress_info: Option<KaraokeProgressRenderInfo>,
+    }
 
-    for line_id in visible_line_ids {
-        let Some(line) = project.get_line(line_id) else {
+    let mut line_data: Vec<(u64, LineRenderData)> = Vec::with_capacity(visible_line_ids.len());
+    for &lid in &visible_line_ids {
+        let Some(line) = project.get_line(lid) else {
             continue;
         };
         let karaoke_active = line.karaoke_active(current_frame);
-        let karaoke_count_in =
-            karaoke_preview
-                && karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
+        let karaoke_count_in = karaoke_preview
+            && karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
         let karaoke_prestart_count_in = karaoke_preview
-            && karaoke_index.prestart_scroll_visible(
-                line,
-                current_frame,
-                karaoke_count_in_frame_count,
-            );
-        let karaoke_upcoming_stack =
-            karaoke_preview && karaoke_index.upcoming_stack_visible(line, current_frame);
-        if karaoke_preview
-            && line.karaoke
-            && !karaoke_active
-            && !karaoke_prestart_count_in
-            && !karaoke_upcoming_stack
-        {
+            && karaoke_index.prestart_scroll_visible(line, current_frame, karaoke_count_in_frame_count);
+        let karaoke_upcoming_stack = karaoke_preview && karaoke_index.upcoming_stack_visible(line, current_frame);
+        
+        if karaoke_preview && line.karaoke && !karaoke_active && !karaoke_count_in && !karaoke_prestart_count_in && !karaoke_upcoming_stack {
             continue;
         }
 
-        let centered_karaoke_width = if karaoke_preview
-            && line.karaoke
-            && (karaoke_active || karaoke_prestart_count_in || karaoke_upcoming_stack)
-        {
+        let centered_karaoke_width = if karaoke_preview && line.karaoke && (karaoke_active || karaoke_prestart_count_in || karaoke_upcoming_stack) {
             Some(state.karaoke_ui_text_width_for_render(line))
         } else {
             None
@@ -2798,30 +2841,81 @@ pub fn render_lines<'a>(
                 centered_karaoke_width,
             )
         } else {
-            layout_ctx.line_rect_with_karaoke_width(
-                line,
-                current_frame,
-                zone,
-                karaoke_preview,
-                None,
-            )
+            layout_ctx.line_rect_with_karaoke_width(line, current_frame, zone, karaoke_preview, None)
         };
 
         if r.x + r.width < zone.x || r.x > zone.x + zone.width {
             continue;
         }
 
+        let karaoke_progress_info = if karaoke_preview && line.karaoke {
+            karaoke_progress_render_info(line, current_frame, &karaoke_lang)
+        } else {
+            None
+        };
+
+        let badge_rect = if karaoke_preview && line.karaoke {
+            badge_rect_for_karaoke_rect(line, &r)
+        } else {
+            layout_ctx.badge_rect_for_name(line, &line.character_name, r.x, zone)
+        };
+
+        line_data.push((
+            lid,
+            LineRenderData {
+                rect: r,
+                badge_rect,
+                karaoke_count_in,
+                karaoke_progress_info,
+            },
+        ));
+    }
+
+    // Optimize badge overlap: sort by y, then sweep line O(n log n) instead of O(n²)
+    line_data.sort_by(|a, b| a.1.badge_rect.y.partial_cmp(&b.1.badge_rect.y).unwrap_or(std::cmp::Ordering::Equal));
+    let mut badge_hidden: HashMap<u64, bool> = HashMap::new();
+    let mut badge_overlap_alpha: HashMap<u64, f32> = HashMap::new();
+    
+    for i in 0..line_data.len() {
+        let (id_i, data_i) = &line_data[i];
+        let mut hidden = false;
+        let mut alpha = 1.0;
+        
+        // Only check nearby badges (spatially close in Y)
+        for j in (i + 1)..line_data.len() {
+            let (id_j, data_j) = &line_data[j];
+            if data_j.badge_rect.y > data_i.badge_rect.y + data_i.badge_rect.height + 2.0 {
+                break; // Too far down, no more overlaps possible
+            }
+            if rects_overlap(&data_i.badge_rect, &data_j.badge_rect) {
+                // Need to compare actual character names
+                let name_i = project.get_line(*id_i).map(|l| &l.character_name);
+                let name_j = project.get_line(*id_j).map(|l| &l.character_name);
+                if let (Some(ni), Some(nj)) = (name_i, name_j) {
+                    if ni == nj {
+                        hidden = true;
+                        break;
+                    } else {
+                        alpha = 0.5;
+                    }
+                }
+            }
+        }
+        badge_hidden.insert(*id_i, hidden);
+        badge_overlap_alpha.insert(*id_i, alpha);
+    }
+
+// Now render all lines using precomputed data
+    for (line_id, data) in line_data {
+        let Some(line) = project.get_line(line_id) else {
+            continue;
+        };
+
         let is_hovered = state.hovered_line == Some(line.id);
         let is_selected = matches!(state.selected, Some(Selection::Line(id)) if id == line.id)
             || matches!(state.selected, Some(Selection::AllLines));
         let is_editing = state.editing_line == Some(line.id);
         let karaoke_playback_line = karaoke_preview && line.karaoke;
-        let karaoke_progress_info = if karaoke_playback_line {
-            karaoke_progress_render_info(line, current_frame, &karaoke_lang)
-        } else {
-            None
-        };
-        let mut cursor_segments = None;
 
         if !karaoke_playback_line {
             // Subtle dark background + border
@@ -2842,7 +2936,7 @@ pub fn render_lines<'a>(
                 LINE_BORDER
             };
             quads.push(QuadInstance {
-                rect: [r.x, r.y, r.width, r.height],
+                rect: [data.rect.x, data.rect.y, data.rect.width, data.rect.height],
                 color: bg,
                 color_bottom: bg,
                 border_color: border,
@@ -2857,25 +2951,26 @@ pub fn render_lines<'a>(
         }
 
         // Stretched text or special rendering for breath arrows
+        let mut cursor_segments = None;
         if !line.text.is_empty() {
             if line.text == "↑" || line.text == "↓" {
-                render_breath_arrow(&r, line.text == "↑", quads);
+                render_breath_arrow(&data.rect, line.text == "↑", quads);
             } else if line.karaoke && karaoke_preview {
-                push_karaoke_rythmo_text(stretched, line, r, karaoke_progress_info);
+                push_karaoke_rythmo_text(stretched, line, data.rect, data.karaoke_progress_info);
             } else {
                 let drag_ratios = state
                     .syllable_drag
                     .as_ref()
                     .filter(|d| d.line_id == line.id);
                 if let Some((breaks, ratios)) =
-                    visible_syllable_segments(line, drag_ratios, &karaoke_lang, karaoke_preview)
+                    visible_syllable_segments(line, drag_ratios, &karaoke_lang, karaoke_preview, state)
                 {
                     let chars: Vec<char> = line.text.chars().collect();
-                    let mut seg_x = r.x;
+                    let mut seg_x = data.rect.x;
                     let mut prev_break = 0usize;
                     let mut editing_segments = if is_editing { Some(Vec::new()) } else { None };
                     for (i, &ratio) in ratios.iter().enumerate() {
-                        let seg_w = ratio * r.width;
+                        let seg_w = ratio * data.rect.width;
                         let end_break = if i < breaks.len() {
                             breaks[i]
                         } else {
@@ -2889,8 +2984,8 @@ pub fn render_lines<'a>(
                                     cache_id,
                                     start_char: prev_break,
                                     end_char: end_break,
-                                    start_ratio: ((seg_x - r.x) / r.width).clamp(0.0, 1.0),
-                                    width_ratio: (seg_w / r.width).clamp(0.0, 1.0),
+                                    start_ratio: ((seg_x - data.rect.x) / data.rect.width).clamp(0.0, 1.0),
+                                    width_ratio: (seg_w / data.rect.width).clamp(0.0, 1.0),
                                 });
                             }
                             push_plain_rythmo_text(
@@ -2899,9 +2994,9 @@ pub fn render_lines<'a>(
                                 segment,
                                 Rect {
                                     x: seg_x,
-                                    y: r.y,
+                                    y: data.rect.y,
                                     width: seg_w,
-                                    height: r.height,
+                                    height: data.rect.height,
                                 },
                             );
                         }
@@ -2915,10 +3010,10 @@ pub fn render_lines<'a>(
                         line.id,
                         line.text.clone(),
                         Rect {
-                            x: r.x,
-                            y: r.y,
-                            width: r.width,
-                            height: r.height,
+                            x: data.rect.x,
+                            y: data.rect.y,
+                            width: data.rect.width,
+                            height: data.rect.height,
                         },
                     );
                 }
@@ -2932,26 +3027,26 @@ pub fn render_lines<'a>(
                     line.id,
                     state.line_input.cursor_pos,
                     state.line_input.selection_range(),
-                    r.x,
-                    r.width,
-                    r.y,
-                    r.height,
+                    data.rect.x,
+                    data.rect.width,
+                    data.rect.y,
+                    data.rect.height,
                     cursor_segments.clone(),
                 ));
             }
         }
 
-        if karaoke_count_in {
+        if data.karaoke_count_in {
             render_karaoke_count_in_dot_scaled(
                 line,
                 current_frame,
-                &r,
+                &data.rect,
                 karaoke_count_in_frame_count,
                 1.0,
                 quads,
             );
         } else if karaoke_preview && line.karaoke {
-            render_karaoke_dot(line, &r, karaoke_progress_info, quads);
+            render_karaoke_dot(line, &data.rect, data.karaoke_progress_info, quads);
         }
 
         let is_syllable_drag_line =
@@ -2960,14 +3055,14 @@ pub fn render_lines<'a>(
             if let Some(ratios) =
                 syllable_ratios_for_line(line, state.syllable_drag.as_ref(), &karaoke_lang)
             {
-                render_syllable_handles(&r, &ratios, true, syllable_quads);
+                render_syllable_handles(&data.rect, &ratios, true, syllable_quads);
             }
         }
 
         // Handles (only on hover/editing)
         if (is_hovered || is_editing) && !karaoke_playback_line {
             quads.push(QuadInstance {
-                rect: [r.x, r.y, constants::HANDLE_WIDTH, r.height],
+                rect: [data.rect.x, data.rect.y, constants::HANDLE_WIDTH, data.rect.height],
                 color: HANDLE_COLOR,
                 color_bottom: HANDLE_COLOR,
                 border_color: [0.0; 4],
@@ -2981,10 +3076,10 @@ pub fn render_lines<'a>(
             });
             quads.push(QuadInstance {
                 rect: [
-                    r.x + r.width - constants::HANDLE_WIDTH,
-                    r.y,
+                    data.rect.x + data.rect.width - constants::HANDLE_WIDTH,
+                    data.rect.y,
                     constants::HANDLE_WIDTH,
-                    r.height,
+                    data.rect.height,
                 ],
                 color: HANDLE_COLOR,
                 color_bottom: HANDLE_COLOR,
@@ -2999,31 +3094,13 @@ pub fn render_lines<'a>(
             });
         }
 
-        // Character badge — colored rectangle above the line with name inside
-        let br = if karaoke_playback_line {
-            badge_rect_for_karaoke_rect(line, &r)
-        } else {
-            layout_ctx.badge_rect_for_name(line, &line.character_name, r.x, zone)
-        };
+        // Character badge — use precomputed badge_rect
+        let br = data.badge_rect;
 
-        // Overlap detection vs OTHER lines: hide if same character, 50% opacity if different
-        let mut badge_hidden = false;
-        let mut badge_overlap_alpha: f32 = 1.0;
-        for (&oid, (other_rect, other_name)) in &line_rects {
-            if oid == line.id {
-                continue;
-            }
-            if rects_overlap(&br, other_rect) {
-                if other_name == &line.character_name {
-                    badge_hidden = true;
-                    break;
-                } else {
-                    badge_overlap_alpha = 0.5;
-                }
-            }
-        }
+        // Overlap detection vs OTHER lines: use precomputed HashMaps
+        let badge_hidden = *badge_hidden.get(&line_id).unwrap_or(&false);
+        let badge_overlap_alpha = *badge_overlap_alpha.get(&line_id).unwrap_or(&1.0);
 
-        let is_editing_char = state.editing_character == Some(line.id);
         if karaoke_playback_line {
             if karaoke_index.character_label_visible(line) {
                 labels.push(LabelInfo {
@@ -3041,9 +3118,10 @@ pub fn render_lines<'a>(
             continue;
         }
 
-        if !badge_hidden {
+if !badge_hidden {
         let mut badge_color = line.character_color;
         badge_color[3] *= badge_overlap_alpha;
+        let is_editing_char = state.editing_character == Some(line.id);
         let badge_border = if is_editing_char {
             [0.8, 0.8, 0.85, 0.8]
         } else {
@@ -3128,11 +3206,11 @@ pub fn render_lines<'a>(
 
         // Note text: small italic label at the bottom of the line
         let note_label_h = 12.0;
-        let note_y = r.y + r.height - note_label_h - 1.0;
+        let note_y = data.rect.y + data.rect.height - note_label_h - 1.0;
         let note_rect = Rect {
-            x: r.x + 4.0,
+            x: data.rect.x + 4.0,
             y: note_y,
-            width: r.width - 8.0,
+            width: data.rect.width - 8.0,
             height: note_label_h,
         };
         if !line.note.is_empty() {
@@ -4645,6 +4723,7 @@ fn handle_mouse_move(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -
                                 state.syllable_drag.as_ref(),
                                 &lang,
                                 ctx.karaoke_preview,
+                                state,
                                 ratio,
                             );
                             state.line_input.update_selection(char_pos);
@@ -4843,6 +4922,7 @@ fn handle_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) 
                     state.syllable_drag.as_ref(),
                     &lang,
                     ctx.karaoke_preview,
+                    state,
                     ratio,
                 );
                 state.line_input.start_selection(char_pos);
@@ -4974,6 +5054,7 @@ fn handle_shift_mouse_press(
                     state.syllable_drag.as_ref(),
                     &lang,
                     ctx.karaoke_preview,
+                    state,
                     ratio,
                 );
                 state.line_input.update_selection(char_pos);
@@ -5039,6 +5120,7 @@ fn handle_double_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32)
                     state.syllable_drag.as_ref(),
                     &lang,
                     ctx.karaoke_preview,
+                    state,
                     ratio,
                 );
                 state.line_input.select_word_at(&line.text, char_pos);
@@ -5610,12 +5692,12 @@ pub fn render_studio_rythmo<'a>(
     let playhead_w = 2.0 * scale;
     let center_x = zone.x + zone.width / 2.0;
     let karaoke_count_in_frame_count = karaoke_count_in_frames(fps);
-    let current_frame_i64 = visual_frame_to_i64(current_frame);
 
     // Ruler ticks (alternating long/short — export style)
     let visible_frames = (zone.width / ppf) as i64 + 4;
-    let first_tick = ((current_frame_i64 - visible_frames / 2) / constants::TICK_GAP_FRAMES)
-        * constants::TICK_GAP_FRAMES;
+    let half_visible_frames = visible_frames as f64 / 2.0;
+    let first_tick_frame = f64_floor_to_i64(current_frame - half_visible_frames);
+    let first_tick = (first_tick_frame / constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
     let mut tf = first_tick;
     loop {
         let x = center_x + (tf as f64 - current_frame) as f32 * ppf;
@@ -5938,7 +6020,7 @@ pub fn render_studio_rythmo<'a>(
         project,
         &karaoke_index,
         &track_layouts,
-        current_frame_i64,
+        visual_frame_to_i64(current_frame),
         fps,
         zone,
         ruler_h,
