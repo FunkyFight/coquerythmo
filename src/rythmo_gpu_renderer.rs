@@ -2122,9 +2122,7 @@ impl GpuRenderer {
             {
                 return None;
             }
-            let (x1, lw) = if line.karaoke
-                && (karaoke_active || karaoke_prestart_scroll || karaoke_upcoming_stack)
-            {
+            let (x1, lw) = if line.karaoke && karaoke_active {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {
@@ -2198,9 +2196,7 @@ impl GpuRenderer {
                 continue;
             }
 
-            let (x1, lw) = if line.karaoke
-                && (karaoke_active || karaoke_prestart_scroll || karaoke_upcoming_stack)
-            {
+            let (x1, lw) = if line.karaoke && karaoke_active {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {

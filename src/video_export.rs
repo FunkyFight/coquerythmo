@@ -490,9 +490,9 @@ fn export_baked_mp4(
         ms(probe_start.elapsed())
     );
     let out_w = even_dimension(export_width);
-    let vid_h = even_dimension(export_height);
     let br_h = rythmo_cpu_renderer::br_height(project, out_w, br_scale);
     let br_h_even = (br_h + 1) & !1;
+    let vid_h = (even_dimension(export_height).saturating_sub(br_h_even)).max(2);
     let total_frames = (info.duration_secs * fps).ceil() as u64;
 
     if total_frames == 0 {

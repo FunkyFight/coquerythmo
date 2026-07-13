@@ -774,9 +774,7 @@ let w = width as f32;
             {
                 return None;
             }
-            let (x1, lw) = if line.karaoke
-                && (karaoke_active || karaoke_prestart_scroll || karaoke_upcoming_stack)
-            {
+            let (x1, lw) = if line.karaoke && karaoke_active {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {
@@ -837,9 +835,7 @@ let w = width as f32;
                 continue;
             }
 
-            let (x1, lw) = if line.karaoke
-                && (karaoke_active || karaoke_prestart_scroll || karaoke_upcoming_stack)
-            {
+            let (x1, lw) = if line.karaoke && karaoke_active {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {

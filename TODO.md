@@ -1,5 +1,5 @@
 # Idées :
-Vidéo sans bandes noires à gauche et à droite (résolution)
+Tester si les lignes poppent plus en rendu gpu
 Traduction auto des lignes
     => Gestion simplifiée et switch easy des différentes langues (CTRL + L)
 Dans l'UI : BR en 60 fps, vidéo en [video_fps] fps.
