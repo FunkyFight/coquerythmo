@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use super::theme;
-use super::widget::{EventResponse, LabelInfo, QuadInstance, Rect, UiEvent, Widget};
+use super::primitives::{EventResponse, LabelInfo, QuadInstance, Rect, UiEvent, Widget};
 
 static ANIM_START: OnceLock<Instant> = OnceLock::new();
 
@@ -75,9 +75,9 @@ impl Widget for LicenseBadge {
         vec![LabelInfo {
             text: &self.label,
             bounds: self.bounds,
-            h_align: super::widget::HAlign::Center,
-            v_align: super::widget::VAlign::Center,
-            overflow: super::widget::Overflow::Clip,
+            h_align: super::primitives::HAlign::Center,
+            v_align: super::primitives::VAlign::Center,
+            overflow: super::primitives::Overflow::Clip,
             padding: 4.0,
             font_size_override: Some(12.0),
             color_override: Some([255, 230, 230]),

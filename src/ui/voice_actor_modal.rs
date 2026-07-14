@@ -1,5 +1,10 @@
+//! Voice actor editor modal.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_match)]
+
 use super::text_input::{self, TextInputAction, TextInputMetrics, TextInputState};
-use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
+use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 
 use crate::i18n::t;
 
@@ -21,6 +26,12 @@ pub struct VoiceActorModal {
     name_input: TextInputState,
     icon_input: TextInputState,
     selecting_field: Option<ActiveField>,
+}
+
+impl Default for VoiceActorModal {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub enum VoiceActorModalResult {

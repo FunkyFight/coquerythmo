@@ -1,0 +1,16 @@
+{
+  "cmd": "create_line",
+  "line": {
+    "id": 42,
+    "start_frame": 10,
+    "duration_frames": 20,
+    "y_slot": 0.5,
+    "text": "test",
+    "character_name": "Alice",
+    "character_color": [1.0, 0.0, 0.0, 1.0],
+    "voice_actor_names": [],
+    "syllable_ratios": [],
+    "karaoke": false,
+    "note": ""
+  }
+}

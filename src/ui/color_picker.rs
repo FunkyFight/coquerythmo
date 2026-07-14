@@ -1,4 +1,4 @@
-use super::widget::{IconInstance, QuadInstance, Rect};
+use super::primitives::{IconInstance, QuadInstance, Rect};
 
 const SV_SIZE: f32 = 150.0;
 const HUE_BAR_HEIGHT: f32 = 16.0;
@@ -21,6 +21,12 @@ pub struct ColorPickerState {
     sv_texture_dirty: bool,
     sv_bind_group: Option<wgpu::BindGroup>,
     hue_bind_group: Option<wgpu::BindGroup>,
+}
+
+impl Default for ColorPickerState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ColorPickerState {
@@ -268,7 +274,7 @@ impl ColorPickerState {
         });
     }
 
-    pub fn handle_event(&mut self, event: &super::widget::UiEvent) -> bool {
+    pub fn handle_event(&mut self, event: &super::primitives::UiEvent) -> bool {
         if !self.active {
             return false;
         }
@@ -277,7 +283,7 @@ impl ColorPickerState {
         let hue = self.hue_rect();
 
         match event {
-            super::widget::UiEvent::MousePress { x, y } => {
+            super::primitives::UiEvent::MousePress { x, y } => {
                 if sv.contains(*x, *y) {
                     self.dragging_sv = true;
                     self.sat = ((*x - sv.x) / sv.width).clamp(0.0, 1.0);
@@ -297,7 +303,7 @@ impl ColorPickerState {
                 }
                 false
             }
-            super::widget::UiEvent::MouseMove { x, y } => {
+            super::primitives::UiEvent::MouseMove { x, y } => {
                 if self.dragging_sv {
                     self.sat = ((*x - sv.x) / sv.width).clamp(0.0, 1.0);
                     self.val = 1.0 - ((*y - sv.y) / sv.height).clamp(0.0, 1.0);
@@ -310,7 +316,7 @@ impl ColorPickerState {
                 }
                 false
             }
-            super::widget::UiEvent::MouseRelease { .. } => {
+            super::primitives::UiEvent::MouseRelease { .. } => {
                 if self.dragging_sv || self.dragging_hue {
                     self.dragging_sv = false;
                     self.dragging_hue = false;

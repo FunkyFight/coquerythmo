@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::project::{LineCharacterNameChange, Project};
+use crate::rythmo_drawing::DrawingStroke;
 use crate::rythmo_line::{MarkerKind, RythmoLine, RythmoMarker};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 
@@ -152,9 +153,15 @@ pub enum CommandPayload {
         old_frame: i64,
         new_frame: i64,
     },
-    LoadVideo {
-        filename: String,
-        data_base64: String,
+    AddDrawingStroke {
+        stroke: DrawingStroke,
+    },
+    EraseDrawingStrokes {
+        strokes: Vec<DrawingStroke>,
+    },
+    TransformStrokes {
+        stroke_ids: Vec<u64>,
+        new_points: Vec<Vec<(f64, f32)>>,
     },
 }
 
@@ -193,13 +200,9 @@ use crate::command::Command;
 impl Packetable for Command {
     fn to_packet(&self, project: &Project) -> Packet {
         let payload = match self {
-            Command::CreateLine { line_id } => {
-                let line = project
-                    .get_line(*line_id)
-                    .expect("line must exist when converting to packet")
-                    .clone();
-                CommandPayload::CreateLine { line }
-            }
+            Command::CreateLine { snapshot, .. } => CommandPayload::CreateLine {
+                line: snapshot.clone(),
+            },
             Command::InsertLine { snapshot, .. } => CommandPayload::CreateLine {
                 line: snapshot.clone(),
             },
@@ -314,13 +317,10 @@ impl Packetable for Command {
             Command::CreateVoiceActor { actor } => CommandPayload::CreateVoiceActor {
                 actor: actor.clone(),
             },
-            Command::AddMarker { index } => {
-                let marker = &project.markers[*index];
-                CommandPayload::AddMarker {
-                    kind: marker.kind.clone(),
-                    frame: marker.frame,
-                }
-            }
+            Command::AddMarker { marker, .. } => CommandPayload::AddMarker {
+                kind: marker.kind.clone(),
+                frame: marker.frame,
+            },
             Command::RemoveMarker { marker, .. } => CommandPayload::RemoveMarker {
                 kind: marker.kind.clone(),
                 frame: marker.frame,
@@ -331,8 +331,7 @@ impl Packetable for Command {
                 new_frame,
             } => {
                 let kind = project
-                    .markers
-                    .get(*index)
+                    .marker(*index)
                     .map(|m| m.kind.clone())
                     .unwrap_or(crate::rythmo_line::MarkerKind::Boucle);
                 CommandPayload::MoveMarker {
@@ -341,6 +340,20 @@ impl Packetable for Command {
                     new_frame: *new_frame,
                 }
             }
+            Command::AddDrawingStroke { stroke } => CommandPayload::AddDrawingStroke {
+                stroke: stroke.clone(),
+            },
+            Command::EraseDrawingStrokes { strokes } => CommandPayload::EraseDrawingStrokes {
+                strokes: strokes.clone(),
+            },
+            Command::TransformStrokes {
+                stroke_ids,
+                new_points,
+                ..
+            } => CommandPayload::TransformStrokes {
+                stroke_ids: stroke_ids.clone(),
+                new_points: new_points.clone(),
+            },
         };
         Packet::Command { payload }
     }
@@ -350,16 +363,16 @@ impl ProjectData {
     pub fn from_project(project: &Project) -> Self {
         Self {
             lines: project.lines_vec(),
-            markers: project.markers.clone(),
+            markers: project.markers().to_vec(),
             known_characters: project
-                .known_characters
+                .known_characters()
                 .iter()
                 .map(|c| CharacterData {
                     name: c.name.clone(),
                     color: c.color,
                 })
                 .collect(),
-            voice_actors: project.voice_actors.clone(),
+            voice_actors: project.voice_actors().to_vec(),
         }
     }
 }

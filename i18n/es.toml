@@ -74,6 +74,13 @@
 "toolbar.back_to_edit" = "Volver a la edición"
 "toolbar.note" = "Añadir una nota"
 "toolbar.karaoke" = "Activar modo karaoke"
+"toolbar.select_mode" = "Modo selección"
+"toolbar.draw_mode" = "Modo dibujo"
+"toolbar.brush_color" = "Color del pincel"
+"toolbar.brush_size_small" = "Tamaño del pincel: pequeño"
+"toolbar.brush_size_medium" = "Tamaño del pincel: mediano"
+"toolbar.brush_size_large" = "Tamaño del pincel: grande"
+"toolbar.eraser" = "Borrador"
 
 # Respirations
 "resp.up" = "Inhalar"

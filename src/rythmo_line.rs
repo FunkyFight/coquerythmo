@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RythmoLine {
     pub id: u64,
     pub start_frame: i64,
@@ -72,14 +72,14 @@ impl RythmoLine {
                 self.id, self.duration_frames
             ));
         }
-        if self.y_slot < 0.0 || self.y_slot > 1.0 {
+        if !(0.0..=1.0).contains(&self.y_slot) {
             return Err(format!(
                 "Line {}: y_slot must be 0.0-1.0 (got {})",
                 self.id, self.y_slot
             ));
         }
         for (i, &c) in self.character_color.iter().enumerate() {
-            if c < 0.0 || c > 1.0 {
+            if !(0.0..=1.0).contains(&c) {
                 return Err(format!(
                     "Line {}: color channel {} out of range (got {})",
                     self.id, i, c

@@ -1,4 +1,7 @@
-use super::widget::{
+//! Dropdown and submenu widgets.
+#![allow(clippy::type_complexity)]
+
+use super::primitives::{
     EventResponse, HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign, Widget,
 };
 

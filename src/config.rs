@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module)]
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -56,6 +58,9 @@ pub struct UiConfig {
     pub border_radius: f32,
     pub rythmo_font: Option<String>,
     pub scroll_speed: f32,
+    /// Fraction of the free area (screen height minus topbar and toolbar)
+    /// allocated to the video preview. The bande rythmo gets the remainder.
+    pub video_split: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +133,7 @@ impl Default for UiConfig {
             border_radius: 8.0,
             rythmo_font: None,
             scroll_speed: 1.0,
+            video_split: 0.48,
         }
     }
 }
@@ -164,8 +170,10 @@ impl Config {
         } else {
             log::info!("No config file found, using defaults");
         }
-        let mut config = Config::default();
-        config.last_whats_new_version = Some(env!("CARGO_PKG_VERSION").to_string());
+        let config = Config {
+            last_whats_new_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            ..Config::default()
+        };
         config.save();
         config
     }
@@ -363,6 +371,17 @@ pub fn remove_server(index: usize) {
 
 pub fn scroll_speed() -> f32 {
     get().ui.scroll_speed
+}
+
+pub fn video_split() -> f32 {
+    get().ui.video_split
+}
+
+pub fn set_video_split(split: f32) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    cfg.ui.video_split = split;
+    cfg.save();
 }
 
 pub fn get() -> std::sync::RwLockReadGuard<'static, Config> {

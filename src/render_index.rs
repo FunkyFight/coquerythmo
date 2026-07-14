@@ -41,7 +41,7 @@ impl ProjectRenderIndex {
             .sort_unstable_by_key(|&(start_frame, line_id)| (start_frame, line_id));
 
         self.markers_by_frame = project
-            .markers
+            .markers()
             .iter()
             .enumerate()
             .map(|(index, marker)| (marker.frame, index))

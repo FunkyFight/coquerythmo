@@ -1,26 +1,35 @@
+//! Main application UI shell.
+//!
+//! A few handlers retain explicit context parameters while the workspace
+//! migration is completed; the signatures keep event flow visible.
+#![allow(clippy::too_many_arguments)]
+
+pub use crate::application::command::ToolMode;
 pub mod actor_icon_cache;
 pub mod color_picker;
 pub mod connect_modal;
 pub mod dropdown;
 pub mod export_modal;
-pub mod file_explorer_modal;
+pub mod file_explorer;
 pub mod icon_button;
 pub mod icons;
 pub mod interactive;
 pub mod layout;
 pub mod license_badge;
-pub mod project_settings_modal;
+pub mod modal_host;
+pub mod pricing_license_modal;
 pub mod pricing_page;
 pub mod pricing_plan_modal;
-pub mod pricing_license_modal;
+pub mod primitives;
+pub mod project_settings_modal;
 pub mod proxy_error_modal;
 pub mod proxy_modal;
 pub mod rename_character_modal;
 pub mod renderer;
-pub mod rythmo;
 pub mod save_prompt_modal;
 pub mod server_browser;
 pub mod settings_modal;
+pub mod shell;
 pub mod slider;
 pub mod studio_warning_modal;
 pub mod text_button;
@@ -30,12 +39,14 @@ pub mod toast;
 pub mod tooltip;
 pub mod voice_actor_modal;
 pub mod whats_new_modal;
-pub mod widget;
 
-use layout::{Layout, PROPS_DEFAULT_W, PROPS_DRAG_ZONE, PROPS_MAX_W, PROPS_MIN_W};
+use layout::{
+    Layout, PROPS_DEFAULT_W, PROPS_DRAG_ZONE, PROPS_MAX_W, PROPS_MIN_W, RYTHMO_MIN_H, TOOLBAR_H,
+    TOPBAR_H, VIDEO_MIN_H,
+};
 use renderer::StretchedText;
 use tooltip::TooltipState;
-use widget::{
+use primitives::{
     EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction,
     UiEvent, VAlign, Widget,
 };
@@ -43,39 +54,15 @@ use widget::{
 use crate::i18n::t;
 use crate::project::Project;
 use crate::render_index::ProjectRenderIndex;
+use crate::rendering::rythmo::scene::{FrameWindow, RythmoScene, SceneOptions};
 
 use self::actor_icon_cache::ActorIconCache;
-use self::dropdown::Dropdown;
-use self::icon_button::IconButton;
 use self::icons::IconAtlas;
+use self::modal_host::ModalHost;
 use self::renderer::UiRenderer;
-use self::slider::Slider;
-use self::text_button::TextButton;
+use crate::workspaces::rythmo::view as rythmo;
 
 use theme::*;
-
-pub(crate) fn scroll_delta_to_frames(delta: f32, multiplier: f32) -> i32 {
-    scroll_delta_to_frames_impl(delta, multiplier)
-}
-
-#[cfg(target_os = "macos")]
-fn scroll_delta_to_frames_impl(delta: f32, multiplier: f32) -> i32 {
-    let frames = (delta * multiplier).round() as i32;
-    if frames == 0 && delta.abs() > f32::EPSILON {
-        if delta > 0.0 {
-            1
-        } else {
-            -1
-        }
-    } else {
-        frames
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn scroll_delta_to_frames_impl(delta: f32, multiplier: f32) -> i32 {
-    (delta * multiplier) as i32
-}
 
 pub struct Ui {
     topbar_widgets: Vec<Box<dyn Widget>>,
@@ -86,34 +73,21 @@ pub struct Ui {
     props_visible: bool,
     props_width: f32,
     dragging_props: bool,
+    /// Fraction of the free area given to the video preview (rest goes to bande rythmo).
+    video_split: f32,
+    dragging_split: Option<shell::SplitHandle>,
     tooltip: Option<TooltipState>,
-    cursor_pos: (f32, f32),
+    pub cursor_pos: (f32, f32),
     playing: bool,
     volume: f32,
     pub rythmo_state: rythmo::RythmoState,
     icon_uvs: std::collections::HashMap<String, [f32; 4]>,
-    active_dropdown: Option<widget::ToolbarDropdown>,
+    active_dropdown: Option<primitives::ToolbarDropdown>,
     pub export_progress: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
     pub export_render_backend: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
     export_label: String,
     pub progress_prefix: String,
-    connect_modal: Option<connect_modal::ConnectModal>,
-    settings_modal: Option<settings_modal::SettingsModal>,
-    project_settings_modal: Option<project_settings_modal::ProjectSettingsModal>,
-    export_modal: Option<export_modal::ExportModal>,
-    file_explorer_modal: Option<file_explorer_modal::FileExplorerModal>,
-    proxy_modal: Option<proxy_modal::ProxyModal>,
-    rename_character_modal: Option<rename_character_modal::RenameCharacterModal>,
-    proxy_error_modal: Option<proxy_error_modal::ProxyErrorModal>,
-    server_browser: Option<server_browser::ServerBrowserModal>,
-    add_server_modal: Option<server_browser::AddServerModal>,
-    save_prompt_modal: Option<save_prompt_modal::SavePromptModal>,
-    studio_warning_modal: Option<studio_warning_modal::StudioWarningModal>,
-    voice_actor_modal: Option<voice_actor_modal::VoiceActorModal>,
-    whats_new_modal: Option<whats_new_modal::WhatsNewModal>,
-    pricing_page: Option<pricing_page::PricingPage>,
-    pricing_plan_modal: Option<pricing_plan_modal::PricingPlanModal>,
-    pricing_license_modal: Option<pricing_license_modal::PricingLicenseModal>,
+    pub modal_host: ModalHost,
     actor_icon_cache: ActorIconCache,
     network_in_room: bool,
     pub network_status: String,
@@ -124,6 +98,14 @@ pub struct Ui {
     pub scrubbing: bool,
     pub sync_overlay: Option<String>,
     pub sync_progress: f32,
+    pub active_mode: Option<ToolMode>,
+    pub brush_color: [f32; 4],
+    pub brush_radius_index: usize,
+    pub erasing: bool,
+    pub brush_picking: bool,
+    pub(crate) drawing_overlay_cache: Option<DrawingOverlayCache>,
+    pub brush_color_presets: [[f32; 4]; 8],
+    pub brush_color_preset_index: usize,
     pub toasts: toast::ToastManager,
     /// Active bande rythmo import (label, start instant). Set by State while a
     /// background parse runs; the modal blocks input + shows a spinner.
@@ -134,7 +116,8 @@ impl Ui {
     pub fn new(screen_width: u32, screen_height: u32, icon_atlas: &IconAtlas) -> Self {
         let sw = screen_width as f32;
         let sh = screen_height as f32;
-        let layout = Layout::compute(sw, sh, false, PROPS_DEFAULT_W);
+        let video_split = crate::config::video_split();
+        let layout = Layout::compute(sw, sh, false, PROPS_DEFAULT_W, video_split);
 
         let icon_names = [
             "resume",
@@ -156,6 +139,9 @@ impl Ui {
             "karaoke",
             "sound",
             "mute",
+            "select-mode",
+            "draw-mode",
+            "eraser",
         ];
         let icon_uvs: std::collections::HashMap<String, [f32; 4]> = icon_names
             .iter()
@@ -170,7 +156,7 @@ impl Ui {
         let settings_uv = icon_uvs.get("settings").copied().unwrap_or([0.0; 4]);
         let project_uv = icon_uvs.get("project").copied().unwrap_or([0.0; 4]);
         let mut ui = Self {
-            topbar_widgets: Self::build_topbar(false, false, sw, settings_uv, project_uv),
+            topbar_widgets: shell::build_topbar(false, false, sw, settings_uv, project_uv),
             toolbar_widgets: vec![],
             layout,
             screen_w: sw,
@@ -178,6 +164,8 @@ impl Ui {
             props_visible: false,
             props_width: PROPS_DEFAULT_W,
             dragging_props: false,
+            video_split,
+            dragging_split: None,
             tooltip: None,
             cursor_pos: (0.0, 0.0),
             playing: false,
@@ -189,23 +177,7 @@ impl Ui {
             export_render_backend: None,
             export_label: String::new(),
             progress_prefix: String::new(),
-            connect_modal: None,
-            settings_modal: None,
-            project_settings_modal: None,
-            export_modal: None,
-            file_explorer_modal: None,
-            proxy_modal: None,
-            rename_character_modal: None,
-            proxy_error_modal: None,
-            server_browser: None,
-            add_server_modal: None,
-            save_prompt_modal: None,
-            studio_warning_modal: None,
-            voice_actor_modal: None,
-            whats_new_modal: None,
-            pricing_page: None,
-            pricing_plan_modal: None,
-            pricing_license_modal: None,
+            modal_host: ModalHost::new(),
             actor_icon_cache: ActorIconCache::new(),
             network_in_room: false,
             network_status: "".into(),
@@ -218,8 +190,26 @@ impl Ui {
             scrubbing: false,
             toasts: toast::ToastManager::new(),
             loading_project: None,
+            active_mode: Some(ToolMode::Select),
+            brush_color: [1.0, 1.0, 1.0, 1.0],
+            brush_radius_index: 0,
+            erasing: false,
+            brush_picking: false,
+            drawing_overlay_cache: None,
+            // Color palette for drawing
+            brush_color_presets: [
+                [1.0, 1.0, 1.0, 1.0], // White
+                [1.0, 0.3, 0.3, 1.0], // Red
+                [0.3, 1.0, 0.3, 1.0], // Green
+                [0.3, 0.5, 1.0, 1.0], // Blue
+                [1.0, 1.0, 0.3, 1.0], // Yellow
+                [1.0, 0.5, 0.2, 1.0], // Orange
+                [0.8, 0.3, 1.0, 1.0], // Purple
+                [0.2, 0.8, 0.8, 1.0], // Cyan
+            ],
+            brush_color_preset_index: 0,
         };
-        ui.toolbar_widgets = ui.build_toolbar();
+        ui.toolbar_widgets = shell::build_toolbar(ui.toolbar_build_context());
         ui
     }
 
@@ -229,267 +219,14 @@ impl Ui {
             self.screen_h,
             self.props_visible,
             self.props_width,
+            self.video_split,
         );
-        self.toolbar_widgets = self.build_toolbar();
-    }
-
-    fn build_topbar(
-        in_room: bool,
-        has_video: bool,
-        screen_w: f32,
-        settings_uv: [f32; 4],
-        project_uv: [f32; 4],
-    ) -> Vec<Box<dyn Widget>> {
-        // Build project menu with "Récent" submenu
-        let recents = crate::config::recent_projects();
-        let recent_labels: Vec<String> = recents
-            .iter()
-            .map(|r| {
-                let video = r
-                    .video_path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let br = r
-                    .br_path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                format!("{} + {}", video, br)
-            })
-            .collect();
-
-        let recents_clone = recents.clone();
-        let mut project_menu = Dropdown::new(
-            Rect {
-                x: 4.0,
-                y: 2.0,
-                width: 80.0,
-                height: 28.0,
-            },
-            vec![
-                t("menu.project.add_video").into(),
-                format!("{} ▸", t("menu.project.import")),
-                t("menu.project.export").into(),
-                t("menu.project.restore_backup").into(),
-                format!("{} ▸", t("menu.project.recent")),
-            ],
-            |index, _label| match index {
-                0 => EventResponse::Action(UiAction::AddVideo),
-                2 => EventResponse::Action(UiAction::ExportProject),
-                3 => EventResponse::Action(UiAction::RestoreBackup),
-                _ => EventResponse::Consumed, // "Importer" et "Récents" ne font rien au clic
-            },
-        )
-        .with_arrow(false)
-        .with_trigger_bg(false)
-        .with_trigger_label(t("menu.project"))
-        .with_panel_width(340.0)
-        .with_disabled_items(vec![false, false, !has_video, false, false]);
-
-        project_menu = project_menu.with_submenu(
-            1,
-            vec![
-                t("menu.project.import.coquerythmo").into(),
-                t("menu.project.import.cappela").into(),
-                t("menu.project.import.srt").into(),
-            ],
-            |index, _label| match index {
-                0 => EventResponse::Action(UiAction::ImportProject),
-                1 => EventResponse::Action(UiAction::ImportCappelaProject),
-                2 => EventResponse::Action(UiAction::ImportSrtProject),
-                _ => EventResponse::Consumed,
-            },
-        );
-
-        // Attach submenu to item index 4 ("Récent ▸")
-        if !recent_labels.is_empty() {
-            project_menu = project_menu.with_submenu(4, recent_labels, move |index, _label| {
-                if let Some(r) = recents_clone.get(index) {
-                    EventResponse::Action(UiAction::OpenRecentProject {
-                        video_path: r.video_path.clone(),
-                        br_path: r.br_path.clone(),
-                    })
-                } else {
-                    EventResponse::Consumed
-                }
-            });
-        }
-
-        let export_menu = Dropdown::new(
-            Rect {
-                x: 88.0,
-                y: 2.0,
-                width: 80.0,
-                height: 28.0,
-            },
-            vec![
-                t("menu.export.mp4").into(),
-                format!("{} (Alpha)", t("menu.export.studio_mode")),
-            ],
-            |index, _label| match index {
-                0 => EventResponse::Action(UiAction::OpenExportModal),
-                1 => EventResponse::Action(UiAction::ShowStudioWarning),
-                _ => EventResponse::Consumed,
-            },
-        )
-        .with_arrow(false)
-        .with_trigger_bg(false)
-        .with_trigger_label(t("menu.export"))
-        .with_panel_width(260.0);
-
-        let tools_menu = Dropdown::new(
-            Rect {
-                x: 172.0,
-                y: 2.0,
-                width: 80.0,
-                height: 28.0,
-            },
-            vec![
-                t("menu.tools.create_proxy").into(),
-                t("menu.tools.secondary_display").into(),
-                t("menu.tools.rename_character").into(),
-            ],
-            |index, _label| match index {
-                0 => EventResponse::Action(UiAction::OpenProxyModal),
-                1 => EventResponse::Action(UiAction::OpenSecondaryDisplay),
-                2 => EventResponse::Action(UiAction::OpenRenameCharacterModal),
-                _ => EventResponse::Consumed,
-            },
-        )
-        .with_arrow(false)
-        .with_trigger_bg(false)
-        .with_trigger_label(t("menu.tools"))
-        .with_panel_width(280.0)
-        .with_disabled_items(vec![!has_video, !has_video, false]);
-
-        let connect_menu = Dropdown::new(
-            Rect {
-                x: 256.0,
-                y: 2.0,
-                width: 120.0,
-                height: 28.0,
-            },
-            vec![
-                t("menu.connect.servers").into(),
-                t("menu.connect.disconnect").into(),
-            ],
-            |index, _label| match index {
-                0 => EventResponse::Action(UiAction::OpenServerBrowser),
-                1 => EventResponse::Action(UiAction::NetworkDisconnect),
-                _ => EventResponse::Consumed,
-            },
-        )
-        .with_arrow(false)
-        .with_trigger_bg(false)
-        .with_trigger_label(t("menu.connect"))
-        .with_panel_width(250.0)
-        .with_disabled_items(vec![false, !in_room]);
-
-        let settings_size = 24.0;
-        let settings_x = screen_w - settings_size - 8.0;
-        let settings_y = (TOPBAR_HEIGHT - settings_size) / 2.0;
-        let project_x = settings_x - settings_size - 8.0;
-        let project_btn = IconButton::new(
-            Rect {
-                x: project_x,
-                y: settings_y,
-                width: settings_size,
-                height: settings_size,
-            },
-            "",
-            project_uv,
-            || EventResponse::Action(UiAction::OpenProjectSettings),
-        )
-        .with_tooltip(t("project_settings.tooltip"));
-        let settings_btn = IconButton::new(
-            Rect {
-                x: settings_x,
-                y: settings_y,
-                width: settings_size,
-                height: settings_size,
-            },
-            "",
-            settings_uv,
-            || EventResponse::Action(UiAction::OpenSettings),
-        )
-        .with_tooltip(t("settings.tooltip"));
-
-        let mut topbar_widgets: Vec<Box<dyn Widget>> = vec![
-            Box::new(project_menu),
-            Box::new(export_menu),
-            Box::new(tools_menu),
-            Box::new(connect_menu),
-        ];
-
-        let discord_w = 80.0;
-        let discord_h = 24.0;
-        let discord_x = if crate::config::dev_mode() {
-            let lic_key = crate::config::license_key();
-            let lic_type = crate::config::license_type();
-            let support_x = if !lic_key.is_empty() || !lic_type.is_empty() {
-                let badge_w = 200.0;
-                let badge_h = 24.0;
-                let badge_x = project_x - badge_w - 8.0;
-                let badge_y = (TOPBAR_HEIGHT - badge_h) / 2.0;
-                    let badge_label = crate::config::license_display_label();
-                    let badge = license_badge::LicenseBadge::new(
-                        Rect {
-                            x: badge_x,
-                            y: badge_y,
-                            width: badge_w,
-                            height: badge_h,
-                        },
-                        badge_label,
-                    );
-                topbar_widgets.push(Box::new(badge));
-                badge_x - discord_w - 8.0
-            } else {
-                let support_w = 160.0;
-                let support_h = 24.0;
-                let support_x = project_x - support_w - 8.0;
-                let support_y = (TOPBAR_HEIGHT - support_h) / 2.0;
-                let support_btn = TextButton::new(
-                    Rect {
-                        x: support_x,
-                        y: support_y,
-                        width: support_w,
-                        height: support_h,
-                    },
-                    t("topbar.support"),
-                    || EventResponse::Action(UiAction::OpenPricingPage),
-                )
-                .with_accent()
-                .with_tooltip(t("topbar.support"));
-                topbar_widgets.push(Box::new(support_btn));
-                support_x - discord_w - 8.0
-            };
-            support_x
-        } else {
-            project_x - discord_w - 8.0
-        };
-        let discord_y = (TOPBAR_HEIGHT - discord_h) / 2.0;
-        let discord_btn = TextButton::new(
-            Rect {
-                x: discord_x,
-                y: discord_y,
-                width: discord_w,
-                height: discord_h,
-            },
-            t("topbar.discord"),
-            || EventResponse::Action(UiAction::OpenDiscord),
-        )
-        .with_tooltip(t("topbar.discord"));
-
-        topbar_widgets.push(Box::new(discord_btn));
-        topbar_widgets.push(Box::new(project_btn));
-        topbar_widgets.push(Box::new(settings_btn));
-        topbar_widgets
+        self.toolbar_widgets = shell::build_toolbar(self.toolbar_build_context());
     }
 
     pub fn rebuild_topbar(&mut self, in_room: bool) {
         self.network_in_room = in_room;
-        self.topbar_widgets = Self::build_topbar(
+        self.topbar_widgets = shell::build_topbar(
             in_room,
             self.has_video,
             self.screen_w,
@@ -504,220 +241,24 @@ impl Ui {
             .unwrap_or_default();
     }
 
-    fn progress_bar_rect(&self) -> Rect {
-        let tb = &self.layout.toolbar;
-        let s = TOOLBAR_BTN_SIZE;
-        let gap = 4.0;
-        // 13 buttons + 4 double-gaps + 1 trailing gap
-        let buttons_end = tb.x + 8.0 + 13.0 * (s + gap) + 4.0 * gap * 2.0 + gap;
-        let slider_start = tb.x + tb.width - SLIDER_W - 8.0;
-        let mute_start = slider_start - s - gap;
-        let left = buttons_end + 8.0;
-        let right = mute_start - 8.0;
-        let w = (right - left).max(40.0);
-        let h = 6.0;
-        Rect {
-            x: left,
-            y: tb.y + (TOOLBAR_HEIGHT - h) / 2.0,
-            width: w,
-            height: h,
-        }
-    }
-
-    fn progress_bar_hit_rect(&self) -> Rect {
-        let r = self.progress_bar_rect();
-        Rect {
-            x: r.x,
-            y: r.y - 8.0,
-            width: r.width,
-            height: r.height + 16.0,
-        }
-    }
-
     pub fn rebuild_toolbar(&mut self) {
-        self.toolbar_widgets = self.build_toolbar();
+        self.toolbar_widgets = shell::build_toolbar(self.toolbar_build_context());
     }
 
-    fn uv(&self, name: &str) -> [f32; 4] {
-        self.icon_uvs.get(name).copied().unwrap_or([0.0; 4])
-    }
-
-    fn build_toolbar(&self) -> Vec<Box<dyn Widget>> {
-        use crate::rythmo_line::MarkerKind;
-
-        let tb = &self.layout.toolbar;
-        let s = TOOLBAR_BTN_SIZE;
-        let y = tb.y + (TOOLBAR_HEIGHT - s) / 2.0;
-        let gap = 4.0;
-        let mut x = tb.x + 8.0;
-
-        let mut widgets: Vec<Box<dyn Widget>> = Vec::new();
-
-        // Helper macro to keep it DRY
-        macro_rules! btn {
-            ($icon:expr, $action:expr, $tip:expr) => {{
-                let b = IconButton::new(
-                    Rect {
-                        x,
-                        y,
-                        width: s,
-                        height: s,
-                    },
-                    "",
-                    self.uv($icon),
-                    $action,
-                )
-                .with_tooltip(t($tip));
-                widgets.push(Box::new(b));
-                x += s + gap;
-            }};
+    fn toolbar_build_context(&self) -> shell::ToolbarBuildContext<'_> {
+        shell::ToolbarBuildContext {
+            layout: &self.layout,
+            icon_uvs: &self.icon_uvs,
+            playing: self.playing,
+            volume: self.volume,
+            active_mode: self.active_mode,
+            brush_color: self.brush_color,
+            brush_radius_index: self.brush_radius_index,
+            brush_color_preset_index: self.brush_color_preset_index,
+            erasing: self.erasing,
+            brush_color_presets: &self.brush_color_presets,
+            ctrl_held: self.rythmo_state.ctrl_held,
         }
-
-        // Transport: prev | play/pause | next
-        btn!(
-            "prev_frame",
-            || EventResponse::Action(UiAction::PrevFrame),
-            "toolbar.prev_frame"
-        );
-        let play_uv = if self.playing {
-            self.uv("pause")
-        } else {
-            self.uv("resume")
-        };
-        let play_tip = if self.playing {
-            "toolbar.stop"
-        } else {
-            "toolbar.play"
-        };
-        let play = IconButton::new(
-            Rect {
-                x,
-                y,
-                width: s,
-                height: s,
-            },
-            "",
-            play_uv,
-            || EventResponse::Action(UiAction::TogglePlayPause),
-        )
-        .with_tooltip(t(play_tip));
-        widgets.push(Box::new(play));
-        x += s + gap;
-        btn!(
-            "next_frame",
-            || EventResponse::Action(UiAction::NextFrame),
-            "toolbar.next_frame"
-        );
-
-        x += gap * 2.0; // separator
-
-        // Markers: boucle | out | scene
-        btn!(
-            "boucle",
-            || EventResponse::Action(UiAction::AddMarker(MarkerKind::Boucle)),
-            "toolbar.boucle"
-        );
-        btn!(
-            "out",
-            || EventResponse::Action(UiAction::AddMarker(MarkerKind::Out)),
-            "toolbar.out"
-        );
-        btn!(
-            "scene",
-            || EventResponse::Action(UiAction::AddMarker(MarkerKind::SceneChange)),
-            "toolbar.scene"
-        );
-
-        x += gap * 2.0; // separator
-
-        // Quick-insert dropdowns: respirations | reactions
-        btn!(
-            "respirations",
-            || EventResponse::Action(UiAction::OpenDropdown(
-                widget::ToolbarDropdown::Respirations
-            )),
-            "toolbar.respirations"
-        );
-        btn!(
-            "reactions",
-            || EventResponse::Action(UiAction::OpenDropdown(widget::ToolbarDropdown::Reactions)),
-            "toolbar.reactions"
-        );
-
-        x += gap * 2.0; // separator
-
-        // Note
-        btn!(
-            "note",
-            || EventResponse::Action(UiAction::AddNote),
-            "toolbar.note"
-        );
-
-        x += gap * 2.0; // separator
-
-        // Liaisons: left | right
-        btn!(
-            "liaison_left",
-            || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonLeft)),
-            "toolbar.liaison_left"
-        );
-        btn!(
-            "liaison_right",
-            || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonRight)),
-            "toolbar.liaison_right"
-        );
-
-        x += gap * 2.0; // separator
-
-        btn!(
-            "karaoke",
-            || EventResponse::Action(UiAction::ToggleKaraokeForSelection),
-            "toolbar.karaoke"
-        );
-        let _ = x;
-
-        // Right side: mute button + volume slider
-        let slider_w = SLIDER_W;
-        let slider_h = 24.0;
-        let slider_x = tb.x + tb.width - slider_w - 8.0;
-        let slider_y = tb.y + (TOOLBAR_HEIGHT - slider_h) / 2.0;
-        let mute_x = slider_x - s - gap;
-        let mute_icon = if self.volume <= 0.001 {
-            "mute"
-        } else {
-            "sound"
-        };
-        let mute_tip = if self.volume <= 0.001 {
-            "toolbar.unmute"
-        } else {
-            "toolbar.mute"
-        };
-        let mute = IconButton::new(
-            Rect {
-                x: mute_x,
-                y,
-                width: s,
-                height: s,
-            },
-            "",
-            self.uv(mute_icon),
-            || EventResponse::Action(UiAction::ToggleMute),
-        )
-        .with_tooltip(t(mute_tip));
-        widgets.push(Box::new(mute));
-        let volume = Slider::new(
-            Rect {
-                x: slider_x,
-                y: slider_y,
-                width: slider_w,
-                height: slider_h,
-            },
-            self.volume,
-            |val| EventResponse::Action(UiAction::SetVolume(val)),
-        );
-        widgets.push(Box::new(volume));
-
-        widgets
     }
 
     pub fn handle_event(
@@ -736,24 +277,12 @@ impl Ui {
             return EventResponse::Consumed;
         }
 
-        // Pricing / support page replaces the entire layout while active.
-        if self.pricing_page.is_some() {
-            return self.handle_pricing_event(event);
-        }
-
-        // File explorer is topmost and keeps parent modals alive underneath.
-        if self.file_explorer_modal.is_some() {
-            return self.handle_file_explorer_event(event);
-        }
-
-        // Proxy error modal blocks all input, including toast dismissal.
-        if self.proxy_error_modal.is_some() {
-            return self.handle_proxy_error_modal_event(event);
-        }
-
-        // Whats-new modal blocks all regular input while release notes are shown.
-        if self.whats_new_modal.is_some() {
-            return self.handle_whats_new_modal_event(event);
+        // ModalHost owns modal priority, lifecycle and command conversion.
+        if let Some(outcome) = self
+            .modal_host
+            .handle_topmost_event(event, self.screen_w, self.screen_h)
+        {
+            return outcome.into_event_response();
         }
 
         // Toast click to dismiss
@@ -769,58 +298,11 @@ impl Ui {
             return EventResponse::Consumed;
         }
 
-        // Settings modal intercepts all input
-        if self.settings_modal.is_some() {
-            return self.handle_settings_modal_event(event);
-        }
-
-        if self.project_settings_modal.is_some() {
-            return self.handle_project_settings_modal_event(event);
-        }
-
-        // Studio warning modal
-        if self.studio_warning_modal.is_some() {
-            return self.handle_studio_warning_event(event);
-        }
-
-        // Save prompt modal (new project)
-        if self.save_prompt_modal.is_some() {
-            return self.handle_save_prompt_event(event);
-        }
-
-        // Export modal intercepts all input
-        if self.export_modal.is_some() {
-            return self.handle_export_modal_event(event);
-        }
-
-        // Voice actor creation modal intercepts all input
-        if self.voice_actor_modal.is_some() {
-            return self.handle_voice_actor_modal_event(event);
-        }
-
-        // Character rename modal intercepts all input
-        if self.rename_character_modal.is_some() {
-            return self.handle_rename_character_modal_event(event);
-        }
-
-        // Proxy modal intercepts all input
-        if self.proxy_modal.is_some() {
-            return self.handle_proxy_modal_event(event);
-        }
-
-        // Add server modal intercepts all input
-        if self.add_server_modal.is_some() {
-            return self.handle_add_server_event(event);
-        }
-
-        // Server browser intercepts all input
-        if self.server_browser.is_some() {
-            return self.handle_server_browser_event(event);
-        }
-
-        // Connect modal intercepts all input
-        if self.connect_modal.is_some() {
-            return self.handle_connect_modal_event(event);
+        if let Some(outcome) = self
+            .modal_host
+            .handle_event(event, self.screen_w, self.screen_h)
+        {
+            return outcome.into_event_response();
         }
 
         if self.rythmo_state.context_menu.is_some() || matches!(event, UiEvent::ContextMenu { .. })
@@ -847,6 +329,10 @@ impl Ui {
                     return resp;
                 }
             }
+        }
+
+        if let Some(response) = self.handle_split_drag(event) {
+            return response;
         }
 
         if let Some(response) = self.handle_props_drag(event) {
@@ -892,9 +378,35 @@ impl Ui {
             }
         }
 
-        // Progress bar scrubbing
+        // Intercept UI actions for tool mode / brush settings (handled locally in Ui)
+        // Check if any widget returned an action we handle locally
+        // We need to check the responses from the widget loops above
+        // Since we returned early on any non-Ignored, we handle them here by re-checking
+        // Actually, the widget loops already return the action. We need to handle specific actions here.
+        // Let's re-process by checking if the event was a click on our toolbar buttons
+        // But the action has already bubbled up. Instead, we handle in State/main.rs.
+        // For SetToolMode, CycleBrushSize, ToggleEraser, OpenBrushColorPicker, we handle in State.
+
+        // Handle brush color picker sync
+        if self.brush_picking {
+            // Handle color picker events when picking brush color
+            if self.rythmo_state.color_picker.handle_event(event) {
+                if !self.rythmo_state.color_picker.active {
+                    self.brush_picking = false;
+                } else {
+                    self.brush_color = self.rythmo_state.color_picker.current_color();
+                }
+                return EventResponse::Consumed;
+            }
+            // If picker closed without selection
+            if !self.rythmo_state.color_picker.active {
+                self.brush_picking = false;
+            }
+        }
+
+        // Rythmo zone events (lines, scroll, ctrl+click, etc.)
         if self.total_frames > 0 {
-            let hit = self.progress_bar_hit_rect();
+            let hit = shell::progress_bar_hit_rect(&self.layout);
             match event {
                 UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y }
                     if hit.contains(*x, *y) =>
@@ -918,6 +430,12 @@ impl Ui {
         }
 
         // Rythmo zone events (lines, scroll, ctrl+click, etc.)
+        let brush_radius_frac = match self.brush_radius_index {
+            0 => 0.006,
+            1 => 0.012,
+            2 => 0.024,
+            _ => 0.012,
+        };
         let rythmo_response = rythmo::handle_rythmo_event(
             event,
             &self.layout.rythmo,
@@ -926,6 +444,10 @@ impl Ui {
             self.playing,
             fps,
             &mut self.rythmo_state,
+            self.active_mode.unwrap_or(ToolMode::Select),
+            self.brush_color,
+            brush_radius_frac,
+            self.erasing,
         );
         if rythmo_response != EventResponse::Ignored {
             return rythmo_response;
@@ -947,7 +469,7 @@ impl Ui {
                     return EventResponse::Action(UiAction::SeekToNextBoucle { direction });
                 }
                 let multiplier = if *fast { 60.0 } else { 15.0 };
-                let frames = scroll_delta_to_frames(*delta, multiplier);
+                let frames = shell::scroll_delta_to_frames(*delta, multiplier);
                 if frames != 0 {
                     return EventResponse::Action(UiAction::SeekRelative(frames));
                 }
@@ -997,6 +519,63 @@ impl Ui {
         }
     }
 
+    fn handle_split_drag(&mut self, event: &UiEvent) -> Option<EventResponse> {
+        let content_h = self.screen_h - TOPBAR_H;
+        let free_h = (content_h - TOOLBAR_H).max(0.0);
+        match event {
+            UiEvent::MousePress { x, y } => {
+                if self.layout.video_split_handle_rect().contains(*x, *y) {
+                        self.dragging_split = Some(shell::SplitHandle::Video);
+                    return Some(EventResponse::Consumed);
+                }
+                if self.layout.rythmo_split_handle_rect().contains(*x, *y) {
+                        self.dragging_split = Some(shell::SplitHandle::Rythmo);
+                    return Some(EventResponse::Consumed);
+                }
+                None
+            }
+            UiEvent::MouseMove { y, .. } => {
+                if let Some(handle) = self.dragging_split {
+                    let requested = match handle {
+                        shell::SplitHandle::Video => (*y) - TOPBAR_H,
+                        shell::SplitHandle::Rythmo => free_h - (self.screen_h - *y),
+                    };
+                    let min_video = VIDEO_MIN_H.min(free_h);
+                    let max_video = (free_h - RYTHMO_MIN_H).max(min_video);
+                    let video_h = requested.clamp(min_video, max_video);
+                    let split = if free_h > 0.0 {
+                        (video_h / free_h).clamp(0.0, 1.0)
+                    } else {
+                        self.video_split
+                    };
+                    self.video_split = split;
+                    self.rebuild_layout();
+                    return Some(EventResponse::Consumed);
+                }
+                None
+            }
+            UiEvent::MouseRelease { .. } => {
+                if self.dragging_split.is_some() {
+                    self.dragging_split = None;
+                    crate::config::set_video_split(self.video_split);
+                    return Some(EventResponse::Consumed);
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn hovering_split_handle(&self) -> bool {
+        let (cx, cy) = self.cursor_pos;
+        self.layout.video_split_handle_rect().contains(cx, cy)
+            || self.layout.rythmo_split_handle_rect().contains(cx, cy)
+    }
+
+    pub(crate) fn dragging_split_handle(&self) -> bool {
+        self.dragging_split.is_some()
+    }
+
     fn update_tooltip(&mut self) {
         let (cx, cy) = self.cursor_pos;
         for widget in self
@@ -1018,9 +597,13 @@ impl Ui {
         self.tooltip = None;
     }
 
+    fn uv(&self, name: &str) -> [f32; 4] {
+        self.icon_uvs.get(name).copied().unwrap_or([0.0; 4])
+    }
+
     pub fn toggle_play_pause(&mut self) {
         self.playing = !self.playing;
-        self.toolbar_widgets = self.build_toolbar();
+        self.toolbar_widgets = shell::build_toolbar(self.toolbar_build_context());
     }
 
     pub fn is_playing(&self) -> bool {
@@ -1034,15 +617,17 @@ impl Ui {
     pub fn needs_animation_or_interaction(&self) -> bool {
         self.playing
             || self.dragging_props
+            || self.dragging_split.is_some()
             || self.scrubbing
             || self.toasts.has_active()
             || self.rythmo_state.needs_animation_or_interaction()
     }
 
     pub fn needs_background_poll(&self) -> bool {
-        self.server_browser.is_some()
+        self.modal_host.server_browser.is_some()
             || self
-                .file_explorer_modal
+                .modal_host
+                .file_explorer
                 .as_ref()
                 .is_some_and(|modal| modal.needs_background_poll())
     }
@@ -1050,21 +635,24 @@ impl Ui {
     pub fn next_cursor_blink_deadline(&self) -> Option<std::time::Instant> {
         let mut deadline = self.rythmo_state.next_cursor_blink_deadline();
         if let Some(modal_deadline) = self
-            .file_explorer_modal
+            .modal_host
+            .file_explorer
             .as_ref()
             .and_then(|modal| modal.next_cursor_blink_deadline())
         {
             deadline = Some(deadline.map_or(modal_deadline, |current| current.min(modal_deadline)));
         }
         if let Some(modal_deadline) = self
-            .rename_character_modal
+            .modal_host
+            .rename_character
             .as_ref()
             .and_then(|modal| modal.next_cursor_blink_deadline())
         {
             deadline = Some(deadline.map_or(modal_deadline, |current| current.min(modal_deadline)));
         }
         if let Some(modal_deadline) = self
-            .pricing_license_modal
+            .modal_host
+            .pricing_license
             .as_ref()
             .map(|modal| modal.next_cursor_blink_deadline())
         {
@@ -1073,7 +661,7 @@ impl Ui {
         deadline
     }
 
-    pub fn toggle_toolbar_dropdown(&mut self, dd: widget::ToolbarDropdown) {
+    pub fn toggle_toolbar_dropdown(&mut self, dd: primitives::ToolbarDropdown) {
         if self.active_dropdown == Some(dd.clone()) {
             self.active_dropdown = None;
         } else {
@@ -1081,9 +669,9 @@ impl Ui {
         }
     }
 
-    fn dropdown_items(dd: &widget::ToolbarDropdown) -> Vec<(&'static str, &'static str)> {
+    fn dropdown_items(dd: &primitives::ToolbarDropdown) -> Vec<(&'static str, &'static str)> {
         match dd {
-            widget::ToolbarDropdown::Respirations => vec![
+            primitives::ToolbarDropdown::Respirations => vec![
                 ("↑", "resp.up"),
                 ("↓", "resp.down"),
                 ("(H)", "resp.h"),
@@ -1091,7 +679,7 @@ impl Ui {
                 ("(mH)", "resp.mh"),
                 ("(mHH)", "resp.mhh"),
             ],
-            widget::ToolbarDropdown::Reactions => vec![
+            primitives::ToolbarDropdown::Reactions => vec![
                 ("(X)", "react.x"),
                 ("(mts)", "react.mts"),
                 ("(tsc)", "react.tsc"),
@@ -1131,7 +719,7 @@ impl Ui {
         EventResponse::Consumed
     }
 
-    fn toolbar_dropdown_rect(&self, dd: &widget::ToolbarDropdown, count: usize) -> Rect {
+    fn toolbar_dropdown_rect(&self, dd: &primitives::ToolbarDropdown, count: usize) -> Rect {
         let items = Self::dropdown_items(dd);
         let _ = items; // use count param
         let item_h = 26.0;
@@ -1139,8 +727,8 @@ impl Ui {
         let h = count as f32 * item_h;
         // Position below the button that opened it
         let btn_index = match dd {
-            widget::ToolbarDropdown::Respirations => 6, // 7th button (0-indexed)
-            widget::ToolbarDropdown::Reactions => 7,
+            primitives::ToolbarDropdown::Respirations => 6, // 7th button (0-indexed)
+            primitives::ToolbarDropdown::Reactions => 7,
         };
         let btn_x = self.layout.toolbar.x + 8.0 + btn_index as f32 * (TOOLBAR_BTN_SIZE + 4.0)
             + if btn_index >= 3 { 8.0 } else { 0.0 }  // separator after transport
@@ -1185,7 +773,7 @@ impl Ui {
         for (text, tooltip_key) in &items {
             // Item label
             labels.push(LabelInfo {
-                text: *text,
+                text,
                 bounds: Rect {
                     x: rect.x + 8.0,
                     y: iy,
@@ -1222,234 +810,7 @@ impl Ui {
     }
 
     pub fn is_editing_text(&self) -> bool {
-        self.rythmo_state.is_editing()
-            || self
-                .file_explorer_modal
-                .as_ref()
-                .is_some_and(|modal| modal.is_editing_text())
-            || self.connect_modal.is_some()
-            || self.export_modal.is_some()
-            || self.proxy_modal.is_some()
-            || self.proxy_error_modal.is_some()
-            || self.voice_actor_modal.is_some()
-            || self.rename_character_modal.is_some()
-            || self.whats_new_modal.is_some()
-            || self.pricing_page.is_some()
-            || self.pricing_plan_modal.is_some()
-            || self.pricing_license_modal.is_some()
-    }
-
-    fn handle_connect_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.connect_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            connect_modal::ConnectModalResult::Consumed => EventResponse::Consumed,
-            connect_modal::ConnectModalResult::Close => {
-                self.connect_modal = None;
-                EventResponse::Consumed
-            }
-            connect_modal::ConnectModalResult::Connect {
-                ip,
-                port,
-                password,
-                username,
-                room_code,
-            } => {
-                self.connect_modal = None;
-                EventResponse::Action(UiAction::NetworkConnect {
-                    ip,
-                    port,
-                    password,
-                    username,
-                    room_code,
-                })
-            }
-        }
-    }
-
-    fn handle_settings_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.settings_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            settings_modal::SettingsModalResult::Consumed => EventResponse::Consumed,
-            settings_modal::SettingsModalResult::Close => {
-                self.settings_modal = None;
-                EventResponse::Consumed
-            }
-            settings_modal::SettingsModalResult::Save {
-                lang,
-                rythmo_font,
-                scroll_speed,
-            } => {
-                self.settings_modal = None;
-                EventResponse::Action(UiAction::SaveSettings {
-                    lang,
-                    rythmo_font,
-                    scroll_speed,
-                })
-            }
-        }
-    }
-
-    fn handle_project_settings_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.project_settings_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            project_settings_modal::ProjectSettingsModalResult::Consumed => EventResponse::Consumed,
-            project_settings_modal::ProjectSettingsModalResult::Close => {
-                self.project_settings_modal = None;
-                EventResponse::Consumed
-            }
-            project_settings_modal::ProjectSettingsModalResult::PickInstrumentalAudio => {
-                EventResponse::Action(UiAction::PickProjectInstrumentalAudio)
-            }
-            project_settings_modal::ProjectSettingsModalResult::Save {
-                instrumental_audio_path,
-            } => {
-                self.project_settings_modal = None;
-                EventResponse::Action(UiAction::SaveProjectSettings {
-                    instrumental_audio_path,
-                })
-            }
-        }
-    }
-
-    fn handle_export_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.export_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            export_modal::ExportModalResult::Consumed => EventResponse::Consumed,
-            export_modal::ExportModalResult::Close => {
-                self.export_modal = None;
-                EventResponse::Consumed
-            }
-            export_modal::ExportModalResult::Export {
-                fps,
-                br_scale,
-                karaoke_text_scale,
-                export_width,
-                export_height,
-                export_original_audio,
-                export_instrumental_audio,
-            } => {
-                self.export_modal = None;
-                EventResponse::Action(UiAction::StartExport {
-                    fps,
-                    br_scale,
-                    karaoke_text_scale,
-                    export_width,
-                    export_height,
-                    export_original_audio,
-                    export_instrumental_audio,
-                })
-            }
-        }
-    }
-
-    fn handle_file_explorer_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.file_explorer_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            file_explorer_modal::FileExplorerResult::Consumed => EventResponse::Consumed,
-            file_explorer_modal::FileExplorerResult::Close => {
-                self.file_explorer_modal = None;
-                EventResponse::Consumed
-            }
-            file_explorer_modal::FileExplorerResult::Clipboard(text) => {
-                EventResponse::Action(UiAction::SetClipboard(text))
-            }
-            file_explorer_modal::FileExplorerResult::Selected { intent, path } => {
-                self.file_explorer_modal = None;
-                EventResponse::Action(UiAction::FilePickerSelected { intent, path })
-            }
-        }
-    }
-
-    fn handle_voice_actor_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.voice_actor_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            voice_actor_modal::VoiceActorModalResult::Consumed => EventResponse::Consumed,
-            voice_actor_modal::VoiceActorModalResult::Close => {
-                self.voice_actor_modal = None;
-                EventResponse::Consumed
-            }
-            voice_actor_modal::VoiceActorModalResult::PickIcon => {
-                EventResponse::Action(UiAction::PickVoiceActorIcon)
-            }
-            voice_actor_modal::VoiceActorModalResult::Clipboard(text) => {
-                EventResponse::Action(UiAction::SetClipboard(text))
-            }
-            voice_actor_modal::VoiceActorModalResult::Create { name, icon_path } => {
-                self.voice_actor_modal = None;
-                EventResponse::Action(UiAction::CreateVoiceActor { name, icon_path })
-            }
-        }
-    }
-
-    fn handle_rename_character_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.rename_character_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            rename_character_modal::RenameCharacterModalResult::Consumed => EventResponse::Consumed,
-            rename_character_modal::RenameCharacterModalResult::Close => {
-                self.rename_character_modal = None;
-                EventResponse::Consumed
-            }
-            rename_character_modal::RenameCharacterModalResult::Clipboard(text) => {
-                EventResponse::Action(UiAction::SetClipboard(text))
-            }
-            rename_character_modal::RenameCharacterModalResult::Rename { old_name, new_name } => {
-                self.rename_character_modal = None;
-                EventResponse::Action(UiAction::RenameCharacter { old_name, new_name })
-            }
-        }
-    }
-
-    fn handle_proxy_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.proxy_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            proxy_modal::ProxyModalResult::Consumed => EventResponse::Consumed,
-            proxy_modal::ProxyModalResult::Close => {
-                self.proxy_modal = None;
-                EventResponse::Consumed
-            }
-            proxy_modal::ProxyModalResult::Create { width, height, crf } => {
-                self.proxy_modal = None;
-                EventResponse::Action(UiAction::CreateProxy { width, height, crf })
-            }
-        }
-    }
-
-    fn handle_proxy_error_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.proxy_error_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            proxy_error_modal::ProxyErrorResult::Consumed => EventResponse::Consumed,
-            proxy_error_modal::ProxyErrorResult::Close => {
-                self.proxy_error_modal = None;
-                EventResponse::Consumed
-            }
-        }
+        self.rythmo_state.is_editing() || self.modal_host.is_editing_text()
     }
 
     pub fn open_export_modal(
@@ -1458,273 +819,95 @@ impl Ui {
         video_height: u32,
         has_project_instrumental_audio: bool,
     ) {
-        self.export_modal = Some(export_modal::ExportModal::new(
+        self.modal_host.open_export(
             video_width,
             video_height,
             has_project_instrumental_audio,
-        ));
+        );
     }
 
-    pub fn open_file_explorer(&mut self, request: file_explorer_modal::FileExplorerRequest) {
-        self.file_explorer_modal = Some(file_explorer_modal::FileExplorerModal::new(request));
+    pub fn open_file_explorer(&mut self, request: file_explorer::FileExplorerRequest) {
+        self.modal_host.open_file_explorer(request);
     }
 
     pub fn poll_file_explorer(&mut self) -> bool {
-        self.file_explorer_modal
-            .as_mut()
-            .is_some_and(|modal| modal.poll_background())
+        self.modal_host.poll_file_explorer()
     }
 
     pub fn open_voice_actor_modal(&mut self) {
-        self.voice_actor_modal = Some(voice_actor_modal::VoiceActorModal::new());
+        self.modal_host.open_voice_actor();
     }
 
     pub fn open_rename_character_modal(&mut self, characters: Vec<String>) {
-        self.rename_character_modal = Some(rename_character_modal::RenameCharacterModal::new(
-            characters,
-        ));
+        self.modal_host.open_rename_character(characters);
     }
 
     pub fn set_voice_actor_modal_icon_path(&mut self, path: impl Into<String>) {
-        if let Some(modal) = &mut self.voice_actor_modal {
-            modal.set_icon_path(path);
-        }
+        self.modal_host.set_voice_actor_icon_path(path);
     }
 
     pub fn open_proxy_modal(&mut self, video_width: u32, video_height: u32) {
-        self.proxy_modal = Some(proxy_modal::ProxyModal::new(video_width, video_height));
+        self.modal_host.open_proxy(video_width, video_height);
     }
 
     pub fn open_proxy_error_modal(&mut self, detail: impl Into<String>) {
-        self.proxy_error_modal = Some(proxy_error_modal::ProxyErrorModal::new(detail));
+        self.modal_host.open_proxy_error(detail);
     }
 
     pub fn open_whats_new_modal(&mut self, version: impl Into<String>, body: impl Into<String>) {
-        self.whats_new_modal = Some(whats_new_modal::WhatsNewModal::new(version, body));
-    }
-
-    fn handle_whats_new_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.whats_new_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            whats_new_modal::WhatsNewResult::Consumed => EventResponse::Consumed,
-            whats_new_modal::WhatsNewResult::Close => {
-                self.whats_new_modal = None;
-                EventResponse::Consumed
-            }
-        }
-    }
-
-    fn handle_server_browser_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.server_browser {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            server_browser::BrowserResult::Consumed => EventResponse::Consumed,
-            server_browser::BrowserResult::Close => {
-                self.server_browser = None;
-                EventResponse::Consumed
-            }
-            server_browser::BrowserResult::CreateRoom { ip, port } => {
-                self.server_browser = None;
-                EventResponse::Action(UiAction::OpenConnectModal {
-                    ip,
-                    port,
-                    join: false,
-                })
-            }
-            server_browser::BrowserResult::JoinRoom { ip, port } => {
-                self.server_browser = None;
-                EventResponse::Action(UiAction::OpenConnectModal {
-                    ip,
-                    port,
-                    join: true,
-                })
-            }
-            server_browser::BrowserResult::AddServer => {
-                EventResponse::Action(UiAction::OpenAddServerModal)
-            }
-            server_browser::BrowserResult::RemoveServer(i) => {
-                EventResponse::Action(UiAction::RemoveServer(i))
-            }
-            server_browser::BrowserResult::Refresh => {
-                EventResponse::Action(UiAction::RefreshServers)
-            }
-        }
-    }
-
-    fn handle_add_server_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.add_server_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            server_browser::AddServerResult::Consumed => EventResponse::Consumed,
-            server_browser::AddServerResult::Close => {
-                self.add_server_modal = None;
-                EventResponse::Consumed
-            }
-            server_browser::AddServerResult::Add { ip, port } => {
-                self.add_server_modal = None;
-                EventResponse::Action(UiAction::AddServer { ip, port })
-            }
-        }
-    }
-
-    fn handle_save_prompt_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.save_prompt_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            save_prompt_modal::SavePromptResult::Consumed => EventResponse::Consumed,
-            save_prompt_modal::SavePromptResult::Save => {
-                self.save_prompt_modal = None;
-                EventResponse::Action(UiAction::NewProjectSave)
-            }
-            save_prompt_modal::SavePromptResult::Discard => {
-                self.save_prompt_modal = None;
-                EventResponse::Action(UiAction::NewProjectDiscard)
-            }
-            save_prompt_modal::SavePromptResult::Cancel => {
-                self.save_prompt_modal = None;
-                EventResponse::Consumed
-            }
-        }
+        self.modal_host.open_whats_new(version, body);
     }
 
     pub fn open_save_prompt(&mut self) {
-        self.save_prompt_modal = Some(save_prompt_modal::SavePromptModal::new());
-    }
-
-    fn handle_studio_warning_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.studio_warning_modal {
-            Some(m) => m,
-            None => return EventResponse::Ignored,
-        };
-        match modal.handle_event(event, self.screen_w, self.screen_h) {
-            studio_warning_modal::StudioWarningResult::Consumed => EventResponse::Consumed,
-            studio_warning_modal::StudioWarningResult::Confirm => {
-                self.studio_warning_modal = None;
-                EventResponse::Action(UiAction::EnterStudioMode)
-            }
-            studio_warning_modal::StudioWarningResult::Cancel => {
-                self.studio_warning_modal = None;
-                EventResponse::Consumed
-            }
-        }
+        self.modal_host.open_save_prompt();
     }
 
     pub fn open_studio_warning(&mut self) {
-        self.studio_warning_modal = Some(studio_warning_modal::StudioWarningModal::new());
+        self.modal_host.open_studio_warning();
     }
 
     pub fn open_pricing_page(&mut self) {
-        self.pricing_page = Some(pricing_page::PricingPage::new());
+        self.modal_host.open_pricing_page();
     }
 
     pub fn close_pricing_page(&mut self) {
-        self.pricing_page = None;
-        self.pricing_plan_modal = None;
-        self.pricing_license_modal = None;
-    }
-
-    fn handle_pricing_event(&mut self, event: &UiEvent) -> EventResponse {
-        if let Some(modal) = &mut self.pricing_license_modal {
-            return match modal.handle_event(event, self.screen_w, self.screen_h) {
-                pricing_license_modal::PricingLicenseModalResult::Consumed => EventResponse::Consumed,
-                pricing_license_modal::PricingLicenseModalResult::Close => {
-                    self.pricing_license_modal = None;
-                    EventResponse::Consumed
-                }
-                pricing_license_modal::PricingLicenseModalResult::Activate(key) => {
-                    self.pricing_license_modal = None;
-                    EventResponse::Action(UiAction::ActivateLicense { key })
-                }
-            };
-        }
-
-        if let Some(modal) = &mut self.pricing_plan_modal {
-            return match modal.handle_event(event, self.screen_w, self.screen_h) {
-                pricing_plan_modal::PricingPlanModalResult::Consumed => EventResponse::Consumed,
-                pricing_plan_modal::PricingPlanModalResult::Close => {
-                    self.pricing_plan_modal = None;
-                    EventResponse::Consumed
-                }
-                pricing_plan_modal::PricingPlanModalResult::Confirm(plan) => {
-                    self.pricing_plan_modal = None;
-                    EventResponse::Action(UiAction::SubscribePlan { plan })
-                }
-            };
-        }
-
-        let result = self
-            .pricing_page
-            .as_mut()
-            .unwrap()
-            .handle_event(event, self.screen_w, self.screen_h);
-        match result {
-            pricing_page::PricingResult::Consumed => EventResponse::Consumed,
-            pricing_page::PricingResult::Close => {
-                self.pricing_page = None;
-                EventResponse::Consumed
-            }
-            pricing_page::PricingResult::SelectPlan(plan) => {
-                self.pricing_plan_modal = Some(pricing_plan_modal::PricingPlanModal::new(
-                    plan.name().to_string(),
-                    plan.price().to_string(),
-                    plan.is_enterprise(),
-                ));
-                EventResponse::Consumed
-            }
-            pricing_page::PricingResult::ActivateLicense => {
-                self.pricing_license_modal = Some(pricing_license_modal::PricingLicenseModal::new());
-                EventResponse::Consumed
-            }
-        }
+        self.modal_host.close_pricing_page();
     }
 
     pub fn open_server_browser(&mut self) {
-        self.server_browser = Some(server_browser::ServerBrowserModal::new());
+        self.modal_host.open_server_browser();
     }
 
     pub fn open_add_server_modal(&mut self) {
-        self.add_server_modal = Some(server_browser::AddServerModal::new());
+        self.modal_host.open_add_server();
     }
 
     pub fn server_browser_mut(&mut self) -> Option<&mut server_browser::ServerBrowserModal> {
-        self.server_browser.as_mut()
+        self.modal_host.server_browser_mut()
     }
 
     pub fn open_connect_modal(&mut self, ip: &str, port: u16, join: bool) {
-        self.connect_modal = Some(connect_modal::ConnectModal::new_with_server(ip, port, join));
+        self.modal_host.open_connect(ip, port, join);
     }
 
     pub fn open_settings_modal(&mut self, fonts: Vec<String>) {
-        self.settings_modal = Some(settings_modal::SettingsModal::new(fonts));
+        self.modal_host.open_settings(fonts);
     }
 
     pub fn open_project_settings_modal(&mut self, instrumental_audio_path: Option<String>) {
-        self.project_settings_modal = Some(project_settings_modal::ProjectSettingsModal::new(
-            instrumental_audio_path,
-        ));
+        self.modal_host.open_project_settings(instrumental_audio_path);
     }
 
     pub fn set_project_instrumental_audio_path(&mut self, path: impl Into<String>) {
-        if let Some(modal) = &mut self.project_settings_modal {
-            modal.set_instrumental_audio_path(path);
-        }
+        self.modal_host.set_project_instrumental_audio_path(path);
     }
 
     pub fn close_project_settings_modal(&mut self) {
-        self.project_settings_modal = None;
+        self.modal_host.close_project_settings();
     }
 
     pub fn close_settings_modal(&mut self) {
-        self.settings_modal = None;
+        self.modal_host.close_settings();
     }
 
     pub fn rythmo_state(&self) -> &rythmo::RythmoState {
@@ -1758,7 +941,7 @@ impl Ui {
     pub fn resize(&mut self, screen_width: u32, screen_height: u32) {
         self.screen_w = screen_width as f32;
         self.screen_h = screen_height as f32;
-        self.topbar_widgets = Self::build_topbar(
+        self.topbar_widgets = shell::build_topbar(
             self.network_in_room,
             self.has_video,
             self.screen_w,
@@ -1808,6 +991,10 @@ impl Ui {
             renderer.texture_bind_group_layout(),
             renderer.texture_sampler(),
         );
+
+        // Update drawing overlay texture if needed
+        self.update_drawing_overlay(device, queue, renderer, project, render_frame, fps);
+
         let mut color_picker_bg_quads: Vec<QuadInstance> = Vec::new();
         let mut base_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
         let mut extra_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
@@ -1848,24 +1035,18 @@ impl Ui {
         let mut modal_labels: Vec<LabelInfo> = Vec::new(); // modal text (above modal backgrounds)
 
         // Pricing / support page replaces the entire layout while active.
-        if self.pricing_page.is_some() {
+        if self.modal_host.pricing_page.is_some() {
             // Page content is the "normal" layer; modals render into the modal
             // layer so their backgrounds and text always sit above the page text.
-            if let Some(page) = &self.pricing_page {
-                page.render(
-                    &mut quads,
-                    &mut overlay_quads,
-                    &mut labels,
-                    self.screen_w,
-                    self.screen_h,
-                );
-            }
-            if let Some(m) = &self.pricing_plan_modal {
-                m.render(&mut modal_quads, &mut modal_labels, self.screen_w, self.screen_h);
-            }
-            if let Some(m) = &self.pricing_license_modal {
-                m.render(&mut modal_quads, &mut modal_labels, self.screen_w, self.screen_h);
-            }
+            self.modal_host.render_pricing(
+                &mut quads,
+                &mut overlay_quads,
+                &mut labels,
+                &mut modal_quads,
+                &mut modal_labels,
+                self.screen_w,
+                self.screen_h,
+            );
             // Toasts (e.g. confirmation after subscribing / activating)
             self.toasts.render(
                 &mut overlay_quads,
@@ -1912,6 +1093,7 @@ impl Ui {
                         self.rythmo_state.syllable_drag.as_ref(),
                         &lang,
                         self.playing,
+                        &self.rythmo_state,
                     )
                     .and_then(|segments| renderer.cursor_pos_from_segments(&segments, ratio))
                     .or_else(|| {
@@ -1920,6 +1102,7 @@ impl Ui {
                             self.rythmo_state.syllable_drag.as_ref(),
                             &lang,
                             self.playing,
+                            &self.rythmo_state,
                             ratio,
                         )
                     })
@@ -1984,6 +1167,60 @@ impl Ui {
                         bind_group,
                     ));
                 }
+            }
+        }
+
+        // Drawing overlay
+        if let Some(cache) = &self.drawing_overlay_cache {
+            let zone = &self.layout.rythmo;
+            base_textured.push((
+                IconInstance {
+                    rect: [zone.x, zone.y, zone.width, zone.height],
+                    uv_rect: [0.0, 0.0, 1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0, 1.0],
+                },
+                &cache.bind_group,
+            ));
+        }
+
+        // Selection overlay (marquee + selected-strokes bbox & handles).
+        // Drawn into overlay_quads so it composites above the drawing overlay.
+        {
+            let zone = &self.layout.rythmo;
+            rythmo::render_selection_overlay(
+                zone,
+                render_frame,
+                project,
+                &self.rythmo_state,
+                &mut overlay_quads,
+            );
+        }
+
+        // Eraser cursor ring (visible like the pencil preview)
+        if self.erasing && self.active_mode == Some(ToolMode::Draw) {
+            let zone = &self.layout.rythmo;
+            let (cx, cy) = self.cursor_pos;
+            if zone.contains(cx, cy) {
+                let brush_radius_frac = match self.brush_radius_index {
+                    0 => 0.006,
+                    1 => 0.012,
+                    2 => 0.024,
+                    _ => 0.012,
+                };
+                let r_px = (brush_radius_frac * zone.height).max(2.0);
+                quads.push(QuadInstance {
+                    rect: [cx - r_px, cy - r_px, r_px * 2.0, r_px * 2.0],
+                    color: [0.0, 0.0, 0.0, 0.0],
+                    color_bottom: [0.0, 0.0, 0.0, 0.0],
+                    border_color: [0.95, 0.95, 0.98, 0.95],
+                    border_width: 1.5,
+                    border_radius: r_px,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0; 4],
+                    shadow_blur: 0.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
+                });
             }
         }
 
@@ -2224,112 +1461,12 @@ impl Ui {
             }
         }
 
-        // Settings modal
-        if let Some(modal) = &self.settings_modal {
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
-
-        if let Some(modal) = &self.project_settings_modal {
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
-
-        // Connect modal
-        if let Some(modal) = &self.connect_modal {
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
-
-        // Server browser
-        if let Some(modal) = &self.server_browser {
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
-
-        // Add server modal (on top of browser)
-        if let Some(modal) = &self.add_server_modal {
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
-
-        // Export modal
-        if let Some(modal) = &self.export_modal {
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
-
-        if let Some(modal) = &self.voice_actor_modal {
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
-
-        if let Some(modal) = &self.rename_character_modal {
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
-
-        // Proxy modal
-        if let Some(modal) = &self.proxy_modal {
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
-
-        // Save prompt modal
-        if let Some(modal) = &self.save_prompt_modal {
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
-
-        // Studio warning modal
-        if let Some(modal) = &self.studio_warning_modal {
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
+        self.modal_host.render_base(
+            &mut modal_quads,
+            &mut modal_labels,
+            self.screen_w,
+            self.screen_h,
+        );
 
         // Bande rythmo import loading modal (on top while a background parse runs)
         if let Some((label, started)) = &self.loading_project {
@@ -2541,38 +1678,13 @@ impl Ui {
             self.screen_h,
         );
 
-        // Whats-new modal is rendered above toasts so the release notes stay readable.
-        if let Some(modal) = &self.whats_new_modal {
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
-
-        // Proxy error modal is rendered last so it stays above toasts and progress.
-        if let Some(modal) = &self.proxy_error_modal {
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
-
-        // File explorer is rendered last so it stays above parent modals.
-        if let Some(modal) = &self.file_explorer_modal {
-            // Text is rendered in one final pass, so clear underlying labels here.
-            // Otherwise parent-modal text can appear above the picker card.
-            labels.clear();
-            modal.render(
-                &mut modal_quads,
-                &mut modal_labels,
-                self.screen_w,
-                self.screen_h,
-            );
-        }
+        self.modal_host.render_top(
+            &mut labels,
+            &mut modal_quads,
+            &mut modal_labels,
+            self.screen_w,
+            self.screen_h,
+        );
 
         renderer.render(
             device,
@@ -2766,7 +1878,7 @@ impl Ui {
 
         // Progress bar (in toolbar)
         if self.total_frames > 0 {
-            let pb = self.progress_bar_rect();
+            let pb = shell::progress_bar_rect(&self.layout);
             let progress = (self.current_frame as f32 / self.total_frames as f32).clamp(0.0, 1.0);
             // Track
             quads.push(QuadInstance {
@@ -2832,10 +1944,25 @@ impl Ui {
             rotation: 0.0,
             _padding: [0.0; 2],
         });
+        let ppf = crate::constants::PIXELS_PER_FRAME * crate::config::scroll_speed();
+        let visible_frames = (l.rythmo.width / ppf.max(0.001)) as i64 + 4;
+        let scene_center = render_frame.clamp(i64::MIN as f64, i64::MAX as f64) as i64;
+        let scene = RythmoScene::build(
+            project,
+            render_index,
+            SceneOptions {
+                frame_window: FrameWindow {
+                    first: scene_center.saturating_sub(visible_frames / 2 + 2),
+                    last: scene_center.saturating_add(visible_frames / 2 + 2),
+                },
+                current_frame: render_frame,
+                source_fps: fps,
+                ..SceneOptions::default()
+            },
+        );
         quads.extend(rythmo::render_rythmo_base(
             &l.rythmo,
             project,
-            render_index,
             render_frame,
             waveform,
             waveform_offset_frames,
@@ -2843,7 +1970,49 @@ impl Ui {
             self.playing,
             fps,
             &self.rythmo_state,
+            &scene,
         ));
+
+        // Resize handles between video/toolbar and toolbar/rythmo.
+        let (hover_video, hover_rythmo) = (
+            self.layout
+                .video_split_handle_rect()
+                .contains(self.cursor_pos.0, self.cursor_pos.1),
+            self.layout
+                .rythmo_split_handle_rect()
+                .contains(self.cursor_pos.0, self.cursor_pos.1),
+        );
+        let handles: [(Rect, bool); 2] = [
+            (
+                l.video_split_handle_rect(),
+                self.dragging_split == Some(shell::SplitHandle::Video) || hover_video,
+            ),
+            (
+                l.rythmo_split_handle_rect(),
+                self.dragging_split == Some(shell::SplitHandle::Rythmo) || hover_rythmo,
+            ),
+        ];
+        for (rect, active) in handles {
+            let color: [f32; 4] = if active {
+                [0.45, 0.55, 0.95, 0.95]
+            } else {
+                [0.20, 0.20, 0.24, 0.55]
+            };
+            let y = rect.y + rect.height / 2.0 - 1.0;
+            quads.push(QuadInstance {
+                rect: [rect.x, y, rect.width, 2.0],
+                color,
+                color_bottom: color,
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 0.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
+        }
 
         // Properties panel
         if let Some(props) = &l.properties {
@@ -3008,4 +2177,174 @@ impl Ui {
             &[], // modal_labels
         );
     }
+
+    fn update_drawing_overlay(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        renderer: &mut UiRenderer,
+        project: &Project,
+        current_frame: f64,
+        _fps: f64,
+    ) {
+        use crate::rythmo_drawing::{rasterize_window, visible_frame_window, DrawingStroke};
+
+        let zone = &self.layout.rythmo;
+        let zw = zone.width.max(1.0) as u32;
+        let zh = zone.height.max(1.0) as u32;
+        let cf = current_frame;
+        let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
+
+        // Compute cache key
+        let active_stroke_len = self
+            .rythmo_state
+            .active_stroke
+            .as_ref()
+            .map_or(0, |s| s.points.len());
+        // Use frame * 1000 as key to include sub-frame precision for smooth scrolling
+        let frame_key = (cf * 1000.0).round() as i64;
+        let key = (
+            frame_key,
+            zw,
+            zh,
+            project.revision(),
+            active_stroke_len,
+            self.rythmo_state.drawing_dirty,
+        );
+
+        // Check if we need to re-rasterize. A live transform drag mutates the
+        // actual stroke points without changing the revision, so force an
+        // update while a transform handle is active to keep strokes in sync.
+        let transform_active = self.rythmo_state.transform_handle.is_some();
+        let needs_update = transform_active
+            || self
+                .drawing_overlay_cache
+                .as_ref()
+                .is_none_or(|c| c.key != key);
+
+        if needs_update {
+            // Collect visible strokes
+            let (first_frame, last_frame) = visible_frame_window(zone.width, cf, ppf, 4);
+            let mut strokes: Vec<&DrawingStroke> =
+                project.drawing().query_window(first_frame, last_frame);
+
+            // Add active stroke for live preview
+            if let Some(ref active) = self.rythmo_state.active_stroke {
+                if active.points.len() > 1 {
+                    strokes.push(active);
+                }
+            }
+
+            if !strokes.is_empty() {
+                let rgba = rasterize_window(&strokes, zw, zh, cf, ppf);
+
+                // Reuse the existing GPU texture when the zone size is unchanged so
+                // scrolling/playback doesn't reallocate a texture every frame (which
+                // caused stutter). Only recreate when the zone is resized.
+                let mut reused = false;
+                if let Some(c) = self.drawing_overlay_cache.as_mut() {
+                    if c.zw == zw && c.zh == zh {
+                        queue.write_texture(
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &c._texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            &rgba,
+                            wgpu::TexelCopyBufferLayout {
+                                offset: 0,
+                                bytes_per_row: Some(4 * zw),
+                                rows_per_image: Some(zh),
+                            },
+                            wgpu::Extent3d {
+                                width: zw,
+                                height: zh,
+                                depth_or_array_layers: 1,
+                            },
+                        );
+                        c.key = key;
+                        reused = true;
+                    }
+                }
+
+                if !reused {
+                    // Create texture
+                    let texture = device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("Drawing Overlay"),
+                        size: wgpu::Extent3d {
+                            width: zw,
+                            height: zh,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    });
+
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &rgba,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(4 * zw),
+                            rows_per_image: Some(zh),
+                        },
+                        wgpu::Extent3d {
+                            width: zw,
+                            height: zh,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+
+                    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Drawing Overlay BG"),
+                        layout: renderer.texture_bind_group_layout(),
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(
+                                    renderer.texture_sampler(),
+                                ),
+                            },
+                        ],
+                    });
+
+                    self.drawing_overlay_cache = Some(DrawingOverlayCache {
+                        _texture: texture,
+                        bind_group,
+                        key,
+                        zw,
+                        zh,
+                    });
+                }
+            } else {
+                self.drawing_overlay_cache = None;
+            }
+        }
+
+        self.rythmo_state.drawing_dirty = false;
+    }
+}
+
+// Drawing overlay cache for GPU texture
+pub(crate) struct DrawingOverlayCache {
+    _texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+    key: (i64, u32, u32, u64, usize, bool),
+    zw: u32,
+    zh: u32,
 }

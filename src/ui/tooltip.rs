@@ -1,4 +1,4 @@
-use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, VAlign};
+use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, VAlign};
 
 const TOOLTIP_PADDING_H: f32 = 12.0;
 const TOOLTIP_PADDING_V: f32 = 6.0;

@@ -1,0 +1,33 @@
+{
+  "source_fps": 24.0,
+  "lines": [
+    {
+      "start_frame": 0,
+      "duration_frames": 24,
+      "y_slot": 0.0,
+      "text": "Narration",
+      "character_name": "Narrateur",
+      "character_color": [0.70, 0.40, 0.85, 1.0],
+      "voice_actor_names": ["Camille"],
+      "syllable_ratios": [],
+      "karaoke": false,
+      "note": "Voix off"
+    }
+  ],
+  "markers": [
+    { "kind": "liaison_left", "frame": 12 },
+    { "kind": "liaison_right", "frame": 18 },
+    { "kind": "scene_change", "frame": 48 }
+  ],
+  "characters": [
+    { "name": "Narrateur", "color": [0.70, 0.40, 0.85, 1.0] }
+  ],
+  "voice_actors": [
+    { "name": "Camille", "icon_path": "", "icon_png_base64": null }
+  ],
+  "settings": {
+    "source_audio_offset_frames": 0,
+    "instrumental_audio_offset_frames": 0
+  },
+  "drawing": { "strokes": [] }
+}

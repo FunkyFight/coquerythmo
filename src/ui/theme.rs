@@ -1,5 +1,5 @@
-/// Centralized theme — all colors, sizes, spacing.
-/// No magic numbers outside this file.
+// Centralized theme — all colors, sizes, spacing.
+// No magic numbers outside this file.
 
 // -- Zone backgrounds --
 pub const TOPBAR_BG: [f32; 4] = [0.11, 0.11, 0.13, 1.0];
@@ -80,7 +80,7 @@ pub const BORDER_RADIUS_DEFAULT: f32 = 8.0;
 pub const BORDER_RADIUS_SMALL: f32 = 4.0;
 pub const ICON_SIZE: u32 = 32;
 pub const TOPBAR_HEIGHT: f32 = 32.0;
-pub const TOOLBAR_HEIGHT: f32 = 40.0;
+pub const TOOLBAR_HEIGHT: f32 = 76.0;
 pub const TOOLBAR_BTN_SIZE: f32 = 32.0;
 pub const SLIDER_TRACK_H: f32 = 4.0;
 pub const SLIDER_THUMB_R: f32 = 7.0;

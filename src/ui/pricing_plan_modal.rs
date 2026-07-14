@@ -1,12 +1,10 @@
-use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
+use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
 
 pub struct PricingPlanModal {
     plan_name: String,
     plan_price: String,
     is_enterprise: bool,
-    confirm_rect: Rect,
-    close_rect: Rect,
 }
 
 pub enum PricingPlanModalResult {
@@ -21,8 +19,6 @@ impl PricingPlanModal {
             plan_name,
             plan_price,
             is_enterprise,
-            confirm_rect: Rect::default(),
-            close_rect: Rect::default(),
         }
     }
 
@@ -168,7 +164,8 @@ impl PricingPlanModal {
             font_family_override: None,
         });
 
-        let desc_lines = super::pricing_page::wrap_text(t("pricing.plan_modal.desc"), card.width - 48.0, 12.0);
+        let desc_lines =
+            super::pricing_page::wrap_text(t("pricing.plan_modal.desc"), card.width - 48.0, 12.0);
         let mut dy = card.y + 128.0;
         for line in desc_lines {
             labels.push(LabelInfo {
@@ -196,7 +193,12 @@ impl PricingPlanModal {
             [0.22, 0.50, 0.72, 1.0]
         };
         overlay.push(QuadInstance {
-            rect: [confirm_rect.x, confirm_rect.y, confirm_rect.width, confirm_rect.height],
+            rect: [
+                confirm_rect.x,
+                confirm_rect.y,
+                confirm_rect.width,
+                confirm_rect.height,
+            ],
             color: confirm_color,
             color_bottom: confirm_color,
             border_color: [0.5, 0.55, 0.7, 0.5],
@@ -226,7 +228,12 @@ impl PricingPlanModal {
         });
 
         overlay.push(QuadInstance {
-            rect: [close_rect.x, close_rect.y, close_rect.width, close_rect.height],
+            rect: [
+                close_rect.x,
+                close_rect.y,
+                close_rect.width,
+                close_rect.height,
+            ],
             color: [0.20, 0.20, 0.25, 1.0],
             color_bottom: [0.16, 0.16, 0.20, 1.0],
             border_color: [0.35, 0.35, 0.42, 0.6],

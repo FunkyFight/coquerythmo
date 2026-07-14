@@ -1,0 +1,30 @@
+{
+  "source_fps": 24.0,
+  "lines": [
+    {
+      "start_frame": 24,
+      "duration_frames": 96,
+      "y_slot": 0.5,
+      "text": "Un deux trois",
+      "character_name": "Chanteur",
+      "character_color": [0.35, 0.80, 0.45, 1.0],
+      "voice_actor_names": [],
+      "syllable_ratios": [0.25, 0.25, 0.5],
+      "karaoke": true,
+      "note": ""
+    }
+  ],
+  "markers": [
+    { "kind": "boucle", "frame": 24 },
+    { "kind": "scene_change", "frame": 120 }
+  ],
+  "characters": [
+    { "name": "Chanteur", "color": [0.35, 0.80, 0.45, 1.0] }
+  ],
+  "voice_actors": [],
+  "settings": {
+    "source_audio_offset_frames": 0,
+    "instrumental_audio_offset_frames": 0
+  },
+  "drawing": { "strokes": [] }
+}

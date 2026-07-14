@@ -71,6 +71,12 @@ pub struct VideoPlayer {
     waveform_jobs: Arc<AtomicU32>,
 }
 
+impl Default for VideoPlayer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 struct AudioClockSnapshot {
     wall_instant: Instant,
     audible_frame: i64,
@@ -1244,18 +1250,13 @@ fn decode_audio_stream_from(
     let chunk_bytes = chunk_samples * 4;
     let mut buf = vec![0u8; chunk_bytes];
 
-    loop {
-        match reader.read_exact(&mut buf) {
-            Ok(()) => {
-                let samples: Vec<f32> = buf
-                    .chunks_exact(4)
-                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                    .collect();
-                if tx.send(samples).is_err() {
-                    break;
-                }
-            }
-            Err(_) => break,
+    while let Ok(()) = reader.read_exact(&mut buf) {
+        let samples: Vec<f32> = buf
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        if tx.send(samples).is_err() {
+            break;
         }
     }
 

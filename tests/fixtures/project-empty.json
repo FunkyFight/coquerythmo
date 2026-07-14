@@ -1,0 +1,12 @@
+{
+  "source_fps": 24.0,
+  "lines": [],
+  "markers": [],
+  "characters": [],
+  "voice_actors": [],
+  "settings": {
+    "source_audio_offset_frames": 0,
+    "instrumental_audio_offset_frames": 0
+  },
+  "drawing": { "strokes": [] }
+}

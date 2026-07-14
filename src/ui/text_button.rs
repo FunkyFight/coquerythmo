@@ -1,6 +1,6 @@
 use super::interactive::{InteractiveResult, InteractiveState};
 use super::theme;
-use super::widget::{EventResponse, LabelInfo, QuadInstance, Rect, UiEvent, Widget};
+use super::primitives::{EventResponse, LabelInfo, QuadInstance, Rect, UiEvent, Widget};
 
 pub struct TextButton {
     bounds: Rect,
@@ -105,7 +105,7 @@ impl Widget for TextButton {
         }]
     }
 
-    fn render_icons(&self) -> Vec<super::widget::IconInstance> {
+    fn render_icons(&self) -> Vec<super::primitives::IconInstance> {
         vec![]
     }
 
@@ -118,9 +118,9 @@ impl Widget for TextButton {
         vec![LabelInfo {
             text: &self.label,
             bounds: self.bounds,
-            h_align: super::widget::HAlign::Center,
-            v_align: super::widget::VAlign::Center,
-            overflow: super::widget::Overflow::Clip,
+            h_align: super::primitives::HAlign::Center,
+            v_align: super::primitives::VAlign::Center,
+            overflow: super::primitives::Overflow::Clip,
             padding: 0.0,
             font_size_override: Some(12.0),
             color_override: Some(text_color),

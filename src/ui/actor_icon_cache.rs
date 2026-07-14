@@ -1,3 +1,6 @@
+//! GPU texture cache for voice-actor icons.
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::{HashMap, HashSet};
 
 use crate::project::Project;
@@ -23,6 +26,12 @@ pub struct ActorIconCache {
     failures: HashMap<String, FailedActorIcon>,
 }
 
+impl Default for ActorIconCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ActorIconCache {
     pub fn new() -> Self {
         Self {
@@ -40,7 +49,7 @@ impl ActorIconCache {
         sampler: &wgpu::Sampler,
     ) {
         let active_names: HashSet<&str> = project
-            .voice_actors
+            .voice_actors()
             .iter()
             .map(|actor| actor.name.as_str())
             .collect();
@@ -49,7 +58,7 @@ impl ActorIconCache {
         self.failures
             .retain(|name, _| active_names.contains(name.as_str()));
 
-        for actor in &project.voice_actors {
+        for actor in project.voice_actors() {
             let Some(icon_data) = actor.icon_png_base64.as_deref() else {
                 self.entries.remove(&actor.name);
                 self.failures.remove(&actor.name);
