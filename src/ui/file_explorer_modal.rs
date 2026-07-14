@@ -1,3 +1,4 @@
+﻿pub use crate::application::command::FilePickerIntent;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -46,28 +47,6 @@ impl FileFilterSpec {
         let ext = ext.to_ascii_lowercase();
         self.extensions.iter().any(|candidate| candidate == &ext)
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum FilePickerIntent {
-    AddVideo,
-    ImportProject,
-    ImportCappelaProject,
-    ImportSrtProject,
-    ExportProject,
-    QuickSave,
-    NewProjectSave,
-    VoiceActorIcon,
-    ProjectInstrumentalAudio,
-    ExportMp4 {
-        fps: f64,
-        br_scale: f32,
-        karaoke_text_scale: f32,
-        export_width: u32,
-        export_height: u32,
-        export_original_audio: bool,
-        export_instrumental_audio: bool,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

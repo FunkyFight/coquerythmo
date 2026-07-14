@@ -1,0 +1,30 @@
+{
+  "source_fps": 24.0,
+  "lines": [
+    { "start_frame": 0, "duration_frames": 24, "y_slot": 0.0, "text": "L0", "character_name": "A", "character_color": [0.35, 0.55, 0.90, 1.0], "voice_actor_names": [], "syllable_ratios": [], "karaoke": false, "note": "" },
+    { "start_frame": 30, "duration_frames": 36, "y_slot": 0.25, "text": "L1", "character_name": "B", "character_color": [0.90, 0.40, 0.35, 1.0], "voice_actor_names": [], "syllable_ratios": [], "karaoke": false, "note": "" },
+    { "start_frame": 72, "duration_frames": 48, "y_slot": 0.5, "text": "L2", "character_name": "C", "character_color": [0.35, 0.80, 0.45, 1.0], "voice_actor_names": [], "syllable_ratios": [], "karaoke": true, "note": "" },
+    { "start_frame": 128, "duration_frames": 72, "y_slot": 0.75, "text": "L3", "character_name": "A", "character_color": [0.35, 0.55, 0.90, 1.0], "voice_actor_names": [], "syllable_ratios": [0.5, 0.5], "karaoke": true, "note": "" },
+    { "start_frame": 216, "duration_frames": 24, "y_slot": 0.0, "text": "L4", "character_name": "B", "character_color": [0.90, 0.40, 0.35, 1.0], "voice_actor_names": [], "syllable_ratios": [], "karaoke": false, "note": "" },
+    { "start_frame": 252, "duration_frames": 36, "y_slot": 0.25, "text": "L5", "character_name": "C", "character_color": [0.35, 0.80, 0.45, 1.0], "voice_actor_names": [], "syllable_ratios": [], "karaoke": false, "note": "" },
+    { "start_frame": 304, "duration_frames": 60, "y_slot": 0.5, "text": "L6", "character_name": "A", "character_color": [0.35, 0.55, 0.90, 1.0], "voice_actor_names": [], "syllable_ratios": [0.25, 0.25, 0.5], "karaoke": true, "note": "" },
+    { "start_frame": 384, "duration_frames": 48, "y_slot": 0.75, "text": "L7", "character_name": "B", "character_color": [0.90, 0.40, 0.35, 1.0], "voice_actor_names": [], "syllable_ratios": [], "karaoke": false, "note": "" }
+  ],
+  "markers": [
+    { "kind": "boucle", "frame": 0 },
+    { "kind": "boucle", "frame": 192 },
+    { "kind": "scene_change", "frame": 288 },
+    { "kind": "out", "frame": 432 }
+  ],
+  "characters": [
+    { "name": "A", "color": [0.35, 0.55, 0.90, 1.0] },
+    { "name": "B", "color": [0.90, 0.40, 0.35, 1.0] },
+    { "name": "C", "color": [0.35, 0.80, 0.45, 1.0] }
+  ],
+  "voice_actors": [],
+  "settings": {
+    "source_audio_offset_frames": 0,
+    "instrumental_audio_offset_frames": 0
+  },
+  "drawing": { "strokes": [] }
+}

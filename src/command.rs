@@ -13,9 +13,11 @@ pub struct LineMove {
 }
 
 /// Each command stores before/after state for reversibility.
+#[derive(Clone)]
 pub enum Command {
     CreateLine {
-        line_id: u64,
+        snapshot: RythmoLine,
+        index: usize,
     },
     InsertLine {
         snapshot: RythmoLine,
@@ -92,6 +94,7 @@ pub enum Command {
         actor: VoiceActor,
     },
     AddMarker {
+        marker: RythmoMarker,
         index: usize,
     },
     RemoveMarker {
@@ -122,13 +125,14 @@ pub enum Command {
 }
 
 impl Command {
-    fn apply(&self, project: &mut Project) {
+    pub(crate) fn apply(&self, project: &mut Project) {
         match self {
-            Command::CreateLine { line_id: _ } => {
+            Command::CreateLine { snapshot, index } => {
+                project.upsert_line_at(*index, snapshot.clone());
                 // Line was already added — nothing to re-apply for redo
             }
             Command::InsertLine { snapshot, index } => {
-                project.insert_line_at(*index, snapshot.clone());
+                project.upsert_line_at(*index, snapshot.clone());
             }
             Command::DeleteLine { snapshot, .. } => {
                 project.remove_line(snapshot.id);
@@ -240,7 +244,8 @@ impl Command {
             Command::CreateVoiceActor { actor } => {
                 project.upsert_voice_actor(actor.clone());
             }
-            Command::AddMarker { .. } => {
+            Command::AddMarker { marker, index } => {
+                project.insert_marker(*index, marker.clone());
                 // Already added during execute — for redo
             }
             Command::RemoveMarker { index, .. } => {
@@ -297,10 +302,10 @@ impl Command {
         }
     }
 
-    fn unapply(&self, project: &mut Project) {
+    pub(crate) fn unapply(&self, project: &mut Project) {
         match self {
-            Command::CreateLine { line_id } => {
-                project.remove_line(*line_id);
+            Command::CreateLine { snapshot, .. } => {
+                project.remove_line(snapshot.id);
             }
             Command::InsertLine { snapshot, .. } => {
                 project.remove_line(snapshot.id);
@@ -450,7 +455,7 @@ impl Command {
             Command::CreateVoiceActor { actor } => {
                 project.remove_voice_actor(&actor.name);
             }
-            Command::AddMarker { index } => {
+            Command::AddMarker { index, .. } => {
                 let _ = project.remove_marker_at(*index);
             }
             Command::RemoveMarker { marker, index } => {
@@ -536,11 +541,21 @@ impl CommandHistory {
         self.undo_stack.last()
     }
 
+    pub fn last_matches_strokes(&self, stroke_ids: &[u64]) -> bool {
+        self.undo_stack.last().is_some_and(|command| {
+            matches!(command, Command::TransformStrokes { stroke_ids: ids, .. } if ids == stroke_ids)
+        })
+    }
+
     pub fn undo(&mut self, project: &mut Project) {
         if let Some(cmd) = self.undo_stack.pop() {
             cmd.unapply(project);
             self.redo_stack.push(cmd);
         }
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
     }
 
     pub fn redo(&mut self, project: &mut Project) {

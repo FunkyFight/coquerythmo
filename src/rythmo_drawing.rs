@@ -356,6 +356,32 @@ pub fn strokes_bbox(strokes: &[&DrawingStroke]) -> Option<(f64, f32, f64, f32)> 
 
 /// Transform strokes by translating, rotating, and scaling around a center point in frame-space.
 /// All coordinates are in frame-space (frame, y_frac).
+pub fn transformed_points(
+    points: &[(f64, f32)],
+    center: (f64, f32),
+    translate: (f64, f32),
+    rotate: f32,
+    scale: f32,
+) -> Vec<(f64, f32)> {
+    let (cx, cy) = center;
+    let cos_a = rotate.cos() as f64;
+    let sin_a = rotate.sin() as f64;
+    let scale_f64 = scale as f64;
+    points
+        .iter()
+        .map(|(frame, y)| {
+            let local_f = (*frame - cx) * scale_f64;
+            let local_y = (*y - cy) * scale;
+            let rot_f = local_f * cos_a - local_y as f64 * sin_a;
+            let rot_y = local_f * sin_a + local_y as f64 * cos_a;
+            (
+                rot_f + cx + translate.0,
+                (rot_y + cy as f64 + translate.1 as f64) as f32,
+            )
+        })
+        .collect()
+}
+
 pub fn transform_strokes(
     strokes: &mut [&mut DrawingStroke],
     center: (f64, f32),
@@ -363,25 +389,8 @@ pub fn transform_strokes(
     rotate: f32,
     scale: f32,
 ) {
-    let (cx, cy) = center;
-    let cos_a = rotate.cos() as f64;
-    let sin_a = rotate.sin() as f64;
-    let scale_f64 = scale as f64;
     for s in strokes {
-        for (f, y) in &mut s.points {
-            // Translate to local space around center
-            let local_f = *f - cx;
-            let local_y = *y - cy;
-            // Apply scale
-            let local_f = local_f * scale_f64;
-            let local_y = local_y * scale;
-            // Apply rotation
-            let rot_f = local_f * cos_a - local_y as f64 * sin_a;
-            let rot_y = local_f * sin_a + local_y as f64 * cos_a;
-            // Apply translation and move back to world space
-            *f = rot_f + cx + translate.0;
-            *y = (rot_y + cy as f64 + translate.1 as f64) as f32;
-        }
+        s.points = transformed_points(&s.points, center, translate, rotate, scale);
     }
 }
 

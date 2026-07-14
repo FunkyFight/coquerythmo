@@ -4,6 +4,10 @@ use std::time::{Duration, Instant};
 use crate::constants;
 use crate::project::Project;
 use crate::render_index::ProjectRenderIndex;
+use crate::rendering::rythmo::scene::{
+    karaoke_adjacent_max_gap_frames, karaoke_count_in_frames, karaoke_stack_height,
+    karaoke_stack_y, FrameWindow, RythmoScene, SceneLine, SceneOptions,
+};
 use crate::rythmo_layout;
 use crate::rythmo_line::{MarkerKind, RythmoLine};
 use crate::ui::widget::{IconInstance, QuadInstance, Rect};
@@ -60,173 +64,6 @@ fn rotated_line(
     );
     q.rotation = angle;
     q
-}
-
-fn same_karaoke_track(a: &RythmoLine, b: &RythmoLine) -> bool {
-    rythmo_layout::track_index_for_y_slot(a.y_slot)
-        == rythmo_layout::track_index_for_y_slot(b.y_slot)
-}
-
-fn karaoke_adjacent_max_gap_frames(fps: f64) -> i64 {
-    let fps = if fps.is_finite() && fps > 0.0 {
-        fps
-    } else {
-        24.0
-    };
-    (constants::KARAOKE_ADJACENT_MAX_GAP_SECONDS * fps).round() as i64
-}
-
-fn karaoke_count_in_frames(fps: f64) -> i64 {
-    let fps = if fps.is_finite() && fps > 0.0 {
-        fps
-    } else {
-        24.0
-    };
-    (constants::KARAOKE_COUNT_IN_SECONDS * fps).round().max(1.0) as i64
-}
-
-fn karaoke_count_in_progress(
-    line: &RythmoLine,
-    current_frame: f64,
-    count_in_frames: i64,
-) -> Option<f32> {
-    if !line.karaoke || current_frame >= line.start_frame as f64 || count_in_frames <= 0 {
-        return None;
-    }
-
-    let count_in_start = line.start_frame as f64 - count_in_frames as f64;
-    if current_frame < count_in_start {
-        return None;
-    }
-
-    Some(((current_frame - count_in_start) / count_in_frames as f64).clamp(0.0, 1.0) as f32)
-}
-
-fn karaoke_count_in_visible(line: &RythmoLine, current_frame: f64, count_in_frames: i64) -> bool {
-    karaoke_count_in_progress(line, current_frame, count_in_frames).is_some()
-}
-
-fn previous_line_on_same_track_before<'a>(
-    project: &'a Project,
-    line: &RythmoLine,
-) -> Option<&'a RythmoLine> {
-    project
-        .lines()
-        .filter(|candidate| {
-            candidate.id != line.id
-                && same_karaoke_track(candidate, line)
-                && (candidate.start_frame < line.start_frame
-                    || (candidate.start_frame == line.start_frame && candidate.id < line.id))
-        })
-        .max_by_key(|candidate| (candidate.start_frame, candidate.id))
-}
-
-fn previous_karaoke_line_before<'a>(
-    project: &'a Project,
-    line: &RythmoLine,
-    max_gap_frames: i64,
-) -> Option<&'a RythmoLine> {
-    let previous = previous_line_on_same_track_before(project, line)?;
-    if previous.karaoke && (line.start_frame - previous.end_frame()).max(0) <= max_gap_frames {
-        Some(previous)
-    } else {
-        None
-    }
-}
-
-fn karaoke_prestart_scroll_visible(
-    project: &Project,
-    line: &RythmoLine,
-    current_frame: f64,
-    max_gap_frames: i64,
-    count_in_frames: i64,
-) -> bool {
-    line.karaoke
-        && karaoke_count_in_visible(line, current_frame, count_in_frames)
-        && previous_karaoke_line_before(project, line, max_gap_frames).is_none()
-}
-
-fn karaoke_upcoming_stack_visible(
-    project: &Project,
-    line: &RythmoLine,
-    current_frame: f64,
-    max_gap_frames: i64,
-) -> bool {
-    if !line.karaoke || current_frame >= line.start_frame as f64 {
-        return false;
-    }
-
-    previous_karaoke_line_before(project, line, max_gap_frames)
-        .is_some_and(|previous| current_frame >= previous.start_frame as f64)
-}
-
-fn karaoke_island_index(project: &Project, line: &RythmoLine, max_gap_frames: i64) -> usize {
-    let mut index = 0;
-    let mut current = line;
-    while let Some(previous) = previous_karaoke_line_before(project, current, max_gap_frames) {
-        index += 1;
-        current = previous;
-    }
-    if previous_line_on_same_track_before(project, current)
-        .is_some_and(|previous| !previous.karaoke)
-    {
-        index += 1;
-    }
-    index
-}
-
-fn karaoke_stack_row(project: &Project, line: &RythmoLine, max_gap_frames: i64) -> usize {
-    karaoke_island_index(project, line, max_gap_frames) % 2
-}
-
-fn karaoke_stack_height(height: f32, scale: f32) -> f32 {
-    ((height - rythmo_layout::karaoke_stack_gap(height, scale)).max(1.0) / 2.0).max(1.0)
-}
-
-fn karaoke_stack_y(y: f32, height: f32, row: usize, scale: f32) -> f32 {
-    let row_h = karaoke_stack_height(height, scale);
-    y + row.min(1) as f32 * (row_h + rythmo_layout::karaoke_stack_gap(height, scale))
-}
-
-fn karaoke_character_label_visible(
-    project: &Project,
-    line: &RythmoLine,
-    max_gap_frames: i64,
-) -> bool {
-    if !line.karaoke || line.character_name.is_empty() {
-        return false;
-    }
-
-    previous_karaoke_line_before(project, line, max_gap_frames)
-        .map(|previous| previous.character_name != line.character_name)
-        .unwrap_or(true)
-}
-
-fn playhead_skip_ranges(
-    project: &Project,
-    current_frame: f64,
-    layouts: &[rythmo_layout::TrackLayout],
-    ruler_h: f32,
-    slot_header_h: f32,
-    badge_gap: f32,
-    max_gap_frames: i64,
-    scale: f32,
-) -> Vec<(f32, f32)> {
-    project
-        .lines()
-        .filter(|line| line.karaoke && line.karaoke_active(current_frame))
-        .filter_map(|line| {
-            let track = rythmo_layout::track_for_y_slot(layouts, line.y_slot)?;
-            let body_y = ruler_h + track.top + slot_header_h + badge_gap;
-            let line_y = karaoke_stack_y(
-                body_y,
-                track.body_h,
-                karaoke_stack_row(project, line, max_gap_frames),
-                scale,
-            );
-            Some((line_y, line_y + karaoke_stack_height(track.body_h, scale)))
-        })
-        .collect()
 }
 
 fn push_playhead_segments(
@@ -358,16 +195,12 @@ fn karaoke_count_in_dot_rect(
 fn push_karaoke_count_in_dot(
     quads: &mut Vec<QuadInstance>,
     line: &RythmoLine,
-    current_frame: f64,
     x: f32,
     y: f32,
-    count_in_frames: i64,
+    count_in_progress: Option<f32>,
     scale: f32,
 ) {
-    let Some(count_in_progress) = karaoke_count_in_progress(line, current_frame, count_in_frames)
-    else {
-        return;
-    };
+    let Some(count_in_progress) = count_in_progress else { return };
 
     let (dx, dy, size) = karaoke_count_in_dot_rect(x, y, count_in_progress, scale);
     let mut shadow = quad(
@@ -1141,7 +974,7 @@ impl GpuRenderer {
 
     fn prepare_drawing_overlay(
         &mut self,
-        scene: &GpuExportScene<'_>,
+        scene: &RythmoScene,
         current_frame: f64,
         width: u32,
         height: u32,
@@ -1153,7 +986,11 @@ impl GpuRenderer {
             ppf,
             4,
         );
-        let strokes = scene.project.drawing.query_window(first_frame, last_frame);
+        let strokes: Vec<_> = scene
+            .drawings
+            .iter()
+            .filter(|stroke| stroke.intersects_window(first_frame, last_frame))
+            .collect();
         if strokes.is_empty() {
             return false;
         }
@@ -2118,16 +1955,33 @@ impl GpuRenderer {
         let font_size = constants::RYTHMO_FONT_SIZE * s;
         let badge_font = constants::BADGE_FONT_SIZE * s;
         let badge_char_w = constants::BADGE_CHAR_W * s;
-        let track_indices = rythmo_layout::used_track_indices(scene.project);
-        let track_layouts = rythmo_layout::build_track_layouts(
+        let visible_frames = (width as f32 / ppf) as i64 + 4;
+        let render_margin_frames = ((source_fps.max(1.0) * 10.0).round() as i64)
+            .max(karaoke_adjacent_max_gap_frames(source_fps))
+            .max(karaoke_count_in_frames(source_fps))
+            .saturating_add(scene.render_index.max_duration_frames());
+        let common_scene = RythmoScene::build(
             scene.project,
-            &track_indices,
-            normal_slot_h,
-            slot_header_h,
-            badge_gap,
-            s,
+            &scene.render_index,
+            SceneOptions {
+                frame_window: FrameWindow {
+                    first: (current_frame.floor() as i64)
+                        .saturating_sub(visible_frames / 2)
+                        .saturating_sub(render_margin_frames),
+                    last: (current_frame.ceil() as i64)
+                        .saturating_add(visible_frames / 2)
+                        .saturating_add(render_margin_frames),
+                },
+                current_frame,
+                source_fps,
+                normal_body_height: normal_slot_h,
+                slot_header_height: slot_header_h,
+                badge_gap,
+                scale: s,
+            },
         );
-        let height = (ruler_h + rythmo_layout::total_tracks_height(&track_layouts)).ceil() as u32;
+        let track_layouts = &common_scene.tracks;
+        let height = (ruler_h + rythmo_layout::total_tracks_height(track_layouts)).ceil() as u32;
 
         self.ensure_offscreen(width, height);
 
@@ -2143,7 +1997,6 @@ impl GpuRenderer {
         icon_batches.clear();
 
         // ── Ruler ticks ──
-        let visible_frames = (w / ppf) as i64 + 4;
         let cf_i64 = current_frame as i64;
         let first_tick = ((cf_i64 - visible_frames / 2) / constants::TICK_GAP_FRAMES)
             * constants::TICK_GAP_FRAMES;
@@ -2174,23 +2027,11 @@ impl GpuRenderer {
             tf += constants::TICK_GAP_FRAMES;
         }
 
-        let karaoke_max_gap_frames = karaoke_adjacent_max_gap_frames(source_fps);
-        let karaoke_count_in_frame_count = karaoke_count_in_frames(source_fps);
-        let render_margin_frames =
-            ((source_fps.max(1.0) * 10.0).round() as i64).max(karaoke_max_gap_frames);
-        let half_visible_frames = (w / ppf / 2.0).ceil() as i64 + render_margin_frames;
-        let first_visible_frame = cf_i64.saturating_sub(half_visible_frames);
-        let last_visible_frame = cf_i64.saturating_add(half_visible_frames);
-
         // ── Playhead, split around active karaoke lines ──
-        let playhead_gaps = playhead_skip_ranges(
-            scene.project,
-            current_frame,
-            &track_layouts,
+        let playhead_gaps = common_scene.active_karaoke_skip_ranges(
             ruler_h,
             slot_header_h,
             badge_gap,
-            karaoke_max_gap_frames,
             s,
         );
         push_playhead_segments(
@@ -2204,19 +2045,11 @@ impl GpuRenderer {
         // ── Lines ──
         // Precompute every visible line's rect + character name so a badge can be tested
         // against OTHER lines (same char → hide, different char → 50% opacity).
-        let mut compute_line_rect = |line: &RythmoLine| -> Option<Rect> {
-            let karaoke_active = line.karaoke_active(current_frame);
-            let karaoke_count_in =
-                karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
-            let karaoke_prestart_scroll = karaoke_prestart_scroll_visible(
-                scene.project,
-                line,
-                current_frame,
-                karaoke_max_gap_frames,
-                karaoke_count_in_frame_count,
-            );
-            let karaoke_upcoming_stack =
-                karaoke_upcoming_stack_visible(scene.project, line, current_frame, karaoke_max_gap_frames);
+        let mut compute_line_rect = |scene_line: &SceneLine| -> Option<Rect> {
+            let line = &scene_line.line;
+            let karaoke_active = scene_line.karaoke_active;
+            let karaoke_prestart_scroll = scene_line.karaoke_prestart_scroll;
+            let karaoke_upcoming_stack = scene_line.karaoke_upcoming_stack;
             if line.karaoke
                 && !karaoke_active
                 && !karaoke_prestart_scroll
@@ -2233,7 +2066,7 @@ impl GpuRenderer {
             if x1 + lw < 0.0 || x1 > w {
                 return None;
             }
-            let track = rythmo_layout::track_for_y_slot(&track_layouts, line.y_slot)?;
+            let track = rythmo_layout::track_for_y_slot(track_layouts, line.y_slot)?;
             let y_base = ruler_h + track.top;
             let body_y = y_base + slot_header_h + badge_gap;
             let mut line_y = body_y;
@@ -2242,7 +2075,7 @@ impl GpuRenderer {
                 line_y = karaoke_stack_y(
                     body_y,
                     track.body_h,
-                    karaoke_stack_row(scene.project, line, karaoke_max_gap_frames),
+                    scene_line.karaoke_stack_row,
                     s,
                 );
                 body_h = karaoke_stack_height(track.body_h, s);
@@ -2255,41 +2088,18 @@ impl GpuRenderer {
             })
         };
         let mut line_rects: HashMap<u64, (Rect, String)> = HashMap::new();
-        for line_id in scene.render_index.visible_line_ids(
-            scene.project,
-            first_visible_frame,
-            last_visible_frame,
-        ) {
-            if let Some(line) = scene.project.get_line(line_id) {
-                if let Some(r) = compute_line_rect(line) {
-                    line_rects.insert(line.id, (r, line.character_name.clone()));
-                }
+        for scene_line in &common_scene.lines {
+            if let Some(r) = compute_line_rect(scene_line) {
+                let line = &scene_line.line;
+                line_rects.insert(line.id, (r, line.character_name.clone()));
             }
         }
-        for line_id in scene.render_index.visible_line_ids(
-            scene.project,
-            first_visible_frame,
-            last_visible_frame,
-        ) {
-            let Some(line) = scene.project.get_line(line_id) else {
-                continue;
-            };
-            let karaoke_active = line.karaoke_active(current_frame);
-            let karaoke_count_in =
-                karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
-            let karaoke_prestart_scroll = karaoke_prestart_scroll_visible(
-                scene.project,
-                line,
-                current_frame,
-                karaoke_max_gap_frames,
-                karaoke_count_in_frame_count,
-            );
-            let karaoke_upcoming_stack = karaoke_upcoming_stack_visible(
-                scene.project,
-                line,
-                current_frame,
-                karaoke_max_gap_frames,
-            );
+        for scene_line in &common_scene.lines {
+            let line = &scene_line.line;
+            let karaoke_active = scene_line.karaoke_active;
+            let karaoke_count_in = scene_line.karaoke_count_in_progress.is_some();
+            let karaoke_prestart_scroll = scene_line.karaoke_prestart_scroll;
+            let karaoke_upcoming_stack = scene_line.karaoke_upcoming_stack;
             if line.karaoke
                 && !karaoke_active
                 && !karaoke_prestart_scroll
@@ -2308,7 +2118,7 @@ impl GpuRenderer {
                 continue;
             }
 
-            let Some(track) = rythmo_layout::track_for_y_slot(&track_layouts, line.y_slot) else {
+            let Some(track) = rythmo_layout::track_for_y_slot(track_layouts, line.y_slot) else {
                 continue;
             };
             let y_base = ruler_h + track.top;
@@ -2319,7 +2129,7 @@ impl GpuRenderer {
                 line_y = karaoke_stack_y(
                     body_y,
                     track.body_h,
-                    karaoke_stack_row(scene.project, line, karaoke_max_gap_frames),
+                    scene_line.karaoke_stack_row,
                     s,
                 );
                 body_h = karaoke_stack_height(track.body_h, s);
@@ -2333,8 +2143,7 @@ impl GpuRenderer {
             // Rectangular, top-aligned, right edge a few px left of the line's left edge.
             let badge_x = x1 - badge_w - constants::BADGE_GAP * s;
             let badge_y = line_y;
-            let show_badge = !line.karaoke
-                || karaoke_character_label_visible(scene.project, line, karaoke_max_gap_frames);
+            let show_badge = !line.karaoke || scene_line.character_label_visible;
 
             // Overlap detection vs OTHER lines: hide if same character, 50% opacity if different
             let mut badge_hidden = false;
@@ -2403,7 +2212,7 @@ impl GpuRenderer {
                         &mut all_icons,
                         &mut icon_batches,
                     );
-                    if let Some(progress) = line.karaoke_progress(current_frame) {
+                    if let Some(progress) = scene_line.karaoke_progress {
                         let visual_progress = crate::syllable::visual_progress_from_timing(
                             &line.text,
                             &line.syllable_ratios,
@@ -2548,10 +2357,9 @@ impl GpuRenderer {
                 push_karaoke_count_in_dot(
                     &mut quads,
                     line,
-                    current_frame,
                     x1,
                     line_y,
-                    karaoke_count_in_frame_count,
+                    scene_line.karaoke_count_in_progress,
                     s,
                 );
             } else {
@@ -2591,13 +2399,10 @@ impl GpuRenderer {
             cf_i64.saturating_sub((w / ppf / 2.0).ceil() as i64 + marker_margin_frames);
         let last_marker_frame =
             cf_i64.saturating_add((w / ppf / 2.0).ceil() as i64 + marker_margin_frames);
-        for marker_index in scene
-            .render_index
-            .visible_marker_indices(first_marker_frame, last_marker_frame)
-        {
-            let Some(marker) = scene.project.markers.get(marker_index) else {
+        for marker in &common_scene.markers {
+            if marker.frame < first_marker_frame || marker.frame > last_marker_frame {
                 continue;
-            };
+            }
             let mx = center_x + (marker.frame as f64 - current_frame) as f32 * ppf;
             if mx < -10.0 * s || mx > w + 10.0 * s {
                 continue;
@@ -2711,7 +2516,7 @@ impl GpuRenderer {
         // Match the editor's layer order: drawings cover the rendered BR and
         // are themselves free of editing handles or selection UI.
         let drawing_icon_index = if self.prepare_drawing_overlay(
-            scene,
+            &common_scene,
             current_frame,
             width,
             height,
@@ -2946,16 +2751,34 @@ mod tests {
         project.get_line_mut(first_karaoke_id).unwrap().karaoke = true;
         project.get_line_mut(second_karaoke_id).unwrap().karaoke = true;
 
-        let max_gap_frames = karaoke_adjacent_max_gap_frames(24.0);
-        let first_karaoke = project.get_line(first_karaoke_id).unwrap();
-        let second_karaoke = project.get_line(second_karaoke_id).unwrap();
-
+        let mut index = ProjectRenderIndex::new();
+        index.refresh(&project);
+        let scene = RythmoScene::build(
+            &project,
+            &index,
+            SceneOptions {
+                frame_window: FrameWindow { first: 0, last: 120 },
+                current_frame: 48.0,
+                source_fps: 24.0,
+                ..SceneOptions::default()
+            },
+        );
         assert_eq!(
-            karaoke_stack_row(&project, first_karaoke, max_gap_frames),
+            scene
+                .lines
+                .iter()
+                .find(|line| line.line.id == first_karaoke_id)
+                .unwrap()
+                .karaoke_stack_row,
             1
         );
         assert_eq!(
-            karaoke_stack_row(&project, second_karaoke, max_gap_frames),
+            scene
+                .lines
+                .iter()
+                .find(|line| line.line.id == second_karaoke_id)
+                .unwrap()
+                .karaoke_stack_row,
             0
         );
     }

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RythmoLine {
     pub id: u64,
     pub start_frame: i64,

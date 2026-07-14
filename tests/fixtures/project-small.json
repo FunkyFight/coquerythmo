@@ -1,0 +1,43 @@
+{
+  "source_fps": 24.0,
+  "lines": [
+    {
+      "start_frame": 12,
+      "duration_frames": 36,
+      "y_slot": 0.25,
+      "text": "Bonjour",
+      "character_name": "Alice",
+      "character_color": [0.35, 0.55, 0.90, 1.0],
+      "voice_actor_names": [],
+      "syllable_ratios": [],
+      "karaoke": false,
+      "note": ""
+    },
+    {
+      "start_frame": 60,
+      "duration_frames": 48,
+      "y_slot": 0.5,
+      "text": "Au revoir",
+      "character_name": "Bob",
+      "character_color": [0.90, 0.40, 0.35, 1.0],
+      "voice_actor_names": [],
+      "syllable_ratios": [],
+      "karaoke": false,
+      "note": "fin"
+    }
+  ],
+  "markers": [
+    { "kind": "boucle", "frame": 0 },
+    { "kind": "out", "frame": 120 }
+  ],
+  "characters": [
+    { "name": "Alice", "color": [0.35, 0.55, 0.90, 1.0] },
+    { "name": "Bob", "color": [0.90, 0.40, 0.35, 1.0] }
+  ],
+  "voice_actors": [],
+  "settings": {
+    "source_audio_offset_frames": 0,
+    "instrumental_audio_offset_frames": 0
+  },
+  "drawing": { "strokes": [] }
+}

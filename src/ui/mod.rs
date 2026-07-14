@@ -1,3 +1,4 @@
+pub use crate::application::command::ToolMode;
 pub mod actor_icon_cache;
 pub mod color_picker;
 pub mod connect_modal;
@@ -8,6 +9,7 @@ pub mod icon_button;
 pub mod icons;
 pub mod interactive;
 pub mod layout;
+pub mod modal_host;
 pub mod license_badge;
 pub mod project_settings_modal;
 pub mod pricing_page;
@@ -15,6 +17,7 @@ pub mod pricing_plan_modal;
 pub mod pricing_license_modal;
 pub mod proxy_error_modal;
 pub mod proxy_modal;
+pub mod primitives;
 pub mod rename_character_modal;
 pub mod renderer;
 pub mod rythmo;
@@ -46,17 +49,18 @@ use widget::{
 use crate::i18n::t;
 use crate::project::Project;
 use crate::render_index::ProjectRenderIndex;
+use crate::rendering::rythmo::scene::{FrameWindow, RythmoScene, SceneOptions};
 
 use self::actor_icon_cache::ActorIconCache;
 use self::dropdown::Dropdown;
 use self::icon_button::IconButton;
 use self::icons::IconAtlas;
+use self::modal_host::ModalHost;
 use self::renderer::UiRenderer;
 use self::slider::Slider;
 use self::text_button::TextButton;
 
 use theme::*;
-use crate::rythmo_drawing::DrawingStroke;
 
 pub(crate) fn scroll_delta_to_frames(delta: f32, multiplier: f32) -> i32 {
     scroll_delta_to_frames_impl(delta, multiplier)
@@ -87,12 +91,6 @@ enum SplitHandle {
     Rythmo,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolMode {
-    Select,
-    Draw,
-}
-
 pub struct Ui {
     topbar_widgets: Vec<Box<dyn Widget>>,
     toolbar_widgets: Vec<Box<dyn Widget>>,
@@ -116,23 +114,7 @@ pub struct Ui {
     pub export_render_backend: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
     export_label: String,
     pub progress_prefix: String,
-    connect_modal: Option<connect_modal::ConnectModal>,
-    settings_modal: Option<settings_modal::SettingsModal>,
-    project_settings_modal: Option<project_settings_modal::ProjectSettingsModal>,
-    export_modal: Option<export_modal::ExportModal>,
-    file_explorer_modal: Option<file_explorer_modal::FileExplorerModal>,
-    proxy_modal: Option<proxy_modal::ProxyModal>,
-    rename_character_modal: Option<rename_character_modal::RenameCharacterModal>,
-    proxy_error_modal: Option<proxy_error_modal::ProxyErrorModal>,
-    server_browser: Option<server_browser::ServerBrowserModal>,
-    add_server_modal: Option<server_browser::AddServerModal>,
-    save_prompt_modal: Option<save_prompt_modal::SavePromptModal>,
-    studio_warning_modal: Option<studio_warning_modal::StudioWarningModal>,
-    voice_actor_modal: Option<voice_actor_modal::VoiceActorModal>,
-    whats_new_modal: Option<whats_new_modal::WhatsNewModal>,
-    pricing_page: Option<pricing_page::PricingPage>,
-    pricing_plan_modal: Option<pricing_plan_modal::PricingPlanModal>,
-    pricing_license_modal: Option<pricing_license_modal::PricingLicenseModal>,
+    pub modal_host: ModalHost,
     actor_icon_cache: ActorIconCache,
     network_in_room: bool,
     pub network_status: String,
@@ -148,7 +130,7 @@ pub has_video: bool,
     pub brush_radius_index: usize,
     pub erasing: bool,
     pub brush_picking: bool,
-    pub drawing_overlay_cache: Option<DrawingOverlayCache>,
+    pub(crate) drawing_overlay_cache: Option<DrawingOverlayCache>,
     pub brush_color_presets: [[f32; 4]; 8],
     pub brush_color_preset_index: usize,
     pub toasts: toast::ToastManager,
@@ -222,23 +204,7 @@ impl Ui {
             export_render_backend: None,
             export_label: String::new(),
             progress_prefix: String::new(),
-            connect_modal: None,
-            settings_modal: None,
-            project_settings_modal: None,
-            export_modal: None,
-            file_explorer_modal: None,
-            proxy_modal: None,
-            rename_character_modal: None,
-            proxy_error_modal: None,
-            server_browser: None,
-            add_server_modal: None,
-            save_prompt_modal: None,
-            studio_warning_modal: None,
-            voice_actor_modal: None,
-            whats_new_modal: None,
-            pricing_page: None,
-            pricing_plan_modal: None,
-            pricing_license_modal: None,
+            modal_host: ModalHost::new(),
             actor_icon_cache: ActorIconCache::new(),
             network_in_room: false,
             network_status: "".into(),
@@ -866,17 +832,6 @@ impl Ui {
                 vec![]
             }
         }
-        // Preset colors: white, red, green, blue, yellow, cyan, magenta, black
-        static PRESET_COLORS: &[[f32; 4]] = &[
-            [1.0, 1.0, 1.0, 1.0],  // white
-            [1.0, 0.2, 0.2, 1.0],  // red
-            [0.2, 1.0, 0.2, 1.0],  // green
-            [0.2, 0.6, 1.0, 1.0],  // blue
-            [1.0, 1.0, 0.2, 1.0],  // yellow
-            [0.2, 1.0, 1.0, 1.0],  // cyan
-            [1.0, 0.2, 1.0, 1.0],  // magenta
-            [0.1, 0.1, 0.1, 1.0],  // black
-        ];
         let color_btn = ColorButton {
             bounds: Rect {
                 x,
@@ -937,7 +892,7 @@ impl Ui {
     pub fn handle_event(
         &mut self,
         event: &UiEvent,
-        project: &mut Project,
+        project: &Project,
         render_frame: f64,
         fps: f64,
     ) -> EventResponse {
@@ -951,22 +906,22 @@ impl Ui {
         }
 
         // Pricing / support page replaces the entire layout while active.
-        if self.pricing_page.is_some() {
+        if self.modal_host.pricing_page.is_some() {
             return self.handle_pricing_event(event);
         }
 
         // File explorer is topmost and keeps parent modals alive underneath.
-        if self.file_explorer_modal.is_some() {
+        if self.modal_host.file_explorer.is_some() {
             return self.handle_file_explorer_event(event);
         }
 
         // Proxy error modal blocks all input, including toast dismissal.
-        if self.proxy_error_modal.is_some() {
+        if self.modal_host.proxy_error.is_some() {
             return self.handle_proxy_error_modal_event(event);
         }
 
         // Whats-new modal blocks all regular input while release notes are shown.
-        if self.whats_new_modal.is_some() {
+        if self.modal_host.whats_new.is_some() {
             return self.handle_whats_new_modal_event(event);
         }
 
@@ -984,56 +939,56 @@ impl Ui {
         }
 
         // Settings modal intercepts all input
-        if self.settings_modal.is_some() {
+        if self.modal_host.settings.is_some() {
             return self.handle_settings_modal_event(event);
         }
 
-        if self.project_settings_modal.is_some() {
+        if self.modal_host.project_settings.is_some() {
             return self.handle_project_settings_modal_event(event);
         }
 
         // Studio warning modal
-        if self.studio_warning_modal.is_some() {
+        if self.modal_host.studio_warning.is_some() {
             return self.handle_studio_warning_event(event);
         }
 
         // Save prompt modal (new project)
-        if self.save_prompt_modal.is_some() {
+        if self.modal_host.save_prompt.is_some() {
             return self.handle_save_prompt_event(event);
         }
 
         // Export modal intercepts all input
-        if self.export_modal.is_some() {
+        if self.modal_host.export.is_some() {
             return self.handle_export_modal_event(event);
         }
 
         // Voice actor creation modal intercepts all input
-        if self.voice_actor_modal.is_some() {
+        if self.modal_host.voice_actor.is_some() {
             return self.handle_voice_actor_modal_event(event);
         }
 
         // Character rename modal intercepts all input
-        if self.rename_character_modal.is_some() {
+        if self.modal_host.rename_character.is_some() {
             return self.handle_rename_character_modal_event(event);
         }
 
         // Proxy modal intercepts all input
-        if self.proxy_modal.is_some() {
+        if self.modal_host.proxy.is_some() {
             return self.handle_proxy_modal_event(event);
         }
 
         // Add server modal intercepts all input
-        if self.add_server_modal.is_some() {
+        if self.modal_host.add_server.is_some() {
             return self.handle_add_server_event(event);
         }
 
         // Server browser intercepts all input
-        if self.server_browser.is_some() {
+        if self.modal_host.server_browser.is_some() {
             return self.handle_server_browser_event(event);
         }
 
         // Connect modal intercepts all input
-        if self.connect_modal.is_some() {
+        if self.modal_host.connect.is_some() {
             return self.handle_connect_modal_event(event);
         }
 
@@ -1111,9 +1066,6 @@ impl Ui {
         }
 
         // Intercept UI actions for tool mode / brush settings (handled locally in Ui)
-        if let EventResponse::Action(action) = &*(&EventResponse::Ignored) {
-            // placeholder - actual interception below
-        }
         // Check if any widget returned an action we handle locally
         // We need to check the responses from the widget loops above
         // Since we returned early on any non-Ignored, we handle them here by re-checking
@@ -1269,7 +1221,7 @@ impl Ui {
                 }
                 None
             }
-            UiEvent::MouseMove { x, y } => {
+            UiEvent::MouseMove { y, .. } => {
                 if let Some(handle) = self.dragging_split {
                     let requested = match handle {
                         SplitHandle::Video => (*y) - TOPBAR_H,
@@ -1355,9 +1307,10 @@ impl Ui {
     }
 
     pub fn needs_background_poll(&self) -> bool {
-        self.server_browser.is_some()
+        self.modal_host.server_browser.is_some()
             || self
-                .file_explorer_modal
+                .modal_host
+                .file_explorer
                 .as_ref()
                 .is_some_and(|modal| modal.needs_background_poll())
     }
@@ -1365,21 +1318,24 @@ impl Ui {
     pub fn next_cursor_blink_deadline(&self) -> Option<std::time::Instant> {
         let mut deadline = self.rythmo_state.next_cursor_blink_deadline();
         if let Some(modal_deadline) = self
-            .file_explorer_modal
+            .modal_host
+            .file_explorer
             .as_ref()
             .and_then(|modal| modal.next_cursor_blink_deadline())
         {
             deadline = Some(deadline.map_or(modal_deadline, |current| current.min(modal_deadline)));
         }
         if let Some(modal_deadline) = self
-            .rename_character_modal
+            .modal_host
+            .rename_character
             .as_ref()
             .and_then(|modal| modal.next_cursor_blink_deadline())
         {
             deadline = Some(deadline.map_or(modal_deadline, |current| current.min(modal_deadline)));
         }
         if let Some(modal_deadline) = self
-            .pricing_license_modal
+            .modal_host
+            .pricing_license
             .as_ref()
             .map(|modal| modal.next_cursor_blink_deadline())
         {
@@ -1539,30 +1495,31 @@ impl Ui {
     pub fn is_editing_text(&self) -> bool {
         self.rythmo_state.is_editing()
             || self
-                .file_explorer_modal
+                .modal_host
+                .file_explorer
                 .as_ref()
                 .is_some_and(|modal| modal.is_editing_text())
-            || self.connect_modal.is_some()
-            || self.export_modal.is_some()
-            || self.proxy_modal.is_some()
-            || self.proxy_error_modal.is_some()
-            || self.voice_actor_modal.is_some()
-            || self.rename_character_modal.is_some()
-            || self.whats_new_modal.is_some()
-            || self.pricing_page.is_some()
-            || self.pricing_plan_modal.is_some()
-            || self.pricing_license_modal.is_some()
+            || self.modal_host.connect.is_some()
+            || self.modal_host.export.is_some()
+            || self.modal_host.proxy.is_some()
+            || self.modal_host.proxy_error.is_some()
+            || self.modal_host.voice_actor.is_some()
+            || self.modal_host.rename_character.is_some()
+            || self.modal_host.whats_new.is_some()
+            || self.modal_host.pricing_page.is_some()
+            || self.modal_host.pricing_plan.is_some()
+            || self.modal_host.pricing_license.is_some()
     }
 
     fn handle_connect_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.connect_modal {
+        let modal = match &mut self.modal_host.connect {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             connect_modal::ConnectModalResult::Consumed => EventResponse::Consumed,
             connect_modal::ConnectModalResult::Close => {
-                self.connect_modal = None;
+                self.modal_host.connect = None;
                 EventResponse::Consumed
             }
             connect_modal::ConnectModalResult::Connect {
@@ -1572,7 +1529,7 @@ impl Ui {
                 username,
                 room_code,
             } => {
-                self.connect_modal = None;
+                self.modal_host.connect = None;
                 EventResponse::Action(UiAction::NetworkConnect {
                     ip,
                     port,
@@ -1585,14 +1542,14 @@ impl Ui {
     }
 
     fn handle_settings_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.settings_modal {
+        let modal = match &mut self.modal_host.settings {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             settings_modal::SettingsModalResult::Consumed => EventResponse::Consumed,
             settings_modal::SettingsModalResult::Close => {
-                self.settings_modal = None;
+                self.modal_host.settings = None;
                 EventResponse::Consumed
             }
             settings_modal::SettingsModalResult::Save {
@@ -1600,7 +1557,7 @@ impl Ui {
                 rythmo_font,
                 scroll_speed,
             } => {
-                self.settings_modal = None;
+                self.modal_host.settings = None;
                 EventResponse::Action(UiAction::SaveSettings {
                     lang,
                     rythmo_font,
@@ -1611,14 +1568,14 @@ impl Ui {
     }
 
     fn handle_project_settings_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.project_settings_modal {
+        let modal = match &mut self.modal_host.project_settings {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             project_settings_modal::ProjectSettingsModalResult::Consumed => EventResponse::Consumed,
             project_settings_modal::ProjectSettingsModalResult::Close => {
-                self.project_settings_modal = None;
+                self.modal_host.project_settings = None;
                 EventResponse::Consumed
             }
             project_settings_modal::ProjectSettingsModalResult::PickInstrumentalAudio => {
@@ -1627,7 +1584,7 @@ impl Ui {
             project_settings_modal::ProjectSettingsModalResult::Save {
                 instrumental_audio_path,
             } => {
-                self.project_settings_modal = None;
+                self.modal_host.project_settings = None;
                 EventResponse::Action(UiAction::SaveProjectSettings {
                     instrumental_audio_path,
                 })
@@ -1636,14 +1593,14 @@ impl Ui {
     }
 
     fn handle_export_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.export_modal {
+        let modal = match &mut self.modal_host.export {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             export_modal::ExportModalResult::Consumed => EventResponse::Consumed,
             export_modal::ExportModalResult::Close => {
-                self.export_modal = None;
+                self.modal_host.export = None;
                 EventResponse::Consumed
             }
             export_modal::ExportModalResult::Export {
@@ -1655,7 +1612,7 @@ impl Ui {
                 export_original_audio,
                 export_instrumental_audio,
             } => {
-                self.export_modal = None;
+                self.modal_host.export = None;
                 EventResponse::Action(UiAction::StartExport {
                     fps,
                     br_scale,
@@ -1670,35 +1627,35 @@ impl Ui {
     }
 
     fn handle_file_explorer_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.file_explorer_modal {
+        let modal = match &mut self.modal_host.file_explorer {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             file_explorer_modal::FileExplorerResult::Consumed => EventResponse::Consumed,
             file_explorer_modal::FileExplorerResult::Close => {
-                self.file_explorer_modal = None;
+                self.modal_host.file_explorer = None;
                 EventResponse::Consumed
             }
             file_explorer_modal::FileExplorerResult::Clipboard(text) => {
                 EventResponse::Action(UiAction::SetClipboard(text))
             }
             file_explorer_modal::FileExplorerResult::Selected { intent, path } => {
-                self.file_explorer_modal = None;
+                self.modal_host.file_explorer = None;
                 EventResponse::Action(UiAction::FilePickerSelected { intent, path })
             }
         }
     }
 
     fn handle_voice_actor_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.voice_actor_modal {
+        let modal = match &mut self.modal_host.voice_actor {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             voice_actor_modal::VoiceActorModalResult::Consumed => EventResponse::Consumed,
             voice_actor_modal::VoiceActorModalResult::Close => {
-                self.voice_actor_modal = None;
+                self.modal_host.voice_actor = None;
                 EventResponse::Consumed
             }
             voice_actor_modal::VoiceActorModalResult::PickIcon => {
@@ -1708,60 +1665,60 @@ impl Ui {
                 EventResponse::Action(UiAction::SetClipboard(text))
             }
             voice_actor_modal::VoiceActorModalResult::Create { name, icon_path } => {
-                self.voice_actor_modal = None;
+                self.modal_host.voice_actor = None;
                 EventResponse::Action(UiAction::CreateVoiceActor { name, icon_path })
             }
         }
     }
 
     fn handle_rename_character_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.rename_character_modal {
+        let modal = match &mut self.modal_host.rename_character {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             rename_character_modal::RenameCharacterModalResult::Consumed => EventResponse::Consumed,
             rename_character_modal::RenameCharacterModalResult::Close => {
-                self.rename_character_modal = None;
+                self.modal_host.rename_character = None;
                 EventResponse::Consumed
             }
             rename_character_modal::RenameCharacterModalResult::Clipboard(text) => {
                 EventResponse::Action(UiAction::SetClipboard(text))
             }
             rename_character_modal::RenameCharacterModalResult::Rename { old_name, new_name } => {
-                self.rename_character_modal = None;
+                self.modal_host.rename_character = None;
                 EventResponse::Action(UiAction::RenameCharacter { old_name, new_name })
             }
         }
     }
 
     fn handle_proxy_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.proxy_modal {
+        let modal = match &mut self.modal_host.proxy {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             proxy_modal::ProxyModalResult::Consumed => EventResponse::Consumed,
             proxy_modal::ProxyModalResult::Close => {
-                self.proxy_modal = None;
+                self.modal_host.proxy = None;
                 EventResponse::Consumed
             }
             proxy_modal::ProxyModalResult::Create { width, height, crf } => {
-                self.proxy_modal = None;
+                self.modal_host.proxy = None;
                 EventResponse::Action(UiAction::CreateProxy { width, height, crf })
             }
         }
     }
 
     fn handle_proxy_error_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.proxy_error_modal {
+        let modal = match &mut self.modal_host.proxy_error {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             proxy_error_modal::ProxyErrorResult::Consumed => EventResponse::Consumed,
             proxy_error_modal::ProxyErrorResult::Close => {
-                self.proxy_error_modal = None;
+                self.modal_host.proxy_error = None;
                 EventResponse::Consumed
             }
         }
@@ -1773,7 +1730,7 @@ impl Ui {
         video_height: u32,
         has_project_instrumental_audio: bool,
     ) {
-        self.export_modal = Some(export_modal::ExportModal::new(
+        self.modal_host.export = Some(export_modal::ExportModal::new(
             video_width,
             video_height,
             has_project_instrumental_audio,
@@ -1781,70 +1738,70 @@ impl Ui {
     }
 
     pub fn open_file_explorer(&mut self, request: file_explorer_modal::FileExplorerRequest) {
-        self.file_explorer_modal = Some(file_explorer_modal::FileExplorerModal::new(request));
+        self.modal_host.file_explorer = Some(file_explorer_modal::FileExplorerModal::new(request));
     }
 
     pub fn poll_file_explorer(&mut self) -> bool {
-        self.file_explorer_modal
+        self.modal_host.file_explorer
             .as_mut()
             .is_some_and(|modal| modal.poll_background())
     }
 
     pub fn open_voice_actor_modal(&mut self) {
-        self.voice_actor_modal = Some(voice_actor_modal::VoiceActorModal::new());
+        self.modal_host.voice_actor = Some(voice_actor_modal::VoiceActorModal::new());
     }
 
     pub fn open_rename_character_modal(&mut self, characters: Vec<String>) {
-        self.rename_character_modal = Some(rename_character_modal::RenameCharacterModal::new(
+        self.modal_host.rename_character = Some(rename_character_modal::RenameCharacterModal::new(
             characters,
         ));
     }
 
     pub fn set_voice_actor_modal_icon_path(&mut self, path: impl Into<String>) {
-        if let Some(modal) = &mut self.voice_actor_modal {
+        if let Some(modal) = &mut self.modal_host.voice_actor {
             modal.set_icon_path(path);
         }
     }
 
     pub fn open_proxy_modal(&mut self, video_width: u32, video_height: u32) {
-        self.proxy_modal = Some(proxy_modal::ProxyModal::new(video_width, video_height));
+        self.modal_host.proxy = Some(proxy_modal::ProxyModal::new(video_width, video_height));
     }
 
     pub fn open_proxy_error_modal(&mut self, detail: impl Into<String>) {
-        self.proxy_error_modal = Some(proxy_error_modal::ProxyErrorModal::new(detail));
+        self.modal_host.proxy_error = Some(proxy_error_modal::ProxyErrorModal::new(detail));
     }
 
     pub fn open_whats_new_modal(&mut self, version: impl Into<String>, body: impl Into<String>) {
-        self.whats_new_modal = Some(whats_new_modal::WhatsNewModal::new(version, body));
+        self.modal_host.whats_new = Some(whats_new_modal::WhatsNewModal::new(version, body));
     }
 
     fn handle_whats_new_modal_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.whats_new_modal {
+        let modal = match &mut self.modal_host.whats_new {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             whats_new_modal::WhatsNewResult::Consumed => EventResponse::Consumed,
             whats_new_modal::WhatsNewResult::Close => {
-                self.whats_new_modal = None;
+                self.modal_host.whats_new = None;
                 EventResponse::Consumed
             }
         }
     }
 
     fn handle_server_browser_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.server_browser {
+        let modal = match &mut self.modal_host.server_browser {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             server_browser::BrowserResult::Consumed => EventResponse::Consumed,
             server_browser::BrowserResult::Close => {
-                self.server_browser = None;
+                self.modal_host.server_browser = None;
                 EventResponse::Consumed
             }
             server_browser::BrowserResult::CreateRoom { ip, port } => {
-                self.server_browser = None;
+                self.modal_host.server_browser = None;
                 EventResponse::Action(UiAction::OpenConnectModal {
                     ip,
                     port,
@@ -1852,7 +1809,7 @@ impl Ui {
                 })
             }
             server_browser::BrowserResult::JoinRoom { ip, port } => {
-                self.server_browser = None;
+                self.modal_host.server_browser = None;
                 EventResponse::Action(UiAction::OpenConnectModal {
                     ip,
                     port,
@@ -1872,111 +1829,112 @@ impl Ui {
     }
 
     fn handle_add_server_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.add_server_modal {
+        let modal = match &mut self.modal_host.add_server {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             server_browser::AddServerResult::Consumed => EventResponse::Consumed,
             server_browser::AddServerResult::Close => {
-                self.add_server_modal = None;
+                self.modal_host.add_server = None;
                 EventResponse::Consumed
             }
             server_browser::AddServerResult::Add { ip, port } => {
-                self.add_server_modal = None;
+                self.modal_host.add_server = None;
                 EventResponse::Action(UiAction::AddServer { ip, port })
             }
         }
     }
 
     fn handle_save_prompt_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.save_prompt_modal {
+        let modal = match &mut self.modal_host.save_prompt {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             save_prompt_modal::SavePromptResult::Consumed => EventResponse::Consumed,
             save_prompt_modal::SavePromptResult::Save => {
-                self.save_prompt_modal = None;
+                self.modal_host.save_prompt = None;
                 EventResponse::Action(UiAction::NewProjectSave)
             }
             save_prompt_modal::SavePromptResult::Discard => {
-                self.save_prompt_modal = None;
+                self.modal_host.save_prompt = None;
                 EventResponse::Action(UiAction::NewProjectDiscard)
             }
             save_prompt_modal::SavePromptResult::Cancel => {
-                self.save_prompt_modal = None;
+                self.modal_host.save_prompt = None;
                 EventResponse::Consumed
             }
         }
     }
 
     pub fn open_save_prompt(&mut self) {
-        self.save_prompt_modal = Some(save_prompt_modal::SavePromptModal::new());
+        self.modal_host.save_prompt = Some(save_prompt_modal::SavePromptModal::new());
     }
 
     fn handle_studio_warning_event(&mut self, event: &UiEvent) -> EventResponse {
-        let modal = match &mut self.studio_warning_modal {
+        let modal = match &mut self.modal_host.studio_warning {
             Some(m) => m,
             None => return EventResponse::Ignored,
         };
         match modal.handle_event(event, self.screen_w, self.screen_h) {
             studio_warning_modal::StudioWarningResult::Consumed => EventResponse::Consumed,
             studio_warning_modal::StudioWarningResult::Confirm => {
-                self.studio_warning_modal = None;
+                self.modal_host.studio_warning = None;
                 EventResponse::Action(UiAction::EnterStudioMode)
             }
             studio_warning_modal::StudioWarningResult::Cancel => {
-                self.studio_warning_modal = None;
+                self.modal_host.studio_warning = None;
                 EventResponse::Consumed
             }
         }
     }
 
     pub fn open_studio_warning(&mut self) {
-        self.studio_warning_modal = Some(studio_warning_modal::StudioWarningModal::new());
+        self.modal_host.studio_warning = Some(studio_warning_modal::StudioWarningModal::new());
     }
 
     pub fn open_pricing_page(&mut self) {
-        self.pricing_page = Some(pricing_page::PricingPage::new());
+        self.modal_host.pricing_page = Some(pricing_page::PricingPage::new());
     }
 
     pub fn close_pricing_page(&mut self) {
-        self.pricing_page = None;
-        self.pricing_plan_modal = None;
-        self.pricing_license_modal = None;
+        self.modal_host.pricing_page = None;
+        self.modal_host.pricing_plan = None;
+        self.modal_host.pricing_license = None;
     }
 
     fn handle_pricing_event(&mut self, event: &UiEvent) -> EventResponse {
-        if let Some(modal) = &mut self.pricing_license_modal {
+        if let Some(modal) = &mut self.modal_host.pricing_license {
             return match modal.handle_event(event, self.screen_w, self.screen_h) {
                 pricing_license_modal::PricingLicenseModalResult::Consumed => EventResponse::Consumed,
                 pricing_license_modal::PricingLicenseModalResult::Close => {
-                    self.pricing_license_modal = None;
+                    self.modal_host.pricing_license = None;
                     EventResponse::Consumed
                 }
                 pricing_license_modal::PricingLicenseModalResult::Activate(key) => {
-                    self.pricing_license_modal = None;
+                    self.modal_host.pricing_license = None;
                     EventResponse::Action(UiAction::ActivateLicense { key })
                 }
             };
         }
 
-        if let Some(modal) = &mut self.pricing_plan_modal {
+        if let Some(modal) = &mut self.modal_host.pricing_plan {
             return match modal.handle_event(event, self.screen_w, self.screen_h) {
                 pricing_plan_modal::PricingPlanModalResult::Consumed => EventResponse::Consumed,
                 pricing_plan_modal::PricingPlanModalResult::Close => {
-                    self.pricing_plan_modal = None;
+                    self.modal_host.pricing_plan = None;
                     EventResponse::Consumed
                 }
                 pricing_plan_modal::PricingPlanModalResult::Confirm(plan) => {
-                    self.pricing_plan_modal = None;
+                    self.modal_host.pricing_plan = None;
                     EventResponse::Action(UiAction::SubscribePlan { plan })
                 }
             };
         }
 
         let result = self
+            .modal_host
             .pricing_page
             .as_mut()
             .unwrap()
@@ -1984,11 +1942,11 @@ impl Ui {
         match result {
             pricing_page::PricingResult::Consumed => EventResponse::Consumed,
             pricing_page::PricingResult::Close => {
-                self.pricing_page = None;
+                self.modal_host.pricing_page = None;
                 EventResponse::Consumed
             }
             pricing_page::PricingResult::SelectPlan(plan) => {
-                self.pricing_plan_modal = Some(pricing_plan_modal::PricingPlanModal::new(
+                self.modal_host.pricing_plan = Some(pricing_plan_modal::PricingPlanModal::new(
                     plan.name().to_string(),
                     plan.price().to_string(),
                     plan.is_enterprise(),
@@ -1996,50 +1954,50 @@ impl Ui {
                 EventResponse::Consumed
             }
             pricing_page::PricingResult::ActivateLicense => {
-                self.pricing_license_modal = Some(pricing_license_modal::PricingLicenseModal::new());
+                self.modal_host.pricing_license = Some(pricing_license_modal::PricingLicenseModal::new());
                 EventResponse::Consumed
             }
         }
     }
 
     pub fn open_server_browser(&mut self) {
-        self.server_browser = Some(server_browser::ServerBrowserModal::new());
+        self.modal_host.server_browser = Some(server_browser::ServerBrowserModal::new());
     }
 
     pub fn open_add_server_modal(&mut self) {
-        self.add_server_modal = Some(server_browser::AddServerModal::new());
+        self.modal_host.add_server = Some(server_browser::AddServerModal::new());
     }
 
     pub fn server_browser_mut(&mut self) -> Option<&mut server_browser::ServerBrowserModal> {
-        self.server_browser.as_mut()
+        self.modal_host.server_browser.as_mut()
     }
 
     pub fn open_connect_modal(&mut self, ip: &str, port: u16, join: bool) {
-        self.connect_modal = Some(connect_modal::ConnectModal::new_with_server(ip, port, join));
+        self.modal_host.connect = Some(connect_modal::ConnectModal::new_with_server(ip, port, join));
     }
 
     pub fn open_settings_modal(&mut self, fonts: Vec<String>) {
-        self.settings_modal = Some(settings_modal::SettingsModal::new(fonts));
+        self.modal_host.settings = Some(settings_modal::SettingsModal::new(fonts));
     }
 
     pub fn open_project_settings_modal(&mut self, instrumental_audio_path: Option<String>) {
-        self.project_settings_modal = Some(project_settings_modal::ProjectSettingsModal::new(
+        self.modal_host.project_settings = Some(project_settings_modal::ProjectSettingsModal::new(
             instrumental_audio_path,
         ));
     }
 
     pub fn set_project_instrumental_audio_path(&mut self, path: impl Into<String>) {
-        if let Some(modal) = &mut self.project_settings_modal {
+        if let Some(modal) = &mut self.modal_host.project_settings {
             modal.set_instrumental_audio_path(path);
         }
     }
 
     pub fn close_project_settings_modal(&mut self) {
-        self.project_settings_modal = None;
+        self.modal_host.project_settings = None;
     }
 
     pub fn close_settings_modal(&mut self) {
-        self.settings_modal = None;
+        self.modal_host.settings = None;
     }
 
     pub fn rythmo_state(&self) -> &rythmo::RythmoState {
@@ -2167,10 +2125,10 @@ impl Ui {
         let mut modal_labels: Vec<LabelInfo> = Vec::new(); // modal text (above modal backgrounds)
 
         // Pricing / support page replaces the entire layout while active.
-        if self.pricing_page.is_some() {
+        if self.modal_host.pricing_page.is_some() {
             // Page content is the "normal" layer; modals render into the modal
             // layer so their backgrounds and text always sit above the page text.
-            if let Some(page) = &self.pricing_page {
+            if let Some(page) = &self.modal_host.pricing_page {
                 page.render(
                     &mut quads,
                     &mut overlay_quads,
@@ -2179,10 +2137,10 @@ impl Ui {
                     self.screen_h,
                 );
             }
-            if let Some(m) = &self.pricing_plan_modal {
+            if let Some(m) = &self.modal_host.pricing_plan {
                 m.render(&mut modal_quads, &mut modal_labels, self.screen_w, self.screen_h);
             }
-            if let Some(m) = &self.pricing_license_modal {
+            if let Some(m) = &self.modal_host.pricing_license {
                 m.render(&mut modal_quads, &mut modal_labels, self.screen_w, self.screen_h);
             }
             // Toasts (e.g. confirmation after subscribing / activating)
@@ -2600,7 +2558,7 @@ impl Ui {
         }
 
         // Settings modal
-        if let Some(modal) = &self.settings_modal {
+        if let Some(modal) = &self.modal_host.settings {
             modal.render(
                 &mut modal_quads,
                 &mut modal_labels,
@@ -2609,7 +2567,7 @@ impl Ui {
             );
         }
 
-        if let Some(modal) = &self.project_settings_modal {
+        if let Some(modal) = &self.modal_host.project_settings {
             modal.render(
                 &mut modal_quads,
                 &mut modal_labels,
@@ -2619,7 +2577,7 @@ impl Ui {
         }
 
         // Connect modal
-        if let Some(modal) = &self.connect_modal {
+        if let Some(modal) = &self.modal_host.connect {
             modal.render(
                 &mut modal_quads,
                 &mut modal_labels,
@@ -2629,7 +2587,7 @@ impl Ui {
         }
 
         // Server browser
-        if let Some(modal) = &self.server_browser {
+        if let Some(modal) = &self.modal_host.server_browser {
             modal.render(
                 &mut modal_quads,
                 &mut modal_labels,
@@ -2639,7 +2597,7 @@ impl Ui {
         }
 
         // Add server modal (on top of browser)
-        if let Some(modal) = &self.add_server_modal {
+        if let Some(modal) = &self.modal_host.add_server {
             modal.render(
                 &mut modal_quads,
                 &mut modal_labels,
@@ -2649,7 +2607,7 @@ impl Ui {
         }
 
         // Export modal
-        if let Some(modal) = &self.export_modal {
+        if let Some(modal) = &self.modal_host.export {
             modal.render(
                 &mut modal_quads,
                 &mut modal_labels,
@@ -2658,7 +2616,7 @@ impl Ui {
             );
         }
 
-        if let Some(modal) = &self.voice_actor_modal {
+        if let Some(modal) = &self.modal_host.voice_actor {
             modal.render(
                 &mut modal_quads,
                 &mut modal_labels,
@@ -2667,7 +2625,7 @@ impl Ui {
             );
         }
 
-        if let Some(modal) = &self.rename_character_modal {
+        if let Some(modal) = &self.modal_host.rename_character {
             modal.render(
                 &mut modal_quads,
                 &mut modal_labels,
@@ -2677,7 +2635,7 @@ impl Ui {
         }
 
         // Proxy modal
-        if let Some(modal) = &self.proxy_modal {
+        if let Some(modal) = &self.modal_host.proxy {
             modal.render(
                 &mut modal_quads,
                 &mut modal_labels,
@@ -2687,7 +2645,7 @@ impl Ui {
         }
 
         // Save prompt modal
-        if let Some(modal) = &self.save_prompt_modal {
+        if let Some(modal) = &self.modal_host.save_prompt {
             modal.render(
                 &mut modal_quads,
                 &mut modal_labels,
@@ -2697,7 +2655,7 @@ impl Ui {
         }
 
         // Studio warning modal
-        if let Some(modal) = &self.studio_warning_modal {
+        if let Some(modal) = &self.modal_host.studio_warning {
             modal.render(
                 &mut modal_quads,
                 &mut modal_labels,
@@ -2917,7 +2875,7 @@ impl Ui {
         );
 
         // Whats-new modal is rendered above toasts so the release notes stay readable.
-        if let Some(modal) = &self.whats_new_modal {
+        if let Some(modal) = &self.modal_host.whats_new {
             modal.render(
                 &mut modal_quads,
                 &mut modal_labels,
@@ -2927,7 +2885,7 @@ impl Ui {
         }
 
         // Proxy error modal is rendered last so it stays above toasts and progress.
-        if let Some(modal) = &self.proxy_error_modal {
+        if let Some(modal) = &self.modal_host.proxy_error {
             modal.render(
                 &mut modal_quads,
                 &mut modal_labels,
@@ -2937,7 +2895,7 @@ impl Ui {
         }
 
         // File explorer is rendered last so it stays above parent modals.
-        if let Some(modal) = &self.file_explorer_modal {
+        if let Some(modal) = &self.modal_host.file_explorer {
             // Text is rendered in one final pass, so clear underlying labels here.
             // Otherwise parent-modal text can appear above the picker card.
             labels.clear();
@@ -3207,10 +3165,25 @@ impl Ui {
             rotation: 0.0,
             _padding: [0.0; 2],
         });
+        let ppf = crate::constants::PIXELS_PER_FRAME * crate::config::scroll_speed();
+        let visible_frames = (l.rythmo.width / ppf.max(0.001)) as i64 + 4;
+        let scene_center = render_frame.clamp(i64::MIN as f64, i64::MAX as f64) as i64;
+        let scene = RythmoScene::build(
+            project,
+            render_index,
+            SceneOptions {
+                frame_window: FrameWindow {
+                    first: scene_center.saturating_sub(visible_frames / 2 + 2),
+                    last: scene_center.saturating_add(visible_frames / 2 + 2),
+                },
+                current_frame: render_frame,
+                source_fps: fps,
+                ..SceneOptions::default()
+            },
+        );
         quads.extend(rythmo::render_rythmo_base(
             &l.rythmo,
             project,
-            render_index,
             render_frame,
             waveform,
             waveform_offset_frames,
@@ -3218,6 +3191,7 @@ impl Ui {
             self.playing,
             fps,
             &self.rythmo_state,
+            &scene,
         ));
 
         // Resize handles between video/toolbar and toolbar/rythmo.
@@ -3432,7 +3406,7 @@ impl Ui {
         renderer: &mut UiRenderer,
         project: &Project,
         current_frame: f64,
-        fps: f64,
+        _fps: f64,
     ) {
         use crate::rythmo_drawing::{rasterize_window, visible_frame_window, DrawingStroke};
 

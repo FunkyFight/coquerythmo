@@ -6,9 +6,6 @@ pub struct PricingLicenseModal {
     key: String,
     input: text_input::TextInputState,
     error: Option<String>,
-    field_rect: Rect,
-    activate_rect: Rect,
-    close_rect: Rect,
 }
 
 pub enum PricingLicenseModalResult {
@@ -25,9 +22,6 @@ impl PricingLicenseModal {
             key: String::new(),
             input,
             error: None,
-            field_rect: Rect::default(),
-            activate_rect: Rect::default(),
-            close_rect: Rect::default(),
         }
     }
 

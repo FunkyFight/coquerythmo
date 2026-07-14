@@ -200,13 +200,9 @@ use crate::command::Command;
 impl Packetable for Command {
     fn to_packet(&self, project: &Project) -> Packet {
         let payload = match self {
-            Command::CreateLine { line_id } => {
-                let line = project
-                    .get_line(*line_id)
-                    .expect("line must exist when converting to packet")
-                    .clone();
-                CommandPayload::CreateLine { line }
-            }
+            Command::CreateLine { snapshot, .. } => CommandPayload::CreateLine {
+                line: snapshot.clone(),
+            },
             Command::InsertLine { snapshot, .. } => CommandPayload::CreateLine {
                 line: snapshot.clone(),
             },
@@ -321,8 +317,7 @@ impl Packetable for Command {
             Command::CreateVoiceActor { actor } => CommandPayload::CreateVoiceActor {
                 actor: actor.clone(),
             },
-            Command::AddMarker { index } => {
-                let marker = &project.markers[*index];
+            Command::AddMarker { marker, .. } => {
                 CommandPayload::AddMarker {
                     kind: marker.kind.clone(),
                     frame: marker.frame,

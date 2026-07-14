@@ -5,8 +5,6 @@ pub struct PricingPlanModal {
     plan_name: String,
     plan_price: String,
     is_enterprise: bool,
-    confirm_rect: Rect,
-    close_rect: Rect,
 }
 
 pub enum PricingPlanModalResult {
@@ -21,8 +19,6 @@ impl PricingPlanModal {
             plan_name,
             plan_price,
             is_enterprise,
-            confirm_rect: Rect::default(),
-            close_rect: Rect::default(),
         }
     }
 
