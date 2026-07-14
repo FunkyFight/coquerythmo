@@ -3417,11 +3417,11 @@ impl Ui {
         // Check if we need to re-rasterize
         let needs_update = self.drawing_overlay_cache.as_ref().map_or(true, |c| c.key != key);
 
-        if needs_update && (!project.drawing.strokes.is_empty() || self.rythmo_state.active_stroke.is_some()) {
+        if needs_update {
             // Collect visible strokes
             let (first_frame, last_frame) = visible_frame_window(zone.width, cf, ppf, 4);
             let mut strokes: Vec<&DrawingStroke> = project.drawing.query_window(first_frame, last_frame);
-            
+
             // Add active stroke for live preview
             if let Some(ref active) = self.rythmo_state.active_stroke {
                 if active.points.len() > 1 {

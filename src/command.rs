@@ -254,14 +254,22 @@ impl Command {
                 }
             }
             Command::AddDrawingStroke { stroke } => {
-                project.drawing.add(stroke.clone());
-                project.bump_revision();
+                if project.drawing.get(stroke.id).is_none() {
+                    project.drawing.add(stroke.clone());
+                    project.bump_revision();
+                }
             }
             Command::EraseDrawingStrokes { strokes } => {
+                let mut changed = false;
                 for s in strokes {
-                    project.drawing.remove(s.id);
+                    if project.drawing.get(s.id).is_some() {
+                        project.drawing.remove(s.id);
+                        changed = true;
+                    }
                 }
-                project.bump_revision();
+                if changed {
+                    project.bump_revision();
+                }
             }
         }
     }
@@ -287,14 +295,22 @@ impl Command {
                 project.upsert_line_at(*old_index, old_line.clone());
             }
             Command::AddDrawingStroke { stroke } => {
-                project.drawing.remove(stroke.id);
-                project.bump_revision();
+                if project.drawing.get(stroke.id).is_some() {
+                    project.drawing.remove(stroke.id);
+                    project.bump_revision();
+                }
             }
             Command::EraseDrawingStrokes { strokes } => {
+                let mut changed = false;
                 for s in strokes {
-                    project.drawing.add(s.clone());
+                    if project.drawing.get(s.id).is_none() {
+                        project.drawing.add(s.clone());
+                        changed = true;
+                    }
                 }
-                project.bump_revision();
+                if changed {
+                    project.bump_revision();
+                }
             }
             Command::MoveLine {
                 line_id,

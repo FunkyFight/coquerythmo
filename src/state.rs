@@ -1867,6 +1867,8 @@ pub fn paste_line(&mut self) {
     }
 
     pub fn add_drawing_stroke(&mut self, stroke: crate::rythmo_drawing::DrawingStroke) {
+        self.project.drawing.add(stroke.clone());
+        self.project.bump_revision();
         self.push_and_broadcast(Command::AddDrawingStroke { stroke });
     }
 
@@ -1876,6 +1878,10 @@ pub fn paste_line(&mut self) {
             .filter_map(|id| self.project.drawing.get(id).cloned())
             .collect();
         if !strokes.is_empty() {
+            for s in &strokes {
+                self.project.drawing.remove(s.id);
+            }
+            self.project.bump_revision();
             self.push_and_broadcast(Command::EraseDrawingStrokes { strokes });
         }
     }
