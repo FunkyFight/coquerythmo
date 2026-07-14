@@ -156,7 +156,7 @@ pub enum CommandPayload {
     AddDrawingStroke {
         stroke: DrawingStroke,
     },
-EraseDrawingStrokes {
+    EraseDrawingStrokes {
         strokes: Vec<DrawingStroke>,
     },
     TransformStrokes {
@@ -317,12 +317,10 @@ impl Packetable for Command {
             Command::CreateVoiceActor { actor } => CommandPayload::CreateVoiceActor {
                 actor: actor.clone(),
             },
-            Command::AddMarker { marker, .. } => {
-                CommandPayload::AddMarker {
-                    kind: marker.kind.clone(),
-                    frame: marker.frame,
-                }
-            }
+            Command::AddMarker { marker, .. } => CommandPayload::AddMarker {
+                kind: marker.kind.clone(),
+                frame: marker.frame,
+            },
             Command::RemoveMarker { marker, .. } => CommandPayload::RemoveMarker {
                 kind: marker.kind.clone(),
                 frame: marker.frame,
@@ -333,8 +331,7 @@ impl Packetable for Command {
                 new_frame,
             } => {
                 let kind = project
-                    .markers
-                    .get(*index)
+                    .marker(*index)
                     .map(|m| m.kind.clone())
                     .unwrap_or(crate::rythmo_line::MarkerKind::Boucle);
                 CommandPayload::MoveMarker {
@@ -346,15 +343,17 @@ impl Packetable for Command {
             Command::AddDrawingStroke { stroke } => CommandPayload::AddDrawingStroke {
                 stroke: stroke.clone(),
             },
-Command::EraseDrawingStrokes { strokes } => CommandPayload::EraseDrawingStrokes {
+            Command::EraseDrawingStrokes { strokes } => CommandPayload::EraseDrawingStrokes {
                 strokes: strokes.clone(),
             },
-Command::TransformStrokes { stroke_ids, new_points, .. } => {
-                CommandPayload::TransformStrokes {
-                    stroke_ids: stroke_ids.clone(),
-                    new_points: new_points.clone(),
-                }
-            }
+            Command::TransformStrokes {
+                stroke_ids,
+                new_points,
+                ..
+            } => CommandPayload::TransformStrokes {
+                stroke_ids: stroke_ids.clone(),
+                new_points: new_points.clone(),
+            },
         };
         Packet::Command { payload }
     }
@@ -364,16 +363,16 @@ impl ProjectData {
     pub fn from_project(project: &Project) -> Self {
         Self {
             lines: project.lines_vec(),
-            markers: project.markers.clone(),
+            markers: project.markers().to_vec(),
             known_characters: project
-                .known_characters
+                .known_characters()
                 .iter()
                 .map(|c| CharacterData {
                     name: c.name.clone(),
                     color: c.color,
                 })
                 .collect(),
-            voice_actors: project.voice_actors.clone(),
+            voice_actors: project.voice_actors().to_vec(),
         }
     }
 }

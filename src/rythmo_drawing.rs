@@ -1,3 +1,7 @@
+//! Drawing primitives and serialization.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::items_after_test_module)]
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -251,7 +255,15 @@ fn stamp_disk(buf: &mut [u8], zw: f32, zh: f32, cx: f32, cy: f32, r: f32, color:
     }
 }
 
-fn stamp_segment(buf: &mut [u8], zw: f32, zh: f32, p0: (f32, f32), p1: (f32, f32), r: f32, color: [f32; 4]) {
+fn stamp_segment(
+    buf: &mut [u8],
+    zw: f32,
+    zh: f32,
+    p0: (f32, f32),
+    p1: (f32, f32),
+    r: f32,
+    color: [f32; 4],
+) {
     let dx = p1.0 - p0.0;
     let dy = p1.1 - p0.1;
     let dist = (dx * dx + dy * dy).sqrt();
@@ -308,7 +320,11 @@ pub fn rasterize_window(
 /// Alpha-composite a transparent drawing raster over an RGBA render target.
 /// Both buffers must describe the same pixel dimensions.
 pub fn composite_rgba_over(dst: &mut [u8], src: &[u8]) {
-    assert_eq!(dst.len(), src.len(), "RGBA buffers must have matching sizes");
+    assert_eq!(
+        dst.len(),
+        src.len(),
+        "RGBA buffers must have matching sizes"
+    );
     for i in (0..dst.len()).step_by(4) {
         blend(dst, i, src[i], src[i + 1], src[i + 2], src[i + 3]);
     }

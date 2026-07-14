@@ -2,7 +2,12 @@
 
 use super::*;
 
-pub(crate) fn handle_mouse_move(ctx: &mut RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -> EventResponse {
+pub(crate) fn handle_mouse_move(
+    ctx: &mut RythmoCtx,
+    state: &mut RythmoState,
+    x: f32,
+    y: f32,
+) -> EventResponse {
     // Autocomplete hover tracking
     if state.editing_character.is_some() {
         let new_hover = autocomplete_hover_index(ctx, state, x, y);
@@ -196,4 +201,3 @@ pub(crate) fn handle_mouse_move(ctx: &mut RythmoCtx, state: &mut RythmoState, x:
         EventResponse::Ignored
     }
 }
-

@@ -29,12 +29,6 @@ impl ProjectSession {
         }
     }
 
-    pub fn reset(&mut self) {
-        self.project.reset();
-        self.project_path = None;
-        self.dirty = false;
-        self.history.clear();
-    }
 }
 
 impl Default for ProjectSession {

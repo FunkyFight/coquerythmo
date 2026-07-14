@@ -1,3 +1,6 @@
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_match)]
+
 use crate::constants::Y_SLOTS;
 use crate::project::{Character, Project, ProjectSettings};
 use crate::rythmo_drawing::{DrawingStroke, RythmoDrawing};
@@ -118,7 +121,7 @@ impl ProjectData {
                 })
                 .collect(),
             markers: project
-                .markers
+                .markers()
                 .iter()
                 .map(|m| MarkerData {
                     kind: match &m.kind {
@@ -133,7 +136,7 @@ impl ProjectData {
                 })
                 .collect(),
             characters: project
-                .known_characters
+                .known_characters()
                 .iter()
                 .map(|c| CharacterData {
                     name: c.name.clone(),
@@ -141,7 +144,7 @@ impl ProjectData {
                 })
                 .collect(),
             voice_actors: project
-                .voice_actors
+                .voice_actors()
                 .iter()
                 .map(|actor| VoiceActorData {
                     name: actor.name.clone(),
@@ -149,14 +152,19 @@ impl ProjectData {
                     icon_png_base64: actor.icon_png_base64.clone(),
                 })
                 .collect(),
-            settings: project.settings.clone(),
+            settings: project.settings().clone(),
             drawing: DrawingData {
-                strokes: project.drawing.strokes.iter().map(|s| StrokeData {
-                    id: s.id,
-                    points: s.points.clone(),
-                    color: s.color,
-                    radius_frac: s.radius_frac,
-                }).collect(),
+                strokes: project
+                    .drawing()
+                    .strokes
+                    .iter()
+                    .map(|s| StrokeData {
+                        id: s.id,
+                        points: s.points.clone(),
+                        color: s.color,
+                        radius_frac: s.radius_frac,
+                    })
+                    .collect(),
             },
         }
     }
@@ -212,31 +220,36 @@ impl ProjectData {
             return;
         }
         project.clear_lines();
-        project.markers.clear();
-        project.known_characters.clear();
-        project.voice_actors.clear();
+        project.set_markers(Vec::new());
+        project.set_known_characters(Vec::new());
+        project.set_voice_actors(Vec::new());
         let mut settings = self.settings.clone();
         settings.source_audio_offset_frames =
             (settings.source_audio_offset_frames as f64 * fps_ratio) as i64;
         settings.instrumental_audio_offset_frames =
             (settings.instrumental_audio_offset_frames as f64 * fps_ratio) as i64;
-        project.settings = settings;
-        project.bump_revision();
+        project.set_settings(settings);
 
-        for ch in &self.characters {
-            project.known_characters.push(Character {
+        let characters = self
+            .characters
+            .iter()
+            .map(|ch| Character {
                 name: ch.name.clone(),
                 color: ch.color,
-            });
-        }
+            })
+            .collect();
+        project.set_known_characters(characters);
 
-        for actor in &self.voice_actors {
-            project.voice_actors.push(VoiceActor {
+        let voice_actors = self
+            .voice_actors
+            .iter()
+            .map(|actor| VoiceActor {
                 name: actor.name.clone(),
                 icon_path: actor.icon_path.clone(),
                 icon_png_base64: actor.icon_png_base64.clone(),
-            });
-        }
+            })
+            .collect();
+        project.set_voice_actors(voice_actors);
 
         for l in &self.lines {
             let adjusted_start = (l.start_frame as f64 * fps_ratio) as i64;
@@ -297,15 +310,16 @@ impl ProjectData {
         }
 
         // Restore drawing
-        project.drawing = RythmoDrawing::new();
+        let mut drawing = RythmoDrawing::new();
         for s in &self.drawing.strokes {
-            project.drawing.add(DrawingStroke {
+            drawing.add(DrawingStroke {
                 id: s.id,
                 points: s.points.clone(),
                 color: s.color,
                 radius_frac: s.radius_frac,
             });
         }
+        project.set_drawing(drawing);
     }
 }
 
@@ -633,7 +647,7 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
                 }
             }
             Ok(Event::Text(ref e)) => {
-                if let ParseState::InLine { .. } = state {
+                if matches!(state, ParseState::InLine { .. }) {
                     let text = e
                         .unescape()
                         .map_err(|e| format!("XML text decode error: {e}"))?;
@@ -916,7 +930,7 @@ mod tests {
         assert_eq!(project.line_count(), 1);
     }
 
-#[test]
+    #[test]
     fn test_apply_preserves_karaoke_syllable_ratios() {
         let data = ProjectData {
             source_fps: 24.0,
@@ -978,7 +992,7 @@ mod tests {
         };
         let mut project = Project::new();
         data.apply_to_project(&mut project, 24.0);
-        assert_eq!(project.markers.len(), 0);
+        assert_eq!(project.markers().len(), 0);
     }
 
     #[test]

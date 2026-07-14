@@ -2,7 +2,12 @@
 
 use super::*;
 
-pub(crate) fn handle_transform_drag(ctx: &mut RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -> EventResponse {
+pub(crate) fn handle_transform_drag(
+    ctx: &mut RythmoCtx,
+    state: &mut RythmoState,
+    x: f32,
+    y: f32,
+) -> EventResponse {
     let Some(ref mut handle) = state.transform_handle else {
         return EventResponse::Ignored;
     };
@@ -23,7 +28,7 @@ pub(crate) fn handle_transform_drag(ctx: &mut RythmoCtx, state: &mut RythmoState
 
     let (translate, rotate, scale) = match handle.kind {
         TransformHandleKind::Move => {
-            let dx_frames = dx / ppf as f32;
+            let dx_frames = dx / ppf;
             let mut dy_frac = dy / ctx.zone.height;
             // Keep the selection inside the vertical drawing area (y_frac in [0, 1])
             // so it cannot be dragged out of the zone, e.g. above the top.
@@ -75,9 +80,8 @@ pub(crate) fn handle_transform_drag(ctx: &mut RythmoCtx, state: &mut RythmoState
             let start_dy = handle.start_mouse.1 - cy_screen;
             let cur_dx = x - cx_screen;
             let cur_dy = y - cy_screen;
-            let start_world_angle =
-                (start_dy / ctx.zone.height).atan2(start_dx / ppf as f32);
-            let cur_world_angle = (cur_dy / ctx.zone.height).atan2(cur_dx / ppf as f32);
+            let start_world_angle = (start_dy / ctx.zone.height).atan2(start_dx / ppf);
+            let cur_world_angle = (cur_dy / ctx.zone.height).atan2(cur_dx / ppf);
             let angle_diff = cur_world_angle - start_world_angle;
             ((0.0, 0.0), angle_diff, 1.0)
         }
@@ -87,13 +91,7 @@ pub(crate) fn handle_transform_drag(ctx: &mut RythmoCtx, state: &mut RythmoState
         .current_stroke_points
         .iter()
         .map(|points| {
-            crate::rythmo_drawing::transformed_points(
-                points,
-                (cx, cy),
-                translate,
-                rotate,
-                scale,
-            )
+            crate::rythmo_drawing::transformed_points(points, (cx, cy), translate, rotate, scale)
         })
         .collect();
 
@@ -105,4 +103,3 @@ pub(crate) fn handle_transform_drag(ctx: &mut RythmoCtx, state: &mut RythmoState
         new_points: handle.current_stroke_points.clone(),
     })
 }
-

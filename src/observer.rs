@@ -14,6 +14,12 @@ pub struct TimelineBus {
     events: Vec<TimelineEvent>,
 }
 
+impl Default for TimelineBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TimelineBus {
     pub fn new() -> Self {
         Self { events: Vec::new() }

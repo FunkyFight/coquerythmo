@@ -74,7 +74,12 @@ pub(crate) fn x_to_frame(x: f32, current_frame: f64, zone: &Rect) -> i64 {
     f64_round_to_i64(current_frame + (x - center_x) as f64 / ppf().max(0.001) as f64)
 }
 
-pub(crate) fn clamped_new_line_duration(project: &Project, frame: i64, y_slot: f32, fps: f64) -> i64 {
+pub(crate) fn clamped_new_line_duration(
+    project: &Project,
+    frame: i64,
+    y_slot: f32,
+    fps: f64,
+) -> i64 {
     let default_dur = (fps * constants::DEFAULT_LINE_DURATION_SEC) as i64;
     project
         .lines()
@@ -292,7 +297,10 @@ pub(crate) fn build_track_layouts_from_karaoke_flags(
         .collect()
 }
 
-pub(crate) fn editor_normal_body_height_for_karaoke_tracks(karaoke_track_count: usize, zone: &Rect) -> f32 {
+pub(crate) fn editor_normal_body_height_for_karaoke_tracks(
+    karaoke_track_count: usize,
+    zone: &Rect,
+) -> f32 {
     let track_count = rythmo_layout::track_count();
     let usable_h = (zone.height - constants::RULER_HEIGHT).max(1.0);
     let header_total = track_count as f32 * (slot_header_height() + BADGE_GAP);
@@ -336,7 +344,7 @@ impl EditorLayoutCtx {
         let normal_body_h = editor_normal_body_height_for_karaoke_tracks(karaoke_track_count, zone);
         let track_layouts = build_track_layouts_from_karaoke_flags(
             &rythmo_layout::all_track_indices(),
-            &karaoke_tracks,
+            karaoke_tracks,
             normal_body_h,
             slot_header_height(),
             BADGE_GAP,
@@ -363,7 +371,10 @@ impl EditorLayoutCtx {
         }
     }
 
-    pub(crate) fn track_for_index(&self, track_index: usize) -> Option<&rythmo_layout::TrackLayout> {
+    pub(crate) fn track_for_index(
+        &self,
+        track_index: usize,
+    ) -> Option<&rythmo_layout::TrackLayout> {
         self.track_by_index
             .get(track_index)
             .and_then(|layout| layout.as_ref())
@@ -434,7 +445,10 @@ impl EditorLayoutCtx {
     }
 }
 
-pub(crate) fn editor_track_layouts(project: &Project, zone: &Rect) -> Vec<rythmo_layout::TrackLayout> {
+pub(crate) fn editor_track_layouts(
+    project: &Project,
+    zone: &Rect,
+) -> Vec<rythmo_layout::TrackLayout> {
     EditorLayoutCtx::new(project, zone).track_layouts
 }
 

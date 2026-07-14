@@ -3,7 +3,7 @@
 use super::binding::{Binding, KeyPattern, RepeatPolicy};
 use super::context::{InputContext, InputContextStack};
 use super::key::{KeyCode, KeyStroke, Modifiers};
-use crate::application::command::UiAction;
+use crate::application::command::{TextCommand, UiAction};
 
 #[derive(Debug, Clone, Default)]
 pub struct ShortcutRouter<C> {
@@ -12,7 +12,9 @@ pub struct ShortcutRouter<C> {
 
 impl<C> ShortcutRouter<C> {
     pub fn new() -> Self {
-        Self { bindings: Vec::new() }
+        Self {
+            bindings: Vec::new(),
+        }
     }
 
     pub fn bind(
@@ -68,6 +70,84 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         shift: true,
         ..Modifiers::NONE
     };
+
+    router.bind(
+        InputContext::TextEditing,
+        KeyCode::Character('k'),
+        ctrl,
+        RepeatPolicy::PressAndRepeat,
+        UiAction::SplitDialogue,
+    );
+    router.bind(
+        InputContext::TextEditing,
+        KeyCode::Character('a'),
+        ctrl,
+        RepeatPolicy::PressAndRepeat,
+        UiAction::SelectAll,
+    );
+    router.bind(
+        InputContext::TextEditing,
+        KeyCode::Character('c'),
+        ctrl,
+        RepeatPolicy::PressAndRepeat,
+        UiAction::Text(TextCommand::Copy),
+    );
+    router.bind(
+        InputContext::TextEditing,
+        KeyCode::Character('x'),
+        ctrl,
+        RepeatPolicy::PressAndRepeat,
+        UiAction::Text(TextCommand::Cut),
+    );
+    router.bind(
+        InputContext::TextEditing,
+        KeyCode::Character('v'),
+        ctrl,
+        RepeatPolicy::PressAndRepeat,
+        UiAction::Text(TextCommand::Paste),
+    );
+    router.bind(
+        InputContext::TextEditing,
+        KeyCode::Character('z'),
+        ctrl,
+        RepeatPolicy::PressOnly,
+        UiAction::Text(TextCommand::Undo),
+    );
+    for (key, command) in [
+        (KeyCode::ArrowLeft, TextCommand::CursorLeft),
+        (KeyCode::ArrowRight, TextCommand::CursorRight),
+        (KeyCode::ArrowUp, TextCommand::CursorUp),
+        (KeyCode::ArrowDown, TextCommand::CursorDown),
+        (KeyCode::Delete, TextCommand::Delete),
+    ] {
+        router.bind(
+            InputContext::TextEditing,
+            key,
+            Modifiers::NONE,
+            RepeatPolicy::PressAndRepeat,
+            UiAction::Text(command),
+        );
+    }
+    router.bind(
+        InputContext::TextEditing,
+        KeyCode::ArrowLeft,
+        Modifiers {
+            shift: true,
+            ..Modifiers::NONE
+        },
+        RepeatPolicy::PressAndRepeat,
+        UiAction::Text(TextCommand::SelectLeft),
+    );
+    router.bind(
+        InputContext::TextEditing,
+        KeyCode::ArrowRight,
+        Modifiers {
+            shift: true,
+            ..Modifiers::NONE
+        },
+        RepeatPolicy::PressAndRepeat,
+        UiAction::Text(TextCommand::SelectRight),
+    );
 
     router.bind(
         InputContext::VideoLoaded,
@@ -212,14 +292,20 @@ mod tests {
         router.bind(
             InputContext::TextEditing,
             KeyCode::Character('c'),
-            Modifiers { ctrl: true, ..Modifiers::NONE },
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
             RepeatPolicy::PressOnly,
             "copy-text",
         );
         router.bind(
             InputContext::Global,
             KeyCode::Character('c'),
-            Modifiers { ctrl: true, ..Modifiers::NONE },
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
             RepeatPolicy::PressOnly,
             "copy-line",
         );
@@ -233,7 +319,10 @@ mod tests {
             router.resolve(
                 &stroke(
                     KeyCode::Character('c'),
-                    Modifiers { ctrl: true, ..Modifiers::NONE },
+                    Modifiers {
+                        ctrl: true,
+                        ..Modifiers::NONE
+                    },
                     false,
                 ),
                 &contexts,
@@ -300,22 +389,27 @@ mod tests {
         let workspace = InputContextStack::new([InputContext::Workspace, InputContext::Global]);
         let studio = InputContextStack::new([InputContext::Studio]);
 
-        let ctrl = Modifiers { ctrl: true, ..Modifiers::NONE };
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
         let ctrl_shift = Modifiers {
             ctrl: true,
             shift: true,
             ..Modifiers::NONE
         };
         let resolve = |key, modifiers, contexts: &InputContextStack, repeat| {
-            router.resolve(
-                &stroke(key, modifiers, repeat),
-                contexts,
-            )
+            router.resolve(&stroke(key, modifiers, repeat), contexts)
         };
 
         assert_eq!(resolve(KeyCode::F5, Modifiers::NONE, &global, false), None);
         assert_eq!(
-            resolve(KeyCode::F5, Modifiers::NONE, &InputContextStack::new([InputContext::VideoLoaded]), false),
+            resolve(
+                KeyCode::F5,
+                Modifiers::NONE,
+                &InputContextStack::new([InputContext::VideoLoaded]),
+                false
+            ),
             Some(&UiAction::ShowStudioWarning)
         );
         assert_eq!(
@@ -362,9 +456,28 @@ mod tests {
             resolve(KeyCode::Character('z'), ctrl, &global, false),
             Some(&UiAction::Undo)
         );
+        assert_eq!(resolve(KeyCode::Character('z'), ctrl, &global, true), None);
+        let text = InputContextStack::new([InputContext::TextEditing]);
         assert_eq!(
-            resolve(KeyCode::Character('z'), ctrl, &global, true),
-            None
+            resolve(KeyCode::Character('c'), ctrl, &text, false),
+            Some(&UiAction::Text(TextCommand::Copy))
+        );
+        assert_eq!(resolve(KeyCode::Character('z'), ctrl, &text, true), None);
+        assert_eq!(
+            resolve(KeyCode::ArrowLeft, Modifiers::NONE, &text, false),
+            Some(&UiAction::Text(TextCommand::CursorLeft))
+        );
+        assert_eq!(
+            resolve(
+                KeyCode::ArrowRight,
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::NONE
+                },
+                &text,
+                false,
+            ),
+            Some(&UiAction::Text(TextCommand::SelectRight))
         );
         assert_eq!(
             resolve(KeyCode::Character('z'), ctrl_shift, &global, false),
@@ -387,12 +500,12 @@ mod tests {
             repeat: false,
             window: InputWindow::Secondary,
         };
-        assert_eq!(router.resolve(&secondary_stroke, &secondary), Some(&UiAction::TogglePlayPause));
         assert_eq!(
-            router.resolve(
-                &stroke(KeyCode::Space, Modifiers::NONE, false),
-                &secondary,
-            ),
+            router.resolve(&secondary_stroke, &secondary),
+            Some(&UiAction::TogglePlayPause)
+        );
+        assert_eq!(
+            router.resolve(&stroke(KeyCode::Space, Modifiers::NONE, false), &secondary,),
             None
         );
     }

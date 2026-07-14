@@ -1,3 +1,10 @@
+//! Socket protocol and collaboration transport.
+//!
+//! Message layouts mirror the server protocol and the socketio error type is
+//! fixed by the external crate.
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::result_large_err)]
+
 use std::sync::{mpsc, Mutex};
 use std::thread;
 
@@ -44,6 +51,12 @@ pub struct NetworkClient {
     pub room_code: Option<String>,
     pub role: Option<String>,
     pub members: Vec<String>,
+}
+
+impl Default for NetworkClient {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NetworkClient {

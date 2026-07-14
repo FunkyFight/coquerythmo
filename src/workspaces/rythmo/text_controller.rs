@@ -30,4 +30,3 @@ pub(crate) fn handle_text_undo(ctx: &RythmoCtx, state: &mut RythmoState) -> Even
     }
     EventResponse::Ignored
 }
-

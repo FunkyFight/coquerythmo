@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module)]
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -168,8 +170,10 @@ impl Config {
         } else {
             log::info!("No config file found, using defaults");
         }
-        let mut config = Config::default();
-        config.last_whats_new_version = Some(env!("CARGO_PKG_VERSION").to_string());
+        let config = Config {
+            last_whats_new_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            ..Config::default()
+        };
         config.save();
         config
     }

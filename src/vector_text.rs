@@ -1,3 +1,7 @@
+//! Vector text rasterization shared by preview and export.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::field_reassign_with_default)]
+
 use std::cell::RefCell;
 use std::sync::{Arc, OnceLock};
 

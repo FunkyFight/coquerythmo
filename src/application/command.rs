@@ -1,4 +1,4 @@
-﻿//! Semantic application commands emitted by UI and input adapters.
+//! Semantic application commands emitted by UI and input adapters.
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiAction {
@@ -207,7 +207,7 @@ pub enum UiAction {
         line_id: u64,
         note: String,
     },
-CopySelectedLine,
+    CopySelectedLine,
     CutSelectedLine,
     PasteLine,
     // Drawing
@@ -236,6 +236,25 @@ CopySelectedLine,
     ActivateLicense {
         key: String,
     },
+    Text(TextCommand),
+}
+
+/// Editing-only commands routed by the input layer before they become
+/// low-level `UiEvent`s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextCommand {
+    SelectAll,
+    Copy,
+    Cut,
+    Paste,
+    Undo,
+    CursorLeft,
+    CursorRight,
+    SelectLeft,
+    SelectRight,
+    CursorUp,
+    CursorDown,
+    Delete,
 }
 
 #[derive(Debug, Clone, PartialEq)]

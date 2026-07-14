@@ -1,3 +1,9 @@
+//! Reversible project mutations and their history.
+//!
+//! The enum shape is intentionally explicit: each variant is a stable
+//! snapshot of one user operation.
+#![allow(clippy::large_enum_variant)]
+
 use crate::project::{Character, LineCharacterNameChange, Project};
 use crate::rythmo_drawing::DrawingStroke;
 use crate::rythmo_line::{RythmoLine, RythmoMarker};
@@ -264,40 +270,20 @@ impl Command {
                 }
             }
             Command::AddDrawingStroke { stroke } => {
-                if project.drawing.get(stroke.id).is_none() {
-                    project.drawing.add(stroke.clone());
-                    project.bump_revision();
+                if project.drawing().get(stroke.id).is_none() {
+                    project.add_drawing_stroke(stroke.clone());
                 }
             }
             Command::EraseDrawingStrokes { strokes } => {
-                let mut changed = false;
-                for s in strokes {
-                    if project.drawing.get(s.id).is_some() {
-                        project.drawing.remove(s.id);
-                        changed = true;
-                    }
-                }
-                if changed {
-                    project.bump_revision();
-                }
+                let ids: Vec<u64> = strokes.iter().map(|stroke| stroke.id).collect();
+                project.remove_drawing_strokes(&ids);
             }
             Command::TransformStrokes {
                 stroke_ids,
                 new_points,
                 ..
             } => {
-                let mut changed = false;
-                for (i, id) in stroke_ids.iter().enumerate() {
-                    if let Some(stroke) = project.drawing.strokes.iter_mut().find(|s| s.id == *id) {
-                        if i < new_points.len() {
-                            stroke.points = new_points[i].clone();
-                            changed = true;
-                        }
-                    }
-                }
-                if changed {
-                    project.bump_revision();
-                }
+                project.set_drawing_strokes_points(stroke_ids, new_points);
             }
         }
     }
@@ -323,40 +309,19 @@ impl Command {
                 project.upsert_line_at(*old_index, old_line.clone());
             }
             Command::AddDrawingStroke { stroke } => {
-                if project.drawing.get(stroke.id).is_some() {
-                    project.drawing.remove(stroke.id);
-                    project.bump_revision();
+                if project.drawing().get(stroke.id).is_some() {
+                    project.remove_drawing_stroke(stroke.id);
                 }
             }
             Command::EraseDrawingStrokes { strokes } => {
-                let mut changed = false;
-                for s in strokes {
-                    if project.drawing.get(s.id).is_none() {
-                        project.drawing.add(s.clone());
-                        changed = true;
-                    }
-                }
-                if changed {
-                    project.bump_revision();
-                }
+                project.add_drawing_strokes(strokes);
             }
             Command::TransformStrokes {
                 stroke_ids,
                 old_points,
                 ..
             } => {
-                let mut changed = false;
-                for (i, id) in stroke_ids.iter().enumerate() {
-                    if let Some(stroke) = project.drawing.strokes.iter_mut().find(|s| s.id == *id) {
-                        if i < old_points.len() {
-                            stroke.points = old_points[i].clone();
-                            changed = true;
-                        }
-                    }
-                }
-                if changed {
-                    project.bump_revision();
-                }
+                project.set_drawing_strokes_points(stroke_ids, old_points);
             }
             Command::MoveLine {
                 line_id,
@@ -510,31 +475,26 @@ impl CommandHistory {
 
     /// Check if the last command matches a predicate (for coalescing).
     pub fn last_matches(&self, line_id: u64, kind: CommandKind) -> bool {
-        self.undo_stack
-            .last()
-            .map_or(false, |cmd| match (cmd, kind) {
-                (Command::UpdateLineText { line_id: id, .. }, CommandKind::UpdateLineText) => {
-                    *id == line_id
-                }
-                (Command::UpdateLineNote { line_id: id, .. }, CommandKind::UpdateLineNote) => {
-                    *id == line_id
-                }
-                (Command::MoveLine { line_id: id, .. }, CommandKind::MoveLine) => *id == line_id,
-                (Command::ResizeLine { line_id: id, .. }, CommandKind::ResizeLine) => {
-                    *id == line_id
-                }
-                (Command::SetCharacter { line_id: id, .. }, CommandKind::SetCharacter) => {
-                    *id == line_id
-                }
-                (
-                    Command::SetCharacterColor { line_id: id, .. },
-                    CommandKind::SetCharacterColor,
-                ) => *id == line_id,
-                (Command::MoveMarker { index: idx, .. }, CommandKind::MoveMarker) => {
-                    *idx == line_id as usize
-                }
-                _ => false,
-            })
+        self.undo_stack.last().is_some_and(|cmd| match (cmd, kind) {
+            (Command::UpdateLineText { line_id: id, .. }, CommandKind::UpdateLineText) => {
+                *id == line_id
+            }
+            (Command::UpdateLineNote { line_id: id, .. }, CommandKind::UpdateLineNote) => {
+                *id == line_id
+            }
+            (Command::MoveLine { line_id: id, .. }, CommandKind::MoveLine) => *id == line_id,
+            (Command::ResizeLine { line_id: id, .. }, CommandKind::ResizeLine) => *id == line_id,
+            (Command::SetCharacter { line_id: id, .. }, CommandKind::SetCharacter) => {
+                *id == line_id
+            }
+            (Command::SetCharacterColor { line_id: id, .. }, CommandKind::SetCharacterColor) => {
+                *id == line_id
+            }
+            (Command::MoveMarker { index: idx, .. }, CommandKind::MoveMarker) => {
+                *idx == line_id as usize
+            }
+            _ => false,
+        })
     }
 
     pub fn last(&self) -> Option<&Command> {
@@ -575,6 +535,12 @@ pub enum CommandKind {
     SetCharacter,
     SetCharacterColor,
     MoveMarker,
+}
+
+impl Default for CommandHistory {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -778,7 +744,7 @@ mod tests {
         assert_eq!(project.get_line(alice_2).unwrap().character_name, "Alice");
         assert_eq!(project.get_line(bob).unwrap().character_name, "Bob");
         let known_names: Vec<_> = project
-            .known_characters
+            .known_characters()
             .iter()
             .map(|character| character.name.as_str())
             .collect();
@@ -789,7 +755,7 @@ mod tests {
         assert_eq!(project.get_line(alice_2).unwrap().character_name, "Alicia");
         assert_eq!(project.get_line(bob).unwrap().character_name, "Bob");
         let known_names: Vec<_> = project
-            .known_characters
+            .known_characters()
             .iter()
             .map(|character| character.name.as_str())
             .collect();

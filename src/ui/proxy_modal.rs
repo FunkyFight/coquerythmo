@@ -1,4 +1,7 @@
-use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_match)]
+
+use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
 
 const CARD_W: f32 = 430.0;

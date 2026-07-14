@@ -1,4 +1,4 @@
-use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
+use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
 
 const CARD_W: f32 = 420.0;
@@ -11,6 +11,12 @@ pub enum SavePromptResult {
     Save,
     Discard,
     Cancel,
+}
+
+impl Default for SavePromptModal {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SavePromptModal {

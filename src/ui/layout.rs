@@ -1,4 +1,4 @@
-use super::widget::Rect;
+use super::primitives::Rect;
 
 pub const TOPBAR_H: f32 = 32.0;
 pub const TOOLBAR_H: f32 = 76.0;

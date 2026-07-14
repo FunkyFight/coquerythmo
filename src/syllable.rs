@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if)]
+
 use hypher::{hyphenate, Lang};
 
 /// Return syllable break positions as character indices within the full text.
@@ -303,47 +305,54 @@ fn french_syllable_breaks(word: &str) -> Vec<usize> {
     let mut i = 1;
     while i < n {
         // Rule: a single consonant between vowels starts a new syllable
-        if !is_vowel(chars[i]) && i + 1 < n && is_vowel(chars[i + 1]) {
-            if i > 0 && is_vowel(chars[i - 1]) {
-                breaks.push(i);
-                i += 2; // skip past the vowel after
-                continue;
-            }
+        if !is_vowel(chars[i])
+            && i > 0
+            && i + 1 < n
+            && is_vowel(chars[i - 1])
+            && is_vowel(chars[i + 1])
+        {
+            breaks.push(i);
+            i += 2; // skip past the vowel after
+            continue;
         }
         // Rule: two consonants between vowels — split between them
-        if !is_vowel(chars[i]) && i + 2 < n && !is_vowel(chars[i + 1]) && is_vowel(chars[i + 2]) {
-            if i > 0 && is_vowel(chars[i - 1]) {
-                // Exception: don't split "bl", "br", "cl", "cr", "dr", "fl", "fr", "gl", "gr",
-                // "pl", "pr", "tr", "vr" — these stay together
-                let c1 = chars[i].to_lowercase().next().unwrap_or(chars[i]);
-                let c2 = chars[i + 1].to_lowercase().next().unwrap_or(chars[i + 1]);
-                let inseparable = matches!(
-                    (c1, c2),
-                    ('b', 'l')
-                        | ('b', 'r')
-                        | ('c', 'l')
-                        | ('c', 'r')
-                        | ('c', 'h')
-                        | ('d', 'r')
-                        | ('f', 'l')
-                        | ('f', 'r')
-                        | ('g', 'l')
-                        | ('g', 'r')
-                        | ('p', 'l')
-                        | ('p', 'r')
-                        | ('p', 'h')
-                        | ('t', 'r')
-                        | ('t', 'h')
-                        | ('v', 'r')
-                );
-                if inseparable {
-                    breaks.push(i);
-                } else {
-                    breaks.push(i + 1);
-                }
-                i += 3;
-                continue;
+        if !is_vowel(chars[i])
+            && i > 0
+            && i + 2 < n
+            && is_vowel(chars[i - 1])
+            && !is_vowel(chars[i + 1])
+            && is_vowel(chars[i + 2])
+        {
+            // Exception: don't split "bl", "br", "cl", "cr", "dr", "fl", "fr", "gl", "gr",
+            // "pl", "pr", "tr", "vr" — these stay together
+            let c1 = chars[i].to_lowercase().next().unwrap_or(chars[i]);
+            let c2 = chars[i + 1].to_lowercase().next().unwrap_or(chars[i + 1]);
+            let inseparable = matches!(
+                (c1, c2),
+                ('b', 'l')
+                    | ('b', 'r')
+                    | ('c', 'l')
+                    | ('c', 'r')
+                    | ('c', 'h')
+                    | ('d', 'r')
+                    | ('f', 'l')
+                    | ('f', 'r')
+                    | ('g', 'l')
+                    | ('g', 'r')
+                    | ('p', 'l')
+                    | ('p', 'r')
+                    | ('p', 'h')
+                    | ('t', 'r')
+                    | ('t', 'h')
+                    | ('v', 'r')
+            );
+            if inseparable {
+                breaks.push(i);
+            } else {
+                breaks.push(i + 1);
             }
+            i += 3;
+            continue;
         }
         i += 1;
     }
@@ -562,7 +571,7 @@ fn nearest_break_index_for_progress(ratios: &[f32], progress: f32) -> Option<usi
     for (index, ratio) in ratios.iter().take(ratios.len() - 1).enumerate() {
         cumulative = (cumulative + ratio).min(1.0);
         let distance = (progress - cumulative).abs();
-        if best.map_or(true, |(_, best_distance)| distance < best_distance) {
+        if best.is_none_or(|(_, best_distance)| distance < best_distance) {
             best = Some((index, distance));
         }
     }

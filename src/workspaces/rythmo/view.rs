@@ -1,17 +1,29 @@
-use crate::ui::renderer::StretchedText;
-use crate::ui::text_input::{self, TextInputMetrics};
-use crate::ui::widget::{
-    EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction,
-    UiEvent, VAlign,
-};
+//! View and rendering adapter for the rythmo workspace.
+//!
+//! Rendering helpers keep the complete layout context in their signatures so
+//! CPU, GPU and interactive paths use the same geometry decisions.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::manual_filter)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::if_same_then_else)]
+#![allow(clippy::needless_borrow)]
+
 use crate::constants;
 use crate::i18n::t;
 use crate::project::Project;
 use crate::render_index::ProjectRenderIndex;
-use crate::rythmo_drawing::{DrawingStroke, strokes_bbox};
-use crate::ui::ToolMode;
+use crate::rythmo_drawing::{strokes_bbox, DrawingStroke};
 use crate::rythmo_layout;
 use crate::rythmo_line::MarkerKind;
+use crate::ui::renderer::StretchedText;
+use crate::ui::text_input::{self, TextInputMetrics};
+use crate::ui::primitives::{
+    EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction,
+    UiEvent, VAlign,
+};
+use crate::ui::ToolMode;
 use std::cell::{Ref, RefCell};
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
@@ -36,8 +48,8 @@ mod geometry;
 pub(crate) use geometry::*;
 #[path = "controller.rs"]
 mod controller;
-pub use controller::*;
 pub(crate) use controller::RythmoCtx;
+pub use controller::*;
 #[path = "text_controller.rs"]
 mod text_controller;
 pub(crate) use text_controller::*;
@@ -47,6 +59,27 @@ pub(crate) use drag::*;
 #[path = "mouse.rs"]
 mod mouse;
 pub(crate) use mouse::*;
+#[path = "mouse_buttons.rs"]
+mod mouse_buttons;
+pub(crate) use mouse_buttons::*;
+#[path = "syllable.rs"]
+mod syllable;
+pub(crate) use syllable::*;
+#[path = "press.rs"]
+mod press;
+pub(crate) use press::*;
+#[path = "selection.rs"]
+mod selection;
+pub(crate) use selection::*;
+#[path = "drawing.rs"]
+mod drawing;
+pub(crate) use drawing::*;
+#[path = "keyboard.rs"]
+mod keyboard;
+pub(crate) use keyboard::*;
+#[path = "keyboard_nav.rs"]
+mod keyboard_nav;
+pub(crate) use keyboard_nav::*;
 
 #[cfg(test)]
 mod tests {
@@ -649,7 +682,6 @@ mod tests {
     }
 }
 
-
 fn push_playhead_segments(
     quads: &mut Vec<QuadInstance>,
     x: f32,
@@ -857,14 +889,7 @@ pub fn render_rythmo_base(
     // Ticks removed from UI (kept in CPU/GPU export renderers)
 
     let playhead_x = zone.x + (zone.width - PLAYHEAD_WIDTH) / 2.0;
-    let skip_ranges = active_karaoke_skip_ranges(
-        project,
-        scene,
-        zone,
-        karaoke_preview,
-        fps,
-        state,
-    );
+    let skip_ranges = active_karaoke_skip_ranges(project, scene, zone, karaoke_preview, fps, state);
     push_playhead_segments(
         &mut quads,
         playhead_x,
@@ -1925,14 +1950,28 @@ pub fn render_lines<'a>(
         let karaoke_count_in = karaoke_preview
             && karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
         let karaoke_prestart_count_in = karaoke_preview
-            && karaoke_index.prestart_scroll_visible(line, current_frame, karaoke_count_in_frame_count);
-        let karaoke_upcoming_stack = karaoke_preview && karaoke_index.upcoming_stack_visible(line, current_frame);
-        
-        if karaoke_preview && line.karaoke && !karaoke_active && !karaoke_count_in && !karaoke_prestart_count_in && !karaoke_upcoming_stack {
+            && karaoke_index.prestart_scroll_visible(
+                line,
+                current_frame,
+                karaoke_count_in_frame_count,
+            );
+        let karaoke_upcoming_stack =
+            karaoke_preview && karaoke_index.upcoming_stack_visible(line, current_frame);
+
+        if karaoke_preview
+            && line.karaoke
+            && !karaoke_active
+            && !karaoke_count_in
+            && !karaoke_prestart_count_in
+            && !karaoke_upcoming_stack
+        {
             continue;
         }
 
-        let centered_karaoke_width = if karaoke_preview && line.karaoke && (karaoke_active || karaoke_prestart_count_in || karaoke_upcoming_stack) {
+        let centered_karaoke_width = if karaoke_preview
+            && line.karaoke
+            && (karaoke_active || karaoke_prestart_count_in || karaoke_upcoming_stack)
+        {
             Some(state.karaoke_ui_text_width_for_render(line))
         } else {
             None
@@ -1949,7 +1988,13 @@ pub fn render_lines<'a>(
                 centered_karaoke_width,
             )
         } else {
-            layout_ctx.line_rect_with_karaoke_width(line, current_frame, zone, karaoke_preview, None)
+            layout_ctx.line_rect_with_karaoke_width(
+                line,
+                current_frame,
+                zone,
+                karaoke_preview,
+                None,
+            )
         };
 
         if r.x + r.width < zone.x || r.x > zone.x + zone.width {
@@ -1980,15 +2025,20 @@ pub fn render_lines<'a>(
     }
 
     // Optimize badge overlap: sort by y, then sweep line O(n log n) instead of O(n²)
-    line_data.sort_by(|a, b| a.1.badge_rect.y.partial_cmp(&b.1.badge_rect.y).unwrap_or(std::cmp::Ordering::Equal));
+    line_data.sort_by(|a, b| {
+        a.1.badge_rect
+            .y
+            .partial_cmp(&b.1.badge_rect.y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut badge_hidden: HashMap<u64, bool> = HashMap::new();
     let mut badge_overlap_alpha: HashMap<u64, f32> = HashMap::new();
-    
+
     for i in 0..line_data.len() {
         let (id_i, data_i) = &line_data[i];
         let mut hidden = false;
         let mut alpha = 1.0;
-        
+
         // Only check nearby badges (spatially close in Y)
         for j in (i + 1)..line_data.len() {
             let (id_j, data_j) = &line_data[j];
@@ -2013,7 +2063,7 @@ pub fn render_lines<'a>(
         badge_overlap_alpha.insert(*id_i, alpha);
     }
 
-// Now render all lines using precomputed data
+    // Now render all lines using precomputed data
     for (line_id, data) in line_data {
         let Some(line) = project.get_line(line_id) else {
             continue;
@@ -2070,9 +2120,13 @@ pub fn render_lines<'a>(
                     .syllable_drag
                     .as_ref()
                     .filter(|d| d.line_id == line.id);
-                if let Some((breaks, ratios)) =
-                    visible_syllable_segments(line, drag_ratios, &karaoke_lang, karaoke_preview, state)
-                {
+                if let Some((breaks, ratios)) = visible_syllable_segments(
+                    line,
+                    drag_ratios,
+                    &karaoke_lang,
+                    karaoke_preview,
+                    state,
+                ) {
                     let chars: Vec<char> = line.text.chars().collect();
                     let mut seg_x = data.rect.x;
                     let mut prev_break = 0usize;
@@ -2092,7 +2146,8 @@ pub fn render_lines<'a>(
                                     cache_id,
                                     start_char: prev_break,
                                     end_char: end_break,
-                                    start_ratio: ((seg_x - data.rect.x) / data.rect.width).clamp(0.0, 1.0),
+                                    start_ratio: ((seg_x - data.rect.x) / data.rect.width)
+                                        .clamp(0.0, 1.0),
                                     width_ratio: (seg_w / data.rect.width).clamp(0.0, 1.0),
                                 });
                             }
@@ -2170,7 +2225,12 @@ pub fn render_lines<'a>(
         // Handles (only on hover/editing)
         if (is_hovered || is_editing) && !karaoke_playback_line {
             quads.push(QuadInstance {
-                rect: [data.rect.x, data.rect.y, constants::HANDLE_WIDTH, data.rect.height],
+                rect: [
+                    data.rect.x,
+                    data.rect.y,
+                    constants::HANDLE_WIDTH,
+                    data.rect.height,
+                ],
                 color: HANDLE_COLOR,
                 color_bottom: HANDLE_COLOR,
                 border_color: [0.0; 4],
@@ -2226,90 +2286,90 @@ pub fn render_lines<'a>(
             continue;
         }
 
-if !badge_hidden {
-        let mut badge_color = line.character_color;
-        badge_color[3] *= badge_overlap_alpha;
-        let is_editing_char = state.editing_character == Some(line.id);
-        let badge_border = if is_editing_char {
-            [0.8, 0.8, 0.85, 0.8]
-        } else {
-            [0.0_f32; 4]
-        };
-        quads.push(QuadInstance {
-            rect: [br.x, br.y, br.width, br.height],
-            color: badge_color,
-            color_bottom: badge_color,
-            border_color: badge_border,
-            border_width: if is_editing_char { 1.0 } else { 0.0 },
-            border_radius: 0.0,
-            shadow_offset: [0.0; 2],
-            shadow_color: [0.0; 4],
-            shadow_blur: 0.0,
-            rotation: 0.0,
-            _padding: [0.0; 2],
-        });
-
-        // Character name text — black on bright backgrounds for contrast
-        if !line.character_name.is_empty() {
-            let [r, g, b, _] = line.character_color;
-            let luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-            let text_color = if luminance > 0.55 {
-                Some([0, 0, 0])
+        if !badge_hidden {
+            let mut badge_color = line.character_color;
+            badge_color[3] *= badge_overlap_alpha;
+            let is_editing_char = state.editing_character == Some(line.id);
+            let badge_border = if is_editing_char {
+                [0.8, 0.8, 0.85, 0.8]
             } else {
-                None
+                [0.0_f32; 4]
             };
-
-            labels.push(LabelInfo {
-                text: &line.character_name,
-                bounds: br,
-                h_align: HAlign::Center,
-                v_align: VAlign::Center,
-                overflow: Overflow::Clip,
-                padding: BADGE_PADDING_H,
-                font_size_override: Some(BADGE_FONT_SIZE),
-                color_override: text_color,
-                font_family_override: None,
+            quads.push(QuadInstance {
+                rect: [br.x, br.y, br.width, br.height],
+                color: badge_color,
+                color_bottom: badge_color,
+                border_color: badge_border,
+                border_width: if is_editing_char { 1.0 } else { 0.0 },
+                border_radius: 0.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
             });
-        }
 
-        render_voice_actor_icons_for_line(
-            line,
-            project,
-            zone,
-            br,
-            ACTOR_ICON_SIZE,
-            quads,
-            labels,
-            actor_icons,
-        );
+            // Character name text — black on bright backgrounds for contrast
+            if !line.character_name.is_empty() {
+                let [r, g, b, _] = line.character_color;
+                let luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+                let text_color = if luminance > 0.55 {
+                    Some([0, 0, 0])
+                } else {
+                    None
+                };
 
-        text_input::render_selection_and_cursor(
-            quads,
-            br,
-            &line.character_name,
-            &state.char_input,
-            is_editing_char,
-            badge_text_metrics(),
-            3.0,
-            3.0,
-            [0.25, 0.45, 0.95, 0.45],
-            CURSOR_COLOR,
-        );
+                labels.push(LabelInfo {
+                    text: &line.character_name,
+                    bounds: br,
+                    h_align: HAlign::Center,
+                    v_align: VAlign::Center,
+                    overflow: Overflow::Clip,
+                    padding: BADGE_PADDING_H,
+                    font_size_override: Some(BADGE_FONT_SIZE),
+                    color_override: text_color,
+                    font_family_override: None,
+                });
+            }
 
-        // Note indicator: small icon at the end of the badge if line has a note
-        if !line.note.is_empty() {
-            let icon_size = 10.0;
-            note_icons.push(IconInstance {
-                rect: [
-                    br.x + br.width - icon_size - 2.0,
-                    br.y + (br.height - icon_size) / 2.0,
-                    icon_size,
-                    icon_size,
-                ],
-                uv_rect: note_uv,
-                tint: [0.7, 0.7, 0.75, 0.9],
-            });
-        }
+            render_voice_actor_icons_for_line(
+                line,
+                project,
+                zone,
+                br,
+                ACTOR_ICON_SIZE,
+                quads,
+                labels,
+                actor_icons,
+            );
+
+            text_input::render_selection_and_cursor(
+                quads,
+                br,
+                &line.character_name,
+                &state.char_input,
+                is_editing_char,
+                badge_text_metrics(),
+                3.0,
+                3.0,
+                [0.25, 0.45, 0.95, 0.45],
+                CURSOR_COLOR,
+            );
+
+            // Note indicator: small icon at the end of the badge if line has a note
+            if !line.note.is_empty() {
+                let icon_size = 10.0;
+                note_icons.push(IconInstance {
+                    rect: [
+                        br.x + br.width - icon_size - 2.0,
+                        br.y + (br.height - icon_size) / 2.0,
+                        icon_size,
+                        icon_size,
+                    ],
+                    uv_rect: note_uv,
+                    tint: [0.7, 0.7, 0.75, 0.9],
+                });
+            }
         }
 
         // Note text: small italic label at the bottom of the line
@@ -2361,9 +2421,9 @@ if !badge_hidden {
         zone,
     );
 
-        // Ghost preview line when holding click on empty space
-        if let Some(ghost) = &state.ghost_preview {
-            let body_rect = layout_ctx.track_body_rect(ghost.y_slot, zone);
+    // Ghost preview line when holding click on empty space
+    if let Some(ghost) = &state.ghost_preview {
+        let body_rect = layout_ctx.track_body_rect(ghost.y_slot, zone);
         let ghost_rect_x = frame_to_x(ghost.frame, current_frame, zone);
         let ghost_w = (ghost.duration_frames as f32 * ppf()).max(2.0);
 
@@ -2388,12 +2448,7 @@ if !badge_hidden {
         let ghost_badge_h = body_rect.height * BADGE_OVERLAP_HEIGHT_RATIO;
         let ghost_badge_x = ghost_rect_x - BADGE_GAP - ghost_badge_w;
         quads.push(QuadInstance {
-            rect: [
-                ghost_badge_x,
-                body_rect.y,
-                ghost_badge_w,
-                ghost_badge_h,
-            ],
+            rect: [ghost_badge_x, body_rect.y, ghost_badge_w, ghost_badge_h],
             color: [0.4, 0.4, 0.5, 0.2],
             color_bottom: [0.4, 0.4, 0.5, 0.2],
             border_color: ghost_border,
@@ -2532,11 +2587,7 @@ fn render_breath_arrow(r: &Rect, up: bool, quads: &mut Vec<QuadInstance>) {
     let spread = 0.5; // ~30 degrees from the main line
 
     // Two short lines forming the arrowhead
-    let base_angle = if up {
-        std::f32::consts::PI + angle
-    } else {
-        std::f32::consts::PI + angle
-    };
+    let base_angle = std::f32::consts::PI + angle;
     quads.push(QuadInstance {
         rect: [
             tip_x - arrow_len / 2.0,
@@ -2823,7 +2874,7 @@ pub fn render_markers<'a>(
     let margin_frames = f64_ceil_to_i64(20.0 / ppf().max(0.001) as f64).saturating_add(1);
     let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames);
     for marker_index in render_index.visible_marker_indices(first_frame, last_frame) {
-        let Some(marker) = project.markers.get(marker_index) else {
+        let Some(marker) = project.marker(marker_index) else {
             continue;
         };
         let x = frame_to_x(marker.frame, current_frame, zone);
@@ -3014,8 +3065,6 @@ pub fn autocomplete_hit(
     None
 }
 
-/// Context passed to all rythmo sub-handlers.
-
 const MENU_ITEM_H: f32 = 26.0;
 const MENU_ROOT_W: f32 = 230.0;
 const MENU_ACTOR_W: f32 = 240.0;
@@ -3094,7 +3143,7 @@ pub fn handle_context_menu_event(
                 (menu.hover_actor_index, menu.hover_action_index)
             {
                 if action_rect.contains(*x, *y) {
-                    if let Some(actor) = project.voice_actors.get(actor_index) {
+                    if let Some(actor) = project.voice_actor(actor_index) {
                         let line_id = menu.line_id;
                         let actor_name = actor.name.clone();
                         state.context_menu = None;
@@ -3124,7 +3173,7 @@ pub fn handle_context_menu_event(
             if actor_rect.contains(*x, *y) {
                 let item_index =
                     ((*y - actor_rect.y + actor_scroll) / MENU_ITEM_H).floor() as usize;
-                if item_index == project.voice_actors.len() {
+                    if item_index == project.voice_actors().len() {
                     state.context_menu = None;
                     return EventResponse::Action(UiAction::OpenVoiceActorModal);
                 }
@@ -3188,7 +3237,7 @@ pub fn render_context_menu<'a>(
         .get_line(menu.line_id)
         .map(|line| line.voice_actor_names.as_slice())
         .unwrap_or(&[]);
-    for (index, actor) in project.voice_actors.iter().enumerate() {
+    for (index, actor) in project.voice_actors().iter().enumerate() {
         let y = actor_rect.y + index as f32 * MENU_ITEM_H - actor_scroll;
         if y + MENU_ITEM_H < actor_rect.y || y > actor_rect.y + actor_rect.height {
             continue;
@@ -3210,7 +3259,7 @@ pub fn render_context_menu<'a>(
         );
     }
 
-    let create_index = project.voice_actors.len();
+    let create_index = project.voice_actors().len();
     let create_y = actor_rect.y + create_index as f32 * MENU_ITEM_H - actor_scroll;
     if create_y + MENU_ITEM_H >= actor_rect.y && create_y <= actor_rect.y + actor_rect.height {
         render_menu_separator(quads, actor_rect.x, create_y, actor_rect.width);
@@ -3234,7 +3283,7 @@ pub fn render_context_menu<'a>(
     }
 
     if let Some(actor_index) = menu.hover_actor_index {
-        if actor_index < project.voice_actors.len() {
+        if actor_index < project.voice_actors().len() {
             render_menu_panel(quads, action_rect);
             let actions = [
                 t("context.voice_actor.assign_line"),
@@ -3277,7 +3326,7 @@ fn context_menu_layout(
         height: root_h,
     };
 
-    let actor_items = project.voice_actors.len() + 1;
+    let actor_items = project.voice_actors().len() + 1;
     let total_actor_h = actor_items as f32 * MENU_ITEM_H;
     let actor_h = total_actor_h
         .min(MENU_MAX_ACTOR_H)
@@ -3379,7 +3428,7 @@ fn update_context_menu_hover(
 
     if actor_rect.contains(x, y) {
         let index = ((y - actor_rect.y + actor_scroll) / MENU_ITEM_H).floor() as usize;
-        if index <= project.voice_actors.len() {
+        if index <= project.voice_actors().len() {
             actor_hover = Some(index);
         }
     }
@@ -3540,7 +3589,6 @@ fn render_menu_scrollbar(quads: &mut Vec<QuadInstance>, rect: Rect, scroll: f32,
     });
 }
 
-
 fn autocomplete_hover_index(ctx: &RythmoCtx, state: &RythmoState, x: f32, y: f32) -> Option<usize> {
     let line_id = state.editing_character?;
     let line = ctx.project.get_line(line_id)?;
@@ -3569,1073 +3617,6 @@ fn autocomplete_hover_index(ctx: &RythmoCtx, state: &RythmoState, x: f32, y: f32
         }
     }
     None
-}
-
-
-
-fn handle_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -> EventResponse {
-    // (autocomplete click already handled before color picker in handle_rythmo_event)
-
-    // Click outside zone while editing → finalize
-    if !ctx.zone.contains(x, y) {
-        let char_id = state.editing_character;
-        let was_editing_line = state.editing_line.is_some();
-        let was_editing_note = state.editing_note.is_some();
-        if char_id.is_some() {
-            state.stop_char_editing();
-        }
-        if was_editing_line {
-            state.stop_line_editing();
-        }
-        if was_editing_note {
-            state.stop_note_editing();
-        }
-        if let Some(line_id) = char_id {
-            return EventResponse::Action(UiAction::FinalizeCharacter { line_id });
-        }
-        return if was_editing_line {
-            EventResponse::Action(UiAction::StopEditing)
-        } else {
-            EventResponse::Ignored
-        };
-    }
-
-    // If we have a stroke selection with transform handles, check those first
-    if matches!(state.selected, Some(Selection::Strokes(_))) {
-        if let Some(handle_kind) = hit_test_transform_handles(ctx, state, ctx.project, x, y) {
-            start_transform_drag(state, ctx.project, handle_kind, x, y);
-            return EventResponse::Consumed;
-        }
-    }
-
-    // Check markers first (smaller hit targets, on top visually)
-    let marker_hit_w = 12.0;
-    for (i, marker) in ctx.project.markers.iter().enumerate() {
-        let mx = frame_to_x(marker.frame, ctx.current_frame, ctx.zone);
-        if (x - mx).abs() < marker_hit_w {
-            state.selected = Some(Selection::Marker(i));
-            state.dragging = Some(DragState {
-                target: DragTarget::Marker(i),
-                drag_start_x: x,
-                original_frame: marker.frame,
-                original_duration: 0,
-                original_y_slot: 0.0,
-                drag_start_y: y,
-                handle: DragHandle::Body,
-                group_origins: Vec::new(),
-            });
-            return EventResponse::Consumed;
-        }
-    }
-
-    // Check lines
-    for line in ctx.project.lines() {
-        let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
-        if !r.contains(x, y) {
-            continue;
-        }
-
-        // If editing this line, single click positions cursor instead of starting a generic drag
-        // Only exceptions are the resize handles which should still resize the line
-        let is_left_handle = x < r.x + constants::HANDLE_WIDTH;
-        let is_right_handle = x > r.x + r.width - constants::HANDLE_WIDTH;
-        let is_editing = state.editing_line == Some(line.id);
-
-        if is_editing && !is_left_handle && !is_right_handle {
-            if !line.text.is_empty() {
-                let ratio = ((x - r.x) / r.width).clamp(0.0, 1.0);
-                state.pending_cursor_click = Some((ratio, false));
-
-                let lang = crate::config::get().lang.clone();
-                let char_pos = cursor_index_for_line_at_ratio(
-                    line,
-                    state.syllable_drag.as_ref(),
-                    &lang,
-                    ctx.karaoke_preview,
-                    state,
-                    ratio,
-                );
-                state.line_input.start_selection(char_pos);
-            }
-            // Add a special drag handle for mouse selection to allow mouse drag selection
-            state.dragging = Some(DragState {
-                target: DragTarget::Line(line.id),
-                handle: DragHandle::Selection,
-                drag_start_x: x,
-                original_frame: line.start_frame,
-                original_duration: line.duration_frames,
-                original_y_slot: line.y_slot,
-                drag_start_y: y,
-                group_origins: Vec::new(),
-            });
-            return EventResponse::Consumed;
-        }
-
-        let handle = if is_left_handle {
-            DragHandle::Left
-        } else if is_right_handle {
-            DragHandle::Right
-        } else {
-            DragHandle::Body
-        };
-        let group_origins =
-            if handle == DragHandle::Body && matches!(state.selected, Some(Selection::AllLines)) {
-                all_line_origins(ctx.project)
-            } else {
-                state.selected = Some(Selection::Line(line.id));
-                Vec::new()
-            };
-
-        state.dragging = Some(DragState {
-            target: DragTarget::Line(line.id),
-            handle,
-            drag_start_x: x,
-            original_frame: line.start_frame,
-            original_duration: line.duration_frames,
-            original_y_slot: line.y_slot,
-            drag_start_y: y,
-            group_origins,
-        });
-        return EventResponse::Consumed;
-    }
-
-    // Click on empty space in Select mode → hit-test a stroke, else start marquee
-    if ctx.active_mode == ToolMode::Select {
-        let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
-        let (frame, y_frac) = crate::rythmo_drawing::screen_to_drawing(
-            x, y, ctx.zone.x, ctx.zone.y, ctx.zone.width, ctx.zone.height,
-            ctx.current_frame, ppf,
-        );
-        let ids = ctx.project.drawing.strokes_within_radius(
-            frame, y_frac, ppf, ctx.zone.height, 0.025,
-        );
-        if !ids.is_empty() {
-            state.selected = Some(Selection::Strokes(ids));
-            return EventResponse::Consumed;
-        }
-        if let Some(resp) = handle_selection_drag(state, x, y, &UiEvent::MousePress { x, y }) {
-            return resp;
-        }
-    }
-
-    // Click on empty space → deselect & stop editing
-    state.selected = None;
-    let char_id = state.editing_character;
-    let was_editing_line = state.editing_line.is_some();
-    let was_editing_note = state.editing_note.is_some();
-    if char_id.is_some() {
-        state.stop_char_editing();
-    }
-    if was_editing_line {
-        state.stop_line_editing();
-    }
-    if was_editing_note {
-        state.stop_note_editing();
-    }
-    if let Some(line_id) = char_id {
-        return EventResponse::Action(UiAction::FinalizeCharacter { line_id });
-    }
-    if was_editing_line || was_editing_note {
-        return EventResponse::Action(UiAction::StopEditing);
-    }
-    EventResponse::Ignored
-}
-
-fn all_line_origins(project: &Project) -> Vec<DragLineOrigin> {
-    project
-        .lines()
-        .map(|line| DragLineOrigin {
-            line_id: line.id,
-            original_frame: line.start_frame,
-            original_y_slot: line.y_slot,
-        })
-        .collect()
-}
-
-/// Compute the screen-space bounding box of selected strokes.
-/// Returns (min_x, min_y, max_x, max_y) in screen pixels, or None if no strokes selected.
-fn selected_strokes_screen_bbox(
-    zone: &Rect,
-    current_frame: f64,
-    project: &Project,
-    state: &RythmoState,
-) -> Option<(f32, f32, f32, f32)> {
-    let Selection::Strokes(ref ids) = state.selected.as_ref()? else {
-        return None;
-    };
-    let strokes: Vec<&DrawingStroke> = ids
-        .iter()
-        .filter_map(|id| project.drawing.get(*id))
-        .collect();
-    if strokes.is_empty() {
-        return None;
-    }
-    let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
-    let center_x = zone.x + zone.width / 2.0;
-    let mut min_x = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut min_y = f32::INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
-    for s in &strokes {
-        for (f, y_frac) in &s.points {
-            let x = center_x + (*f - current_frame) as f32 * ppf;
-            let y = zone.y + y_frac * zone.height;
-            min_x = min_x.min(x);
-            max_x = max_x.max(x);
-            min_y = min_y.min(y);
-            max_y = max_y.max(y);
-        }
-    }
-    Some((min_x, min_y, max_x, max_y))
-}
-
-/// Draw the live marquee rectangle and the selected-strokes bounding box with
-/// transform handles into the given quad list. The quad list is expected to be
-/// composited above the drawing overlay so the handles remain visible.
-pub(crate) fn render_selection_overlay(
-    zone: &Rect,
-    current_frame: f64,
-    project: &Project,
-    state: &RythmoState,
-    quads: &mut Vec<QuadInstance>,
-) {
-    let accent: [f32; 4] = [0.3, 0.9, 1.0, 1.0];
-
-    // Live marquee rectangle (screen-space Rect in pixels)
-    if let Some(drag) = &state.selection_drag {
-        let x = drag.x.min(drag.x + drag.width);
-        let y = drag.y.min(drag.y + drag.height);
-        let w = drag.width.abs();
-        let h = drag.height.abs();
-        let fill: [f32; 4] = [0.2, 0.8, 0.9, 0.12];
-        quads.push(QuadInstance {
-            rect: [x, y, w, h],
-            color: fill,
-            color_bottom: fill,
-            border_color: accent,
-            border_width: 1.0,
-            border_radius: 0.0,
-            shadow_offset: [0.0; 2],
-            shadow_color: [0.0; 4],
-            shadow_blur: 0.0,
-            rotation: 0.0,
-            _padding: [0.0; 2],
-        });
-    }
-
-    // Selected strokes bounding box + corner & rotate handles
-    let Some((min_x, min_y, max_x, max_y)) =
-        selected_strokes_screen_bbox(zone, current_frame, project, state)
-    else {
-        return;
-    };
-
-    // Bounding box outline
-    quads.push(QuadInstance {
-        rect: [min_x, min_y, max_x - min_x, max_y - min_y],
-        color: [0.0; 4],
-        color_bottom: [0.0; 4],
-        border_color: accent,
-        border_width: 1.0,
-        border_radius: 0.0,
-        shadow_offset: [0.0; 2],
-        shadow_color: [0.0; 4],
-        shadow_blur: 0.0,
-        rotation: 0.0,
-        _padding: [0.0; 2],
-    });
-
-    let hs = 6.0; // half-size of handle squares in pixels
-    let corners = [
-        (min_x, min_y),
-        (max_x, min_y),
-        (min_x, max_y),
-        (max_x, max_y),
-    ];
-    for (cx, cy) in corners {
-        quads.push(QuadInstance {
-            rect: [cx - hs, cy - hs, hs * 2.0, hs * 2.0],
-            color: accent,
-            color_bottom: accent,
-            border_color: [0.0; 4],
-            border_width: 0.0,
-            border_radius: 0.0,
-            shadow_offset: [0.0; 2],
-            shadow_color: [0.0; 4],
-            shadow_blur: 0.0,
-            rotation: 0.0,
-            _padding: [0.0; 2],
-        });
-    }
-
-    // Rotate handle above the top-center edge, with a connector line
-    let rotate_offset = 24.0;
-    let cx = (min_x + max_x) / 2.0;
-    quads.push(QuadInstance {
-        rect: [cx - 0.5, min_y - rotate_offset, 1.0, rotate_offset],
-        color: accent,
-        color_bottom: accent,
-        border_color: [0.0; 4],
-        border_width: 0.0,
-        border_radius: 0.0,
-        shadow_offset: [0.0; 2],
-        shadow_color: [0.0; 4],
-        shadow_blur: 0.0,
-        rotation: 0.0,
-        _padding: [0.0; 2],
-    });
-    quads.push(QuadInstance {
-        rect: [cx - hs, min_y - rotate_offset - hs, hs * 2.0, hs * 2.0],
-        color: accent,
-        color_bottom: accent,
-        border_color: [0.0; 4],
-        border_width: 0.0,
-        border_radius: 0.0,
-        shadow_offset: [0.0; 2],
-        shadow_color: [0.0; 4],
-        shadow_blur: 0.0,
-        rotation: 0.0,
-        _padding: [0.0; 2],
-    });
-}
-
-/// Hit-test the transform handles of the selected strokes' bounding box.
-/// Returns the handle kind if hit, or None.
-fn hit_test_transform_handles(
-    ctx: &RythmoCtx,
-    state: &RythmoState,
-    project: &Project,
-    x: f32,
-    y: f32,
-) -> Option<TransformHandleKind> {
-    let (min_x, min_y, max_x, max_y) =
-        selected_strokes_screen_bbox(&ctx.zone, ctx.current_frame, project, state)?;
-    let handle_size = 12.0;
-    let rotate_offset = 24.0;
-
-    // Check corner handles
-    if (x - min_x).abs() < handle_size && (y - min_y).abs() < handle_size {
-        return Some(TransformHandleKind::TopLeft);
-    }
-    if (x - max_x).abs() < handle_size && (y - min_y).abs() < handle_size {
-        return Some(TransformHandleKind::TopRight);
-    }
-    if (x - min_x).abs() < handle_size && (y - max_y).abs() < handle_size {
-        return Some(TransformHandleKind::BottomLeft);
-    }
-    if (x - max_x).abs() < handle_size && (y - max_y).abs() < handle_size {
-        return Some(TransformHandleKind::BottomRight);
-    }
-
-    // Check rotate handle (top-center, above bbox)
-    let cx = (min_x + max_x) / 2.0;
-    if (x - cx).abs() < handle_size && (y - (min_y - rotate_offset)).abs() < handle_size {
-        return Some(TransformHandleKind::Rotate);
-    }
-
-    // Check move handle (bbox body)
-    if x >= min_x && x <= max_x && y >= min_y && y <= max_y {
-        return Some(TransformHandleKind::Move);
-    }
-
-    None
-}
-
-/// Start transform handle drag, capturing original stroke points.
-fn start_transform_drag(
-    state: &mut RythmoState,
-    project: &Project,
-    kind: TransformHandleKind,
-    x: f32,
-    y: f32,
-) {
-    let Selection::Strokes(ids) = state.selected.clone().unwrap() else {
-        return;
-    };
-    let strokes: Vec<&DrawingStroke> = ids
-        .iter()
-        .filter_map(|id| project.drawing.get(*id))
-        .collect();
-    if strokes.is_empty() {
-        return;
-    }
-    let start_stroke_points: Vec<Vec<(f64, f32)>> = strokes.iter().map(|s| s.points.clone()).collect();
-    let bbox = strokes_bbox(&strokes);
-    let start_bbox = bbox.unwrap_or((0.0, 0.0, 0.0, 0.0));
-    state.transform_handle = Some(TransformHandle {
-        kind,
-        start_mouse: (x, y),
-        start_bbox,
-        current_stroke_points: start_stroke_points.clone(),
-        start_stroke_points,
-        stroke_ids: ids,
-    });
-}
-
-/// Finalize a marquee selection: convert the live drag rectangle into a
-/// frame-space query and select the enclosed strokes (clears selection if none).
-fn finalize_marquee_selection(ctx: &RythmoCtx, state: &mut RythmoState) {
-    if let Some(drag) = state.selection_drag.take() {
-        let min_x = drag.x.min(drag.x + drag.width);
-        let max_x = drag.x.max(drag.x + drag.width);
-        let min_y = drag.y.min(drag.y + drag.height);
-        let max_y = drag.y.max(drag.y + drag.height);
-        let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
-        let center_x = ctx.zone.x + ctx.zone.width / 2.0;
-        let min_frame = ctx.current_frame + (min_x - center_x) as f64 / ppf as f64;
-        let max_frame = ctx.current_frame + (max_x - center_x) as f64 / ppf as f64;
-        let min_y_frac = ((min_y - ctx.zone.y) / ctx.zone.height).clamp(0.0, 1.0);
-        let max_y_frac = ((max_y - ctx.zone.y) / ctx.zone.height).clamp(0.0, 1.0);
-        let stroke_ids = ctx.project.drawing.strokes_in_rect(
-            min_frame.min(max_frame),
-            min_y_frac.min(max_y_frac),
-            min_frame.max(max_frame),
-            min_y_frac.max(max_y_frac),
-        );
-        state.selected = if stroke_ids.is_empty() {
-            None
-        } else {
-            Some(Selection::Strokes(stroke_ids))
-        };
-    }
-}
-
-/// Handle marquee selection drag start (move is handled directly in
-/// `handle_mouse_move`, finalize in `handle_mouse_release`).
-fn handle_selection_drag(state: &mut RythmoState, x: f32, y: f32, event: &UiEvent) -> Option<EventResponse> {
-    match event {
-        UiEvent::MousePress { .. } => {
-            // Start marquee selection on empty space
-            state.selection_drag = Some(Rect { x, y, width: 0.0, height: 0.0 });
-            Some(EventResponse::Consumed)
-        }
-        _ => None,
-    }
-}
-
-fn handle_mouse_release(state: &mut RythmoState, ctx: &RythmoCtx) -> EventResponse {
-    // Handle transform handle release
-    if state.transform_handle.take().is_some() {
-        return EventResponse::Consumed;
-    }
-
-    // Handle marquee selection release
-    if state.selection_drag.is_some() {
-        finalize_marquee_selection(ctx, state);
-        return EventResponse::Consumed;
-    }
-
-    if state.dragging.take().is_some() {
-        EventResponse::Consumed
-    } else {
-        EventResponse::Ignored
-    }
-}
-
-fn handle_ctrl_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -> EventResponse {
-    if !ctx.zone.contains(x, y) {
-        return EventResponse::Ignored;
-    }
-    state.stop_line_editing();
-    state.stop_char_editing();
-    state.stop_note_editing();
-    EventResponse::Action(UiAction::CreateLine {
-        frame: x_to_frame(x, ctx.current_frame, ctx.zone),
-        y_slot: y_to_slot(ctx.project, y, ctx.zone),
-    })
-}
-
-fn handle_shift_mouse_press(
-    ctx: &RythmoCtx,
-    state: &mut RythmoState,
-    x: f32,
-    y: f32,
-) -> EventResponse {
-    if !ctx.zone.contains(x, y) {
-        return EventResponse::Ignored;
-    }
-
-    // Line text editing selection
-    if let Some(line_id) = state.editing_line {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
-            if r.contains(x, y) && !line.text.is_empty() {
-                let ratio = ((x - r.x) / r.width).clamp(0.0, 1.0);
-                state.pending_cursor_click = Some((ratio, true));
-
-                // If there's no selection, start one from current cursor
-                if !state.line_input.has_selection() {
-                    let current = state.line_input.cursor_pos;
-                    state.line_input.selection = Some((current, current));
-                }
-
-                let lang = crate::config::get().lang.clone();
-                let char_pos = cursor_index_for_line_at_ratio(
-                    line,
-                    state.syllable_drag.as_ref(),
-                    &lang,
-                    ctx.karaoke_preview,
-                    state,
-                    ratio,
-                );
-                state.line_input.update_selection(char_pos);
-
-                return EventResponse::Consumed;
-            }
-        }
-    }
-
-    EventResponse::Ignored
-}
-
-fn handle_double_click(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) -> EventResponse {
-    // Save current character edit before switching
-    let finalize_line_id = state.editing_character;
-
-    // Badge → character editing
-    for line in ctx.project.lines() {
-        let br = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone);
-        if br.contains(x, y) {
-            if let Some(old_id) = finalize_line_id {
-                if old_id != line.id {
-                    state.stop_char_editing();
-                    // Can't dispatch two actions, so finalize happens via FinalizeCharacter below
-                }
-            }
-            state.editing_character = Some(line.id);
-            state.char_input.activate(&line.character_name);
-            state.char_input.select_all(&line.character_name);
-            let (picker_x, picker_y) = color_picker_origin_for_badge(&br, ctx.zone);
-            state
-                .color_picker
-                .open(picker_x, picker_y, line.character_color);
-            state.stop_line_editing();
-            state.stop_note_editing();
-            return if let Some(old_id) = finalize_line_id.filter(|&id| id != line.id) {
-                EventResponse::Action(UiAction::FinalizeCharacter { line_id: old_id })
-            } else {
-                EventResponse::Consumed
-            };
-        }
-    }
-    // Line body → note editing (if has note and click is in note area) or text editing
-    for line in ctx.project.lines() {
-        let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
-        if r.contains(x, y) {
-            // If the line has a note and click is in the bottom part, edit note
-            if !line.note.is_empty() {
-                let note_label_h = 12.0;
-                let note_y = r.y + r.height - note_label_h - 1.0;
-                if y >= note_y {
-                    state.stop_line_editing();
-                    state.stop_char_editing();
-                    return EventResponse::Action(UiAction::AddNote);
-                }
-            }
-            // If already editing this line, select the clicked word.
-            if state.editing_line == Some(line.id) && !line.text.is_empty() {
-                let ratio = ((x - r.x) / r.width).clamp(0.0, 1.0);
-                let lang = crate::config::get().lang.clone();
-                let char_pos = cursor_index_for_line_at_ratio(
-                    line,
-                    state.syllable_drag.as_ref(),
-                    &lang,
-                    ctx.karaoke_preview,
-                    state,
-                    ratio,
-                );
-                state.line_input.select_word_at(&line.text, char_pos);
-                return EventResponse::Consumed;
-            }
-            state.editing_line = Some(line.id);
-            state.line_input.activate(&line.text);
-            state.stop_char_editing();
-            state.stop_note_editing();
-            return if let Some(old_id) = finalize_line_id {
-                EventResponse::Action(UiAction::FinalizeCharacter { line_id: old_id })
-            } else {
-                EventResponse::Consumed
-            };
-        }
-    }
-    // Click empty → stop editing
-    if let Some(old_id) = finalize_line_id {
-        state.stop_char_editing();
-        return EventResponse::Action(UiAction::FinalizeCharacter { line_id: old_id });
-    }
-    if state.editing_line.is_some() {
-        state.stop_line_editing();
-        return EventResponse::Action(UiAction::StopEditing);
-    }
-    EventResponse::Ignored
-}
-
-fn handle_key_input(ctx: &RythmoCtx, state: &mut RythmoState, text: &str) -> EventResponse {
-    use crate::ui::text_input::TextInputAction;
-
-    // Note editing takes priority
-    if let Some(line_id) = state.editing_note {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            match state.note_input.handle_key(text, &line.note) {
-                Some(TextInputAction::Changed(new_note)) => {
-                    return EventResponse::Action(UiAction::UpdateLineNote {
-                        line_id,
-                        note: new_note,
-                    })
-                }
-                Some(TextInputAction::Finished) => {
-                    state.stop_note_editing();
-                    return EventResponse::Action(UiAction::StopEditing);
-                }
-                None => {}
-            }
-        }
-        return EventResponse::Consumed;
-    }
-
-    if let Some(line_id) = state.editing_character {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            // Enter with autocomplete → confirm suggestion (default to first)
-            if text == "\r" || text == "\n" {
-                let suggestions = ctx.project.autocomplete(&line.character_name);
-                if !suggestions.is_empty() {
-                    let idx = state.autocomplete_index.unwrap_or(0);
-                    if let Some(suggestion) = suggestions.get(idx) {
-                        let name = suggestion.name.clone();
-                        let color = suggestion.color;
-                        state.stop_char_editing();
-                        return EventResponse::Action(UiAction::SetCharacter {
-                            line_id,
-                            name,
-                            color,
-                        });
-                    }
-                }
-            }
-
-            match state.char_input.handle_key(text, &line.character_name) {
-                Some(TextInputAction::Changed(name)) => {
-                    state.autocomplete_index = Some(0); // default to first suggestion
-                    let br =
-                        badge_rect_for_name(ctx.project, line, &name, ctx.current_frame, ctx.zone);
-                    let (picker_x, picker_y) = color_picker_origin_for_badge(&br, ctx.zone);
-                    state.color_picker.move_to(picker_x, picker_y);
-                    return EventResponse::Action(UiAction::UpdateCharacterName { line_id, name });
-                }
-                Some(TextInputAction::Finished) => {
-                    let name = line.character_name.clone();
-                    let color = state.color_picker.current_color();
-                    state.stop_char_editing();
-                    return if !name.is_empty() {
-                        EventResponse::Action(UiAction::SetCharacter {
-                            line_id,
-                            name,
-                            color,
-                        })
-                    } else {
-                        EventResponse::Action(UiAction::StopEditing)
-                    };
-                }
-                None => {}
-            }
-        }
-        return EventResponse::Consumed;
-    }
-
-    if let Some(line_id) = state.editing_line {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            match state.line_input.handle_key(text, &line.text) {
-                Some(TextInputAction::Changed(new_text)) => {
-                    return EventResponse::Action(UiAction::UpdateLineText {
-                        id: line_id,
-                        text: new_text,
-                    })
-                }
-                Some(TextInputAction::Finished) => {
-                    state.stop_line_editing();
-                    return EventResponse::Action(UiAction::StopEditing);
-                }
-                None => {}
-            }
-        }
-        return EventResponse::Consumed;
-    }
-    EventResponse::Ignored
-}
-
-fn handle_autocomplete_nav(ctx: &RythmoCtx, state: &mut RythmoState, dir: i32) -> EventResponse {
-    if let Some(line_id) = state.editing_character {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            let suggestions = ctx.project.autocomplete(&line.character_name);
-            if suggestions.is_empty() {
-                return EventResponse::Ignored;
-            }
-
-            let count = suggestions.len();
-            let new_idx = match state.autocomplete_index {
-                Some(idx) => {
-                    let next = idx as i32 + dir;
-                    if next < 0 {
-                        None
-                    } else {
-                        Some((next as usize).min(count - 1))
-                    }
-                }
-                None => {
-                    if dir > 0 {
-                        Some(0)
-                    } else {
-                        None
-                    }
-                }
-            };
-            state.autocomplete_index = new_idx;
-            return EventResponse::Consumed;
-        }
-    }
-    EventResponse::Ignored
-}
-
-fn handle_select_all(ctx: &RythmoCtx, state: &mut RythmoState) -> EventResponse {
-    if let Some(line_id) = state.editing_character {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            state.char_input.select_all(&line.character_name);
-            return EventResponse::Consumed;
-        }
-    }
-    if let Some(line_id) = state.editing_line {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            state.line_input.select_all(&line.text);
-            return EventResponse::Consumed;
-        }
-    }
-    if let Some(line_id) = state.editing_note {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            state.note_input.select_all(&line.note);
-            return EventResponse::Consumed;
-        }
-    }
-    if ctx.project.lines().next().is_some() {
-        state.selected = Some(Selection::AllLines);
-        state.dragging = None;
-        state.stop_line_editing();
-        state.stop_char_editing();
-        state.stop_note_editing();
-        return EventResponse::Consumed;
-    }
-    EventResponse::Ignored
-}
-
-fn handle_copy(ctx: &RythmoCtx, state: &mut RythmoState) -> EventResponse {
-    if let Some(line_id) = state.editing_note {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            if let Some(text) = state.note_input.selected_text(&line.note) {
-                return EventResponse::Action(UiAction::SetClipboard(text));
-            }
-        }
-    }
-    if let Some(line_id) = state.editing_character {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            if let Some(text) = state.char_input.selected_text(&line.character_name) {
-                return EventResponse::Action(UiAction::SetClipboard(text));
-            }
-        }
-    }
-    if let Some(line_id) = state.editing_line {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            if let Some(text) = state.line_input.selected_text(&line.text) {
-                return EventResponse::Action(UiAction::SetClipboard(text));
-            }
-        }
-    }
-    EventResponse::Consumed
-}
-
-fn handle_cut(ctx: &RythmoCtx, state: &mut RythmoState) -> EventResponse {
-    let delete = "\x08";
-    if let Some(line_id) = state.editing_note {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            if let Some(text) = state.note_input.selected_text(&line.note) {
-                if let Some(crate::ui::text_input::TextInputAction::Changed(note)) =
-                    state.note_input.handle_key(delete, &line.note)
-                {
-                    return EventResponse::Action(UiAction::SetClipboardAndUpdateLineNote {
-                        clipboard: text,
-                        line_id,
-                        note,
-                    });
-                }
-                return EventResponse::Action(UiAction::SetClipboard(text));
-            }
-        }
-    }
-    if let Some(line_id) = state.editing_character {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            if let Some(text) = state.char_input.selected_text(&line.character_name) {
-                if let Some(crate::ui::text_input::TextInputAction::Changed(name)) =
-                    state.char_input.handle_key(delete, &line.character_name)
-                {
-                    state.autocomplete_index = Some(0);
-                    return EventResponse::Action(UiAction::SetClipboardAndUpdateCharacterName {
-                        clipboard: text,
-                        line_id,
-                        name,
-                    });
-                }
-                return EventResponse::Action(UiAction::SetClipboard(text));
-            }
-        }
-    }
-    if let Some(line_id) = state.editing_line {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            if let Some(text) = state.line_input.selected_text(&line.text) {
-                if let Some(crate::ui::text_input::TextInputAction::Changed(new_text)) =
-                    state.line_input.handle_key(delete, &line.text)
-                {
-                    return EventResponse::Action(UiAction::SetClipboardAndUpdateLineText {
-                        clipboard: text,
-                        id: line_id,
-                        text: new_text,
-                    });
-                }
-                return EventResponse::Action(UiAction::SetClipboard(text));
-            }
-        }
-    }
-    EventResponse::Consumed
-}
-
-fn handle_cursor_move(
-    ctx: &RythmoCtx,
-    state: &mut RythmoState,
-    dir: i32,
-    shift: bool,
-) -> EventResponse {
-    if let Some(line_id) = state.editing_character {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            if dir < 0 {
-                if shift {
-                    state.char_input.move_left_shift();
-                } else {
-                    state.char_input.move_left();
-                }
-            } else {
-                if shift {
-                    state.char_input.move_right_shift(&line.character_name);
-                } else {
-                    state.char_input.move_right(&line.character_name);
-                }
-            }
-            return EventResponse::Consumed;
-        }
-    }
-    if let Some(line_id) = state.editing_line {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            if dir < 0 {
-                if shift {
-                    state.line_input.move_left_shift();
-                } else {
-                    state.line_input.move_left();
-                }
-            } else {
-                if shift {
-                    state.line_input.move_right_shift(&line.text);
-                } else {
-                    state.line_input.move_right(&line.text);
-                }
-            }
-            return EventResponse::Consumed;
-        }
-    }
-    if let Some(line_id) = state.editing_note {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            if dir < 0 {
-                if shift {
-                    state.note_input.move_left_shift();
-                } else {
-                    state.note_input.move_left();
-                }
-            } else {
-                if shift {
-                    state.note_input.move_right_shift(&line.note);
-                } else {
-                    state.note_input.move_right(&line.note);
-                }
-            }
-            return EventResponse::Consumed;
-        }
-    }
-    EventResponse::Ignored
-}
-
-// ── Syllable mode helpers ──────────────────────────────────────────────────
-
-fn syllable_mouse_press(
-    ctx: &RythmoCtx,
-    state: &mut RythmoState,
-    x: f32,
-    y: f32,
-) -> Option<EventResponse> {
-    if !ctx.zone.contains(x, y) {
-        return None;
-    }
-
-    // Find which line was clicked
-    let line = ctx
-        .project
-        .lines()
-        .find(|l| line_rect(ctx.project, l, ctx.current_frame, ctx.zone).contains(x, y))?;
-    if ctx.karaoke_preview && line.karaoke {
-        return None;
-    }
-    if state.hovered_line != Some(line.id) {
-        return None;
-    }
-
-    let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
-
-    let lang = crate::config::get().lang.clone();
-    let ratios = syllable_ratios_for_line(line, state.syllable_drag.as_ref(), &lang)?;
-    if ratios.len() <= 1 {
-        return None;
-    }
-
-    // Find which separator is closest to click
-    let mut sep_x = r.x;
-    let hit_w = 7.0;
-    let top_y = r.y + 1.0;
-    if y < top_y - 6.0 || y > top_y + 14.0 {
-        return None;
-    }
-    for (i, ratio) in ratios.iter().enumerate() {
-        sep_x += ratio * r.width;
-        if i < ratios.len() - 1 && (x - sep_x).abs() < hit_w {
-            state.syllable_drag = Some(SyllableDrag {
-                line_id: line.id,
-                separator_index: i,
-                ratios: ratios.clone(),
-                drag_start_x: x,
-                line_rect: r,
-            });
-            return Some(EventResponse::Consumed);
-        }
-    }
-    None
-}
-
-fn syllable_mouse_move(state: &mut RythmoState, x: f32) -> Option<EventResponse> {
-    let drag = state.syllable_drag.as_mut()?;
-
-    let dx = x - drag.drag_start_x;
-    let delta_ratio = dx / drag.line_rect.width;
-    drag.drag_start_x = x;
-
-    let i = drag.separator_index;
-    let min_ratio = syllable_drag_min_ratio(drag.ratios.len(), drag.line_rect.width);
-    if delta_ratio.abs() <= 0.0001 || i + 1 >= drag.ratios.len() {
-        return Some(EventResponse::Consumed);
-    }
-
-    let left_end = i + 1;
-    let right_start = i + 1;
-    let left_total: f32 = drag.ratios[..left_end].iter().sum();
-    let right_total: f32 = drag.ratios[right_start..].iter().sum();
-    let left_min_total = min_ratio * left_end as f32;
-    let right_min_total = min_ratio * (drag.ratios.len() - right_start) as f32;
-
-    if delta_ratio > 0.0 {
-        let applied = delta_ratio.min((right_total - right_min_total).max(0.0));
-        if applied > 0.0 {
-            redistribute_group_to_total(
-                &mut drag.ratios[..left_end],
-                left_total + applied,
-                min_ratio,
-            );
-            redistribute_group_to_total(
-                &mut drag.ratios[right_start..],
-                right_total - applied,
-                min_ratio,
-            );
-        }
-    } else {
-        let applied = (-delta_ratio).min((left_total - left_min_total).max(0.0));
-        if applied > 0.0 {
-            redistribute_group_to_total(
-                &mut drag.ratios[..left_end],
-                left_total - applied,
-                min_ratio,
-            );
-            redistribute_group_to_total(
-                &mut drag.ratios[right_start..],
-                right_total + applied,
-                min_ratio,
-            );
-        }
-    }
-
-    normalize_ratios_in_place(&mut drag.ratios);
-
-    Some(EventResponse::Consumed)
-}
-
-fn syllable_drag_min_ratio(segment_count: usize, line_width: f32) -> f32 {
-    if segment_count == 0 || line_width <= 1.0 {
-        return 0.001;
-    }
-
-    // Keep handles usable without reserving a large percentage of the line.
-    // A fixed 5% minimum made separators feel blocked on lines with many syllables.
-    let pixel_min = 3.0 / line_width.max(1.0);
-    let total_budget_min = 0.35 / segment_count as f32;
-    pixel_min
-        .clamp(0.001, 0.02)
-        .min(total_budget_min.max(0.001))
-}
-
-fn redistribute_group_to_total(ratios: &mut [f32], target_total: f32, min_ratio: f32) {
-    if ratios.is_empty() {
-        return;
-    }
-
-    let count = ratios.len() as f32;
-    let min_total = min_ratio * count;
-    let target_total = target_total.max(min_total);
-    let target_free = (target_total - min_total).max(0.0);
-    let free_sum: f32 = ratios
-        .iter()
-        .map(|ratio| (*ratio - min_ratio).max(0.0))
-        .sum();
-
-    if free_sum <= f32::EPSILON {
-        let each = target_total / count;
-        for ratio in ratios.iter_mut() {
-            *ratio = each;
-        }
-        return;
-    }
-
-    for ratio in ratios.iter_mut() {
-        let free = (*ratio - min_ratio).max(0.0);
-        *ratio = min_ratio + free / free_sum * target_free;
-    }
-}
-
-fn normalize_ratios_in_place(ratios: &mut [f32]) {
-    let sum: f32 = ratios.iter().sum();
-    if sum <= f32::EPSILON {
-        return;
-    }
-    for ratio in ratios.iter_mut() {
-        *ratio /= sum;
-    }
-}
-
-fn syllable_mouse_release(state: &mut RythmoState) -> Option<EventResponse> {
-    let drag = state.syllable_drag.take()?;
-    Some(EventResponse::Action(UiAction::SetSyllableRatios {
-        line_id: drag.line_id,
-        ratios: drag.ratios,
-    }))
 }
 
 // -- Studio Mode (export-style rythmo rendering) --
@@ -4760,12 +3741,8 @@ pub fn render_studio_rythmo<'a>(
         tf += constants::TICK_GAP_FRAMES;
     }
 
-    let studio_skip_ranges = common_scene.active_karaoke_skip_ranges(
-        ruler_h,
-        slot_header_h,
-        badge_gap,
-        scale,
-    );
+    let studio_skip_ranges =
+        common_scene.active_karaoke_skip_ranges(ruler_h, slot_header_h, badge_gap, scale);
 
     // Playhead, split around active karaoke lines.
     let ph_c = [217.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0];

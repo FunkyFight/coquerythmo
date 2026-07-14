@@ -1,3 +1,9 @@
+//! CPU renderer for the shared rythmo scene.
+//!
+//! Renderer entry points deliberately receive the complete render context so
+//! CPU and GPU backends remain behaviorally interchangeable.
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::HashMap;
 
 use crate::constants;
@@ -8,7 +14,7 @@ use crate::rendering::rythmo::scene::{
     karaoke_stack_y, FrameWindow, RythmoScene, SceneLine, SceneOptions,
 };
 use crate::rythmo_layout;
-use crate::ui::widget::Rect;
+use crate::ui::primitives::Rect;
 use crate::voice_actor::{decode_icon_rgba, icon_hash, VoiceActor, VOICE_ACTOR_ICON_SIZE};
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent,
@@ -64,6 +70,12 @@ pub struct CpuRenderer {
     voice_actor_icon_cache: HashMap<u64, Vec<u8>>,
     rythmo_text_cache_bytes: usize,
     cache_tick: u64,
+}
+
+impl Default for CpuRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CpuRenderer {
@@ -228,8 +240,8 @@ impl CpuRenderer {
                     .swash_cache
                     .get_image_uncached(&mut self.font_system, physical.cache_key)
                 {
-                    let gx = physical.x as i32;
-                    let gy = (line_y as i32) + physical.y as i32;
+                    let gx = physical.x;
+                    let gy = line_y as i32 + physical.y;
                     for iy in 0..image.placement.height as i32 {
                         for ix in 0..image.placement.width as i32 {
                             let px = gx + image.placement.left + ix;
@@ -283,9 +295,11 @@ impl CpuRenderer {
     fn cached_voice_actor_icon(&mut self, actor: &VoiceActor) -> Option<&[u8]> {
         let icon = actor.icon_png_base64.as_deref()?;
         let hash = icon_hash(icon);
-        if !self.voice_actor_icon_cache.contains_key(&hash) {
+        if let std::collections::hash_map::Entry::Vacant(entry) =
+            self.voice_actor_icon_cache.entry(hash)
+        {
             let rgba = decode_icon_rgba(icon).ok()?;
-            self.voice_actor_icon_cache.insert(hash, rgba);
+            entry.insert(rgba);
         }
         self.voice_actor_icon_cache
             .get(&hash)
@@ -560,7 +574,7 @@ impl CpuRenderer {
         let mut pixmap = Pixmap::new(width, height).unwrap();
         pixmap.fill(tiny_skia::Color::from_rgba8(5, 5, 8, 255));
 
-let w = width as f32;
+        let w = width as f32;
         let h = height as f32;
         let center_x = w / 2.0;
 
@@ -586,12 +600,7 @@ let w = width as f32;
         }
 
         // -- Playhead, split around active karaoke lines --
-        let playhead_gaps = scene.active_karaoke_skip_ranges(
-            ruler_h,
-            slot_header_h,
-            badge_gap,
-            s,
-        );
+        let playhead_gaps = scene.active_karaoke_skip_ranges(ruler_h, slot_header_h, badge_gap, s);
         blit_playhead_segments(
             &mut pixmap,
             center_x - playhead_w / 2.0,
@@ -624,18 +633,13 @@ let w = width as f32;
             if x1 + lw < 0.0 || x1 > w {
                 return None;
             }
-            let track = rythmo_layout::track_for_y_slot(&track_layouts, line.y_slot)?;
+            let track = rythmo_layout::track_for_y_slot(track_layouts, line.y_slot)?;
             let y_base = ruler_h + track.top;
             let body_y = y_base + slot_header_h + badge_gap;
             let mut line_y = body_y;
             let mut body_h = normal_slot_h;
             if line.karaoke {
-                line_y = karaoke_stack_y(
-                    body_y,
-                    track.body_h,
-                    scene_line.karaoke_stack_row,
-                    s,
-                );
+                line_y = karaoke_stack_y(body_y, track.body_h, scene_line.karaoke_stack_row, s);
                 body_h = karaoke_stack_height(track.body_h, s);
             }
             Some(Rect {
@@ -676,7 +680,7 @@ let w = width as f32;
                 continue;
             }
 
-            let Some(track) = rythmo_layout::track_for_y_slot(&track_layouts, line.y_slot) else {
+            let Some(track) = rythmo_layout::track_for_y_slot(track_layouts, line.y_slot) else {
                 continue;
             };
             let y_base = ruler_h + track.top;
@@ -684,12 +688,7 @@ let w = width as f32;
             let mut line_y = body_y;
             let mut body_h = normal_slot_h;
             if line.karaoke {
-                line_y = karaoke_stack_y(
-                    body_y,
-                    track.body_h,
-                    scene_line.karaoke_stack_row,
-                    s,
-                );
+                line_y = karaoke_stack_y(body_y, track.body_h, scene_line.karaoke_stack_row, s);
                 body_h = karaoke_stack_height(track.body_h, s);
             }
 
@@ -820,7 +819,12 @@ let w = width as f32;
                     badge_y,
                     badge_w,
                     badge_h,
-                    [color_channel(cr), color_channel(cg), color_channel(cb), badge_overlap_alpha],
+                    [
+                        color_channel(cr),
+                        color_channel(cg),
+                        color_channel(cb),
+                        badge_overlap_alpha,
+                    ],
                 );
 
                 // Badge text
@@ -882,7 +886,6 @@ let w = width as f32;
                     actor_icon_size,
                     s,
                 );
-
             }
 
             // Breath arrows
@@ -952,11 +955,11 @@ let w = width as f32;
                                 continue;
                             }
                             // Tint: gray (160, 160, 170)
-                            let sr = (160u32 * a / 255) as u32;
-                            let sg = (160u32 * a / 255) as u32;
-                            let sb = (170u32 * a / 255) as u32;
+                            let sr = 160u32 * a / 255;
+                            let sg = 160u32 * a / 255;
+                            let sb = 170u32 * a / 255;
                             let inv = 255 - a;
-pm_data[di] = ((sr + pm_data[di] as u32 * inv) / 255) as u8;
+                            pm_data[di] = ((sr + pm_data[di] as u32 * inv) / 255) as u8;
                             pm_data[di + 1] = ((sg + pm_data[di + 1] as u32 * inv) / 255) as u8;
                             pm_data[di + 2] = ((sb + pm_data[di + 2] as u32 * inv) / 255) as u8;
                             pm_data[di + 3] = (a + (pm_data[di + 3] as u32 * inv) / 255) as u8;
@@ -968,12 +971,8 @@ pm_data[di] = ((sr + pm_data[di] as u32 * inv) / 255) as u8;
 
         // Drawings are an overlay in the editor, so composite them last in the
         // exported BR as well (above lines, labels and markers).
-        let (first_frame, last_frame) = crate::rythmo_drawing::visible_frame_window(
-            width as f32,
-            current_frame as f64,
-            ppf,
-            4,
-        );
+        let (first_frame, last_frame) =
+            crate::rythmo_drawing::visible_frame_window(width as f32, current_frame as f64, ppf, 4);
         let strokes: Vec<_> = scene
             .drawings
             .iter()
@@ -1078,7 +1077,9 @@ fn blit_karaoke_count_in_dot(
     count_in_progress: Option<f32>,
     scale: f32,
 ) {
-    let Some(count_in_progress) = count_in_progress else { return };
+    let Some(count_in_progress) = count_in_progress else {
+        return;
+    };
 
     let (dx, dy, size) = karaoke_count_in_dot_rect(x, y, count_in_progress, scale);
     blit_circle(
@@ -1375,7 +1376,10 @@ mod tests {
             &project,
             &index,
             SceneOptions {
-                frame_window: FrameWindow { first: 0, last: 120 },
+                frame_window: FrameWindow {
+                    first: 0,
+                    last: 120,
+                },
                 current_frame: 48.0,
                 source_fps: 24.0,
                 ..SceneOptions::default()

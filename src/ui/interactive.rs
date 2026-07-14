@@ -1,18 +1,13 @@
-use super::widget::{Rect, UiEvent};
+use super::primitives::{Rect, UiEvent};
 
 /// Shared state machine for any clickable/hoverable element.
 /// Replaces duplicated Normal/Hovered/Pressed logic across widgets.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum InteractiveState {
+    #[default]
     Normal,
     Hovered,
     Pressed,
-}
-
-impl Default for InteractiveState {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 pub enum InteractiveResult {

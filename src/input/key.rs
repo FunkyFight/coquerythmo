@@ -61,11 +61,7 @@ pub struct KeyStroke {
 }
 
 impl KeyStroke {
-    pub fn from_winit(
-        event: &KeyEvent,
-        modifiers: Modifiers,
-        window: InputWindow,
-    ) -> Option<Self> {
+    pub fn from_winit(event: &KeyEvent, modifiers: Modifiers, window: InputWindow) -> Option<Self> {
         let key = match &event.logical_key {
             Key::Named(named) => match named {
                 NamedKey::F5 => KeyCode::F5,

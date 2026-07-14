@@ -1,3 +1,6 @@
+//! Shared GPU text and primitive renderer.
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
@@ -9,7 +12,7 @@ use glyphon::{
 use wgpu::MultisampleState;
 
 use super::icons::IconAtlas;
-use super::widget::{HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, VAlign};
+use super::primitives::{HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, VAlign};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -483,7 +486,7 @@ impl UiRenderer {
 
     pub fn cursor_pos_from_segments(
         &self,
-        segments: &[crate::ui::rythmo::CursorSegmentInfo],
+        segments: &[crate::workspaces::rythmo::view::CursorSegmentInfo],
         x_ratio: f32,
     ) -> Option<usize> {
         let mut closest = None;
@@ -968,7 +971,7 @@ impl UiRenderer {
         extra_textured: &[(IconInstance, &wgpu::BindGroup)],
         post_texture_quads: &[QuadInstance], // drawn after textured quads (e.g. color picker indicators)
         modal_quads: &[QuadInstance],        // modal backgrounds (above normal text)
-        modal_labels: &[LabelInfo],         // modal text (above modal backgrounds)
+        modal_labels: &[LabelInfo],          // modal text (above modal backgrounds)
     ) {
         let ui_scale = ui_scale.max(1.0);
         let uniforms = Uniforms {

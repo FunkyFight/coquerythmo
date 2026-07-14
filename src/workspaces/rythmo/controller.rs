@@ -1,5 +1,9 @@
 //! Event-to-command controller for the rythmo workspace.
 
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_match)]
+
 use super::*;
 
 pub(crate) struct RythmoCtx<'a> {
@@ -24,8 +28,6 @@ pub fn handle_rythmo_event(
     brush_radius_frac: f32,
     erasing: bool,
 ) -> EventResponse {
-    use crate::rythmo_drawing::screen_to_drawing;
-
     let mut ctx = RythmoCtx {
         zone,
         project,
@@ -35,123 +37,12 @@ pub fn handle_rythmo_event(
         active_mode,
     };
 
-    // Drawing mode handling - early return to block line editing
+    // Drawing mode handling - early return to block line editing.
     if active_mode == ToolMode::Draw {
-        let in_zone = |x: f32, y: f32| {
-            x >= ctx.zone.x
-                && x <= ctx.zone.x + ctx.zone.width
-                && y >= ctx.zone.y
-                && y <= ctx.zone.y + ctx.zone.height
-        };
-
-        let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
-
-        match event {
-            UiEvent::MousePress { x, y } if in_zone(*x, *y) => {
-                let (frame, y_frac) = screen_to_drawing(
-                    *x,
-                    *y,
-                    ctx.zone.x,
-                    ctx.zone.y,
-                    ctx.zone.width,
-                    ctx.zone.height,
-                    ctx.current_frame,
-                    ppf,
-                );
-                if erasing {
-                    // Eraser: find strokes under cursor
-                    let stroke_ids = ctx.project.drawing.strokes_within_radius(
-                        frame,
-                        y_frac,
-                        ppf,
-                        ctx.zone.height,
-                        brush_radius_frac,
-                    );
-                    if !stroke_ids.is_empty() {
-                        return EventResponse::Action(UiAction::EraseDrawingStrokes(stroke_ids));
-                    }
-                } else {
-                    // Start new stroke
-                    let mut stroke = DrawingStroke::new(
-                        ctx.project.drawing.peek_id(),
-                        brush_color,
-                        brush_radius_frac,
-                    );
-                    stroke.points.push((frame, y_frac));
-                    state.active_stroke = Some(stroke);
-                    state.drawing_dirty = true;
-                }
-                return EventResponse::Consumed;
-            }
-            UiEvent::MouseMove { x, y } if erasing && in_zone(*x, *y) => {
-                let (frame, y_frac) = screen_to_drawing(
-                    *x,
-                    *y,
-                    ctx.zone.x,
-                    ctx.zone.y,
-                    ctx.zone.width,
-                    ctx.zone.height,
-                    ctx.current_frame,
-                    ppf,
-                );
-                let stroke_ids = ctx.project.drawing.strokes_within_radius(
-                    frame,
-                    y_frac,
-                    ppf,
-                    ctx.zone.height,
-                    brush_radius_frac,
-                );
-                if !stroke_ids.is_empty() {
-                    return EventResponse::Action(UiAction::EraseDrawingStrokes(stroke_ids));
-                }
-                return EventResponse::Consumed;
-            }
-            UiEvent::MouseMove { x, y } if state.active_stroke.is_some() && in_zone(*x, *y) => {
-                let (frame, y_frac) = screen_to_drawing(
-                    *x,
-                    *y,
-                    ctx.zone.x,
-                    ctx.zone.y,
-                    ctx.zone.width,
-                    ctx.zone.height,
-                    ctx.current_frame,
-                    ppf,
-                );
-                if let Some(ref mut stroke) = state.active_stroke {
-                    stroke.points.push((frame, y_frac));
-                    state.drawing_dirty = true;
-                }
-                return EventResponse::Consumed;
-            }
-            UiEvent::MouseRelease { .. } if state.active_stroke.is_some() => {
-                if let Some(stroke) = state.active_stroke.take() {
-                    if stroke.points.len() > 1 {
-                        state.drawing_dirty = true;
-                        return EventResponse::Action(UiAction::AddDrawingStroke(stroke));
-                    }
-                }
-                return EventResponse::Consumed;
-            }
-            _ => {}
-        }
-
-        // In Draw mode, consume events in zone to block line editing
-        if matches!(event, UiEvent::MousePress { .. } | UiEvent::MouseMove { .. } | UiEvent::MouseRelease { .. }) {
-            let in_zone = |x: f32, y: f32| {
-                x >= ctx.zone.x
-                    && x <= ctx.zone.x + ctx.zone.width
-                    && y >= ctx.zone.y
-                    && y <= ctx.zone.y + ctx.zone.height
-            };
-            let in_zone = match event {
-                UiEvent::MousePress { x, y }
-                | UiEvent::MouseMove { x, y }
-                | UiEvent::MouseRelease { x, y } => in_zone(*x, *y),
-                _ => false,
-            };
-            if in_zone {
-                return EventResponse::Consumed;
-            }
+        if let Some(response) =
+            handle_drawing_event(&ctx, event, state, brush_color, brush_radius_frac, erasing)
+        {
+            return response;
         }
     }
 

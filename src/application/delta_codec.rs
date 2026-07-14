@@ -85,7 +85,9 @@ pub fn encode_delta(command: &Command, project: &Project) -> Option<serde_json::
             "syllable_ratios": new_ratios,
         }),
         Command::SetSyllableRatios {
-            line_id, new_ratios, ..
+            line_id,
+            new_ratios,
+            ..
         } => serde_json::json!({
             "action": "set_syllable_ratios",
             "line_id": line_id,
@@ -143,7 +145,7 @@ pub fn encode_delta(command: &Command, project: &Project) -> Option<serde_json::
             old_frame,
             new_frame,
         } => {
-            let marker = project.markers.get(*index)?;
+            let marker = project.marker(*index)?;
             serde_json::json!({
                 "action": "move_marker",
                 "kind": serde_json::to_value(&marker.kind).ok()?,
@@ -194,9 +196,9 @@ pub fn decode_delta(data: &serde_json::Value) -> Option<CommandPayload> {
             y_slot: data.get("y_slot")?.as_f64()? as f32,
         }),
         "move_lines" => Some(CommandPayload::MoveLines {
-            lines: data
-                .get("lines")
-                .and_then(|value| serde_json::from_value::<Vec<MoveLinePayload>>(value.clone()).ok())?,
+            lines: data.get("lines").and_then(|value| {
+                serde_json::from_value::<Vec<MoveLinePayload>>(value.clone()).ok()
+            })?,
         }),
         "resize_line" => Some(CommandPayload::ResizeLine {
             line_id: data.get("line_id")?.as_u64()?,
@@ -224,9 +226,9 @@ pub fn decode_delta(data: &serde_json::Value) -> Option<CommandPayload> {
             line_id: data.get("line_id")?.as_u64()?,
             name: data.get("name")?.as_str()?.to_string(),
             color: serde_json::from_value(data.get("color")?.clone()).ok()?,
-            voice_actor_names: Some(serde_json::from_value(
-                data.get("voice_actor_names")?.clone(),
-            ).ok()?),
+            voice_actor_names: Some(
+                serde_json::from_value(data.get("voice_actor_names")?.clone()).ok()?,
+            ),
         }),
         "set_character_color" => Some(CommandPayload::SetCharacterColor {
             line_id: data.get("line_id")?.as_u64()?,
@@ -295,6 +297,9 @@ mod tests {
             "start_frame": 12,
             "y_slot": 0.5
         });
-        assert!(matches!(decode_delta(&data), Some(CommandPayload::MoveLine { line_id: 7, .. })));
+        assert!(matches!(
+            decode_delta(&data),
+            Some(CommandPayload::MoveLine { line_id: 7, .. })
+        ));
     }
 }

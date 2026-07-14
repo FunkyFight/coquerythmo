@@ -1,5 +1,5 @@
 use super::text_input;
-use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
+use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -78,11 +78,7 @@ pub fn wrap_text<'a>(text: &'a str, max_w: f32, font_size: f32) -> Vec<&'a str> 
             let (ws, we) = words[idx];
             let word = &paragraph[ws..we];
             let w = text_input::text_width(word, font_size);
-            let add = if line_start.is_some() {
-                space_w + w
-            } else {
-                w
-            };
+            let add = if line_start.is_some() { space_w + w } else { w };
             if let Some(ls) = line_start {
                 if current_w + add > max_w {
                     out.push(&paragraph[ls..words[idx - 1].1]);
@@ -178,6 +174,12 @@ pub struct PricingPage {
     hover_close: bool,
     hover_plan: Option<usize>,
     hover_activate: bool,
+}
+
+impl Default for PricingPage {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PricingPage {

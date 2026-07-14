@@ -58,9 +58,18 @@ pub struct LabelInfo<'a> {
 
 #[derive(Debug, Clone)]
 pub enum UiEvent {
-    MouseMove { x: f32, y: f32 },
-    MousePress { x: f32, y: f32 },
-    MouseRelease { x: f32, y: f32 },
+    MouseMove {
+        x: f32,
+        y: f32,
+    },
+    MousePress {
+        x: f32,
+        y: f32,
+    },
+    MouseRelease {
+        x: f32,
+        y: f32,
+    },
     Scroll {
         x: f32,
         y: f32,
@@ -68,7 +77,9 @@ pub enum UiEvent {
         fast: bool,
         ctrl: bool,
     },
-    KeyInput { text: String },
+    KeyInput {
+        text: String,
+    },
     CursorLeft,
     CursorRight,
     ShiftCursorLeft,
@@ -80,12 +91,30 @@ pub enum UiEvent {
     Copy,
     Cut,
     UndoTextEdit,
-    CtrlClick { x: f32, y: f32 },
-    ShiftMousePress { x: f32, y: f32 },
-    DoubleClick { x: f32, y: f32 },
-    MiddlePress { x: f32, y: f32 },
-    MiddleRelease { x: f32, y: f32 },
-    ContextMenu { x: f32, y: f32 },
+    CtrlClick {
+        x: f32,
+        y: f32,
+    },
+    ShiftMousePress {
+        x: f32,
+        y: f32,
+    },
+    DoubleClick {
+        x: f32,
+        y: f32,
+    },
+    MiddlePress {
+        x: f32,
+        y: f32,
+    },
+    MiddleRelease {
+        x: f32,
+        y: f32,
+    },
+    ContextMenu {
+        x: f32,
+        y: f32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

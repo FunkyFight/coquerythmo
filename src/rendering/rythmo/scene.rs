@@ -85,11 +85,8 @@ impl RythmoScene {
             .filter_map(|id| project.get_line(id))
             .map(|line| {
                 let karaoke_active = line.karaoke_active(options.current_frame);
-                let karaoke_count_in_progress = karaoke_count_in_progress(
-                    line,
-                    options.current_frame,
-                    count_in_frames,
-                );
+                let karaoke_count_in_progress =
+                    karaoke_count_in_progress(line, options.current_frame, count_in_frames);
                 let karaoke_prestart_scroll = karaoke_prestart_scroll_visible(
                     project,
                     line,
@@ -104,11 +101,8 @@ impl RythmoScene {
                     max_gap_frames,
                 );
                 let karaoke_stack_row = karaoke_stack_row(project, line, max_gap_frames);
-                let character_label_visible = karaoke_character_label_visible(
-                    project,
-                    line,
-                    max_gap_frames,
-                );
+                let character_label_visible =
+                    karaoke_character_label_visible(project, line, max_gap_frames);
                 SceneLine {
                     line: line.clone(),
                     track_index: crate::rythmo_layout::track_index_for_y_slot(line.y_slot),
@@ -126,7 +120,7 @@ impl RythmoScene {
         let markers = render_index
             .visible_marker_indices(options.frame_window.first, options.frame_window.last)
             .into_iter()
-            .filter_map(|index| project.markers.get(index))
+            .filter_map(|index| project.marker(index))
             .map(|marker| SceneMarker {
                 kind: marker.kind.clone(),
                 frame: marker.frame,
@@ -134,7 +128,7 @@ impl RythmoScene {
             .collect();
 
         let drawings = project
-            .drawing
+            .drawing()
             .query_window(options.frame_window.first, options.frame_window.last)
             .into_iter()
             .cloned()
@@ -170,21 +164,12 @@ impl RythmoScene {
             .iter()
             .filter(|scene_line| scene_line.karaoke_active)
             .filter_map(|scene_line| {
-                let track = crate::rythmo_layout::track_for_index(
-                    &self.tracks,
-                    scene_line.track_index,
-                )?;
+                let track =
+                    crate::rythmo_layout::track_for_index(&self.tracks, scene_line.track_index)?;
                 let body_y = ruler_height + track.top + slot_header_height + badge_gap;
-                let line_y = karaoke_stack_y(
-                    body_y,
-                    track.body_h,
-                    scene_line.karaoke_stack_row,
-                    scale,
-                );
-                Some((
-                    line_y,
-                    line_y + karaoke_stack_height(track.body_h, scale),
-                ))
+                let line_y =
+                    karaoke_stack_y(body_y, track.body_h, scene_line.karaoke_stack_row, scale);
+                Some((line_y, line_y + karaoke_stack_height(track.body_h, scale)))
             })
             .collect()
     }
@@ -319,8 +304,7 @@ pub fn karaoke_stack_height(height: f32, scale: f32) -> f32 {
 
 pub fn karaoke_stack_y(y: f32, height: f32, row: usize, scale: f32) -> f32 {
     let row_height = karaoke_stack_height(height, scale);
-    y + row.min(1) as f32
-        * (row_height + crate::rythmo_layout::karaoke_stack_gap(height, scale))
+    y + row.min(1) as f32 * (row_height + crate::rythmo_layout::karaoke_stack_gap(height, scale))
 }
 
 #[cfg(test)]
@@ -354,7 +338,10 @@ mod tests {
         });
 
         let options = SceneOptions {
-            frame_window: FrameWindow { first: 16, last: 72 },
+            frame_window: FrameWindow {
+                first: 16,
+                last: 72,
+            },
             current_frame: 40.0,
             ..SceneOptions::default()
         };
@@ -364,7 +351,14 @@ mod tests {
         let second = RythmoScene::build(&project, &index, options);
 
         assert_eq!(first, second);
-        assert_eq!(first.lines.iter().map(|line| line.line.id).collect::<Vec<_>>(), vec![normal, karaoke]);
+        assert_eq!(
+            first
+                .lines
+                .iter()
+                .map(|line| line.line.id)
+                .collect::<Vec<_>>(),
+            vec![normal, karaoke]
+        );
         assert_eq!(first.markers.len(), 1);
         assert_eq!(first.lines[1].karaoke_progress, Some(1.0 / 6.0));
     }

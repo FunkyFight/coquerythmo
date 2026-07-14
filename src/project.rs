@@ -1,8 +1,11 @@
+//! Project domain model and mutation helpers.
+#![allow(clippy::too_many_arguments)]
+
 use crate::constants::JS_MAX_SAFE_INTEGER;
-use crate::rythmo_drawing::RythmoDrawing;
+use crate::rythmo_drawing::{DrawingStroke, RythmoDrawing};
 use crate::rythmo_line::{RythmoLine, RythmoMarker};
 use crate::voice_actor::VoiceActor;
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
 
 const DEFAULT_COLORS: &[[f32; 4]] = &[
     [0.35, 0.55, 0.90, 1.0], // blue
@@ -43,13 +46,19 @@ pub struct LineCharacterNameChange {
 pub struct Project {
     line_map: HashMap<u64, RythmoLine>,
     line_order: Vec<u64>,
-    pub markers: Vec<RythmoMarker>,
-    pub known_characters: Vec<Character>,
-    pub voice_actors: Vec<VoiceActor>,
-    pub drawing: RythmoDrawing,
+    markers: Vec<RythmoMarker>,
+    known_characters: Vec<Character>,
+    voice_actors: Vec<VoiceActor>,
+    drawing: RythmoDrawing,
     color_index: usize,
     revision: u64,
-    pub settings: ProjectSettings,
+    settings: ProjectSettings,
+}
+
+impl Default for Project {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Project {
@@ -83,6 +92,40 @@ impl Project {
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Read-only access to project collections. All changes go through the
+    /// domain methods below so revision invalidation cannot be skipped.
+    pub fn markers(&self) -> &[RythmoMarker] {
+        &self.markers
+    }
+
+    pub fn marker(&self, index: usize) -> Option<&RythmoMarker> {
+        self.markers.get(index)
+    }
+
+    pub fn marker_count(&self) -> usize {
+        self.markers.len()
+    }
+
+    pub fn known_characters(&self) -> &[Character] {
+        &self.known_characters
+    }
+
+    pub fn voice_actors(&self) -> &[VoiceActor] {
+        &self.voice_actors
+    }
+
+    pub fn voice_actor(&self, index: usize) -> Option<&VoiceActor> {
+        self.voice_actors.get(index)
+    }
+
+    pub fn drawing(&self) -> &RythmoDrawing {
+        &self.drawing
+    }
+
+    pub fn settings(&self) -> &ProjectSettings {
+        &self.settings
     }
 
     pub fn bump_revision(&mut self) {
@@ -273,8 +316,8 @@ impl Project {
 
     pub fn upsert_line_at(&mut self, index: usize, line: RythmoLine) {
         let id = line.id;
-        if self.line_map.contains_key(&id) {
-            self.line_map.insert(id, line);
+        if let Entry::Occupied(mut entry) = self.line_map.entry(id) {
+            entry.insert(line);
             self.bump_revision();
         } else {
             self.insert_line_at(index, line);
@@ -351,6 +394,11 @@ impl Project {
         self.bump_revision();
     }
 
+    pub fn set_voice_actors(&mut self, voice_actors: Vec<VoiceActor>) {
+        self.voice_actors = voice_actors;
+        self.bump_revision();
+    }
+
     /// Returns true if the project has no lines, no markers, and no characters.
     pub fn is_empty(&self) -> bool {
         self.line_map.is_empty()
@@ -376,6 +424,80 @@ impl Project {
             self.settings = settings;
             self.bump_revision();
         }
+    }
+
+    pub fn add_drawing_stroke(&mut self, stroke: DrawingStroke) {
+        self.drawing.add(stroke);
+        self.bump_revision();
+    }
+
+    pub fn add_drawing_strokes(&mut self, strokes: &[DrawingStroke]) -> bool {
+        let mut changed = false;
+        for stroke in strokes {
+            if self.drawing.get(stroke.id).is_none() {
+                self.drawing.add(stroke.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            self.bump_revision();
+        }
+        changed
+    }
+
+    pub fn remove_drawing_stroke(&mut self, id: u64) -> Option<DrawingStroke> {
+        let removed = self.drawing.remove(id);
+        if removed.is_some() {
+            self.bump_revision();
+        }
+        removed
+    }
+
+    pub fn remove_drawing_strokes(&mut self, ids: &[u64]) -> bool {
+        let mut changed = false;
+        for id in ids {
+            if self.drawing.remove(*id).is_some() {
+                changed = true;
+            }
+        }
+        if changed {
+            self.bump_revision();
+        }
+        changed
+    }
+
+    pub fn set_drawing_stroke_points(&mut self, id: u64, points: Vec<(f64, f32)>) -> bool {
+        let Some(stroke) = self.drawing.get_mut(id) else {
+            return false;
+        };
+        stroke.points = points;
+        self.bump_revision();
+        true
+    }
+
+    pub fn set_drawing_strokes_points(
+        &mut self,
+        ids: &[u64],
+        points: &[Vec<(f64, f32)>],
+    ) -> bool {
+        let mut changed = false;
+        for (index, id) in ids.iter().enumerate() {
+            if let Some(new_points) = points.get(index) {
+                if let Some(stroke) = self.drawing.get_mut(*id) {
+                    stroke.points = new_points.clone();
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.bump_revision();
+        }
+        changed
+    }
+
+    pub fn set_drawing(&mut self, drawing: RythmoDrawing) {
+        self.drawing = drawing;
+        self.bump_revision();
     }
 
     pub fn adjust_source_audio_offset(&mut self, delta_frames: i64) {

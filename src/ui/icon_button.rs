@@ -1,6 +1,6 @@
 use super::interactive::{InteractiveResult, InteractiveState};
 use super::theme;
-use super::widget::{EventResponse, IconInstance, LabelInfo, QuadInstance, Rect, UiEvent, Widget};
+use super::primitives::{EventResponse, IconInstance, LabelInfo, QuadInstance, Rect, UiEvent, Widget};
 
 pub struct IconButton {
     bounds: Rect,
@@ -64,7 +64,11 @@ impl Widget for IconButton {
 
     fn render_quads(&self) -> Vec<QuadInstance> {
         let (bg, border_color, border_width) = if self.active {
-            (theme::TRANSPARENT_HOVER, theme::INTERACTIVE_BORDER_HOVERED, 2.0)
+            (
+                theme::TRANSPARENT_HOVER,
+                theme::INTERACTIVE_BORDER_HOVERED,
+                2.0,
+            )
         } else {
             let bg = match self.state {
                 InteractiveState::Normal => theme::TRANSPARENT,

@@ -12,7 +12,9 @@ pub struct RythmoWorkspace {
 
 impl RythmoWorkspace {
     pub fn new() -> Self {
-        Self { needs_redraw: false }
+        Self {
+            needs_redraw: false,
+        }
     }
 }
 

@@ -1,6 +1,9 @@
+//! Text input state and rendering.
+#![allow(clippy::too_many_arguments)]
+
 use std::time::{Duration, Instant};
 
-use super::widget::{HAlign, QuadInstance, Rect};
+use super::primitives::{HAlign, QuadInstance, Rect};
 
 pub enum TextInputAction {
     Changed(String),
@@ -19,6 +22,12 @@ pub struct TextInputState {
     cursor_blink: Instant,
     pub selection: Option<(usize, usize)>,
     undo_stack: Vec<TextEditSnapshot>,
+}
+
+impl Default for TextInputState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

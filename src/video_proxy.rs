@@ -68,7 +68,7 @@ pub fn probe_video(path: &Path) -> Result<VideoInfo, String> {
     }
 
     let parts: Vec<&str> = lines[0].split(',').collect();
-    let width = parts.get(0).and_then(|s| s.parse().ok()).unwrap_or(1920);
+    let width = parts.first().and_then(|s| s.parse().ok()).unwrap_or(1920);
     let height = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1080);
     let duration_secs = lines
         .get(1)
@@ -368,7 +368,7 @@ fn fit_to_dimensions_without_upscale(
 
 fn even_dimension(value: u32) -> u32 {
     let clamped = value.clamp(16, 8192);
-    if clamped % 2 == 0 {
+    if clamped.is_multiple_of(2) {
         clamped
     } else {
         (clamped + 1).min(8192)

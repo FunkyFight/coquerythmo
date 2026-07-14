@@ -1,4 +1,4 @@
-use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
+use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
 
 pub const PROJECT_SETTINGS_W: f32 = 520.0;

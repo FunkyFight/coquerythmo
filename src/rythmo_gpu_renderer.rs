@@ -1,3 +1,9 @@
+//! GPU renderer for the shared rythmo scene.
+//!
+//! Backend signatures expose the complete render context used by export and
+//! preview paths.
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -10,7 +16,7 @@ use crate::rendering::rythmo::scene::{
 };
 use crate::rythmo_layout;
 use crate::rythmo_line::{MarkerKind, RythmoLine};
-use crate::ui::widget::{IconInstance, QuadInstance, Rect};
+use crate::ui::primitives::{IconInstance, QuadInstance, Rect};
 use crate::voice_actor::{decode_icon_rgba, VoiceActor, VOICE_ACTOR_ICON_SIZE};
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent,
@@ -35,7 +41,17 @@ fn quad(x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: f32, a: f32) -> QuadI
     }
 }
 
-fn quad_rounded(x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: f32, a: f32, border_radius: f32) -> QuadInstance {
+fn quad_rounded(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+    border_radius: f32,
+) -> QuadInstance {
     let mut q = quad(x, y, w, h, r, g, b, a);
     q.border_radius = border_radius;
     q
@@ -134,7 +150,7 @@ fn push_karaoke_dot(
         &line.text,
         &line.syllable_ratios,
         &crate::config::get().lang,
-        progress as f32,
+        progress,
     );
     let bounce = (local_progress * std::f32::consts::PI).sin().max(0.0);
     let size = constants::KARAOKE_DOT_SIZE * scale.max(0.5);
@@ -200,7 +216,9 @@ fn push_karaoke_count_in_dot(
     count_in_progress: Option<f32>,
     scale: f32,
 ) {
-    let Some(count_in_progress) = count_in_progress else { return };
+    let Some(count_in_progress) = count_in_progress else {
+        return;
+    };
 
     let (dx, dy, size) = karaoke_count_in_dot_rect(x, y, count_in_progress, scale);
     let mut shadow = quad(
@@ -327,7 +345,7 @@ impl OffscreenTarget {
 
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let unpadded = width * 4;
-        let padded_row_bytes = ((unpadded + align - 1) / align) * align;
+        let padded_row_bytes = unpadded.div_ceil(align) * align;
         let buf_size = (padded_row_bytes * height) as u64;
 
         let make_staging = |label| {
@@ -490,7 +508,7 @@ impl<'a> GpuExportScene<'a> {
         let mut render_index = ProjectRenderIndex::new();
         render_index.refresh(project);
         let voice_actors_by_name = project
-            .voice_actors
+            .voice_actors()
             .iter()
             .map(|actor| (actor.name.as_str(), actor))
             .collect();
@@ -980,12 +998,8 @@ impl GpuRenderer {
         height: u32,
         ppf: f32,
     ) -> bool {
-        let (first_frame, last_frame) = crate::rythmo_drawing::visible_frame_window(
-            width as f32,
-            current_frame,
-            ppf,
-            4,
-        );
+        let (first_frame, last_frame) =
+            crate::rythmo_drawing::visible_frame_window(width as f32, current_frame, ppf, 4);
         let strokes: Vec<_> = scene
             .drawings
             .iter()
@@ -995,13 +1009,8 @@ impl GpuRenderer {
             return false;
         }
 
-        let rgba = crate::rythmo_drawing::rasterize_window(
-            &strokes,
-            width,
-            height,
-            current_frame,
-            ppf,
-        );
+        let rgba =
+            crate::rythmo_drawing::rasterize_window(&strokes, width, height, current_frame, ppf);
         let needs_create = self
             .drawing_overlay
             .as_ref()
@@ -1112,8 +1121,8 @@ impl GpuRenderer {
                     .swash_cache
                     .get_image_uncached(&mut self.font_system, physical.cache_key)
                 {
-                    let gx = physical.x as i32;
-                    let gy = (line_y as i32) + physical.y as i32;
+                    let gx = physical.x;
+                    let gy = line_y as i32 + physical.y;
                     for iy in 0..image.placement.height as i32 {
                         for ix in 0..image.placement.width as i32 {
                             let px = gx + image.placement.left + ix;
@@ -2028,12 +2037,8 @@ impl GpuRenderer {
         }
 
         // ── Playhead, split around active karaoke lines ──
-        let playhead_gaps = common_scene.active_karaoke_skip_ranges(
-            ruler_h,
-            slot_header_h,
-            badge_gap,
-            s,
-        );
+        let playhead_gaps =
+            common_scene.active_karaoke_skip_ranges(ruler_h, slot_header_h, badge_gap, s);
         push_playhead_segments(
             &mut quads,
             center_x - playhead_w / 2.0,
@@ -2072,12 +2077,7 @@ impl GpuRenderer {
             let mut line_y = body_y;
             let mut body_h = normal_slot_h;
             if line.karaoke {
-                line_y = karaoke_stack_y(
-                    body_y,
-                    track.body_h,
-                    scene_line.karaoke_stack_row,
-                    s,
-                );
+                line_y = karaoke_stack_y(body_y, track.body_h, scene_line.karaoke_stack_row, s);
                 body_h = karaoke_stack_height(track.body_h, s);
             }
             Some(Rect {
@@ -2126,12 +2126,7 @@ impl GpuRenderer {
             let mut line_y = body_y;
             let mut body_h = normal_slot_h;
             if line.karaoke {
-                line_y = karaoke_stack_y(
-                    body_y,
-                    track.body_h,
-                    scene_line.karaoke_stack_row,
-                    s,
-                );
+                line_y = karaoke_stack_y(body_y, track.body_h, scene_line.karaoke_stack_row, s);
                 body_h = karaoke_stack_height(track.body_h, s);
             }
 
@@ -2167,10 +2162,7 @@ impl GpuRenderer {
             }
 
             // Store badge info for later drawing (after text)
-            let badge_info = if show_badge
-                && !badge_hidden
-                && !line.character_name.is_empty()
-            {
+            let badge_info = if show_badge && !badge_hidden && !line.character_name.is_empty() {
                 let luminance = 0.299 * cr + 0.587 * cg + 0.114 * cb;
                 let (tr, tg, tb) = if luminance > 0.55 {
                     (0.0_f32, 0.0, 0.0)
@@ -2289,9 +2281,21 @@ impl GpuRenderer {
             }
 
             // Draw badge AFTER text so it appears on top
-            if let Some((badge_x, badge_y, badge_w, badge_h, cr, cg, cb, ba, hash, tr, tg, tb)) = badge_info {
+            if let Some((badge_x, badge_y, badge_w, badge_h, cr, cg, cb, ba, hash, tr, tg, tb)) =
+                badge_info
+            {
                 let badge_radius = 0.0; // rectangular badge (no rounding)
-                quads.push(quad_rounded(badge_x, badge_y, badge_w, badge_h, cr, cg, cb, ba, badge_radius));
+                quads.push(quad_rounded(
+                    badge_x,
+                    badge_y,
+                    badge_w,
+                    badge_h,
+                    cr,
+                    cg,
+                    cb,
+                    ba,
+                    badge_radius,
+                ));
 
                 if let Some(cached) = self.text_cache.get(&hash) {
                     let tw = cached.width as f32;
@@ -2515,23 +2519,18 @@ impl GpuRenderer {
 
         // Match the editor's layer order: drawings cover the rendered BR and
         // are themselves free of editing handles or selection UI.
-        let drawing_icon_index = if self.prepare_drawing_overlay(
-            &common_scene,
-            current_frame,
-            width,
-            height,
-            ppf,
-        ) {
-            let index = all_icons.len() as u32;
-            all_icons.push(IconInstance {
-                rect: [0.0, 0.0, width as f32, height as f32],
-                uv_rect: [0.0, 0.0, 1.0, 1.0],
-                tint: [1.0, 1.0, 1.0, 1.0],
-            });
-            Some(index)
-        } else {
-            None
-        };
+        let drawing_icon_index =
+            if self.prepare_drawing_overlay(&common_scene, current_frame, width, height, ppf) {
+                let index = all_icons.len() as u32;
+                all_icons.push(IconInstance {
+                    rect: [0.0, 0.0, width as f32, height as f32],
+                    uv_rect: [0.0, 0.0, 1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0, 1.0],
+                });
+                Some(index)
+            } else {
+                None
+            };
 
         Self::coalesce_icon_batches(&mut icon_batches);
 
@@ -2757,7 +2756,10 @@ mod tests {
             &project,
             &index,
             SceneOptions {
-                frame_window: FrameWindow { first: 0, last: 120 },
+                frame_window: FrameWindow {
+                    first: 0,
+                    last: 120,
+                },
                 current_frame: 48.0,
                 source_fps: 24.0,
                 ..SceneOptions::default()

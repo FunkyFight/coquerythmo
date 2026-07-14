@@ -89,6 +89,12 @@ pub struct RythmoState {
     syllable_breaks_cache: RefCell<HashMap<u64, (Vec<usize>, u64)>>, // line_id -> (breaks, text_hash)
 }
 
+impl Default for RythmoState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct SyllableDrag {
     pub line_id: u64,
     pub separator_index: usize, // which separator is being dragged (0 = between syl 0 and 1)
@@ -288,32 +294,39 @@ impl RythmoState {
 
         *self.cached_layout_signature.borrow_mut() = signature;
         *self.cached_layout_ctx.borrow_mut() = Some(layout_ctx);
-        
+
         Ref::map(self.cached_layout_ctx.borrow(), |ctx| ctx.as_ref().unwrap())
     }
 
-    pub(super) fn get_syllable_breaks(&self, line: &crate::rythmo_line::RythmoLine, lang: &str) -> Vec<usize> {
+    pub(super) fn get_syllable_breaks(
+        &self,
+        line: &crate::rythmo_line::RythmoLine,
+        lang: &str,
+    ) -> Vec<usize> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         let mut hasher = DefaultHasher::new();
         line.text.hash(&mut hasher);
         lang.hash(&mut hasher);
         let text_hash = hasher.finish();
-        
+
         let mut cache = self.syllable_breaks_cache.borrow_mut();
         if let Some((cached_breaks, cached_hash)) = cache.get(&line.id) {
             if *cached_hash == text_hash {
                 return cached_breaks.clone();
             }
         }
-        
+
         let breaks = crate::syllable::syllable_breaks(&line.text, lang);
         cache.insert(line.id, (breaks.clone(), text_hash));
         breaks
     }
 
-    pub(super) fn karaoke_ui_text_width_for_render(&self, line: &crate::rythmo_line::RythmoLine) -> f32 {
+    pub(super) fn karaoke_ui_text_width_for_render(
+        &self,
+        line: &crate::rythmo_line::RythmoLine,
+    ) -> f32 {
         let font_size = karaoke_ui_font_size();
         if let Some(width) = self.cached_karaoke_ui_text_width_for_font(line, font_size) {
             return width;

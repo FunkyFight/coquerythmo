@@ -1,5 +1,8 @@
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_match)]
+
 use super::text_input;
-use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
+use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
 
 const CARD_W: f32 = 480.0;
@@ -44,6 +47,12 @@ pub struct ServerBrowserModal {
     pub servers: Vec<ServerInfo>,
     pub selected: Option<usize>,
     pub scroll_offset: f32,
+}
+
+impl Default for ServerBrowserModal {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ServerBrowserModal {
@@ -508,6 +517,12 @@ pub enum AddServerResult {
     Consumed,
     Close,
     Add { ip: String, port: u16 },
+}
+
+impl Default for AddServerModal {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AddServerModal {

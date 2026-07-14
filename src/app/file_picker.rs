@@ -1,9 +1,11 @@
-﻿use std::path::PathBuf;
+use std::path::PathBuf;
 
 use crate::export;
 use crate::i18n;
 use crate::state::State;
-use crate::ui::file_explorer_modal::{FileExplorerMode, FileExplorerRequest, FileFilterSpec, FilePickerIntent};
+use crate::ui::file_explorer::{
+    FileExplorerMode, FileExplorerRequest, FileFilterSpec, FilePickerIntent,
+};
 pub(crate) fn open_dialog_filters(filter_name: &str, extensions: &[&str]) -> Vec<FileFilterSpec> {
     vec![
         FileFilterSpec::new(i18n::t("picker.filter.all_files"), &["*"]),
@@ -24,7 +26,8 @@ pub(crate) fn downloads_or_home_dir() -> Option<PathBuf> {
 
 pub(crate) fn project_or_video_dir(state: &State) -> Option<PathBuf> {
     state
-        .project_session.project_path
+        .project_session
+        .project_path
         .as_ref()
         .and_then(|prev| prev.parent().map(PathBuf::from))
         .or_else(|| {
@@ -41,7 +44,8 @@ pub(crate) fn video_or_project_dir(state: &State) -> Option<PathBuf> {
         .and_then(|video| video.parent().map(PathBuf::from))
         .or_else(|| {
             state
-                .project_session.project_path
+                .project_session
+                .project_path
                 .as_ref()
                 .and_then(|prev| prev.parent().map(PathBuf::from))
         })
@@ -51,7 +55,8 @@ pub(crate) fn video_or_project_dir(state: &State) -> Option<PathBuf> {
 pub(crate) fn picker_extra_locations(state: &State) -> Vec<(String, PathBuf)> {
     let mut locations = Vec::new();
     if let Some(path) = state
-        .project_session.project_path
+        .project_session
+        .project_path
         .as_ref()
         .and_then(|prev| prev.parent().map(PathBuf::from))
     {
@@ -165,7 +170,3 @@ pub(crate) fn import_srt_from_path(state: &mut State, path: PathBuf) {
         Err(e) => log::error!("SRT import failed: {e}"),
     }
 }
-
-
-
-

@@ -7,24 +7,26 @@ use winit::window::{Window, WindowId};
 
 use std::time::{Duration, Instant};
 
-use crate::application::edit_service::{EditExecutor, EditOrigin};
 use crate::application::collaboration_service::{CollaborationSession, PingResult};
+use crate::application::context::AppContext;
 use crate::application::delta_codec::{decode_delta, encode_delta};
-use crate::application::job_service::{JobManager, PendingExportJob, PendingImportJob, PendingProxyJob};
+use crate::application::edit_service::{EditExecutor, EditOrigin};
+use crate::application::job_service::{
+    JobManager, PendingExportJob, PendingImportJob, PendingProxyJob,
+};
 use crate::application::playback_service::PlaybackSession;
-use crate::command::{Command, CommandKind, LineMove};
 use crate::application::project_service::ProjectSession;
 use crate::application::render_service::RenderCoordinator;
 use crate::application::ui_shell::UiShell;
 use crate::application::window_service::WindowManager;
-use crate::application::context::AppContext;
 use crate::application::workspace_service::WorkspaceHost;
+use crate::command::{Command, CommandKind, LineMove};
 use crate::network::{ConnectionState, IncomingMessage};
 use crate::observer::TimelineEvent;
 use crate::packet::{CommandPayload, Packet, ProjectData};
 use crate::project::{Character, LineCharacterNameChange, Project};
 use crate::rythmo_line::RythmoLine;
-use crate::ui::widget::{EventResponse, UiEvent};
+use crate::ui::primitives::{EventResponse, UiEvent};
 use crate::ui::Ui;
 use crate::video::{AudioTrack, VideoPlayer};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
@@ -130,12 +132,17 @@ impl State {
     pub fn handle_ui_event(&mut self, event: &UiEvent) -> EventResponse {
         let render_frame = self.render_frame();
         let fps = self.fps();
-        self.ui_shell.ui.handle_event(
-            event,
-            &self.project_session.project,
-            render_frame,
-            fps,
-        )
+        self.ui_shell
+            .ui
+            .handle_event(event, &self.project_session.project, render_frame, fps)
+    }
+
+    pub fn is_rythmo_text_editing(&self) -> bool {
+        self.ui_shell.ui.rythmo_state.is_editing()
+    }
+
+    pub fn captures_modal_input(&self) -> bool {
+        self.ui_shell.ui.modal_host.captures_input()
     }
 
     pub fn set_export_progress(&mut self, p: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>) {
@@ -244,8 +251,13 @@ impl State {
     }
 
     pub fn open_project_settings_modal(&mut self) {
-        self.ui_shell.ui
-            .open_project_settings_modal(self.project_session.project.settings.instrumental_audio_path.clone());
+        self.ui_shell.ui.open_project_settings_modal(
+            self.project_session
+                .project
+                .settings()
+                .instrumental_audio_path
+                .clone(),
+        );
     }
 
     pub fn set_project_instrumental_audio_path(&mut self, path: impl Into<String>) {
@@ -257,7 +269,7 @@ impl State {
     }
 
     pub fn save_project_settings(&mut self, instrumental_audio_path: Option<String>) {
-        let mut settings = self.project_session.project.settings.clone();
+        let mut settings = self.project_session.project.settings().clone();
         settings.instrumental_audio_path = instrumental_audio_path;
         EditExecutor::apply_domain_change(
             &mut self.project_session,
@@ -293,7 +305,7 @@ impl State {
 
     pub fn toggle_karaoke_for_selection(&mut self) {
         let line_id = match self.ui_shell.ui.rythmo_state.selected {
-            Some(crate::ui::rythmo::Selection::Line(id)) => Some(id),
+            Some(crate::workspaces::rythmo::view::Selection::Line(id)) => Some(id),
             _ => self.ui_shell.ui.rythmo_state.hovered_line,
         };
         let Some(line_id) = line_id else {
@@ -317,7 +329,8 @@ impl State {
             old_ratios.clone()
         };
 
-        self.ui_shell.ui.rythmo_state.selected = Some(crate::ui::rythmo::Selection::Line(line_id));
+        self.ui_shell.ui.rythmo_state.selected =
+            Some(crate::workspaces::rythmo::view::Selection::Line(line_id));
         self.execute_and_broadcast(Command::SetLineKaraoke {
             line_id,
             old_karaoke,
@@ -332,8 +345,9 @@ impl State {
         self.ui_shell.ui.open_export_modal(
             video_width,
             video_height,
-            self.project_session.project
-                .settings
+            self.project_session
+                .project
+                .settings()
                 .instrumental_audio_path
                 .as_deref()
                 .is_some_and(|path| !path.trim().is_empty()),
@@ -342,7 +356,7 @@ impl State {
 
     pub fn open_file_explorer(
         &mut self,
-        request: crate::ui::file_explorer_modal::FileExplorerRequest,
+        request: crate::ui::file_explorer::FileExplorerRequest,
     ) {
         self.ui_shell.ui.open_file_explorer(request);
     }
@@ -368,11 +382,15 @@ impl State {
     pub fn rebuild_topbar_for_network(&mut self) {
         let room_code = self.collaboration.network.room_code.clone();
         self.ui_shell.ui.set_network_room_code(room_code.as_deref());
-        self.ui_shell.ui.rebuild_topbar(self.collaboration.network.is_in_room());
+        self.ui_shell
+            .ui
+            .rebuild_topbar(self.collaboration.network.is_in_room());
     }
 
     pub fn rebuild_topbar(&mut self) {
-        self.ui_shell.ui.rebuild_topbar(self.collaboration.network.is_in_room());
+        self.ui_shell
+            .ui
+            .rebuild_topbar(self.collaboration.network.is_in_room());
     }
 
     pub fn begin_network_connect(&mut self) {
@@ -393,8 +411,16 @@ impl State {
         } else {
             &self.ui_shell.ui.network_status
         };
-        self.window_manager.main_window
-            .set_title(&format!("Coquerythmo v{} - {}", crate::update::current_version(), display));
+        let display = if self.ui_shell.ui.network_status.is_empty() {
+            "Déconnecté"
+        } else {
+            display
+        };
+        self.window_manager.main_window.set_title(&format!(
+            "Coquerythmo v{} - {}",
+            crate::update::current_version(),
+            display
+        ));
     }
 
     pub fn update_window_title(&self) {
@@ -403,8 +429,16 @@ impl State {
         } else {
             &self.ui_shell.ui.network_status
         };
-        self.window_manager.main_window
-            .set_title(&format!("Coquerythmo v{} - {}", crate::update::current_version(), display));
+        let display = if self.ui_shell.ui.network_status.is_empty() {
+            "Déconnecté"
+        } else {
+            display
+        };
+        self.window_manager.main_window.set_title(&format!(
+            "Coquerythmo v{} - {}",
+            crate::update::current_version(),
+            display
+        ));
     }
 
     pub fn request_redraw(&self) {
@@ -416,19 +450,22 @@ impl State {
     }
 
     pub fn secondary_window_id(&self) -> Option<WindowId> {
-        self.window_manager.secondary_display
+        self.window_manager
+            .secondary_display
             .as_ref()
             .map(|display| display.window.id())
     }
 
     pub fn is_video_playing(&self) -> bool {
-        self.playback.video_player
+        self.playback
+            .video_player
             .as_ref()
             .is_some_and(|player| player.is_playing())
     }
 
     pub fn is_secondary_window(&self, window_id: WindowId) -> bool {
-        self.window_manager.secondary_display
+        self.window_manager
+            .secondary_display
             .as_ref()
             .is_some_and(|display| display.window.id() == window_id)
     }
@@ -480,11 +517,15 @@ impl State {
     // -- Video --
 
     pub fn current_frame(&self) -> i64 {
-        self.playback.video_player.as_ref().map_or(0, |p| p.current_frame())
+        self.playback
+            .video_player
+            .as_ref()
+            .map_or(0, |p| p.current_frame())
     }
 
     pub fn render_frame(&self) -> f64 {
-        self.playback.video_player
+        self.playback
+            .video_player
             .as_ref()
             .map_or(self.current_frame() as f64, |p| {
                 p.current_frame_for_render()
@@ -492,30 +533,39 @@ impl State {
     }
 
     pub fn fps(&self) -> f64 {
-        self.playback.video_player.as_ref().map_or(30.0, |p| p.fps())
+        self.playback
+            .video_player
+            .as_ref()
+            .map_or(30.0, |p| p.fps())
     }
 
     pub fn total_frames(&self) -> i64 {
-        self.playback.video_player.as_ref().map_or(0, |p| p.total_frames())
+        self.playback
+            .video_player
+            .as_ref()
+            .map_or(0, |p| p.total_frames())
     }
 
     pub fn source_video_size(&self) -> Option<(u32, u32)> {
         self.playback.source_video_size.or_else(|| {
-            self.playback.video_player
+            self.playback
+                .video_player
                 .as_ref()
                 .and_then(|player| player.video_size())
         })
     }
 
     pub fn video_path(&self) -> Option<PathBuf> {
-        self.playback.source_video_path
+        self.playback
+            .source_video_path
             .clone()
             .or_else(|| self.playback.video_player.as_ref().and_then(|p| p.path()))
     }
 
     pub fn load_video(&mut self, path: &Path) {
         let proxy_path = self
-            .project_session.project_path
+            .project_session
+            .project_path
             .as_ref()
             .and_then(|br_path| crate::video_proxy::linked_proxy_path(br_path, path));
         self.load_video_for_playback(path, proxy_path.as_deref(), None);
@@ -554,7 +604,8 @@ impl State {
             return;
         };
         let proxy_path = self
-            .project_session.project_path
+            .project_session
+            .project_path
             .as_ref()
             .and_then(|br_path| crate::video_proxy::linked_proxy_path(br_path, &source_path));
 
@@ -667,7 +718,12 @@ impl State {
                 frame.max(0)
             };
             player.seek_frame_instant(target as i32);
-            player.decode_current_frame(&self.render.gfx.device, &self.render.gfx.queue, bgl, sampler);
+            player.decode_current_frame(
+                &self.render.gfx.device,
+                &self.render.gfx.queue,
+                bgl,
+                sampler,
+            );
         }
 
         if self.ui_shell.ui.is_playing() {
@@ -731,14 +787,16 @@ impl State {
     }
 
     pub fn active_audio_offset_frames(&self) -> i64 {
-        self.playback.video_player
+        self.playback
+            .video_player
             .as_ref()
             .map(|player| player.active_audio_offset_frames())
             .unwrap_or(0)
     }
 
     pub fn active_audio_is_instrumental(&self) -> bool {
-        self.playback.video_player
+        self.playback
+            .video_player
             .as_ref()
             .is_some_and(|player| player.active_audio_track() == AudioTrack::Instrumental)
     }
@@ -769,7 +827,7 @@ impl State {
         let Some(player) = &mut self.playback.video_player else {
             return;
         };
-        let settings = &self.project_session.project.settings;
+        let settings = self.project_session.project.settings();
         player.set_instrumental_audio_path(
             settings
                 .instrumental_audio_path
@@ -805,7 +863,12 @@ impl State {
         let bgl = self.render.ui_renderer.texture_bind_group_layout();
         let sampler = self.render.ui_renderer.texture_sampler();
         if let Some(player) = &mut self.playback.video_player {
-            player.step_backward(&self.render.gfx.device, &self.render.gfx.queue, bgl, sampler);
+            player.step_backward(
+                &self.render.gfx.device,
+                &self.render.gfx.queue,
+                bgl,
+                sampler,
+            );
             if self.ui_shell.ui.is_playing() {
                 self.ui_shell.ui.toggle_play_pause();
             }
@@ -816,7 +879,12 @@ impl State {
         let bgl = self.render.ui_renderer.texture_bind_group_layout();
         let sampler = self.render.ui_renderer.texture_sampler();
         if let Some(player) = &mut self.playback.video_player {
-            player.step_forward(&self.render.gfx.device, &self.render.gfx.queue, bgl, sampler);
+            player.step_forward(
+                &self.render.gfx.device,
+                &self.render.gfx.queue,
+                bgl,
+                sampler,
+            );
             if self.ui_shell.ui.is_playing() {
                 self.ui_shell.ui.toggle_play_pause();
             }
@@ -850,8 +918,9 @@ impl State {
     pub fn seek_to_next_boucle(&mut self, direction: i32) {
         let current = self.current_frame();
         let boucle_frames: Vec<i64> = self
-            .project_session.project
-            .markers
+            .project_session
+            .project
+            .markers()
             .iter()
             .filter(|m| m.kind == crate::rythmo_line::MarkerKind::Boucle)
             .map(|m| m.frame)
@@ -883,7 +952,12 @@ impl State {
                 let bgl = self.render.ui_renderer.texture_bind_group_layout();
                 let sampler = self.render.ui_renderer.texture_sampler();
                 if let Some(player) = &mut self.playback.video_player {
-                    player.decode_current_frame(&self.render.gfx.device, &self.render.gfx.queue, bgl, sampler);
+                    player.decode_current_frame(
+                        &self.render.gfx.device,
+                        &self.render.gfx.queue,
+                        bgl,
+                        sampler,
+                    );
                 }
                 return true;
             }
@@ -942,7 +1016,9 @@ impl State {
         }
         // Rebuild topbar if connection state changed
         if self.collaboration.network.state != prev_state {
-            self.ui_shell.ui.rebuild_topbar(self.collaboration.network.is_in_room());
+            self.ui_shell
+                .ui
+                .rebuild_topbar(self.collaboration.network.is_in_room());
             changed = true;
         }
 
@@ -992,7 +1068,10 @@ impl State {
                 log::info!("Member joined: {username}");
             }
             Packet::MemberLeft { username } => {
-                self.collaboration.network.members.retain(|m| m != &username);
+                self.collaboration
+                    .network
+                    .members
+                    .retain(|m| m != &username);
                 log::info!("Member left: {username}");
             }
             Packet::RemoteCommand { from, payload } => {
@@ -1018,11 +1097,7 @@ impl State {
     }
 
     fn apply_remote_command(&mut self, payload: CommandPayload) {
-        EditExecutor::apply_remote_payload(
-            &mut self.project_session,
-            payload,
-            EditOrigin::Remote,
-        );
+        EditExecutor::apply_remote_payload(&mut self.project_session, payload, EditOrigin::Remote);
     }
     fn apply_project_sync(&mut self, data: ProjectData) {
         EditExecutor::apply_sync(&mut self.project_session, data);
@@ -1102,7 +1177,8 @@ impl State {
             return;
         }
         let data = ProjectData::from_project(&self.project_session.project);
-        self.collaboration.network
+        self.collaboration
+            .network
             .send_raw("sync", serde_json::json!({ "project": data }));
     }
 
@@ -1135,7 +1211,8 @@ impl State {
 
         // Save current fullscreen state and enter fullscreen
         self.window_manager.fullscreen_before_studio = self.window_manager.main_window.fullscreen();
-        self.window_manager.main_window
+        self.window_manager
+            .main_window
             .set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
     }
 
@@ -1175,7 +1252,7 @@ impl State {
 
     // -- Project / Lines (all via Command pattern) --
 
-    pub fn open_toolbar_dropdown(&mut self, dropdown: crate::ui::widget::ToolbarDropdown) {
+    pub fn open_toolbar_dropdown(&mut self, dropdown: crate::ui::primitives::ToolbarDropdown) {
         self.ui_shell.ui.toggle_toolbar_dropdown(dropdown);
     }
 
@@ -1205,7 +1282,8 @@ impl State {
         }
 
         let changes: Vec<_> = self
-            .project_session.project
+            .project_session
+            .project
             .lines()
             .filter(|line| line.character_name == old_name)
             .map(|line| LineCharacterNameChange {
@@ -1219,7 +1297,7 @@ impl State {
             return;
         }
 
-        let old_known_characters = self.project_session.project.known_characters.clone();
+        let old_known_characters = self.project_session.project.known_characters().to_vec();
         let new_known_characters = self.known_characters_after_rename(&old_name, &new_name);
         self.execute_and_broadcast(Command::RenameCharacter {
             changes,
@@ -1230,7 +1308,7 @@ impl State {
     }
 
     fn known_characters_after_rename(&self, old_name: &str, new_name: &str) -> Vec<Character> {
-        let mut known_characters = self.project_session.project.known_characters.clone();
+        let mut known_characters = self.project_session.project.known_characters().to_vec();
         let old_index = known_characters
             .iter()
             .position(|character| character.name == old_name);
@@ -1251,7 +1329,8 @@ impl State {
         }
 
         if let Some(color) = self
-            .project_session.project
+            .project_session
+            .project
             .lines()
             .find(|line| line.character_name == old_name)
             .map(|line| line.character_color)
@@ -1266,7 +1345,7 @@ impl State {
     }
 
     pub fn delete_selected(&mut self) {
-        use crate::ui::rythmo::Selection;
+        use crate::workspaces::rythmo::view::Selection;
         if let Some(ref sel) = self.ui_shell.ui.rythmo_state().selected {
             match sel {
                 Selection::Line(id) => {
@@ -1278,8 +1357,11 @@ impl State {
                     }
                 }
                 Selection::Marker(idx) => {
-                    if let Some(marker) = self.project_session.project.markers.get(*idx).cloned() {
-                        self.execute_and_broadcast(Command::RemoveMarker { marker, index: *idx });
+                    if let Some(marker) = self.project_session.project.marker(*idx).cloned() {
+                        self.execute_and_broadcast(Command::RemoveMarker {
+                            marker,
+                            index: *idx,
+                        });
                     }
                 }
                 Selection::AllLines => {}
@@ -1294,7 +1376,7 @@ impl State {
     }
 
     pub fn copy_selected_line(&mut self) {
-        use crate::ui::rythmo::Selection;
+        use crate::workspaces::rythmo::view::Selection;
         if let Some(Selection::Line(id)) = self.ui_shell.ui.rythmo_state().selected {
             self.line_clipboard = self.project_session.project.get_line(id).cloned();
         }
@@ -1311,9 +1393,16 @@ impl State {
         };
         let mut line = snapshot;
         line.id = self.project_session.project.generate_line_id();
-        line.start_frame += self.project_session.project.settings.source_audio_offset_frames;
+        line.start_frame += self
+            .project_session
+            .project
+            .settings()
+            .source_audio_offset_frames;
         let index = self.project_session.project.line_count();
-        self.execute_and_broadcast(Command::InsertLine { snapshot: line, index });
+        self.execute_and_broadcast(Command::InsertLine {
+            snapshot: line,
+            index,
+        });
     }
 
     pub fn add_drawing_stroke(&mut self, stroke: crate::rythmo_drawing::DrawingStroke) {
@@ -1323,7 +1412,7 @@ impl State {
     pub fn erase_drawing_strokes(&mut self, ids: Vec<u64>) {
         let strokes: Vec<crate::rythmo_drawing::DrawingStroke> = ids
             .into_iter()
-            .filter_map(|id| self.project_session.project.drawing.get(id).cloned())
+            .filter_map(|id| self.project_session.project.drawing().get(id).cloned())
             .collect();
         if !strokes.is_empty() {
             self.execute_and_broadcast(Command::EraseDrawingStrokes { strokes });
@@ -1398,13 +1487,20 @@ impl State {
     pub fn open_brush_color_picker(&mut self) {
         let x = self.ui_shell.ui.cursor_pos.0;
         let y = self.ui_shell.ui.cursor_pos.1 + 40.0;
-        self.ui_shell.ui.rythmo_state.color_picker.open(x, y, self.ui_shell.ui.brush_color);
+        self.ui_shell
+            .ui
+            .rythmo_state
+            .color_picker
+            .open(x, y, self.ui_shell.ui.brush_color);
         self.ui_shell.ui.brush_picking = true;
     }
 
     pub fn split_dialogue(&mut self) -> bool {
         let Some(target) = self.dialogue_split_target() else {
-            self.show_toast("SÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©lectionne un dialogue et place le curseur dedans.", 3.0);
+            self.show_toast(
+                "SÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©lectionne un dialogue et place le curseur dedans.",
+                3.0,
+            );
             return false;
         };
         let line_id = match &target {
@@ -1415,7 +1511,10 @@ impl State {
             return false;
         };
         if old_line.duration_frames <= 1 {
-            self.show_toast("Dialogue trop court pour ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âªtre coupÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©.", 3.0);
+            self.show_toast(
+                "Dialogue trop court pour ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âªtre coupÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©.",
+                3.0,
+            );
             return false;
         }
 
@@ -1448,7 +1547,8 @@ impl State {
         let first_duration = first_duration.clamp(1, old_line.duration_frames - 1);
         let second_duration = old_line.duration_frames - first_duration;
         let old_index = self
-            .project_session.project
+            .project_session
+            .project
             .line_index(line_id)
             .unwrap_or_else(|| self.project_session.project.line_count());
         let second_index = old_index + 1;
@@ -1474,7 +1574,8 @@ impl State {
         self.ui_shell.ui.rythmo_state.dragging = None;
         self.ui_shell.ui.rythmo_state.syllable_drag = None;
         self.ui_shell.ui.rythmo_state.context_menu = None;
-        self.ui_shell.ui.rythmo_state.selected = Some(crate::ui::rythmo::Selection::Line(second_line.id));
+        self.ui_shell.ui.rythmo_state.selected =
+            Some(crate::workspaces::rythmo::view::Selection::Line(second_line.id));
 
         self.execute_and_broadcast(Command::SplitLine {
             old_line,
@@ -1501,10 +1602,11 @@ impl State {
 
         let frame = self.current_frame();
         let line_id = match self.ui_shell.ui.rythmo_state.selected {
-            Some(crate::ui::rythmo::Selection::Line(line_id)) => Some(line_id),
+            Some(crate::workspaces::rythmo::view::Selection::Line(line_id)) => Some(line_id),
             _ => self.ui_shell.ui.rythmo_state.hovered_line.or_else(|| {
                 let mut active = self
-                    .project_session.project
+                    .project_session
+                    .project
                     .lines()
                     .filter(|line| frame > line.start_frame && frame < line.end_frame())
                     .map(|line| line.id);
@@ -1527,10 +1629,10 @@ impl State {
     }
 
     pub fn move_marker(&mut self, index: usize, frame: i64) {
-        if index >= self.project_session.project.markers.len() {
+        if index >= self.project_session.project.marker_count() {
             return;
         }
-        let old_frame = self.project_session.project.markers[index].frame;
+        let old_frame = self.project_session.project.marker(index).unwrap().frame;
         self.execute_and_broadcast(Command::MoveMarker {
             index,
             old_frame,
@@ -1541,40 +1643,31 @@ impl State {
     pub fn add_marker(&mut self, kind: crate::rythmo_line::MarkerKind) {
         let frame = self.current_frame();
         let marker = crate::rythmo_line::RythmoMarker { kind, frame };
-        let index = self.project_session.project.markers.len();
+        let index = self.project_session.project.marker_count();
         self.execute_and_broadcast(Command::AddMarker { marker, index });
     }
 
     pub fn add_quick_line(&mut self, text: String) {
         let frame = self.current_frame();
         let dur = (self.fps() * 1.0) as i64; // 1 second
-        let (_, command) = EditExecutor::create_line(
-            &mut self.project_session,
-            frame,
-            dur,
-            0.0,
-            text,
-        );
+        let (_, command) =
+            EditExecutor::create_line(&mut self.project_session, frame, dur, 0.0, text);
         self.broadcast_delta(&command);
     }
 
     pub fn create_line(&mut self, frame: i64, y_slot: f32) -> u64 {
         let default_dur = (self.fps() * constants::DEFAULT_LINE_DURATION_SEC) as i64;
         let dur = self
-            .project_session.project
+            .project_session
+            .project
             .lines()
             .filter(|line| (line.y_slot - y_slot).abs() < 0.01 && line.start_frame > frame)
             .map(|line| line.start_frame)
             .min()
             .map(|start| (start - frame - constants::TICK_GAP_FRAMES).clamp(1, default_dur))
             .unwrap_or(default_dur);
-        let (line_id, command) = EditExecutor::create_line(
-            &mut self.project_session,
-            frame,
-            dur,
-            y_slot,
-            String::new(),
-        );
+        let (line_id, command) =
+            EditExecutor::create_line(&mut self.project_session, frame, dur, y_slot, String::new());
         self.broadcast_delta(&command);
         line_id
     }
@@ -1582,13 +1675,20 @@ impl State {
     pub fn start_editing_line(&mut self, line_id: u64) {
         if let Some(line) = self.project_session.project.get_line(line_id) {
             let text = line.text.clone();
-            self.ui_shell.ui.rythmo_state.start_editing_line(line_id, &text);
+            self.ui_shell
+                .ui
+                .rythmo_state
+                .start_editing_line(line_id, &text);
         }
     }
 
     pub fn move_line(&mut self, id: u64, start_frame: i64, y_slot: f32) {
         // Coalesce: update last command if same line drag
-        if self.project_session.history.last_matches(id, CommandKind::MoveLine) {
+        if self
+            .project_session
+            .history
+            .last_matches(id, CommandKind::MoveLine)
+        {
             let Some(line) = self.project_session.project.get_line(id) else {
                 return;
             };
@@ -1599,17 +1699,22 @@ impl State {
                 new_start: start_frame,
                 new_y_slot: y_slot,
             };
-            EditExecutor::coalesce(&mut self.project_session, command, |cmd| {
-                if let Command::MoveLine {
-                    new_start,
-                    new_y_slot,
-                    ..
-                } = cmd
-                {
-                    *new_start = start_frame;
-                    *new_y_slot = y_slot;
-                }
-            }, EditOrigin::Local);
+            EditExecutor::coalesce(
+                &mut self.project_session,
+                command,
+                |cmd| {
+                    if let Command::MoveLine {
+                        new_start,
+                        new_y_slot,
+                        ..
+                    } = cmd
+                    {
+                        *new_start = start_frame;
+                        *new_y_slot = y_slot;
+                    }
+                },
+                EditOrigin::Local,
+            );
         } else if let Some(line) = self.project_session.project.get_line(id) {
             let old_start = line.start_frame;
             let old_y = line.y_slot;
@@ -1648,13 +1753,16 @@ impl State {
             let command_moves: Vec<_> = requested
                 .iter()
                 .filter_map(|(line_id, new_start, new_y_slot)| {
-                    self.project_session.project.get_line(*line_id).map(|line| LineMove {
-                        line_id: *line_id,
-                        old_start: line.start_frame,
-                        old_y_slot: line.y_slot,
-                        new_start: *new_start,
-                        new_y_slot: *new_y_slot,
-                    })
+                    self.project_session
+                        .project
+                        .get_line(*line_id)
+                        .map(|line| LineMove {
+                            line_id: *line_id,
+                            old_start: line.start_frame,
+                            old_y_slot: line.y_slot,
+                            new_start: *new_start,
+                            new_y_slot: *new_y_slot,
+                        })
                 })
                 .collect();
             EditExecutor::coalesce(
@@ -1663,12 +1771,14 @@ impl State {
                     moves: command_moves,
                 },
                 |cmd| {
-                if let Command::MoveLines { moves } = cmd {
-                    for (movement, (_, new_start, new_y_slot)) in moves.iter_mut().zip(&requested) {
-                        movement.new_start = *new_start;
-                        movement.new_y_slot = *new_y_slot;
+                    if let Command::MoveLines { moves } = cmd {
+                        for (movement, (_, new_start, new_y_slot)) in
+                            moves.iter_mut().zip(&requested)
+                        {
+                            movement.new_start = *new_start;
+                            movement.new_y_slot = *new_y_slot;
+                        }
                     }
-                }
                 },
                 EditOrigin::Local,
             );
@@ -1701,7 +1811,11 @@ impl State {
     }
 
     pub fn resize_line(&mut self, id: u64, start_frame: i64, duration_frames: i64) {
-        if self.project_session.history.last_matches(id, CommandKind::ResizeLine) {
+        if self
+            .project_session
+            .history
+            .last_matches(id, CommandKind::ResizeLine)
+        {
             let Some(line) = self.project_session.project.get_line(id) else {
                 return;
             };
@@ -1712,15 +1826,20 @@ impl State {
                 new_start: start_frame,
                 new_dur: duration_frames,
             };
-            EditExecutor::coalesce(&mut self.project_session, command, |cmd| {
-                if let Command::ResizeLine {
-                    new_start, new_dur, ..
-                } = cmd
-                {
-                    *new_start = start_frame;
-                    *new_dur = duration_frames;
-                }
-            }, EditOrigin::Local);
+            EditExecutor::coalesce(
+                &mut self.project_session,
+                command,
+                |cmd| {
+                    if let Command::ResizeLine {
+                        new_start, new_dur, ..
+                    } = cmd
+                    {
+                        *new_start = start_frame;
+                        *new_dur = duration_frames;
+                    }
+                },
+                EditOrigin::Local,
+            );
         } else if let Some(line) = self.project_session.project.get_line(id) {
             let old_start = line.start_frame;
             let old_dur = line.duration_frames;
@@ -1736,9 +1855,14 @@ impl State {
 
     pub fn update_line_text(&mut self, id: u64, text: String) {
         // Coalesce: update last text command for same line
-        if self.project_session.history.last_matches(id, CommandKind::UpdateLineText) {
+        if self
+            .project_session
+            .history
+            .last_matches(id, CommandKind::UpdateLineText)
+        {
             let old_text = self
-                .project_session.project
+                .project_session
+                .project
                 .get_line(id)
                 .map(|line| line.text.clone())
                 .unwrap_or_default();
@@ -1747,14 +1871,20 @@ impl State {
                 old_text,
                 new_text: text.clone(),
             };
-            EditExecutor::coalesce(&mut self.project_session, command, |cmd| {
-                if let Command::UpdateLineText { new_text, .. } = cmd {
-                    *new_text = text;
-                }
-            }, EditOrigin::Local);
+            EditExecutor::coalesce(
+                &mut self.project_session,
+                command,
+                |cmd| {
+                    if let Command::UpdateLineText { new_text, .. } = cmd {
+                        *new_text = text;
+                    }
+                },
+                EditOrigin::Local,
+            );
         } else {
             let old_text = self
-                .project_session.project
+                .project_session
+                .project
                 .get_line(id)
                 .map(|l| l.text.clone())
                 .unwrap_or_default();
@@ -1813,17 +1943,21 @@ impl State {
         if line.character_name == name {
             line.voice_actor_names.clone()
         } else {
-            self.project_session.project.voice_actor_names_for_character(name, line_id)
+            self.project_session
+                .project
+                .voice_actor_names_for_character(name, line_id)
         }
     }
 
     pub fn set_character_color(&mut self, line_id: u64, color: [f32; 4]) {
         if self
-            .project_session.history
+            .project_session
+            .history
             .last_matches(line_id, CommandKind::SetCharacterColor)
         {
             let old_color = self
-                .project_session.project
+                .project_session
+                .project
                 .get_line(line_id)
                 .map(|line| line.character_color)
                 .unwrap_or_default();
@@ -1832,14 +1966,20 @@ impl State {
                 old_color,
                 new_color: color,
             };
-            EditExecutor::coalesce(&mut self.project_session, command, |cmd| {
-                if let Command::SetCharacterColor { new_color, .. } = cmd {
-                    *new_color = color;
-                }
-            }, EditOrigin::Local);
+            EditExecutor::coalesce(
+                &mut self.project_session,
+                command,
+                |cmd| {
+                    if let Command::SetCharacterColor { new_color, .. } = cmd {
+                        *new_color = color;
+                    }
+                },
+                EditOrigin::Local,
+            );
         } else {
             let old_color = self
-                .project_session.project
+                .project_session
+                .project
                 .get_line(line_id)
                 .map(|l| l.character_color)
                 .unwrap_or_default();
@@ -1868,22 +2008,26 @@ impl State {
             _ => self.voice_actor_names_for_character_change(line_id, &name),
         };
         let known_color = self
-            .project_session.project
-            .known_characters
+            .project_session
+            .project
+            .known_characters()
             .iter()
             .find(|c| c.name == name)
             .map(|c| c.color);
 
         // Coalesce character name edits
         if self
-            .project_session.history
+            .project_session
+            .history
             .last_matches(line_id, CommandKind::SetCharacter)
         {
-            let final_color = known_color.unwrap_or_else(|| self
-                .project_session.project
-                .get_line(line_id)
-                .map(|l| l.character_color)
-                .unwrap_or_default());
+            let final_color = known_color.unwrap_or_else(|| {
+                self.project_session
+                    .project
+                    .get_line(line_id)
+                    .map(|l| l.character_color)
+                    .unwrap_or_default()
+            });
             let command = Command::SetCharacter {
                 line_id,
                 old_name: old_name.clone(),
@@ -1893,25 +2037,32 @@ impl State {
                 new_color: final_color,
                 new_voice_actor_names: new_voice_actor_names.clone(),
             };
-            EditExecutor::coalesce(&mut self.project_session, command, |cmd| {
-                if let Command::SetCharacter {
-                    new_name,
-                    new_color,
-                    new_voice_actor_names: command_voice_actor_names,
-                    ..
-                } = cmd
-                {
-                    *new_name = name;
-                    *new_color = final_color;
-                    *command_voice_actor_names = new_voice_actor_names;
-                }
-            }, EditOrigin::Local);
+            EditExecutor::coalesce(
+                &mut self.project_session,
+                command,
+                |cmd| {
+                    if let Command::SetCharacter {
+                        new_name,
+                        new_color,
+                        new_voice_actor_names: command_voice_actor_names,
+                        ..
+                    } = cmd
+                    {
+                        *new_name = name;
+                        *new_color = final_color;
+                        *command_voice_actor_names = new_voice_actor_names;
+                    }
+                },
+                EditOrigin::Local,
+            );
         } else {
-            let final_color = known_color.unwrap_or_else(|| self
-                .project_session.project
-                .get_line(line_id)
-                .map(|l| l.character_color)
-                .unwrap_or_default());
+            let final_color = known_color.unwrap_or_else(|| {
+                self.project_session
+                    .project
+                    .get_line(line_id)
+                    .map(|l| l.character_color)
+                    .unwrap_or_default()
+            });
             self.execute_and_broadcast(Command::SetCharacter {
                 line_id,
                 old_name,
@@ -1935,7 +2086,12 @@ impl State {
             self.show_toast(crate::i18n::t("toast.voice_actor_name_required"), 4.0);
             return;
         }
-        if self.project_session.project.find_voice_actor(&name).is_some() {
+        if self
+            .project_session
+            .project
+            .find_voice_actor(&name)
+            .is_some()
+        {
             self.show_toast(crate::i18n::t("toast.voice_actor_exists"), 4.0);
             return;
         }
@@ -2008,7 +2164,8 @@ impl State {
 
     fn set_voice_actor_for_character(&mut self, line_id: u64, actor_name: String, assign: bool) {
         let Some(character_name) = self
-            .project_session.project
+            .project_session
+            .project
             .get_line(line_id)
             .map(|line| line.character_name.clone())
             .filter(|name| !name.trim().is_empty())
@@ -2017,7 +2174,8 @@ impl State {
         };
 
         let changes = self
-            .project_session.project
+            .project_session
+            .project
             .lines()
             .filter(|line| line.character_name == character_name)
             .filter_map(|line| {
@@ -2054,7 +2212,8 @@ impl State {
 
     pub fn start_editing_note(&mut self, line_id: u64) {
         let note = self
-            .project_session.project
+            .project_session
+            .project
             .get_line(line_id)
             .map(|l| l.note.clone())
             .unwrap_or_default();
@@ -2063,9 +2222,13 @@ impl State {
         } else {
             note
         };
-        self.ui_shell.ui.rythmo_state.start_editing_note(line_id, &text);
+        self.ui_shell
+            .ui
+            .rythmo_state
+            .start_editing_note(line_id, &text);
         if self
-            .project_session.project
+            .project_session
+            .project
             .get_line(line_id)
             .map(|l| l.note.is_empty())
             .unwrap_or(true)
@@ -2079,16 +2242,23 @@ impl State {
     }
 
     pub fn start_editing_note_selected(&mut self) {
-        if let Some(crate::ui::rythmo::Selection::Line(id)) = self.ui_shell.ui.rythmo_state.selected {
+        if let Some(crate::workspaces::rythmo::view::Selection::Line(id)) =
+            self.ui_shell.ui.rythmo_state.selected
+        {
             self.start_editing_note(id);
         }
     }
 
     pub fn update_line_note(&mut self, id: u64, note: String) {
         use crate::command::{Command, CommandKind};
-        if self.project_session.history.last_matches(id, CommandKind::UpdateLineNote) {
+        if self
+            .project_session
+            .history
+            .last_matches(id, CommandKind::UpdateLineNote)
+        {
             let old_note = self
-                .project_session.project
+                .project_session
+                .project
                 .get_line(id)
                 .map(|line| line.note.clone())
                 .unwrap_or_default();
@@ -2097,14 +2267,20 @@ impl State {
                 old_note,
                 new_note: note.clone(),
             };
-            EditExecutor::coalesce(&mut self.project_session, command, |cmd| {
-                if let Command::UpdateLineNote { new_note, .. } = cmd {
-                    *new_note = note;
-                }
-            }, EditOrigin::Local);
+            EditExecutor::coalesce(
+                &mut self.project_session,
+                command,
+                |cmd| {
+                    if let Command::UpdateLineNote { new_note, .. } = cmd {
+                        *new_note = note;
+                    }
+                },
+                EditOrigin::Local,
+            );
         } else {
             let old_note = self
-                .project_session.project
+                .project_session
+                .project
                 .get_line(id)
                 .map(|l| l.note.clone())
                 .unwrap_or_default();
@@ -2167,7 +2343,12 @@ impl State {
                 self.render.ui_renderer.texture_bind_group_layout(),
                 self.render.ui_renderer.texture_sampler(),
             );
-            player.tick(&self.render.gfx.device, &self.render.gfx.queue, bgl, sampler);
+            player.tick(
+                &self.render.gfx.device,
+                &self.render.gfx.queue,
+                bgl,
+                sampler,
+            );
             if player.current_frame() != prev_frame {
                 self.playback.timeline.emit(TimelineEvent::FrameChanged {
                     frame: player.current_frame(),
@@ -2372,7 +2553,8 @@ impl State {
     }
 
     fn current_waveform_revision(&self) -> u64 {
-        self.playback.video_player
+        self.playback
+            .video_player
             .as_ref()
             .map(|player| player.waveform_revision())
             .unwrap_or(0)
@@ -2383,7 +2565,8 @@ impl State {
     }
 
     fn waveform_decode_pending(&self) -> bool {
-        self.playback.video_player
+        self.playback
+            .video_player
             .as_ref()
             .is_some_and(|player| player.is_waveform_decoding())
     }
@@ -2420,7 +2603,8 @@ impl State {
 
     fn continuous_redraw_due(&self, now: Instant) -> bool {
         (self.needs_continuous_redraw() || self.secondary_needs_continuous_redraw())
-            && now.saturating_duration_since(self.render.last_redraw) >= Self::app_refresh_interval()
+            && now.saturating_duration_since(self.render.last_redraw)
+                >= Self::app_refresh_interval()
     }
     pub fn needs_redraw_now(&self) -> bool {
         let now = Instant::now();
@@ -2480,7 +2664,9 @@ impl State {
             push_deadline(now + Duration::from_millis(100));
         }
 
-        if self.collaboration.network.state != ConnectionState::Disconnected || self.ui_shell.ui.needs_background_poll() {
+        if self.collaboration.network.state != ConnectionState::Disconnected
+            || self.ui_shell.ui.needs_background_poll()
+        {
             push_deadline(now + Duration::from_millis(100));
         }
 
@@ -2496,7 +2682,8 @@ impl State {
         let surface_texture = match self.render.gfx.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(tex) | CurrentSurfaceTexture::Suboptimal(tex) => tex,
             CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
-                self.render.gfx
+                self.render
+                    .gfx
                     .surface
                     .configure(&self.render.gfx.device, &self.render.gfx.config);
                 return;
@@ -2508,13 +2695,13 @@ impl State {
         let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .render
-            .gfx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render Encoder"),
-            });
+        let mut encoder =
+            self.render
+                .gfx
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Render Encoder"),
+                });
 
         // Clear
         {
@@ -2542,7 +2729,9 @@ impl State {
         self.tick_video();
 
         // Video quad ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â skip when export modal is showing (it would cover the modal)
-        let video_quad = if self.ui_shell.ui.export_progress.is_some() || self.window_manager.secondary_display.is_some() {
+        let video_quad = if self.ui_shell.ui.export_progress.is_some()
+            || self.window_manager.secondary_display.is_some()
+        {
             None
         } else {
             build_video_quad(&self.playback.video_player, &self.ui_shell.ui)
@@ -2567,7 +2756,9 @@ impl State {
         let fps = self.fps();
         let waveform_offset_frames = self.active_audio_offset_frames();
         let waveform_is_instrumental = self.active_audio_is_instrumental();
-        self.project_session.render_index.refresh(&self.project_session.project);
+        self.project_session
+            .render_index
+            .refresh(&self.project_session.project);
         self.ui_shell.ui.render(
             &mut self.render.ui_renderer,
             &self.render.gfx.device,
@@ -2588,7 +2779,10 @@ impl State {
             waveform_is_instrumental,
         );
 
-        self.render.gfx.queue.submit(std::iter::once(encoder.finish()));
+        self.render
+            .gfx
+            .queue
+            .submit(std::iter::once(encoder.finish()));
         surface_texture.present();
         self.render.last_redraw = Instant::now();
     }
@@ -2597,7 +2791,8 @@ impl State {
         let surface_texture = match self.render.gfx.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(tex) | CurrentSurfaceTexture::Suboptimal(tex) => tex,
             CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
-                self.render.gfx
+                self.render
+                    .gfx
                     .surface
                     .configure(&self.render.gfx.device, &self.render.gfx.config);
                 return;
@@ -2609,13 +2804,13 @@ impl State {
         let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .render
-            .gfx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Studio Render Encoder"),
-            });
+        let mut encoder =
+            self.render
+                .gfx
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Studio Render Encoder"),
+                });
 
         // Clear to black
         {
@@ -2641,7 +2836,10 @@ impl State {
         let _events = self.playback.timeline.drain();
         self.tick_video();
 
-        let rythmo_h = crate::ui::rythmo::studio_br_height(&self.project_session.project, self.ui_shell.ui.screen_w());
+        let rythmo_h = crate::workspaces::rythmo::view::studio_br_height(
+            &self.project_session.project,
+            self.ui_shell.ui.screen_w(),
+        );
         let video_quad = if self.window_manager.secondary_display.is_some() {
             None
         } else {
@@ -2649,7 +2847,9 @@ impl State {
         };
         let render_frame = self.render_frame();
         let fps = self.fps();
-        self.project_session.render_index.refresh(&self.project_session.project);
+        self.project_session
+            .render_index
+            .refresh(&self.project_session.project);
 
         self.ui_shell.ui.render_studio(
             &mut self.render.ui_renderer,
@@ -2667,7 +2867,10 @@ impl State {
             fps,
         );
 
-        self.render.gfx.queue.submit(std::iter::once(encoder.finish()));
+        self.render
+            .gfx
+            .queue
+            .submit(std::iter::once(encoder.finish()));
         surface_texture.present();
         self.render.last_redraw = Instant::now();
     }
@@ -2685,7 +2888,9 @@ impl State {
         let surface_texture = match display.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(tex) | CurrentSurfaceTexture::Suboptimal(tex) => tex,
             CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
-                display.surface.configure(&self.render.gfx.device, &display.config);
+                display
+                    .surface
+                    .configure(&self.render.gfx.device, &display.config);
                 return;
             }
             CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => return,
@@ -2697,13 +2902,13 @@ impl State {
         let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .render
-            .gfx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Secondary Display Render Encoder"),
-            });
+        let mut encoder =
+            self.render
+                .gfx
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Secondary Display Render Encoder"),
+                });
 
         {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2748,7 +2953,10 @@ impl State {
             &[], // no modal labels
         );
 
-        self.render.gfx.queue.submit(std::iter::once(encoder.finish()));
+        self.render
+            .gfx
+            .queue
+            .submit(std::iter::once(encoder.finish()));
         surface_texture.present();
         self.render.last_redraw = Instant::now();
     }
@@ -2757,7 +2965,7 @@ impl State {
 fn build_video_quad<'a>(
     video_player: &'a Option<VideoPlayer>,
     ui: &Ui,
-) -> Option<(&'a wgpu::BindGroup, crate::ui::widget::IconInstance)> {
+) -> Option<(&'a wgpu::BindGroup, crate::ui::primitives::IconInstance)> {
     let player = video_player.as_ref()?;
     let bind_group = player.bind_group.as_ref()?;
     let (vid_w, vid_h) = player.video_size()?;
@@ -2773,7 +2981,7 @@ fn build_video_quad<'a>(
 
     Some((
         bind_group,
-        crate::ui::widget::IconInstance {
+        crate::ui::primitives::IconInstance {
             rect: [
                 preview.x + (preview.width - draw_w) / 2.0,
                 preview.y + (preview.height - draw_h) / 2.0,
@@ -2790,7 +2998,7 @@ fn build_studio_video_quad<'a>(
     video_player: &'a Option<VideoPlayer>,
     ui: &Ui,
     rythmo_h: f32,
-) -> Option<(&'a wgpu::BindGroup, crate::ui::widget::IconInstance)> {
+) -> Option<(&'a wgpu::BindGroup, crate::ui::primitives::IconInstance)> {
     let player = video_player.as_ref()?;
     let bind_group = player.bind_group.as_ref()?;
     let (vid_w, vid_h) = player.video_size()?;
@@ -2809,7 +3017,7 @@ fn build_studio_video_quad<'a>(
 
     Some((
         bind_group,
-        crate::ui::widget::IconInstance {
+        crate::ui::primitives::IconInstance {
             rect: [
                 (screen_w - draw_w) / 2.0,
                 (video_zone_h - draw_h) / 2.0,
@@ -2822,11 +3030,11 @@ fn build_studio_video_quad<'a>(
     ))
 }
 
-fn build_full_window_video_quad<'a>(
-    video_player: &'a Option<VideoPlayer>,
+fn build_full_window_video_quad(
+    video_player: &Option<VideoPlayer>,
     screen_w: f32,
     screen_h: f32,
-) -> Option<(&'a wgpu::BindGroup, crate::ui::widget::IconInstance)> {
+) -> Option<(&wgpu::BindGroup, crate::ui::primitives::IconInstance)> {
     let player = video_player.as_ref()?;
     let bind_group = player.bind_group.as_ref()?;
     let (vid_w, vid_h) = player.video_size()?;
@@ -2841,7 +3049,7 @@ fn build_full_window_video_quad<'a>(
 
     Some((
         bind_group,
-        crate::ui::widget::IconInstance {
+        crate::ui::primitives::IconInstance {
             rect: [
                 (screen_w - draw_w) / 2.0,
                 (screen_h - draw_h) / 2.0,
@@ -2959,6 +3167,3 @@ fn ping_server_socketio(
         }
     }
 }
-
-
-

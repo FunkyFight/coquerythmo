@@ -1,4 +1,4 @@
-use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
+use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use std::time::Instant;
 
 const TOAST_W: f32 = 520.0;
@@ -56,6 +56,12 @@ impl Toast {
 pub struct ToastManager {
     toasts: Vec<Toast>,
     hovered: Option<usize>,
+}
+
+impl Default for ToastManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ToastManager {

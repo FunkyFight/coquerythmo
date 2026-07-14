@@ -34,6 +34,16 @@ pub struct EditEffects {
 pub struct EditExecutor;
 
 impl EditExecutor {
+    /// Reset the current document through the canonical edit boundary when a
+    /// new project is started. This intentionally clears document history and
+    /// dirty state as one operation.
+    pub fn reset(session: &mut ProjectSession) {
+        session.project.reset();
+        session.project_path = None;
+        session.dirty = false;
+        session.history.clear();
+    }
+
     /// Mark a non-reversible domain-side change according to its origin.
     pub fn mark_dirty(session: &mut ProjectSession, origin: EditOrigin) -> EditEffects {
         let marked_dirty = matches!(origin, EditOrigin::Local | EditOrigin::Import);
@@ -171,10 +181,7 @@ impl EditExecutor {
 
     /// Validate a forward-only wire payload and enrich it with the previous
     /// state required by the reversible domain command.
-    fn command_from_payload(
-        session: &ProjectSession,
-        payload: CommandPayload,
-    ) -> Option<Command> {
+    fn command_from_payload(session: &ProjectSession, payload: CommandPayload) -> Option<Command> {
         let project = &session.project;
         Some(match payload {
             CommandPayload::CreateLine { line } => Command::CreateLine {
@@ -284,9 +291,8 @@ impl EditExecutor {
                 voice_actor_names,
             } => {
                 let line = project.get_line(line_id)?;
-                let new_voice_actor_names = voice_actor_names.unwrap_or_else(|| {
-                    project.voice_actor_names_for_character(&name, line_id)
-                });
+                let new_voice_actor_names = voice_actor_names
+                    .unwrap_or_else(|| project.voice_actor_names_for_character(&name, line_id));
                 Command::SetCharacter {
                     line_id,
                     old_name: line.character_name.clone(),
@@ -310,7 +316,7 @@ impl EditExecutor {
                 known_characters,
             } => Command::RenameCharacter {
                 changes,
-                old_known_characters: project.known_characters.clone(),
+                old_known_characters: project.known_characters().to_vec(),
                 new_known_characters: known_characters
                     .into_iter()
                     .map(|character| Character {
@@ -323,15 +329,15 @@ impl EditExecutor {
             CommandPayload::CreateVoiceActor { actor } => Command::CreateVoiceActor { actor },
             CommandPayload::AddMarker { kind, frame } => Command::AddMarker {
                 marker: RythmoMarker { kind, frame },
-                index: project.markers.len(),
+                index: project.marker_count(),
             },
             CommandPayload::RemoveMarker { kind, frame } => {
                 let index = project
-                    .markers
+                    .markers()
                     .iter()
                     .position(|marker| marker.kind == kind && marker.frame == frame)?;
                 Command::RemoveMarker {
-                    marker: project.markers[index].clone(),
+                    marker: project.marker(index)?.clone(),
                     index,
                 }
             }
@@ -341,7 +347,7 @@ impl EditExecutor {
                 new_frame,
             } => {
                 let index = project
-                    .markers
+                    .markers()
                     .iter()
                     .position(|marker| marker.kind == kind && marker.frame == old_frame)?;
                 Command::MoveMarker {
@@ -350,9 +356,7 @@ impl EditExecutor {
                     new_frame,
                 }
             }
-            CommandPayload::AddDrawingStroke { stroke } => {
-                Command::AddDrawingStroke { stroke }
-            }
+            CommandPayload::AddDrawingStroke { stroke } => Command::AddDrawingStroke { stroke },
             CommandPayload::EraseDrawingStrokes { strokes } => {
                 Command::EraseDrawingStrokes { strokes }
             }
@@ -365,7 +369,7 @@ impl EditExecutor {
                 }
                 let old_points = stroke_ids
                     .iter()
-                    .map(|id| project.drawing.get(*id).map(|stroke| stroke.points.clone()))
+                    .map(|id| project.drawing().get(*id).map(|stroke| stroke.points.clone()))
                     .collect::<Option<Vec<_>>>()?;
                 Command::TransformStrokes {
                     stroke_ids,
@@ -393,15 +397,16 @@ impl EditExecutor {
         }
 
         session.project.set_markers(data.markers);
-        session.project.known_characters = data
-            .known_characters
-            .into_iter()
-            .map(|character| Character {
-                name: character.name,
-                color: character.color,
-            })
-            .collect();
-        session.project.voice_actors = data.voice_actors;
+        session.project.set_known_characters(
+            data.known_characters
+                .into_iter()
+                .map(|character| Character {
+                    name: character.name,
+                    color: character.color,
+                })
+                .collect(),
+        );
+        session.project.set_voice_actors(data.voice_actors);
         session.project.bump_revision();
     }
 }
@@ -415,7 +420,11 @@ mod tests {
     fn local_edits_are_recorded_and_mark_dirty() {
         let mut session = ProjectSession::new();
         let line_id = session.project.add_line(0, 48, 0.0);
-        let snapshot = session.project.get_line(line_id).cloned().expect("line snapshot");
+        let snapshot = session
+            .project
+            .get_line(line_id)
+            .cloned()
+            .expect("line snapshot");
         let effects = EditExecutor::record_applied(
             &mut session,
             Command::CreateLine { snapshot, index: 0 },
@@ -437,7 +446,11 @@ mod tests {
     fn remote_and_sync_edits_do_not_pollute_local_history() {
         let mut session = ProjectSession::new();
         let line_id = session.project.add_line(0, 48, 0.0);
-        let snapshot = session.project.get_line(line_id).cloned().expect("line snapshot");
+        let snapshot = session
+            .project
+            .get_line(line_id)
+            .cloned()
+            .expect("line snapshot");
 
         let remote = EditExecutor::record_applied(
             &mut session,
@@ -463,14 +476,10 @@ mod tests {
     #[test]
     fn remote_payload_uses_the_reversible_command_without_local_effects() {
         let mut session = ProjectSession::new();
-        let line_id = session.project.add_line_full(
-            0,
-            48,
-            0.0,
-            "before".into(),
-            "Alice".into(),
-            [1.0; 4],
-        );
+        let line_id =
+            session
+                .project
+                .add_line_full(0, 48, 0.0, "before".into(), "Alice".into(), [1.0; 4]);
         let revision_before = session.project.revision();
 
         EditExecutor::apply_remote_payload(
@@ -491,13 +500,8 @@ mod tests {
     #[test]
     fn created_lines_are_recorded_once_and_can_be_undone_and_redone() {
         let mut session = ProjectSession::new();
-        let (line_id, command) = EditExecutor::create_line(
-            &mut session,
-            12,
-            24,
-            0.25,
-            "hello".into(),
-        );
+        let (line_id, command) =
+            EditExecutor::create_line(&mut session, 12, 24, 0.25, "hello".into());
 
         assert_eq!(session.project.get_line(line_id).unwrap().text, "hello");
         assert!(matches!(command, Command::CreateLine { .. }));
@@ -519,10 +523,7 @@ mod tests {
 
         let _ = EditExecutor::execute(
             &mut session,
-            Command::InsertLine {
-                snapshot,
-                index: 0,
-            },
+            Command::InsertLine { snapshot, index: 0 },
             EditOrigin::Local,
         );
         assert!(session.project.get_line(line_id).is_some());

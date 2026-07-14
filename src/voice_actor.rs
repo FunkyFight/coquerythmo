@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 pub const VOICE_ACTOR_ICON_SIZE: u32 = 256;
 pub const MAX_ICON_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_EMBEDDED_ICON_BYTES: usize = 2 * 1024 * 1024;
-const MAX_EMBEDDED_ICON_BASE64_LEN: usize = ((MAX_EMBEDDED_ICON_BYTES + 2) / 3) * 4;
+const MAX_EMBEDDED_ICON_BASE64_LEN: usize = MAX_EMBEDDED_ICON_BYTES.div_ceil(3) * 4;
 const MAX_ICON_SOURCE_DIMENSION: u32 = 4096;
 const MAX_ICON_DECODE_ALLOC_BYTES: u64 = 64 * 1024 * 1024;
 

@@ -1,11 +1,20 @@
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_match)]
+
 use super::text_input;
-use super::widget::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
+use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
 
 pub struct PricingLicenseModal {
     key: String,
     input: text_input::TextInputState,
     error: Option<String>,
+}
+
+impl Default for PricingLicenseModal {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub enum PricingLicenseModalResult {
@@ -26,8 +35,9 @@ impl PricingLicenseModal {
     }
 
     pub fn next_cursor_blink_deadline(&self) -> std::time::Instant {
-        self.input.next_cursor_blink_deadline()
-            .unwrap_or_else(|| std::time::Instant::now())
+        self.input
+            .next_cursor_blink_deadline()
+            .unwrap_or_else(std::time::Instant::now)
     }
 
     fn layout(sw: f32, sh: f32) -> (Rect, Rect, Rect, Rect) {
@@ -180,7 +190,11 @@ impl PricingLicenseModal {
             font_family_override: None,
         });
 
-        let desc_lines = super::pricing_page::wrap_text(t("pricing.license_modal.desc"), card.width - 48.0, 12.0);
+        let desc_lines = super::pricing_page::wrap_text(
+            t("pricing.license_modal.desc"),
+            card.width - 48.0,
+            12.0,
+        );
         let mut dy = card.y + 48.0;
         for line in desc_lines {
             labels.push(LabelInfo {
@@ -221,7 +235,12 @@ impl PricingLicenseModal {
 
         let focused = true;
         overlay.push(QuadInstance {
-            rect: [field_rect.x, field_rect.y, field_rect.width, field_rect.height],
+            rect: [
+                field_rect.x,
+                field_rect.y,
+                field_rect.width,
+                field_rect.height,
+            ],
             color: [0.07, 0.07, 0.10, 1.0],
             color_bottom: [0.07, 0.07, 0.10, 1.0],
             border_color: if self.error.is_some() {
@@ -283,7 +302,12 @@ impl PricingLicenseModal {
         }
 
         overlay.push(QuadInstance {
-            rect: [activate_rect.x, activate_rect.y, activate_rect.width, activate_rect.height],
+            rect: [
+                activate_rect.x,
+                activate_rect.y,
+                activate_rect.width,
+                activate_rect.height,
+            ],
             color: [0.22, 0.50, 0.72, 1.0],
             color_bottom: [0.22, 0.50, 0.72, 1.0],
             border_color: [0.5, 0.55, 0.7, 0.5],
@@ -308,7 +332,12 @@ impl PricingLicenseModal {
         });
 
         overlay.push(QuadInstance {
-            rect: [close_rect.x, close_rect.y, close_rect.width, close_rect.height],
+            rect: [
+                close_rect.x,
+                close_rect.y,
+                close_rect.width,
+                close_rect.height,
+            ],
             color: [0.20, 0.20, 0.25, 1.0],
             color_bottom: [0.16, 0.16, 0.20, 1.0],
             border_color: [0.35, 0.35, 0.42, 0.6],

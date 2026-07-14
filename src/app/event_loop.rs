@@ -1,10 +1,7 @@
-use std::sync::Arc;
-use std::time::Instant;
-use winit::dpi::LogicalSize;
-use winit::event::{ElementState, Event, MouseButton, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
-use winit::keyboard::{Key, NamedKey};
+use super::bootstrap;
+use super::dispatcher::{dispatch, CommandDispatcher};
 use crate::config;
+use crate::application::edit_service::EditExecutor;
 use crate::i18n;
 use crate::input::context::{InputContext, InputContextStack};
 use crate::input::key::{InputWindow, KeyStroke, Modifiers};
@@ -12,10 +9,14 @@ use crate::input::router::existing_shortcuts;
 use crate::platform;
 use crate::state::State;
 use crate::ui;
-use crate::ui::widget::{UiAction, UiEvent};
+use crate::ui::primitives::{UiAction, UiEvent};
 use crate::update;
-use super::bootstrap;
-use super::dispatcher::{dispatch, CommandDispatcher};
+use std::sync::Arc;
+use std::time::Instant;
+use winit::dpi::LogicalSize;
+use winit::event::{ElementState, Event, MouseButton, WindowEvent};
+use winit::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
+use winit::keyboard::{Key, NamedKey};
 
 #[derive(Debug)]
 pub(crate) enum AppEvent {
@@ -58,11 +59,13 @@ fn handle_whats_new_result(
     }
 }
 
-pub(crate) fn new_project_reset_and_pick_video(state: &mut State, elwt: &EventLoopWindowTarget<AppEvent>) {
-    state.project_session.reset();
+pub(crate) fn new_project_reset_and_pick_video(
+    state: &mut State,
+    elwt: &EventLoopWindowTarget<AppEvent>,
+) {
+    EditExecutor::reset(&mut state.project_session);
     CommandDispatcher::dispatch(UiAction::AddVideo, state, elwt);
 }
-
 
 fn is_space_key(key: &Key) -> bool {
     matches!(key, Key::Named(NamedKey::Space))
@@ -179,8 +182,10 @@ pub fn run() {
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
                     if event.state == ElementState::Pressed {
-                        if !state.is_editing_text() {
-                            let mut contexts = Vec::new();
+                        let mut contexts = Vec::new();
+                        if state.is_rythmo_text_editing() {
+                            contexts.push(InputContext::TextEditing);
+                        } else if !state.is_editing_text() {
                             if state.video_path().is_some() {
                                 contexts.push(InputContext::VideoLoaded);
                             }
@@ -190,27 +195,24 @@ pub fn run() {
                                 contexts.push(InputContext::Workspace);
                                 contexts.push(InputContext::Global);
                             }
-                            let context_stack = InputContextStack::new(contexts);
-                            let modifiers = Modifiers {
-                                ctrl: ctrl_held,
-                                shift: shift_held,
-                                ..Modifiers::NONE
-                            };
-                            if let Some(stroke) = KeyStroke::from_winit(
-                                &event,
-                                modifiers,
-                                InputWindow::Main,
-                            ) {
-                                if let Some(action) = shortcuts
-                                    .resolve(&stroke, &context_stack)
-                                    .cloned()
-                                {
-                                    if CommandDispatcher::dispatch(action, &mut state, elwt) {
-                                        elwt.exit();
-                                    }
-                                    state.request_redraw();
-                                    return;
+                        }
+                        let context_stack = InputContextStack::new(contexts);
+                        let modifiers = Modifiers {
+                            ctrl: ctrl_held,
+                            shift: shift_held,
+                            ..Modifiers::NONE
+                        };
+                        if let Some(stroke) = KeyStroke::from_winit(
+                            &event,
+                            modifiers,
+                            InputWindow::Main,
+                        ) {
+                            if let Some(action) = shortcuts.resolve(&stroke, &context_stack).cloned() {
+                                if CommandDispatcher::dispatch(action, &mut state, elwt) {
+                                    elwt.exit();
                                 }
+                                state.request_redraw();
+                                return;
                             }
                         }
                         // F5: show studio warning if video is loaded
@@ -339,7 +341,7 @@ pub fn run() {
                             CommandDispatcher::dispatch(UiAction::SeekToNextBoucle { direction }, &mut state, elwt);
                         } else {
                             // Regular scroll: seek by frames
-                            let frame_delta = ui::scroll_delta_to_frames(scroll_delta, 10.0);
+                            let frame_delta = ui::shell::scroll_delta_to_frames(scroll_delta, 10.0);
                             if frame_delta != 0 {
                                 CommandDispatcher::dispatch(UiAction::SeekRelative(frame_delta), &mut state, elwt);
                             }
@@ -502,6 +504,3 @@ pub fn run() {
         })
         .expect("Event loop error");
 }
-
-
-

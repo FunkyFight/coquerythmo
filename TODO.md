@@ -28,6 +28,7 @@ DAW basique.
 Agrandir le texte pour le nom des persos
 Afficher les fichiers qui ont le même nom quand on tape dans "Nom" dans l'explorateur de fichiers
 Si pas sauvegarde et qu'on ferme : demander si on veut vraiment partir ou si on sauvegarde avant
+Si Proxy : appliqué automatiquement à chaque load
 Bug : Lancer la vidéo, naviguer avec la barre : La vidéo freeze
 Bug : la ligne karaoké défile dans l'export mp4 au lieu d'être insta anchored au centre
 Bug : l'image de comédien est sur la ligne.

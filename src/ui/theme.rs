@@ -1,5 +1,5 @@
-/// Centralized theme — all colors, sizes, spacing.
-/// No magic numbers outside this file.
+// Centralized theme — all colors, sizes, spacing.
+// No magic numbers outside this file.
 
 // -- Zone backgrounds --
 pub const TOPBAR_BG: [f32; 4] = [0.11, 0.11, 0.13, 1.0];

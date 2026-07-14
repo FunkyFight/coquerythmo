@@ -13,8 +13,12 @@ use coquerythmo::rythmo_line::RythmoLine;
 use serde_json::Value;
 
 fn fixture(name: &str) -> String {
-    fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name))
-        .expect("fixture must exist")
+    fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name),
+    )
+    .expect("fixture must exist")
 }
 
 fn golden(name: &str) -> Value {
@@ -51,7 +55,8 @@ fn all_phase_zero_project_fixtures_round_trip_without_schema_drift() {
         "project-characters-markers.json",
         "project-large.json",
     ] {
-        let source: Value = serde_json::from_str(&fixture(name)).expect("fixture must be valid JSON");
+        let source: Value =
+            serde_json::from_str(&fixture(name)).expect("fixture must be valid JSON");
         let data: ProjectData = serde_json::from_value(source.clone()).expect("project schema");
         let mut round_trip = serde_json::to_value(data).expect("project must serialize");
         let mut source = source;
@@ -66,7 +71,10 @@ fn packet_and_command_payload_match_legacy_goldens() {
     let packet = Packet::RoomCreated {
         code: "ABC123".into(),
     };
-    assert_eq!(serde_json::to_value(packet).unwrap(), golden("packet-room-created.json"));
+    assert_eq!(
+        serde_json::to_value(packet).unwrap(),
+        golden("packet-room-created.json")
+    );
 
     let payload = CommandPayload::CreateLine {
         line: RythmoLine {
@@ -113,7 +121,7 @@ fn local_edit_undo_redo_preserves_revision_and_values() {
     let after = session.project.revision();
     assert!(after > before);
     assert!(session.dirty);
-    assert_eq!(session.history.last().is_some(), true);
+    assert!(session.history.last().is_some());
 
     assert!(EditExecutor::undo(&mut session));
     assert_eq!(session.project.get_line(line_id).unwrap().text, "before");
@@ -125,8 +133,8 @@ fn local_edit_undo_redo_preserves_revision_and_values() {
 #[test]
 fn rythmo_scene_fixtures_share_visible_lines_markers_and_drawings() {
     let mut karaoke_project = Project::new();
-    let karaoke_data: ProjectData = serde_json::from_str(&fixture("project-karaoke.json"))
-        .expect("karaoke fixture schema");
+    let karaoke_data: ProjectData =
+        serde_json::from_str(&fixture("project-karaoke.json")).expect("karaoke fixture schema");
     karaoke_data.apply_to_project(&mut karaoke_project, 24.0);
     let mut karaoke_index = ProjectRenderIndex::new();
     karaoke_index.refresh(&karaoke_project);
@@ -134,7 +142,10 @@ fn rythmo_scene_fixtures_share_visible_lines_markers_and_drawings() {
         &karaoke_project,
         &karaoke_index,
         SceneOptions {
-            frame_window: FrameWindow { first: 0, last: 144 },
+            frame_window: FrameWindow {
+                first: 0,
+                last: 144,
+            },
             current_frame: 48.0,
             source_fps: 24.0,
             ..SceneOptions::default()
@@ -146,8 +157,8 @@ fn rythmo_scene_fixtures_share_visible_lines_markers_and_drawings() {
     assert_eq!(karaoke_scene.lines[0].karaoke_progress, Some(0.25));
 
     let mut drawing_project = Project::new();
-    let drawing_data: ProjectData = serde_json::from_str(&fixture("project-drawings.json"))
-        .expect("drawing fixture schema");
+    let drawing_data: ProjectData =
+        serde_json::from_str(&fixture("project-drawings.json")).expect("drawing fixture schema");
     drawing_data.apply_to_project(&mut drawing_project, 25.0);
     let mut drawing_index = ProjectRenderIndex::new();
     drawing_index.refresh(&drawing_project);
