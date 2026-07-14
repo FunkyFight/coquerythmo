@@ -320,6 +320,11 @@ CopySelectedLine,
     // Drawing
     AddDrawingStroke(crate::rythmo_drawing::DrawingStroke),
     EraseDrawingStrokes(Vec<u64>),
+    TransformStrokes {
+        stroke_ids: Vec<u64>,
+        old_points: Vec<Vec<(f64, f32)>>,
+        new_points: Vec<Vec<(f64, f32)>>,
+    },
     // Tool mode
     SetToolMode(crate::ui::ToolMode),
     CycleBrushSize,

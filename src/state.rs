@@ -193,8 +193,10 @@ impl State {
     }
 
     pub fn handle_ui_event(&mut self, event: &UiEvent) -> EventResponse {
+        let render_frame = self.render_frame();
+        let fps = self.fps();
         self.ui
-            .handle_event(event, &self.project, self.render_frame(), self.fps())
+            .handle_event(event, &mut self.project, render_frame, fps)
     }
 
     pub fn set_export_progress(&mut self, p: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>) {
@@ -1211,10 +1213,6 @@ impl State {
                     self.project.move_marker(index, new_frame);
                 }
             }
-            CommandPayload::LoadVideo { .. } => {
-                log::debug!("Remote: load video (ignored, using chunked transfer)");
-                // Video transfer now uses chunked video_start/chunk/end events
-            }
             CommandPayload::UpdateLineNote { line_id, note } => {
                 log::debug!("Remote: update note for line {}", line_id);
                 if let Some(l) = self.project.get_line_mut(line_id) {
@@ -1229,6 +1227,14 @@ impl State {
                 log::debug!("Remote: erase {} drawing strokes", strokes.len());
                 for s in strokes {
                     self.project.drawing.remove(s.id);
+                }
+            }
+            CommandPayload::TransformStrokes { stroke_ids, new_points } => {
+                log::debug!("Remote: transform {} drawing strokes", stroke_ids.len());
+                for (id, points) in stroke_ids.into_iter().zip(new_points) {
+                    if let Some(stroke) = self.project.drawing.get_mut(id) {
+                        stroke.points = points;
+                    }
                 }
             }
         }
@@ -1615,6 +1621,9 @@ impl State {
             Command::EraseDrawingStrokes { strokes } => {
                 serde_json::json!({ "action": "erase_drawing_strokes", "strokes": serde_json::to_value(strokes).unwrap_or_default() })
             }
+            Command::TransformStrokes { stroke_ids, new_points, .. } => {
+                serde_json::json!({ "action": "transform_strokes", "stroke_ids": stroke_ids, "new_points": new_points })
+            }
         };
         self.network.send_raw("delta", payload);
     }
@@ -1639,6 +1648,7 @@ impl State {
                     | Command::MoveMarker { .. }
                     | Command::AddDrawingStroke { .. }
                     | Command::EraseDrawingStrokes { .. }
+                    | Command::TransformStrokes { .. }
             ) {
                 self.broadcast_delta(cmd);
             }
@@ -1826,19 +1836,24 @@ impl State {
 
     pub fn delete_selected(&mut self) {
         use crate::ui::rythmo::Selection;
-        if let Some(sel) = self.ui.rythmo_state().selected {
+        if let Some(ref sel) = self.ui.rythmo_state().selected {
             match sel {
                 Selection::Line(id) => {
-                    if let Some((snapshot, index)) = self.project.remove_line(id) {
+                    if let Some((snapshot, index)) = self.project.remove_line(*id) {
                         self.push_and_broadcast(Command::DeleteLine { snapshot, index });
                     }
                 }
                 Selection::Marker(idx) => {
-                    if let Some(marker) = self.project.remove_marker_at(idx) {
-                        self.push_and_broadcast(Command::RemoveMarker { marker, index: idx });
+                    if let Some(marker) = self.project.remove_marker_at(*idx) {
+                        self.push_and_broadcast(Command::RemoveMarker { marker, index: *idx });
                     }
                 }
                 Selection::AllLines => {}
+                Selection::Strokes(ids) => {
+                    if !ids.is_empty() {
+                        self.erase_drawing_strokes(ids.clone());
+                    }
+                }
             }
             self.ui.clear_selection();
         }
@@ -1884,6 +1899,33 @@ pub fn paste_line(&mut self) {
             self.project.bump_revision();
             self.push_and_broadcast(Command::EraseDrawingStrokes { strokes });
         }
+    }
+
+    pub fn transform_drawing_strokes(
+        &mut self,
+        stroke_ids: Vec<u64>,
+        old_points: Vec<Vec<(f64, f32)>>,
+        new_points: Vec<Vec<(f64, f32)>>,
+    ) {
+        for (i, id) in stroke_ids.iter().enumerate() {
+            if i < new_points.len() {
+                if let Some(s) = self
+                    .project
+                    .drawing
+                    .strokes
+                    .iter_mut()
+                    .find(|s| s.id == *id)
+                {
+                    s.points = new_points[i].clone();
+                }
+            }
+        }
+        self.project.bump_revision();
+        self.push_and_broadcast(Command::TransformStrokes {
+            stroke_ids,
+            old_points,
+            new_points,
+        });
     }
 
     pub fn set_tool_mode(&mut self, mode: crate::ui::ToolMode) {

@@ -82,6 +82,10 @@ impl RythmoDrawing {
         self.strokes.iter().find(|s| s.id == id)
     }
 
+    pub fn get_mut(&mut self, id: u64) -> Option<&mut DrawingStroke> {
+        self.strokes.iter_mut().find(|s| s.id == id)
+    }
+
     pub fn query_window(&self, first_frame: i64, last_frame: i64) -> Vec<&DrawingStroke> {
         self.strokes
             .iter()
@@ -108,6 +112,39 @@ impl RythmoDrawing {
                     ids.push(s.id);
                     break;
                 }
+            }
+        }
+        ids
+    }
+
+    /// Returns IDs of strokes whose bounding boxes intersect the given rectangle in frame-space.
+    /// Rect is (min_frame, min_y_frac, max_frame, max_y_frac).
+    pub fn strokes_in_rect(
+        &self,
+        min_frame: f64,
+        min_y: f32,
+        max_frame: f64,
+        max_y: f32,
+    ) -> Vec<u64> {
+        let mut ids = Vec::new();
+        for s in &self.strokes {
+            let (s_min_f, s_max_f) = s.bbox_frames();
+            let s_min_f = s_min_f as f64;
+            let s_max_f = s_max_f as f64;
+            // Quick bbox reject
+            if s_max_f < min_frame || s_min_f > max_frame {
+                continue;
+            }
+            // Check y overlap by scanning points (since y varies per point)
+            let mut y_overlaps = false;
+            for (_, yf) in &s.points {
+                if *yf >= min_y && *yf <= max_y {
+                    y_overlaps = true;
+                    break;
+                }
+            }
+            if y_overlaps {
+                ids.push(s.id);
             }
         }
         ids
@@ -266,4 +303,71 @@ pub fn rasterize_window(
         }
     }
     buf
+}
+
+/// Compute the bounding box of multiple strokes in frame-space.
+/// Returns (min_frame, min_y, max_frame, max_y).
+pub fn strokes_bbox(strokes: &[&DrawingStroke]) -> Option<(f64, f32, f64, f32)> {
+    let mut min_f = f64::INFINITY;
+    let mut max_f = f64::NEG_INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    let mut any = false;
+    for s in strokes {
+        for (f, y) in &s.points {
+            any = true;
+            min_f = min_f.min(*f);
+            max_f = max_f.max(*f);
+            min_y = min_y.min(*y);
+            max_y = max_y.max(*y);
+        }
+    }
+    if any {
+        Some((min_f, min_y, max_f, max_y))
+    } else {
+        None
+    }
+}
+
+/// Transform strokes by translating, rotating, and scaling around a center point in frame-space.
+/// All coordinates are in frame-space (frame, y_frac).
+pub fn transform_strokes(
+    strokes: &mut [&mut DrawingStroke],
+    center: (f64, f32),
+    translate: (f64, f32),
+    rotate: f32,
+    scale: f32,
+) {
+    let (cx, cy) = center;
+    let cos_a = rotate.cos() as f64;
+    let sin_a = rotate.sin() as f64;
+    let scale_f64 = scale as f64;
+    for s in strokes {
+        for (f, y) in &mut s.points {
+            // Translate to local space around center
+            let local_f = *f - cx;
+            let local_y = *y - cy;
+            // Apply scale
+            let local_f = local_f * scale_f64;
+            let local_y = local_y * scale;
+            // Apply rotation
+            let rot_f = local_f * cos_a - local_y as f64 * sin_a;
+            let rot_y = local_f * sin_a + local_y as f64 * cos_a;
+            // Apply translation and move back to world space
+            *f = rot_f + cx + translate.0;
+            *y = (rot_y + cy as f64 + translate.1 as f64) as f32;
+        }
+    }
+}
+
+/// Get mutable references to strokes by IDs for transformation.
+pub fn get_strokes_mut<'a>(
+    drawing: &'a mut RythmoDrawing,
+    ids: &[u64],
+) -> Vec<&'a mut DrawingStroke> {
+    drawing
+        .strokes
+        .iter_mut()
+        .filter(|s| ids.contains(&s.id))
+        .collect()
 }

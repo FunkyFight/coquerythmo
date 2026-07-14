@@ -156,12 +156,12 @@ pub enum CommandPayload {
     AddDrawingStroke {
         stroke: DrawingStroke,
     },
-    EraseDrawingStrokes {
+EraseDrawingStrokes {
         strokes: Vec<DrawingStroke>,
     },
-    LoadVideo {
-        filename: String,
-        data_base64: String,
+    TransformStrokes {
+        stroke_ids: Vec<u64>,
+        new_points: Vec<Vec<(f64, f32)>>,
     },
 }
 
@@ -351,9 +351,15 @@ impl Packetable for Command {
             Command::AddDrawingStroke { stroke } => CommandPayload::AddDrawingStroke {
                 stroke: stroke.clone(),
             },
-            Command::EraseDrawingStrokes { strokes } => CommandPayload::EraseDrawingStrokes {
+Command::EraseDrawingStrokes { strokes } => CommandPayload::EraseDrawingStrokes {
                 strokes: strokes.clone(),
             },
+Command::TransformStrokes { stroke_ids, new_points, .. } => {
+                CommandPayload::TransformStrokes {
+                    stroke_ids: stroke_ids.clone(),
+                    new_points: new_points.clone(),
+                }
+            }
         };
         Packet::Command { payload }
     }

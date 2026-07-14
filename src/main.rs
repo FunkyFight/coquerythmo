@@ -966,6 +966,9 @@ fn handle_action(
         UiAction::EraseDrawingStrokes(ids) => {
             state.erase_drawing_strokes(ids);
         }
+        UiAction::TransformStrokes { stroke_ids, old_points, new_points } => {
+            state.transform_drawing_strokes(stroke_ids, old_points, new_points);
+        }
     }
     false
 }

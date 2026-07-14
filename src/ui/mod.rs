@@ -937,7 +937,7 @@ impl Ui {
     pub fn handle_event(
         &mut self,
         event: &UiEvent,
-        project: &Project,
+        project: &mut Project,
         render_frame: f64,
         fps: f64,
     ) -> EventResponse {

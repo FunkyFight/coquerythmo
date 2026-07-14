@@ -114,6 +114,11 @@ pub enum Command {
     EraseDrawingStrokes {
         strokes: Vec<DrawingStroke>,
     },
+    TransformStrokes {
+        stroke_ids: Vec<u64>,
+        old_points: Vec<Vec<(f64, f32)>>,
+        new_points: Vec<Vec<(f64, f32)>>,
+    },
 }
 
 impl Command {
@@ -271,6 +276,24 @@ impl Command {
                     project.bump_revision();
                 }
             }
+            Command::TransformStrokes {
+                stroke_ids,
+                new_points,
+                ..
+            } => {
+                let mut changed = false;
+                for (i, id) in stroke_ids.iter().enumerate() {
+                    if let Some(stroke) = project.drawing.strokes.iter_mut().find(|s| s.id == *id) {
+                        if i < new_points.len() {
+                            stroke.points = new_points[i].clone();
+                            changed = true;
+                        }
+                    }
+                }
+                if changed {
+                    project.bump_revision();
+                }
+            }
         }
     }
 
@@ -306,6 +329,24 @@ impl Command {
                     if project.drawing.get(s.id).is_none() {
                         project.drawing.add(s.clone());
                         changed = true;
+                    }
+                }
+                if changed {
+                    project.bump_revision();
+                }
+            }
+            Command::TransformStrokes {
+                stroke_ids,
+                old_points,
+                ..
+            } => {
+                let mut changed = false;
+                for (i, id) in stroke_ids.iter().enumerate() {
+                    if let Some(stroke) = project.drawing.strokes.iter_mut().find(|s| s.id == *id) {
+                        if i < old_points.len() {
+                            stroke.points = old_points[i].clone();
+                            changed = true;
+                        }
                     }
                 }
                 if changed {
