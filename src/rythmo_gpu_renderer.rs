@@ -693,6 +693,13 @@ struct FailedActorIconRef {
     icon_len: usize,
 }
 
+struct DrawingOverlayTexture {
+    texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+    width: u32,
+    height: u32,
+}
+
 // ── Icon draw range (batch) ──────────────────────────────────────────────────
 
 struct IconBatch {
@@ -734,6 +741,7 @@ pub struct GpuRenderer {
     text_cache: HashMap<u64, CachedText>,
     actor_icon_cache: HashMap<String, CachedActorIconRef>,
     failed_actor_icon_cache: HashMap<String, FailedActorIconRef>,
+    drawing_overlay: Option<DrawingOverlayTexture>,
     offscreen: Option<OffscreenTarget>,
     nv12: Option<Nv12Target>,
     // Pre-allocated GPU vertex buffers (reused across frames)
@@ -1091,6 +1099,7 @@ impl GpuRenderer {
             text_cache: HashMap::new(),
             actor_icon_cache: HashMap::new(),
             failed_actor_icon_cache: HashMap::new(),
+            drawing_overlay: None,
             offscreen: None,
             nv12: None,
             quad_buf,
@@ -1128,6 +1137,99 @@ impl GpuRenderer {
             );
             self.icon_buf_cap = new_cap;
         }
+    }
+
+    fn prepare_drawing_overlay(
+        &mut self,
+        scene: &GpuExportScene<'_>,
+        current_frame: f64,
+        width: u32,
+        height: u32,
+        ppf: f32,
+    ) -> bool {
+        let (first_frame, last_frame) = crate::rythmo_drawing::visible_frame_window(
+            width as f32,
+            current_frame,
+            ppf,
+            4,
+        );
+        let strokes = scene.project.drawing.query_window(first_frame, last_frame);
+        if strokes.is_empty() {
+            return false;
+        }
+
+        let rgba = crate::rythmo_drawing::rasterize_window(
+            &strokes,
+            width,
+            height,
+            current_frame,
+            ppf,
+        );
+        let needs_create = self
+            .drawing_overlay
+            .as_ref()
+            .is_none_or(|overlay| overlay.width != width || overlay.height != height);
+        if needs_create {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Export Drawing Overlay"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Export Drawing Overlay BG"),
+                layout: &self.texture_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.nearest_sampler),
+                    },
+                ],
+            });
+            self.drawing_overlay = Some(DrawingOverlayTexture {
+                texture,
+                bind_group,
+                width,
+                height,
+            });
+            self.stats.texture_creations += 1;
+            self.stats.bind_groups_created += 1;
+        }
+
+        let overlay = self.drawing_overlay.as_ref().unwrap();
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &overlay.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        true
     }
 
     // ── Text rasterization (CPU) ─────────────────────────────────────────
@@ -2606,6 +2708,26 @@ impl GpuRenderer {
             }
         }
 
+        // Match the editor's layer order: drawings cover the rendered BR and
+        // are themselves free of editing handles or selection UI.
+        let drawing_icon_index = if self.prepare_drawing_overlay(
+            scene,
+            current_frame,
+            width,
+            height,
+            ppf,
+        ) {
+            let index = all_icons.len() as u32;
+            all_icons.push(IconInstance {
+                rect: [0.0, 0.0, width as f32, height as f32],
+                uv_rect: [0.0, 0.0, 1.0, 1.0],
+                tint: [1.0, 1.0, 1.0, 1.0],
+            });
+            Some(index)
+        } else {
+            None
+        };
+
         Self::coalesce_icon_batches(&mut icon_batches);
 
         // ── Submit GPU work (non-blocking) ──
@@ -2674,6 +2796,12 @@ impl GpuRenderer {
                             pass.draw(0..6, batch.start..batch.start + batch.count);
                         }
                     }
+                    if let (Some(index), Some(overlay)) =
+                        (drawing_icon_index, self.drawing_overlay.as_ref())
+                    {
+                        pass.set_bind_group(1, &overlay.bind_group, &[]);
+                        pass.draw(0..6, index..index + 1);
+                    }
                 }
             }
             match readback {
@@ -2726,7 +2854,8 @@ impl GpuRenderer {
         let icon_draws = icon_batches
             .iter()
             .filter(|batch| self.text_cache.contains_key(&batch.hash))
-            .count() as u64;
+            .count() as u64
+            + u64::from(drawing_icon_index.is_some());
         let frame_draws = quad_draws + icon_draws;
         self.stats.frames_submitted += 1;
         self.stats.draw_calls += frame_draws;

@@ -305,6 +305,31 @@ pub fn rasterize_window(
     buf
 }
 
+/// Alpha-composite a transparent drawing raster over an RGBA render target.
+/// Both buffers must describe the same pixel dimensions.
+pub fn composite_rgba_over(dst: &mut [u8], src: &[u8]) {
+    assert_eq!(dst.len(), src.len(), "RGBA buffers must have matching sizes");
+    for i in (0..dst.len()).step_by(4) {
+        blend(dst, i, src[i], src[i + 1], src[i + 2], src[i + 3]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn composite_rgba_over_blends_drawing_pixels() {
+        let mut dst = vec![10, 20, 30, 255, 1, 2, 3, 255];
+        let src = vec![210, 20, 30, 128, 0, 0, 0, 0];
+
+        composite_rgba_over(&mut dst, &src);
+
+        assert_eq!(&dst[..4], &[110, 20, 30, 255]);
+        assert_eq!(&dst[4..], &[1, 2, 3, 255]);
+    }
+}
+
 /// Compute the bounding box of multiple strokes in frame-space.
 /// Returns (min_frame, min_y, max_frame, max_y).
 pub fn strokes_bbox(strokes: &[&DrawingStroke]) -> Option<(f64, f32, f64, f32)> {

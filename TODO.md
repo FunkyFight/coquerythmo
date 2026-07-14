@@ -27,8 +27,9 @@ Compte à rebours / Pre-roll (maybe deux choses différentes)
 DAW basique.
 Agrandir le texte pour le nom des persos
 Afficher les fichiers qui ont le même nom quand on tape dans "Nom" dans l'explorateur de fichiers
+Si pas sauvegarde et qu'on ferme : demander si on veut vraiment partir ou si on sauvegarde avant
 Bug : Lancer la vidéo, naviguer avec la barre : La vidéo freeze
-Bug : la ligne karaoké défile 2s avant de venir au centre.
+Bug : la ligne karaoké défile dans l'export mp4 au lieu d'être insta anchored au centre
 Bug : l'image de comédien est sur la ligne.
 Bug : Dans le rendu export, les graduations semblent être buggées
 Bug : Rotation d'un dessin le skew au lieu de le tourner

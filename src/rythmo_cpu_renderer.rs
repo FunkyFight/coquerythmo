@@ -1137,6 +1137,26 @@ pm_data[di] = ((sr + pm_data[di] as u32 * inv) / 255) as u8;
             }
         }
 
+        // Drawings are an overlay in the editor, so composite them last in the
+        // exported BR as well (above lines, labels and markers).
+        let (first_frame, last_frame) = crate::rythmo_drawing::visible_frame_window(
+            width as f32,
+            current_frame as f64,
+            ppf,
+            4,
+        );
+        let strokes = project.drawing.query_window(first_frame, last_frame);
+        if !strokes.is_empty() {
+            let drawing = crate::rythmo_drawing::rasterize_window(
+                &strokes,
+                width,
+                height,
+                current_frame as f64,
+                ppf,
+            );
+            crate::rythmo_drawing::composite_rgba_over(pixmap.data_mut(), &drawing);
+        }
+
         pixmap.data().to_vec()
     }
 }
