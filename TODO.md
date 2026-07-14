@@ -1,16 +1,16 @@
 # Idées :
-Tester si les lignes poppent plus en rendu gpu
+EN COURS ==== Dans l'UI : BR en 60 fps, vidéo en [video_fps] fps.
+    Maintenant : hyper optimiser pour que les lignes arrêtent de buter et de bugger
 
-Render du transform des dessins in real time
-Render des dessins dans l'export final
+Corriger les lignes qui poppent en mode gpu, cpu et UI (à cause de l'étiquette nom personnage devant)
 
 Traduction auto des lignes
     => Gestion simplifiée et switch easy des différentes langues (CTRL + L)
-EN COURS ==== Dans l'UI : BR en 60 fps, vidéo en [video_fps] fps.
+
 Pouvoir dessiner sur la bande rythmo.
 Tous les trucs de Voxdub qui comparent intégrés
 F9 qui, selon le contexte (intelligent) affiche à gauche tous les raccourcis claviers possibles (catégorisés selon le panel)
-Fichier .coquerythmo qui contient : la BR, la vidéo, les audios, les configurations, la police même, tout.
+Fichier .coquerythmo qui contient : la BR, la vidéo, les audios, les configurations, la police aussi, tout.
     => Passer le .json tout seul en legacy
 Export to anything
     Pré-format : 16:9 (YouTube), 9:16 (Shorts / TikTok), Same as Source
