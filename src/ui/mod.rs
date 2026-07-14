@@ -2321,6 +2321,19 @@ impl Ui {
             ));
         }
 
+        // Selection overlay (marquee + selected-strokes bbox & handles).
+        // Drawn into overlay_quads so it composites above the drawing overlay.
+        {
+            let zone = &self.layout.rythmo;
+            rythmo::render_selection_overlay(
+                zone,
+                render_frame,
+                project,
+                &self.rythmo_state,
+                &mut overlay_quads,
+            );
+        }
+
         // Eraser cursor ring (visible like the pencil preview)
         if self.erasing && self.active_mode == Some(ToolMode::Draw) {
             let zone = &self.layout.rythmo;
@@ -3442,8 +3455,12 @@ impl Ui {
             self.rythmo_state.drawing_dirty,
         );
 
-        // Check if we need to re-rasterize
-        let needs_update = self.drawing_overlay_cache.as_ref().map_or(true, |c| c.key != key);
+        // Check if we need to re-rasterize. A live transform drag mutates the
+        // actual stroke points without changing the revision, so force an
+        // update while a transform handle is active to keep strokes in sync.
+        let transform_active = self.rythmo_state.transform_handle.is_some();
+        let needs_update = transform_active
+            || self.drawing_overlay_cache.as_ref().map_or(true, |c| c.key != key);
 
         if needs_update {
             // Collect visible strokes

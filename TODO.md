@@ -1,6 +1,8 @@
 # Idées :
 Tester si les lignes poppent plus en rendu gpu
 
+Render du transform des dessins in real time
+Render des dessins dans l'export final
 
 Traduction auto des lignes
     => Gestion simplifiée et switch easy des différentes langues (CTRL + L)
@@ -23,11 +25,13 @@ Exports possibles :
     Grille de croisillées (Grille de présence, boucles) https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQkSPDwVRmkXZFyXFbooHqTWDFPm-QIGwJOJB18RNKsw4rSKMhTcL8CfMfs&s=10
 Compte à rebours / Pre-roll (maybe deux choses différentes)
 DAW basique.
+Agrandir le texte pour le nom des persos
 Bug : Lancer la vidéo, naviguer avec la barre : La vidéo freeze
 Bug : la ligne karaoké défile 2s avant de venir au centre.
 Bug : l'image de comédien est sur la ligne.
 Bug : Dans le rendu export, les graduations semblent être buggées
-
+Bug : Rotation d'un dessin le skew au lieu de le tourner
+Bug : Dessin peut être transporté en haut quand on le déplace
 
 
 # Suggestions

@@ -4850,13 +4850,26 @@ fn handle_transform_drag(ctx: &mut RythmoCtx, state: &mut RythmoState, x: f32, y
     let cy = (start_bbox.1 + start_bbox.3) / 2.0;
 
     let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
-    let slot_h = crate::constants::SLOT_HEIGHT;
+
+    // Screen-space bbox center (for rotation, which works in pixels).
+    let center_x = ctx.zone.x + ctx.zone.width / 2.0;
+    let cx_screen = center_x + (cx - ctx.current_frame) as f32 * ppf;
+    let cy_screen = ctx.zone.y + cy * ctx.zone.height;
 
     let (translate, rotate, scale) = match handle.kind {
         TransformHandleKind::Move => {
             let dx_frames = dx / ppf as f32;
-            let dy_slots = -dy / (slot_h * ctx.zone.height) as f32;
-            ((dx_frames as f64, dy_slots), 0.0, 1.0)
+            let mut dy_frac = dy / ctx.zone.height;
+            // Keep the selection inside the vertical drawing area (y_frac in [0, 1])
+            // so it cannot be dragged out of the zone, e.g. above the top.
+            let new_min_y = start_bbox.1 + dy_frac;
+            let new_max_y = start_bbox.3 + dy_frac;
+            if new_min_y < 0.0 {
+                dy_frac = -start_bbox.1;
+            } else if new_max_y > 1.0 {
+                dy_frac = 1.0 - start_bbox.3;
+            }
+            ((dx_frames as f64, dy_frac), 0.0, 1.0)
         }
         TransformHandleKind::TopLeft
         | TransformHandleKind::TopRight
@@ -4878,10 +4891,10 @@ fn handle_transform_drag(ctx: &mut RythmoCtx, state: &mut RythmoState, x: f32, y
                 };
                 let scale_y = match handle.kind {
                     TransformHandleKind::TopLeft | TransformHandleKind::TopRight => {
-                        1.0 - dy / (bbox_h * slot_h * ctx.zone.height)
+                        1.0 - dy / (bbox_h * ctx.zone.height)
                     }
                     TransformHandleKind::BottomLeft | TransformHandleKind::BottomRight => {
-                        1.0 + dy / (bbox_h * slot_h * ctx.zone.height)
+                        1.0 + dy / (bbox_h * ctx.zone.height)
                     }
                     _ => 1.0,
                 };
@@ -4890,9 +4903,17 @@ fn handle_transform_drag(ctx: &mut RythmoCtx, state: &mut RythmoState, x: f32, y
             }
         }
         TransformHandleKind::Rotate => {
-            let start_angle = (handle.start_mouse.1 - cy as f32).atan2(handle.start_mouse.0 - cx as f32);
-            let current_angle = (y - cy as f32).atan2(x - cx as f32);
-            let angle_diff = current_angle - start_angle;
+            // Convert the mouse vector (relative to the bbox center) into
+            // world space (frames, y_frac) so the rotation matches the mouse
+            // under the anisotropic x/y projection instead of skewing.
+            let start_dx = handle.start_mouse.0 - cx_screen;
+            let start_dy = handle.start_mouse.1 - cy_screen;
+            let cur_dx = x - cx_screen;
+            let cur_dy = y - cy_screen;
+            let start_world_angle =
+                (start_dy / ctx.zone.height).atan2(start_dx / ppf as f32);
+            let cur_world_angle = (cur_dy / ctx.zone.height).atan2(cur_dx / ppf as f32);
+            let angle_diff = cur_world_angle - start_world_angle;
             ((0.0, 0.0), angle_diff, 1.0)
         }
     };
@@ -5235,8 +5256,20 @@ fn handle_mouse_press(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32) 
         return EventResponse::Consumed;
     }
 
-    // Click on empty space in Select mode → start marquee selection for strokes
+    // Click on empty space in Select mode → hit-test a stroke, else start marquee
     if ctx.active_mode == ToolMode::Select {
+        let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
+        let (frame, y_frac) = crate::rythmo_drawing::screen_to_drawing(
+            x, y, ctx.zone.x, ctx.zone.y, ctx.zone.width, ctx.zone.height,
+            ctx.current_frame, ppf,
+        );
+        let ids = ctx.project.drawing.strokes_within_radius(
+            frame, y_frac, ppf, ctx.zone.height, 0.025,
+        );
+        if !ids.is_empty() {
+            state.selected = Some(Selection::Strokes(ids));
+            return EventResponse::Consumed;
+        }
         if let Some(resp) = handle_selection_drag(ctx, state, x, y, &UiEvent::MousePress { x, y }) {
             return resp;
         }
@@ -5279,9 +5312,10 @@ fn all_line_origins(project: &Project) -> Vec<DragLineOrigin> {
 /// Compute the screen-space bounding box of selected strokes.
 /// Returns (min_x, min_y, max_x, max_y) in screen pixels, or None if no strokes selected.
 fn selected_strokes_screen_bbox(
-    ctx: &RythmoCtx,
-    state: &RythmoState,
+    zone: &Rect,
+    current_frame: f64,
     project: &Project,
+    state: &RythmoState,
 ) -> Option<(f32, f32, f32, f32)> {
     let Selection::Strokes(ref ids) = state.selected.as_ref()? else {
         return None;
@@ -5294,15 +5328,15 @@ fn selected_strokes_screen_bbox(
         return None;
     }
     let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
-    let center_x = ctx.zone.x + ctx.zone.width / 2.0;
+    let center_x = zone.x + zone.width / 2.0;
     let mut min_x = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
     let mut min_y = f32::INFINITY;
     let mut max_y = f32::NEG_INFINITY;
     for s in &strokes {
         for (f, y_frac) in &s.points {
-            let x = center_x + (*f - ctx.current_frame) as f32 * ppf;
-            let y = ctx.zone.y + y_frac * ctx.zone.height;
+            let x = center_x + (*f - current_frame) as f32 * ppf;
+            let y = zone.y + y_frac * zone.height;
             min_x = min_x.min(x);
             max_x = max_x.max(x);
             min_y = min_y.min(y);
@@ -5310,6 +5344,116 @@ fn selected_strokes_screen_bbox(
         }
     }
     Some((min_x, min_y, max_x, max_y))
+}
+
+/// Draw the live marquee rectangle and the selected-strokes bounding box with
+/// transform handles into the given quad list. The quad list is expected to be
+/// composited above the drawing overlay so the handles remain visible.
+pub(crate) fn render_selection_overlay(
+    zone: &Rect,
+    current_frame: f64,
+    project: &Project,
+    state: &RythmoState,
+    quads: &mut Vec<QuadInstance>,
+) {
+    let accent: [f32; 4] = [0.3, 0.9, 1.0, 1.0];
+
+    // Live marquee rectangle (screen-space Rect in pixels)
+    if let Some(drag) = &state.selection_drag {
+        let x = drag.x.min(drag.x + drag.width);
+        let y = drag.y.min(drag.y + drag.height);
+        let w = drag.width.abs();
+        let h = drag.height.abs();
+        let fill: [f32; 4] = [0.2, 0.8, 0.9, 0.12];
+        quads.push(QuadInstance {
+            rect: [x, y, w, h],
+            color: fill,
+            color_bottom: fill,
+            border_color: accent,
+            border_width: 1.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+    }
+
+    // Selected strokes bounding box + corner & rotate handles
+    let Some((min_x, min_y, max_x, max_y)) =
+        selected_strokes_screen_bbox(zone, current_frame, project, state)
+    else {
+        return;
+    };
+
+    // Bounding box outline
+    quads.push(QuadInstance {
+        rect: [min_x, min_y, max_x - min_x, max_y - min_y],
+        color: [0.0; 4],
+        color_bottom: [0.0; 4],
+        border_color: accent,
+        border_width: 1.0,
+        border_radius: 0.0,
+        shadow_offset: [0.0; 2],
+        shadow_color: [0.0; 4],
+        shadow_blur: 0.0,
+        rotation: 0.0,
+        _padding: [0.0; 2],
+    });
+
+    let hs = 6.0; // half-size of handle squares in pixels
+    let corners = [
+        (min_x, min_y),
+        (max_x, min_y),
+        (min_x, max_y),
+        (max_x, max_y),
+    ];
+    for (cx, cy) in corners {
+        quads.push(QuadInstance {
+            rect: [cx - hs, cy - hs, hs * 2.0, hs * 2.0],
+            color: accent,
+            color_bottom: accent,
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+    }
+
+    // Rotate handle above the top-center edge, with a connector line
+    let rotate_offset = 24.0;
+    let cx = (min_x + max_x) / 2.0;
+    quads.push(QuadInstance {
+        rect: [cx - 0.5, min_y - rotate_offset, 1.0, rotate_offset],
+        color: accent,
+        color_bottom: accent,
+        border_color: [0.0; 4],
+        border_width: 0.0,
+        border_radius: 0.0,
+        shadow_offset: [0.0; 2],
+        shadow_color: [0.0; 4],
+        shadow_blur: 0.0,
+        rotation: 0.0,
+        _padding: [0.0; 2],
+    });
+    quads.push(QuadInstance {
+        rect: [cx - hs, min_y - rotate_offset - hs, hs * 2.0, hs * 2.0],
+        color: accent,
+        color_bottom: accent,
+        border_color: [0.0; 4],
+        border_width: 0.0,
+        border_radius: 0.0,
+        shadow_offset: [0.0; 2],
+        shadow_color: [0.0; 4],
+        shadow_blur: 0.0,
+        rotation: 0.0,
+        _padding: [0.0; 2],
+    });
 }
 
 /// Hit-test the transform handles of the selected strokes' bounding box.
@@ -5321,7 +5465,8 @@ fn hit_test_transform_handles(
     x: f32,
     y: f32,
 ) -> Option<TransformHandleKind> {
-    let (min_x, min_y, max_x, max_y) = selected_strokes_screen_bbox(ctx, state, project)?;
+    let (min_x, min_y, max_x, max_y) =
+        selected_strokes_screen_bbox(&ctx.zone, ctx.current_frame, project, state)?;
     let handle_size = 12.0;
     let rotate_offset = 24.0;
 
@@ -5384,54 +5529,42 @@ fn start_transform_drag(
     });
 }
 
-/// Handle marquee selection drag start/move/end.
+/// Finalize a marquee selection: convert the live drag rectangle into a
+/// frame-space query and select the enclosed strokes (clears selection if none).
+fn finalize_marquee_selection(ctx: &RythmoCtx, state: &mut RythmoState) {
+    if let Some(drag) = state.selection_drag.take() {
+        let min_x = drag.x.min(drag.x + drag.width);
+        let max_x = drag.x.max(drag.x + drag.width);
+        let min_y = drag.y.min(drag.y + drag.height);
+        let max_y = drag.y.max(drag.y + drag.height);
+        let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
+        let center_x = ctx.zone.x + ctx.zone.width / 2.0;
+        let min_frame = ctx.current_frame + (min_x - center_x) as f64 / ppf as f64;
+        let max_frame = ctx.current_frame + (max_x - center_x) as f64 / ppf as f64;
+        let min_y_frac = ((min_y - ctx.zone.y) / ctx.zone.height).clamp(0.0, 1.0);
+        let max_y_frac = ((max_y - ctx.zone.y) / ctx.zone.height).clamp(0.0, 1.0);
+        let stroke_ids = ctx.project.drawing.strokes_in_rect(
+            min_frame.min(max_frame),
+            min_y_frac.min(max_y_frac),
+            min_frame.max(max_frame),
+            min_y_frac.max(max_y_frac),
+        );
+        state.selected = if stroke_ids.is_empty() {
+            None
+        } else {
+            Some(Selection::Strokes(stroke_ids))
+        };
+    }
+}
+
+/// Handle marquee selection drag start (move is handled directly in
+/// `handle_mouse_move`, finalize in `handle_mouse_release`).
 fn handle_selection_drag(ctx: &RythmoCtx, state: &mut RythmoState, x: f32, y: f32, event: &UiEvent) -> Option<EventResponse> {
     match event {
         UiEvent::MousePress { .. } => {
             // Start marquee selection on empty space
             state.selection_drag = Some(Rect { x, y, width: 0.0, height: 0.0 });
             Some(EventResponse::Consumed)
-        }
-        UiEvent::MouseMove { .. } => {
-            if let Some(ref mut drag) = state.selection_drag {
-                drag.width = x - drag.x;
-                drag.height = y - drag.y;
-                Some(EventResponse::Consumed)
-            } else {
-                None
-            }
-        }
-        UiEvent::MouseRelease { .. } => {
-            if let Some(drag) = state.selection_drag.take() {
-                // Convert drag rect to frame-space and query strokes
-                let min_x = drag.x.min(drag.x + drag.width);
-                let max_x = drag.x.max(drag.x + drag.width);
-                let min_y = drag.y.min(drag.y + drag.height);
-                let max_y = drag.y.max(drag.y + drag.height);
-
-                let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
-                let center_x = ctx.zone.x + ctx.zone.width / 2.0;
-                let min_frame = ctx.current_frame + (min_x - center_x) as f64 / ppf as f64;
-                let max_frame = ctx.current_frame + (max_x - center_x) as f64 / ppf as f64;
-                let min_y_frac = ((min_y - ctx.zone.y) / ctx.zone.height).clamp(0.0, 1.0);
-                let max_y_frac = ((max_y - ctx.zone.y) / ctx.zone.height).clamp(0.0, 1.0);
-
-                let stroke_ids = ctx.project.drawing.strokes_in_rect(
-                    min_frame.min(max_frame),
-                    min_y_frac.min(max_y_frac),
-                    min_frame.max(max_frame),
-                    min_y_frac.max(max_y_frac),
-                );
-
-                if !stroke_ids.is_empty() {
-                    state.selected = Some(Selection::Strokes(stroke_ids));
-                } else {
-                    state.selected = None;
-                }
-                Some(EventResponse::Consumed)
-            } else {
-                None
-            }
         }
         _ => None,
     }
@@ -5457,7 +5590,8 @@ fn handle_mouse_release(state: &mut RythmoState, ctx: &RythmoCtx, project: &Proj
     }
 
     // Handle marquee selection release
-    if state.selection_drag.take().is_some() {
+    if state.selection_drag.is_some() {
+        finalize_marquee_selection(ctx, state);
         return EventResponse::Consumed;
     }
 
@@ -6638,4 +6772,7 @@ pub fn render_studio_rythmo<'a>(
             _ => {} // LiaisonLeft/Right not rendered in studio mode
         }
     }
+
+    // Selection overlay (marquee rect + selected-strokes bbox & handles)
+    render_selection_overlay(zone, current_frame, project, rythmo_state, quads);
 }
