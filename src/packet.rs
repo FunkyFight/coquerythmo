@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::project::{LineCharacterNameChange, Project};
+use crate::rythmo_drawing::DrawingStroke;
 use crate::rythmo_line::{MarkerKind, RythmoLine, RythmoMarker};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 
@@ -151,6 +152,12 @@ pub enum CommandPayload {
         kind: MarkerKind,
         old_frame: i64,
         new_frame: i64,
+    },
+    AddDrawingStroke {
+        stroke: DrawingStroke,
+    },
+    EraseDrawingStrokes {
+        strokes: Vec<DrawingStroke>,
     },
     LoadVideo {
         filename: String,
@@ -341,6 +348,12 @@ impl Packetable for Command {
                     new_frame: *new_frame,
                 }
             }
+            Command::AddDrawingStroke { stroke } => CommandPayload::AddDrawingStroke {
+                stroke: stroke.clone(),
+            },
+            Command::EraseDrawingStrokes { strokes } => CommandPayload::EraseDrawingStrokes {
+                strokes: strokes.clone(),
+            },
         };
         Packet::Command { payload }
     }

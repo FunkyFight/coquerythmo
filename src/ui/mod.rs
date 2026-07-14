@@ -56,6 +56,7 @@ use self::slider::Slider;
 use self::text_button::TextButton;
 
 use theme::*;
+use crate::rythmo_drawing::DrawingStroke;
 
 pub(crate) fn scroll_delta_to_frames(delta: f32, multiplier: f32) -> i32 {
     scroll_delta_to_frames_impl(delta, multiplier)
@@ -86,7 +87,7 @@ enum SplitHandle {
     Rythmo,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolMode {
     Select,
     Draw,
@@ -105,7 +106,7 @@ pub struct Ui {
     video_split: f32,
     dragging_split: Option<SplitHandle>,
     tooltip: Option<TooltipState>,
-    cursor_pos: (f32, f32),
+    pub cursor_pos: (f32, f32),
     playing: bool,
     volume: f32,
     pub rythmo_state: rythmo::RythmoState,
@@ -136,19 +137,24 @@ pub struct Ui {
     network_in_room: bool,
     pub network_status: String,
     network_room_label: String,
-    pub has_video: bool,
+pub has_video: bool,
     pub current_frame: i64,
     pub total_frames: i64,
     pub scrubbing: bool,
     pub sync_overlay: Option<String>,
     pub sync_progress: f32,
-    active_mode: Option<ToolMode>,
+    pub active_mode: Option<ToolMode>,
+    pub brush_color: [f32; 4],
+    pub brush_radius_index: usize,
+    pub erasing: bool,
+    pub brush_picking: bool,
+    pub drawing_overlay_cache: Option<DrawingOverlayCache>,
+    pub brush_color_presets: [[f32; 4]; 8],
+    pub brush_color_preset_index: usize,
     pub toasts: toast::ToastManager,
     /// Active bande rythmo import (label, start instant). Set by State while a
     /// background parse runs; the modal blocks input + shows a spinner.
     pub loading_project: Option<(String, std::time::Instant)>,
-    /// Active tool mode (select/draw). Clicking one deselects the other.
-    active_mode: Option<ToolMode>,
 }
 
 impl Ui {
@@ -180,6 +186,7 @@ impl Ui {
             "mute",
             "select-mode",
             "draw-mode",
+            "eraser",
         ];
         let icon_uvs: std::collections::HashMap<String, [f32; 4]> = icon_names
             .iter()
@@ -244,7 +251,24 @@ impl Ui {
             scrubbing: false,
             toasts: toast::ToastManager::new(),
             loading_project: None,
-            active_mode: None,
+            active_mode: Some(ToolMode::Select),
+            brush_color: [1.0, 1.0, 1.0, 1.0],
+            brush_radius_index: 0,
+            erasing: false,
+            brush_picking: false,
+            drawing_overlay_cache: None,
+            // Color palette for drawing
+            brush_color_presets: [
+                [1.0, 1.0, 1.0, 1.0],  // White
+                [1.0, 0.3, 0.3, 1.0],  // Red
+                [0.3, 1.0, 0.3, 1.0],  // Green
+                [0.3, 0.5, 1.0, 1.0],  // Blue
+                [1.0, 1.0, 0.3, 1.0],  // Yellow
+                [1.0, 0.5, 0.2, 1.0],  // Orange
+                [0.8, 0.3, 1.0, 1.0],  // Purple
+                [0.2, 0.8, 0.8, 1.0],  // Cyan
+            ],
+            brush_color_preset_index: 0,
         };
         ui.toolbar_widgets = ui.build_toolbar();
         ui
@@ -575,7 +599,7 @@ impl Ui {
 
         let tb = &self.layout.toolbar;
         let s = TOOLBAR_BTN_SIZE;
-        let y = tb.y + (TOOLBAR_HEIGHT - s) / 2.0;
+        let y1 = tb.y + (TOOLBAR_BTN_SIZE - s) / 2.0;
         let gap = 4.0;
         let mut x = tb.x + 8.0;
 
@@ -587,7 +611,7 @@ impl Ui {
                 let b = IconButton::new(
                     Rect {
                         x,
-                        y,
+                        y: y1,
                         width: s,
                         height: s,
                     },
@@ -601,6 +625,7 @@ impl Ui {
             }};
         }
 
+        // LINE 1 - existing toolbar
         // Transport: prev | play/pause | next
         btn!(
             "prev_frame",
@@ -620,7 +645,7 @@ impl Ui {
         let play = IconButton::new(
             Rect {
                 x,
-                y,
+                y: y1,
                 width: s,
                 height: s,
             },
@@ -708,7 +733,7 @@ impl Ui {
         let slider_w = SLIDER_W;
         let slider_h = 24.0;
         let slider_x = tb.x + tb.width - slider_w - 8.0;
-        let slider_y = tb.y + (TOOLBAR_HEIGHT - slider_h) / 2.0;
+        let slider_y = tb.y + (TOOLBAR_BTN_SIZE - slider_h) / 2.0;
         let mute_x = slider_x - s - gap;
         let mute_icon = if self.volume <= 0.001 {
             "mute"
@@ -723,7 +748,7 @@ impl Ui {
         let mute = IconButton::new(
             Rect {
                 x: mute_x,
-                y,
+                y: y1,
                 width: s,
                 height: s,
             },
@@ -744,6 +769,169 @@ impl Ui {
             |val| EventResponse::Action(UiAction::SetVolume(val)),
         );
         widgets.push(Box::new(volume));
+
+        // LINE 2 - drawing tools (left side)
+        let y2 = tb.y + TOOLBAR_BTN_SIZE + 6.0;
+        x = tb.x + 8.0;
+
+        // Select mode button
+        let select_active = self.active_mode == Some(ToolMode::Select);
+        let select = IconButton::new(
+            Rect {
+                x,
+                y: y2,
+                width: s,
+                height: s,
+            },
+            "",
+            self.uv("select-mode"),
+            || EventResponse::Action(UiAction::SetToolMode(ToolMode::Select)),
+        )
+        .with_tooltip(t("toolbar.select_mode"))
+        .with_active(select_active);
+        widgets.push(Box::new(select));
+        x += s + gap;
+
+        // Draw mode button
+        let draw_active = self.active_mode == Some(ToolMode::Draw);
+        let draw = IconButton::new(
+            Rect {
+                x,
+                y: y2,
+                width: s,
+                height: s,
+            },
+            "",
+            self.uv("draw-mode"),
+            || EventResponse::Action(UiAction::SetToolMode(ToolMode::Draw)),
+        )
+        .with_tooltip(t("toolbar.draw_mode"))
+        .with_active(draw_active);
+        widgets.push(Box::new(draw));
+        x += s + gap;
+
+// Brush color button (shows current color as a small square)
+        // Left click cycles through preset colors, Ctrl+Click opens color picker
+        struct ColorButton {
+            bounds: Rect,
+            color: [f32; 4],
+            preset_index: usize,
+            presets: &'static [[f32; 4]],
+            on_pick: Box<dyn FnMut() -> EventResponse>,
+            on_cycle: Box<dyn FnMut(usize, [f32; 4])>,
+            ctrl_held: bool,
+        }
+        impl Widget for ColorButton {
+            fn bounds(&self) -> Rect {
+                self.bounds
+            }
+            fn handle_event(&mut self, event: &UiEvent) -> EventResponse {
+                match event {
+                    UiEvent::MousePress { x, y } if self.bounds.contains(*x, *y) => {
+                        // Ctrl+Click opens color picker
+                        if self.ctrl_held {
+                            return (self.on_pick)();
+                        }
+                        // Left click cycles through presets
+                        self.preset_index = (self.preset_index + 1) % self.presets.len();
+                        self.color = self.presets[self.preset_index];
+                        (self.on_cycle)(self.preset_index, self.color);
+                        EventResponse::Consumed
+                    }
+                    _ => EventResponse::Ignored,
+                }
+            }
+            fn render_quads(&self) -> Vec<QuadInstance> {
+                let padding = 4.0;
+                let sz = self.bounds.width - padding * 2.0;
+                vec![QuadInstance {
+                    rect: [
+                        self.bounds.x + padding,
+                        self.bounds.y + padding,
+                        sz,
+                        sz,
+                    ],
+                    color: self.color,
+                    color_bottom: self.color,
+                    border_color: [0.5, 0.5, 0.55, 0.5],
+                    border_width: 1.0,
+                    border_radius: 3.0,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0; 4],
+                    shadow_blur: 0.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
+                }]
+            }
+            fn labels(&self) -> Vec<LabelInfo<'_>> {
+                vec![]
+            }
+        }
+        // Preset colors: white, red, green, blue, yellow, cyan, magenta, black
+        static PRESET_COLORS: &[[f32; 4]] = &[
+            [1.0, 1.0, 1.0, 1.0],  // white
+            [1.0, 0.2, 0.2, 1.0],  // red
+            [0.2, 1.0, 0.2, 1.0],  // green
+            [0.2, 0.6, 1.0, 1.0],  // blue
+            [1.0, 1.0, 0.2, 1.0],  // yellow
+            [0.2, 1.0, 1.0, 1.0],  // cyan
+            [1.0, 0.2, 1.0, 1.0],  // magenta
+            [0.1, 0.1, 0.1, 1.0],  // black
+        ];
+        let color_btn = ColorButton {
+            bounds: Rect {
+                x,
+                y: y2,
+                width: s,
+                height: s,
+            },
+            color: self.brush_color,
+            preset_index: self.brush_color_preset_index,
+            presets: &self.brush_color_presets,
+            on_pick: Box::new(|| EventResponse::Action(UiAction::OpenBrushColorPicker)),
+            on_cycle: Box::new(|idx, color| {
+                self.brush_color_preset_index = idx;
+                self.brush_color = color;
+            }),
+            ctrl_held: self.rythmo_state.ctrl_held,
+        };
+        widgets.push(Box::new(color_btn));
+        x += s + gap;
+
+        // Brush size cycle button
+        let size_labels = ["S", "M", "L"];
+        let size_tip = ["toolbar.brush_size_small", "toolbar.brush_size_medium", "toolbar.brush_size_large"];
+        let size_active = self.brush_radius_index;
+        let size = TextButton::new(
+            Rect {
+                x,
+                y: y2,
+                width: s,
+                height: s,
+            },
+            size_labels[size_active],
+            || EventResponse::Action(UiAction::CycleBrushSize),
+        )
+        .with_tooltip(t(size_tip[size_active]));
+        widgets.push(Box::new(size));
+        x += s + gap;
+
+        // Eraser toggle
+        let eraser_active = self.erasing;
+        let eraser = IconButton::new(
+            Rect {
+                x,
+                y: y2,
+                width: s,
+                height: s,
+            },
+            "",
+            self.uv("eraser"),
+            || EventResponse::Action(UiAction::ToggleEraser),
+        )
+        .with_tooltip(t("toolbar.eraser"))
+        .with_active(eraser_active);
+        widgets.push(Box::new(eraser));
 
         widgets
     }
@@ -924,7 +1112,36 @@ impl Ui {
             }
         }
 
-        // Progress bar scrubbing
+        // Intercept UI actions for tool mode / brush settings (handled locally in Ui)
+        if let EventResponse::Action(action) = &*(&EventResponse::Ignored) {
+            // placeholder - actual interception below
+        }
+        // Check if any widget returned an action we handle locally
+        // We need to check the responses from the widget loops above
+        // Since we returned early on any non-Ignored, we handle them here by re-checking
+        // Actually, the widget loops already return the action. We need to handle specific actions here.
+        // Let's re-process by checking if the event was a click on our toolbar buttons
+        // But the action has already bubbled up. Instead, we handle in State/main.rs.
+        // For SetToolMode, CycleBrushSize, ToggleEraser, OpenBrushColorPicker, we handle in State.
+
+        // Handle brush color picker sync
+        if self.brush_picking {
+            // Handle color picker events when picking brush color
+            if self.rythmo_state.color_picker.handle_event(event) {
+                if !self.rythmo_state.color_picker.active {
+                    self.brush_picking = false;
+                } else {
+                    self.brush_color = self.rythmo_state.color_picker.current_color();
+                }
+                return EventResponse::Consumed;
+            }
+            // If picker closed without selection
+            if !self.rythmo_state.color_picker.active {
+                self.brush_picking = false;
+            }
+        }
+
+        // Rythmo zone events (lines, scroll, ctrl+click, etc.)
         if self.total_frames > 0 {
             let hit = self.progress_bar_hit_rect();
             match event {
@@ -950,6 +1167,12 @@ impl Ui {
         }
 
         // Rythmo zone events (lines, scroll, ctrl+click, etc.)
+        let brush_radius_frac = match self.brush_radius_index {
+            0 => 0.006,
+            1 => 0.012,
+            2 => 0.024,
+            _ => 0.012,
+        };
         let rythmo_response = rythmo::handle_rythmo_event(
             event,
             &self.layout.rythmo,
@@ -958,6 +1181,10 @@ impl Ui {
             self.playing,
             fps,
             &mut self.rythmo_state,
+            self.active_mode.unwrap_or(ToolMode::Select),
+            self.brush_color,
+            brush_radius_frac,
+            self.erasing,
         );
         if rythmo_response != EventResponse::Ignored {
             return rythmo_response;
@@ -1898,6 +2125,10 @@ impl Ui {
             renderer.texture_bind_group_layout(),
             renderer.texture_sampler(),
         );
+
+        // Update drawing overlay texture if needed
+        self.update_drawing_overlay(device, queue, renderer, project, render_frame.round() as i64, fps);
+
         let mut color_picker_bg_quads: Vec<QuadInstance> = Vec::new();
         let mut base_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
         let mut extra_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
@@ -2077,6 +2308,19 @@ impl Ui {
                     ));
                 }
             }
+        }
+
+        // Drawing overlay
+        if let Some(cache) = &self.drawing_overlay_cache {
+            let zone = &self.layout.rythmo;
+            base_textured.push((
+                IconInstance {
+                    rect: [zone.x, zone.y, zone.width, zone.height],
+                    uv_rect: [0.0, 0.0, 1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0, 1.0],
+                },
+                &cache.bind_group,
+            ));
         }
 
         // Markers
@@ -3141,4 +3385,124 @@ impl Ui {
             &[], // modal_labels
         );
     }
+
+    fn update_drawing_overlay(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        renderer: &mut UiRenderer,
+        project: &Project,
+        current_frame: i64,
+        fps: f64,
+    ) {
+        use crate::rythmo_drawing::{rasterize_window, visible_frame_window, DrawingStroke};
+
+        let zone = &self.layout.rythmo;
+        let zw = zone.width.max(1.0) as u32;
+        let zh = zone.height.max(1.0) as u32;
+        let cf = current_frame as f64;
+        let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
+
+        // Compute cache key
+        let active_stroke_len = self.rythmo_state.active_stroke.as_ref().map_or(0, |s| s.points.len());
+        // Use frame * 1000 as key to include sub-frame precision for smooth scrolling
+        let frame_key = (cf * 1000.0).round() as i64;
+        let key = (
+            frame_key,
+            zw,
+            zh,
+            project.revision(),
+            active_stroke_len,
+            self.rythmo_state.drawing_dirty,
+        );
+
+        // Check if we need to re-rasterize
+        let needs_update = self.drawing_overlay_cache.as_ref().map_or(true, |c| c.key != key);
+
+        if needs_update && (!project.drawing.strokes.is_empty() || self.rythmo_state.active_stroke.is_some()) {
+            // Collect visible strokes
+            let (first_frame, last_frame) = visible_frame_window(zone.width, cf, ppf, 4);
+            let mut strokes: Vec<&DrawingStroke> = project.drawing.query_window(first_frame, last_frame);
+            
+            // Add active stroke for live preview
+            if let Some(ref active) = self.rythmo_state.active_stroke {
+                if active.points.len() > 1 {
+                    strokes.push(active);
+                }
+            }
+
+            if !strokes.is_empty() {
+                let rgba = rasterize_window(&strokes, zw, zh, cf, ppf);
+                
+                // Create texture
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Drawing Overlay"),
+                    size: wgpu::Extent3d {
+                        width: zw,
+                        height: zh,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &rgba,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * zw),
+                        rows_per_image: Some(zh),
+                    },
+                    wgpu::Extent3d {
+                        width: zw,
+                        height: zh,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Drawing Overlay BG"),
+                    layout: renderer.texture_bind_group_layout(),
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(renderer.texture_sampler()),
+                        },
+                    ],
+                });
+                
+                self.drawing_overlay_cache = Some(DrawingOverlayCache {
+                    _texture: texture,
+                    bind_group,
+                    key,
+                });
+            } else {
+                self.drawing_overlay_cache = None;
+            }
+        }
+
+self.rythmo_state.drawing_dirty = false;
+        }
+    }
+
+// Drawing overlay cache for GPU texture
+pub(crate) struct DrawingOverlayCache {
+    _texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+    key: (i64, u32, u32, u64, usize, bool),
 }

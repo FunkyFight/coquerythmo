@@ -12,6 +12,9 @@ impl Rect {
     }
 }
 
+use super::ToolMode;
+use crate::rythmo_drawing::DrawingStroke;
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum HAlign {
     Left,
@@ -311,9 +314,17 @@ pub enum UiAction {
         line_id: u64,
         note: String,
     },
-    CopySelectedLine,
+CopySelectedLine,
     CutSelectedLine,
     PasteLine,
+    // Drawing
+    AddDrawingStroke(crate::rythmo_drawing::DrawingStroke),
+    EraseDrawingStrokes(Vec<u64>),
+    // Tool mode
+    SetToolMode(crate::ui::ToolMode),
+    CycleBrushSize,
+    ToggleEraser,
+    OpenBrushColorPicker,
     // Pricing / support page
     OpenPricingPage,
     OpenDiscord,

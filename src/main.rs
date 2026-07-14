@@ -11,6 +11,7 @@ mod packet;
 mod project;
 mod render_index;
 mod rythmo_cpu_renderer;
+mod rythmo_drawing;
 mod rythmo_gpu_renderer;
 mod rythmo_layout;
 mod rythmo_line;
@@ -41,6 +42,7 @@ use ui::file_explorer_modal::{
     FileExplorerMode, FileExplorerRequest, FileFilterSpec, FilePickerIntent,
 };
 use ui::widget::{EventResponse, UiAction, UiEvent};
+use crate::ui::ToolMode;
 
 #[derive(Debug)]
 enum AppEvent {
@@ -942,6 +944,24 @@ fn handle_action(
         }
         UiAction::PasteLine => {
             state.paste_line();
+        }
+        UiAction::SetToolMode(mode) => {
+            state.set_tool_mode(mode);
+        }
+        UiAction::CycleBrushSize => {
+            state.cycle_brush_size();
+        }
+        UiAction::ToggleEraser => {
+            state.toggle_eraser();
+        }
+        UiAction::OpenBrushColorPicker => {
+            state.open_brush_color_picker();
+        }
+        UiAction::AddDrawingStroke(stroke) => {
+            state.add_drawing_stroke(stroke);
+        }
+        UiAction::EraseDrawingStrokes(ids) => {
+            state.erase_drawing_strokes(ids);
         }
     }
     false

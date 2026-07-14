@@ -1,4 +1,5 @@
 use crate::project::{Character, LineCharacterNameChange, Project};
+use crate::rythmo_drawing::DrawingStroke;
 use crate::rythmo_line::{RythmoLine, RythmoMarker};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 
@@ -106,6 +107,12 @@ pub enum Command {
         line_id: u64,
         old_note: String,
         new_note: String,
+    },
+    AddDrawingStroke {
+        stroke: DrawingStroke,
+    },
+    EraseDrawingStrokes {
+        strokes: Vec<DrawingStroke>,
     },
 }
 
@@ -246,6 +253,16 @@ impl Command {
                     l.note = new_note.clone();
                 }
             }
+            Command::AddDrawingStroke { stroke } => {
+                project.drawing.add(stroke.clone());
+                project.bump_revision();
+            }
+            Command::EraseDrawingStrokes { strokes } => {
+                for s in strokes {
+                    project.drawing.remove(s.id);
+                }
+                project.bump_revision();
+            }
         }
     }
 
@@ -268,6 +285,16 @@ impl Command {
             } => {
                 project.remove_line(second_line.id);
                 project.upsert_line_at(*old_index, old_line.clone());
+            }
+            Command::AddDrawingStroke { stroke } => {
+                project.drawing.remove(stroke.id);
+                project.bump_revision();
+            }
+            Command::EraseDrawingStrokes { strokes } => {
+                for s in strokes {
+                    project.drawing.add(s.clone());
+                }
+                project.bump_revision();
             }
             Command::MoveLine {
                 line_id,

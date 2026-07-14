@@ -1,7 +1,7 @@
 use super::widget::Rect;
 
 pub const TOPBAR_H: f32 = 32.0;
-pub const TOOLBAR_H: f32 = 40.0;
+pub const TOOLBAR_H: f32 = 76.0;
 pub const PROPS_MIN_W: f32 = 200.0;
 pub const PROPS_MAX_W: f32 = 500.0;
 pub const PROPS_DEFAULT_W: f32 = 320.0;

@@ -1,5 +1,6 @@
 use crate::constants::Y_SLOTS;
 use crate::project::{Character, Project, ProjectSettings};
+use crate::rythmo_drawing::{DrawingStroke, RythmoDrawing};
 use crate::rythmo_line::{MarkerKind, RythmoMarker};
 use crate::voice_actor::VoiceActor;
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,8 @@ pub struct ProjectData {
     pub voice_actors: Vec<VoiceActorData>,
     #[serde(default)]
     pub settings: ProjectSettings,
+    #[serde(default)]
+    pub drawing: DrawingData,
 }
 
 fn default_fps() -> f64 {
@@ -77,6 +80,20 @@ pub struct VoiceActorData {
     pub icon_path: String,
     #[serde(default)]
     pub icon_png_base64: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct DrawingData {
+    #[serde(default)]
+    pub strokes: Vec<StrokeData>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct StrokeData {
+    pub id: u64,
+    pub points: Vec<(f64, f32)>,
+    pub color: [f32; 4],
+    pub radius_frac: f32,
 }
 
 // -- Conversion --
@@ -133,6 +150,14 @@ impl ProjectData {
                 })
                 .collect(),
             settings: project.settings.clone(),
+            drawing: DrawingData {
+                strokes: project.drawing.strokes.iter().map(|s| StrokeData {
+                    id: s.id,
+                    points: s.points.clone(),
+                    color: s.color,
+                    radius_frac: s.radius_frac,
+                }).collect(),
+            },
         }
     }
 
@@ -268,6 +293,17 @@ impl ProjectData {
             project.add_marker(RythmoMarker {
                 kind,
                 frame: (m.frame as f64 * fps_ratio) as i64,
+            });
+        }
+
+        // Restore drawing
+        project.drawing = RythmoDrawing::new();
+        for s in &self.drawing.strokes {
+            project.drawing.add(DrawingStroke {
+                id: s.id,
+                points: s.points.clone(),
+                color: s.color,
+                radius_frac: s.radius_frac,
             });
         }
     }
@@ -423,6 +459,7 @@ pub fn import_srt(path: &Path, fps: f64) -> Result<ProjectData, String> {
         }],
         voice_actors: Vec::new(),
         settings: ProjectSettings::default(),
+        drawing: DrawingData::default(),
     })
 }
 
@@ -737,6 +774,7 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
         characters,
         voice_actors: Vec::new(),
         settings: ProjectSettings::default(),
+        drawing: DrawingData::default(),
     })
 }
 
@@ -790,6 +828,7 @@ mod tests {
             characters: vec![],
             voice_actors: vec![],
             settings: ProjectSettings::default(),
+            drawing: DrawingData::default(),
         };
 
         let mut project = Project::new();
@@ -836,6 +875,7 @@ mod tests {
             characters: vec![],
             voice_actors: vec![],
             settings: ProjectSettings::default(),
+            drawing: DrawingData::default(),
         };
 
         let (clipped, skipped) = data.clamp_to_total_frames(100);
@@ -870,12 +910,13 @@ mod tests {
             characters: vec![],
             voice_actors: vec![],
             settings: ProjectSettings::default(),
+            drawing: DrawingData { strokes: vec![] },
         };
         data.apply_to_project(&mut project, 24.0);
         assert_eq!(project.line_count(), 1);
     }
 
-    #[test]
+#[test]
     fn test_apply_preserves_karaoke_syllable_ratios() {
         let data = ProjectData {
             source_fps: 24.0,
@@ -909,6 +950,7 @@ mod tests {
             characters: vec![],
             voice_actors: vec![],
             settings: ProjectSettings::default(),
+            drawing: DrawingData { strokes: vec![] },
         };
 
         let mut project = Project::new();
@@ -932,6 +974,7 @@ mod tests {
             characters: vec![],
             voice_actors: vec![],
             settings: ProjectSettings::default(),
+            drawing: DrawingData { strokes: vec![] },
         };
         let mut project = Project::new();
         data.apply_to_project(&mut project, 24.0);

@@ -1,4 +1,5 @@
 use crate::constants::JS_MAX_SAFE_INTEGER;
+use crate::rythmo_drawing::RythmoDrawing;
 use crate::rythmo_line::{RythmoLine, RythmoMarker};
 use crate::voice_actor::VoiceActor;
 use std::collections::HashMap;
@@ -45,6 +46,7 @@ pub struct Project {
     pub markers: Vec<RythmoMarker>,
     pub known_characters: Vec<Character>,
     pub voice_actors: Vec<VoiceActor>,
+    pub drawing: RythmoDrawing,
     color_index: usize,
     revision: u64,
     pub settings: ProjectSettings,
@@ -58,6 +60,7 @@ impl Project {
             markers: Vec::new(),
             known_characters: Vec::new(),
             voice_actors: Vec::new(),
+            drawing: RythmoDrawing::new(),
             color_index: 0,
             revision: 0,
             settings: ProjectSettings::default(),
@@ -71,6 +74,7 @@ impl Project {
             markers: self.markers.clone(),
             known_characters: self.known_characters.clone(),
             voice_actors: self.voice_actors.clone(),
+            drawing: self.drawing.clone(),
             color_index: self.color_index,
             revision: self.revision,
             settings: self.settings.clone(),

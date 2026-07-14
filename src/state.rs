@@ -1221,6 +1221,16 @@ impl State {
                     l.note = note;
                 }
             }
+            CommandPayload::AddDrawingStroke { stroke } => {
+                log::debug!("Remote: add drawing stroke {}", stroke.id);
+                self.project.drawing.add(stroke);
+            }
+            CommandPayload::EraseDrawingStrokes { strokes } => {
+                log::debug!("Remote: erase {} drawing strokes", strokes.len());
+                for s in strokes {
+                    self.project.drawing.remove(s.id);
+                }
+            }
         }
     }
 
@@ -1599,6 +1609,12 @@ impl State {
                     return;
                 }
             }
+            Command::AddDrawingStroke { stroke } => {
+                serde_json::json!({ "action": "add_drawing_stroke", "stroke": serde_json::to_value(stroke).unwrap_or_default() })
+            }
+            Command::EraseDrawingStrokes { strokes } => {
+                serde_json::json!({ "action": "erase_drawing_strokes", "strokes": serde_json::to_value(strokes).unwrap_or_default() })
+            }
         };
         self.network.send_raw("delta", payload);
     }
@@ -1621,6 +1637,8 @@ impl State {
                     | Command::SetSyllableRatios { .. }
                     | Command::SetVoiceActors { .. }
                     | Command::MoveMarker { .. }
+                    | Command::AddDrawingStroke { .. }
+                    | Command::EraseDrawingStrokes { .. }
             ) {
                 self.broadcast_delta(cmd);
             }
@@ -1838,18 +1856,56 @@ impl State {
         self.delete_selected();
     }
 
-    pub fn paste_line(&mut self) {
+pub fn paste_line(&mut self) {
         let Some(snapshot) = self.line_clipboard.clone() else {
             return;
         };
-        let start_frame = self.current_frame();
-        let (line, index) = self.project.duplicate_line_from(&snapshot, start_frame);
-        let id = line.id;
-        self.ui.rythmo_state.selected = Some(crate::ui::rythmo::Selection::Line(id));
-        self.push_and_broadcast(Command::InsertLine {
-            snapshot: line,
-            index,
-        });
+        let mut line = snapshot;
+        line.id = self.project.generate_line_id();
+        line.start_frame += self.project.settings.source_audio_offset_frames;
+        self.project.insert_line(line);
+    }
+
+    pub fn add_drawing_stroke(&mut self, stroke: crate::rythmo_drawing::DrawingStroke) {
+        self.push_and_broadcast(Command::AddDrawingStroke { stroke });
+    }
+
+    pub fn erase_drawing_strokes(&mut self, ids: Vec<u64>) {
+        let strokes: Vec<crate::rythmo_drawing::DrawingStroke> = ids
+            .into_iter()
+            .filter_map(|id| self.project.drawing.get(id).cloned())
+            .collect();
+        if !strokes.is_empty() {
+            self.push_and_broadcast(Command::EraseDrawingStrokes { strokes });
+        }
+    }
+
+    pub fn set_tool_mode(&mut self, mode: crate::ui::ToolMode) {
+        self.ui.active_mode = Some(mode);
+        if mode == crate::ui::ToolMode::Select {
+            self.ui.erasing = false;
+        }
+        self.ui.rebuild_toolbar();
+    }
+
+    pub fn cycle_brush_size(&mut self) {
+        self.ui.brush_radius_index = (self.ui.brush_radius_index + 1) % 3;
+        self.ui.rebuild_toolbar();
+    }
+
+    pub fn toggle_eraser(&mut self) {
+        self.ui.erasing = !self.ui.erasing;
+        if self.ui.erasing {
+            self.ui.active_mode = Some(crate::ui::ToolMode::Draw);
+        }
+        self.ui.rebuild_toolbar();
+    }
+
+    pub fn open_brush_color_picker(&mut self) {
+        let x = self.ui.cursor_pos.0;
+        let y = self.ui.cursor_pos.1 + 40.0;
+        self.ui.rythmo_state.color_picker.open(x, y, self.ui.brush_color);
+        self.ui.brush_picking = true;
     }
 
     pub fn split_dialogue(&mut self) -> bool {

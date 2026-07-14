@@ -8,6 +8,7 @@ pub struct IconButton {
     tooltip_text: Option<String>,
     state: InteractiveState,
     on_click: Box<dyn FnMut() -> EventResponse>,
+    active: bool,
 }
 
 impl IconButton {
@@ -23,11 +24,17 @@ impl IconButton {
             tooltip_text: None,
             state: InteractiveState::default(),
             on_click: Box::new(on_click),
+            active: false,
         }
     }
 
     pub fn with_tooltip(mut self, text: impl Into<String>) -> Self {
         self.tooltip_text = Some(text.into());
+        self
+    }
+
+    pub fn with_active(mut self, active: bool) -> Self {
+        self.active = active;
         self
     }
 }
@@ -56,10 +63,15 @@ impl Widget for IconButton {
     }
 
     fn render_quads(&self) -> Vec<QuadInstance> {
-        let bg = match self.state {
-            InteractiveState::Normal => theme::TRANSPARENT,
-            InteractiveState::Hovered => theme::TRANSPARENT_HOVER,
-            InteractiveState::Pressed => theme::TRANSPARENT_PRESS,
+        let (bg, border_color, border_width) = if self.active {
+            (theme::TRANSPARENT_HOVER, theme::INTERACTIVE_BORDER_HOVERED, 2.0)
+        } else {
+            let bg = match self.state {
+                InteractiveState::Normal => theme::TRANSPARENT,
+                InteractiveState::Hovered => theme::TRANSPARENT_HOVER,
+                InteractiveState::Pressed => theme::TRANSPARENT_PRESS,
+            };
+            (bg, [0.0; 4], 0.0)
         };
         vec![QuadInstance {
             rect: [
@@ -70,8 +82,8 @@ impl Widget for IconButton {
             ],
             color: bg,
             color_bottom: bg,
-            border_color: [0.0; 4],
-            border_width: 0.0,
+            border_color,
+            border_width,
             border_radius: theme::BORDER_RADIUS_SMALL,
             shadow_offset: [0.0; 2],
             shadow_color: [0.0; 4],
