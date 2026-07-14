@@ -325,6 +325,10 @@ CopySelectedLine,
     CycleBrushSize,
     ToggleEraser,
     OpenBrushColorPicker,
+    CycleBrushColor {
+        index: usize,
+        color: [f32; 4],
+    },
     // Pricing / support page
     OpenPricingPage,
     OpenDiscord,

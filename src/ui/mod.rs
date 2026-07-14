@@ -816,9 +816,9 @@ impl Ui {
             bounds: Rect,
             color: [f32; 4],
             preset_index: usize,
-            presets: &'static [[f32; 4]],
+            presets: Vec<[f32; 4]>,
             on_pick: Box<dyn FnMut() -> EventResponse>,
-            on_cycle: Box<dyn FnMut(usize, [f32; 4])>,
+            on_cycle: Box<dyn FnMut(usize, [f32; 4]) -> EventResponse>,
             ctrl_held: bool,
         }
         impl Widget for ColorButton {
@@ -835,8 +835,7 @@ impl Ui {
                         // Left click cycles through presets
                         self.preset_index = (self.preset_index + 1) % self.presets.len();
                         self.color = self.presets[self.preset_index];
-                        (self.on_cycle)(self.preset_index, self.color);
-                        EventResponse::Consumed
+                        (self.on_cycle)(self.preset_index, self.color)
                     }
                     _ => EventResponse::Ignored,
                 }
@@ -887,11 +886,10 @@ impl Ui {
             },
             color: self.brush_color,
             preset_index: self.brush_color_preset_index,
-            presets: &self.brush_color_presets,
+            presets: self.brush_color_presets.to_vec(),
             on_pick: Box::new(|| EventResponse::Action(UiAction::OpenBrushColorPicker)),
             on_cycle: Box::new(|idx, color| {
-                self.brush_color_preset_index = idx;
-                self.brush_color = color;
+                EventResponse::Action(UiAction::CycleBrushColor { index: idx, color })
             }),
             ctrl_held: self.rythmo_state.ctrl_held,
         };

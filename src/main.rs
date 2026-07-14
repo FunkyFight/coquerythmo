@@ -957,6 +957,9 @@ fn handle_action(
         UiAction::OpenBrushColorPicker => {
             state.open_brush_color_picker();
         }
+        UiAction::CycleBrushColor { index, color } => {
+            state.cycle_brush_color(index, color);
+        }
         UiAction::AddDrawingStroke(stroke) => {
             state.add_drawing_stroke(stroke);
         }

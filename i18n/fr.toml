@@ -117,13 +117,6 @@
 "toolbar.brush_size_medium" = "Taille du pinceau : moyen"
 "toolbar.brush_size_large" = "Taille du pinceau : grand"
 "toolbar.eraser" = "Gomme"
-"toolbar.select_mode" = "Mode sélection"
-"toolbar.draw_mode" = "Mode dessin"
-"toolbar.brush_color" = "Couleur du pinceau"
-"toolbar.brush_size_small" = "Taille pinceau : petit"
-"toolbar.brush_size_medium" = "Taille pinceau : moyen"
-"toolbar.brush_size_large" = "Taille pinceau : grand"
-"toolbar.eraser" = "Gomme"
 
 # Respirations
 "resp.up" = "Inspiration"

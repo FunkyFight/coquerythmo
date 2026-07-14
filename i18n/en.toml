@@ -81,13 +81,6 @@
 "toolbar.brush_size_medium" = "Brush size: medium"
 "toolbar.brush_size_large" = "Brush size: large"
 "toolbar.eraser" = "Eraser"
-"toolbar.select_mode" = "Select mode"
-"toolbar.draw_mode" = "Draw mode"
-"toolbar.brush_color" = "Brush color"
-"toolbar.brush_size_small" = "Brush size: small"
-"toolbar.brush_size_medium" = "Brush size: medium"
-"toolbar.brush_size_large" = "Brush size: large"
-"toolbar.eraser" = "Eraser"
 
 # Respirations
 "resp.up" = "Inhale"

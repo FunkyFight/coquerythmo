@@ -1901,6 +1901,12 @@ pub fn paste_line(&mut self) {
         self.ui.rebuild_toolbar();
     }
 
+    pub fn cycle_brush_color(&mut self, index: usize, color: [f32; 4]) {
+        self.ui.brush_color_preset_index = index;
+        self.ui.brush_color = color;
+        self.ui.rebuild_toolbar();
+    }
+
     pub fn open_brush_color_picker(&mut self) {
         let x = self.ui.cursor_pos.0;
         let y = self.ui.cursor_pos.1 + 40.0;
