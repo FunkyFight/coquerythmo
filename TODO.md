@@ -1,7 +1,4 @@
 # Idées :
-EN COURS ==== Dans l'UI : BR en 60 fps, vidéo en [video_fps] fps.
-    Maintenant : hyper optimiser pour que les lignes arrêtent de buter et de bugger
-
 Corriger les lignes qui poppent en mode gpu, cpu et UI (à cause de l'étiquette nom personnage devant)
 
 Traduction auto des lignes
@@ -29,14 +26,11 @@ Agrandir le texte pour le nom des persos
 Afficher les fichiers qui ont le même nom quand on tape dans "Nom" dans l'explorateur de fichiers
 Si pas sauvegarde et qu'on ferme : demander si on veut vraiment partir ou si on sauvegarde avant
 Si Proxy : appliqué automatiquement à chaque load
-Bug : Lancer la vidéo, naviguer avec la barre : La vidéo freeze
-Bug : la ligne karaoké défile dans l'export mp4 au lieu d'être insta anchored au centre
-Bug : l'image de comédien est sur la ligne.
-Bug : Dans le rendu export, les graduations semblent être buggées
-Bug : Rotation d'un dessin le skew au lieu de le tourner
-Bug : Dessin peut être transporté en haut quand on le déplace
-Bug : Dessin pas possible avec tablette graphique
-Bug : La sélection (carré bleu) peut se faire en dehors de la bande rythmo
+
+Taille lignes karaoké dans l'export : le 200% devrait être le nouveau 100%
+Taille Ligne BR dans l'export le 50% devrait être le nouveau 100%
+
+Bug : Les handles pour les syllabes ne sont pas bien mises, elles coupent mal. Mais dès que j'en bouge une, elles coupent bien de nouveau
 
 
 # Suggestions

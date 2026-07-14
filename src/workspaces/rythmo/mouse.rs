@@ -73,8 +73,12 @@ pub(crate) fn handle_mouse_move(
     // Handle marquee selection drag
     if ctx.active_mode == ToolMode::Select {
         if let Some(ref mut drag) = state.selection_drag {
-            drag.width = x - drag.x;
-            drag.height = y - drag.y;
+            // Keep the marquee entirely inside the rythmo band even when the
+            // pointer is released after leaving the zone.
+            let clamped_x = x.clamp(ctx.zone.x, ctx.zone.x + ctx.zone.width);
+            let clamped_y = y.clamp(ctx.zone.y, ctx.zone.y + ctx.zone.height);
+            drag.width = clamped_x - drag.x;
+            drag.height = clamped_y - drag.y;
             return EventResponse::Consumed;
         }
     }

@@ -902,6 +902,12 @@ impl State {
 
     pub fn seek_absolute(&mut self, frame: i64) {
         if let Some(player) = &mut self.playback.video_player {
+            if player.pause_for_seek() {
+                if self.ui_shell.ui.is_playing() {
+                    self.ui_shell.ui.toggle_play_pause();
+                }
+                self.playback.timeline.emit(TimelineEvent::PlaybackStopped);
+            }
             let current = player.current_frame();
             let delta = (frame - current) as i32;
             player.seek_frame_instant(delta);
@@ -911,6 +917,22 @@ impl State {
         }
         self.playback.last_scroll_time = Some(Instant::now());
         self.playback.scroll_needs_decode = true;
+    }
+
+    pub fn finish_seek(&mut self) {
+        self.playback.scroll_needs_decode = false;
+        self.playback.last_scroll_time = None;
+
+        let bgl = self.render.ui_renderer.texture_bind_group_layout();
+        let sampler = self.render.ui_renderer.texture_sampler();
+        if let Some(player) = &mut self.playback.video_player {
+            player.decode_current_frame(
+                &self.render.gfx.device,
+                &self.render.gfx.queue,
+                bgl,
+                sampler,
+            );
+        }
     }
 
     pub fn seek_relative(&mut self, delta: i32) {
@@ -961,12 +983,16 @@ impl State {
                 let bgl = self.render.ui_renderer.texture_bind_group_layout();
                 let sampler = self.render.ui_renderer.texture_sampler();
                 if let Some(player) = &mut self.playback.video_player {
-                    player.decode_current_frame(
-                        &self.render.gfx.device,
-                        &self.render.gfx.queue,
-                        bgl,
-                        sampler,
-                    );
+                    if player.is_playing() {
+                        player.restart_playback_decoders();
+                    } else {
+                        player.decode_current_frame(
+                            &self.render.gfx.device,
+                            &self.render.gfx.queue,
+                            bgl,
+                            sampler,
+                        );
+                    }
                 }
                 return true;
             }

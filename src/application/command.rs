@@ -57,6 +57,7 @@ pub enum UiAction {
     NextFrame,
     SeekRelative(i32),
     SeekAbsolute(i64),
+    FinishSeek,
     SeekToNextBoucle {
         direction: i32,
     },

@@ -562,7 +562,7 @@ struct IconBatch {
 // ── GPU Renderer ─────────────────────────────────────────────────────────────
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const BASE_TICK_WIDTH: f32 = 1.0;
+const BASE_TICK_WIDTH: f32 = 1.5;
 const BASE_PLAYHEAD_WIDTH: f32 = 2.0;
 
 const INITIAL_QUAD_CAP: usize = 512;
@@ -1743,7 +1743,7 @@ impl GpuRenderer {
         line: &RythmoLine,
         x: f32,
         y: f32,
-        badge_w: f32,
+        _badge_w: f32,
         icon_size: f32,
         scale: f32,
         surface_w: f32,
@@ -1757,7 +1757,9 @@ impl GpuRenderer {
 
         let icon_size = icon_size.max(1.0);
         let gap = 3.0 * scale;
-        let mut icon_x = x + badge_w + gap;
+        // The badge ends immediately before the line body. Keep actor icons
+        // on the outer side of the badge so they cannot cover the line text.
+        let mut icon_x = x - gap - icon_size;
 
         for actor_name in &line.voice_actor_names {
             if icon_x > surface_w {
@@ -1813,7 +1815,7 @@ impl GpuRenderer {
                 );
             }
 
-            icon_x += icon_size + gap;
+            icon_x -= icon_size + gap;
         }
     }
 
@@ -2006,9 +2008,14 @@ impl GpuRenderer {
         icon_batches.clear();
 
         // ── Ruler ticks ──
-        let cf_i64 = current_frame as i64;
-        let first_tick = ((cf_i64 - visible_frames / 2) / constants::TICK_GAP_FRAMES)
-            * constants::TICK_GAP_FRAMES;
+        let cf_i64 = if current_frame.is_finite() {
+            current_frame.floor() as i64
+        } else {
+            0
+        };
+        let first_tick_frame = cf_i64 - visible_frames / 2;
+        let first_tick =
+            first_tick_frame.div_euclid(constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
         let mut tf = first_tick;
         loop {
             let x = center_x + (tf as f64 - current_frame) as f32 * ppf;
@@ -2016,7 +2023,7 @@ impl GpuRenderer {
                 break;
             }
             if x >= 0.0 {
-                let tick_idx = tf / constants::TICK_GAP_FRAMES;
+                let tick_idx = tf.div_euclid(constants::TICK_GAP_FRAMES);
                 let th = if tick_idx % 2 == 0 {
                     tick_long
                 } else {
@@ -2062,7 +2069,7 @@ impl GpuRenderer {
             {
                 return None;
             }
-            let (x1, lw) = if line.karaoke && karaoke_active {
+            let (x1, lw) = if scene_line.karaoke_should_be_centered() {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {
@@ -2108,7 +2115,7 @@ impl GpuRenderer {
                 continue;
             }
 
-            let (x1, lw) = if line.karaoke && karaoke_active {
+            let (x1, lw) = if scene_line.karaoke_should_be_centered() {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {

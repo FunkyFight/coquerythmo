@@ -14,7 +14,7 @@ use crate::update;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, Event, MouseButton, WindowEvent};
+use winit::event::{ElementState, Event, MouseButton, TouchPhase, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 use winit::keyboard::{Key, NamedKey};
 
@@ -386,6 +386,44 @@ pub fn run() {
                     if next_cursor_icon != cursor_icon {
                         window.set_cursor_icon(next_cursor_icon);
                         cursor_icon = next_cursor_icon;
+                    }
+                }
+                WindowEvent::Touch(touch) => {
+                    // Windows tablets can expose the pen as a touch stream
+                    // instead of a mouse stream. Feed that stream through the
+                    // same pointer events used by the drawing tool.
+                    if !state.is_studio_mode() {
+                        cursor_pos = state.window_to_ui_position(
+                            touch.location.x as f32,
+                            touch.location.y as f32,
+                        );
+                        match touch.phase {
+                            TouchPhase::Started => dispatch(
+                                UiEvent::MousePress {
+                                    x: cursor_pos.0,
+                                    y: cursor_pos.1,
+                                },
+                                &mut state,
+                                elwt,
+                            ),
+                            TouchPhase::Moved => dispatch(
+                                UiEvent::MouseMove {
+                                    x: cursor_pos.0,
+                                    y: cursor_pos.1,
+                                },
+                                &mut state,
+                                elwt,
+                            ),
+                            TouchPhase::Ended | TouchPhase::Cancelled => dispatch(
+                                UiEvent::MouseRelease {
+                                    x: cursor_pos.0,
+                                    y: cursor_pos.1,
+                                },
+                                &mut state,
+                                elwt,
+                            ),
+                        }
+                        state.request_redraw();
                     }
                 }
                 WindowEvent::MouseInput {

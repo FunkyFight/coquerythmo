@@ -191,6 +191,9 @@ impl CommandDispatcher {
             UiAction::SeekAbsolute(frame) => {
                 state.seek_absolute(frame);
             }
+            UiAction::FinishSeek => {
+                state.finish_seek();
+            }
             UiAction::SeekToNextBoucle { direction } => {
                 state.seek_to_next_boucle(direction);
             }

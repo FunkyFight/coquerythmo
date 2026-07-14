@@ -4,5 +4,12 @@
 - Réparation du 16:9 qui avait des bandes noires
 - Possibilité de redimensionner les panels
 - Dessins dans la bande rythmo
+- Possibilité de dessiner avec la tablette graphique
 - Optimisation du défilement
 - Correction du bug qui faisait freeze la vidéo quand on bougeait la souris
+- Correction du déchirement temporel qui rendait la lecture de la BR désagréable dans l'app
+- Correction de la sélection bleue qui allait au delà de la bande rythmo
+- Correction des dessins pouvant sortir en hauteur de la BR
+- Correction de la rotation des dessins qui faisaient un skew au lieu de tourner
+- Correction des icônes comédiens qui étaient dans le texte de la ligne
+- Correction du seek qui freezait la vidéo

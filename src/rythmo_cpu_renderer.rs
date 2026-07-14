@@ -22,7 +22,7 @@ use glyphon::{
 use resvg::tiny_skia::{self, Pixmap};
 
 // Local constants not shared with the UI
-const BASE_TICK_WIDTH: f32 = 1.0;
+const BASE_TICK_WIDTH: f32 = 1.5;
 const BASE_PLAYHEAD_WIDTH: f32 = 2.0;
 const MAX_RYTHMO_TEXT_CACHE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_RYTHMO_TEXT_CACHE_ENTRIES: usize = 512;
@@ -313,7 +313,7 @@ impl CpuRenderer {
         line: &crate::rythmo_line::RythmoLine,
         x: f32,
         y: f32,
-        badge_w: f32,
+        _badge_w: f32,
         icon_size: f32,
         scale: f32,
     ) {
@@ -322,7 +322,9 @@ impl CpuRenderer {
         }
 
         let icon_size = icon_size.max(1.0);
-        let mut icon_x = x + badge_w + 3.0 * scale;
+        // The badge ends immediately before the line body. Keep actor icons
+        // on the outer side of the badge so they cannot cover the line text.
+        let mut icon_x = x - 3.0 * scale - icon_size;
 
         for actor_name in &line.voice_actor_names {
             if icon_x > pixmap.width() as f32 {
@@ -339,7 +341,7 @@ impl CpuRenderer {
             } else {
                 self.blit_actor_fallback(pixmap, actor_name, icon_x, y, icon_size);
             }
-            icon_x += icon_size + 3.0 * scale;
+            icon_x -= icon_size + 3.0 * scale;
         }
     }
 
@@ -579,8 +581,9 @@ impl CpuRenderer {
         let center_x = w / 2.0;
 
         // -- Ruler ticks --
-        let first_tick = ((current_frame - visible_frames / 2) / constants::TICK_GAP_FRAMES)
-            * constants::TICK_GAP_FRAMES;
+        let first_tick_frame = current_frame - visible_frames / 2;
+        let first_tick =
+            first_tick_frame.div_euclid(constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
         let mut tf = first_tick;
         loop {
             let x = center_x + (tf - current_frame) as f32 * ppf;
@@ -588,7 +591,7 @@ impl CpuRenderer {
                 break;
             }
             if x >= 0.0 {
-                let tick_idx = tf / constants::TICK_GAP_FRAMES;
+                let tick_idx = tf.div_euclid(constants::TICK_GAP_FRAMES);
                 let th = if tick_idx % 2 == 0 {
                     tick_long
                 } else {
@@ -624,7 +627,7 @@ impl CpuRenderer {
             {
                 return None;
             }
-            let (x1, lw) = if line.karaoke && karaoke_active {
+            let (x1, lw) = if scene_line.karaoke_should_be_centered() {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {
@@ -670,7 +673,7 @@ impl CpuRenderer {
                 continue;
             }
 
-            let (x1, lw) = if line.karaoke && karaoke_active {
+            let (x1, lw) = if scene_line.karaoke_should_be_centered() {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {

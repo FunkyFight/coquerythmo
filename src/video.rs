@@ -358,8 +358,27 @@ impl VideoPlayer {
         self.playing
     }
 
+    /// Stop playback and discard its buffered frames before an interactive seek.
+    pub fn pause_for_seek(&mut self) -> bool {
+        let was_playing = self.playing;
+        if was_playing {
+            self.playing = false;
+            self.stop_decoders();
+        }
+        was_playing
+    }
+
     /// Move current_frame by delta WITHOUT decoding (instant, for scroll).
     pub fn seek_frame_instant(&mut self, delta: i32) {
+        let was_playing = self.playing;
+        if was_playing {
+            // The decoder FIFO still contains frames from the old position.
+            // Drop it now and let the debounced seek callback start a fresh
+            // stream from the new position. Keeping the old FIFO is what made
+            // timeline seeks during playback appear to freeze.
+            self.stop_decoders();
+        }
+
         let target = (self.current_frame + delta as i64).max(0);
         let target = if self.total_frames > 0 {
             target.min(self.total_frames - 1)
@@ -367,6 +386,32 @@ impl VideoPlayer {
             target
         };
         self.current_frame = target;
+        self.finished = false;
+
+        if was_playing {
+            self.playback_start_time = Some(Instant::now());
+            self.playback_start_frame = self.current_frame;
+            self.playback_start_audio_frame = 0;
+        }
+    }
+
+    /// Restart the audio/video streams after a debounced seek made during
+    /// playback. The current frame remains the clock origin while the new
+    /// decoder catches up.
+    pub fn restart_playback_decoders(&mut self) {
+        if !self.playing || self.receiver.is_some() {
+            return;
+        }
+
+        let timestamp = self.current_frame as f64 / self.fps.max(1.0);
+        self.start_decoders_at(timestamp);
+        self.playback_start_time = Some(Instant::now());
+        self.playback_start_frame = self.current_frame;
+        self.playback_start_audio_frame = self
+            .audio_clock
+            .as_ref()
+            .map(|clock| clock.audible_frame())
+            .unwrap_or(0);
     }
 
     /// Decode and display the frame at current_frame. Call after scroll stabilizes.
@@ -437,10 +482,26 @@ impl VideoPlayer {
             return;
         }
 
-        let Some(target_render_frame) = self.playback_render_frame_at(Instant::now()) else {
+        let now = Instant::now();
+        let Some(target_playback_frame) = self.playback_frame_at(now) else {
             return;
         };
+        let target_render_frame = self.clamp_render_frame(target_playback_frame);
         let target_frame = target_render_frame.floor() as i64;
+
+        let wall_clock_frame = self.playback_start_time.map(|start| {
+            self.playback_start_frame as f64 + start.elapsed().as_secs_f64() * self.fps
+        });
+        if self.total_frames > 0
+            && (target_playback_frame >= self.total_frames as f64
+                || wall_clock_frame.is_some_and(|frame| frame >= self.total_frames as f64))
+        {
+            self.playing = false;
+            self.finished = true;
+            self.stop_decoders();
+            log::info!("Video playback finished");
+            return;
+        }
 
         // Already at or ahead of target — nothing to do
         if self.current_frame >= target_frame {
@@ -505,9 +566,13 @@ impl VideoPlayer {
         }
     }
 
-    fn playback_render_frame_at(&self, now: Instant) -> Option<f64> {
+    fn playback_frame_at(&self, now: Instant) -> Option<f64> {
         let elapsed = self.playback_elapsed_seconds_at(now)?;
-        Some(self.clamp_render_frame(self.playback_start_frame as f64 + elapsed * self.fps))
+        Some(self.playback_start_frame as f64 + elapsed * self.fps)
+    }
+
+    fn playback_render_frame_at(&self, now: Instant) -> Option<f64> {
+        Some(self.clamp_render_frame(self.playback_frame_at(now)?))
     }
 
     /// Visual frame for UI rendering. Decoded-frame and timeline state remain integer-based.
@@ -1331,4 +1396,19 @@ fn decode_waveform_peaks(path: &Path, fps: f64, total_frames: usize) -> Result<V
     let _ = child.kill();
     let _ = child.wait();
     Ok(peaks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VideoPlayer;
+
+    #[test]
+    fn interactive_seek_pauses_active_playback() {
+        let mut player = VideoPlayer::new();
+        player.playing = true;
+
+        assert!(player.pause_for_seek());
+        assert!(!player.is_playing());
+        assert!(!player.pause_for_seek());
+    }
 }

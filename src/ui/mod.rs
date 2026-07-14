@@ -424,7 +424,7 @@ impl Ui {
                 }
                 UiEvent::MouseRelease { .. } if self.scrubbing => {
                     self.scrubbing = false;
-                    return EventResponse::Consumed;
+                    return EventResponse::Action(UiAction::FinishSeek);
                 }
                 _ => {}
             }

@@ -238,10 +238,18 @@ pub(crate) fn start_transform_drag(
 /// frame-space query and select the enclosed strokes (clears selection if none).
 pub(crate) fn finalize_marquee_selection(ctx: &RythmoCtx, state: &mut RythmoState) {
     if let Some(drag) = state.selection_drag.take() {
-        let min_x = drag.x.min(drag.x + drag.width);
-        let max_x = drag.x.max(drag.x + drag.width);
-        let min_y = drag.y.min(drag.y + drag.height);
-        let max_y = drag.y.max(drag.y + drag.height);
+        let zone_min_x = ctx.zone.x;
+        let zone_max_x = ctx.zone.x + ctx.zone.width;
+        let zone_min_y = ctx.zone.y;
+        let zone_max_y = ctx.zone.y + ctx.zone.height;
+        let start_x = drag.x.clamp(zone_min_x, zone_max_x);
+        let end_x = (drag.x + drag.width).clamp(zone_min_x, zone_max_x);
+        let start_y = drag.y.clamp(zone_min_y, zone_max_y);
+        let end_y = (drag.y + drag.height).clamp(zone_min_y, zone_max_y);
+        let min_x = start_x.min(end_x);
+        let max_x = start_x.max(end_x);
+        let min_y = start_y.min(end_y);
+        let max_y = start_y.max(end_y);
         let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
         let center_x = ctx.zone.x + ctx.zone.width / 2.0;
         let min_frame = ctx.current_frame + (min_x - center_x) as f64 / ppf as f64;

@@ -2553,7 +2553,9 @@ fn render_voice_actor_icons_for_line<'a>(
 
     let size = icon_size;
     let gap = ACTOR_ICON_GAP;
-    let mut x = badge.x + badge.width + gap;
+    // The badge ends immediately before the line body. Keep actor icons on
+    // the outer side of the badge so they cannot cover the line text.
+    let mut x = badge.x - gap - size;
     let y = badge.y + (badge.height - size) * 0.5;
     for actor_name in &line.voice_actor_names {
         if x > zone.x + zone.width {
@@ -2611,7 +2613,7 @@ fn render_voice_actor_icons_for_line<'a>(
                 font_family_override: None,
             });
         }
-        x += size + gap;
+        x -= size + gap;
     }
 }
 
@@ -3781,7 +3783,8 @@ pub fn render_studio_rythmo<'a>(
     let visible_frames = (zone.width / ppf) as i64 + 4;
     let half_visible_frames = visible_frames as f64 / 2.0;
     let first_tick_frame = f64_floor_to_i64(current_frame - half_visible_frames);
-    let first_tick = (first_tick_frame / constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
+    let first_tick =
+        first_tick_frame.div_euclid(constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
     let mut tf = first_tick;
     loop {
         let x = center_x + (tf as f64 - current_frame) as f32 * ppf;
@@ -3789,7 +3792,7 @@ pub fn render_studio_rythmo<'a>(
             break;
         }
         if x >= zone.x {
-            let tick_idx = tf / constants::TICK_GAP_FRAMES;
+            let tick_idx = tf.div_euclid(constants::TICK_GAP_FRAMES);
             let th = if tick_idx % 2 == 0 {
                 tick_long
             } else {

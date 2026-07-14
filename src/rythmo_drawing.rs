@@ -344,6 +344,25 @@ mod tests {
         assert_eq!(&dst[..4], &[110, 20, 30, 255]);
         assert_eq!(&dst[4..], &[1, 2, 3, 255]);
     }
+
+    #[test]
+    fn screen_rotation_does_not_skew_under_anisotropic_projection() {
+        let points = [(0.0, 0.0), (1.0, 0.0)];
+        let rotated = transformed_points_in_screen_space(
+            &points,
+            (0.0, 0.0),
+            (0.0, 0.0),
+            std::f32::consts::FRAC_PI_2,
+            1.0,
+            10.0,
+            100.0,
+        );
+
+        // One frame is 10 px wide, so after a quarter-turn it is 10 px tall,
+        // i.e. 0.1 of a 100 px drawing zone.
+        assert!(rotated[1].0.abs() < 1e-6);
+        assert!((rotated[1].1 - 0.1).abs() < 1e-6);
+    }
 }
 
 /// Compute the bounding box of multiple strokes in frame-space.
@@ -393,6 +412,40 @@ pub fn transformed_points(
             (
                 rot_f + cx + translate.0,
                 (rot_y + cy as f64 + translate.1 as f64) as f32,
+            )
+        })
+        .collect()
+}
+
+/// Transform points as a user sees them on screen, then convert them back to
+/// frame/y coordinates. A frame and a normalized y unit have different pixel
+/// sizes, so rotating directly in frame-space makes a screen rotation look
+/// skewed. The explicit projection scales keep the operation truly rigid.
+pub fn transformed_points_in_screen_space(
+    points: &[(f64, f32)],
+    center: (f64, f32),
+    translate: (f64, f32),
+    rotate: f32,
+    scale: f32,
+    pixels_per_frame: f32,
+    zone_height: f32,
+) -> Vec<(f64, f32)> {
+    let (cx, cy) = center;
+    let x_scale = pixels_per_frame.max(f32::EPSILON) as f64;
+    let y_scale = zone_height.max(f32::EPSILON) as f64;
+    let cos_a = rotate.cos() as f64;
+    let sin_a = rotate.sin() as f64;
+    let scale = scale.max(0.0) as f64;
+    points
+        .iter()
+        .map(|(frame, y)| {
+            let local_x = (*frame - cx) * x_scale * scale;
+            let local_y = (*y - cy) as f64 * y_scale * scale;
+            let rotated_x = local_x * cos_a - local_y * sin_a;
+            let rotated_y = local_x * sin_a + local_y * cos_a;
+            (
+                rotated_x / x_scale + cx + translate.0,
+                (rotated_y / y_scale + cy as f64 + translate.1 as f64) as f32,
             )
         })
         .collect()

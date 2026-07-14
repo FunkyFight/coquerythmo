@@ -30,14 +30,28 @@ pub(crate) fn handle_transform_drag(
         TransformHandleKind::Move => {
             let dx_frames = dx / ppf;
             let mut dy_frac = dy / ctx.zone.height;
-            // Keep the selection inside the vertical drawing area (y_frac in [0, 1])
-            // so it cannot be dragged out of the zone, e.g. above the top.
-            let new_min_y = start_bbox.1 + dy_frac;
-            let new_max_y = start_bbox.3 + dy_frac;
+            // `start_mouse` and `current_stroke_points` are advanced after
+            // every event, so clamp against the current preview bbox rather
+            // than the original bbox. Otherwise repeated small moves could
+            // eventually push the drawing above the band.
+            let mut current_min_y = f32::INFINITY;
+            let mut current_max_y = f32::NEG_INFINITY;
+            for points in &handle.current_stroke_points {
+                for &(_, point_y) in points {
+                    current_min_y = current_min_y.min(point_y);
+                    current_max_y = current_max_y.max(point_y);
+                }
+            }
+            if !current_min_y.is_finite() || !current_max_y.is_finite() {
+                current_min_y = start_bbox.1 as f32;
+                current_max_y = start_bbox.3;
+            }
+            let new_min_y = current_min_y + dy_frac;
+            let new_max_y = current_max_y + dy_frac;
             if new_min_y < 0.0 {
-                dy_frac = -start_bbox.1;
+                dy_frac = -current_min_y;
             } else if new_max_y > 1.0 {
-                dy_frac = 1.0 - start_bbox.3;
+                dy_frac = 1.0 - current_max_y;
             }
             ((dx_frames as f64, dy_frac), 0.0, 1.0)
         }
@@ -80,9 +94,9 @@ pub(crate) fn handle_transform_drag(
             let start_dy = handle.start_mouse.1 - cy_screen;
             let cur_dx = x - cx_screen;
             let cur_dy = y - cy_screen;
-            let start_world_angle = (start_dy / ctx.zone.height).atan2(start_dx / ppf);
-            let cur_world_angle = (cur_dy / ctx.zone.height).atan2(cur_dx / ppf);
-            let angle_diff = cur_world_angle - start_world_angle;
+            let start_screen_angle = start_dy.atan2(start_dx);
+            let cur_screen_angle = cur_dy.atan2(cur_dx);
+            let angle_diff = cur_screen_angle - start_screen_angle;
             ((0.0, 0.0), angle_diff, 1.0)
         }
     };
@@ -91,7 +105,25 @@ pub(crate) fn handle_transform_drag(
         .current_stroke_points
         .iter()
         .map(|points| {
-            crate::rythmo_drawing::transformed_points(points, (cx, cy), translate, rotate, scale)
+            if matches!(handle.kind, TransformHandleKind::Rotate) {
+                crate::rythmo_drawing::transformed_points_in_screen_space(
+                    points,
+                    (cx, cy),
+                    translate,
+                    rotate,
+                    scale,
+                    ppf,
+                    ctx.zone.height,
+                )
+            } else {
+                crate::rythmo_drawing::transformed_points(
+                    points,
+                    (cx, cy),
+                    translate,
+                    rotate,
+                    scale,
+                )
+            }
         })
         .collect();
 
