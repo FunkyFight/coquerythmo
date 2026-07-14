@@ -26,6 +26,7 @@ Exports possibles :
 Compte à rebours / Pre-roll (maybe deux choses différentes)
 DAW basique.
 Agrandir le texte pour le nom des persos
+Afficher les fichiers qui ont le même nom quand on tape dans "Nom" dans l'explorateur de fichiers
 Bug : Lancer la vidéo, naviguer avec la barre : La vidéo freeze
 Bug : la ligne karaoké défile 2s avant de venir au centre.
 Bug : l'image de comédien est sur la ligne.
