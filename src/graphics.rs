@@ -1,6 +1,16 @@
 use std::sync::Arc;
 use winit::window::Window;
 
+fn present_mode(vsync: bool) -> wgpu::PresentMode {
+    if !vsync {
+        return wgpu::PresentMode::AutoNoVsync;
+    }
+
+    // FIFO is the only presentation path that consistently keeps the complete
+    // rythmo band on the same display refresh across supported backends.
+    wgpu::PresentMode::Fifo
+}
+
 pub struct GraphicsContext {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -82,7 +92,7 @@ impl GraphicsContext {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::AutoNoVsync,
+            present_mode: present_mode(crate::config::get().window.vsync),
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -130,14 +140,7 @@ impl GraphicsContext {
             return Err("Secondary display does not support the main surface format".into());
         }
 
-        let present_mode = if surface_caps
-            .present_modes
-            .contains(&self.config.present_mode)
-        {
-            self.config.present_mode
-        } else {
-            wgpu::PresentMode::AutoNoVsync
-        };
+        let present_mode = present_mode(crate::config::get().window.vsync);
         let alpha_mode = if surface_caps.alpha_modes.contains(&self.config.alpha_mode) {
             self.config.alpha_mode
         } else {
@@ -162,5 +165,16 @@ impl GraphicsContext {
             size,
             window,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::present_mode;
+
+    #[test]
+    fn present_mode_uses_strict_vsync() {
+        assert_eq!(present_mode(true), wgpu::PresentMode::Fifo);
+        assert_eq!(present_mode(false), wgpu::PresentMode::AutoNoVsync);
     }
 }

@@ -1,8 +1,10 @@
 use crate::project::Project;
+use std::collections::HashMap;
 
 pub struct ProjectRenderIndex {
     version: u64,
     lines_by_start: Vec<(i64, u64)>,
+    line_order_by_id: HashMap<u64, usize>,
     markers_by_frame: Vec<(i64, usize)>,
     max_duration_frames: i64,
 }
@@ -12,6 +14,7 @@ impl Default for ProjectRenderIndex {
         Self {
             version: u64::MAX,
             lines_by_start: Vec::new(),
+            line_order_by_id: HashMap::new(),
             markers_by_frame: Vec::new(),
             max_duration_frames: 0,
         }
@@ -30,11 +33,13 @@ impl ProjectRenderIndex {
         }
 
         self.lines_by_start.clear();
+        self.line_order_by_id.clear();
         self.markers_by_frame.clear();
         self.max_duration_frames = 0;
 
-        for line in project.lines() {
+        for (line_index, line) in project.lines().enumerate() {
             self.lines_by_start.push((line.start_frame, line.id));
+            self.line_order_by_id.insert(line.id, line_index);
             self.max_duration_frames = self.max_duration_frames.max(line.duration_frames.max(0));
         }
         self.lines_by_start
@@ -94,6 +99,13 @@ impl ProjectRenderIndex {
 
     pub fn max_duration_frames(&self) -> i64 {
         self.max_duration_frames
+    }
+
+    pub fn line_order_index(&self, line_id: u64) -> usize {
+        self.line_order_by_id
+            .get(&line_id)
+            .copied()
+            .unwrap_or(usize::MAX)
     }
 }
 

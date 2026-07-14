@@ -2,6 +2,50 @@
 
 use super::*;
 
+fn hit_test_line_and_track(
+    ctx: &RythmoCtx,
+    state: &RythmoState,
+    x: f32,
+    y: f32,
+) -> (Option<u64>, Option<usize>) {
+    let max_gap_frames = karaoke_adjacent_max_gap_frames(ctx.fps);
+    let karaoke_index = state.cached_karaoke_ui_index(ctx.project, max_gap_frames);
+    let layout_ctx =
+        state.get_or_create_layout_ctx(ctx.project, karaoke_index.karaoke_tracks(), ctx.zone);
+
+    // A line can only contain the pointer if its timeline interval contains
+    // the frame under the pointer. Querying that frame avoids scanning every
+    // line for each raw mouse event.
+    let pointer_frame = x_to_frame(x, ctx.current_frame, ctx.zone);
+    let mut candidate_ids =
+        ctx.render_index
+            .visible_line_ids(ctx.project, pointer_frame, pointer_frame);
+    candidate_ids.sort_by_key(|line_id| ctx.render_index.line_order_index(*line_id));
+
+    let found = candidate_ids.into_iter().find(|line_id| {
+        ctx.project.get_line(*line_id).is_some_and(|line| {
+            layout_ctx
+                .line_rect_with_karaoke_width(
+                    line,
+                    ctx.current_frame,
+                    ctx.zone,
+                    false,
+                    None,
+                )
+                .contains(x, y)
+        })
+    });
+
+    let relative_y = y - ctx.zone.y - constants::RULER_HEIGHT;
+    let hovered_track = layout_ctx
+        .track_layouts()
+        .iter()
+        .find(|layout| relative_y >= layout.top && relative_y < layout.top + layout.total_h)
+        .map(|layout| layout.track_index);
+
+    (found, hovered_track)
+}
+
 pub(crate) fn handle_mouse_move(
     ctx: &mut RythmoCtx,
     state: &mut RythmoState,
@@ -136,10 +180,7 @@ pub(crate) fn handle_mouse_move(
 
     // Ghost preview when CTRL held and hovering empty BR space
     if state.ctrl_held && ctx.zone.contains(x, y) {
-        let on_line = ctx
-            .project
-            .lines()
-            .any(|l| line_rect(ctx.project, l, ctx.current_frame, ctx.zone).contains(x, y));
+        let on_line = hit_test_line_and_track(ctx, state, x, y).0.is_some();
         if !on_line {
             let frame = x_to_frame(x, ctx.current_frame, ctx.zone);
             let y_slot = y_to_slot(ctx.project, y, ctx.zone);
@@ -171,19 +212,7 @@ pub(crate) fn handle_mouse_move(
         };
     }
 
-    let found = ctx
-        .project
-        .lines()
-        .find(|l| line_rect(ctx.project, l, ctx.current_frame, ctx.zone).contains(x, y))
-        .map(|l| l.id);
-
-    let hovered_track = {
-        let relative_y = y - ctx.zone.y - constants::RULER_HEIGHT;
-        editor_track_layouts(ctx.project, ctx.zone)
-            .iter()
-            .find(|layout| relative_y >= layout.top && relative_y < layout.top + layout.total_h)
-            .map(|layout| layout.track_index)
-    };
+    let (found, hovered_track) = hit_test_line_and_track(ctx, state, x, y);
 
     let mut changed = false;
     if found != state.hovered_line {

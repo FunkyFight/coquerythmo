@@ -156,8 +156,11 @@ pub(crate) fn line_visual_x_width_with_karaoke_width(
     }
 
     let x1 = frame_to_x(line.start_frame, current_frame, zone);
-    let x2 = frame_to_x(line.end_frame(), current_frame, zone);
-    (x1, (x2 - x1).max(2.0))
+    // Keep the extent independent from the scrolling origin. Subtracting two
+    // moving f32 positions makes an otherwise integral width jitter across a
+    // pixel boundary, which invalidates the stretched-text texture cache.
+    let width = (line.duration_frames as f32 * ppf()).max(2.0);
+    (x1, width)
 }
 
 pub(crate) fn badge_rect_for_line(
@@ -378,6 +381,10 @@ impl EditorLayoutCtx {
         self.track_by_index
             .get(track_index)
             .and_then(|layout| layout.as_ref())
+    }
+
+    pub(crate) fn track_layouts(&self) -> &[rythmo_layout::TrackLayout] {
+        &self.track_layouts
     }
 
     pub(crate) fn track_for_y_slot(&self, y_slot: f32) -> &rythmo_layout::TrackLayout {

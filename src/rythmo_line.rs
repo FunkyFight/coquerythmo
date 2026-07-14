@@ -53,8 +53,11 @@ impl RythmoLine {
         scale: f32,
     ) -> (f32, f32) {
         let x1 = center_x + (self.start_frame as f64 - current_frame) as f32 * pixels_per_frame;
-        let x2 = center_x + (self.end_frame() as f64 - current_frame) as f32 * pixels_per_frame;
-        let width = (x2 - x1).max(2.0);
+        // Width must not depend on the moving viewport position. Computing it as
+        // `x2 - x1` makes f32 rounding alternate around whole pixels during
+        // sub-frame scrolling. The text texture cache rounds that width up, so
+        // the oscillation continuously invalidates and rebuilds visible text.
+        let width = (self.duration_frames as f32 * pixels_per_frame).max(2.0);
 
         if self.karaoke_active(current_frame) {
             let width =

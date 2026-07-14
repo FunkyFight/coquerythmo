@@ -9,6 +9,7 @@ use super::*;
 pub(crate) struct RythmoCtx<'a> {
     pub(crate) zone: &'a Rect,
     pub(crate) project: &'a Project,
+    pub(crate) render_index: &'a ProjectRenderIndex,
     pub(crate) current_frame: f64,
     pub(crate) karaoke_preview: bool,
     pub(crate) fps: f64,
@@ -19,6 +20,7 @@ pub fn handle_rythmo_event(
     event: &UiEvent,
     zone: &Rect,
     project: &Project,
+    render_index: &ProjectRenderIndex,
     current_frame: f64,
     karaoke_preview: bool,
     fps: f64,
@@ -31,6 +33,7 @@ pub fn handle_rythmo_event(
     let mut ctx = RythmoCtx {
         zone,
         project,
+        render_index,
         current_frame,
         karaoke_preview,
         fps,

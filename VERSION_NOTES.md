@@ -4,3 +4,5 @@
 - Réparation du 16:9 qui avait des bandes noires
 - Possibilité de redimensionner les panels
 - Dessins dans la bande rythmo
+- Optimisation du défilement
+- Correction du bug qui faisait freeze la vidéo quand on bougeait la souris

@@ -788,10 +788,45 @@ pub(crate) fn dispatch(
     state: &mut State,
     elwt: &winit::event_loop::EventLoopWindowTarget<AppEvent>,
 ) {
-    if let EventResponse::Action(action) = state.handle_ui_event(&ui_event) {
+    let response = state.handle_ui_event(&ui_event);
+    let response_changed_ui = !matches!(response, EventResponse::Ignored);
+    let is_pointer_move = matches!(ui_event, UiEvent::MouseMove { .. });
+
+    if let EventResponse::Action(action) = response {
         if CommandDispatcher::dispatch(action, state, elwt) {
             elwt.exit();
         }
     }
-    state.request_redraw();
+
+    if should_request_redraw(
+        is_pointer_move,
+        response_changed_ui,
+        state.needs_continuous_redraw(),
+    ) {
+        state.request_redraw();
+    }
+}
+
+fn should_request_redraw(
+    is_pointer_move: bool,
+    response_changed_ui: bool,
+    continuous_redraw: bool,
+) -> bool {
+    // During playback/animation the paced redraw loop is already active.
+    // Ignored raw mouse events must not bypass that pacing and create a render
+    // storm at the mouse polling rate.
+    !is_pointer_move || response_changed_ui || !continuous_redraw
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_request_redraw;
+
+    #[test]
+    fn ignored_pointer_moves_use_the_paced_redraw_loop() {
+        assert!(!should_request_redraw(true, false, true));
+        assert!(should_request_redraw(true, true, true));
+        assert!(should_request_redraw(true, false, false));
+        assert!(should_request_redraw(false, false, true));
+    }
 }

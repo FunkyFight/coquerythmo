@@ -1,7 +1,7 @@
 use super::bootstrap;
 use super::dispatcher::{dispatch, CommandDispatcher};
-use crate::config;
 use crate::application::edit_service::EditExecutor;
+use crate::config;
 use crate::i18n;
 use crate::input::context::{InputContext, InputContextStack};
 use crate::input::key::{InputWindow, KeyStroke, Modifiers};
@@ -106,6 +106,7 @@ pub fn run() {
     let mut last_click_time = None;
     let mut ctrl_held = false;
     let mut shift_held = false;
+    let mut cursor_icon = winit::window::CursorIcon::Default;
 
     event_loop
         .run(move |event, elwt| {
@@ -375,12 +376,16 @@ pub fn run() {
 
                     let resize_cursor = state.hovering_resize_handle() || state.dragging_resize_handle();
 
-                    if resize_cursor {
-                        window.set_cursor_icon(winit::window::CursorIcon::NsResize);
+                    let next_cursor_icon = if resize_cursor {
+                        winit::window::CursorIcon::NsResize
                     } else if is_text_cursor {
-                        window.set_cursor_icon(winit::window::CursorIcon::Text);
+                        winit::window::CursorIcon::Text
                     } else {
-                        window.set_cursor_icon(winit::window::CursorIcon::Default);
+                        winit::window::CursorIcon::Default
+                    };
+                    if next_cursor_icon != cursor_icon {
+                        window.set_cursor_icon(next_cursor_icon);
+                        cursor_icon = next_cursor_icon;
                     }
                 }
                 WindowEvent::MouseInput {
@@ -489,8 +494,7 @@ pub fn run() {
                 }
 
                 if needs_continuous {
-                    // Use Poll for continuous rendering at monitor refresh rate (60fps+)
-                    // The OS/window system will throttle to vsync automatically
+                    // Continuous playback is paced by the FIFO surface.
                     elwt.set_control_flow(ControlFlow::Poll);
                 } else if let Some(deadline) = state.next_wake_deadline() {
                     let now = Instant::now();

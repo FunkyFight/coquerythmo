@@ -36,6 +36,7 @@ Bug : Dans le rendu export, les graduations semblent être buggées
 Bug : Rotation d'un dessin le skew au lieu de le tourner
 Bug : Dessin peut être transporté en haut quand on le déplace
 Bug : Dessin pas possible avec tablette graphique
+Bug : La sélection (carré bleu) peut se faire en dehors de la bande rythmo
 
 
 # Suggestions

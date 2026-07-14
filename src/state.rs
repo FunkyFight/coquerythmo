@@ -132,9 +132,18 @@ impl State {
     pub fn handle_ui_event(&mut self, event: &UiEvent) -> EventResponse {
         let render_frame = self.render_frame();
         let fps = self.fps();
+        self.project_session
+            .render_index
+            .refresh(&self.project_session.project);
         self.ui_shell
             .ui
-            .handle_event(event, &self.project_session.project, render_frame, fps)
+            .handle_event(
+                event,
+                &self.project_session.project,
+                &self.project_session.render_index,
+                render_frame,
+                fps,
+            )
     }
 
     pub fn is_rythmo_text_editing(&self) -> bool {

@@ -630,6 +630,78 @@ mod tests {
     }
 
     #[test]
+    fn scrolling_does_not_change_line_texture_width() {
+        crate::config::init();
+        let mut project = Project::new();
+        let line_id = project.add_line(1_000, 48, 0.0);
+        let line = project.get_line(line_id).unwrap();
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 240.0,
+        };
+        let expected_width = line.duration_frames as f32 * ppf();
+
+        for step in 0..=240 {
+            let current_frame = 1_000.0 + step as f64 / 240.0;
+            let (_, editor_width) = line_visual_x_width(line, current_frame, &zone, false);
+            let (_, playback_width) = line_visual_x_width(line, current_frame, &zone, true);
+
+            assert_eq!(editor_width.to_bits(), expected_width.to_bits());
+            assert_eq!(playback_width.to_bits(), expected_width.to_bits());
+            assert_eq!(editor_width.ceil() as u32, expected_width.ceil() as u32);
+            assert_eq!(playback_width.ceil() as u32, expected_width.ceil() as u32);
+        }
+    }
+
+    #[test]
+    fn pointer_hover_finds_line_through_render_index() {
+        crate::config::init();
+        let mut project = Project::new();
+        let line_id = project.add_line(40, 20, 0.0);
+        let mut render_index = ProjectRenderIndex::new();
+        render_index.refresh(&project);
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 240.0,
+        };
+        let current_frame = 50.0;
+        let line_rect = EditorLayoutCtx::new(&project, &zone).line_rect_with_karaoke_width(
+            project.get_line(line_id).unwrap(),
+            current_frame,
+            &zone,
+            false,
+            None,
+        );
+        let mut state = RythmoState::new();
+
+        let response = handle_rythmo_event(
+            &UiEvent::MouseMove {
+                x: line_rect.x + line_rect.width / 2.0,
+                y: line_rect.y + line_rect.height / 2.0,
+            },
+            &zone,
+            &project,
+            &render_index,
+            current_frame,
+            false,
+            24.0,
+            &mut state,
+            ToolMode::Select,
+            [1.0, 1.0, 1.0, 1.0],
+            0.012,
+            false,
+        );
+
+        assert_eq!(response, EventResponse::Consumed);
+        assert_eq!(state.hovered_line, Some(line_id));
+        assert_eq!(state.hovered_track, Some(0));
+    }
+
+    #[test]
     fn waveform_offset_keeps_visible_audio_peaks_rendered() {
         crate::config::init();
         let project = Project::new();
@@ -1930,7 +2002,7 @@ pub fn render_lines<'a>(
     let margin_frames = interactive_render_margin_frames(fps, render_index);
     let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames);
     let mut visible_line_ids = render_index.visible_line_ids(project, first_frame, last_frame);
-    visible_line_ids.sort_by_key(|id| project.line_index(*id).unwrap_or(usize::MAX));
+    visible_line_ids.sort_by_key(|id| render_index.line_order_index(*id));
 
     // Precompute line data ONCE - rect, karaoke flags, badge rect, character name
     #[derive(Clone, Copy)]

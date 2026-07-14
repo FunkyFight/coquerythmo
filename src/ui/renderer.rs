@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::mpsc::{Receiver, SyncSender};
 
 use glyphon::{
     cosmic_text::{Align, Ellipsize, EllipsizeHeightLimit},
@@ -24,6 +25,65 @@ struct CachedTextTexture {
     bind_group: wgpu::BindGroup,
     cache_hash: u64,
     char_x_ratios: Vec<f32>, // ratio 0.0-1.0 for each char boundary (len = char_count + 1)
+}
+
+struct TextRasterRequest {
+    line_id: u64,
+    cache_hash: u64,
+    text: String,
+    font_size: f32,
+    width: u32,
+    height: u32,
+    stretch: bool,
+}
+
+struct TextRasterResult {
+    line_id: u64,
+    cache_hash: u64,
+    rendered: Option<crate::vector_text::VectorTextPixmap>,
+}
+
+fn spawn_text_raster_worker() -> (SyncSender<TextRasterRequest>, Receiver<TextRasterResult>) {
+    let (request_tx, request_rx) = std::sync::mpsc::sync_channel::<TextRasterRequest>(64);
+    let (result_tx, result_rx) = std::sync::mpsc::channel::<TextRasterResult>();
+
+    std::thread::Builder::new()
+        .name("rythmo-text-raster".into())
+        .spawn(move || {
+            let mut font_system = FontSystem::new();
+            while let Ok(request) = request_rx.recv() {
+                let rendered = if request.stretch {
+                    crate::vector_text::render_rythmo_text_with_ratios(
+                        &mut font_system,
+                        &request.text,
+                        request.font_size,
+                        request.width,
+                        request.height,
+                    )
+                } else {
+                    crate::vector_text::render_rythmo_text_natural(
+                        &mut font_system,
+                        &request.text,
+                        request.font_size,
+                        request.width,
+                        request.height,
+                    )
+                };
+                if result_tx
+                    .send(TextRasterResult {
+                        line_id: request.line_id,
+                        cache_hash: request.cache_hash,
+                        rendered,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .expect("failed to start rythmo text raster worker");
+
+    (request_tx, result_rx)
 }
 
 struct DynamicBuffer {
@@ -204,6 +264,9 @@ pub struct UiRenderer {
     viewport: Viewport,
 
     text_texture_cache: HashMap<u64, CachedTextTexture>,
+    text_raster_requests: SyncSender<TextRasterRequest>,
+    text_raster_results: Receiver<TextRasterResult>,
+    pending_text_rasters: HashMap<u64, u64>,
     ui_text_cache: HashMap<UiTextKey, CachedUiTextBuffer>,
     ui_text_frame: u64,
     quad_buffer: DynamicBuffer,
@@ -422,6 +485,7 @@ impl UiRenderer {
             TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
         let modal_text_renderer =
             TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
+        let (text_raster_requests, text_raster_results) = spawn_text_raster_worker();
 
         Self {
             quad_pipeline,
@@ -437,6 +501,9 @@ impl UiRenderer {
             modal_text_renderer,
             viewport,
             text_texture_cache: HashMap::new(),
+            text_raster_requests,
+            text_raster_results,
+            pending_text_rasters: HashMap::new(),
             ui_text_cache: HashMap::new(),
             ui_text_frame: 0,
             quad_buffer: DynamicBuffer::new(),
@@ -521,7 +588,10 @@ impl UiRenderer {
         queue: &wgpu::Queue,
         ui_scale: f32,
         stretched: &[StretchedText],
+        async_misses: bool,
     ) -> Vec<(IconInstance, u64)> {
+        self.upload_ready_text_rasters(device, queue, 2);
+
         let ui_scale = ui_scale.max(1.0);
         let font_size = crate::config::get().ui.font_size * 2.0 * ui_scale;
         let mut result = Vec::new();
@@ -551,7 +621,27 @@ impl UiRenderer {
                 remaining_prewarm_misses -= 1;
             }
 
-            if needs_update {
+            if needs_update && async_misses {
+                let already_pending =
+                    self.pending_text_rasters.get(&st.line_id).copied() == Some(cache_hash);
+                if !already_pending {
+                    let request = TextRasterRequest {
+                        line_id: st.line_id,
+                        cache_hash,
+                        text: st.text.clone(),
+                        font_size: effective_font_size,
+                        width: tex_w,
+                        height: tex_h,
+                        stretch: st.stretch,
+                    };
+                    if self.text_raster_requests.try_send(request).is_ok() {
+                        self.pending_text_rasters.insert(st.line_id, cache_hash);
+                    }
+                }
+            } else if needs_update {
+                // Editing and paused views keep their immediate text response. Only
+                // playback misses are rasterized away from the render thread.
+                self.pending_text_rasters.remove(&st.line_id);
                 let rendered = if st.stretch {
                     crate::vector_text::render_rythmo_text_with_ratios(
                         &mut self.font_system,
@@ -577,66 +667,7 @@ impl UiRenderer {
                 if w == 0 || h == 0 {
                     continue;
                 }
-
-                let texture = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("Vector Rythmo Text"),
-                    size: wgpu::Extent3d {
-                        width: w,
-                        height: h,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                });
-
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &rendered.pixels,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(4 * w),
-                        rows_per_image: Some(h),
-                    },
-                    wgpu::Extent3d {
-                        width: w,
-                        height: h,
-                        depth_or_array_layers: 1,
-                    },
-                );
-
-                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Vector Rythmo Text BG"),
-                    layout: &self.icon_atlas.bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&self.icon_atlas.sampler),
-                        },
-                    ],
-                });
-
-                self.text_texture_cache.insert(
-                    st.line_id,
-                    CachedTextTexture {
-                        bind_group,
-                        cache_hash,
-                        char_x_ratios: rendered.char_x_ratios,
-                    },
-                );
+                self.upload_text_raster(device, queue, st.line_id, cache_hash, rendered);
             }
 
             if st.prewarm {
@@ -647,7 +678,11 @@ impl UiRenderer {
                 continue;
             }
 
-            if let Some(_cached) = self.text_texture_cache.get(&st.line_id) {
+            if self
+                .text_texture_cache
+                .get(&st.line_id)
+                .is_some_and(|cached| cached.cache_hash == cache_hash)
+            {
                 result.push((
                     IconInstance {
                         rect: [
@@ -665,6 +700,100 @@ impl UiRenderer {
         }
 
         result
+    }
+
+    fn upload_ready_text_rasters(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        max_uploads: usize,
+    ) {
+        let mut uploaded = 0;
+        while uploaded < max_uploads {
+            let Ok(result) = self.text_raster_results.try_recv() else {
+                break;
+            };
+            if self.pending_text_rasters.get(&result.line_id).copied() != Some(result.cache_hash) {
+                continue;
+            }
+            self.pending_text_rasters.remove(&result.line_id);
+            let Some(rendered) = result.rendered else {
+                continue;
+            };
+            if rendered.width == 0 || rendered.height == 0 {
+                continue;
+            }
+            self.upload_text_raster(device, queue, result.line_id, result.cache_hash, rendered);
+            uploaded += 1;
+        }
+    }
+
+    fn upload_text_raster(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        line_id: u64,
+        cache_hash: u64,
+        rendered: crate::vector_text::VectorTextPixmap,
+    ) {
+        let w = rendered.width;
+        let h = rendered.height;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Vector Rythmo Text"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &rendered.pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * w),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Vector Rythmo Text BG"),
+            layout: &self.icon_atlas.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.icon_atlas.sampler),
+                },
+            ],
+        });
+        self.text_texture_cache.insert(
+            line_id,
+            CachedTextTexture {
+                bind_group,
+                cache_hash,
+                char_x_ratios: rendered.char_x_ratios,
+            },
+        );
     }
 
     fn hash_stretched_text(
@@ -688,6 +817,7 @@ impl UiRenderer {
 
     pub fn clear_text_cache(&mut self) {
         self.text_texture_cache.clear();
+        self.pending_text_rasters.clear();
     }
 
     pub fn enumerate_font_families(&self) -> Vec<String> {

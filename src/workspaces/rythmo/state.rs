@@ -244,23 +244,9 @@ impl RythmoState {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
-        // Track usage (which tracks have lines)
-        let track_count = rythmo_layout::track_count();
-        let mut used_tracks = vec![false; track_count];
-        let mut karaoke_tracks = vec![false; track_count];
-        for line in project.lines() {
-            let track_index = rythmo_layout::track_index_for_y_slot(line.y_slot);
-            used_tracks[track_index] = true;
-            if line.karaoke {
-                karaoke_tracks[track_index] = true;
-            }
-        }
-        for (i, (used, karaoke)) in used_tracks.iter().zip(karaoke_tracks.iter()).enumerate() {
-            if *used {
-                i.hash(&mut hasher);
-                karaoke.hash(&mut hasher);
-            }
-        }
+        // Project revision already covers every change that can affect track
+        // usage. Re-scanning all lines here made every pointer move O(n).
+        project.revision().hash(&mut hasher);
         zone.height.to_bits().hash(&mut hasher);
         hasher.finish()
     }
