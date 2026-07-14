@@ -17,12 +17,12 @@ use crate::render_index::ProjectRenderIndex;
 use crate::rythmo_drawing::{strokes_bbox, DrawingStroke};
 use crate::rythmo_layout;
 use crate::rythmo_line::MarkerKind;
-use crate::ui::renderer::StretchedText;
-use crate::ui::text_input::{self, TextInputMetrics};
 use crate::ui::primitives::{
     EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction,
     UiEvent, VAlign,
 };
+use crate::ui::renderer::StretchedText;
+use crate::ui::text_input::{self, TextInputMetrics};
 use crate::ui::ToolMode;
 use std::cell::{Ref, RefCell};
 use std::collections::{hash_map::DefaultHasher, HashMap};
@@ -982,9 +982,9 @@ const BADGE_HEIGHT: f32 = 13.0;
 const BADGE_PADDING_H: f32 = 8.0;
 const BADGE_GAP: f32 = 2.0;
 const BADGE_MIN_W: f32 = 24.0;
-const BADGE_FONT_SIZE: f32 = 11.0;
+const BADGE_FONT_SIZE: f32 = 13.0;
 
-// Badge height ~1/3 of line height, positioned at line left edge
+// Character badge overlaps the upper part of the line body.
 const BADGE_OVERLAP_HEIGHT_RATIO: f32 = constants::BADGE_OVERLAP_HEIGHT_RATIO;
 const ACTOR_ICON_SIZE: f32 = constants::VOICE_ACTOR_DISPLAY_ICON_SIZE;
 const ACTOR_ICON_GAP: f32 = 3.0;
@@ -2069,7 +2069,31 @@ pub fn render_lines<'a>(
             )
         };
 
-        if r.x + r.width < zone.x || r.x > zone.x + zone.width {
+        let badge_rect = if karaoke_preview && line.karaoke {
+            badge_rect_for_karaoke_rect(line, &r)
+        } else {
+            layout_ctx.badge_rect_for_name(line, &line.character_name, r.x, zone)
+        };
+        let show_badge =
+            !(karaoke_preview && line.karaoke) || karaoke_index.character_label_visible(line);
+        let leading_visual = show_badge.then(|| {
+            rythmo_layout::leading_visual_bounds(
+                badge_rect.x,
+                badge_rect.width,
+                (!line.karaoke)
+                    .then_some(line.voice_actor_names.len())
+                    .unwrap_or(0),
+                ACTOR_ICON_SIZE,
+                ACTOR_ICON_GAP,
+            )
+        });
+        if !rythmo_layout::line_or_badge_intersects_viewport(
+            r.x,
+            r.width,
+            leading_visual,
+            zone.x,
+            zone.x + zone.width,
+        ) {
             continue;
         }
 
@@ -2077,12 +2101,6 @@ pub fn render_lines<'a>(
             karaoke_progress_render_info(line, current_frame, &karaoke_lang)
         } else {
             None
-        };
-
-        let badge_rect = if karaoke_preview && line.karaoke {
-            badge_rect_for_karaoke_rect(line, &r)
-        } else {
-            layout_ctx.badge_rect_for_name(line, &line.character_name, r.x, zone)
         };
 
         line_data.push((
@@ -3247,7 +3265,7 @@ pub fn handle_context_menu_event(
             if actor_rect.contains(*x, *y) {
                 let item_index =
                     ((*y - actor_rect.y + actor_scroll) / MENU_ITEM_H).floor() as usize;
-                    if item_index == project.voice_actors().len() {
+                if item_index == project.voice_actors().len() {
                     state.context_menu = None;
                     return EventResponse::Action(UiAction::OpenVoiceActorModal);
                 }
@@ -3696,7 +3714,7 @@ fn autocomplete_hover_index(ctx: &RythmoCtx, state: &RythmoState, x: f32, y: f32
 // -- Studio Mode (export-style rythmo rendering) --
 
 fn studio_reference_height_from_track_flags(used_tracks: &[bool], karaoke_tracks: &[bool]) -> f32 {
-    let slot_header_h = 20.0_f32.max(ACTOR_ICON_SIZE);
+    let slot_header_h = 22.0_f32.max(ACTOR_ICON_SIZE);
     let track_indices = track_indices_from_usage(used_tracks);
     let layouts = build_track_layouts_from_karaoke_flags(
         &track_indices,
@@ -3742,7 +3760,7 @@ pub fn render_studio_rythmo<'a>(
     // Readable sizes (increase text)
     let ruler_h = 20.0 * scale;
     let normal_slot_h = 32.0 * scale;
-    let badge_h = 20.0 * scale;
+    let badge_h = 22.0 * scale;
     let badge_gap = 4.0 * scale;
     let actor_icon_size = ACTOR_ICON_SIZE * scale;
     let slot_header_h = badge_h.max(actor_icon_size);
@@ -3856,7 +3874,31 @@ pub fn render_studio_rythmo<'a>(
         } else {
             line.visual_x_width(current_frame, center_x, ppf, zone.width, scale)
         };
-        if x1 + lw < zone.x || x1 > zone.x + zone.width {
+        let badge_w = (line.character_name.chars().count().max(1) as f32 * badge_char_w
+            + badge_padding * 2.0)
+            .max(badge_min_w);
+        let badge_x = if line.karaoke {
+            x1 - badge_w - constants::KARAOKE_NEXT_PREVIEW_GAP * 0.5 * scale
+        } else {
+            x1
+        };
+        let show_badge = !line.karaoke || scene_line.character_label_visible;
+        let leading_visual = show_badge.then(|| {
+            rythmo_layout::leading_visual_bounds(
+                badge_x,
+                badge_w,
+                line.voice_actor_names.len(),
+                actor_icon_size,
+                ACTOR_ICON_GAP * scale,
+            )
+        });
+        if !rythmo_layout::line_or_badge_intersects_viewport(
+            x1,
+            lw,
+            leading_visual,
+            zone.x,
+            zone.x + zone.width,
+        ) {
             continue;
         }
 
@@ -3882,20 +3924,11 @@ pub fn render_studio_rythmo<'a>(
             body_h = stacked_rect.height;
         }
         let [cr, cg, cb, _] = line.character_color;
-        let badge_w = (line.character_name.chars().count().max(1) as f32 * badge_char_w
-            + badge_padding * 2.0)
-            .max(badge_min_w);
-        let badge_x = if line.karaoke {
-            x1 - badge_w - constants::KARAOKE_NEXT_PREVIEW_GAP * 0.5 * scale
-        } else {
-            x1
-        };
         let badge_y = if line.karaoke {
             line_y + (body_h - badge_h) * 0.5
         } else {
             y_base + ((slot_header_h - badge_h) * 0.5).max(0.0)
         };
-        let show_badge = !line.karaoke || scene_line.character_label_visible;
         if show_badge {
             let bc = [cr, cg, cb, 1.0];
             quads.push(QuadInstance {

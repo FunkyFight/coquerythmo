@@ -1,5 +1,5 @@
-use super::text_input;
 use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
+use super::text_input;
 use crate::i18n::t;
 
 #[derive(Clone, Copy, PartialEq, Eq)]

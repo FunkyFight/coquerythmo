@@ -20,11 +20,12 @@ pub(super) fn cpu_fit_and_stack_filter(
     out_w: u32,
     vid_h: u32,
     fps: f64,
-    duration_secs: f64,
+    source_duration_secs: f64,
+    pre_roll_secs: f64,
 ) -> String {
+    let total_duration = source_duration_secs + pre_roll_secs;
     format!(
-        "[0:v]trim=duration={},setpts=PTS-STARTPTS,scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps={},format=yuv420p[v];[1:v]trim=duration={},setpts=PTS-STARTPTS,format=yuv420p[br];[v][br]vstack=inputs=2:shortest=1[out]",
-        duration_secs, out_w, vid_h, out_w, vid_h, fps, duration_secs
+        "[0:v]trim=duration={source_duration_secs},setpts=PTS-STARTPTS,tpad=start_duration={pre_roll_secs}:start_mode=add:color=black,scale={out_w}:{vid_h}:force_original_aspect_ratio=decrease,pad={out_w}:{vid_h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps={fps},format=yuv420p[v];[1:v]trim=duration={total_duration},setpts=PTS-STARTPTS,format=yuv420p[br];[v][br]vstack=inputs=2:shortest=1[out]"
     )
 }
 
@@ -33,12 +34,13 @@ pub(super) fn cuda_fit_and_stack_filter(
     vid_h: u32,
     br_h_even: u32,
     fps: f64,
-    duration_secs: f64,
+    source_duration_secs: f64,
+    pre_roll_secs: f64,
 ) -> String {
     let total_h = vid_h + br_h_even;
+    let total_duration = source_duration_secs + pre_roll_secs;
     format!(
-        "color=c=black:s={}x{}:r={}:d={},format=nv12,hwupload_cuda[canvas];[0:v]scale_cuda=w={}:h={}:format=nv12:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1[src];[1:v]format=nv12,hwupload_cuda[br];[canvas][src]overlay_cuda=x=(main_w-overlay_w)/2:y=({}-overlay_h)/2:shortest=1[tmp];[tmp][br]overlay_cuda=x=0:y={}:shortest=1[out]",
-        out_w, total_h, fps, duration_secs, out_w, vid_h, vid_h, vid_h
+        "color=c=black:s={out_w}x{total_h}:r={fps}:d={total_duration},format=nv12,hwupload_cuda[canvas];[0:v]setpts=PTS-STARTPTS+{pre_roll_secs}/TB,scale_cuda=w={out_w}:h={vid_h}:format=nv12:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1[src];[1:v]format=nv12,hwupload_cuda[br];[canvas][src]overlay_cuda=x=(main_w-overlay_w)/2:y=({vid_h}-overlay_h)/2:shortest=1[tmp];[tmp][br]overlay_cuda=x=0:y={vid_h}:shortest=1[out]"
     )
 }
 
@@ -47,21 +49,13 @@ pub(super) fn cuda_rgba_fit_and_stack_filter(
     vid_h: u32,
     br_h_even: u32,
     fps: f64,
-    duration_secs: f64,
+    source_duration_secs: f64,
+    pre_roll_secs: f64,
 ) -> String {
     let total_h = vid_h + br_h_even;
+    let total_duration = source_duration_secs + pre_roll_secs;
     format!(
-        "color=c=black:s={}x{}:r={}:d={},format=nv12,hwupload_cuda[canvas];[0:v]scale_cuda=w={}:h={}:format=nv12:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1[src];[1:v]format=rgba,hwupload_cuda,scale_cuda=w={}:h={}:format=nv12:passthrough=0[br];[canvas][src]overlay_cuda=x=(main_w-overlay_w)/2:y=({}-overlay_h)/2:shortest=1[tmp];[tmp][br]overlay_cuda=x=0:y={}:shortest=1[out]",
-        out_w,
-        total_h,
-        fps,
-        duration_secs,
-        out_w,
-        vid_h,
-        out_w,
-        br_h_even,
-        vid_h,
-        vid_h
+        "color=c=black:s={out_w}x{total_h}:r={fps}:d={total_duration},format=nv12,hwupload_cuda[canvas];[0:v]setpts=PTS-STARTPTS+{pre_roll_secs}/TB,scale_cuda=w={out_w}:h={vid_h}:format=nv12:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1[src];[1:v]format=rgba,hwupload_cuda,scale_cuda=w={out_w}:h={br_h_even}:format=nv12:passthrough=0[br];[canvas][src]overlay_cuda=x=(main_w-overlay_w)/2:y=({vid_h}-overlay_h)/2:shortest=1[tmp];[tmp][br]overlay_cuda=x=0:y={vid_h}:shortest=1[out]"
     )
 }
 
@@ -82,6 +76,7 @@ pub(super) fn run_baked_single_pass(
     br_h_even: u32,
     total_frames: u64,
     duration_secs: f64,
+    timeline_start_source_frame: f64,
     include_source_audio: bool,
     render_backend_status: Option<&AtomicU32>,
     cancel: &AtomicBool,
@@ -201,6 +196,7 @@ pub(super) fn run_baked_single_pass(
         br_h,
         br_h_even,
         total_frames,
+        timeline_start_source_frame,
         &ffmpeg_progress,
         render_backend_status,
         cancel,
@@ -343,5 +339,24 @@ fn log_baked_export_summary(
             progress::mib(gpu.total_readback_bytes),
             gpu.last_readback_bytes,
         );
+    }
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::*;
+
+    #[test]
+    fn cpu_filter_prepends_black_video_but_keeps_br_for_full_timeline() {
+        let filter = cpu_fit_and_stack_filter(1920, 900, 24.0, 10.0, 2.5);
+        assert!(filter.contains("tpad=start_duration=2.5:start_mode=add:color=black"));
+        assert!(filter.contains("[1:v]trim=duration=12.5"));
+    }
+
+    #[test]
+    fn cuda_filter_delays_source_by_preroll_duration() {
+        let filter = cuda_fit_and_stack_filter(1920, 900, 180, 24.0, 10.0, 3.0);
+        assert!(filter.contains("setpts=PTS-STARTPTS+3/TB"));
+        assert!(filter.contains("d=13"));
     }
 }

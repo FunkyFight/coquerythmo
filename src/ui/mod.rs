@@ -14,6 +14,7 @@ pub mod file_explorer;
 pub mod icon_button;
 pub mod icons;
 pub mod interactive;
+pub mod language_modal;
 pub mod layout;
 pub mod license_badge;
 pub mod modal_host;
@@ -44,12 +45,12 @@ use layout::{
     Layout, PROPS_DEFAULT_W, PROPS_DRAG_ZONE, PROPS_MAX_W, PROPS_MIN_W, RYTHMO_MIN_H, TOOLBAR_H,
     TOPBAR_H, VIDEO_MIN_H,
 };
-use renderer::StretchedText;
-use tooltip::TooltipState;
 use primitives::{
     EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction,
     UiEvent, VAlign, Widget,
 };
+use renderer::StretchedText;
+use tooltip::TooltipState;
 
 use crate::i18n::t;
 use crate::project::Project;
@@ -278,10 +279,20 @@ impl Ui {
             return EventResponse::Consumed;
         }
 
+        // Export/proxy workers may read media extracted from a portable
+        // project. Keep the document immutable until they finish; Escape is a
+        // deliberate cancellation path handled by the worker.
+        if self.export_progress.is_some() {
+            if matches!(event, UiEvent::KeyInput { text } if text == "\x1b") {
+                return EventResponse::Action(UiAction::CancelExport);
+            }
+            return EventResponse::Consumed;
+        }
+
         // ModalHost owns modal priority, lifecycle and command conversion.
-        if let Some(outcome) = self
-            .modal_host
-            .handle_topmost_event(event, self.screen_w, self.screen_h)
+        if let Some(outcome) =
+            self.modal_host
+                .handle_topmost_event(event, self.screen_w, self.screen_h)
         {
             return outcome.into_event_response();
         }
@@ -527,11 +538,11 @@ impl Ui {
         match event {
             UiEvent::MousePress { x, y } => {
                 if self.layout.video_split_handle_rect().contains(*x, *y) {
-                        self.dragging_split = Some(shell::SplitHandle::Video);
+                    self.dragging_split = Some(shell::SplitHandle::Video);
                     return Some(EventResponse::Consumed);
                 }
                 if self.layout.rythmo_split_handle_rect().contains(*x, *y) {
-                        self.dragging_split = Some(shell::SplitHandle::Rythmo);
+                    self.dragging_split = Some(shell::SplitHandle::Rythmo);
                     return Some(EventResponse::Consumed);
                 }
                 None
@@ -819,13 +830,29 @@ impl Ui {
         &mut self,
         video_width: u32,
         video_height: u32,
-        has_project_instrumental_audio: bool,
+        languages: Vec<export_modal::ExportLanguageOption>,
+        configuration: crate::project::ExportConfiguration,
     ) {
-        self.modal_host.open_export(
-            video_width,
-            video_height,
-            has_project_instrumental_audio,
-        );
+        self.modal_host
+            .open_export(video_width, video_height, languages, configuration);
+    }
+
+    pub fn open_languages_modal(
+        &mut self,
+        languages: Vec<language_modal::LanguageListItem>,
+        active_language_id: u64,
+    ) {
+        self.modal_host
+            .open_languages(languages, active_language_id);
+    }
+
+    pub fn refresh_languages_modal(
+        &mut self,
+        languages: Vec<language_modal::LanguageListItem>,
+        active_language_id: u64,
+    ) {
+        self.modal_host
+            .refresh_languages(languages, active_language_id);
     }
 
     pub fn open_file_explorer(&mut self, request: file_explorer::FileExplorerRequest) {
@@ -897,7 +924,8 @@ impl Ui {
     }
 
     pub fn open_project_settings_modal(&mut self, instrumental_audio_path: Option<String>) {
-        self.modal_host.open_project_settings(instrumental_audio_path);
+        self.modal_host
+            .open_project_settings(instrumental_audio_path);
     }
 
     pub fn set_project_instrumental_audio_path(&mut self, path: impl Into<String>) {
@@ -1673,6 +1701,22 @@ impl Ui {
                 padding: 0.0,
                 font_size_override: Some(17.0),
                 color_override: None,
+                font_family_override: None,
+            });
+            labels.push(LabelInfo {
+                text: crate::i18n::t("progress.cancel_hint"),
+                bounds: Rect {
+                    x: dx,
+                    y: dy + 86.0,
+                    width: dw,
+                    height: 20.0,
+                },
+                h_align: HAlign::Center,
+                v_align: VAlign::Center,
+                overflow: Overflow::Clip,
+                padding: 0.0,
+                font_size_override: Some(11.0),
+                color_override: Some([160, 164, 176]),
                 font_family_override: None,
             });
         }

@@ -25,13 +25,7 @@ fn hit_test_line_and_track(
     let found = candidate_ids.into_iter().find(|line_id| {
         ctx.project.get_line(*line_id).is_some_and(|line| {
             layout_ctx
-                .line_rect_with_karaoke_width(
-                    line,
-                    ctx.current_frame,
-                    ctx.zone,
-                    false,
-                    None,
-                )
+                .line_rect_with_karaoke_width(line, ctx.current_frame, ctx.zone, false, None)
                 .contains(x, y)
         })
     });

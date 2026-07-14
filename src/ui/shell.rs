@@ -5,8 +5,8 @@
 //! scroll conversion. Modal lifecycle is kept in [`super::modal_host`].
 
 use super::layout::Layout;
-use super::theme::{SLIDER_W, TOOLBAR_BTN_SIZE, TOOLBAR_HEIGHT, TOPBAR_HEIGHT};
 use super::primitives::{EventResponse, LabelInfo, QuadInstance, Rect, UiAction, UiEvent, Widget};
+use super::theme::{SLIDER_W, TOOLBAR_BTN_SIZE, TOOLBAR_HEIGHT, TOPBAR_HEIGHT};
 use super::{dropdown::Dropdown, icon_button::IconButton, slider::Slider, text_button::TextButton};
 use crate::application::command::ToolMode;
 use crate::i18n::t;
@@ -44,6 +44,13 @@ pub(crate) fn build_topbar(
     let recent_labels: Vec<String> = recents
         .iter()
         .map(|r| {
+            if r.video_path == r.br_path {
+                return r
+                    .br_path
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
+                    .unwrap_or_default();
+            }
             let video = r
                 .video_path
                 .file_stem()
@@ -102,16 +109,31 @@ pub(crate) fn build_topbar(
     );
 
     if !recent_labels.is_empty() {
-        project_menu = project_menu.with_submenu(4, recent_labels, move |index, _label| {
-            if let Some(r) = recents_clone.get(index) {
-                EventResponse::Action(UiAction::OpenRecentProject {
-                    video_path: r.video_path.clone(),
-                    br_path: r.br_path.clone(),
-                })
-            } else {
-                EventResponse::Consumed
-            }
-        });
+        let recents_remove = recents.clone();
+        project_menu = project_menu.with_removable_submenu(
+            4,
+            recent_labels,
+            move |index, _label| {
+                if let Some(r) = recents_clone.get(index) {
+                    EventResponse::Action(UiAction::OpenRecentProject {
+                        video_path: r.video_path.clone(),
+                        br_path: r.br_path.clone(),
+                    })
+                } else {
+                    EventResponse::Consumed
+                }
+            },
+            move |index, _label| {
+                if let Some(r) = recents_remove.get(index) {
+                    EventResponse::Action(UiAction::RemoveRecentProject {
+                        video_path: r.video_path.clone(),
+                        br_path: r.br_path.clone(),
+                    })
+                } else {
+                    EventResponse::Consumed
+                }
+            },
+        );
     }
 
     let export_menu = Dropdown::new(

@@ -7,10 +7,25 @@ use super::EXPORT_CANCELLED_MESSAGE;
 
 pub fn is_cancelled_error(error: &str) -> bool {
     error == EXPORT_CANCELLED_MESSAGE
+        || error
+            .strip_suffix(EXPORT_CANCELLED_MESSAGE)
+            .is_some_and(|prefix| prefix.ends_with(": "))
 }
 
 pub(super) fn export_cancelled(cancel: &AtomicBool) -> bool {
     cancel.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contextual_export_errors_still_report_cancellation() {
+        assert!(is_cancelled_error(EXPORT_CANCELLED_MESSAGE));
+        assert!(is_cancelled_error("Video / Français: Export canceled"));
+        assert!(!is_cancelled_error("Export canceled after a codec failure"));
+    }
 }
 
 pub(super) fn check_export_cancel(cancel: &AtomicBool) -> Result<(), String> {

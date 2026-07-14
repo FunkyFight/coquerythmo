@@ -1,5 +1,5 @@
-use super::theme;
 use super::primitives::{EventResponse, LabelInfo, QuadInstance, Rect, UiEvent, Widget};
+use super::theme;
 
 pub struct Slider {
     bounds: Rect,

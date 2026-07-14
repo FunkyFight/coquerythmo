@@ -59,3 +59,34 @@ pub fn t(key: &str) -> &str {
     }
     key
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_language_contains_the_portable_project_and_export_keys() {
+        let required = [
+            "menu.project.import.coquerythmo",
+            "menu.export.mp4",
+            "picker.project_save.title",
+            "picker.delivery_export.title",
+            "toast.save_requires_video",
+            "toast.save_font_unavailable",
+            "toast.legacy_project_loaded",
+            "toast.export_requires_video",
+            "export_hub.languages",
+        ];
+        for source in [FR_TOML, EN_TOML, ES_TOML] {
+            let table = source
+                .parse::<toml::Table>()
+                .expect("valid translation TOML");
+            for key in required {
+                assert!(
+                    table.get(key).is_some_and(toml::Value::is_str),
+                    "missing translation key {key}"
+                );
+            }
+        }
+    }
+}

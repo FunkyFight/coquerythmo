@@ -2,7 +2,9 @@
 #![allow(clippy::collapsible_match)]
 
 use crate::constants::Y_SLOTS;
-use crate::project::{Character, Project, ProjectSettings};
+use crate::project::{
+    Character, LanguageId, LanguageSnapshot, Project, ProjectLanguage, ProjectSettings,
+};
 use crate::rythmo_drawing::{DrawingStroke, RythmoDrawing};
 use crate::rythmo_line::{MarkerKind, RythmoMarker};
 use crate::voice_actor::VoiceActor;
@@ -40,6 +42,19 @@ pub struct ProjectData {
     pub settings: ProjectSettings,
     #[serde(default)]
     pub drawing: DrawingData,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<LanguageProjectData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_language_id: Option<LanguageId>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct LanguageProjectData {
+    pub id: LanguageId,
+    pub name: String,
+    #[serde(default)]
+    pub code: String,
+    pub project: Box<ProjectData>,
 }
 
 fn default_fps() -> f64 {
@@ -103,6 +118,22 @@ pub struct StrokeData {
 
 impl ProjectData {
     pub fn from_project(project: &Project, fps: f64) -> Self {
+        let mut data = Self::from_single_project(project, fps);
+        data.active_language_id = Some(project.active_language_id());
+        data.languages = project
+            .language_snapshots()
+            .into_iter()
+            .map(|snapshot| LanguageProjectData {
+                id: snapshot.language.id,
+                name: snapshot.language.name,
+                code: snapshot.language.code,
+                project: Box::new(Self::from_single_project(&snapshot.project, fps)),
+            })
+            .collect();
+        data
+    }
+
+    fn from_single_project(project: &Project, fps: f64) -> Self {
         Self {
             source_fps: fps,
             lines: project
@@ -166,6 +197,8 @@ impl ProjectData {
                     })
                     .collect(),
             },
+            languages: Vec::new(),
+            active_language_id: None,
         }
     }
 
@@ -205,6 +238,73 @@ impl ProjectData {
     }
 
     pub fn apply_to_project(&self, project: &mut Project, target_fps: f64) {
+        if self.languages.is_empty() {
+            if self.apply_single_to_project(project, target_fps) {
+                project.retain_active_language_only();
+            }
+            return;
+        }
+
+        let mut snapshots = Vec::with_capacity(self.languages.len());
+        for serialized in &self.languages {
+            let name = serialized.name.trim();
+            if name.is_empty() {
+                log::warn!("Skipping language {} with an empty name", serialized.id);
+                continue;
+            }
+            let code = if serialized.code.trim().is_empty() {
+                name
+            } else {
+                serialized.code.trim()
+            };
+            let mut language_project = Project::new_with_language(name, code);
+            if !serialized
+                .project
+                .apply_single_to_project(&mut language_project, target_fps)
+            {
+                continue;
+            }
+            let mut settings = language_project.settings().clone();
+            settings.export_configuration = self.settings.export_configuration.clone();
+            language_project.set_settings(settings);
+            snapshots.push(LanguageSnapshot {
+                language: ProjectLanguage {
+                    id: serialized.id,
+                    name: name.to_string(),
+                    code: code.to_string(),
+                },
+                project: language_project,
+            });
+        }
+
+        let requested_active = self
+            .active_language_id
+            .or_else(|| snapshots.first().map(|snapshot| snapshot.language.id));
+        let Some(active_language_id) = requested_active else {
+            if self.apply_single_to_project(project, target_fps) {
+                project.retain_active_language_only();
+            }
+            return;
+        };
+        if !project.replace_language_snapshots(snapshots, active_language_id) {
+            if self.apply_single_to_project(project, target_fps) {
+                project.retain_active_language_only();
+            }
+        }
+    }
+
+    /// Replace only the currently selected language band. Other languages and
+    /// every per-language audio/configuration remain untouched.
+    pub fn apply_to_active_language(&self, project: &mut Project, target_fps: f64) -> bool {
+        let settings = project.settings().clone();
+        if !self.apply_single_to_project(project, target_fps) {
+            return false;
+        }
+        project.set_settings(settings);
+        true
+    }
+
+    fn apply_single_to_project(&self, project: &mut Project, target_fps: f64) -> bool {
         let fps_ratio = if self.source_fps > 0.0 && target_fps > 0.0 {
             target_fps / self.source_fps
         } else {
@@ -217,7 +317,7 @@ impl ProjectData {
                 self.source_fps,
                 target_fps
             );
-            return;
+            return false;
         }
         project.clear_lines();
         project.set_markers(Vec::new());
@@ -320,6 +420,7 @@ impl ProjectData {
             });
         }
         project.set_drawing(drawing);
+        true
     }
 }
 
@@ -474,6 +575,199 @@ pub fn import_srt(path: &Path, fps: f64) -> Result<ProjectData, String> {
         voice_actors: Vec::new(),
         settings: ProjectSettings::default(),
         drawing: DrawingData::default(),
+        languages: Vec::new(),
+        active_language_id: None,
+    })
+}
+
+// -- Advanced SubStation Alpha .ass importer --
+
+fn ass_time_to_frames(time: &str, fps: f64) -> Result<i64, String> {
+    let mut parts = time.trim().split(':');
+    let hours: f64 = parts
+        .next()
+        .ok_or_else(|| format!("Invalid ASS time: '{time}'"))?
+        .parse()
+        .map_err(|_| format!("Invalid hours in ASS time: '{time}'"))?;
+    let minutes: f64 = parts
+        .next()
+        .ok_or_else(|| format!("Invalid ASS time: '{time}'"))?
+        .parse()
+        .map_err(|_| format!("Invalid minutes in ASS time: '{time}'"))?;
+    let seconds: f64 = parts
+        .next()
+        .ok_or_else(|| format!("Invalid ASS time: '{time}'"))?
+        .replace(',', ".")
+        .parse()
+        .map_err(|_| format!("Invalid seconds in ASS time: '{time}'"))?;
+    if parts.next().is_some() {
+        return Err(format!("Invalid ASS time: '{time}'"));
+    }
+    Ok(((hours * 3600.0 + minutes * 60.0 + seconds) * fps).round() as i64)
+}
+
+fn ass_color_to_rgba(value: &str) -> [f32; 4] {
+    let hex = value
+        .trim()
+        .trim_start_matches("&H")
+        .trim_start_matches("&h")
+        .trim_end_matches('&');
+    let parsed = u32::from_str_radix(hex, 16).unwrap_or(0x00ff_ffff);
+    let alpha = if hex.len() > 6 {
+        ((parsed >> 24) & 0xff) as u8
+    } else {
+        0
+    };
+    let blue = ((parsed >> 16) & 0xff) as u8;
+    let green = ((parsed >> 8) & 0xff) as u8;
+    let red = (parsed & 0xff) as u8;
+    [
+        red as f32 / 255.0,
+        green as f32 / 255.0,
+        blue as f32 / 255.0,
+        (255 - alpha) as f32 / 255.0,
+    ]
+}
+
+fn ass_plain_text(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    let mut in_override = false;
+    for ch in value.chars() {
+        match ch {
+            '{' => in_override = true,
+            '}' if in_override => in_override = false,
+            _ if !in_override => result.push(ch),
+            _ => {}
+        }
+    }
+    result
+        .replace("\\N", "\n")
+        .replace("\\n", "\n")
+        .replace("\\h", " ")
+}
+
+/// Import an ASS/SSA subtitle file. Columns are resolved from their `Format:`
+/// declarations, including files whose field order differs from our export.
+pub fn import_ass(path: &Path, fps: f64) -> Result<ProjectData, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| format!("Read error: {e}"))?;
+    let content = content.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+    let mut section = "";
+    let mut style_columns: Vec<String> = Vec::new();
+    let mut event_columns: Vec<String> = Vec::new();
+    let mut styles = std::collections::HashMap::<String, [f32; 4]>::new();
+    let mut lines = Vec::new();
+
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line;
+            continue;
+        }
+        let Some((kind, payload)) = line.split_once(':') else {
+            continue;
+        };
+        let kind = kind.trim();
+        let payload = payload.trim_start();
+        if kind.eq_ignore_ascii_case("Format") {
+            let columns = payload
+                .split(',')
+                .map(|column| column.trim().to_ascii_lowercase())
+                .collect();
+            if section.eq_ignore_ascii_case("[Events]") {
+                event_columns = columns;
+            } else if section.eq_ignore_ascii_case("[V4+ Styles]")
+                || section.eq_ignore_ascii_case("[V4 Styles]")
+            {
+                style_columns = columns;
+            }
+            continue;
+        }
+        if kind.eq_ignore_ascii_case("Style") && !style_columns.is_empty() {
+            let values: Vec<&str> = payload.splitn(style_columns.len(), ',').collect();
+            let value = |name: &str| {
+                style_columns
+                    .iter()
+                    .position(|column| column == name)
+                    .and_then(|index| values.get(index))
+                    .map(|value| value.trim())
+            };
+            if let Some(name) = value("name") {
+                styles.insert(
+                    name.to_string(),
+                    value("primarycolour")
+                        .map(ass_color_to_rgba)
+                        .unwrap_or([1.0; 4]),
+                );
+            }
+            continue;
+        }
+        if !kind.eq_ignore_ascii_case("Dialogue") || event_columns.is_empty() {
+            continue;
+        }
+
+        let values: Vec<&str> = payload.splitn(event_columns.len(), ',').collect();
+        let value = |name: &str| {
+            event_columns
+                .iter()
+                .position(|column| column == name)
+                .and_then(|index| values.get(index))
+                .map(|value| value.trim())
+        };
+        let start_frame = ass_time_to_frames(
+            value("start").ok_or_else(|| "ASS Dialogue is missing Start".to_string())?,
+            fps,
+        )?;
+        let end_frame = ass_time_to_frames(
+            value("end").ok_or_else(|| "ASS Dialogue is missing End".to_string())?,
+            fps,
+        )?;
+        let text = ass_plain_text(value("text").unwrap_or_default());
+        if text.trim().is_empty() {
+            continue;
+        }
+        let style = value("style").unwrap_or("Default");
+        let character_name = value("name")
+            .filter(|name| !name.is_empty())
+            .unwrap_or(style)
+            .to_string();
+        let character_color = styles.get(style).copied().unwrap_or([1.0; 4]);
+        lines.push(LineData {
+            start_frame,
+            duration_frames: (end_frame - start_frame).max(1),
+            y_slot: Y_SLOTS[1],
+            text,
+            character_name,
+            character_color,
+            voice_actor_names: Vec::new(),
+            syllable_ratios: Vec::new(),
+            karaoke: false,
+            note: String::new(),
+        });
+    }
+
+    let mut characters = Vec::new();
+    for line in &lines {
+        if !characters
+            .iter()
+            .any(|character: &CharacterData| character.name == line.character_name)
+        {
+            characters.push(CharacterData {
+                name: line.character_name.clone(),
+                color: line.character_color,
+            });
+        }
+    }
+    log::info!("ASS imported: {} lines", lines.len());
+    Ok(ProjectData {
+        source_fps: fps,
+        lines,
+        markers: Vec::new(),
+        characters,
+        voice_actors: Vec::new(),
+        settings: ProjectSettings::default(),
+        drawing: DrawingData::default(),
+        languages: Vec::new(),
+        active_language_id: None,
     })
 }
 
@@ -789,6 +1083,8 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
         voice_actors: Vec::new(),
         settings: ProjectSettings::default(),
         drawing: DrawingData::default(),
+        languages: Vec::new(),
+        active_language_id: None,
     })
 }
 
@@ -823,6 +1119,99 @@ mod tests {
     }
 
     #[test]
+    fn legacy_json_roundtrip_does_not_add_multilingual_or_export_fields() {
+        let legacy = serde_json::json!({
+            "source_fps": 24.0,
+            "lines": [],
+            "markers": [],
+            "characters": [],
+            "voice_actors": [],
+            "settings": {
+                "source_audio_offset_frames": 0,
+                "instrumental_audio_offset_frames": 0
+            },
+            "drawing": { "strokes": [] }
+        });
+
+        let decoded: ProjectData = serde_json::from_value(legacy.clone()).unwrap();
+        let encoded = serde_json::to_value(decoded).unwrap();
+
+        assert_eq!(encoded, legacy);
+    }
+
+    #[test]
+    fn multilingual_project_roundtrip_preserves_active_band_audio_and_export_config() {
+        let mut project = Project::new_with_language("Français", "fr-fr");
+        let french_id = project.active_language_id();
+        project.add_line_full(
+            12,
+            48,
+            0.5,
+            "Bonjour".into(),
+            "Alice".into(),
+            [1.0, 0.0, 0.0, 1.0],
+        );
+        let mut french_settings = project.settings().clone();
+        french_settings.instrumental_audio_path = Some("fr_instrumental.wav".into());
+        french_settings.instrumental_audio_offset_frames = 9;
+        french_settings.export_configuration.pre_roll_seconds = 2.5;
+        french_settings.export_configuration.countdown_enabled = true;
+        french_settings.export_configuration.subtitle_formats.srt = true;
+        project.set_settings(french_settings);
+
+        let english_id = project.create_language("English", "en");
+        let english_line_id = project.lines().next().unwrap().id;
+        project.get_line_mut(english_line_id).unwrap().text = "Hello".into();
+        let mut english_settings = project.settings().clone();
+        english_settings.instrumental_audio_path = Some("en_instrumental.wav".into());
+        english_settings.instrumental_audio_offset_frames = 18;
+        project.set_settings(english_settings);
+
+        let encoded = serde_json::to_string(&ProjectData::from_project(&project, 24.0)).unwrap();
+        let decoded: ProjectData = serde_json::from_str(&encoded).unwrap();
+        let mut restored = Project::new();
+        decoded.apply_to_project(&mut restored, 24.0);
+
+        assert_eq!(restored.language_count(), 2);
+        assert_eq!(restored.active_language_id(), english_id);
+        assert_eq!(restored.active_language().code, "en");
+        assert_eq!(restored.lines().next().unwrap().text, "Hello");
+        assert_eq!(
+            restored.settings().instrumental_audio_path.as_deref(),
+            Some("en_instrumental.wav")
+        );
+        assert_eq!(restored.settings().instrumental_audio_offset_frames, 18);
+
+        let french = restored.project_for_language(french_id).unwrap();
+        assert_eq!(french.lines().next().unwrap().text, "Bonjour");
+        assert_eq!(
+            french.settings().instrumental_audio_path.as_deref(),
+            Some("fr_instrumental.wav")
+        );
+        assert_eq!(french.settings().instrumental_audio_offset_frames, 9);
+        assert_eq!(
+            restored.settings().export_configuration.pre_roll_seconds,
+            2.5
+        );
+        assert!(restored.settings().export_configuration.countdown_enabled);
+        assert!(
+            restored
+                .settings()
+                .export_configuration
+                .subtitle_formats
+                .srt
+        );
+        assert_eq!(
+            restored
+                .language_snapshots()
+                .into_iter()
+                .map(|snapshot| snapshot.language.id)
+                .collect::<Vec<_>>(),
+            vec![french_id, english_id]
+        );
+    }
+
+    #[test]
     fn test_fps_conversion() {
         let data = ProjectData {
             source_fps: 24.0,
@@ -843,6 +1232,8 @@ mod tests {
             voice_actors: vec![],
             settings: ProjectSettings::default(),
             drawing: DrawingData::default(),
+            languages: Vec::new(),
+            active_language_id: None,
         };
 
         let mut project = Project::new();
@@ -890,6 +1281,8 @@ mod tests {
             voice_actors: vec![],
             settings: ProjectSettings::default(),
             drawing: DrawingData::default(),
+            languages: Vec::new(),
+            active_language_id: None,
         };
 
         let (clipped, skipped) = data.clamp_to_total_frames(100);
@@ -904,7 +1297,9 @@ mod tests {
         let mut project = Project::new();
         project.add_line(0, 10, 0.25);
         project.add_line(10, 10, 0.5);
+        project.create_language_named("English");
         assert_eq!(project.line_count(), 2);
+        assert_eq!(project.language_count(), 2);
 
         let data = ProjectData {
             source_fps: 24.0,
@@ -925,9 +1320,73 @@ mod tests {
             voice_actors: vec![],
             settings: ProjectSettings::default(),
             drawing: DrawingData { strokes: vec![] },
+            languages: Vec::new(),
+            active_language_id: None,
         };
         data.apply_to_project(&mut project, 24.0);
         assert_eq!(project.line_count(), 1);
+        assert_eq!(project.language_count(), 1);
+        assert_eq!(project.active_language().name, "English");
+        assert_eq!(
+            project
+                .settings()
+                .export_configuration
+                .selected_language_ids,
+            vec![project.active_language_id()]
+        );
+    }
+
+    #[test]
+    fn subtitle_import_replaces_only_active_language_and_preserves_audio() {
+        let mut project = Project::new_with_language("Français", "fr");
+        project.add_line_full(0, 24, 0.5, "Bonjour".into(), "Alice".into(), [1.0; 4]);
+        let french_id = project.active_language_id();
+        project.set_language_instrumental_audio_path(french_id, Some("fr.wav".into()));
+        let english_id = project.create_language("English", "en");
+        project.set_language_instrumental_audio_path(english_id, Some("en.wav".into()));
+
+        let imported = ProjectData {
+            source_fps: 24.0,
+            lines: vec![LineData {
+                start_frame: 48,
+                duration_frames: 24,
+                y_slot: 0.5,
+                text: "Imported English".into(),
+                character_name: "Bob".into(),
+                character_color: [1.0; 4],
+                voice_actor_names: Vec::new(),
+                syllable_ratios: Vec::new(),
+                karaoke: false,
+                note: String::new(),
+            }],
+            markers: Vec::new(),
+            characters: Vec::new(),
+            voice_actors: Vec::new(),
+            settings: ProjectSettings::default(),
+            drawing: DrawingData::default(),
+            languages: Vec::new(),
+            active_language_id: None,
+        };
+
+        assert!(imported.apply_to_active_language(&mut project, 24.0));
+        assert_eq!(project.language_count(), 2);
+        assert_eq!(project.active_language_id(), english_id);
+        assert_eq!(project.lines().next().unwrap().text, "Imported English");
+        assert_eq!(
+            project
+                .language_instrumental_audio_path(english_id)
+                .as_deref(),
+            Some("en.wav")
+        );
+
+        let french = project.project_for_language(french_id).unwrap();
+        assert_eq!(french.lines().next().unwrap().text, "Bonjour");
+        assert_eq!(
+            project
+                .language_instrumental_audio_path(french_id)
+                .as_deref(),
+            Some("fr.wav")
+        );
     }
 
     #[test]
@@ -965,6 +1424,8 @@ mod tests {
             voice_actors: vec![],
             settings: ProjectSettings::default(),
             drawing: DrawingData { strokes: vec![] },
+            languages: Vec::new(),
+            active_language_id: None,
         };
 
         let mut project = Project::new();
@@ -989,6 +1450,8 @@ mod tests {
             voice_actors: vec![],
             settings: ProjectSettings::default(),
             drawing: DrawingData { strokes: vec![] },
+            languages: Vec::new(),
+            active_language_id: None,
         };
         let mut project = Project::new();
         data.apply_to_project(&mut project, 24.0);
@@ -1033,6 +1496,28 @@ mod tests {
         assert_eq!(data.lines[1].duration_frames, 2);
         assert_eq!(data.characters.len(), 1);
         assert_eq!(data.characters[0].name, "Character");
+    }
+
+    #[test]
+    fn test_import_ass_respects_format_role_color_and_text_commas() {
+        let ass = "[V4+ Styles]\nFormat: Name, Fontname, PrimaryColour\nStyle: Hero,Arial,&H00030201\n\n[Events]\nFormat: Layer, Start, End, Style, Name, Text\nDialogue: 0,0:00:01.00,0:00:03.50,Hero,Alice,{\\i1}Bonjour, le monde\\NDeuxième ligne\n";
+        let dir = std::env::temp_dir().join("coquerythmo_test_ass");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.ass");
+        std::fs::write(&path, ass).unwrap();
+
+        let data = import_ass(&path, 24.0).unwrap();
+        assert_eq!(data.lines.len(), 1);
+        assert_eq!(data.lines[0].start_frame, 24);
+        assert_eq!(data.lines[0].duration_frames, 60);
+        assert_eq!(data.lines[0].character_name, "Alice");
+        assert_eq!(data.lines[0].text, "Bonjour, le monde\nDeuxième ligne");
+        assert_eq!(
+            data.lines[0].character_color,
+            [1.0 / 255.0, 2.0 / 255.0, 3.0 / 255.0, 1.0]
+        );
+        assert_eq!(data.characters.len(), 1);
+        assert_eq!(data.characters[0].name, "Alice");
     }
 
     #[test]

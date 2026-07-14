@@ -200,14 +200,16 @@ impl CpuRenderer {
 
     /// Rasterize text into RGBA pixels at natural size, returns (pixels, width, height).
     fn rasterize_text(&mut self, text: &str, font_size: f32) -> (Vec<u8>, u32, u32) {
+        crate::vector_text::prepare_font_system(&mut self.font_system);
         let line_height = (font_size * 1.4).ceil();
         let mut buffer =
             GlyphonBuffer::new(&mut self.font_system, Metrics::new(font_size, line_height));
         buffer.set_size(&mut self.font_system, Some(10000.0), Some(line_height));
-        let rythmo_family = crate::config::get().ui.rythmo_font.clone();
-        let family = match &rythmo_family {
-            Some(name) => Family::Name(name),
-            None => Family::SansSerif,
+        let rythmo_family = crate::vector_text::rythmo_font_family_name();
+        let family = if rythmo_family == "sans-serif" {
+            Family::SansSerif
+        } else {
+            Family::Name(&rythmo_family)
         };
         buffer.set_text(
             &mut self.font_system,
@@ -543,7 +545,6 @@ impl CpuRenderer {
         let slot_header_h = badge_h.max(actor_icon_size);
         let font_size = constants::RYTHMO_FONT_SIZE * s;
         let badge_font = constants::BADGE_FONT_SIZE * s;
-        let badge_char_w = constants::BADGE_CHAR_W * s;
         self.render_index.refresh(project);
         let visible_frames = (width as f32 / ppf) as i64 + 4;
         let render_margin_frames = ((source_fps.max(1.0) * 10.0).round() as i64)
@@ -633,7 +634,21 @@ impl CpuRenderer {
             } else {
                 line.visual_x_width(current_frame as f64, center_x, ppf, w, s)
             };
-            if x1 + lw < 0.0 || x1 > w {
+            let badge_w = rythmo_layout::scaled_character_badge_width(&line.character_name, s);
+            let badge_x = rythmo_layout::leading_character_badge_x(x1, badge_w, s);
+            let show_badge = !line.karaoke || scene_line.character_label_visible;
+            let leading_visual = show_badge.then(|| {
+                rythmo_layout::leading_visual_bounds(
+                    badge_x,
+                    badge_w,
+                    (!line.karaoke)
+                        .then_some(line.voice_actor_names.len())
+                        .unwrap_or(0),
+                    actor_icon_size,
+                    3.0 * s,
+                )
+            });
+            if !rythmo_layout::line_or_badge_intersects_viewport(x1, lw, leading_visual, 0.0, w) {
                 return None;
             }
             let track = rythmo_layout::track_for_y_slot(track_layouts, line.y_slot)?;
@@ -679,7 +694,21 @@ impl CpuRenderer {
             } else {
                 line.visual_x_width(current_frame as f64, center_x, ppf, w, s)
             };
-            if x1 + lw < 0.0 || x1 > w {
+            let badge_w = rythmo_layout::scaled_character_badge_width(&line.character_name, s);
+            let badge_x = rythmo_layout::leading_character_badge_x(x1, badge_w, s);
+            let show_badge = !line.karaoke || scene_line.character_label_visible;
+            let leading_visual = show_badge.then(|| {
+                rythmo_layout::leading_visual_bounds(
+                    badge_x,
+                    badge_w,
+                    (!line.karaoke)
+                        .then_some(line.voice_actor_names.len())
+                        .unwrap_or(0),
+                    actor_icon_size,
+                    3.0 * s,
+                )
+            });
+            if !rythmo_layout::line_or_badge_intersects_viewport(x1, lw, leading_visual, 0.0, w) {
                 continue;
             }
 
@@ -699,12 +728,7 @@ impl CpuRenderer {
             // Rectangular, top-aligned, with right edge a few px left of the line's left edge.
             let badge_h = body_h * constants::BADGE_OVERLAP_HEIGHT_RATIO;
             let [cr, cg, cb, _] = line.character_color;
-            let badge_w = (line.character_name.chars().count().max(1) as f32 * badge_char_w
-                + 12.0 * s)
-                .max(16.0 * s);
-            let badge_x = x1 - badge_w - constants::BADGE_GAP * s;
             let badge_y = line_y;
-            let show_badge = !line.karaoke || scene_line.character_label_visible;
 
             // Rythmo text, rendered vectorially at final size.
             if !line.text.is_empty() && line.text != "↑" && line.text != "↓" {

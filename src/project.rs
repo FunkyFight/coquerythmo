@@ -5,7 +5,7 @@ use crate::constants::JS_MAX_SAFE_INTEGER;
 use crate::rythmo_drawing::{DrawingStroke, RythmoDrawing};
 use crate::rythmo_line::{RythmoLine, RythmoMarker};
 use crate::voice_actor::VoiceActor;
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{hash_map::Entry, BTreeMap, HashMap};
 
 const DEFAULT_COLORS: &[[f32; 4]] = &[
     [0.35, 0.55, 0.90, 1.0], // blue
@@ -20,6 +20,191 @@ const DEFAULT_COLORS: &[[f32; 4]] = &[
 
 use serde::{Deserialize, Serialize};
 
+pub type LanguageId = u64;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoExportAspect {
+    #[default]
+    Source,
+    Landscape16x9,
+    Portrait9x16,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoExportQuality {
+    P720,
+    #[default]
+    P1080,
+    P1440,
+    P8k,
+    Custom,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubtitleExportFormats {
+    #[serde(default)]
+    pub json: bool,
+    #[serde(default)]
+    pub srt: bool,
+    #[serde(default)]
+    pub ass: bool,
+    #[serde(default)]
+    pub detx: bool,
+}
+
+impl Default for SubtitleExportFormats {
+    fn default() -> Self {
+        Self {
+            json: false,
+            srt: false,
+            ass: false,
+            detx: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioExportFormats {
+    #[serde(default)]
+    pub mp3: bool,
+    #[serde(default)]
+    pub wav: bool,
+    #[serde(default)]
+    pub bwf_stems: bool,
+}
+
+impl Default for AudioExportFormats {
+    fn default() -> Self {
+        Self {
+            mp3: false,
+            wav: false,
+            bwf_stems: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossReferenceExportFormats {
+    #[serde(default)]
+    pub csv: bool,
+    #[serde(default)]
+    pub pdf: bool,
+}
+
+impl Default for CrossReferenceExportFormats {
+    fn default() -> Self {
+        Self {
+            csv: false,
+            pdf: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioSelection {
+    #[serde(default = "default_true")]
+    pub original: bool,
+    #[serde(default)]
+    pub instrumental: bool,
+}
+
+impl Default for AudioSelection {
+    fn default() -> Self {
+        Self {
+            original: true,
+            instrumental: false,
+        }
+    }
+}
+
+fn default_export_width() -> u32 {
+    1920
+}
+
+fn default_export_height() -> u32 {
+    1080
+}
+
+fn default_export_fps() -> f64 {
+    crate::constants::DEFAULT_EXPORT_FPS as f64
+}
+
+fn default_export_scale() -> f32 {
+    1.0
+}
+
+fn default_countdown_start() -> u32 {
+    3
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExportConfiguration {
+    #[serde(default = "default_true")]
+    pub video_enabled: bool,
+    #[serde(default)]
+    pub video_aspect: VideoExportAspect,
+    #[serde(default)]
+    pub video_quality: VideoExportQuality,
+    #[serde(default = "default_export_width")]
+    pub custom_width: u32,
+    #[serde(default = "default_export_height")]
+    pub custom_height: u32,
+    #[serde(default = "default_export_fps")]
+    pub fps: f64,
+    #[serde(default = "default_export_scale")]
+    pub br_scale: f32,
+    #[serde(default = "default_export_scale")]
+    pub karaoke_text_scale: f32,
+    #[serde(default)]
+    pub subtitle_formats: SubtitleExportFormats,
+    #[serde(default)]
+    pub audio_formats: AudioExportFormats,
+    #[serde(default)]
+    pub cross_reference_formats: CrossReferenceExportFormats,
+    #[serde(default)]
+    pub presence_grid_pdf: bool,
+    #[serde(default)]
+    pub pre_roll_seconds: f64,
+    #[serde(default)]
+    pub countdown_enabled: bool,
+    #[serde(default = "default_countdown_start")]
+    pub countdown_start: u32,
+    #[serde(default)]
+    pub selected_language_ids: Vec<LanguageId>,
+    #[serde(default)]
+    pub audio_by_language: BTreeMap<LanguageId, AudioSelection>,
+}
+
+impl Default for ExportConfiguration {
+    fn default() -> Self {
+        Self {
+            video_enabled: true,
+            video_aspect: VideoExportAspect::Source,
+            video_quality: VideoExportQuality::P1080,
+            custom_width: default_export_width(),
+            custom_height: default_export_height(),
+            fps: default_export_fps(),
+            br_scale: default_export_scale(),
+            karaoke_text_scale: default_export_scale(),
+            subtitle_formats: SubtitleExportFormats::default(),
+            audio_formats: AudioExportFormats::default(),
+            cross_reference_formats: CrossReferenceExportFormats::default(),
+            presence_grid_pdf: false,
+            pre_roll_seconds: 0.0,
+            countdown_enabled: false,
+            countdown_start: default_countdown_start(),
+            selected_language_ids: Vec::new(),
+            audio_by_language: BTreeMap::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProjectSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -28,6 +213,53 @@ pub struct ProjectSettings {
     pub source_audio_offset_frames: i64,
     #[serde(default)]
     pub instrumental_audio_offset_frames: i64,
+    #[serde(default, skip_serializing_if = "is_default_export_configuration")]
+    pub export_configuration: ExportConfiguration,
+}
+
+fn is_default_export_configuration(configuration: &ExportConfiguration) -> bool {
+    configuration == &ExportConfiguration::default()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectLanguage {
+    pub id: LanguageId,
+    pub name: String,
+    #[serde(default)]
+    pub code: String,
+}
+
+pub struct LanguageSnapshot {
+    pub language: ProjectLanguage,
+    pub project: Project,
+}
+
+impl Clone for LanguageSnapshot {
+    fn clone(&self) -> Self {
+        Self {
+            language: self.language.clone(),
+            project: self.project.snapshot(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct BandSnapshot {
+    line_map: HashMap<u64, RythmoLine>,
+    line_order: Vec<u64>,
+    markers: Vec<RythmoMarker>,
+    known_characters: Vec<Character>,
+    voice_actors: Vec<VoiceActor>,
+    drawing: RythmoDrawing,
+    color_index: usize,
+    revision: u64,
+    settings: ProjectSettings,
+}
+
+#[derive(Clone)]
+struct StoredLanguageSnapshot {
+    language: ProjectLanguage,
+    band: BandSnapshot,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -53,6 +285,9 @@ pub struct Project {
     color_index: usize,
     revision: u64,
     settings: ProjectSettings,
+    active_language: ProjectLanguage,
+    language_order: Vec<LanguageId>,
+    language_snapshots: HashMap<LanguageId, StoredLanguageSnapshot>,
 }
 
 impl Default for Project {
@@ -63,6 +298,25 @@ impl Default for Project {
 
 impl Project {
     pub fn new() -> Self {
+        Self::new_with_language("Français", "fr-fr")
+    }
+
+    pub fn new_with_language(name: impl Into<String>, code: impl Into<String>) -> Self {
+        let language = ProjectLanguage {
+            id: Self::generate_language_id_from(std::iter::empty()),
+            name: name.into(),
+            code: code.into(),
+        };
+        let language_id = language.id;
+        let mut settings = ProjectSettings::default();
+        settings
+            .export_configuration
+            .selected_language_ids
+            .push(language_id);
+        settings
+            .export_configuration
+            .audio_by_language
+            .insert(language_id, AudioSelection::default());
         Self {
             line_map: HashMap::new(),
             line_order: Vec::new(),
@@ -72,7 +326,10 @@ impl Project {
             drawing: RythmoDrawing::new(),
             color_index: 0,
             revision: 0,
-            settings: ProjectSettings::default(),
+            settings,
+            active_language: language,
+            language_order: vec![language_id],
+            language_snapshots: HashMap::new(),
         }
     }
 
@@ -87,6 +344,9 @@ impl Project {
             color_index: self.color_index,
             revision: self.revision,
             settings: self.settings.clone(),
+            active_language: self.active_language.clone(),
+            language_order: self.language_order.clone(),
+            language_snapshots: self.language_snapshots.clone(),
         }
     }
 
@@ -126,6 +386,398 @@ impl Project {
 
     pub fn settings(&self) -> &ProjectSettings {
         &self.settings
+    }
+
+    pub fn active_language(&self) -> &ProjectLanguage {
+        &self.active_language
+    }
+
+    pub fn active_language_id(&self) -> LanguageId {
+        self.active_language.id
+    }
+
+    pub fn language_count(&self) -> usize {
+        self.language_order.len()
+    }
+
+    pub fn languages(&self) -> Vec<ProjectLanguage> {
+        self.language_order
+            .iter()
+            .filter_map(|id| self.language(*id))
+            .collect()
+    }
+
+    pub fn language(&self, id: LanguageId) -> Option<ProjectLanguage> {
+        if id == self.active_language.id {
+            return Some(self.active_language.clone());
+        }
+        self.language_snapshots
+            .get(&id)
+            .map(|snapshot| snapshot.language.clone())
+    }
+
+    /// Return detached, mono-language snapshots in the stable language order.
+    ///
+    /// Each returned [`Project`] deliberately contains only its own language,
+    /// which prevents recursive language trees while keeping existing render
+    /// and export APIs usable without special cases.
+    pub fn language_snapshots(&self) -> Vec<LanguageSnapshot> {
+        self.language_order
+            .iter()
+            .filter_map(|id| {
+                let language = self.language(*id)?;
+                let project = self.project_for_language(*id)?;
+                Some(LanguageSnapshot { language, project })
+            })
+            .collect()
+    }
+
+    /// Materialize one language as a detached mono-language project.
+    pub fn project_for_language(&self, id: LanguageId) -> Option<Project> {
+        let global_export_configuration = self.settings.export_configuration.clone();
+        if id == self.active_language.id {
+            let mut band = self.current_band_snapshot();
+            band.settings.export_configuration = global_export_configuration;
+            return Some(Self::from_detached_band(self.active_language.clone(), band));
+        }
+
+        let stored = self.language_snapshots.get(&id)?;
+        let mut band = stored.band.clone();
+        band.settings.export_configuration = global_export_configuration;
+        Some(Self::from_detached_band(stored.language.clone(), band))
+    }
+
+    /// Create a language by duplicating the active rythmo band, select it, and
+    /// return its stable identifier. Instrumental audio is intentionally reset:
+    /// it belongs to the language, not to the duplicated text/timing data.
+    pub fn create_language(
+        &mut self,
+        name: impl Into<String>,
+        code: impl Into<String>,
+    ) -> LanguageId {
+        let mut name = name.into().trim().to_string();
+        if name.is_empty() {
+            name = "Language".to_string();
+        }
+        let mut code = code.into().trim().to_string();
+        if code.is_empty() {
+            code = name.clone();
+        }
+        let id = Self::generate_language_id_from(self.language_order.iter().copied());
+        let language = ProjectLanguage { id, name, code };
+
+        let mut global_export_configuration = self.settings.export_configuration.clone();
+        if !global_export_configuration
+            .selected_language_ids
+            .contains(&id)
+        {
+            global_export_configuration.selected_language_ids.push(id);
+        }
+        global_export_configuration
+            .audio_by_language
+            .insert(id, AudioSelection::default());
+        self.settings.export_configuration = global_export_configuration.clone();
+
+        let mut band = self.current_band_snapshot();
+        band.settings.instrumental_audio_path = None;
+        band.settings.instrumental_audio_offset_frames = 0;
+        band.settings.export_configuration = global_export_configuration;
+        self.language_order.push(id);
+        self.language_snapshots
+            .insert(id, StoredLanguageSnapshot { language, band });
+        let _ = self.select_language(id);
+        id
+    }
+
+    /// Convenience API for a free-form language name (the initial code is the
+    /// same string and can be refined later with [`Self::update_language`]).
+    pub fn create_language_named(&mut self, name: impl Into<String>) -> LanguageId {
+        let name = name.into();
+        self.create_language(name.clone(), name)
+    }
+
+    pub fn update_language(
+        &mut self,
+        id: LanguageId,
+        name: impl Into<String>,
+        code: impl Into<String>,
+    ) -> bool {
+        let name = name.into().trim().to_string();
+        if name.is_empty() {
+            return false;
+        }
+        let code = {
+            let value = code.into().trim().to_string();
+            if value.is_empty() {
+                name.clone()
+            } else {
+                value
+            }
+        };
+
+        if id == self.active_language.id {
+            if self.active_language.name == name && self.active_language.code == code {
+                return false;
+            }
+            self.active_language.name = name;
+            self.active_language.code = code;
+            return true;
+        }
+
+        let Some(snapshot) = self.language_snapshots.get_mut(&id) else {
+            return false;
+        };
+        if snapshot.language.name == name && snapshot.language.code == code {
+            return false;
+        }
+        snapshot.language.name = name;
+        snapshot.language.code = code;
+        true
+    }
+
+    pub fn rename_language(&mut self, id: LanguageId, name: impl Into<String>) -> bool {
+        let Some(language) = self.language(id) else {
+            return false;
+        };
+        let name = name.into();
+        let code = if language.code == language.name {
+            name.clone()
+        } else {
+            language.code
+        };
+        self.update_language(id, name, code)
+    }
+
+    pub fn language_instrumental_audio_path(&self, id: LanguageId) -> Option<String> {
+        if id == self.active_language.id {
+            return self.settings.instrumental_audio_path.clone();
+        }
+        self.language_snapshots
+            .get(&id)
+            .and_then(|snapshot| snapshot.band.settings.instrumental_audio_path.clone())
+    }
+
+    pub fn set_language_instrumental_audio_path(
+        &mut self,
+        id: LanguageId,
+        path: Option<String>,
+    ) -> bool {
+        let path = path.and_then(|value| {
+            let value = value.trim().to_string();
+            (!value.is_empty()).then_some(value)
+        });
+        if id == self.active_language.id {
+            if self.settings.instrumental_audio_path == path {
+                return false;
+            }
+            self.settings.instrumental_audio_path = path;
+            self.bump_revision();
+            return true;
+        }
+        let Some(snapshot) = self.language_snapshots.get_mut(&id) else {
+            return false;
+        };
+        if snapshot.band.settings.instrumental_audio_path == path {
+            return false;
+        }
+        snapshot.band.settings.instrumental_audio_path = path;
+        self.bump_revision();
+        true
+    }
+
+    pub fn select_language(&mut self, id: LanguageId) -> bool {
+        if id == self.active_language.id {
+            return true;
+        }
+        let Some(mut incoming) = self.language_snapshots.remove(&id) else {
+            return false;
+        };
+
+        let previous_revision = self.revision;
+        let global_export_configuration = self.settings.export_configuration.clone();
+        let outgoing = StoredLanguageSnapshot {
+            language: self.active_language.clone(),
+            band: self.current_band_snapshot(),
+        };
+        self.language_snapshots
+            .insert(outgoing.language.id, outgoing);
+
+        incoming.band.settings.export_configuration = global_export_configuration;
+        self.active_language = incoming.language;
+        self.restore_band_snapshot(incoming.band, previous_revision);
+        true
+    }
+
+    pub fn delete_language(&mut self, id: LanguageId) -> bool {
+        if self.language_order.len() <= 1 {
+            return false;
+        }
+        let Some(index) = self
+            .language_order
+            .iter()
+            .position(|language_id| *language_id == id)
+        else {
+            return false;
+        };
+
+        let mut global_export_configuration = self.settings.export_configuration.clone();
+        global_export_configuration
+            .selected_language_ids
+            .retain(|language_id| *language_id != id);
+        global_export_configuration.audio_by_language.remove(&id);
+
+        self.language_order.remove(index);
+        if id != self.active_language.id {
+            self.language_snapshots.remove(&id);
+            self.settings.export_configuration = global_export_configuration;
+            return true;
+        }
+
+        let replacement_index = index.min(self.language_order.len() - 1);
+        let replacement_id = self.language_order[replacement_index];
+        let Some(mut replacement) = self.language_snapshots.remove(&replacement_id) else {
+            return false;
+        };
+        let previous_revision = self.revision;
+        replacement.band.settings.export_configuration = global_export_configuration;
+        self.active_language = replacement.language;
+        self.restore_band_snapshot(replacement.band, previous_revision);
+        true
+    }
+
+    /// Collapse a legacy mono-language import onto the current UI language.
+    /// This also removes export selections that referred to discarded bands.
+    pub(crate) fn retain_active_language_only(&mut self) {
+        let active_id = self.active_language.id;
+        let audio_selection = self
+            .settings
+            .export_configuration
+            .audio_by_language
+            .get(&active_id)
+            .copied()
+            .unwrap_or_default();
+        self.language_snapshots.clear();
+        self.language_order.clear();
+        self.language_order.push(active_id);
+        self.settings.export_configuration.selected_language_ids = vec![active_id];
+        self.settings.export_configuration.audio_by_language.clear();
+        self.settings
+            .export_configuration
+            .audio_by_language
+            .insert(active_id, audio_selection);
+        self.bump_revision();
+    }
+
+    /// Replace the complete language collection from serialized data.
+    /// Invalid/duplicate entries are ignored; at least one language is required.
+    pub fn replace_language_snapshots(
+        &mut self,
+        snapshots: Vec<LanguageSnapshot>,
+        active_language_id: LanguageId,
+    ) -> bool {
+        let mut unique = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for mut snapshot in snapshots {
+            if !seen.insert(snapshot.language.id) {
+                continue;
+            }
+            if snapshot.language.name.trim().is_empty() {
+                continue;
+            }
+            if snapshot.language.code.trim().is_empty() {
+                snapshot.language.code = snapshot.language.name.clone();
+            }
+            unique.push(snapshot);
+        }
+        if unique.is_empty() {
+            return false;
+        }
+
+        let active_index = unique
+            .iter()
+            .position(|snapshot| snapshot.language.id == active_language_id)
+            .unwrap_or(0);
+        let language_order: Vec<LanguageId> =
+            unique.iter().map(|snapshot| snapshot.language.id).collect();
+        let active = unique.remove(active_index);
+        let previous_revision = self.revision;
+        let global_export_configuration = active.project.settings.export_configuration.clone();
+
+        self.language_order.clear();
+        self.language_snapshots.clear();
+        self.language_order = language_order;
+        self.active_language = active.language;
+        let mut active_band = active.project.current_band_snapshot();
+        active_band.settings.export_configuration = global_export_configuration.clone();
+        self.restore_band_snapshot(active_band, previous_revision);
+
+        for snapshot in unique {
+            let id = snapshot.language.id;
+            let mut band = snapshot.project.current_band_snapshot();
+            band.settings.export_configuration = global_export_configuration.clone();
+            self.language_snapshots.insert(
+                id,
+                StoredLanguageSnapshot {
+                    language: snapshot.language,
+                    band,
+                },
+            );
+        }
+        true
+    }
+
+    fn generate_language_id_from(ids: impl IntoIterator<Item = LanguageId>) -> LanguageId {
+        let used: std::collections::HashSet<LanguageId> = ids.into_iter().collect();
+        loop {
+            let id = rand::random::<u64>() % JS_MAX_SAFE_INTEGER;
+            if id != 0 && !used.contains(&id) {
+                return id;
+            }
+        }
+    }
+
+    fn current_band_snapshot(&self) -> BandSnapshot {
+        BandSnapshot {
+            line_map: self.line_map.clone(),
+            line_order: self.line_order.clone(),
+            markers: self.markers.clone(),
+            known_characters: self.known_characters.clone(),
+            voice_actors: self.voice_actors.clone(),
+            drawing: self.drawing.clone(),
+            color_index: self.color_index,
+            revision: self.revision,
+            settings: self.settings.clone(),
+        }
+    }
+
+    fn restore_band_snapshot(&mut self, band: BandSnapshot, previous_revision: u64) {
+        self.line_map = band.line_map;
+        self.line_order = band.line_order;
+        self.markers = band.markers;
+        self.known_characters = band.known_characters;
+        self.voice_actors = band.voice_actors;
+        self.drawing = band.drawing;
+        self.color_index = band.color_index;
+        self.settings = band.settings;
+        self.revision = band.revision.max(previous_revision).wrapping_add(1);
+    }
+
+    fn from_detached_band(language: ProjectLanguage, band: BandSnapshot) -> Self {
+        let id = language.id;
+        Self {
+            line_map: band.line_map,
+            line_order: band.line_order,
+            markers: band.markers,
+            known_characters: band.known_characters,
+            voice_actors: band.voice_actors,
+            drawing: band.drawing,
+            color_index: band.color_index,
+            revision: band.revision,
+            settings: band.settings,
+            active_language: language,
+            language_order: vec![id],
+            language_snapshots: HashMap::new(),
+        }
     }
 
     pub fn bump_revision(&mut self) {
@@ -401,10 +1053,17 @@ impl Project {
 
     /// Returns true if the project has no lines, no markers, and no characters.
     pub fn is_empty(&self) -> bool {
-        self.line_map.is_empty()
+        let active_empty = self.line_map.is_empty()
             && self.markers.is_empty()
             && self.known_characters.is_empty()
-            && self.voice_actors.is_empty()
+            && self.voice_actors.is_empty();
+        active_empty
+            && self.language_snapshots.values().all(|snapshot| {
+                snapshot.band.line_map.is_empty()
+                    && snapshot.band.markers.is_empty()
+                    && snapshot.band.known_characters.is_empty()
+                    && snapshot.band.voice_actors.is_empty()
+            })
     }
 
     /// Full reset: clear lines, markers, characters, and color index.
@@ -414,14 +1073,31 @@ impl Project {
         self.markers.clear();
         self.known_characters.clear();
         self.voice_actors.clear();
-        self.settings = ProjectSettings::default();
+        self.drawing = RythmoDrawing::new();
+        self.language_snapshots.clear();
+        self.language_order.clear();
+        self.language_order.push(self.active_language.id);
+        let mut settings = ProjectSettings::default();
+        settings
+            .export_configuration
+            .selected_language_ids
+            .push(self.active_language.id);
+        settings
+            .export_configuration
+            .audio_by_language
+            .insert(self.active_language.id, AudioSelection::default());
+        self.settings = settings;
         self.color_index = 0;
         self.bump_revision();
     }
 
     pub fn set_settings(&mut self, settings: ProjectSettings) {
         if self.settings != settings {
+            let export_configuration = settings.export_configuration.clone();
             self.settings = settings;
+            for snapshot in self.language_snapshots.values_mut() {
+                snapshot.band.settings.export_configuration = export_configuration.clone();
+            }
             self.bump_revision();
         }
     }
@@ -475,11 +1151,7 @@ impl Project {
         true
     }
 
-    pub fn set_drawing_strokes_points(
-        &mut self,
-        ids: &[u64],
-        points: &[Vec<(f64, f32)>],
-    ) -> bool {
+    pub fn set_drawing_strokes_points(&mut self, ids: &[u64], points: &[Vec<(f64, f32)>]) -> bool {
         let mut changed = false;
         for (index, id) in ids.iter().enumerate() {
             if let Some(new_points) = points.get(index) {
@@ -902,5 +1574,102 @@ mod tests {
         assert_eq!(Project::snap_y(0.3), 0.25);
         assert_eq!(Project::snap_y(0.6), 0.5);
         assert_eq!(Project::snap_y(0.9), 1.0);
+    }
+
+    #[test]
+    fn language_creation_duplicates_band_selects_it_and_resets_instrumental() {
+        let mut project = Project::new_with_language("Français", "fr-fr");
+        let french_id = project.active_language_id();
+        let line_id = project.add_line_full(
+            12,
+            48,
+            0.5,
+            "Bonjour".into(),
+            "Alice".into(),
+            [1.0, 0.0, 0.0, 1.0],
+        );
+        let mut settings = project.settings().clone();
+        settings.instrumental_audio_path = Some("fr_instrumental.wav".into());
+        settings.instrumental_audio_offset_frames = 9;
+        project.set_settings(settings);
+
+        let english_id = project.create_language_named("English");
+
+        assert_eq!(project.active_language_id(), english_id);
+        assert_eq!(project.active_language().name, "English");
+        assert_eq!(project.active_language().code, "English");
+        assert_eq!(project.get_line(line_id).unwrap().text, "Bonjour");
+        assert_eq!(project.settings().instrumental_audio_path, None);
+        assert_eq!(project.settings().instrumental_audio_offset_frames, 0);
+
+        let french = project.project_for_language(french_id).unwrap();
+        assert_eq!(french.get_line(line_id).unwrap().text, "Bonjour");
+        assert_eq!(
+            french.settings().instrumental_audio_path.as_deref(),
+            Some("fr_instrumental.wav")
+        );
+        assert_eq!(french.settings().instrumental_audio_offset_frames, 9);
+    }
+
+    #[test]
+    fn language_bands_are_independent_and_crud_keeps_one_language() {
+        let mut project = Project::new_with_language("Français", "fr-fr");
+        let french_id = project.active_language_id();
+        let line_id = project.add_line_full(0, 24, 0.25, "Bonjour".into(), "A".into(), [1.0; 4]);
+        let english_id = project.create_language_named("English");
+        project.get_line_mut(line_id).unwrap().text = "Hello".into();
+        assert!(project.rename_language(english_id, "English (US)"));
+
+        assert!(project.select_language(french_id));
+        assert_eq!(project.get_line(line_id).unwrap().text, "Bonjour");
+        assert_eq!(project.language(english_id).unwrap().name, "English (US)");
+        assert_eq!(project.language(english_id).unwrap().code, "English (US)");
+        assert!(project.delete_language(english_id));
+        assert_eq!(project.language_count(), 1);
+        assert!(!project.delete_language(french_id));
+    }
+
+    #[test]
+    fn export_configuration_is_shared_across_language_switches() {
+        let mut project = Project::new_with_language("Français", "fr-fr");
+        let french_id = project.active_language_id();
+        let english_id = project.create_language_named("English");
+        let mut settings = project.settings().clone();
+        settings.export_configuration.pre_roll_seconds = 2.5;
+        settings.export_configuration.countdown_enabled = true;
+        settings.export_configuration.video_aspect = VideoExportAspect::Portrait9x16;
+        project.set_settings(settings);
+
+        assert!(project.select_language(french_id));
+        assert_eq!(
+            project.settings().export_configuration.pre_roll_seconds,
+            2.5
+        );
+        assert!(project.settings().export_configuration.countdown_enabled);
+        assert_eq!(
+            project.settings().export_configuration.video_aspect,
+            VideoExportAspect::Portrait9x16
+        );
+        assert_eq!(
+            project
+                .project_for_language(english_id)
+                .unwrap()
+                .settings()
+                .export_configuration
+                .pre_roll_seconds,
+            2.5
+        );
+    }
+
+    #[test]
+    fn export_configuration_empty_json_uses_operational_defaults() {
+        let configuration: ExportConfiguration = serde_json::from_str("{}").unwrap();
+        assert!(configuration.video_enabled);
+        assert_eq!(configuration.video_aspect, VideoExportAspect::Source);
+        assert_eq!(configuration.video_quality, VideoExportQuality::P1080);
+        assert_eq!(configuration.custom_width, 1920);
+        assert_eq!(configuration.custom_height, 1080);
+        assert_eq!(configuration.countdown_start, 3);
+        assert!(AudioSelection::default().original);
     }
 }

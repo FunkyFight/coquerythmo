@@ -33,6 +33,9 @@ pub enum Command {
         snapshot: RythmoLine,
         index: usize,
     },
+    DeleteLines {
+        lines: Vec<(RythmoLine, usize)>,
+    },
     SplitLine {
         old_line: RythmoLine,
         old_index: usize,
@@ -142,6 +145,11 @@ impl Command {
             }
             Command::DeleteLine { snapshot, .. } => {
                 project.remove_line(snapshot.id);
+            }
+            Command::DeleteLines { lines } => {
+                for (snapshot, _) in lines {
+                    project.remove_line(snapshot.id);
+                }
             }
             Command::SplitLine {
                 first_line,
@@ -298,6 +306,13 @@ impl Command {
             }
             Command::DeleteLine { snapshot, index } => {
                 project.insert_line_at(*index, snapshot.clone());
+            }
+            Command::DeleteLines { lines } => {
+                let mut lines = lines.clone();
+                lines.sort_by_key(|(_, index)| *index);
+                for (snapshot, index) in lines {
+                    project.insert_line_at(index, snapshot);
+                }
             }
             Command::SplitLine {
                 old_line,
@@ -596,6 +611,35 @@ mod tests {
         assert_eq!(project.get_line(id).unwrap().text, "test");
 
         // Redo removes it again
+        history.redo(&mut project);
+        assert_eq!(project.line_count(), 0);
+    }
+
+    #[test]
+    fn test_undo_redo_delete_all_is_one_history_command() {
+        let mut project = Project::new();
+        let first = project.add_line_full(0, 10, 0.25, "first".into(), "A".into(), [1.0; 4]);
+        let second = project.add_line_full(10, 10, 0.5, "second".into(), "B".into(), [1.0; 4]);
+        let lines = vec![
+            (project.get_line(first).unwrap().clone(), 0),
+            (project.get_line(second).unwrap().clone(), 1),
+        ];
+        let mut history = CommandHistory::new();
+        let command = Command::DeleteLines { lines };
+        command.apply(&mut project);
+        history.push(command);
+        assert_eq!(project.line_count(), 0);
+
+        history.undo(&mut project);
+        assert_eq!(project.line_count(), 2);
+        assert_eq!(
+            project
+                .lines()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+
         history.redo(&mut project);
         assert_eq!(project.line_count(), 0);
     }

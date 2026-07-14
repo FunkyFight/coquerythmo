@@ -13,6 +13,26 @@ pub enum UiAction {
     ImportSrtProject,
     ExportProject,
     OpenExportModal,
+    OpenLanguages,
+    CreateLanguage {
+        name: String,
+    },
+    RenameLanguage {
+        id: u64,
+        name: String,
+    },
+    DeleteLanguage {
+        id: u64,
+    },
+    SelectLanguage {
+        id: u64,
+    },
+    PickLanguageInstrumentalAudio {
+        id: u64,
+    },
+    ClearLanguageInstrumentalAudio {
+        id: u64,
+    },
     StartExport {
         fps: f64,
         br_scale: f32,
@@ -31,6 +51,16 @@ pub enum UiAction {
         export_height: u32,
         export_original_audio: bool,
         export_instrumental_audio: bool,
+    },
+    StartConfiguredExport {
+        configuration: crate::project::ExportConfiguration,
+    },
+    StartConfiguredExportToPath {
+        output_path: std::path::PathBuf,
+        configuration: crate::project::ExportConfiguration,
+    },
+    SaveExportConfiguration {
+        configuration: crate::project::ExportConfiguration,
     },
     FilePickerSelected {
         intent: FilePickerIntent,
@@ -135,6 +165,10 @@ pub enum UiAction {
     StopEditing,
     ToggleKaraokeForSelection,
     OpenRecentProject {
+        video_path: std::path::PathBuf,
+        br_path: std::path::PathBuf,
+    },
+    RemoveRecentProject {
         video_path: std::path::PathBuf,
         br_path: std::path::PathBuf,
     },
@@ -279,6 +313,9 @@ pub enum FilePickerIntent {
     NewProjectSave,
     VoiceActorIcon,
     ProjectInstrumentalAudio,
+    LanguageInstrumentalAudio {
+        language_id: u64,
+    },
     ExportMp4 {
         fps: f64,
         br_scale: f32,
@@ -287,5 +324,8 @@ pub enum FilePickerIntent {
         export_height: u32,
         export_original_audio: bool,
         export_instrumental_audio: bool,
+    },
+    ConfiguredExport {
+        configuration: crate::project::ExportConfiguration,
     },
 }

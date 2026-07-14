@@ -1,6 +1,6 @@
 use super::interactive::{InteractiveResult, InteractiveState};
-use super::theme;
 use super::primitives::{EventResponse, LabelInfo, QuadInstance, Rect, UiEvent, Widget};
+use super::theme;
 
 pub struct TextButton {
     bounds: Rect,

@@ -4,15 +4,17 @@ use winit::event_loop::EventLoopWindowTarget;
 use super::event_loop::new_project_reset_and_pick_video;
 use super::event_loop::AppEvent;
 use super::file_picker::{
-    import_cappela_from_path, import_project_from_path, import_srt_from_path, open_dialog_filters,
-    open_file_picker, project_or_video_dir, quick_save_existing, save_dialog_filters,
-    save_project_as, video_or_project_dir,
+    import_cappela_from_path, import_project_from_path, import_subtitle_from_path,
+    open_dialog_filters, open_file_picker, project_or_video_dir, quick_save_existing,
+    quick_save_existing_with_continuation, save_dialog_filters, save_project_as,
+    save_project_as_with_continuation, video_or_project_dir,
 };
 use crate::application::command::TextCommand;
+use crate::application::job_service::SaveContinuation;
 use crate::state::State;
 use crate::ui::file_explorer::{FileExplorerMode, FilePickerIntent};
 use crate::ui::primitives::{EventResponse, UiAction, UiEvent};
-use crate::{config, export, i18n, packet, platform, video_export, video_proxy};
+use crate::{config, i18n, packet, platform, video_export, video_proxy};
 use std::sync::Arc;
 use winit::dpi::LogicalSize;
 
@@ -25,17 +27,19 @@ pub(crate) fn handle_file_picker_selected(
     elwt: &EventLoopWindowTarget<AppEvent>,
 ) {
     match intent {
-        FilePickerIntent::AddVideo => state.load_video(&path),
+        FilePickerIntent::AddVideo => {
+            if state.load_video(&path) {
+                state.project_session.dirty = true;
+            }
+        }
         FilePickerIntent::ImportProject => import_project_from_path(state, path),
         FilePickerIntent::ImportCappelaProject => import_cappela_from_path(state, path),
-        FilePickerIntent::ImportSrtProject => import_srt_from_path(state, path),
+        FilePickerIntent::ImportSrtProject => import_subtitle_from_path(state, path),
         FilePickerIntent::ExportProject | FilePickerIntent::QuickSave => {
             save_project_as(state, path);
         }
         FilePickerIntent::NewProjectSave => {
-            if save_project_as(state, path) {
-                new_project_reset_and_pick_video(state, elwt);
-            }
+            save_project_as_with_continuation(state, path, SaveContinuation::NewProject);
         }
         FilePickerIntent::VoiceActorIcon => {
             state.set_voice_actor_modal_icon_path(path.to_string_lossy().into_owned());
@@ -45,6 +49,12 @@ pub(crate) fn handle_file_picker_selected(
             state.set_project_instrumental_audio_path(path.clone());
             state.save_project_settings(Some(path));
             state.close_project_settings_modal();
+        }
+        FilePickerIntent::LanguageInstrumentalAudio { language_id } => {
+            state.set_language_instrumental_audio(
+                language_id,
+                Some(path.to_string_lossy().into_owned()),
+            );
         }
         FilePickerIntent::ExportMp4 {
             fps,
@@ -70,6 +80,16 @@ pub(crate) fn handle_file_picker_selected(
                 elwt,
             );
         }
+        FilePickerIntent::ConfiguredExport { configuration } => {
+            let _ = CommandDispatcher::dispatch(
+                UiAction::StartConfiguredExportToPath {
+                    output_path: path,
+                    configuration,
+                },
+                state,
+                elwt,
+            );
+        }
     }
 }
 
@@ -80,7 +100,13 @@ impl CommandDispatcher {
         elwt: &EventLoopWindowTarget<AppEvent>,
     ) -> bool {
         match action {
-            UiAction::CloseApp => return true,
+            UiAction::CloseApp => {
+                if state.is_project_save_in_progress() {
+                    state.show_toast(i18n::t("toast.close_blocked_saving"), 5.0);
+                } else {
+                    return true;
+                }
+            }
             UiAction::CloseSecondaryDisplay => state.close_secondary_display(),
             UiAction::Undo => state.undo(),
             UiAction::Redo => state.redo(),
@@ -98,22 +124,25 @@ impl CommandDispatcher {
                 );
             }
             UiAction::ExportProject => {
-                use export::{JsonExporter, ProjectExporter};
-                let exporter = JsonExporter;
-                let extensions = [exporter.extension()];
-                let filters = save_dialog_filters(exporter.description(), &extensions);
+                let filters = save_dialog_filters(
+                    "Projet Coquerythmo",
+                    &[crate::project_archive::PROJECT_EXTENSION],
+                );
                 open_file_picker(
                     state,
-                    i18n::t("picker.export.title"),
+                    i18n::t("picker.project_save.title"),
                     FileExplorerMode::Save,
                     FilePickerIntent::ExportProject,
                     filters,
                     project_or_video_dir(state),
-                    Some(exporter.extension()),
+                    Some(crate::project_archive::PROJECT_EXTENSION),
                 );
             }
             UiAction::ImportProject => {
-                let filters = open_dialog_filters("Bande rythmo JSON", &["json"]);
+                let filters = open_dialog_filters(
+                    "Projet Coquerythmo",
+                    &[crate::project_archive::PROJECT_EXTENSION, "json"],
+                );
                 open_file_picker(
                     state,
                     i18n::t("picker.import.title"),
@@ -137,7 +166,10 @@ impl CommandDispatcher {
                 );
             }
             UiAction::ImportSrtProject => {
-                let filters = open_dialog_filters("SubRip SRT", &["srt"]);
+                let filters = open_dialog_filters(
+                    "Sous-titres JSON / SRT / ASS / DETX",
+                    &["json", "srt", "ass", "detx"],
+                );
                 open_file_picker(
                     state,
                     i18n::t("picker.import.srt.title"),
@@ -149,21 +181,21 @@ impl CommandDispatcher {
                 );
             }
             UiAction::QuickSave => {
-                use export::{JsonExporter, ProjectExporter};
                 if state.project_session.project_path.is_some() {
                     quick_save_existing(state);
                 } else {
-                    let exporter = JsonExporter;
-                    let extensions = [exporter.extension()];
-                    let filters = save_dialog_filters(exporter.description(), &extensions);
+                    let filters = save_dialog_filters(
+                        "Projet Coquerythmo",
+                        &[crate::project_archive::PROJECT_EXTENSION],
+                    );
                     open_file_picker(
                         state,
-                        i18n::t("picker.export.title"),
+                        i18n::t("picker.project_save.title"),
                         FileExplorerMode::Save,
                         FilePickerIntent::QuickSave,
                         filters,
                         project_or_video_dir(state),
-                        Some(exporter.extension()),
+                        Some(crate::project_archive::PROJECT_EXTENSION),
                     );
                 }
             }
@@ -295,11 +327,57 @@ impl CommandDispatcher {
                 state.add_quick_line(text);
             }
             UiAction::OpenExportModal => {
-                if state.video_path().is_some() {
-                    state.open_export_modal();
-                } else {
-                    log::warn!("No video loaded — cannot export MP4");
-                }
+                state.open_export_modal();
+            }
+            UiAction::OpenLanguages => state.open_languages_modal(),
+            UiAction::CreateLanguage { name } => state.create_language(name),
+            UiAction::RenameLanguage { id, name } => state.rename_language(id, name),
+            UiAction::DeleteLanguage { id } => state.delete_language(id),
+            UiAction::SelectLanguage { id } => state.select_language(id),
+            UiAction::PickLanguageInstrumentalAudio { id } => {
+                let filters = open_dialog_filters(
+                    "Audio",
+                    &["wav", "mp3", "m4a", "aac", "flac", "ogg", "opus"],
+                );
+                open_file_picker(
+                    state,
+                    i18n::t("picker.instrumental_audio.title"),
+                    FileExplorerMode::Open,
+                    FilePickerIntent::LanguageInstrumentalAudio { language_id: id },
+                    filters,
+                    video_or_project_dir(state),
+                    None,
+                );
+            }
+            UiAction::ClearLanguageInstrumentalAudio { id } => {
+                state.set_language_instrumental_audio(id, None);
+            }
+            UiAction::SaveExportConfiguration { configuration } => {
+                state.save_export_configuration(configuration);
+            }
+            UiAction::StartConfiguredExport { configuration } => {
+                state.save_export_configuration(configuration.clone());
+                let filters = save_dialog_filters(
+                    "Export Coquerythmo",
+                    &[
+                        "mp4", "json", "srt", "ass", "detx", "mp3", "wav", "csv", "pdf",
+                    ],
+                );
+                open_file_picker(
+                    state,
+                    i18n::t("picker.delivery_export.title"),
+                    FileExplorerMode::Save,
+                    FilePickerIntent::ConfiguredExport { configuration },
+                    filters,
+                    video_or_project_dir(state),
+                    None,
+                );
+            }
+            UiAction::StartConfiguredExportToPath {
+                output_path,
+                configuration,
+            } => {
+                state.start_configured_export(output_path, configuration);
             }
             UiAction::OpenProxyModal => {
                 if state.video_path().is_none() {
@@ -445,6 +523,7 @@ impl CommandDispatcher {
                             source_audio_offset_frames,
                             instrumental_audio_offset_frames,
                             double_export_instrumental,
+                            0.0,
                             Some(render_backend_status.clone()),
                             cancel_for_job,
                             move |v| {
@@ -517,14 +596,34 @@ impl CommandDispatcher {
                 video_path,
                 br_path,
             } => {
-                if video_path.exists() && br_path.exists() {
-                    state.project_session.project_path = Some(br_path.clone());
-                    state.load_video(&video_path);
+                let is_bundle = br_path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| {
+                        extension.eq_ignore_ascii_case(crate::project_archive::PROJECT_EXTENSION)
+                    });
+                if is_bundle && br_path.exists() {
                     state.start_br_import(br_path);
-                    log::info!("Loading recent project");
+                    log::info!("Loading recent portable project");
+                } else if video_path.exists() && br_path.exists() {
+                    let previous_project_path = state.project_session.project_path.clone();
+                    state.project_session.project_path = Some(br_path.clone());
+                    if state.load_video(&video_path) {
+                        state.start_br_import(br_path);
+                        log::info!("Loading recent legacy project");
+                    } else {
+                        state.project_session.project_path = previous_project_path;
+                    }
                 } else {
                     log::warn!("Recent project files missing, skipping");
                 }
+            }
+            UiAction::RemoveRecentProject {
+                video_path,
+                br_path,
+            } => {
+                config::remove_recent_project(&video_path, &br_path);
+                state.rebuild_topbar_for_network();
             }
             UiAction::ToggleKaraokeForSelection => {
                 state.toggle_karaoke_for_selection();
@@ -660,7 +759,13 @@ impl CommandDispatcher {
                 rythmo_font,
                 scroll_speed,
             } => {
+                let font_changed = crate::config::get().ui.rythmo_font != rythmo_font;
                 crate::config::save_settings(lang, rythmo_font, scroll_speed);
+                if font_changed {
+                    crate::vector_text::clear_project_font();
+                    state.render.ui_renderer.clear_text_cache();
+                    state.project_session.dirty = true;
+                }
                 state.close_settings_modal();
             }
             UiAction::SaveProjectSettings {
@@ -675,7 +780,9 @@ impl CommandDispatcher {
                 state.offset_active_audio_by(delta_frames);
             }
             UiAction::NewProject => {
-                if state.project_session.dirty && !state.project_session.project.is_empty() {
+                if state.is_project_save_in_progress() {
+                    state.show_toast(i18n::t("toast.project_change_blocked_saving"), 5.0);
+                } else if state.project_session.dirty {
                     state.open_save_prompt();
                 } else {
                     new_project_reset_and_pick_video(state, elwt);
@@ -683,27 +790,29 @@ impl CommandDispatcher {
             }
             UiAction::NewProjectSave => {
                 if state.project_session.project_path.is_some() {
-                    if quick_save_existing(state) {
-                        new_project_reset_and_pick_video(state, elwt);
-                    }
+                    quick_save_existing_with_continuation(state, SaveContinuation::NewProject);
                 } else {
-                    use export::{JsonExporter, ProjectExporter};
-                    let exporter = JsonExporter;
-                    let extensions = [exporter.extension()];
-                    let filters = save_dialog_filters(exporter.description(), &extensions);
+                    let filters = save_dialog_filters(
+                        "Projet Coquerythmo",
+                        &[crate::project_archive::PROJECT_EXTENSION],
+                    );
                     open_file_picker(
                         state,
-                        i18n::t("picker.export.title"),
+                        i18n::t("picker.project_save.title"),
                         FileExplorerMode::Save,
                         FilePickerIntent::NewProjectSave,
                         filters,
                         project_or_video_dir(state),
-                        Some(exporter.extension()),
+                        Some(crate::project_archive::PROJECT_EXTENSION),
                     );
                 }
             }
             UiAction::NewProjectDiscard => {
-                new_project_reset_and_pick_video(state, elwt);
+                if state.is_project_save_in_progress() {
+                    state.show_toast(i18n::t("toast.project_change_blocked_saving"), 5.0);
+                } else {
+                    new_project_reset_and_pick_video(state, elwt);
+                }
             }
             UiAction::EnterStudioMode => {
                 state.enter_studio_mode();

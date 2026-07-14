@@ -63,7 +63,10 @@ pub(crate) fn new_project_reset_and_pick_video(
     state: &mut State,
     elwt: &EventLoopWindowTarget<AppEvent>,
 ) {
+    state.clear_video_for_new_project();
     EditExecutor::reset(&mut state.project_session);
+    crate::vector_text::clear_project_font();
+    state.render.ui_renderer.clear_text_cache();
     CommandDispatcher::dispatch(UiAction::AddVideo, state, elwt);
 }
 
@@ -166,7 +169,14 @@ pub fn run() {
                 }
 
                 match event {
-                WindowEvent::CloseRequested => elwt.exit(),
+                WindowEvent::CloseRequested => {
+                    if state.is_project_save_in_progress() {
+                        state.show_toast(i18n::t("toast.close_blocked_saving"), 5.0);
+                        state.request_redraw();
+                    } else {
+                        elwt.exit();
+                    }
+                }
                 WindowEvent::Resized(physical_size) => {
                     state.resize(physical_size);
                     state.request_redraw();
@@ -183,6 +193,31 @@ pub fn run() {
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
                     if event.state == ElementState::Pressed {
+                        if state.ui_shell.ui.has_active_progress() {
+                            if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+                                CommandDispatcher::dispatch(
+                                    UiAction::CancelExport,
+                                    &mut state,
+                                    elwt,
+                                );
+                                state.request_redraw();
+                            }
+                            return;
+                        }
+                        if state.ui_shell.ui.loading_project.is_some() {
+                            return;
+                        }
+                        // The translation manager is global, but never stack it over an
+                        // existing modal whose event routing would remain underneath it.
+                        if ctrl_held
+                            && !event.repeat
+                            && !state.captures_modal_input()
+                            && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("l"))
+                        {
+                            CommandDispatcher::dispatch(UiAction::OpenLanguages, &mut state, elwt);
+                            state.request_redraw();
+                            return;
+                        }
                         let mut contexts = Vec::new();
                         if state.is_rythmo_text_editing() {
                             contexts.push(InputContext::TextEditing);
@@ -509,12 +544,24 @@ pub fn run() {
                     }
                 }
                 WindowEvent::DroppedFile(path) => {
+                    if state.ui_shell.ui.has_active_progress() {
+                        return;
+                    }
                     let ext = path.extension()
                         .and_then(|e| e.to_str())
                         .map(|e| e.to_lowercase())
                         .unwrap_or_default();
                     if ["mp4", "mov", "avi", "mkv", "webm"].contains(&ext.as_str()) {
-                        state.load_video(&path);
+                        if state.load_video(&path) {
+                            state.project_session.dirty = true;
+                            state.request_redraw();
+                        }
+                    } else if [crate::project_archive::PROJECT_EXTENSION, "json"]
+                        .contains(&ext.as_str())
+                    {
+                        state.start_br_import(path);
+                    } else if ["srt", "ass", "detx"].contains(&ext.as_str()) {
+                        super::file_picker::import_subtitle_from_path(&mut state, path);
                         state.request_redraw();
                     }
                 }
@@ -523,6 +570,9 @@ pub fn run() {
             }
             Event::AboutToWait => {
                 let changed = state.tick_background();
+                if state.take_new_project_after_save_ready() {
+                    new_project_reset_and_pick_video(&mut state, elwt);
+                }
                 let needs_continuous = state.needs_continuous_redraw();
                 if changed || state.needs_redraw_now() {
                     state.request_redraw();

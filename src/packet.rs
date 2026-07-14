@@ -199,6 +199,11 @@ use crate::command::Command;
 
 impl Packetable for Command {
     fn to_packet(&self, project: &Project) -> Packet {
+        if matches!(self, Command::DeleteLines { .. }) {
+            return Packet::Sync {
+                project: ProjectData::from_project(project),
+            };
+        }
         let payload = match self {
             Command::CreateLine { snapshot, .. } => CommandPayload::CreateLine {
                 line: snapshot.clone(),
@@ -209,6 +214,7 @@ impl Packetable for Command {
             Command::DeleteLine { snapshot, .. } => CommandPayload::DeleteLine {
                 line_id: snapshot.id,
             },
+            Command::DeleteLines { .. } => unreachable!("handled as a full sync above"),
             Command::SplitLine {
                 first_line,
                 second_line,

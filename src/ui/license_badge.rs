@@ -1,8 +1,8 @@
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use super::theme;
 use super::primitives::{EventResponse, LabelInfo, QuadInstance, Rect, UiEvent, Widget};
+use super::theme;
 
 static ANIM_START: OnceLock<Instant> = OnceLock::new();
 

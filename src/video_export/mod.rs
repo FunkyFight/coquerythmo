@@ -8,6 +8,7 @@ mod capabilities;
 mod ffmpeg;
 mod frame_source;
 mod pipeline;
+pub mod preroll;
 mod progress;
 mod types;
 

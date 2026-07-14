@@ -12,7 +12,8 @@ use crate::application::context::AppContext;
 use crate::application::delta_codec::{decode_delta, encode_delta};
 use crate::application::edit_service::{EditExecutor, EditOrigin};
 use crate::application::job_service::{
-    JobManager, PendingExportJob, PendingImportJob, PendingProxyJob,
+    JobManager, PendingExportJob, PendingImportJob, PendingProxyJob, PendingSaveJob,
+    SaveContinuation,
 };
 use crate::application::playback_service::PlaybackSession;
 use crate::application::project_service::ProjectSession;
@@ -135,15 +136,13 @@ impl State {
         self.project_session
             .render_index
             .refresh(&self.project_session.project);
-        self.ui_shell
-            .ui
-            .handle_event(
-                event,
-                &self.project_session.project,
-                &self.project_session.render_index,
-                render_frame,
-                fps,
-            )
+        self.ui_shell.ui.handle_event(
+            event,
+            &self.project_session.project,
+            &self.project_session.render_index,
+            render_frame,
+            fps,
+        )
     }
 
     pub fn is_rythmo_text_editing(&self) -> bool {
@@ -164,6 +163,61 @@ impl State {
         }
     }
 
+    pub fn is_project_save_in_progress(&self) -> bool {
+        self.jobs.pending_save_job.is_some()
+    }
+
+    pub fn take_new_project_after_save_ready(&mut self) -> bool {
+        std::mem::take(&mut self.jobs.new_project_after_save_ready)
+    }
+
+    pub(crate) fn start_project_save(
+        &mut self,
+        path: PathBuf,
+        source_video: PathBuf,
+        proxy_video: Option<PathBuf>,
+        font_asset: PathBuf,
+        continuation: SaveContinuation,
+    ) -> bool {
+        if self.jobs.pending_save_job.is_some() {
+            self.show_toast(crate::i18n::t("toast.save_already_running"), 4.0);
+            return false;
+        }
+
+        let project = self.project_session.project.snapshot();
+        let saved_revision = project.revision();
+        let fps = self.fps();
+        let worker_path = path.clone();
+        let worker_source = source_video.clone();
+        let worker_proxy = proxy_video.clone();
+        let worker_font = font_asset.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = crate::project_archive::save_bundle(
+                &project,
+                fps,
+                &worker_path,
+                &worker_source,
+                worker_proxy.as_deref(),
+                Some(&worker_font),
+            )
+            .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+
+        self.jobs.pending_save_job = Some(PendingSaveJob {
+            path,
+            saved_revision,
+            source_video,
+            proxy_video,
+            font_asset,
+            continuation,
+            receiver,
+        });
+        self.show_toast(crate::i18n::t("toast.save_started"), 5.0);
+        true
+    }
+
     pub fn set_export_cancel(&mut self, cancel: Option<Arc<AtomicBool>>) {
         self.jobs.active_export_cancel = cancel;
     }
@@ -171,7 +225,7 @@ impl State {
     pub fn cancel_export(&mut self) {
         if let Some(cancel) = &self.jobs.active_export_cancel {
             cancel.store(true, Ordering::Relaxed);
-            self.ui_shell.ui.progress_prefix = "Annulation...".to_string();
+            self.ui_shell.ui.progress_prefix = crate::i18n::t("progress.canceling").to_string();
         }
     }
 
@@ -351,22 +405,172 @@ impl State {
 
     pub fn open_export_modal(&mut self) {
         let (video_width, video_height) = self.source_video_size().unwrap_or((1920, 1080));
-        self.ui_shell.ui.open_export_modal(
-            video_width,
-            video_height,
-            self.project_session
-                .project
-                .settings()
-                .instrumental_audio_path
-                .as_deref()
-                .is_some_and(|path| !path.trim().is_empty()),
+        let languages = self
+            .project_session
+            .project
+            .languages()
+            .into_iter()
+            .map(|language| crate::ui::export_modal::ExportLanguageOption {
+                id: language.id,
+                name: language.name,
+                has_instrumental: self
+                    .project_session
+                    .project
+                    .language_instrumental_audio_path(language.id)
+                    .as_deref()
+                    .is_some_and(|path| !path.trim().is_empty()),
+            })
+            .collect();
+        let configuration = self
+            .project_session
+            .project
+            .settings()
+            .export_configuration
+            .clone();
+        self.ui_shell
+            .ui
+            .open_export_modal(video_width, video_height, languages, configuration);
+    }
+
+    fn language_modal_items(&self) -> Vec<crate::ui::language_modal::LanguageListItem> {
+        self.project_session
+            .project
+            .languages()
+            .into_iter()
+            .map(|language| crate::ui::language_modal::LanguageListItem {
+                id: language.id,
+                name: language.name,
+                instrumental_audio_path: self
+                    .project_session
+                    .project
+                    .language_instrumental_audio_path(language.id),
+            })
+            .collect()
+    }
+
+    pub fn open_languages_modal(&mut self) {
+        let active = self.project_session.project.active_language_id();
+        let languages = self.language_modal_items();
+        self.ui_shell.ui.open_languages_modal(languages, active);
+    }
+
+    fn refresh_languages_modal(&mut self) {
+        let active = self.project_session.project.active_language_id();
+        let languages = self.language_modal_items();
+        self.ui_shell.ui.refresh_languages_modal(languages, active);
+    }
+
+    pub fn create_language(&mut self, name: String) {
+        let id = self
+            .project_session
+            .project
+            .create_language_named(name.clone());
+        self.project_session.dirty = true;
+        self.project_session.history.clear();
+        self.project_session.render_index = crate::render_index::ProjectRenderIndex::new();
+        self.ui_shell.ui.clear_selection();
+        self.sync_audio_settings_to_player();
+        self.refresh_languages_modal();
+        let selected = self
+            .project_session
+            .project
+            .language(id)
+            .map(|language| language.name)
+            .unwrap_or(name);
+        self.show_toast(
+            format!("{} {}", crate::i18n::t("toast.language_created"), selected),
+            4.0,
         );
     }
 
-    pub fn open_file_explorer(
+    pub fn rename_language(&mut self, id: u64, name: String) {
+        if self
+            .project_session
+            .project
+            .rename_language(id, name.clone())
+        {
+            self.project_session.dirty = true;
+            self.refresh_languages_modal();
+            self.show_toast(
+                format!("{} {}", crate::i18n::t("toast.language_renamed"), name),
+                3.0,
+            );
+        }
+    }
+
+    pub fn select_language(&mut self, id: u64) {
+        if id == self.project_session.project.active_language_id() {
+            return;
+        }
+        if self.project_session.project.select_language(id) {
+            self.project_session.dirty = true;
+            self.project_session.history.clear();
+            self.project_session.render_index = crate::render_index::ProjectRenderIndex::new();
+            self.ui_shell.ui.clear_selection();
+            self.sync_audio_settings_to_player();
+            self.refresh_languages_modal();
+            if let Some(language) = self.project_session.project.language(id) {
+                self.show_toast(
+                    format!(
+                        "{} {}",
+                        crate::i18n::t("toast.language_selected"),
+                        language.name
+                    ),
+                    3.0,
+                );
+            }
+        }
+    }
+
+    pub fn delete_language(&mut self, id: u64) {
+        let name = self
+            .project_session
+            .project
+            .language(id)
+            .map(|language| language.name)
+            .unwrap_or_default();
+        if self.project_session.project.delete_language(id) {
+            self.project_session.dirty = true;
+            self.project_session.history.clear();
+            self.project_session.render_index = crate::render_index::ProjectRenderIndex::new();
+            self.ui_shell.ui.clear_selection();
+            self.sync_audio_settings_to_player();
+            self.refresh_languages_modal();
+            self.show_toast(
+                format!("{} {}", crate::i18n::t("toast.language_deleted"), name),
+                3.0,
+            );
+        }
+    }
+
+    pub fn set_language_instrumental_audio(&mut self, id: u64, path: Option<String>) {
+        if self
+            .project_session
+            .project
+            .set_language_instrumental_audio_path(id, path)
+        {
+            self.project_session.dirty = true;
+            if id == self.project_session.project.active_language_id() {
+                self.sync_audio_settings_to_player();
+            }
+            self.refresh_languages_modal();
+        }
+    }
+
+    pub fn save_export_configuration(
         &mut self,
-        request: crate::ui::file_explorer::FileExplorerRequest,
+        configuration: crate::project::ExportConfiguration,
     ) {
+        let mut settings = self.project_session.project.settings().clone();
+        if settings.export_configuration == configuration {
+            return;
+        }
+        settings.export_configuration = configuration;
+        self.project_session.project.set_settings(settings);
+        self.project_session.dirty = true;
+    }
+
+    pub fn open_file_explorer(&mut self, request: crate::ui::file_explorer::FileExplorerRequest) {
         self.ui_shell.ui.open_file_explorer(request);
     }
 
@@ -571,14 +775,43 @@ impl State {
             .or_else(|| self.playback.video_player.as_ref().and_then(|p| p.path()))
     }
 
-    pub fn load_video(&mut self, path: &Path) {
+    pub fn load_video(&mut self, path: &Path) -> bool {
         let proxy_path = self
             .project_session
             .project_path
             .as_ref()
             .and_then(|br_path| crate::video_proxy::linked_proxy_path(br_path, path));
-        self.load_video_for_playback(path, proxy_path.as_deref(), None);
-        self.sync_audio_settings_to_player();
+        let loaded = self.load_video_for_playback(path, proxy_path.as_deref(), None);
+        if loaded {
+            self.sync_audio_settings_to_player();
+        }
+        loaded
+    }
+
+    /// Drop the decoder before releasing a portable project's extraction
+    /// guard, so no player keeps paths into an already-cleaned temporary tree.
+    pub fn clear_video_for_new_project(&mut self) {
+        if self.ui_shell.ui.is_playing() {
+            self.ui_shell.ui.toggle_play_pause();
+        }
+        self.playback.video_player = None;
+        self.playback.source_video_path = None;
+        self.playback.source_video_size = None;
+        self.playback.proxy_video_path = None;
+        self.playback.last_scroll_time = None;
+        self.playback.scroll_needs_decode = false;
+        self.playback.last_waveform_revision = 0;
+        self.ui_shell.ui.has_video = false;
+        self.ui_shell.ui.total_frames = 0;
+        self.playback.timeline.emit(TimelineEvent::PlaybackStopped);
+        self.playback.timeline.emit(TimelineEvent::VideoLoaded {
+            fps: 30.0,
+            total_frames: 0,
+        });
+        self.playback
+            .timeline
+            .emit(TimelineEvent::FrameChanged { frame: 0 });
+        self.rebuild_topbar_for_network();
     }
 
     pub fn reload_linked_proxy(&mut self) {
@@ -641,11 +874,88 @@ impl State {
         self.jobs.pending_export_job = Some(PendingExportJob { receiver });
     }
 
+    pub fn start_configured_export(
+        &mut self,
+        output_base: PathBuf,
+        configuration: crate::project::ExportConfiguration,
+    ) {
+        let audio_outputs_enabled = configuration.audio_formats.mp3
+            || configuration.audio_formats.wav
+            || configuration.audio_formats.bwf_stems;
+        let original_audio_selected =
+            configuration
+                .selected_language_ids
+                .iter()
+                .any(|language_id| {
+                    configuration
+                        .audio_by_language
+                        .get(language_id)
+                        .copied()
+                        .unwrap_or_default()
+                        .original
+                });
+        let source_video = self.video_path();
+        if source_video.is_none()
+            && (configuration.video_enabled || (audio_outputs_enabled && original_audio_selected))
+        {
+            self.show_toast(crate::i18n::t("toast.export_requires_video"), 4.0);
+            return;
+        }
+        self.save_export_configuration(configuration.clone());
+        let project = self.project_session.project.snapshot();
+        let source_fps = self.fps();
+        let source_total_frames = self.total_frames();
+        let source_size = self.source_video_size().unwrap_or((1920, 1080));
+        let progress = Arc::new(std::sync::atomic::AtomicU32::new(0.0_f32.to_bits()));
+        let progress_for_ui = progress.clone();
+        let render_backend = Arc::new(std::sync::atomic::AtomicU32::new(
+            crate::video_export::EXPORT_RENDER_BACKEND_UNKNOWN,
+        ));
+        let render_backend_for_ui = render_backend.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_for_job = cancel.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            progress.store(0.001_f32.to_bits(), Ordering::Relaxed);
+            let result =
+                crate::configured_export::run(crate::configured_export::ConfiguredExportContext {
+                    project: &project,
+                    source_video: source_video.as_deref(),
+                    output_base: &output_base,
+                    source_fps,
+                    source_total_frames,
+                    source_size,
+                    configuration: &configuration,
+                    render_backend_status: Some(render_backend),
+                    progress: progress.clone(),
+                    cancel: cancel_for_job,
+                })
+                .map(|outputs| {
+                    for output in outputs {
+                        log::info!("Delivery exported to {}", output.display());
+                    }
+                });
+            let _ = sender.send(result);
+            progress.store(2.0_f32.to_bits(), Ordering::Relaxed);
+        });
+
+        self.set_progress_label(crate::i18n::t("progress.exporting"));
+        self.set_export_render_backend(Some(render_backend_for_ui));
+        self.set_export_progress(Some(progress_for_ui));
+        self.set_export_cancel(Some(cancel));
+        self.watch_export_job(receiver);
+    }
+
     /// Kick off a background parse of a bande rythmo file and show a loading
     /// modal while it runs. `apply_to_project` (main-thread) happens on completion.
     pub fn start_br_import(&mut self, br_path: PathBuf) {
-        use crate::export::{JsonImporter, ProjectImporter};
         use std::sync::mpsc;
+
+        if self.is_project_save_in_progress() {
+            self.show_toast(crate::i18n::t("toast.project_change_blocked_saving"), 5.0);
+            return;
+        }
 
         let label = br_path
             .file_stem()
@@ -654,7 +964,8 @@ impl State {
         let (tx, rx) = mpsc::channel();
         let thread_path = br_path.clone();
         std::thread::spawn(move || {
-            let result = JsonImporter.import(&thread_path);
+            let result = crate::project_archive::load_project_file(&thread_path)
+                .map_err(|error| error.to_string());
             let _ = tx.send(result);
         });
         self.jobs.pending_import_job = Some(PendingImportJob {
@@ -670,7 +981,7 @@ impl State {
         source_path: &Path,
         proxy_path: Option<&Path>,
         seek_frame: Option<i64>,
-    ) {
+    ) -> bool {
         let (bgl, sampler) = self.renderer_refs();
         let mut player = VideoPlayer::new();
 
@@ -714,7 +1025,7 @@ impl State {
                     format!("{} {detail}", crate::i18n::t("toast.video_load_failed")),
                     6.0,
                 );
-                return;
+                return false;
             }
         }
 
@@ -762,6 +1073,7 @@ impl State {
         self.ui_shell.ui.has_video = true;
         self.ui_shell.ui.total_frames = total;
         self.rebuild_topbar_for_network();
+        true
     }
 
     pub fn toggle_play_pause(&mut self) {
@@ -1157,6 +1469,8 @@ impl State {
     /// delta. Encoding happens before `apply` because move-marker deltas read
     /// the marker's current position from the project.
     fn execute_and_broadcast(&mut self, cmd: Command) {
+        let requires_full_sync =
+            matches!(cmd, Command::DeleteLines { .. }) && self.collaboration.network.is_in_room();
         let payload = if self.collaboration.network.is_in_room() {
             encode_delta(&cmd, &self.project_session.project)
         } else {
@@ -1165,6 +1479,8 @@ impl State {
         EditExecutor::execute(&mut self.project_session, cmd, EditOrigin::Local);
         if let Some(payload) = payload {
             self.collaboration.network.send_raw("delta", payload);
+        } else if requires_full_sync {
+            self.broadcast_full_sync();
         }
     }
 
@@ -1399,7 +1715,25 @@ impl State {
                         });
                     }
                 }
-                Selection::AllLines => {}
+                Selection::AllLines => {
+                    // Snapshot the active band before mutating it. Deleting
+                    // through canonical commands keeps undo/redo and network
+                    // collaboration consistent with single-line deletion.
+                    let lines: Vec<_> = self
+                        .project_session
+                        .project
+                        .lines()
+                        .filter_map(|line| {
+                            self.project_session
+                                .project
+                                .line_index(line.id)
+                                .map(|index| (line.clone(), index))
+                        })
+                        .collect();
+                    if !lines.is_empty() {
+                        self.execute_and_broadcast(Command::DeleteLines { lines });
+                    }
+                }
                 Selection::Strokes(ids) => {
                     if !ids.is_empty() {
                         self.erase_drawing_strokes(ids.clone());
@@ -1609,8 +1943,9 @@ impl State {
         self.ui_shell.ui.rythmo_state.dragging = None;
         self.ui_shell.ui.rythmo_state.syllable_drag = None;
         self.ui_shell.ui.rythmo_state.context_menu = None;
-        self.ui_shell.ui.rythmo_state.selected =
-            Some(crate::workspaces::rythmo::view::Selection::Line(second_line.id));
+        self.ui_shell.ui.rythmo_state.selected = Some(
+            crate::workspaces::rythmo::view::Selection::Line(second_line.id),
+        );
 
         self.execute_and_broadcast(Command::SplitLine {
             old_line,
@@ -2424,8 +2759,14 @@ impl State {
                     .is_some_and(|path| crate::video_proxy::paths_match(path, &job.source_path))
                 {
                     let frame = self.current_frame();
-                    self.load_video_for_playback(&job.source_path, Some(&proxy_path), Some(frame));
-                    self.show_toast(crate::i18n::t("toast.proxy_created"), 4.0);
+                    if self.load_video_for_playback(
+                        &job.source_path,
+                        Some(&proxy_path),
+                        Some(frame),
+                    ) {
+                        self.project_session.dirty = true;
+                        self.show_toast(crate::i18n::t("toast.proxy_created"), 4.0);
+                    }
                 } else {
                     self.show_toast(crate::i18n::t("toast.proxy_created_not_loaded"), 5.0);
                 }
@@ -2461,14 +2802,14 @@ impl State {
         self.set_export_progress(None);
         match result {
             Ok(()) => {
-                log::info!("MP4 export completed");
+                log::info!("Export completed");
                 self.show_toast(crate::i18n::t("toast.export_completed"), 4.0);
             }
             Err(e) => {
                 if crate::video_export::is_cancelled_error(&e) {
-                    log::info!("MP4 export canceled");
+                    log::info!("Export canceled");
                 } else {
-                    log::error!("MP4 export failed: {e}");
+                    log::error!("Export failed: {e}");
                     self.show_toast(
                         format!("{} {e}", crate::i18n::t("toast.export_failed")),
                         8.0,
@@ -2500,16 +2841,56 @@ impl State {
         self.ui_shell.ui.loading_project = None;
 
         match result {
-            Ok(data) => {
-                let fps = self.fps();
-                EditExecutor::apply_import(&mut self.project_session, data, fps);
-                self.sync_audio_settings_to_player();
-                self.project_session.project_path = Some(job.br_path.clone());
-                self.reload_linked_proxy();
-                if let Some(video) = self.video_path() {
-                    crate::config::add_recent_project(video, job.br_path.clone());
-                    self.rebuild_topbar_for_network();
+            Ok(loaded) => {
+                let is_legacy_json = loaded.is_legacy_json();
+                let bundled_source = loaded.source_video_path.clone();
+                let bundled_proxy = loaded.proxy_video_path.clone();
+                if let Some(source) = bundled_source.as_deref() {
+                    if !self.load_video_for_playback(source, bundled_proxy.as_deref(), None) {
+                        let message = crate::i18n::t("toast.import_video_failed");
+                        log::error!("{message} {}", source.display());
+                        self.show_toast(message, 7.0);
+                        return true;
+                    }
                 }
+
+                crate::vector_text::clear_project_font();
+                if let Some(font_path) = loaded.font_asset_path.as_deref() {
+                    if let Some(family) = crate::vector_text::register_project_font_file(font_path)
+                    {
+                        log::info!("Loaded bundled rythmo font: {family}");
+                    } else {
+                        log::warn!("Bundled font could not be loaded: {}", font_path.display());
+                    }
+                }
+                let fps = self.fps();
+                loaded
+                    .project_data
+                    .apply_to_project(&mut self.project_session.project, fps);
+                self.project_session.history.clear();
+                self.project_session.dirty = false;
+                self.sync_audio_settings_to_player();
+                self.project_session.project_path = if is_legacy_json {
+                    None
+                } else {
+                    Some(job.br_path.clone())
+                };
+                if is_legacy_json {
+                    self.show_toast(crate::i18n::t("toast.legacy_project_loaded"), 6.0);
+                }
+                self.project_session.render_index = crate::render_index::ProjectRenderIndex::new();
+                self.render.ui_renderer.clear_text_cache();
+                if is_legacy_json {
+                    if let Some(video) = self.video_path() {
+                        crate::config::add_recent_project(video, job.br_path.clone());
+                    }
+                } else {
+                    crate::config::add_recent_project(job.br_path.clone(), job.br_path.clone());
+                }
+                if !is_legacy_json {
+                    self.project_session.loaded_project = Some(loaded);
+                }
+                self.rebuild_topbar_for_network();
                 log::info!("Project imported from {}", job.br_path.display());
             }
             Err(e) => {
@@ -2521,6 +2902,64 @@ impl State {
             }
         }
 
+        true
+    }
+
+    fn poll_save_job(&mut self) -> bool {
+        let result = match self.jobs.pending_save_job.as_ref() {
+            Some(job) => match job.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err("Project save job disconnected".into()))
+                }
+            },
+            None => None,
+        };
+        let Some(result) = result else {
+            return false;
+        };
+        let Some(job) = self.jobs.pending_save_job.take() else {
+            return false;
+        };
+
+        match result {
+            Ok(()) => {
+                let current_font = crate::vector_text::selected_font_asset().map(|(_, path)| path);
+                let snapshot_is_current = self.project_session.project.revision()
+                    == job.saved_revision
+                    && self.video_path().as_ref() == Some(&job.source_video)
+                    && self.playback.proxy_video_path == job.proxy_video
+                    && current_font.as_ref() == Some(&job.font_asset);
+
+                self.project_session.project_path = Some(job.path.clone());
+                if snapshot_is_current {
+                    self.project_session.dirty = false;
+                }
+                crate::config::add_recent_project(job.path.clone(), job.path.clone());
+                self.rebuild_topbar_for_network();
+                self.show_toast(crate::i18n::t("toast.saved"), 4.0);
+                log::info!("Project saved to {}", job.path.display());
+
+                if job.continuation == SaveContinuation::NewProject {
+                    if snapshot_is_current {
+                        self.jobs.new_project_after_save_ready = true;
+                    } else {
+                        self.show_toast(
+                            crate::i18n::t("toast.new_project_canceled_after_edit"),
+                            7.0,
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                log::error!("Project save failed: {error}");
+                self.show_toast(
+                    format!("{} {error}", crate::i18n::t("toast.save_failed")),
+                    8.0,
+                );
+            }
+        }
         true
     }
 
@@ -2573,6 +3012,7 @@ impl State {
         changed |= self.poll_export_job();
         changed |= self.poll_proxy_job();
         changed |= self.poll_import_job();
+        changed |= self.poll_save_job();
         changed |= self.poll_file_explorer();
         changed |= self.poll_waveform_change();
         changed
@@ -2620,6 +3060,7 @@ impl State {
         if self.ui_shell.ui.has_active_progress()
             || self.jobs.pending_proxy_job.is_some()
             || self.jobs.pending_import_job.is_some()
+            || self.jobs.pending_save_job.is_some()
         {
             return now.duration_since(self.render.last_redraw) >= Duration::from_millis(100);
         }
@@ -2671,6 +3112,7 @@ impl State {
         if self.ui_shell.ui.has_active_progress()
             || self.jobs.pending_proxy_job.is_some()
             || self.jobs.pending_import_job.is_some()
+            || self.jobs.pending_save_job.is_some()
         {
             push_deadline(self.render.last_redraw + Duration::from_millis(100));
         }

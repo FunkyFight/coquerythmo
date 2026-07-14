@@ -25,6 +25,78 @@ pub fn y_slot_for_track_index(track_index: usize) -> f32 {
         .clamp(0.0, 0.75)
 }
 
+/// Returns whether either a line body or the envelope of its leading
+/// decorations touches the horizontal viewport.
+///
+/// Character badges and voice-actor icons travel immediately before their line
+/// body. Culling only against the body makes decorations that have already
+/// entered from the right stay invisible until the body itself reaches the
+/// edge, at which point the whole visual pops in at once.
+pub fn line_or_badge_intersects_viewport(
+    line_x: f32,
+    line_width: f32,
+    leading_visual: Option<(f32, f32)>,
+    viewport_left: f32,
+    viewport_right: f32,
+) -> bool {
+    horizontal_rect_intersects_viewport(line_x, line_width, viewport_left, viewport_right)
+        || leading_visual.is_some_and(|(visual_x, visual_width)| {
+            horizontal_rect_intersects_viewport(
+                visual_x,
+                visual_width,
+                viewport_left,
+                viewport_right,
+            )
+        })
+}
+
+/// Horizontal envelope covering a badge and every voice-actor icon rendered
+/// immediately before it.
+pub fn leading_visual_bounds(
+    badge_x: f32,
+    badge_width: f32,
+    actor_count: usize,
+    icon_size: f32,
+    icon_gap: f32,
+) -> (f32, f32) {
+    let badge_left = badge_x.min(badge_x + badge_width);
+    let badge_right = badge_x.max(badge_x + badge_width);
+    let actor_span = actor_count as f32 * (icon_size.max(0.0) + icon_gap.max(0.0));
+    let left = badge_left - actor_span;
+    (left, (badge_right - left).max(0.0))
+}
+
+fn horizontal_rect_intersects_viewport(
+    x: f32,
+    width: f32,
+    viewport_left: f32,
+    viewport_right: f32,
+) -> bool {
+    if !x.is_finite()
+        || !width.is_finite()
+        || !viewport_left.is_finite()
+        || !viewport_right.is_finite()
+    {
+        return false;
+    }
+
+    let rect_left = x.min(x + width);
+    let rect_right = x.max(x + width);
+    let view_left = viewport_left.min(viewport_right);
+    let view_right = viewport_left.max(viewport_right);
+    rect_right >= view_left && rect_left <= view_right
+}
+
+pub fn scaled_character_badge_width(character_name: &str, scale: f32) -> f32 {
+    let scale = scale.max(0.0);
+    (character_name.chars().count().max(1) as f32 * constants::BADGE_CHAR_W * scale + 12.0 * scale)
+        .max(16.0 * scale)
+}
+
+pub fn leading_character_badge_x(line_x: f32, badge_width: f32, scale: f32) -> f32 {
+    line_x - badge_width - constants::BADGE_GAP * scale.max(0.0)
+}
+
 pub fn all_track_indices() -> Vec<usize> {
     (0..track_count()).collect()
 }
@@ -134,5 +206,69 @@ mod tests {
             total_tracks_height(&layouts),
             normal.total_h + karaoke.total_h
         );
+    }
+
+    #[test]
+    fn leading_badge_keeps_an_incoming_line_visible_before_its_body() {
+        let viewport_left = 0.0;
+        let viewport_right = 100.0;
+        let line_x = 110.0;
+        let line_width = 40.0;
+        let badge = Some((84.0, 24.0));
+
+        assert!(!line_or_badge_intersects_viewport(
+            line_x,
+            line_width,
+            None,
+            viewport_left,
+            viewport_right,
+        ));
+        assert!(line_or_badge_intersects_viewport(
+            line_x,
+            line_width,
+            badge,
+            viewport_left,
+            viewport_right,
+        ));
+    }
+
+    #[test]
+    fn line_and_badge_are_culled_once_both_are_outside() {
+        assert!(!line_or_badge_intersects_viewport(
+            130.0,
+            40.0,
+            Some((105.0, 20.0)),
+            0.0,
+            100.0,
+        ));
+        assert!(line_or_badge_intersects_viewport(
+            -10.0,
+            20.0,
+            Some((-35.0, 20.0)),
+            0.0,
+            100.0,
+        ));
+    }
+
+    #[test]
+    fn voice_actor_icon_envelope_enters_before_badge() {
+        let badge_x = 130.0;
+        let leading = leading_visual_bounds(badge_x, 24.0, 2, 20.0, 3.0);
+        assert_eq!(leading, (84.0, 70.0));
+        assert!(line_or_badge_intersects_viewport(
+            160.0,
+            40.0,
+            Some(leading),
+            0.0,
+            100.0,
+        ));
+    }
+
+    #[test]
+    fn enlarged_export_badge_text_fits_without_vertical_stretching() {
+        let badge_height = constants::SLOT_HEIGHT * constants::BADGE_OVERLAP_HEIGHT_RATIO;
+        let natural_text_line_height = (constants::BADGE_FONT_SIZE * 1.4).ceil();
+
+        assert!(badge_height >= natural_text_line_height);
     }
 }

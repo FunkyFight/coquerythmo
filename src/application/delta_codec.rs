@@ -21,6 +21,7 @@ pub fn encode_delta(command: &Command, project: &Project) -> Option<serde_json::
         Command::DeleteLine { snapshot, .. } => {
             serde_json::json!({ "action": "delete_line", "line_id": snapshot.id })
         }
+        Command::DeleteLines { .. } => return None,
         Command::SplitLine {
             first_line,
             second_line,

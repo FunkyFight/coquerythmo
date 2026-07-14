@@ -299,6 +299,15 @@ pub fn init() {
     INSTANCE.get_or_init(|| RwLock::new(Config::load()));
 }
 
+/// Return the configured UI language without requiring the global config to
+/// have been initialized (notably useful for domain-only tests).
+pub fn language_or_default() -> String {
+    INSTANCE
+        .get()
+        .and_then(|lock| lock.read().ok().map(|config| config.lang.clone()))
+        .unwrap_or_else(|| Config::default().lang)
+}
+
 pub fn save_settings(lang: String, rythmo_font: Option<String>, scroll_speed: f32) {
     let lock = INSTANCE.get().expect("config not initialized");
     let mut cfg = lock.write().unwrap();
@@ -329,6 +338,14 @@ pub fn add_recent_project(video_path: PathBuf, br_path: PathBuf) {
 
 pub fn recent_projects() -> Vec<RecentProject> {
     get().recent_projects.clone()
+}
+
+pub fn remove_recent_project(video_path: &PathBuf, br_path: &PathBuf) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    cfg.recent_projects
+        .retain(|recent| &recent.video_path != video_path || &recent.br_path != br_path);
+    cfg.save();
 }
 
 pub fn should_show_whats_new(version: &str) -> bool {

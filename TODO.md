@@ -1,37 +1,22 @@
 # Idées :
 Corriger les lignes qui poppent en mode gpu, cpu et UI (à cause de l'étiquette nom personnage devant)
 
-Traduction auto des lignes
-    => Gestion simplifiée et switch easy des différentes langues (CTRL + L)
-
-Pouvoir dessiner sur la bande rythmo.
-Tous les trucs de Voxdub qui comparent intégrés
 F9 qui, selon le contexte (intelligent) affiche à gauche tous les raccourcis claviers possibles (catégorisés selon le panel)
-Fichier .coquerythmo qui contient : la BR, la vidéo, les audios, les configurations, la police aussi, tout.
-    => Passer le .json tout seul en legacy
-Export to anything
-    Pré-format : 16:9 (YouTube), 9:16 (Shorts / TikTok), Same as Source
-    Qualité : 720p, 1080p, 1440p, 4k, 8k, custom
-    Exports avec quels audios
-    Exports avec quelles langues
-Exports possibles :
-    Vidéo
-    Sous-titres : JSON, SRT, ASS, DETX
-    Audio : mp3, wav, bwf stems
-    Référence croisée : CSV, PDF
-    Grille de croisillées (Grille de présence, boucles) https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQkSPDwVRmkXZFyXFbooHqTWDFPm-QIGwJOJB18RNKsw4rSKMhTcL8CfMfs&s=10
-Compte à rebours / Pre-roll (maybe deux choses différentes)
+
+
 DAW basique.
 Agrandir le texte pour le nom des persos
 Afficher les fichiers qui ont le même nom quand on tape dans "Nom" dans l'explorateur de fichiers
 Si pas sauvegarde et qu'on ferme : demander si on veut vraiment partir ou si on sauvegarde avant
 Si Proxy : appliqué automatiquement à chaque load
+Bouton close project
 
 Taille lignes karaoké dans l'export : le 200% devrait être le nouveau 100%
 Taille Ligne BR dans l'export le 50% devrait être le nouveau 100%
 
 Bug : Les handles pour les syllabes ne sont pas bien mises, elles coupent mal. Mais dès que j'en bouge une, elles coupent bien de nouveau
 
+Pouvoir supprimer une entrée dans le menu récent
 
 # Suggestions
 

@@ -1,6 +1,8 @@
 use super::interactive::{InteractiveResult, InteractiveState};
+use super::primitives::{
+    EventResponse, IconInstance, LabelInfo, QuadInstance, Rect, UiEvent, Widget,
+};
 use super::theme;
-use super::primitives::{EventResponse, IconInstance, LabelInfo, QuadInstance, Rect, UiEvent, Widget};
 
 pub struct IconButton {
     bounds: Rect,

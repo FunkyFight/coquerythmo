@@ -8,8 +8,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::i18n::t;
-use crate::ui::text_input::{self, TextInputAction, TextInputMetrics, TextInputState};
 use crate::ui::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
+use crate::ui::text_input::{self, TextInputAction, TextInputMetrics, TextInputState};
 
 mod controller;
 mod model;

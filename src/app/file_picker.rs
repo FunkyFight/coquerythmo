@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
+use crate::application::job_service::SaveContinuation;
 use crate::export;
+use crate::export::ProjectImporter;
 use crate::i18n;
 use crate::state::State;
 use crate::ui::file_explorer::{
@@ -99,35 +101,57 @@ pub(crate) fn open_file_picker(
 }
 
 pub(crate) fn save_project_as(state: &mut State, path: PathBuf) -> bool {
-    use export::{JsonExporter, ProjectExporter};
-    let fps = state.fps();
-    if let Err(e) = JsonExporter.export(&state.project_session.project, fps, &path) {
-        log::error!("Export failed: {e}");
-        false
+    save_project_as_with_continuation(state, path, SaveContinuation::None)
+}
+
+pub(crate) fn save_project_as_with_continuation(
+    state: &mut State,
+    path: PathBuf,
+    continuation: SaveContinuation,
+) -> bool {
+    let path = if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case(crate::project_archive::PROJECT_EXTENSION)
+        }) {
+        path
     } else {
-        state.project_session.project_path = Some(path);
-        state.project_session.dirty = false;
-        state.show_toast(i18n::t("toast.saved"), 3.0);
-        state.reload_linked_proxy();
-        true
-    }
+        path.with_extension(crate::project_archive::PROJECT_EXTENSION)
+    };
+    let Some(source_video) = state.video_path() else {
+        state.show_toast(i18n::t("toast.save_requires_video"), 5.0);
+        return false;
+    };
+    let proxy_video = state.playback.proxy_video_path.clone();
+    let Some((_, font_asset)) = crate::vector_text::selected_font_asset() else {
+        state.show_toast(i18n::t("toast.save_font_unavailable"), 6.0);
+        return false;
+    };
+    state.start_project_save(path, source_video, proxy_video, font_asset, continuation)
 }
 
 pub(crate) fn quick_save_existing(state: &mut State) -> bool {
-    use export::{JsonExporter, ProjectExporter};
+    quick_save_existing_with_continuation(state, SaveContinuation::None)
+}
+
+pub(crate) fn quick_save_existing_with_continuation(
+    state: &mut State,
+    continuation: SaveContinuation,
+) -> bool {
     let Some(path) = state.project_session.project_path.clone() else {
         return false;
     };
-    let fps = state.fps();
-    if let Err(e) = JsonExporter.export(&state.project_session.project, fps, &path) {
-        log::error!("Quick save failed: {e}");
-        false
-    } else {
-        log::info!("Quick saved to {}", path.display());
-        state.project_session.dirty = false;
-        state.show_toast(i18n::t("toast.saved"), 3.0);
-        true
-    }
+    let Some(source_video) = state.video_path() else {
+        state.show_toast(i18n::t("toast.save_requires_video"), 5.0);
+        return false;
+    };
+    let proxy_video = state.playback.proxy_video_path.clone();
+    let Some((_, font_asset)) = crate::vector_text::selected_font_asset() else {
+        state.show_toast(i18n::t("toast.save_font_unavailable"), 6.0);
+        return false;
+    };
+    state.start_project_save(path, source_video, proxy_video, font_asset, continuation)
 }
 
 pub(crate) fn import_project_from_path(state: &mut State, path: PathBuf) {
@@ -138,7 +162,7 @@ pub(crate) fn import_cappela_from_path(state: &mut State, path: PathBuf) {
     let fps = state.fps();
     match export::import_cappela(&path, fps) {
         Ok(data) => {
-            crate::application::edit_service::EditExecutor::apply_import(
+            crate::application::edit_service::EditExecutor::apply_subtitle_import(
                 &mut state.project_session,
                 data,
                 fps,
@@ -149,24 +173,40 @@ pub(crate) fn import_cappela_from_path(state: &mut State, path: PathBuf) {
     }
 }
 
-pub(crate) fn import_srt_from_path(state: &mut State, path: PathBuf) {
+pub(crate) fn import_subtitle_from_path(state: &mut State, path: PathBuf) {
     let fps = state.fps();
     let total_frames = state.total_frames();
-    match export::import_srt(&path, fps) {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let result = match extension.as_str() {
+        "json" => export::JsonImporter.import(&path),
+        "srt" => export::import_srt(&path, fps),
+        "ass" => export::import_ass(&path, fps),
+        "detx" => export::import_cappela(&path, fps),
+        _ => Err(format!("Unsupported subtitle format: .{extension}")),
+    };
+    match result {
         Ok(mut data) => {
             let (clipped, skipped) = data.clamp_to_total_frames(total_frames);
             if clipped > 0 || skipped > 0 {
                 log::warn!(
-                    "SRT import clipped to video duration: {clipped} shortened, {skipped} skipped"
+                    "Subtitle import clipped to video duration: {clipped} shortened, {skipped} skipped"
                 );
             }
-            crate::application::edit_service::EditExecutor::apply_import(
+            crate::application::edit_service::EditExecutor::apply_subtitle_import(
                 &mut state.project_session,
                 data,
                 fps,
             );
             state.project_session.project_path = None;
+            state.show_toast(i18n::t("toast.subtitle_imported"), 4.0);
         }
-        Err(e) => log::error!("SRT import failed: {e}"),
+        Err(e) => {
+            log::error!("Subtitle import failed: {e}");
+            state.show_toast(format!("{} {e}", i18n::t("toast.import_failed")), 8.0);
+        }
     }
 }

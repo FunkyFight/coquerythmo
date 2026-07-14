@@ -8,9 +8,11 @@
 use super::connect_modal::ConnectModal;
 use super::export_modal::ExportModal;
 use super::file_explorer::{FileExplorerModal, FileExplorerRequest, FileExplorerResult};
+use super::language_modal::{LanguageListItem, LanguageModal};
 use super::pricing_license_modal::PricingLicenseModal;
 use super::pricing_page::PricingPage;
 use super::pricing_plan_modal::PricingPlanModal;
+use super::primitives::{EventResponse, LabelInfo, QuadInstance, UiAction, UiEvent};
 use super::project_settings_modal::ProjectSettingsModal;
 use super::proxy_error_modal::ProxyErrorModal;
 use super::proxy_modal::ProxyModal;
@@ -21,7 +23,6 @@ use super::settings_modal::SettingsModal;
 use super::studio_warning_modal::StudioWarningModal;
 use super::voice_actor_modal::VoiceActorModal;
 use super::whats_new_modal::WhatsNewModal;
-use super::primitives::{EventResponse, LabelInfo, QuadInstance, UiAction, UiEvent};
 
 /// Result of dispatching an interaction to the active modal.
 ///
@@ -46,6 +47,7 @@ pub struct ModalHost {
     pub settings: Option<SettingsModal>,
     pub project_settings: Option<ProjectSettingsModal>,
     pub export: Option<ExportModal>,
+    pub languages: Option<LanguageModal>,
     pub file_explorer: Option<FileExplorerModal>,
     pub proxy: Option<ProxyModal>,
     pub rename_character: Option<RenameCharacterModal>,
@@ -68,6 +70,7 @@ impl ModalHost {
             settings: None,
             project_settings: None,
             export: None,
+            languages: None,
             file_explorer: None,
             proxy: None,
             rename_character: None,
@@ -89,6 +92,7 @@ impl ModalHost {
             || self.settings.is_some()
             || self.project_settings.is_some()
             || self.export.is_some()
+            || self.languages.is_some()
             || self.file_explorer.is_some()
             || self.proxy.is_some()
             || self.rename_character.is_some()
@@ -110,6 +114,7 @@ impl ModalHost {
             .is_some_and(|modal| modal.is_editing_text())
             || self.connect.is_some()
             || self.export.is_some()
+            || self.languages.is_some()
             || self.proxy.is_some()
             || self.proxy_error.is_some()
             || self.voice_actor.is_some()
@@ -177,6 +182,9 @@ impl ModalHost {
         if self.export.is_some() {
             return Some(self.handle_export_event(event, screen_w, screen_h));
         }
+        if self.languages.is_some() {
+            return Some(self.handle_languages_event(event, screen_w, screen_h));
+        }
         if self.voice_actor.is_some() {
             return Some(self.handle_voice_actor_event(event, screen_w, screen_h));
         }
@@ -204,7 +212,12 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self.connect.as_mut().unwrap().handle_event(event, screen_w, screen_h) {
+        match self
+            .connect
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h)
+        {
             super::connect_modal::ConnectModalResult::Consumed => ModalOutcome::Consumed,
             super::connect_modal::ConnectModalResult::Close => {
                 self.connect = None;
@@ -235,7 +248,12 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self.settings.as_mut().unwrap().handle_event(event, screen_w, screen_h) {
+        match self
+            .settings
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h)
+        {
             super::settings_modal::SettingsModalResult::Consumed => ModalOutcome::Consumed,
             super::settings_modal::SettingsModalResult::Close => {
                 self.settings = None;
@@ -295,31 +313,59 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self.export.as_mut().unwrap().handle_event(event, screen_w, screen_h) {
+        match self
+            .export
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h)
+        {
             super::export_modal::ExportModalResult::Consumed => ModalOutcome::Consumed,
-            super::export_modal::ExportModalResult::Close => {
+            super::export_modal::ExportModalResult::Close { configuration } => {
                 self.export = None;
+                ModalOutcome::Action(UiAction::SaveExportConfiguration { configuration })
+            }
+            super::export_modal::ExportModalResult::Export { configuration } => {
+                self.export = None;
+                ModalOutcome::Action(UiAction::StartConfiguredExport { configuration })
+            }
+        }
+    }
+
+    fn handle_languages_event(
+        &mut self,
+        event: &UiEvent,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> ModalOutcome {
+        use super::language_modal::LanguageModalResult;
+        match self
+            .languages
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h)
+        {
+            LanguageModalResult::Consumed => ModalOutcome::Consumed,
+            LanguageModalResult::Close => {
+                self.languages = None;
                 ModalOutcome::Consumed
             }
-            super::export_modal::ExportModalResult::Export {
-                fps,
-                br_scale,
-                karaoke_text_scale,
-                export_width,
-                export_height,
-                export_original_audio,
-                export_instrumental_audio,
-            } => {
-                self.export = None;
-                ModalOutcome::Action(UiAction::StartExport {
-                    fps,
-                    br_scale,
-                    karaoke_text_scale,
-                    export_width,
-                    export_height,
-                    export_original_audio,
-                    export_instrumental_audio,
-                })
+            LanguageModalResult::Create { name } => {
+                ModalOutcome::Action(UiAction::CreateLanguage { name })
+            }
+            LanguageModalResult::Rename { id, name } => {
+                ModalOutcome::Action(UiAction::RenameLanguage { id, name })
+            }
+            LanguageModalResult::Delete { id } => {
+                ModalOutcome::Action(UiAction::DeleteLanguage { id })
+            }
+            LanguageModalResult::Select { id } => {
+                ModalOutcome::Action(UiAction::SelectLanguage { id })
+            }
+            LanguageModalResult::PickInstrumental { id } => {
+                ModalOutcome::Action(UiAction::PickLanguageInstrumentalAudio { id })
+            }
+            LanguageModalResult::ClearInstrumental { id } => {
+                ModalOutcome::Action(UiAction::ClearLanguageInstrumentalAudio { id })
             }
         }
     }
@@ -341,7 +387,9 @@ impl ModalHost {
                 self.file_explorer = None;
                 ModalOutcome::Consumed
             }
-            FileExplorerResult::Clipboard(text) => ModalOutcome::Action(UiAction::SetClipboard(text)),
+            FileExplorerResult::Clipboard(text) => {
+                ModalOutcome::Action(UiAction::SetClipboard(text))
+            }
             FileExplorerResult::Selected { intent, path } => {
                 self.file_explorer = None;
                 ModalOutcome::Action(UiAction::FilePickerSelected { intent, path })
@@ -355,7 +403,12 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self.voice_actor.as_mut().unwrap().handle_event(event, screen_w, screen_h) {
+        match self
+            .voice_actor
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h)
+        {
             super::voice_actor_modal::VoiceActorModalResult::Consumed => ModalOutcome::Consumed,
             super::voice_actor_modal::VoiceActorModalResult::Close => {
                 self.voice_actor = None;
@@ -412,7 +465,12 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self.proxy.as_mut().unwrap().handle_event(event, screen_w, screen_h) {
+        match self
+            .proxy
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h)
+        {
             super::proxy_modal::ProxyModalResult::Consumed => ModalOutcome::Consumed,
             super::proxy_modal::ProxyModalResult::Close => {
                 self.proxy = None;
@@ -451,7 +509,12 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self.whats_new.as_mut().unwrap().handle_event(event, screen_w, screen_h) {
+        match self
+            .whats_new
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h)
+        {
             super::whats_new_modal::WhatsNewResult::Consumed => ModalOutcome::Consumed,
             super::whats_new_modal::WhatsNewResult::Close => {
                 self.whats_new = None;
@@ -511,7 +574,12 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self.add_server.as_mut().unwrap().handle_event(event, screen_w, screen_h) {
+        match self
+            .add_server
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h)
+        {
             super::server_browser::AddServerResult::Consumed => ModalOutcome::Consumed,
             super::server_browser::AddServerResult::Close => {
                 self.add_server = None;
@@ -530,7 +598,12 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self.save_prompt.as_mut().unwrap().handle_event(event, screen_w, screen_h) {
+        match self
+            .save_prompt
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h)
+        {
             super::save_prompt_modal::SavePromptResult::Consumed => ModalOutcome::Consumed,
             super::save_prompt_modal::SavePromptResult::Save => {
                 self.save_prompt = None;
@@ -609,7 +682,12 @@ impl ModalHost {
             };
         }
 
-        match self.pricing_page.as_mut().unwrap().handle_event(event, screen_w, screen_h) {
+        match self
+            .pricing_page
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h)
+        {
             super::pricing_page::PricingResult::Consumed => ModalOutcome::Consumed,
             super::pricing_page::PricingResult::Close => {
                 self.pricing_page = None;
@@ -624,7 +702,8 @@ impl ModalHost {
                 ModalOutcome::Consumed
             }
             super::pricing_page::PricingResult::ActivateLicense => {
-                self.pricing_license = Some(super::pricing_license_modal::PricingLicenseModal::new());
+                self.pricing_license =
+                    Some(super::pricing_license_modal::PricingLicenseModal::new());
                 ModalOutcome::Consumed
             }
         }
@@ -634,13 +713,25 @@ impl ModalHost {
         &mut self,
         video_width: u32,
         video_height: u32,
-        has_project_instrumental_audio: bool,
+        languages: Vec<super::export_modal::ExportLanguageOption>,
+        configuration: crate::project::ExportConfiguration,
     ) {
         self.export = Some(super::export_modal::ExportModal::new(
             video_width,
             video_height,
-            has_project_instrumental_audio,
+            languages,
+            configuration,
         ));
+    }
+
+    pub fn open_languages(&mut self, languages: Vec<LanguageListItem>, active_language_id: u64) {
+        self.languages = Some(LanguageModal::new(languages, active_language_id));
+    }
+
+    pub fn refresh_languages(&mut self, languages: Vec<LanguageListItem>, active_language_id: u64) {
+        if let Some(modal) = &mut self.languages {
+            modal.refresh(languages, active_language_id);
+        }
     }
 
     pub fn open_file_explorer(&mut self, request: FileExplorerRequest) {
@@ -670,7 +761,10 @@ impl ModalHost {
     }
 
     pub fn open_proxy(&mut self, video_width: u32, video_height: u32) {
-        self.proxy = Some(super::proxy_modal::ProxyModal::new(video_width, video_height));
+        self.proxy = Some(super::proxy_modal::ProxyModal::new(
+            video_width,
+            video_height,
+        ));
     }
 
     pub fn open_proxy_error(&mut self, detail: impl Into<String>) {
@@ -712,7 +806,9 @@ impl ModalHost {
     }
 
     pub fn open_connect(&mut self, ip: &str, port: u16, join: bool) {
-        self.connect = Some(super::connect_modal::ConnectModal::new_with_server(ip, port, join));
+        self.connect = Some(super::connect_modal::ConnectModal::new_with_server(
+            ip, port, join,
+        ));
     }
 
     pub fn open_settings(&mut self, fonts: Vec<String>) {
@@ -784,6 +880,9 @@ impl ModalHost {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
         if let Some(modal) = &self.export {
+            modal.render(modal_quads, modal_labels, screen_w, screen_h);
+        }
+        if let Some(modal) = &self.languages {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
         if let Some(modal) = &self.voice_actor {

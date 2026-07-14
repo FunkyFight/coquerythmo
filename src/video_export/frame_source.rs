@@ -24,6 +24,7 @@ pub(super) fn write_br_frames(
     br_h: u32,
     br_h_even: u32,
     total_frames: u64,
+    timeline_start_source_frame: f64,
     ffmpeg_progress: &AtomicU32,
     render_backend_status: Option<&AtomicU32>,
     cancel: &AtomicBool,
@@ -75,7 +76,7 @@ pub(super) fn write_br_frames(
                 BrInputFormat::Nv12 => {
                     gpu.submit_render_nv12(
                         &scene,
-                        0.0,
+                        timeline_start_source_frame,
                         out_w,
                         fps,
                         source_fps,
@@ -86,7 +87,7 @@ pub(super) fn write_br_frames(
                 }
                 BrInputFormat::Rgba => gpu.submit_render(
                     &scene,
-                    0.0,
+                    timeline_start_source_frame,
                     out_w,
                     fps,
                     source_fps,
@@ -104,7 +105,7 @@ pub(super) fn write_br_frames(
                     stats.finish_readback += finish_start.elapsed();
 
                     check_stdin_cancel(cancel)?;
-                    let video_pos = frame as f64 * frame_ratio;
+                    let video_pos = timeline_start_source_frame + frame as f64 * frame_ratio;
                     let submit_start = Instant::now();
                     gpu.submit_render_nv12(
                         &scene,
@@ -141,7 +142,7 @@ pub(super) fn write_br_frames(
                 gpu.finish_render_into(out_w, br_h, &mut rgba_buf);
                 stats.finish_readback += finish_start.elapsed();
                 check_stdin_cancel(cancel)?;
-                let video_pos = frame as f64 * frame_ratio;
+                let video_pos = timeline_start_source_frame + frame as f64 * frame_ratio;
                 let submit_start = Instant::now();
                 gpu.submit_render(
                     &scene,
@@ -226,7 +227,8 @@ pub(super) fn write_br_frames(
                         .iter()
                         .zip(renderers.iter_mut())
                         .map(|(&frame, renderer)| {
-                            let vf = (frame as f64 * frame_ratio) as i64;
+                            let vf = (timeline_start_source_frame + frame as f64 * frame_ratio)
+                                .round() as i64;
                             scope.spawn(move || {
                                 renderer.render_br(
                                     project,

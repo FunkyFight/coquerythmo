@@ -8,6 +8,7 @@ use super::primitives::{
 const ITEM_HEIGHT: f32 = 36.0;
 const RADIUS: f32 = 6.0;
 const PANEL_GAP: f32 = 4.0;
+const SUBMENU_REMOVE_WIDTH: f32 = 36.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DropdownState {
@@ -20,8 +21,10 @@ struct Submenu {
     trigger_index: usize,
     items: Vec<String>,
     on_select: Box<dyn FnMut(usize, &str) -> EventResponse>,
+    on_remove: Option<Box<dyn FnMut(usize, &str) -> EventResponse>>,
     open: bool,
     hovered: Option<usize>,
+    hovered_remove: bool,
 }
 
 pub struct Dropdown {
@@ -98,8 +101,29 @@ impl Dropdown {
             trigger_index,
             items,
             on_select: Box::new(on_select),
+            on_remove: None,
             open: false,
             hovered: None,
+            hovered_remove: false,
+        });
+        self
+    }
+
+    pub fn with_removable_submenu(
+        mut self,
+        trigger_index: usize,
+        items: Vec<String>,
+        on_select: impl FnMut(usize, &str) -> EventResponse + 'static,
+        on_remove: impl FnMut(usize, &str) -> EventResponse + 'static,
+    ) -> Self {
+        self.submenus.push(Submenu {
+            trigger_index,
+            items,
+            on_select: Box::new(on_select),
+            on_remove: Some(Box::new(on_remove)),
+            open: false,
+            hovered: None,
+            hovered_remove: false,
         });
         self
     }
@@ -133,12 +157,21 @@ impl Dropdown {
         None
     }
 
+    fn hit_submenu_remove(&self, x: f32, y: f32) -> Option<(usize, usize)> {
+        let (sub_idx, item_idx) = self.hit_submenu_option(x, y)?;
+        let sub = self.submenus.get(sub_idx)?;
+        let panel = self.submenu_panel_rect(sub_idx)?;
+        (sub.on_remove.is_some() && x >= panel.x + panel.width - SUBMENU_REMOVE_WIDTH)
+            .then_some((sub_idx, item_idx))
+    }
+
     fn close(&mut self) {
         self.open = false;
         self.hovered_option = None;
         for sub in &mut self.submenus {
             sub.open = false;
             sub.hovered = None;
+            sub.hovered_remove = false;
         }
     }
 
@@ -242,11 +275,13 @@ impl Widget for Dropdown {
                     };
 
                     let sub_hit = self.hit_submenu_option(*x, *y);
+                    let remove_hit = self.hit_submenu_remove(*x, *y);
 
                     let mut state_changed = false;
                     for (i, sub) in self.submenus.iter_mut().enumerate() {
                         let was_open = sub.open;
                         let prev_hover = sub.hovered;
+                        let prev_remove = sub.hovered_remove;
 
                         if self.hovered_option == Some(sub.trigger_index) {
                             sub.open = true;
@@ -254,6 +289,7 @@ impl Widget for Dropdown {
                             if hit_sub_idx != i {
                                 sub.open = false;
                                 sub.hovered = None;
+                                sub.hovered_remove = false;
                             }
                         } else if self.hovered_option.is_some() {
                             sub.open = false;
@@ -264,15 +300,22 @@ impl Widget for Dropdown {
                             if let Some((hit_sub_idx, hit_item_idx)) = sub_hit {
                                 if hit_sub_idx == i {
                                     sub.hovered = Some(hit_item_idx);
+                                    sub.hovered_remove =
+                                        remove_hit == Some((hit_sub_idx, hit_item_idx));
                                 } else {
                                     sub.hovered = None;
+                                    sub.hovered_remove = false;
                                 }
                             } else {
                                 sub.hovered = None;
+                                sub.hovered_remove = false;
                             }
                         }
 
-                        if was_open != sub.open || prev_hover != sub.hovered {
+                        if was_open != sub.open
+                            || prev_hover != sub.hovered
+                            || prev_remove != sub.hovered_remove
+                        {
                             state_changed = true;
                         }
                     }
@@ -325,6 +368,22 @@ impl Widget for Dropdown {
             }
             UiEvent::MouseRelease { x, y } => {
                 if self.open {
+                    if let Some((sub_idx, item_idx)) = self.hit_submenu_remove(*x, *y) {
+                        let label = self.submenus[sub_idx].items[item_idx].clone();
+                        let response =
+                            if let Some(on_remove) = self.submenus[sub_idx].on_remove.as_mut() {
+                                on_remove(item_idx, &label)
+                            } else {
+                                EventResponse::Consumed
+                            };
+                        self.close();
+                        self.trigger_state = DropdownState::Normal;
+                        return if response != EventResponse::Ignored {
+                            response
+                        } else {
+                            EventResponse::Consumed
+                        };
+                    }
                     if let Some((sub_idx, item_idx)) = self.hit_submenu_option(*x, *y) {
                         let label = self.submenus[sub_idx].items[item_idx].clone();
                         let response = (self.submenus[sub_idx].on_select)(item_idx, &label);
@@ -465,6 +524,26 @@ impl Widget for Dropdown {
                                 rotation: 0.0,
                                 _padding: [0.0; 2],
                             });
+                            if sub.hovered_remove && sub.on_remove.is_some() {
+                                quads.push(QuadInstance {
+                                    rect: [
+                                        sub_rect.x + sub_rect.width - SUBMENU_REMOVE_WIDTH + 3.0,
+                                        sy + 3.0,
+                                        SUBMENU_REMOVE_WIDTH - 6.0,
+                                        ITEM_HEIGHT - 6.0,
+                                    ],
+                                    color: [0.65, 0.15, 0.18, 0.55],
+                                    color_bottom: [0.52, 0.10, 0.13, 0.55],
+                                    border_color: [0.95, 0.35, 0.38, 0.45],
+                                    border_width: 1.0,
+                                    border_radius: 4.0,
+                                    shadow_offset: [0.0; 2],
+                                    shadow_color: [0.0; 4],
+                                    shadow_blur: 0.0,
+                                    rotation: 0.0,
+                                    _padding: [0.0; 2],
+                                });
+                            }
                         }
                     }
                 }
@@ -583,12 +662,17 @@ impl Widget for Dropdown {
                 if let Some(sub_rect) = self.submenu_panel_rect(i) {
                     for (j, item) in sub.items.iter().enumerate() {
                         let sy = sub_rect.y + j as f32 * ITEM_HEIGHT;
+                        let remove_width = if sub.on_remove.is_some() {
+                            SUBMENU_REMOVE_WIDTH
+                        } else {
+                            0.0
+                        };
                         result.push(LabelInfo {
                             text: item,
                             bounds: Rect {
                                 x: sub_rect.x,
                                 y: sy,
-                                width: sub_rect.width,
+                                width: sub_rect.width - remove_width,
                                 height: ITEM_HEIGHT,
                             },
                             h_align: HAlign::Left,
@@ -599,6 +683,24 @@ impl Widget for Dropdown {
                             color_override: None,
                             font_family_override: None,
                         });
+                        if sub.on_remove.is_some() {
+                            result.push(LabelInfo {
+                                text: "×",
+                                bounds: Rect {
+                                    x: sub_rect.x + sub_rect.width - SUBMENU_REMOVE_WIDTH,
+                                    y: sy,
+                                    width: SUBMENU_REMOVE_WIDTH,
+                                    height: ITEM_HEIGHT,
+                                },
+                                h_align: HAlign::Center,
+                                v_align: VAlign::Center,
+                                overflow: Overflow::Clip,
+                                padding: 0.0,
+                                font_size_override: Some(17.0),
+                                color_override: sub.hovered_remove.then_some([255, 205, 205]),
+                                font_family_override: None,
+                            });
+                        }
                     }
                 }
             }

@@ -38,10 +38,12 @@ impl EditExecutor {
     /// new project is started. This intentionally clears document history and
     /// dirty state as one operation.
     pub fn reset(session: &mut ProjectSession) {
-        session.project.reset();
+        session.project = ProjectSession::project_for_ui_language();
+        session.render_index = crate::render_index::ProjectRenderIndex::new();
         session.project_path = None;
         session.dirty = false;
         session.history.clear();
+        session.loaded_project = None;
     }
 
     /// Mark a non-reversible domain-side change according to its origin.
@@ -75,6 +77,20 @@ impl EditExecutor {
     pub fn apply_import(session: &mut ProjectSession, data: ImportProjectData, fps: f64) {
         data.apply_to_project(&mut session.project, fps);
         Self::mark_dirty(session, EditOrigin::Import);
+    }
+
+    /// Replace the active language band while preserving the multilingual
+    /// collection and its per-language media.
+    pub fn apply_subtitle_import(
+        session: &mut ProjectSession,
+        data: ImportProjectData,
+        fps: f64,
+    ) -> bool {
+        if !data.apply_to_active_language(&mut session.project, fps) {
+            return false;
+        }
+        Self::mark_dirty(session, EditOrigin::Import);
+        true
     }
 
     /// Register a command whose project mutation has already happened.
@@ -369,7 +385,12 @@ impl EditExecutor {
                 }
                 let old_points = stroke_ids
                     .iter()
-                    .map(|id| project.drawing().get(*id).map(|stroke| stroke.points.clone()))
+                    .map(|id| {
+                        project
+                            .drawing()
+                            .get(*id)
+                            .map(|stroke| stroke.points.clone())
+                    })
                     .collect::<Option<Vec<_>>>()?;
                 Command::TransformStrokes {
                     stroke_ids,

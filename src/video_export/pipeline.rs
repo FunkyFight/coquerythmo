@@ -46,6 +46,7 @@ pub fn export_mp4(
     source_audio_offset_frames: i64,
     instrumental_audio_offset_frames: i64,
     double_export_instrumental: bool,
+    pre_roll_seconds: f64,
     render_backend_status: Option<Arc<AtomicU32>>,
     cancel: Arc<AtomicBool>,
     progress_cb: impl FnMut(f32) + Send + 'static,
@@ -82,6 +83,7 @@ pub fn export_mp4(
         source_audio_offset_frames,
         instrumental_audio_offset_frames,
         double_export_instrumental,
+        pre_roll_seconds,
         render_backend_status.as_deref(),
         &cancel,
         &progress_cb,
@@ -102,6 +104,7 @@ pub(super) fn export_baked_mp4(
     source_audio_offset_frames: i64,
     instrumental_audio_offset_frames: i64,
     double_export_instrumental: bool,
+    pre_roll_seconds: f64,
     render_backend_status: Option<&AtomicU32>,
     cancel: &AtomicBool,
     progress_cb: &ProgressCallback,
@@ -109,6 +112,11 @@ pub(super) fn export_baked_mp4(
     let export_start = Instant::now();
     check_export_cancel(cancel)?;
     let fps = valid_export_fps(fps)?;
+    let pre_roll_seconds = if pre_roll_seconds.is_finite() {
+        pre_roll_seconds.clamp(0.0, 120.0)
+    } else {
+        0.0
+    };
     let probe_start = Instant::now();
     let info = probe(source_video)?;
     check_export_cancel(cancel)?;
@@ -120,7 +128,10 @@ pub(super) fn export_baked_mp4(
     let br_h = rythmo_cpu_renderer::br_height(project, out_w, br_scale);
     let br_h_even = (br_h + 1) & !1;
     let vid_h = (even_dimension(export_height).saturating_sub(br_h_even)).max(2);
-    let total_frames = (info.duration_secs * fps).ceil() as u64;
+    let total_duration_secs = info.duration_secs + pre_roll_seconds;
+    let total_frames = (total_duration_secs * fps).ceil() as u64;
+    let timeline_start_source_frame = -pre_roll_seconds * source_fps;
+    let pre_roll_audio_frames = (pre_roll_seconds * fps).round() as i64;
 
     if total_frames == 0 {
         return Err("Video has no duration".into());
@@ -188,17 +199,33 @@ pub(super) fn export_baked_mp4(
     }
 
     let cuda_filter = if use_cuda_rgba_br {
-        cuda_rgba_fit_and_stack_filter(out_w, vid_h, br_h_even, fps, info.duration_secs)
+        cuda_rgba_fit_and_stack_filter(
+            out_w,
+            vid_h,
+            br_h_even,
+            fps,
+            info.duration_secs,
+            pre_roll_seconds,
+        )
     } else {
-        cuda_fit_and_stack_filter(out_w, vid_h, br_h_even, fps, info.duration_secs)
+        cuda_fit_and_stack_filter(
+            out_w,
+            vid_h,
+            br_h_even,
+            fps,
+            info.duration_secs,
+            pre_roll_seconds,
+        )
     };
     let cuda_br_input = if use_cuda_rgba_br {
         BrInputFormat::Rgba
     } else {
         BrInputFormat::Nv12
     };
-    let cpu_filter = cpu_fit_and_stack_filter(out_w, vid_h, fps, info.duration_secs);
-    let needs_audio_mux = instrumental_audio.is_some() || source_audio_offset_frames != 0;
+    let cpu_filter =
+        cpu_fit_and_stack_filter(out_w, vid_h, fps, info.duration_secs, pre_roll_seconds);
+    let needs_audio_mux =
+        instrumental_audio.is_some() || source_audio_offset_frames != 0 || pre_roll_seconds > 0.0;
     let temp_video = needs_audio_mux.then(|| temp_video_path(output));
     let video_output = temp_video.as_deref().unwrap_or(output);
     let include_source_audio = !needs_audio_mux;
@@ -220,7 +247,8 @@ pub(super) fn export_baked_mp4(
             br_h,
             br_h_even,
             total_frames,
-            info.duration_secs,
+            total_duration_secs,
+            timeline_start_source_frame,
             include_source_audio,
             render_backend_status,
             cancel,
@@ -250,7 +278,8 @@ pub(super) fn export_baked_mp4(
                 br_h,
                 br_h_even,
                 total_frames,
-                info.duration_secs,
+                total_duration_secs,
+                timeline_start_source_frame,
                 include_source_audio,
                 render_backend_status,
                 cancel,
@@ -276,7 +305,8 @@ pub(super) fn export_baked_mp4(
             br_h,
             br_h_even,
             total_frames,
-            info.duration_secs,
+            total_duration_secs,
+            timeline_start_source_frame,
             include_source_audio,
             render_backend_status,
             cancel,
@@ -300,8 +330,8 @@ pub(super) fn export_baked_mp4(
                     temp,
                     source_video,
                     output,
-                    info.duration_secs,
-                    source_audio_offset_frames,
+                    total_duration_secs,
+                    source_audio_offset_frames + pre_roll_audio_frames,
                     fps,
                     cancel,
                 ) {
@@ -316,8 +346,8 @@ pub(super) fn export_baked_mp4(
                 temp,
                 audio,
                 &instrumental_output,
-                info.duration_secs,
-                instrumental_audio_offset_frames,
+                total_duration_secs,
+                instrumental_audio_offset_frames + pre_roll_audio_frames,
                 fps,
                 cancel,
                 progress_cb,
@@ -334,8 +364,8 @@ pub(super) fn export_baked_mp4(
                 temp,
                 source_video,
                 output,
-                info.duration_secs,
-                source_audio_offset_frames,
+                total_duration_secs,
+                source_audio_offset_frames + pre_roll_audio_frames,
                 fps,
                 cancel,
             ) {

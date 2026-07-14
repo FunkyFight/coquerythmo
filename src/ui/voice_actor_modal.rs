@@ -3,8 +3,8 @@
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::collapsible_match)]
 
-use super::text_input::{self, TextInputAction, TextInputMetrics, TextInputState};
 use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
+use super::text_input::{self, TextInputAction, TextInputMetrics, TextInputState};
 
 use crate::i18n::t;
 
