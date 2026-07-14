@@ -3994,6 +3994,29 @@ pub fn handle_rythmo_event(
                 }
                 return EventResponse::Consumed;
             }
+            UiEvent::MouseMove { x, y } if erasing && in_zone(*x, *y) => {
+                let (frame, y_frac) = screen_to_drawing(
+                    *x,
+                    *y,
+                    ctx.zone.x,
+                    ctx.zone.y,
+                    ctx.zone.width,
+                    ctx.zone.height,
+                    ctx.current_frame,
+                    ppf,
+                );
+                let stroke_ids = project.drawing.strokes_within_radius(
+                    frame,
+                    y_frac,
+                    ppf,
+                    ctx.zone.height,
+                    brush_radius_frac,
+                );
+                if !stroke_ids.is_empty() {
+                    return EventResponse::Action(UiAction::EraseDrawingStrokes(stroke_ids));
+                }
+                return EventResponse::Consumed;
+            }
             UiEvent::MouseMove { x, y } if state.active_stroke.is_some() && in_zone(*x, *y) => {
                 let (frame, y_frac) = screen_to_drawing(
                     *x,

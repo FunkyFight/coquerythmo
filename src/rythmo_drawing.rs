@@ -99,7 +99,7 @@ impl RythmoDrawing {
     ) -> Vec<u64> {
         let mut ids = Vec::new();
         for s in &self.strokes {
-            let combined_r = s.radius_frac.max(radius_frac);
+            let combined_r = radius_frac.max(s.radius_frac * 0.5);
             for (f, yf) in &s.points {
                 let norm_dx = (f - frame) * ppf as f64 / zone_h as f64;
                 let norm_dy = (yf - y_frac) as f64;

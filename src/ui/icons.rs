@@ -43,6 +43,11 @@ impl IconAtlas {
                 flip_h: false,
             },
             SvgEntry {
+                name: "eraser",
+                data: include_bytes!("../icons/eraser.svg"),
+                flip_h: false,
+            },
+            SvgEntry {
                 name: "prev_frame",
                 data: include_bytes!("../icons/goto.svg"),
                 flip_h: false,

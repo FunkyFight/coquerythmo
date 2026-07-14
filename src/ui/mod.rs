@@ -2125,7 +2125,7 @@ impl Ui {
         );
 
         // Update drawing overlay texture if needed
-        self.update_drawing_overlay(device, queue, renderer, project, render_frame.round() as i64, fps);
+        self.update_drawing_overlay(device, queue, renderer, project, render_frame, fps);
 
         let mut color_picker_bg_quads: Vec<QuadInstance> = Vec::new();
         let mut base_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
@@ -2319,6 +2319,34 @@ impl Ui {
                 },
                 &cache.bind_group,
             ));
+        }
+
+        // Eraser cursor ring (visible like the pencil preview)
+        if self.erasing && self.active_mode == Some(ToolMode::Draw) {
+            let zone = &self.layout.rythmo;
+            let (cx, cy) = self.cursor_pos;
+            if zone.contains(cx, cy) {
+                let brush_radius_frac = match self.brush_radius_index {
+                    0 => 0.006,
+                    1 => 0.012,
+                    2 => 0.024,
+                    _ => 0.012,
+                };
+                let r_px = (brush_radius_frac * zone.height).max(2.0);
+                quads.push(QuadInstance {
+                    rect: [cx - r_px, cy - r_px, r_px * 2.0, r_px * 2.0],
+                    color: [0.0, 0.0, 0.0, 0.0],
+                    color_bottom: [0.0, 0.0, 0.0, 0.0],
+                    border_color: [0.95, 0.95, 0.98, 0.95],
+                    border_width: 1.5,
+                    border_radius: r_px,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0; 4],
+                    shadow_blur: 0.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
+                });
+            }
         }
 
         // Markers
@@ -3390,7 +3418,7 @@ impl Ui {
         queue: &wgpu::Queue,
         renderer: &mut UiRenderer,
         project: &Project,
-        current_frame: i64,
+        current_frame: f64,
         fps: f64,
     ) {
         use crate::rythmo_drawing::{rasterize_window, visible_frame_window, DrawingStroke};
@@ -3398,7 +3426,7 @@ impl Ui {
         let zone = &self.layout.rythmo;
         let zw = zone.width.max(1.0) as u32;
         let zh = zone.height.max(1.0) as u32;
-        let cf = current_frame as f64;
+        let cf = current_frame;
         let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
 
         // Compute cache key
@@ -3431,64 +3459,98 @@ impl Ui {
 
             if !strokes.is_empty() {
                 let rgba = rasterize_window(&strokes, zw, zh, cf, ppf);
-                
-                // Create texture
-                let texture = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("Drawing Overlay"),
-                    size: wgpu::Extent3d {
-                        width: zw,
-                        height: zh,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                });
-                
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &rgba,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(4 * zw),
-                        rows_per_image: Some(zh),
-                    },
-                    wgpu::Extent3d {
-                        width: zw,
-                        height: zh,
-                        depth_or_array_layers: 1,
-                    },
-                );
-                
-                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Drawing Overlay BG"),
-                    layout: renderer.texture_bind_group_layout(),
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&view),
+
+                // Reuse the existing GPU texture when the zone size is unchanged so
+                // scrolling/playback doesn't reallocate a texture every frame (which
+                // caused stutter). Only recreate when the zone is resized.
+                let mut reused = false;
+                if let Some(c) = self.drawing_overlay_cache.as_mut() {
+                    if c.zw == zw && c.zh == zh {
+                        queue.write_texture(
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &c._texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            &rgba,
+                            wgpu::TexelCopyBufferLayout {
+                                offset: 0,
+                                bytes_per_row: Some(4 * zw),
+                                rows_per_image: Some(zh),
+                            },
+                            wgpu::Extent3d {
+                                width: zw,
+                                height: zh,
+                                depth_or_array_layers: 1,
+                            },
+                        );
+                        c.key = key;
+                        reused = true;
+                    }
+                }
+
+                if !reused {
+                    // Create texture
+                    let texture = device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("Drawing Overlay"),
+                        size: wgpu::Extent3d {
+                            width: zw,
+                            height: zh,
+                            depth_or_array_layers: 1,
                         },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(renderer.texture_sampler()),
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    });
+
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
                         },
-                    ],
-                });
-                
-                self.drawing_overlay_cache = Some(DrawingOverlayCache {
-                    _texture: texture,
-                    bind_group,
-                    key,
-                });
+                        &rgba,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(4 * zw),
+                            rows_per_image: Some(zh),
+                        },
+                        wgpu::Extent3d {
+                            width: zw,
+                            height: zh,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+
+                    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Drawing Overlay BG"),
+                        layout: renderer.texture_bind_group_layout(),
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(renderer.texture_sampler()),
+                            },
+                        ],
+                    });
+
+                    self.drawing_overlay_cache = Some(DrawingOverlayCache {
+                        _texture: texture,
+                        bind_group,
+                        key,
+                        zw,
+                        zh,
+                    });
+                }
             } else {
                 self.drawing_overlay_cache = None;
             }
@@ -3503,4 +3565,6 @@ pub(crate) struct DrawingOverlayCache {
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     key: (i64, u32, u32, u64, usize, bool),
+    zw: u32,
+    zh: u32,
 }
