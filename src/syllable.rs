@@ -401,6 +401,44 @@ pub fn syllable_count(text: &str, lang: &str) -> usize {
     syllable_breaks(text, lang).len() + 1
 }
 
+/// End of the highlighted prefix. The complete word crossing the reading line
+/// is included so the highlight never cuts through a glyph or a word.
+pub fn read_highlight_end(text: &str, progress: f32) -> Option<usize> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() || !(0.0..=1.0).contains(&progress) {
+        return None;
+    }
+    let index = ((progress * chars.len() as f32).floor() as usize).min(chars.len() - 1);
+    if chars[index].is_whitespace() {
+        let mut end = index + 1;
+        while end < chars.len() && chars[end].is_whitespace() {
+            end += 1;
+        }
+        return Some(end);
+    }
+    let mut end = index + 1;
+    while end < chars.len() && !chars[end].is_whitespace() {
+        end += 1;
+    }
+    while end < chars.len() && chars[end].is_whitespace() {
+        end += 1;
+    }
+    Some(end)
+}
+
+pub fn read_highlight_end_from_timing(
+    text: &str,
+    saved_ratios: &[f32],
+    lang: &str,
+    progress: f32,
+) -> Option<usize> {
+    if !(0.0..=1.0).contains(&progress) {
+        return None;
+    }
+    let visual_progress = visual_progress_from_timing(text, saved_ratios, lang, progress);
+    read_highlight_end(text, visual_progress)
+}
+
 /// Compute default ratios proportional to the character count of each segment.
 /// This gives a visually correct initial distribution where longer syllables
 /// get more space than shorter ones.
@@ -767,6 +805,14 @@ mod tests {
             progress < 0.2,
             "visual progress should linger on stretched first syllable, got {progress}"
         );
+    }
+
+    #[test]
+    fn read_highlight_keeps_past_words_and_completes_the_current_word() {
+        assert_eq!(read_highlight_end("un deux", 0.10), Some(3));
+        assert_eq!(read_highlight_end("un deux", 0.30), Some(3));
+        assert_eq!(read_highlight_end("un deux", 0.75), Some(7));
+        assert_eq!(read_highlight_end("un deux", 1.20), None);
     }
 
     #[test]

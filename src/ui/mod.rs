@@ -974,8 +974,8 @@ impl Ui {
         self.modal_host.open_whats_new(version, body);
     }
 
-    pub fn open_save_prompt(&mut self) {
-        self.modal_host.open_save_prompt();
+    pub fn open_save_prompt(&mut self, kind: save_prompt_modal::SavePromptKind) {
+        self.modal_host.open_save_prompt(kind);
     }
 
     pub fn open_studio_warning(&mut self) {
@@ -1010,9 +1010,13 @@ impl Ui {
         self.modal_host.open_settings(fonts);
     }
 
-    pub fn open_project_settings_modal(&mut self, instrumental_audio_path: Option<String>) {
+    pub fn open_project_settings_modal(
+        &mut self,
+        instrumental_audio_path: Option<String>,
+        highlight_read_word: bool,
+    ) {
         self.modal_host
-            .open_project_settings(instrumental_audio_path);
+            .open_project_settings(instrumental_audio_path, highlight_read_word);
     }
 
     pub fn set_project_instrumental_audio_path(&mut self, path: impl Into<String>) {
@@ -1157,6 +1161,8 @@ impl Ui {
         let mut overlay_labels: Vec<LabelInfo> = Vec::new();
         let mut modal_quads: Vec<QuadInstance> = Vec::new(); // modal backgrounds (above normal text)
         let mut modal_labels: Vec<LabelInfo> = Vec::new(); // modal text (above modal backgrounds)
+        let mut modal_overlay_quads: Vec<QuadInstance> = Vec::new();
+        let mut modal_overlay_labels: Vec<LabelInfo> = Vec::new();
 
         // Pricing / support page replaces the entire layout while active.
         if self.modal_host.pricing_page.is_some() {
@@ -1204,6 +1210,8 @@ impl Ui {
                 &color_picker_fg_quads,
                 &modal_quads,
                 &modal_labels,
+                &modal_overlay_quads,
+                &modal_overlay_labels,
             );
             return;
         }
@@ -1853,6 +1861,8 @@ impl Ui {
         self.modal_host.render_top(
             &mut modal_quads,
             &mut modal_labels,
+            &mut modal_overlay_quads,
+            &mut modal_overlay_labels,
             self.screen_w,
             self.screen_h,
         );
@@ -1878,6 +1888,8 @@ impl Ui {
             &color_picker_fg_quads,
             &modal_quads,
             &modal_labels,
+            &modal_overlay_quads,
+            &modal_overlay_labels,
         );
     }
 
@@ -2306,6 +2318,8 @@ impl Ui {
             &[], // post_texture_quads
             &[], // modal_quads
             &[], // modal_labels
+            &[], // modal_overlay_quads
+            &[], // modal_overlay_labels
         );
     }
 

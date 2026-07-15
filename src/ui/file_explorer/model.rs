@@ -41,6 +41,7 @@ impl FileExplorerModal {
             address_input: super::TextInputState::new(),
             name_filter_input: super::TextInputState::new(),
             filename_input: super::TextInputState::new(),
+            filename_suggestion: None,
             show_filter_dropdown: false,
             overwrite_path: None,
             dragging_scrollbar: false,

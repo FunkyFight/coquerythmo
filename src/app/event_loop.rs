@@ -70,6 +70,13 @@ pub(crate) fn new_project_reset_and_pick_video(
     CommandDispatcher::dispatch(UiAction::AddVideo, state, elwt);
 }
 
+pub(crate) fn close_project_reset(state: &mut State) {
+    state.clear_video_for_new_project();
+    EditExecutor::reset(&mut state.project_session);
+    crate::vector_text::clear_project_font();
+    state.render.ui_renderer.clear_text_cache();
+}
+
 fn is_space_key(key: &Key) -> bool {
     matches!(key, Key::Named(NamedKey::Space))
         || matches!(key, Key::Character(text) if text.as_str() == " ")
@@ -174,7 +181,11 @@ pub fn run() {
                         state.show_toast(i18n::t("toast.close_blocked_saving"), 5.0);
                         state.request_redraw();
                     } else {
-                        elwt.exit();
+                        if CommandDispatcher::dispatch(UiAction::ExitApplication, &mut state, elwt) {
+                            elwt.exit();
+                        } else {
+                            state.request_redraw();
+                        }
                     }
                 }
                 WindowEvent::Resized(physical_size) => {
@@ -574,8 +585,19 @@ pub fn run() {
             }
             Event::AboutToWait => {
                 let changed = state.tick_background();
-                if state.take_new_project_after_save_ready() {
-                    new_project_reset_and_pick_video(&mut state, elwt);
+                if let Some(transition) = state.take_transition_after_save_ready() {
+                    match transition {
+                        crate::application::job_service::SaveContinuation::NewProject => {
+                            new_project_reset_and_pick_video(&mut state, elwt)
+                        }
+                        crate::application::job_service::SaveContinuation::CloseProject => {
+                            close_project_reset(&mut state)
+                        }
+                        crate::application::job_service::SaveContinuation::ExitApplication => {
+                            elwt.exit()
+                        }
+                        crate::application::job_service::SaveContinuation::None => {}
+                    }
                 }
                 let needs_continuous = state.needs_continuous_redraw();
                 if changed || state.needs_redraw_now() {

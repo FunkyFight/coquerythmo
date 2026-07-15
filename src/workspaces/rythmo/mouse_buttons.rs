@@ -79,6 +79,27 @@ pub(crate) fn handle_shift_mouse_press(
         }
     }
 
+    // Outside text editing, Shift+drag locks the line's timing and only
+    // changes its vertical track.
+    for line in ctx.project.lines() {
+        let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
+        if !rect.contains(x, y) {
+            continue;
+        }
+        state.selected = Some(Selection::Line(line.id));
+        state.dragging = Some(DragState {
+            target: DragTarget::Line(line.id),
+            drag_start_x: x,
+            original_frame: line.start_frame,
+            original_duration: line.duration_frames,
+            original_y_slot: line.y_slot,
+            drag_start_y: y,
+            handle: DragHandle::VerticalOnly,
+            group_origins: Vec::new(),
+        });
+        return EventResponse::Consumed;
+    }
+
     EventResponse::Ignored
 }
 

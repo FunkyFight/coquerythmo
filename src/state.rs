@@ -169,8 +169,8 @@ impl State {
         self.jobs.pending_save_job.is_some()
     }
 
-    pub fn take_new_project_after_save_ready(&mut self) -> bool {
-        std::mem::take(&mut self.jobs.new_project_after_save_ready)
+    pub(crate) fn take_transition_after_save_ready(&mut self) -> Option<SaveContinuation> {
+        self.jobs.transition_after_save_ready.take()
     }
 
     pub(crate) fn start_project_save(
@@ -324,12 +324,10 @@ impl State {
     }
 
     pub fn open_project_settings_modal(&mut self) {
+        let settings = self.project_session.project.settings();
         self.ui_shell.ui.open_project_settings_modal(
-            self.project_session
-                .project
-                .settings()
-                .instrumental_audio_path
-                .clone(),
+            settings.instrumental_audio_path.clone(),
+            settings.highlight_read_word,
         );
     }
 
@@ -480,9 +478,14 @@ impl State {
         self.ui_shell.ui.close_project_settings_modal();
     }
 
-    pub fn save_project_settings(&mut self, instrumental_audio_path: Option<String>) {
+    pub fn save_project_settings(
+        &mut self,
+        instrumental_audio_path: Option<String>,
+        highlight_read_word: bool,
+    ) {
         let mut settings = self.project_session.project.settings().clone();
         settings.instrumental_audio_path = instrumental_audio_path;
+        settings.highlight_read_word = highlight_read_word;
         EditExecutor::apply_domain_change(
             &mut self.project_session,
             EditOrigin::Local,
@@ -511,8 +514,8 @@ impl State {
         self.ui_shell.ui.close_pricing_page();
     }
 
-    pub fn open_save_prompt(&mut self) {
-        self.ui_shell.ui.open_save_prompt();
+    pub fn open_save_prompt(&mut self, kind: crate::ui::save_prompt_modal::SavePromptKind) {
+        self.ui_shell.ui.open_save_prompt(kind);
     }
 
     pub fn toggle_karaoke_for_selection(&mut self) {
@@ -1134,7 +1137,16 @@ impl State {
         let (bgl, sampler) = self.renderer_refs();
         let mut player = VideoPlayer::new();
 
-        let mut active_proxy_path = proxy_path.map(Path::to_path_buf);
+        // Every decoder load resolves the proxy again. This covers project loads,
+        // recent projects and explicit reloads without requiring each caller to
+        // remember the proxy policy.
+        let linked_proxy = proxy_path.map(Path::to_path_buf).or_else(|| {
+            self.project_session
+                .project_path
+                .as_deref()
+                .and_then(|br_path| crate::video_proxy::linked_proxy_path(br_path, source_path))
+        });
+        let mut active_proxy_path = linked_proxy;
         let mut load_path = active_proxy_path.as_deref().unwrap_or(source_path);
         let mut load_result = player.load_with_audio(
             load_path,
@@ -3131,12 +3143,12 @@ impl State {
                 self.show_toast(crate::i18n::t("toast.saved"), 4.0);
                 log::info!("Project saved to {}", job.path.display());
 
-                if job.continuation == SaveContinuation::NewProject {
+                if job.continuation != SaveContinuation::None {
                     if snapshot_is_current {
-                        self.jobs.new_project_after_save_ready = true;
+                        self.jobs.transition_after_save_ready = Some(job.continuation);
                     } else {
                         self.show_toast(
-                            crate::i18n::t("toast.new_project_canceled_after_edit"),
+                            crate::i18n::t("toast.transition_canceled_after_edit"),
                             7.0,
                         );
                     }
@@ -3621,6 +3633,8 @@ impl State {
             &[],
             &[], // no modal quads
             &[], // no modal labels
+            &[], // no modal overlay quads
+            &[], // no modal overlay labels
         );
 
         self.render

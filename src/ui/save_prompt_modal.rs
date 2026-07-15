@@ -1,10 +1,22 @@
 use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
 
-const CARD_W: f32 = 420.0;
-const CARD_H: f32 = 150.0;
+const CARD_W: f32 = 560.0;
+const CARD_H: f32 = 230.0;
+const BUTTON_W: f32 = 154.0;
+const BUTTON_H: f32 = 42.0;
+const BUTTON_GAP: f32 = 12.0;
 
-pub struct SavePromptModal;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SavePromptKind {
+    NewProject,
+    CloseProject,
+    ExitApplication,
+}
+
+pub struct SavePromptModal {
+    kind: SavePromptKind,
+}
 
 pub enum SavePromptResult {
     Consumed,
@@ -15,13 +27,17 @@ pub enum SavePromptResult {
 
 impl Default for SavePromptModal {
     fn default() -> Self {
-        Self::new()
+        Self::new(SavePromptKind::NewProject)
     }
 }
 
 impl SavePromptModal {
-    pub fn new() -> Self {
-        Self
+    pub fn new(kind: SavePromptKind) -> Self {
+        Self { kind }
+    }
+
+    pub fn kind(&self) -> SavePromptKind {
+        self.kind
     }
 
     fn card_rect(sw: f32, sh: f32) -> Rect {
@@ -33,6 +49,18 @@ impl SavePromptModal {
         }
     }
 
+    fn button_rects(card: Rect) -> [Rect; 3] {
+        let total_w = BUTTON_W * 3.0 + BUTTON_GAP * 2.0;
+        let start_x = card.x + (card.width - total_w) / 2.0;
+        let y = card.y + card.height - BUTTON_H - 24.0;
+        [0.0, 1.0, 2.0].map(|index| Rect {
+            x: start_x + index * (BUTTON_W + BUTTON_GAP),
+            y,
+            width: BUTTON_W,
+            height: BUTTON_H,
+        })
+    }
+
     pub fn handle_event(&mut self, event: &UiEvent, sw: f32, sh: f32) -> SavePromptResult {
         let card = Self::card_rect(sw, sh);
         match event {
@@ -41,30 +69,7 @@ impl SavePromptModal {
                 if !card.contains(*x, *y) {
                     return SavePromptResult::Cancel;
                 }
-                let btn_y = card.y + CARD_H - 44.0;
-                let btn_w = 110.0;
-                let gap = 10.0;
-                let total_w = btn_w * 3.0 + gap * 2.0;
-                let start_x = card.x + (CARD_W - total_w) / 2.0;
-
-                let save_btn = Rect {
-                    x: start_x,
-                    y: btn_y,
-                    width: btn_w,
-                    height: 30.0,
-                };
-                let discard_btn = Rect {
-                    x: start_x + btn_w + gap,
-                    y: btn_y,
-                    width: btn_w,
-                    height: 30.0,
-                };
-                let cancel_btn = Rect {
-                    x: start_x + 2.0 * (btn_w + gap),
-                    y: btn_y,
-                    width: btn_w,
-                    height: 30.0,
-                };
+                let [save_btn, discard_btn, cancel_btn] = Self::button_rects(card);
 
                 if save_btn.contains(*x, *y) {
                     return SavePromptResult::Save;
@@ -93,8 +98,8 @@ impl SavePromptModal {
         // Dim background
         quads.push(QuadInstance {
             rect: [0.0, 0.0, sw, sh],
-            color: [0.0, 0.0, 0.0, 0.75],
-            color_bottom: [0.0, 0.0, 0.0, 0.75],
+            color: [0.015, 0.015, 0.025, 0.82],
+            color_bottom: [0.015, 0.015, 0.025, 0.82],
             border_color: [0.0; 4],
             border_width: 0.0,
             border_radius: 0.0,
@@ -108,14 +113,14 @@ impl SavePromptModal {
         // Card
         quads.push(QuadInstance {
             rect: [card.x, card.y, card.width, card.height],
-            color: [0.22, 0.22, 0.26, 1.0],
-            color_bottom: [0.16, 0.16, 0.19, 1.0],
-            border_color: [0.55, 0.45, 0.20, 0.8],
-            border_width: 1.5,
-            border_radius: 14.0,
-            shadow_offset: [0.0, 4.0],
-            shadow_color: [0.0, 0.0, 0.0, 0.5],
-            shadow_blur: 10.0,
+            color: [0.16, 0.16, 0.20, 1.0],
+            color_bottom: [0.105, 0.105, 0.14, 1.0],
+            border_color: [0.38, 0.38, 0.48, 0.9],
+            border_width: 1.0,
+            border_radius: 16.0,
+            shadow_offset: [0.0, 8.0],
+            shadow_color: [0.0, 0.0, 0.0, 0.58],
+            shadow_blur: 18.0,
             rotation: 0.0,
             _padding: [0.0; 2],
         });
@@ -124,87 +129,78 @@ impl SavePromptModal {
         labels.push(LabelInfo {
             text: t("save_prompt.title"),
             bounds: Rect {
-                x: card.x,
-                y: card.y + 14.0,
-                width: card.width,
-                height: 24.0,
+                x: card.x + 30.0,
+                y: card.y + 24.0,
+                width: card.width - 60.0,
+                height: 32.0,
             },
-            h_align: HAlign::Center,
+            h_align: HAlign::Left,
             v_align: VAlign::Center,
             overflow: Overflow::Clip,
             padding: 0.0,
-            font_size_override: Some(14.0),
-            color_override: Some([230, 190, 80]),
+            font_size_override: Some(20.0),
+            color_override: Some([248, 211, 99]),
             font_family_override: None,
         });
 
         // Message
         labels.push(LabelInfo {
-            text: t("save_prompt.message"),
-            bounds: Rect {
-                x: card.x + 20.0,
-                y: card.y + 46.0,
-                width: card.width - 40.0,
-                height: 20.0,
+            text: match self.kind {
+                SavePromptKind::NewProject => t("save_prompt.message.new_project"),
+                SavePromptKind::CloseProject => t("save_prompt.message.close_project"),
+                SavePromptKind::ExitApplication => t("save_prompt.message.exit_application"),
             },
-            h_align: HAlign::Center,
+            bounds: Rect {
+                x: card.x + 30.0,
+                y: card.y + 70.0,
+                width: card.width - 60.0,
+                height: 54.0,
+            },
+            h_align: HAlign::Left,
             v_align: VAlign::Center,
             overflow: Overflow::Clip,
             padding: 0.0,
-            font_size_override: Some(11.0),
-            color_override: Some([200, 200, 210]),
+            font_size_override: Some(15.0),
+            color_override: Some([222, 222, 232]),
             font_family_override: None,
         });
 
         // Buttons
-        let btn_y = card.y + CARD_H - 44.0;
-        let btn_w = 110.0;
-        let gap = 10.0;
-        let total_w = btn_w * 3.0 + gap * 2.0;
-        let start_x = card.x + (CARD_W - total_w) / 2.0;
-
+        let button_rects = Self::button_rects(card);
         let buttons = [
-            (start_x, t("save_prompt.save"), [0.20, 0.50, 0.30, 1.0]),
-            (
-                start_x + btn_w + gap,
-                t("save_prompt.discard"),
-                [0.55, 0.25, 0.20, 1.0],
-            ),
-            (
-                start_x + 2.0 * (btn_w + gap),
-                t("save_prompt.cancel"),
-                [0.25, 0.25, 0.30, 1.0],
-            ),
+            (t("save_prompt.save"), [0.18, 0.52, 0.32, 1.0]),
+            (t("save_prompt.discard"), [0.58, 0.24, 0.22, 1.0]),
+            (t("save_prompt.cancel"), [0.25, 0.25, 0.32, 1.0]),
         ];
 
-        for (bx, label, color) in buttons {
+        for (button, (label, color)) in button_rects.into_iter().zip(buttons) {
             quads.push(QuadInstance {
-                rect: [bx, btn_y, btn_w, 30.0],
+                rect: [button.x, button.y, button.width, button.height],
                 color,
-                color_bottom: color,
-                border_color: [0.5, 0.5, 0.55, 0.5],
+                color_bottom: [color[0] * 0.82, color[1] * 0.82, color[2] * 0.82, color[3]],
+                border_color: [0.62, 0.62, 0.70, 0.45],
                 border_width: 1.0,
-                border_radius: 4.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
+                border_radius: 8.0,
+                shadow_offset: [0.0, 2.0],
+                shadow_color: [0.0, 0.0, 0.0, 0.28],
+                shadow_blur: 4.0,
                 rotation: 0.0,
                 _padding: [0.0; 2],
             });
             labels.push(LabelInfo {
                 text: label,
                 bounds: Rect {
-                    x: bx,
-                    y: btn_y,
-                    width: btn_w,
-                    height: 30.0,
+                    x: button.x,
+                    y: button.y,
+                    width: button.width,
+                    height: button.height,
                 },
                 h_align: HAlign::Center,
                 v_align: VAlign::Center,
                 overflow: Overflow::Clip,
                 padding: 0.0,
-                font_size_override: Some(11.0),
-                color_override: Some([230, 230, 235]),
+                font_size_override: Some(14.0),
+                color_override: Some([248, 248, 252]),
                 font_family_override: None,
             });
         }

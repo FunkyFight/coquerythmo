@@ -25,6 +25,8 @@ pub(crate) struct PendingImportJob {
 pub(crate) enum SaveContinuation {
     None,
     NewProject,
+    CloseProject,
+    ExitApplication,
 }
 
 pub(crate) struct PendingSaveJob {
@@ -43,7 +45,7 @@ pub struct JobManager {
     pub(crate) pending_import_job: Option<PendingImportJob>,
     pub(crate) pending_save_job: Option<PendingSaveJob>,
     pub(crate) active_export_cancel: Option<Arc<AtomicBool>>,
-    pub(crate) new_project_after_save_ready: bool,
+    pub(crate) transition_after_save_ready: Option<SaveContinuation>,
 }
 
 impl JobManager {
@@ -54,7 +56,7 @@ impl JobManager {
             pending_import_job: None,
             pending_save_job: None,
             active_export_cancel: None,
-            new_project_after_save_ready: false,
+            transition_after_save_ready: None,
         }
     }
 }

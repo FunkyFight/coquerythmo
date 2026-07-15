@@ -252,6 +252,7 @@ enum TextLayer {
     Base,
     Overlay,
     Modal,
+    ModalOverlay,
 }
 
 pub struct UiRenderer {
@@ -269,6 +270,7 @@ pub struct UiRenderer {
     text_renderer: TextRenderer,
     overlay_text_renderer: TextRenderer,
     modal_text_renderer: TextRenderer,
+    modal_overlay_text_renderer: TextRenderer,
     viewport: Viewport,
 
     text_texture_cache: HashMap<u64, CachedTextTexture>,
@@ -285,6 +287,7 @@ pub struct UiRenderer {
     base_textured_buffer: DynamicBuffer,
     overlay_quad_buffer: DynamicBuffer,
     modal_quad_buffer: DynamicBuffer,
+    modal_overlay_quad_buffer: DynamicBuffer,
     extra_textured_buffer: DynamicBuffer,
     post_texture_quad_buffer: DynamicBuffer,
 }
@@ -495,6 +498,8 @@ impl UiRenderer {
             TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
         let modal_text_renderer =
             TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
+        let modal_overlay_text_renderer =
+            TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
         let (text_raster_requests, text_raster_results) = spawn_text_raster_worker();
 
         Self {
@@ -510,6 +515,7 @@ impl UiRenderer {
             text_renderer,
             overlay_text_renderer,
             modal_text_renderer,
+            modal_overlay_text_renderer,
             viewport,
             text_texture_cache: HashMap::new(),
             text_raster_requests,
@@ -525,6 +531,7 @@ impl UiRenderer {
             base_textured_buffer: DynamicBuffer::new(),
             overlay_quad_buffer: DynamicBuffer::new(),
             modal_quad_buffer: DynamicBuffer::new(),
+            modal_overlay_quad_buffer: DynamicBuffer::new(),
             extra_textured_buffer: DynamicBuffer::new(),
             post_texture_quad_buffer: DynamicBuffer::new(),
         }
@@ -1101,6 +1108,18 @@ impl UiRenderer {
                     &mut self.swash_cache,
                 )
                 .unwrap(),
+            TextLayer::ModalOverlay => self
+                .modal_overlay_text_renderer
+                .prepare(
+                    device,
+                    queue,
+                    &mut self.font_system,
+                    &mut self.text_atlas,
+                    &self.viewport,
+                    text_areas,
+                    &mut self.swash_cache,
+                )
+                .unwrap(),
         }
     }
 
@@ -1126,6 +1145,8 @@ impl UiRenderer {
         post_texture_quads: &[QuadInstance], // drawn after textured quads (e.g. color picker indicators)
         modal_quads: &[QuadInstance],        // modal backgrounds (above normal text)
         modal_labels: &[LabelInfo],          // modal text (above modal backgrounds)
+        modal_overlay_quads: &[QuadInstance], // popups above modal content
+        modal_overlay_labels: &[LabelInfo],  // popup text above popup backgrounds
     ) {
         let ui_scale = ui_scale.max(1.0);
         let uniforms = Uniforms {
@@ -1208,6 +1229,12 @@ impl UiRenderer {
         );
         self.modal_quad_buffer
             .upload(device, queue, "UI Modal Quad Buffer", modal_quads);
+        self.modal_overlay_quad_buffer.upload(
+            device,
+            queue,
+            "UI Modal Overlay Quad Buffer",
+            modal_overlay_quads,
+        );
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1354,8 +1381,19 @@ impl UiRenderer {
 
         // Second pass: modals on top of everything (quads + text). LoadOp::Load
         // preserves the first pass's output.
-        if !modal_quads.is_empty() || !modal_labels.is_empty() {
+        if !modal_quads.is_empty()
+            || !modal_labels.is_empty()
+            || !modal_overlay_quads.is_empty()
+            || !modal_overlay_labels.is_empty()
+        {
             self.prepare_text_layer(device, queue, modal_labels, ui_scale, TextLayer::Modal);
+            self.prepare_text_layer(
+                device,
+                queue,
+                modal_overlay_labels,
+                ui_scale,
+                TextLayer::ModalOverlay,
+            );
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("UI Modal Pass"),
@@ -1388,6 +1426,21 @@ impl UiRenderer {
             // prevents glyphon's previous modal buffer from leaking forward.
             if !modal_labels.is_empty() {
                 self.modal_text_renderer
+                    .render(&self.text_atlas, &self.viewport, &mut pass)
+                    .unwrap();
+            }
+
+            if !modal_overlay_quads.is_empty() {
+                pass.set_pipeline(&self.quad_pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                if let Some(buffer) = self.modal_overlay_quad_buffer.buffer() {
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    pass.draw(0..6, 0..modal_overlay_quads.len() as u32);
+                }
+            }
+
+            if !modal_overlay_labels.is_empty() {
+                self.modal_overlay_text_renderer
                     .render(&self.text_atlas, &self.viewport, &mut pass)
                     .unwrap();
             }

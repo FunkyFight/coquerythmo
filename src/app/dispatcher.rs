@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use winit::event_loop::EventLoopWindowTarget;
 
-use super::event_loop::new_project_reset_and_pick_video;
 use super::event_loop::AppEvent;
+use super::event_loop::{close_project_reset, new_project_reset_and_pick_video};
 use super::file_picker::{
     import_cappela_from_path, import_project_from_path, import_subtitle_from_path,
     open_dialog_filters, open_file_picker, project_or_video_dir, quick_save_existing,
@@ -41,13 +41,20 @@ pub(crate) fn handle_file_picker_selected(
         FilePickerIntent::NewProjectSave => {
             save_project_as_with_continuation(state, path, SaveContinuation::NewProject);
         }
+        FilePickerIntent::CloseProjectSave => {
+            save_project_as_with_continuation(state, path, SaveContinuation::CloseProject);
+        }
+        FilePickerIntent::ExitApplicationSave => {
+            save_project_as_with_continuation(state, path, SaveContinuation::ExitApplication);
+        }
         FilePickerIntent::VoiceActorIcon => {
             state.set_voice_actor_modal_icon_path(path.to_string_lossy().into_owned());
         }
         FilePickerIntent::ProjectInstrumentalAudio => {
             let path = path.to_string_lossy().into_owned();
             state.set_project_instrumental_audio_path(path.clone());
-            state.save_project_settings(Some(path));
+            let highlight_read_word = state.project_session.project.settings().highlight_read_word;
+            state.save_project_settings(Some(path), highlight_read_word);
             state.close_project_settings_modal();
         }
         FilePickerIntent::LanguageInstrumentalAudio { language_id } => {
@@ -835,8 +842,9 @@ impl CommandDispatcher {
             }
             UiAction::SaveProjectSettings {
                 instrumental_audio_path,
+                highlight_read_word,
             } => {
-                state.save_project_settings(instrumental_audio_path);
+                state.save_project_settings(instrumental_audio_path, highlight_read_word);
             }
             UiAction::ToggleActiveAudio => {
                 state.toggle_active_audio();
@@ -848,7 +856,8 @@ impl CommandDispatcher {
                 if state.is_project_save_in_progress() {
                     state.show_toast(i18n::t("toast.project_change_blocked_saving"), 5.0);
                 } else if state.project_session.dirty {
-                    state.open_save_prompt();
+                    state
+                        .open_save_prompt(crate::ui::save_prompt_modal::SavePromptKind::NewProject);
                 } else {
                     new_project_reset_and_pick_video(state, elwt);
                 }
@@ -879,6 +888,68 @@ impl CommandDispatcher {
                     new_project_reset_and_pick_video(state, elwt);
                 }
             }
+            UiAction::CloseProject => {
+                if state.is_project_save_in_progress() {
+                    state.show_toast(i18n::t("toast.project_change_blocked_saving"), 5.0);
+                } else if state.project_session.dirty {
+                    state.open_save_prompt(
+                        crate::ui::save_prompt_modal::SavePromptKind::CloseProject,
+                    );
+                } else {
+                    close_project_reset(state);
+                }
+            }
+            UiAction::CloseProjectSave => {
+                if state.project_session.project_path.is_some() {
+                    quick_save_existing_with_continuation(state, SaveContinuation::CloseProject);
+                } else {
+                    let filters = save_dialog_filters(
+                        "Projet Coquerythmo",
+                        &[crate::project_archive::PROJECT_EXTENSION],
+                    );
+                    open_file_picker(
+                        state,
+                        i18n::t("picker.project_save.title"),
+                        FileExplorerMode::Save,
+                        FilePickerIntent::CloseProjectSave,
+                        filters,
+                        project_or_video_dir(state),
+                        Some(crate::project_archive::PROJECT_EXTENSION),
+                    );
+                }
+            }
+            UiAction::CloseProjectDiscard => close_project_reset(state),
+            UiAction::ExitApplication => {
+                if state.is_project_save_in_progress() {
+                    state.show_toast(i18n::t("toast.close_blocked_saving"), 5.0);
+                } else if state.project_session.dirty {
+                    state.open_save_prompt(
+                        crate::ui::save_prompt_modal::SavePromptKind::ExitApplication,
+                    );
+                } else {
+                    return true;
+                }
+            }
+            UiAction::ExitApplicationSave => {
+                if state.project_session.project_path.is_some() {
+                    quick_save_existing_with_continuation(state, SaveContinuation::ExitApplication);
+                } else {
+                    let filters = save_dialog_filters(
+                        "Projet Coquerythmo",
+                        &[crate::project_archive::PROJECT_EXTENSION],
+                    );
+                    open_file_picker(
+                        state,
+                        i18n::t("picker.project_save.title"),
+                        FileExplorerMode::Save,
+                        FilePickerIntent::ExitApplicationSave,
+                        filters,
+                        project_or_video_dir(state),
+                        Some(crate::project_archive::PROJECT_EXTENSION),
+                    );
+                }
+            }
+            UiAction::ExitApplicationDiscard => return true,
             UiAction::EnterStudioMode => {
                 state.enter_studio_mode();
             }

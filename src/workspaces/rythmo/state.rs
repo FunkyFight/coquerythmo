@@ -148,6 +148,7 @@ pub enum DragHandle {
     Left,
     Right,
     Body,
+    VerticalOnly,
     Selection,
 }
 

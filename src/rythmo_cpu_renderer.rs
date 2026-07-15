@@ -406,6 +406,44 @@ impl CpuRenderer {
         );
     }
 
+    fn blit_read_word_text(
+        &mut self,
+        pixmap: &mut Pixmap,
+        text: &str,
+        x: f32,
+        y: f32,
+        dest_w: f32,
+        dest_h: f32,
+        font_size: f32,
+        segment_start: usize,
+        highlight_end: Option<usize>,
+    ) {
+        let count = text.chars().count();
+        let Some(highlight_end) = highlight_end else {
+            self.blit_rythmo_text(pixmap, text, x, y, dest_w, dest_h, font_size);
+            return;
+        };
+        if count == 0 || highlight_end <= segment_start {
+            self.blit_rythmo_text(pixmap, text, x, y, dest_w, dest_h, font_size);
+            return;
+        }
+        let end_ratio = ((highlight_end - segment_start) as f32 / count as f32).min(1.0);
+        if end_ratio < 1.0 {
+            self.blit_rythmo_text(pixmap, text, x, y, dest_w, dest_h, font_size);
+        }
+        self.blit_rythmo_text_tinted_clipped(
+            pixmap,
+            text,
+            x,
+            y,
+            dest_w,
+            dest_h,
+            font_size,
+            [255, 209, 20],
+            end_ratio,
+        );
+    }
+
     fn blit_rythmo_text_tinted_clipped(
         &mut self,
         pixmap: &mut Pixmap,
@@ -732,6 +770,19 @@ impl CpuRenderer {
 
             // Rythmo text, rendered vectorially at final size.
             if !line.text.is_empty() && line.text != "↑" && line.text != "↓" {
+                let read_highlight_end = if project.settings().highlight_read_word && !line.karaoke
+                {
+                    let progress = (current_frame as f64 - line.start_frame as f64)
+                        / line.duration_frames.max(1) as f64;
+                    crate::syllable::read_highlight_end_from_timing(
+                        &line.text,
+                        &line.syllable_ratios,
+                        &crate::config::get().lang,
+                        progress as f32,
+                    )
+                } else {
+                    None
+                };
                 if line.karaoke {
                     let karaoke_font_size =
                         font_size * constants::KARAOKE_TEXT_FONT_SCALE * karaoke_text_scale;
@@ -772,11 +823,8 @@ impl CpuRenderer {
                 } else {
                     let lang = &crate::config::get().lang;
                     let breaks = crate::syllable::syllable_breaks(&line.text, lang);
-                    let ratios = if line.syllable_ratios.len() == breaks.len() + 1 {
-                        line.syllable_ratios.clone()
-                    } else {
-                        Vec::new()
-                    };
+                    let ratios =
+                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
                     if !ratios.is_empty() {
                         let chars: Vec<char> = line.text.chars().collect();
                         let mut seg_x = x1;
@@ -790,7 +838,7 @@ impl CpuRenderer {
                             };
                             let segment: String = chars[prev_break..end_break].iter().collect();
                             if !segment.is_empty() && seg_w > 0.5 {
-                                self.blit_rythmo_text(
+                                self.blit_read_word_text(
                                     &mut pixmap,
                                     &segment,
                                     seg_x,
@@ -798,13 +846,15 @@ impl CpuRenderer {
                                     seg_w,
                                     body_h,
                                     font_size,
+                                    prev_break,
+                                    read_highlight_end,
                                 );
                             }
                             seg_x += seg_w;
                             prev_break = end_break;
                         }
                     } else {
-                        self.blit_rythmo_text(
+                        self.blit_read_word_text(
                             &mut pixmap,
                             &line.text,
                             x1,
@@ -812,6 +862,8 @@ impl CpuRenderer {
                             lw,
                             body_h,
                             font_size,
+                            0,
+                            read_highlight_end,
                         );
                     }
                 }

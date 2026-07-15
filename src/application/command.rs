@@ -272,6 +272,7 @@ pub enum UiAction {
     },
     SaveProjectSettings {
         instrumental_audio_path: Option<String>,
+        highlight_read_word: bool,
     },
     ToggleActiveAudio,
     OffsetActiveAudioBy(i64),
@@ -279,6 +280,12 @@ pub enum UiAction {
     NewProject,
     NewProjectSave,
     NewProjectDiscard,
+    CloseProject,
+    CloseProjectSave,
+    CloseProjectDiscard,
+    ExitApplication,
+    ExitApplicationSave,
+    ExitApplicationDiscard,
     // Studio mode
     EnterStudioMode,
     ShowStudioWarning,
@@ -373,6 +380,8 @@ pub enum FilePickerIntent {
     ExportProject,
     QuickSave,
     NewProjectSave,
+    CloseProjectSave,
+    ExitApplicationSave,
     VoiceActorIcon,
     ProjectInstrumentalAudio,
     LanguageInstrumentalAudio {

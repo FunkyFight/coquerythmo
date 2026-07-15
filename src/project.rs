@@ -213,6 +213,8 @@ pub struct ProjectSettings {
     pub source_audio_offset_frames: i64,
     #[serde(default)]
     pub instrumental_audio_offset_frames: i64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub highlight_read_word: bool,
     #[serde(default, skip_serializing_if = "is_default_export_configuration")]
     pub export_configuration: ExportConfiguration,
     #[serde(default, skip_serializing_if = "is_default_automation_graph")]
@@ -221,6 +223,10 @@ pub struct ProjectSettings {
 
 fn is_default_export_configuration(configuration: &ExportConfiguration) -> bool {
     configuration == &ExportConfiguration::default()
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn is_default_automation_graph(graph: &crate::automation::AutomationGraph) -> bool {
@@ -441,15 +447,18 @@ impl Project {
     /// Materialize one language as a detached mono-language project.
     pub fn project_for_language(&self, id: LanguageId) -> Option<Project> {
         let global_export_configuration = self.settings.export_configuration.clone();
+        let highlight_read_word = self.settings.highlight_read_word;
         if id == self.active_language.id {
             let mut band = self.current_band_snapshot();
             band.settings.export_configuration = global_export_configuration;
+            band.settings.highlight_read_word = highlight_read_word;
             return Some(Self::from_detached_band(self.active_language.clone(), band));
         }
 
         let stored = self.language_snapshots.get(&id)?;
         let mut band = stored.band.clone();
         band.settings.export_configuration = global_export_configuration;
+        band.settings.highlight_read_word = highlight_read_word;
         Some(Self::from_detached_band(stored.language.clone(), band))
     }
 
@@ -601,6 +610,7 @@ impl Project {
 
         let previous_revision = self.revision;
         let global_export_configuration = self.settings.export_configuration.clone();
+        let highlight_read_word = self.settings.highlight_read_word;
         let outgoing = StoredLanguageSnapshot {
             language: self.active_language.clone(),
             band: self.current_band_snapshot(),
@@ -609,6 +619,7 @@ impl Project {
             .insert(outgoing.language.id, outgoing);
 
         incoming.band.settings.export_configuration = global_export_configuration;
+        incoming.band.settings.highlight_read_word = highlight_read_word;
         self.active_language = incoming.language;
         self.restore_band_snapshot(incoming.band, previous_revision);
         true
@@ -645,7 +656,9 @@ impl Project {
             return false;
         };
         let previous_revision = self.revision;
+        let highlight_read_word = self.settings.highlight_read_word;
         replacement.band.settings.export_configuration = global_export_configuration;
+        replacement.band.settings.highlight_read_word = highlight_read_word;
         self.active_language = replacement.language;
         self.restore_band_snapshot(replacement.band, previous_revision);
         true
@@ -708,6 +721,7 @@ impl Project {
         let active = unique.remove(active_index);
         let previous_revision = self.revision;
         let global_export_configuration = active.project.settings.export_configuration.clone();
+        let highlight_read_word = active.project.settings.highlight_read_word;
 
         self.language_order.clear();
         self.language_snapshots.clear();
@@ -715,12 +729,14 @@ impl Project {
         self.active_language = active.language;
         let mut active_band = active.project.current_band_snapshot();
         active_band.settings.export_configuration = global_export_configuration.clone();
+        active_band.settings.highlight_read_word = highlight_read_word;
         self.restore_band_snapshot(active_band, previous_revision);
 
         for snapshot in unique {
             let id = snapshot.language.id;
             let mut band = snapshot.project.current_band_snapshot();
             band.settings.export_configuration = global_export_configuration.clone();
+            band.settings.highlight_read_word = highlight_read_word;
             self.language_snapshots.insert(
                 id,
                 StoredLanguageSnapshot {
@@ -886,6 +902,7 @@ impl Project {
         };
         self.line_map.insert(id, line);
         self.line_order.push(id);
+        self.reconcile_known_characters();
         self.bump_revision();
         id
     }
@@ -936,6 +953,7 @@ impl Project {
         };
         self.line_map.insert(id, line);
         self.line_order.push(id);
+        self.reconcile_known_characters();
         self.bump_revision();
         id
     }
@@ -960,6 +978,7 @@ impl Project {
         if !self.line_order.contains(&id) {
             self.line_order.push(id);
         }
+        self.reconcile_known_characters();
         self.bump_revision();
     }
 
@@ -969,6 +988,7 @@ impl Project {
         self.line_map.insert(id, line);
         let idx = index.min(self.line_order.len());
         self.line_order.insert(idx, id);
+        self.reconcile_known_characters();
         self.bump_revision();
     }
 
@@ -976,6 +996,7 @@ impl Project {
         let id = line.id;
         if let Entry::Occupied(mut entry) = self.line_map.entry(id) {
             entry.insert(line);
+            self.reconcile_known_characters();
             self.bump_revision();
         } else {
             self.insert_line_at(index, line);
@@ -987,6 +1008,7 @@ impl Project {
         let line = self.line_map.remove(&id)?;
         let index = self.line_order.iter().position(|&i| i == id).unwrap_or(0);
         self.line_order.remove(index);
+        self.reconcile_known_characters();
         self.bump_revision();
         Some((line, index))
     }
@@ -1002,6 +1024,7 @@ impl Project {
             false
         });
         self.line_map.retain(|_, line| f(line));
+        self.reconcile_known_characters();
         self.bump_revision();
     }
 
@@ -1009,6 +1032,7 @@ impl Project {
     pub fn clear_lines(&mut self) {
         self.line_map.clear();
         self.line_order.clear();
+        self.known_characters.clear();
         self.bump_revision();
     }
 
@@ -1100,9 +1124,11 @@ impl Project {
     pub fn set_settings(&mut self, settings: ProjectSettings) {
         if self.settings != settings {
             let export_configuration = settings.export_configuration.clone();
+            let highlight_read_word = settings.highlight_read_word;
             self.settings = settings;
             for snapshot in self.language_snapshots.values_mut() {
                 snapshot.band.settings.export_configuration = export_configuration.clone();
+                snapshot.band.settings.highlight_read_word = highlight_read_word;
             }
             self.bump_revision();
         }
@@ -1200,6 +1226,7 @@ impl Project {
             line.character_name = name;
             line.character_color = color;
         }
+        self.reconcile_known_characters();
     }
 
     pub fn set_character_with_voice_actors(
@@ -1216,6 +1243,7 @@ impl Project {
             line.character_color = color;
             line.voice_actor_names = voice_actor_names;
         }
+        self.reconcile_known_characters();
     }
 
     fn upsert_known_character(&mut self, name: &str, color: [f32; 4]) {
@@ -1232,6 +1260,37 @@ impl Project {
                 self.bump_revision();
             }
         }
+    }
+
+    /// Keep the character catalog strictly derived from characters still used
+    /// by at least one line. Colors already customized in the catalog win;
+    /// newly encountered characters inherit the color of their first line.
+    fn reconcile_known_characters(&mut self) {
+        let used: Vec<(String, [f32; 4])> = self
+            .lines()
+            .filter(|line| !line.character_name.trim().is_empty())
+            .map(|line| (line.character_name.clone(), line.character_color))
+            .fold(Vec::new(), |mut characters, character| {
+                if !characters.iter().any(|(name, _)| name == &character.0) {
+                    characters.push(character);
+                }
+                characters
+            });
+        self.known_characters
+            .retain(|character| used.iter().any(|(name, _)| name == &character.name));
+        for (name, color) in used {
+            if !self
+                .known_characters
+                .iter()
+                .any(|character| character.name == name)
+            {
+                self.known_characters.push(Character { name, color });
+            }
+        }
+    }
+
+    pub(crate) fn prune_unused_characters(&mut self) {
+        self.reconcile_known_characters();
     }
 
     pub fn find_character(&self, name: &str) -> Option<&Character> {
@@ -1279,6 +1338,7 @@ impl Project {
             }
         }
         if changed {
+            self.reconcile_known_characters();
             self.bump_revision();
         }
     }
@@ -1432,6 +1492,33 @@ mod tests {
         assert_eq!(removed.id, id);
         assert_eq!(index, 0);
         assert_eq!(p.line_count(), 0);
+    }
+
+    #[test]
+    fn removing_last_line_for_character_prunes_catalog() {
+        let mut project = Project::new();
+        let alice = project.add_line_full(
+            0,
+            10,
+            0.0,
+            "Bonjour".into(),
+            "Alice".into(),
+            [1.0, 0.0, 0.0, 1.0],
+        );
+        let bob = project.add_line_full(
+            10,
+            10,
+            0.0,
+            "Salut".into(),
+            "Bob".into(),
+            [0.0, 0.0, 1.0, 1.0],
+        );
+        assert_eq!(project.known_characters().len(), 2);
+        project.remove_line(alice);
+        assert_eq!(project.character_names_from_lines(), vec!["Bob"]);
+        assert_eq!(project.known_characters()[0].name, "Bob");
+        project.remove_line(bob);
+        assert!(project.known_characters().is_empty());
     }
 
     #[test]
@@ -1644,6 +1731,7 @@ mod tests {
         settings.export_configuration.pre_roll_seconds = 2.5;
         settings.export_configuration.countdown_enabled = true;
         settings.export_configuration.video_aspect = VideoExportAspect::Portrait9x16;
+        settings.highlight_read_word = true;
         project.set_settings(settings);
 
         assert!(project.select_language(french_id));
@@ -1652,6 +1740,7 @@ mod tests {
             2.5
         );
         assert!(project.settings().export_configuration.countdown_enabled);
+        assert!(project.settings().highlight_read_word);
         assert_eq!(
             project.settings().export_configuration.video_aspect,
             VideoExportAspect::Portrait9x16

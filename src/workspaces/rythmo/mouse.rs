@@ -171,6 +171,11 @@ pub(crate) fn handle_mouse_move(
                             y_slot: new_y_slot,
                         })
                     }
+                    DragHandle::VerticalOnly => EventResponse::Action(UiAction::MoveLine {
+                        id: line_id,
+                        start_frame: drag.original_frame,
+                        y_slot: y_to_slot(ctx.project, y, ctx.zone),
+                    }),
                 }
             }
         };

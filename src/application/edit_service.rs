@@ -428,6 +428,7 @@ impl EditExecutor {
                 })
                 .collect(),
         );
+        session.project.prune_unused_characters();
         session.project.set_voice_actors(data.voice_actors);
         let mut settings = session.project.settings().clone();
         settings.automation = automation;

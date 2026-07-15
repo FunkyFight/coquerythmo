@@ -1049,6 +1049,38 @@ fn push_plain_rythmo_text(
     stretched.push(StretchedText::new(line_id, text, dest_rect));
 }
 
+fn push_read_word_rythmo_text(
+    stretched: &mut Vec<StretchedText>,
+    line_id: u64,
+    text: String,
+    dest_rect: Rect,
+    segment_start: usize,
+    highlight_end: Option<usize>,
+) {
+    let char_count = text.chars().count();
+    let Some(highlight_end) = highlight_end else {
+        push_plain_rythmo_text(stretched, line_id, text, dest_rect);
+        return;
+    };
+    if char_count == 0 || highlight_end <= segment_start {
+        push_plain_rythmo_text(stretched, line_id, text, dest_rect);
+        return;
+    }
+    if highlight_end >= segment_start + char_count {
+        let mut highlighted = StretchedText::new(line_id, text, dest_rect);
+        highlighted.tint = [1.0, 0.82, 0.08, 1.0];
+        stretched.push(highlighted);
+        return;
+    }
+    push_plain_rythmo_text(stretched, line_id, text.clone(), dest_rect);
+    let ratio = (highlight_end - segment_start) as f32 / char_count as f32;
+    let mut overlay = StretchedText::new(line_id, text, dest_rect);
+    overlay.draw_rect.width *= ratio;
+    overlay.uv_rect[2] = ratio;
+    overlay.tint = [1.0, 0.82, 0.08, 1.0];
+    stretched.push(overlay);
+}
+
 fn push_natural_karaoke_text(
     stretched: &mut Vec<StretchedText>,
     line_id: u64,
@@ -1551,7 +1583,7 @@ fn visible_syllable_segments(
     line: &crate::rythmo_line::RythmoLine,
     drag: Option<&SyllableDrag>,
     lang: &str,
-    karaoke_preview: bool,
+    _karaoke_preview: bool,
     state: &RythmoState,
 ) -> Option<(Vec<usize>, Vec<f32>)> {
     if line.text.is_empty() || line.text == "↑" || line.text == "↓" {
@@ -1564,19 +1596,13 @@ fn visible_syllable_segments(
     }
 
     let drag = drag.filter(|drag| drag.line_id == line.id);
-    let has_drag = drag.is_some();
-    let has_saved = line.syllable_ratios.len() == breaks.len() + 1;
     let ratios = if let Some(drag) = drag {
         drag.ratios.clone()
-    } else if has_saved {
-        line.syllable_ratios.clone()
-    } else if line.karaoke && !karaoke_preview {
-        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang)
     } else {
-        Vec::new()
+        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang)
     };
 
-    if has_drag || has_saved || !ratios.is_empty() {
+    if !ratios.is_empty() {
         Some((breaks, ratios))
     } else {
         None
@@ -1868,13 +1894,11 @@ fn syllable_ratios_for_line(
         return Some(drag.ratios.clone());
     }
 
-    if line.syllable_ratios.len() == breaks.len() + 1 {
-        Some(line.syllable_ratios.clone())
-    } else {
-        Some(crate::syllable::default_ratios_from_breaks(
-            &line.text, &breaks,
-        ))
-    }
+    Some(crate::syllable::timing_ratios(
+        &line.text,
+        &line.syllable_ratios,
+        lang,
+    ))
 }
 
 fn render_syllable_handles(
@@ -1964,6 +1988,28 @@ pub fn render_lines<'a>(
     f32,
     Option<Vec<CursorSegmentInfo>>,
 )> {
+    if let Some(drag) = state.dragging.as_ref().filter(|drag| {
+        drag.handle == DragHandle::VerticalOnly && matches!(drag.target, DragTarget::Line(_))
+    }) {
+        if let DragTarget::Line(line_id) = drag.target {
+            if project.get_line(line_id).is_some() {
+                let guide_x = frame_to_x(drag.original_frame, current_frame, zone);
+                syllable_quads.push(QuadInstance {
+                    rect: [guide_x - 1.0, zone.y, 2.0, zone.height],
+                    color: [0.68, 0.68, 0.72, 0.9],
+                    color_bottom: [0.68, 0.68, 0.72, 0.9],
+                    border_color: [0.0; 4],
+                    border_width: 0.0,
+                    border_radius: 1.0,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0, 0.0, 0.0, 0.25],
+                    shadow_blur: 2.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
+                });
+            }
+        }
+    }
     state.prune_karaoke_text_width_cache(project);
     let karaoke_max_gap_frames = karaoke_adjacent_max_gap_frames(fps);
     let karaoke_index = state.cached_karaoke_ui_index(project, karaoke_max_gap_frames);
@@ -2165,6 +2211,18 @@ pub fn render_lines<'a>(
             || matches!(state.selected, Some(Selection::AllLines));
         let is_editing = state.editing_line == Some(line.id);
         let karaoke_playback_line = karaoke_preview && line.karaoke;
+        let read_highlight_end = if project.settings().highlight_read_word && !line.karaoke {
+            let progress =
+                (current_frame - line.start_frame as f64) / line.duration_frames.max(1) as f64;
+            crate::syllable::read_highlight_end_from_timing(
+                &line.text,
+                &line.syllable_ratios,
+                &karaoke_lang,
+                progress as f32,
+            )
+        } else {
+            None
+        };
 
         if !karaoke_playback_line {
             // Subtle dark background + border
@@ -2242,7 +2300,7 @@ pub fn render_lines<'a>(
                                     width_ratio: (seg_w / data.rect.width).clamp(0.0, 1.0),
                                 });
                             }
-                            push_plain_rythmo_text(
+                            push_read_word_rythmo_text(
                                 stretched,
                                 cache_id,
                                 segment,
@@ -2252,6 +2310,8 @@ pub fn render_lines<'a>(
                                     width: seg_w,
                                     height: data.rect.height,
                                 },
+                                prev_break,
+                                read_highlight_end,
                             );
                         }
                         seg_x += seg_w;
@@ -2259,7 +2319,7 @@ pub fn render_lines<'a>(
                     }
                     cursor_segments = editing_segments.filter(|segments| !segments.is_empty());
                 } else {
-                    push_plain_rythmo_text(
+                    push_read_word_rythmo_text(
                         stretched,
                         line.id,
                         line.text.clone(),
@@ -2269,6 +2329,8 @@ pub fn render_lines<'a>(
                             width: data.rect.width,
                             height: data.rect.height,
                         },
+                        0,
+                        read_highlight_end,
                     );
                 }
             }
@@ -3932,12 +3994,26 @@ pub fn render_studio_rythmo<'a>(
             if line.karaoke {
                 push_karaoke_rythmo_text(stretched, line, body_rect, karaoke_progress_info);
             } else {
+                let progress =
+                    (current_frame - line.start_frame as f64) / line.duration_frames.max(1) as f64;
+                let read_highlight_end = project
+                    .settings()
+                    .highlight_read_word
+                    .then(|| {
+                        crate::syllable::read_highlight_end_from_timing(
+                            &line.text,
+                            &line.syllable_ratios,
+                            &karaoke_lang,
+                            progress as f32,
+                        )
+                    })
+                    .flatten();
                 let breaks = crate::syllable::syllable_breaks(&line.text, &karaoke_lang);
-                let ratios = if line.syllable_ratios.len() == breaks.len() + 1 {
-                    line.syllable_ratios.clone()
-                } else {
-                    Vec::new()
-                };
+                let ratios = crate::syllable::timing_ratios(
+                    &line.text,
+                    &line.syllable_ratios,
+                    &karaoke_lang,
+                );
                 if !ratios.is_empty() {
                     let chars: Vec<char> = line.text.chars().collect();
                     let mut seg_x = x1;
@@ -3951,7 +4027,7 @@ pub fn render_studio_rythmo<'a>(
                         };
                         let segment: String = chars[prev_break..end_break].iter().collect();
                         if !segment.is_empty() && seg_w > 1.0 {
-                            push_plain_rythmo_text(
+                            push_read_word_rythmo_text(
                                 stretched,
                                 syllable_segment_cache_id(line.id, i),
                                 segment,
@@ -3961,13 +4037,15 @@ pub fn render_studio_rythmo<'a>(
                                     width: seg_w,
                                     height: body_h,
                                 },
+                                prev_break,
+                                read_highlight_end,
                             );
                         }
                         seg_x += seg_w;
                         prev_break = end_break;
                     }
                 } else {
-                    push_plain_rythmo_text(
+                    push_read_word_rythmo_text(
                         stretched,
                         line.id,
                         line.text.clone(),
@@ -3977,6 +4055,8 @@ pub fn render_studio_rythmo<'a>(
                             width: lw,
                             height: body_h,
                         },
+                        0,
+                        read_highlight_end,
                     );
                 }
             }

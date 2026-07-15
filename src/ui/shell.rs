@@ -79,11 +79,13 @@ pub(crate) fn build_topbar(
             t("menu.project.export").into(),
             t("menu.project.restore_backup").into(),
             format!("{} ▸", t("menu.project.recent")),
+            t("menu.project.close").into(),
         ],
         |index, _label| match index {
             0 => EventResponse::Action(UiAction::AddVideo),
             2 => EventResponse::Action(UiAction::ExportProject),
             3 => EventResponse::Action(UiAction::RestoreBackup),
+            5 => EventResponse::Action(UiAction::CloseProject),
             _ => EventResponse::Consumed,
         },
     )
@@ -91,7 +93,7 @@ pub(crate) fn build_topbar(
     .with_trigger_bg(false)
     .with_trigger_label(t("menu.project"))
     .with_panel_width(340.0)
-    .with_disabled_items(vec![false, false, !has_video, false, false]);
+    .with_disabled_items(vec![false, false, !has_video, false, false, false]);
 
     project_menu = project_menu.with_submenu(
         1,

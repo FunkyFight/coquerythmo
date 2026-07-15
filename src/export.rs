@@ -420,6 +420,7 @@ impl ProjectData {
             });
         }
         project.set_drawing(drawing);
+        project.prune_unused_characters();
         true
     }
 }

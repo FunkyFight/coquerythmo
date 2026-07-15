@@ -298,10 +298,12 @@ impl ModalHost {
             }
             super::project_settings_modal::ProjectSettingsModalResult::Save {
                 instrumental_audio_path,
+                highlight_read_word,
             } => {
                 self.project_settings = None;
                 ModalOutcome::Action(UiAction::SaveProjectSettings {
                     instrumental_audio_path,
+                    highlight_read_word,
                 })
             }
         }
@@ -598,6 +600,7 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
+        let kind = self.save_prompt.as_ref().unwrap().kind();
         match self
             .save_prompt
             .as_mut()
@@ -607,11 +610,31 @@ impl ModalHost {
             super::save_prompt_modal::SavePromptResult::Consumed => ModalOutcome::Consumed,
             super::save_prompt_modal::SavePromptResult::Save => {
                 self.save_prompt = None;
-                ModalOutcome::Action(UiAction::NewProjectSave)
+                ModalOutcome::Action(match kind {
+                    super::save_prompt_modal::SavePromptKind::NewProject => {
+                        UiAction::NewProjectSave
+                    }
+                    super::save_prompt_modal::SavePromptKind::CloseProject => {
+                        UiAction::CloseProjectSave
+                    }
+                    super::save_prompt_modal::SavePromptKind::ExitApplication => {
+                        UiAction::ExitApplicationSave
+                    }
+                })
             }
             super::save_prompt_modal::SavePromptResult::Discard => {
                 self.save_prompt = None;
-                ModalOutcome::Action(UiAction::NewProjectDiscard)
+                ModalOutcome::Action(match kind {
+                    super::save_prompt_modal::SavePromptKind::NewProject => {
+                        UiAction::NewProjectDiscard
+                    }
+                    super::save_prompt_modal::SavePromptKind::CloseProject => {
+                        UiAction::CloseProjectDiscard
+                    }
+                    super::save_prompt_modal::SavePromptKind::ExitApplication => {
+                        UiAction::ExitApplicationDiscard
+                    }
+                })
             }
             super::save_prompt_modal::SavePromptResult::Cancel => {
                 self.save_prompt = None;
@@ -775,8 +798,8 @@ impl ModalHost {
         self.whats_new = Some(super::whats_new_modal::WhatsNewModal::new(version, body));
     }
 
-    pub fn open_save_prompt(&mut self) {
-        self.save_prompt = Some(super::save_prompt_modal::SavePromptModal::new());
+    pub fn open_save_prompt(&mut self, kind: super::save_prompt_modal::SavePromptKind) {
+        self.save_prompt = Some(super::save_prompt_modal::SavePromptModal::new(kind));
     }
 
     pub fn open_studio_warning(&mut self) {
@@ -815,9 +838,14 @@ impl ModalHost {
         self.settings = Some(super::settings_modal::SettingsModal::new(fonts));
     }
 
-    pub fn open_project_settings(&mut self, instrumental_audio_path: Option<String>) {
+    pub fn open_project_settings(
+        &mut self,
+        instrumental_audio_path: Option<String>,
+        highlight_read_word: bool,
+    ) {
         self.project_settings = Some(super::project_settings_modal::ProjectSettingsModal::new(
             instrumental_audio_path,
+            highlight_read_word,
         ));
     }
 
@@ -907,6 +935,8 @@ impl ModalHost {
         &'a self,
         modal_quads: &mut Vec<QuadInstance>,
         modal_labels: &mut Vec<LabelInfo<'a>>,
+        modal_overlay_quads: &mut Vec<QuadInstance>,
+        modal_overlay_labels: &mut Vec<LabelInfo<'a>>,
         screen_w: f32,
         screen_h: f32,
     ) {
@@ -917,7 +947,14 @@ impl ModalHost {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
         if let Some(modal) = &self.file_explorer {
-            modal.render(modal_quads, modal_labels, screen_w, screen_h);
+            modal.render(
+                modal_quads,
+                modal_labels,
+                modal_overlay_quads,
+                modal_overlay_labels,
+                screen_w,
+                screen_h,
+            );
         }
     }
 }

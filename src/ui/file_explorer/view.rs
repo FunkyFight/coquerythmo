@@ -8,6 +8,8 @@ impl FileExplorerModal {
         &'a self,
         quads: &mut Vec<QuadInstance>,
         labels: &mut Vec<LabelInfo<'a>>,
+        overlay_quads: &mut Vec<QuadInstance>,
+        overlay_labels: &mut Vec<LabelInfo<'a>>,
         screen_w: f32,
         screen_h: f32,
     ) {
@@ -56,13 +58,13 @@ impl FileExplorerModal {
         self.render_sidebar(quads, labels, &layout);
         self.render_list(quads, labels, &layout);
         self.render_footer(quads, labels, &layout);
-
-        if self.show_filter_dropdown {
-            self.render_filter_dropdown(quads, labels, &layout);
-        }
-
         if self.overwrite_path.is_some() {
-            self.render_overwrite_prompt(quads, labels, &layout);
+            self.render_overwrite_prompt(overlay_quads, overlay_labels, &layout);
+        } else {
+            self.render_filename_suggestions(overlay_quads, overlay_labels, &layout);
+            if self.show_filter_dropdown {
+                self.render_filter_dropdown(overlay_quads, overlay_labels, &layout);
+            }
         }
     }
 }

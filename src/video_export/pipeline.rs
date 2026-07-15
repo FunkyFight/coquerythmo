@@ -54,11 +54,9 @@ pub fn export_mp4(
     if !check_ffmpeg() {
         return Err("ffmpeg/ffprobe not found beside app or in PATH".into());
     }
-    let karaoke_text_scale = if karaoke_text_scale.is_finite() {
-        karaoke_text_scale.clamp(0.5, 2.0)
-    } else {
-        1.0
-    };
+    // The UI scale is relative to the production defaults: the former 50% BR
+    // height and 200% karaoke size are now presented as 100%.
+    let (br_scale, karaoke_text_scale) = effective_export_scales(br_scale, karaoke_text_scale);
 
     let progress_cb: ProgressCallback = Arc::new(ProgressState {
         callback: Mutex::new(Box::new(progress_cb)),
@@ -88,6 +86,20 @@ pub fn export_mp4(
         &cancel,
         &progress_cb,
     )
+}
+
+fn effective_export_scales(br_scale: f32, karaoke_text_scale: f32) -> (f32, f32) {
+    let br = if br_scale.is_finite() {
+        br_scale.clamp(0.5, 2.0) * 0.5
+    } else {
+        0.5
+    };
+    let karaoke = if karaoke_text_scale.is_finite() {
+        karaoke_text_scale.clamp(0.5, 2.0) * 2.0
+    } else {
+        2.0
+    };
+    (br, karaoke)
 }
 
 pub(super) fn export_baked_mp4(
@@ -399,5 +411,17 @@ fn even_dimension(value: u32) -> u32 {
         clamped
     } else {
         (clamped + 1).min(8192)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effective_export_scales;
+
+    #[test]
+    fn one_hundred_percent_uses_new_export_bases() {
+        assert_eq!(effective_export_scales(1.0, 1.0), (0.5, 2.0));
+        assert_eq!(effective_export_scales(0.5, 0.5), (0.25, 1.0));
+        assert_eq!(effective_export_scales(2.0, 2.0), (1.0, 4.0));
     }
 }

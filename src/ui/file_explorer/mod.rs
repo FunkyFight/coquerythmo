@@ -153,6 +153,7 @@ pub struct FileExplorerModal {
     address_input: TextInputState,
     name_filter_input: TextInputState,
     filename_input: TextInputState,
+    filename_suggestion: Option<usize>,
     show_filter_dropdown: bool,
     overwrite_path: Option<PathBuf>,
     dragging_scrollbar: bool,
@@ -360,6 +361,10 @@ impl FileExplorerModal {
             self.navigate_to(path, true);
         } else if self.scrollbar_track_contains(x, y, layout) {
             self.start_scrollbar_drag(y, layout);
+        } else if let Some(index) = self.filename_suggestion_index_at(x, y, layout) {
+            self.filename_suggestion = Some(index);
+            self.apply_filename_suggestion();
+            self.activate_field(ActiveField::Filename);
         } else if let Some(index) = self.entry_index_at(x, y, layout) {
             self.select_entry(index);
             self.deactivate_fields();
@@ -442,6 +447,7 @@ impl FileExplorerModal {
     }
 
     fn complete_selection(&mut self) -> FileExplorerResult {
+        self.apply_filename_suggestion();
         let Some(mut path) = self.candidate_path() else {
             self.error = Some(t("file_explorer.error.filename_required").to_string());
             self.status_text = t("file_explorer.error.filename_required").to_string();
@@ -693,6 +699,7 @@ impl FileExplorerModal {
             return;
         }
         self.selected = Some(index);
+        self.filename_suggestion = None;
         if !self.entries[index].is_dir {
             self.filename = self.entries[index].name.clone();
             self.filename_input.set_text_external(&self.filename);
@@ -724,6 +731,76 @@ impl FileExplorerModal {
         };
         self.select_entry(visible_indices[next_pos]);
         self.clamp_scroll(layout);
+    }
+
+    fn filename_suggestion_indices(&self) -> Vec<usize> {
+        let query = self.filename.trim().to_lowercase();
+        if query.is_empty() || self.active_field != Some(ActiveField::Filename) {
+            return Vec::new();
+        }
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                (!entry.is_dir && entry.sort_name.starts_with(&query)).then_some(index)
+            })
+            .take(8)
+            .collect()
+    }
+
+    fn move_filename_suggestion(&mut self, direction: i32) -> bool {
+        let suggestions = self.filename_suggestion_indices();
+        if suggestions.is_empty() {
+            self.filename_suggestion = None;
+            return false;
+        }
+        let current = self
+            .filename_suggestion
+            .and_then(|selected| suggestions.iter().position(|index| *index == selected));
+        let next = match (current, direction < 0) {
+            (Some(position), true) => position.saturating_sub(1),
+            (Some(position), false) => (position + 1).min(suggestions.len() - 1),
+            (None, true) => suggestions.len() - 1,
+            (None, false) => 0,
+        };
+        self.filename_suggestion = Some(suggestions[next]);
+        true
+    }
+
+    fn apply_filename_suggestion(&mut self) {
+        let Some(index) = self.filename_suggestion.take() else {
+            return;
+        };
+        let Some(entry) = self.entries.get(index) else {
+            return;
+        };
+        self.filename = entry.name.clone();
+        self.filename_input.set_text_external(&self.filename);
+        self.selected = Some(index);
+    }
+
+    fn filename_suggestion_index_at(
+        &self,
+        x: f32,
+        y: f32,
+        layout: &ExplorerLayout,
+    ) -> Option<usize> {
+        let suggestions = self.filename_suggestion_indices();
+        let rect = self.filename_suggestion_rect(layout)?;
+        if !rect.contains(x, y) {
+            return None;
+        }
+        suggestions.get(((y - rect.y) / ROW_H) as usize).copied()
+    }
+
+    fn filename_suggestion_rect(&self, layout: &ExplorerLayout) -> Option<Rect> {
+        let count = self.filename_suggestion_indices().len();
+        (count > 0).then_some(Rect {
+            x: layout.filename.x,
+            y: layout.filename.y - count as f32 * ROW_H,
+            width: layout.filename.width,
+            height: count as f32 * ROW_H,
+        })
     }
 
     fn ensure_selection_visible(&mut self, index: usize) {
@@ -904,6 +981,7 @@ impl FileExplorerModal {
 
     fn deactivate_fields(&mut self) {
         self.active_field = None;
+        self.filename_suggestion = None;
         self.address_input.deactivate();
         self.name_filter_input.deactivate();
         self.filename_input.deactivate();
@@ -944,6 +1022,7 @@ impl FileExplorerModal {
                     self.filename_input.handle_key(text, &current)
                 {
                     self.filename = sanitize_text(value, 1024);
+                    self.filename_suggestion = None;
                 }
             }
             None => {}
@@ -1459,7 +1538,6 @@ impl FileExplorerModal {
             &self.filename_input,
             self.active_field == Some(ActiveField::Filename),
         );
-
         render_filter_button(quads, labels, layout.filter, self.current_filter_name());
         render_button(
             quads,
@@ -1496,6 +1574,58 @@ impl FileExplorerModal {
             }),
             font_family_override: None,
         });
+    }
+
+    fn render_filename_suggestions<'a>(
+        &'a self,
+        quads: &mut Vec<QuadInstance>,
+        labels: &mut Vec<LabelInfo<'a>>,
+        layout: &ExplorerLayout,
+    ) {
+        let suggestions = self.filename_suggestion_indices();
+        if suggestions.is_empty() {
+            return;
+        }
+        let Some(rect) = self.filename_suggestion_rect(layout) else {
+            return;
+        };
+        quads.push(quad(
+            rect,
+            [0.13, 0.13, 0.16, 1.0],
+            [0.09, 0.09, 0.12, 1.0],
+            [0.42, 0.42, 0.50, 0.9],
+            1.0,
+            4.0,
+        ));
+        for (position, index) in suggestions.into_iter().enumerate() {
+            let row = Rect {
+                x: rect.x + 2.0,
+                y: rect.y + position as f32 * ROW_H + 1.0,
+                width: rect.width - 4.0,
+                height: ROW_H - 2.0,
+            };
+            if self.filename_suggestion == Some(index) {
+                quads.push(quad(
+                    row,
+                    [0.30, 0.28, 0.55, 0.82],
+                    [0.30, 0.28, 0.55, 0.82],
+                    [0.0; 4],
+                    0.0,
+                    3.0,
+                ));
+            }
+            labels.push(LabelInfo {
+                text: &self.entries[index].name,
+                bounds: row,
+                h_align: HAlign::Left,
+                v_align: VAlign::Center,
+                overflow: Overflow::Ellipsis,
+                padding: 8.0,
+                font_size_override: Some(12.0),
+                color_override: Some([226, 226, 236]),
+                font_family_override: None,
+            });
+        }
     }
 
     fn render_filter_dropdown<'a>(

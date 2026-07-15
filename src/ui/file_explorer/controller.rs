@@ -59,11 +59,15 @@ impl FileExplorerModal {
                 FileExplorerResult::Consumed
             }
             UiEvent::CursorUp => {
-                self.move_selection(-1, &layout);
+                if !self.move_filename_suggestion(-1) {
+                    self.move_selection(-1, &layout);
+                }
                 FileExplorerResult::Consumed
             }
             UiEvent::CursorDown => {
-                self.move_selection(1, &layout);
+                if !self.move_filename_suggestion(1) {
+                    self.move_selection(1, &layout);
+                }
                 FileExplorerResult::Consumed
             }
             UiEvent::Delete => {

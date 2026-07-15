@@ -29,4 +29,12 @@ C'est une mise à jour en deux temps : 3.4.0 qui conclut plus ou moins la partie
 - AUTOMATISATION DU PLACEMENT DES LIGNES !
 - Panels Tableau des lignes et Tableau des personnages
 - Texte des étiquettes plus grande, étiquettes des persos plus lisibles
-- 
+- Suggestions de fichiers similaires pendant la saisie du champ « Nom ».
+- Confirmation sauvegarder/ignorer/annuler lors d’une fermeture dirty, y compris la fermeture de l’application.
+- Chargement automatique du proxy à chaque chargement vidéo.
+- Action « Fermer le projet » dans le menu Projet.
+- Nouvelles références d’export : BR 50 % → 100 %, karaoké 200 % → 100 %.
+- Séparateurs syllabiques correctement initialisés et normalisés.
+- Suppression automatique des personnages inutilisés.
+- Option projet pour illuminer en jaune le mot lu, prise en charge par l’UI et les renderers CPU/GPU.
+- Shift + clic-glisser vertical, sans décalage temporel, avec repère gris temporaire
