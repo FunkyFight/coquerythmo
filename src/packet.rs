@@ -183,6 +183,12 @@ pub struct ProjectData {
     pub known_characters: Vec<CharacterData>,
     #[serde(default)]
     pub voice_actors: Vec<VoiceActor>,
+    #[serde(default, skip_serializing_if = "is_default_automation")]
+    pub automation: crate::automation::AutomationGraph,
+}
+
+fn is_default_automation(graph: &crate::automation::AutomationGraph) -> bool {
+    graph == &crate::automation::AutomationGraph::default()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -379,6 +385,7 @@ impl ProjectData {
                 })
                 .collect(),
             voice_actors: project.voice_actors().to_vec(),
+            automation: project.settings().automation.clone(),
         }
     }
 }

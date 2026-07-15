@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod application;
+pub mod automation;
 pub mod command;
 pub mod config;
 pub mod configured_export;

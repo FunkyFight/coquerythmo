@@ -26,3 +26,4 @@ C'est une mise à jour en deux temps : 3.4.0 qui conclut plus ou moins la partie
     - Exports en références croisées : CSV, PDF et loop presence grid
 - Ajout du système de multi-langage pour une bande rythmo
 - Croix pour retirer un élément des projets récents
+- AUTOMATISATION DU PLACEMENT DES LIGNES !!!

@@ -76,6 +76,12 @@ mod tests {
             "toast.legacy_project_loaded",
             "toast.export_requires_video",
             "export_hub.languages",
+            "menu.tools.automation",
+            "automation.add_entry",
+            "automation.add_line_reroute",
+            "automation.exec_input",
+            "automation.enabled",
+            "automation.add_role",
         ];
         for source in [FR_TOML, EN_TOML, ES_TOML] {
             let table = source

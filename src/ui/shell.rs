@@ -166,14 +166,16 @@ pub(crate) fn build_topbar(
             height: 28.0,
         },
         vec![
+            t("menu.tools.automation").into(),
             t("menu.tools.create_proxy").into(),
             t("menu.tools.secondary_display").into(),
             t("menu.tools.rename_character").into(),
         ],
         |index, _label| match index {
-            0 => EventResponse::Action(UiAction::OpenProxyModal),
-            1 => EventResponse::Action(UiAction::OpenSecondaryDisplay),
-            2 => EventResponse::Action(UiAction::OpenRenameCharacterModal),
+            0 => EventResponse::Action(UiAction::OpenAutomation),
+            1 => EventResponse::Action(UiAction::OpenProxyModal),
+            2 => EventResponse::Action(UiAction::OpenSecondaryDisplay),
+            3 => EventResponse::Action(UiAction::OpenRenameCharacterModal),
             _ => EventResponse::Consumed,
         },
     )
@@ -181,7 +183,7 @@ pub(crate) fn build_topbar(
     .with_trigger_bg(false)
     .with_trigger_label(t("menu.tools"))
     .with_panel_width(280.0)
-    .with_disabled_items(vec![!has_video, !has_video, false]);
+    .with_disabled_items(vec![false, !has_video, !has_video, false]);
 
     let connect_menu = Dropdown::new(
         Rect {

@@ -52,6 +52,7 @@ pub struct State {
     pub workspace_host: WorkspaceHost<RythmoWorkspace>,
     last_autosave: Instant,
     line_clipboard: Option<RythmoLine>,
+    automation_last_run: Option<(u64, u64)>,
 }
 
 impl State {
@@ -73,6 +74,7 @@ impl State {
             workspace_host: WorkspaceHost::new(RythmoWorkspace::new()),
             last_autosave: Instant::now(),
             line_clipboard: None,
+            automation_last_run: None,
         }
     }
 
@@ -321,6 +323,145 @@ impl State {
                 .instrumental_audio_path
                 .clone(),
         );
+    }
+
+    pub fn open_automation(&mut self) {
+        self.ui_shell.ui.open_automation();
+    }
+
+    pub fn close_automation(&mut self) {
+        self.ui_shell.ui.close_automation();
+    }
+
+    fn update_automation_graph(
+        &mut self,
+        update: impl FnOnce(&mut crate::automation::AutomationGraph) -> bool,
+    ) {
+        let mut settings = self.project_session.project.settings().clone();
+        if !update(&mut settings.automation) {
+            return;
+        }
+        EditExecutor::apply_domain_change(
+            &mut self.project_session,
+            EditOrigin::Local,
+            |project| project.set_settings(settings),
+        );
+        self.automation_last_run = None;
+        if self.collaboration.network.is_in_room() {
+            self.broadcast_full_sync();
+        }
+    }
+
+    pub fn automation_add_node(
+        &mut self,
+        kind: crate::automation::AutomationNodeKind,
+        x: f32,
+        y: f32,
+    ) {
+        self.update_automation_graph(move |graph| graph.add_node(kind, x, y).is_some());
+    }
+
+    pub fn automation_add_connected_node(
+        &mut self,
+        kind: crate::automation::AutomationNodeKind,
+        x: f32,
+        y: f32,
+        from_node: u64,
+        edge_kind: crate::automation::AutomationEdgeKind,
+        branch: crate::automation::AutomationBranch,
+    ) {
+        self.update_automation_graph(move |graph| {
+            let Some(to_node) = graph.add_node(kind, x, y) else {
+                return false;
+            };
+            if graph.connect(crate::automation::AutomationEdge {
+                from_node,
+                kind: edge_kind,
+                branch,
+                to_node,
+            }) {
+                true
+            } else {
+                graph.delete_node(to_node);
+                false
+            }
+        });
+    }
+
+    pub fn automation_move_node(&mut self, node_id: u64, x: f32, y: f32) {
+        self.update_automation_graph(move |graph| graph.move_node(node_id, x, y));
+    }
+
+    pub fn automation_delete_node(&mut self, node_id: u64) {
+        self.update_automation_graph(move |graph| graph.delete_node(node_id));
+    }
+
+    pub fn automation_connect(
+        &mut self,
+        from_node: u64,
+        kind: crate::automation::AutomationEdgeKind,
+        branch: crate::automation::AutomationBranch,
+        to_node: u64,
+    ) {
+        self.update_automation_graph(move |graph| {
+            graph.connect(crate::automation::AutomationEdge {
+                from_node,
+                kind,
+                branch,
+                to_node,
+            })
+        });
+    }
+
+    pub fn automation_disconnect(
+        &mut self,
+        from_node: u64,
+        kind: crate::automation::AutomationEdgeKind,
+        branch: crate::automation::AutomationBranch,
+    ) {
+        self.update_automation_graph(move |graph| graph.disconnect(from_node, kind, &branch));
+    }
+
+    pub fn automation_add_role(&mut self, node_id: u64, role: String) {
+        self.update_automation_graph(move |graph| graph.add_role(node_id, role));
+    }
+
+    pub fn automation_remove_role(&mut self, node_id: u64, role: String) {
+        self.update_automation_graph(move |graph| graph.remove_role(node_id, &role));
+    }
+
+    pub fn automation_set_track(&mut self, node_id: u64, track: u8) {
+        self.update_automation_graph(move |graph| graph.set_track(node_id, track));
+    }
+
+    pub fn automation_set_node_enabled(&mut self, node_id: u64, enabled: bool) {
+        self.update_automation_graph(move |graph| graph.set_enabled(node_id, enabled));
+    }
+
+    /// The entry node is conceptually evaluated every frame. Since the graph
+    /// is deterministic, the runtime skips the walk when neither the active
+    /// language nor its project revision changed.
+    fn apply_automation_if_needed(&mut self) {
+        let key = (
+            self.project_session.project.active_language_id(),
+            self.project_session.project.revision(),
+        );
+        if self.automation_last_run == Some(key) {
+            return;
+        }
+        let moves = self
+            .project_session
+            .project
+            .settings()
+            .automation
+            .desired_track_moves(&self.project_session.project);
+        if !moves.is_empty() {
+            self.move_lines(moves);
+        }
+        self.automation_last_run = Some((
+            self.project_session.project.active_language_id(),
+            self.project_session.project.revision(),
+        ));
     }
 
     pub fn set_project_instrumental_audio_path(&mut self, path: impl Into<String>) {
@@ -1696,6 +1837,12 @@ impl State {
     }
 
     pub fn delete_selected(&mut self) {
+        if self.ui_shell.ui.automation_open() {
+            if let Some(node_id) = self.ui_shell.ui.take_selected_automation_node() {
+                self.automation_delete_node(node_id);
+            }
+            return;
+        }
         use crate::workspaces::rythmo::view::Selection;
         if let Some(ref sel) = self.ui_shell.ui.rythmo_state().selected {
             match sel {
@@ -3204,10 +3351,12 @@ impl State {
         let _events = self.playback.timeline.drain();
 
         self.tick_video();
+        self.apply_automation_if_needed();
 
         // Video quad ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â skip when export modal is showing (it would cover the modal)
         let video_quad = if self.ui_shell.ui.export_progress.is_some()
             || self.window_manager.secondary_display.is_some()
+            || self.ui_shell.ui.automation_open()
         {
             None
         } else {

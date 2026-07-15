@@ -17,6 +17,7 @@ use crate::render_index::ProjectRenderIndex;
 use crate::rythmo_drawing::{strokes_bbox, DrawingStroke};
 use crate::rythmo_layout;
 use crate::rythmo_line::MarkerKind;
+use crate::ui::context_menu;
 use crate::ui::primitives::{
     EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction,
     UiEvent, VAlign,
@@ -3554,32 +3555,11 @@ fn clamped_menu_origin(
     screen_w: f32,
     screen_h: f32,
 ) -> (f32, f32) {
-    (
-        x.clamp(
-            MENU_MARGIN,
-            (screen_w - width - MENU_MARGIN).max(MENU_MARGIN),
-        ),
-        y.clamp(
-            MENU_MARGIN,
-            (screen_h - height - MENU_MARGIN).max(MENU_MARGIN),
-        ),
-    )
+    context_menu::clamped_origin(x, y, width, height, screen_w, screen_h)
 }
 
 fn render_menu_panel(quads: &mut Vec<QuadInstance>, rect: Rect) {
-    quads.push(QuadInstance {
-        rect: [rect.x, rect.y, rect.width, rect.height],
-        color: [0.16, 0.16, 0.19, 0.98],
-        color_bottom: [0.11, 0.11, 0.14, 0.98],
-        border_color: [0.42, 0.42, 0.50, 0.85],
-        border_width: 1.0,
-        border_radius: 0.0,
-        shadow_offset: [0.0, 4.0],
-        shadow_color: [0.0, 0.0, 0.0, 0.45],
-        shadow_blur: 10.0,
-        rotation: 0.0,
-        _padding: [0.0; 2],
-    });
+    context_menu::render_panel(quads, rect);
 }
 
 fn render_menu_item<'a>(
@@ -3590,60 +3570,7 @@ fn render_menu_item<'a>(
     hovered: bool,
     arrow: bool,
 ) {
-    if hovered {
-        quads.push(QuadInstance {
-            rect: [
-                rect.x + 3.0,
-                rect.y + 2.0,
-                rect.width - 6.0,
-                rect.height - 4.0,
-            ],
-            color: [0.31, 0.40, 0.72, 0.85],
-            color_bottom: [0.24, 0.32, 0.62, 0.85],
-            border_color: [0.0; 4],
-            border_width: 0.0,
-            border_radius: 0.0,
-            shadow_offset: [0.0; 2],
-            shadow_color: [0.0; 4],
-            shadow_blur: 0.0,
-            rotation: 0.0,
-            _padding: [0.0; 2],
-        });
-    }
-    labels.push(LabelInfo {
-        text,
-        bounds: Rect {
-            x: rect.x + 10.0,
-            y: rect.y,
-            width: rect.width - if arrow { 28.0 } else { 20.0 },
-            height: rect.height,
-        },
-        h_align: HAlign::Left,
-        v_align: VAlign::Center,
-        overflow: Overflow::Ellipsis,
-        padding: 0.0,
-        font_size_override: Some(12.0),
-        color_override: Some([230, 230, 238]),
-        font_family_override: None,
-    });
-    if arrow {
-        labels.push(LabelInfo {
-            text: ">",
-            bounds: Rect {
-                x: rect.x + rect.width - 24.0,
-                y: rect.y,
-                width: 16.0,
-                height: rect.height,
-            },
-            h_align: HAlign::Center,
-            v_align: VAlign::Center,
-            overflow: Overflow::Clip,
-            padding: 0.0,
-            font_size_override: Some(12.0),
-            color_override: Some([190, 190, 205]),
-            font_family_override: None,
-        });
-    }
+    context_menu::render_item(quads, labels, rect, text, hovered, arrow, 12.0);
 }
 
 fn render_menu_separator(quads: &mut Vec<QuadInstance>, x: f32, y: f32, width: f32) {

@@ -215,10 +215,16 @@ pub struct ProjectSettings {
     pub instrumental_audio_offset_frames: i64,
     #[serde(default, skip_serializing_if = "is_default_export_configuration")]
     pub export_configuration: ExportConfiguration,
+    #[serde(default, skip_serializing_if = "is_default_automation_graph")]
+    pub automation: crate::automation::AutomationGraph,
 }
 
 fn is_default_export_configuration(configuration: &ExportConfiguration) -> bool {
     configuration == &ExportConfiguration::default()
+}
+
+fn is_default_automation_graph(graph: &crate::automation::AutomationGraph) -> bool {
+    graph == &crate::automation::AutomationGraph::default()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

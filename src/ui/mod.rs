@@ -6,8 +6,10 @@
 
 pub use crate::application::command::ToolMode;
 pub mod actor_icon_cache;
+pub mod automation;
 pub mod color_picker;
 pub mod connect_modal;
+pub mod context_menu;
 pub mod dropdown;
 pub mod export_modal;
 pub mod file_explorer;
@@ -111,6 +113,7 @@ pub struct Ui {
     /// Active bande rythmo import (label, start instant). Set by State while a
     /// background parse runs; the modal blocks input + shows a spinner.
     pub loading_project: Option<(String, std::time::Instant)>,
+    automation_editor: automation::AutomationEditor,
 }
 
 impl Ui {
@@ -191,6 +194,7 @@ impl Ui {
             scrubbing: false,
             toasts: toast::ToastManager::new(),
             loading_project: None,
+            automation_editor: automation::AutomationEditor::default(),
             active_mode: Some(ToolMode::Select),
             brush_color: [1.0, 1.0, 1.0, 1.0],
             brush_radius_index: 0,
@@ -375,6 +379,15 @@ impl Ui {
                     return response;
                 }
             }
+        }
+
+        if let Some(response) = self.automation_editor.handle_event(
+            event,
+            &self.layout.video_preview,
+            &project.settings().automation,
+            project,
+        ) {
+            return response;
         }
         for widget in self
             .topbar_widgets
@@ -587,6 +600,28 @@ impl Ui {
 
     pub(crate) fn dragging_split_handle(&self) -> bool {
         self.dragging_split.is_some()
+    }
+
+    pub fn open_automation(&mut self) {
+        self.rythmo_state.stop_line_editing();
+        self.rythmo_state.stop_char_editing();
+        self.rythmo_state.stop_note_editing();
+        self.rythmo_state.selected = None;
+        self.rythmo_state.context_menu = None;
+        self.automation_editor.open();
+        self.tooltip = None;
+    }
+
+    pub fn close_automation(&mut self) {
+        self.automation_editor.close();
+    }
+
+    pub fn automation_open(&self) -> bool {
+        self.automation_editor.is_open()
+    }
+
+    pub fn take_selected_automation_node(&mut self) -> Option<u64> {
+        self.automation_editor.take_selected_node_for_deletion()
     }
 
     fn update_tooltip(&mut self) {
@@ -1160,6 +1195,15 @@ impl Ui {
             waveform,
             waveform_offset_frames,
             waveform_is_instrumental,
+        );
+
+        self.automation_editor.render(
+            &self.layout.video_preview,
+            &project.settings().automation,
+            project,
+            self.cursor_pos,
+            &mut quads,
+            &mut labels,
         );
 
         // Rythmo lines

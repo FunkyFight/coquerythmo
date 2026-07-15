@@ -17,6 +17,8 @@ Taille Ligne BR dans l'export le 50% devrait être le nouveau 100%
 Bug : Les handles pour les syllabes ne sont pas bien mises, elles coupent mal. Mais dès que j'en bouge une, elles coupent bien de nouveau
 
 Pouvoir supprimer une entrée dans le menu récent
+Les personnages inutilisés dans toute la BR doivent être supprimés automatiquement
+Possibilité de changer la couleur d'un mot lu dans la BR (Ui + Renderers)
 
 # Suggestions
 

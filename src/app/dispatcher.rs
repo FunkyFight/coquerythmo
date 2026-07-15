@@ -275,6 +275,58 @@ impl CommandDispatcher {
             UiAction::OpenRenameCharacterModal => {
                 state.open_rename_character_modal();
             }
+            UiAction::OpenAutomation => {
+                state.open_automation();
+            }
+            UiAction::CloseAutomation => {
+                state.close_automation();
+            }
+            UiAction::AutomationAddNode { kind, x, y } => {
+                state.automation_add_node(kind, x, y);
+            }
+            UiAction::AutomationAddConnectedNode {
+                kind,
+                x,
+                y,
+                from_node,
+                edge_kind,
+                branch,
+            } => {
+                state.automation_add_connected_node(kind, x, y, from_node, edge_kind, branch);
+            }
+            UiAction::AutomationMoveNode { node_id, x, y } => {
+                state.automation_move_node(node_id, x, y);
+            }
+            UiAction::AutomationDeleteNode { node_id } => {
+                state.automation_delete_node(node_id);
+            }
+            UiAction::AutomationConnect {
+                from_node,
+                kind,
+                branch,
+                to_node,
+            } => {
+                state.automation_connect(from_node, kind, branch, to_node);
+            }
+            UiAction::AutomationDisconnect {
+                from_node,
+                kind,
+                branch,
+            } => {
+                state.automation_disconnect(from_node, kind, branch);
+            }
+            UiAction::AutomationAddRole { node_id, role } => {
+                state.automation_add_role(node_id, role);
+            }
+            UiAction::AutomationRemoveRole { node_id, role } => {
+                state.automation_remove_role(node_id, role);
+            }
+            UiAction::AutomationSetTrack { node_id, track } => {
+                state.automation_set_track(node_id, track);
+            }
+            UiAction::AutomationSetNodeEnabled { node_id, enabled } => {
+                state.automation_set_node_enabled(node_id, enabled);
+            }
             UiAction::RenameCharacter { old_name, new_name } => {
                 state.rename_character_everywhere(old_name, new_name);
             }

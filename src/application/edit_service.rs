@@ -403,6 +403,7 @@ impl EditExecutor {
 
     /// Merge a full collaboration snapshot without entering local history.
     pub fn apply_sync(session: &mut ProjectSession, data: SyncProjectData) {
+        let automation = data.automation.clone();
         let remote_ids: std::collections::HashSet<u64> =
             data.lines.iter().map(|line| line.id).collect();
         session
@@ -428,6 +429,9 @@ impl EditExecutor {
                 .collect(),
         );
         session.project.set_voice_actors(data.voice_actors);
+        let mut settings = session.project.settings().clone();
+        settings.automation = automation;
+        session.project.set_settings(settings);
         session.project.bump_revision();
     }
 }

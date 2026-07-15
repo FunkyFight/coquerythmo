@@ -74,6 +74,56 @@ pub enum UiAction {
         crf: u8,
     },
     OpenRenameCharacterModal,
+    OpenAutomation,
+    CloseAutomation,
+    AutomationAddNode {
+        kind: crate::automation::AutomationNodeKind,
+        x: f32,
+        y: f32,
+    },
+    AutomationAddConnectedNode {
+        kind: crate::automation::AutomationNodeKind,
+        x: f32,
+        y: f32,
+        from_node: u64,
+        edge_kind: crate::automation::AutomationEdgeKind,
+        branch: crate::automation::AutomationBranch,
+    },
+    AutomationMoveNode {
+        node_id: u64,
+        x: f32,
+        y: f32,
+    },
+    AutomationDeleteNode {
+        node_id: u64,
+    },
+    AutomationConnect {
+        from_node: u64,
+        kind: crate::automation::AutomationEdgeKind,
+        branch: crate::automation::AutomationBranch,
+        to_node: u64,
+    },
+    AutomationDisconnect {
+        from_node: u64,
+        kind: crate::automation::AutomationEdgeKind,
+        branch: crate::automation::AutomationBranch,
+    },
+    AutomationAddRole {
+        node_id: u64,
+        role: String,
+    },
+    AutomationRemoveRole {
+        node_id: u64,
+        role: String,
+    },
+    AutomationSetTrack {
+        node_id: u64,
+        track: u8,
+    },
+    AutomationSetNodeEnabled {
+        node_id: u64,
+        enabled: bool,
+    },
     RenameCharacter {
         old_name: String,
         new_name: String,
