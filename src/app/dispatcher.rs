@@ -281,6 +281,19 @@ impl CommandDispatcher {
             UiAction::CloseAutomation => {
                 state.close_automation();
             }
+            UiAction::OpenLinesPanel => state.open_lines_panel(),
+            UiAction::OpenRolesPanel => state.open_roles_panel(),
+            UiAction::CloseSidePanel => state.close_side_panel(),
+            UiAction::SetLinesRole {
+                line_ids,
+                name,
+                color,
+            } => {
+                state.set_lines_role(line_ids, name, color);
+            }
+            UiAction::SetRoleColor { role, color } => {
+                state.set_role_color(role, color);
+            }
             UiAction::AutomationAddNode { kind, x, y } => {
                 state.automation_add_node(kind, x, y);
             }

@@ -33,6 +33,7 @@ pub mod save_prompt_modal;
 pub mod server_browser;
 pub mod settings_modal;
 pub mod shell;
+pub mod side_panel;
 pub mod slider;
 pub mod studio_warning_modal;
 pub mod text_button;
@@ -114,6 +115,7 @@ pub struct Ui {
     /// background parse runs; the modal blocks input + shows a spinner.
     pub loading_project: Option<(String, std::time::Instant)>,
     automation_editor: automation::AutomationEditor,
+    side_panel: side_panel::SidePanel,
 }
 
 impl Ui {
@@ -195,6 +197,7 @@ impl Ui {
             toasts: toast::ToastManager::new(),
             loading_project: None,
             automation_editor: automation::AutomationEditor::default(),
+            side_panel: side_panel::SidePanel::default(),
             active_mode: Some(ToolMode::Select),
             brush_color: [1.0, 1.0, 1.0, 1.0],
             brush_radius_index: 0,
@@ -321,6 +324,20 @@ impl Ui {
             return outcome.into_event_response();
         }
 
+        // The resize handle straddles the panel boundary, so it owns pointer
+        // events before the panel content does.
+        if let Some(response) = self.handle_props_drag(event) {
+            return response;
+        }
+
+        // The side panel owns its complete area and its overlays (context menu,
+        // role picker and color picker) before the rythmo workspace sees them.
+        if let Some(panel) = self.layout.properties {
+            if let Some(response) = self.side_panel.handle_event(event, panel, project) {
+                return response;
+            }
+        }
+
         if self.rythmo_state.context_menu.is_some() || matches!(event, UiEvent::ContextMenu { .. })
         {
             let response = rythmo::handle_context_menu_event(
@@ -348,10 +365,6 @@ impl Ui {
         }
 
         if let Some(response) = self.handle_split_drag(event) {
-            return response;
-        }
-
-        if let Some(response) = self.handle_props_drag(event) {
             return response;
         }
 
@@ -514,7 +527,7 @@ impl Ui {
             UiEvent::MousePress { x, y } => {
                 if let Some(props) = &self.layout.properties {
                     let drag_zone = Rect {
-                        x: props.x - PROPS_DRAG_ZONE,
+                        x: props.x + props.width - PROPS_DRAG_ZONE,
                         y: props.y,
                         width: PROPS_DRAG_ZONE * 2.0,
                         height: props.height,
@@ -528,7 +541,7 @@ impl Ui {
             }
             UiEvent::MouseMove { x, .. } => {
                 if self.dragging_props {
-                    self.props_width = (self.screen_w - x).clamp(PROPS_MIN_W, PROPS_MAX_W);
+                    self.props_width = x.clamp(PROPS_MIN_W, PROPS_MAX_W);
                     self.rebuild_layout();
                     return Some(EventResponse::Consumed);
                 }
@@ -602,6 +615,24 @@ impl Ui {
         self.dragging_split.is_some()
     }
 
+    pub(crate) fn hovering_props_handle(&self) -> bool {
+        let Some(props) = self.layout.properties else {
+            return false;
+        };
+        let (cx, cy) = self.cursor_pos;
+        Rect {
+            x: props.x + props.width - PROPS_DRAG_ZONE,
+            y: props.y,
+            width: PROPS_DRAG_ZONE * 2.0,
+            height: props.height,
+        }
+        .contains(cx, cy)
+    }
+
+    pub(crate) fn dragging_props_handle(&self) -> bool {
+        self.dragging_props
+    }
+
     pub fn open_automation(&mut self) {
         self.rythmo_state.stop_line_editing();
         self.rythmo_state.stop_char_editing();
@@ -618,6 +649,20 @@ impl Ui {
 
     pub fn automation_open(&self) -> bool {
         self.automation_editor.is_open()
+    }
+
+    pub fn open_side_panel(&mut self, kind: side_panel::SidePanelKind) {
+        self.close_automation();
+        self.props_visible = true;
+        self.side_panel.open(kind);
+        self.rebuild_layout();
+        self.tooltip = None;
+    }
+
+    pub fn close_side_panel(&mut self) {
+        self.props_visible = false;
+        self.side_panel.close();
+        self.rebuild_layout();
     }
 
     pub fn take_selected_automation_node(&mut self) -> Option<u64> {
@@ -682,6 +727,11 @@ impl Ui {
 
     pub fn next_cursor_blink_deadline(&self) -> Option<std::time::Instant> {
         let mut deadline = self.rythmo_state.next_cursor_blink_deadline();
+        if let Some(side_panel_deadline) = self.side_panel.next_cursor_blink_deadline() {
+            deadline = Some(deadline.map_or(side_panel_deadline, |current| {
+                current.min(side_panel_deadline)
+            }));
+        }
         if let Some(modal_deadline) = self
             .modal_host
             .file_explorer
@@ -858,7 +908,9 @@ impl Ui {
     }
 
     pub fn is_editing_text(&self) -> bool {
-        self.rythmo_state.is_editing() || self.modal_host.is_editing_text()
+        self.rythmo_state.is_editing()
+            || self.modal_host.is_editing_text()
+            || self.side_panel.is_editing_text()
     }
 
     pub fn open_export_modal(
@@ -1049,6 +1101,12 @@ impl Ui {
             renderer.texture_bind_group_layout(),
             renderer.texture_sampler(),
         );
+        self.side_panel.ensure_color_picker_textures(
+            device,
+            queue,
+            renderer.texture_bind_group_layout(),
+            renderer.texture_sampler(),
+        );
         self.actor_icon_cache.sync(
             project,
             device,
@@ -1096,6 +1154,7 @@ impl Ui {
         let mut overlay_quads = Vec::new(); // overlay layer (on top of video)
         let mut icons: Vec<IconInstance> = Vec::new();
         let mut labels: Vec<LabelInfo> = Vec::new();
+        let mut overlay_labels: Vec<LabelInfo> = Vec::new();
         let mut modal_quads: Vec<QuadInstance> = Vec::new(); // modal backgrounds (above normal text)
         let mut modal_labels: Vec<LabelInfo> = Vec::new(); // modal text (above modal backgrounds)
 
@@ -1115,7 +1174,7 @@ impl Ui {
             // Toasts (e.g. confirmation after subscribing / activating)
             self.toasts.render(
                 &mut overlay_quads,
-                &mut labels,
+                &mut overlay_labels,
                 self.screen_w,
                 self.screen_h,
             );
@@ -1136,6 +1195,7 @@ impl Ui {
                 &overlay_quads,
                 &icons,
                 &labels,
+                &overlay_labels,
                 None,
                 &stretched_quads,
                 &syllable_quads,
@@ -1402,29 +1462,46 @@ impl Ui {
         }
 
         // Capturing widgets → overlay (on top of video)
-        for widget in self
-            .topbar_widgets
-            .iter()
-            .chain(self.toolbar_widgets.iter())
-        {
-            if widget.captures_all() {
-                overlay_quads.extend(widget.render_quads());
-                icons.extend(widget.render_icons());
-                labels.extend(widget.labels());
-            }
-        }
-
         // Autocomplete dropdown (on top of all lines)
         rythmo::render_autocomplete(
             &self.layout.rythmo,
             project,
             render_frame,
             &self.rythmo_state,
-            &mut quads,
-            &mut labels,
+            &mut overlay_quads,
+            &mut overlay_labels,
         );
 
+        // Panels are true overlays: drawing them here keeps line textures,
+        // actor icons and the drawing layer from ever bleeding into the panel.
+        if let Some(panel) = self.layout.properties {
+            self.side_panel
+                .render(panel, project, &mut overlay_quads, &mut overlay_labels);
+        }
+
+        self.side_panel
+            .render_menus(project, &mut modal_quads, &mut modal_labels);
+
+        // Capturing dropdowns belong above persistent overlays such as the
+        // side panel, with their text in the same semantic layer.
+        for widget in self
+            .topbar_widgets
+            .iter()
+            .chain(self.toolbar_widgets.iter())
+        {
+            if widget.captures_all() {
+                modal_quads.extend(widget.render_quads());
+                icons.extend(widget.render_icons());
+                modal_labels.extend(widget.labels());
+            }
+        }
+
         self.rythmo_state.color_picker.render(
+            &mut color_picker_bg_quads,
+            &mut extra_textured,
+            &mut color_picker_fg_quads,
+        );
+        self.side_panel.render_color_picker(
             &mut color_picker_bg_quads,
             &mut extra_textured,
             &mut color_picker_fg_quads,
@@ -1434,7 +1511,7 @@ impl Ui {
         overlay_quads.extend(color_picker_bg_quads);
 
         // Toolbar dropdown → overlay
-        self.render_toolbar_dropdown(&mut overlay_quads, &mut labels);
+        self.render_toolbar_dropdown(&mut overlay_quads, &mut overlay_labels);
 
         rythmo::render_context_menu(
             project,
@@ -1442,13 +1519,13 @@ impl Ui {
             self.screen_h,
             &self.rythmo_state,
             &mut overlay_quads,
-            &mut labels,
+            &mut overlay_labels,
         );
 
         // Tooltip → overlay
         if let Some(tooltip) = &self.tooltip {
             overlay_quads.extend(tooltip.render_quads(self.screen_w));
-            labels.extend(tooltip.render_labels(self.screen_w));
+            overlay_labels.extend(tooltip.render_labels(self.screen_w));
         }
 
         // Sync overlay (blocks UI during video transfer)
@@ -1487,7 +1564,7 @@ impl Ui {
                 _padding: [0.0; 2],
             });
             // Label
-            labels.push(LabelInfo {
+            overlay_labels.push(LabelInfo {
                 text: msg,
                 bounds: Rect {
                     x: dx,
@@ -1583,7 +1660,7 @@ impl Ui {
                 _padding: [0.0; 2],
             });
             // Title
-            labels.push(LabelInfo {
+            overlay_labels.push(LabelInfo {
                 text: t("loading_project.title"),
                 bounds: Rect {
                     x: dx,
@@ -1600,7 +1677,7 @@ impl Ui {
                 font_family_override: None,
             });
             // File name
-            labels.push(LabelInfo {
+            overlay_labels.push(LabelInfo {
                 text: label.as_str(),
                 bounds: Rect {
                     x: dx + 20.0,
@@ -1731,7 +1808,7 @@ impl Ui {
                 });
             }
             // Labels
-            labels.push(LabelInfo {
+            overlay_labels.push(LabelInfo {
                 text: &self.export_label,
                 bounds: Rect {
                     x: dx,
@@ -1747,7 +1824,7 @@ impl Ui {
                 color_override: None,
                 font_family_override: None,
             });
-            labels.push(LabelInfo {
+            overlay_labels.push(LabelInfo {
                 text: crate::i18n::t("progress.cancel_hint"),
                 bounds: Rect {
                     x: dx,
@@ -1768,13 +1845,12 @@ impl Ui {
         // Toasts
         self.toasts.render(
             &mut overlay_quads,
-            &mut labels,
+            &mut overlay_labels,
             self.screen_w,
             self.screen_h,
         );
 
         self.modal_host.render_top(
-            &mut labels,
             &mut modal_quads,
             &mut modal_labels,
             self.screen_w,
@@ -1793,6 +1869,7 @@ impl Ui {
             &overlay_quads,
             &icons,
             &labels,
+            &overlay_labels,
             video_quad,
             &stretched_quads,
             &syllable_quads,
@@ -1808,7 +1885,7 @@ impl Ui {
         &'a self,
         quads: &mut Vec<QuadInstance>,
         labels: &mut Vec<LabelInfo<'a>>,
-        project: &Project,
+        project: &'a Project,
         render_frame: f64,
         render_index: &ProjectRenderIndex,
         fps: f64,
@@ -1836,7 +1913,7 @@ impl Ui {
         let status_text = self.network_status.trim();
         let room_text = self.network_room_label.trim();
         if !status_text.is_empty() || !room_text.is_empty() {
-            let left = 388.0;
+            let left = 472.0;
             let right = self.screen_w - 42.0;
             let available = right - left;
             if available >= 140.0 {
@@ -2108,53 +2185,6 @@ impl Ui {
                 _padding: [0.0; 2],
             });
         }
-
-        // Properties panel
-        if let Some(props) = &l.properties {
-            quads.push(QuadInstance {
-                rect: [props.x, props.y, props.width, props.height],
-                color: PROPS_BG,
-                color_bottom: PROPS_BG,
-                border_color: PROPS_BORDER,
-                border_width: 0.0,
-                border_radius: 0.0,
-                shadow_offset: [-2.0, 0.0],
-                shadow_color: [0.0, 0.0, 0.0, 0.3],
-                shadow_blur: 6.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-            quads.push(QuadInstance {
-                rect: [props.x, props.y, 1.0, props.height],
-                color: PROPS_BORDER,
-                color_bottom: PROPS_BORDER,
-                border_color: [0.0; 4],
-                border_width: 0.0,
-                border_radius: 0.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-            let header_rect = Rect {
-                x: props.x,
-                y: props.y,
-                width: props.width,
-                height: 32.0,
-            };
-            labels.push(LabelInfo {
-                text: t("zone.properties"),
-                bounds: header_rect,
-                h_align: HAlign::Center,
-                v_align: VAlign::Center,
-                overflow: Overflow::Clip,
-                padding: 8.0,
-                font_size_override: None,
-                color_override: None,
-                font_family_override: None,
-            });
-        }
     }
 
     /// Studio Mode render: black BG + video + export-style rythmo band only.
@@ -2267,6 +2297,7 @@ impl Ui {
             &[],    // no overlay quads
             &[],    // no icons (markers use quads)
             &labels,
+            &[], // no overlay labels
             video_quad,
             &stretched_quads,
             &[], // post_stretched_quads

@@ -187,7 +187,7 @@ pub(crate) fn build_topbar(
 
     let connect_menu = Dropdown::new(
         Rect {
-            x: 256.0,
+            x: 340.0,
             y: 2.0,
             width: 120.0,
             height: 28.0,
@@ -207,6 +207,28 @@ pub(crate) fn build_topbar(
     .with_trigger_label(t("menu.connect"))
     .with_panel_width(250.0)
     .with_disabled_items(vec![false, !in_room]);
+
+    let panels_menu = Dropdown::new(
+        Rect {
+            x: 256.0,
+            y: 2.0,
+            width: 80.0,
+            height: 28.0,
+        },
+        vec![
+            format!("{}    Ctrl+I", t("menu.panels.lines")),
+            format!("{}    Ctrl+P", t("menu.panels.roles")),
+        ],
+        |index, _label| match index {
+            0 => EventResponse::Action(UiAction::OpenLinesPanel),
+            1 => EventResponse::Action(UiAction::OpenRolesPanel),
+            _ => EventResponse::Consumed,
+        },
+    )
+    .with_arrow(false)
+    .with_trigger_bg(false)
+    .with_trigger_label(t("menu.panels"))
+    .with_panel_width(240.0);
 
     let settings_size = 24.0;
     let settings_x = screen_w - settings_size - 8.0;
@@ -241,6 +263,7 @@ pub(crate) fn build_topbar(
         Box::new(project_menu),
         Box::new(export_menu),
         Box::new(tools_menu),
+        Box::new(panels_menu),
         Box::new(connect_menu),
     ];
 

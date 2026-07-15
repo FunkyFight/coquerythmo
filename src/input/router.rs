@@ -242,6 +242,20 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
     );
     router.bind(
         InputContext::Global,
+        KeyCode::Character('i'),
+        ctrl,
+        RepeatPolicy::PressOnly,
+        UiAction::OpenLinesPanel,
+    );
+    router.bind(
+        InputContext::Global,
+        KeyCode::Character('p'),
+        ctrl,
+        RepeatPolicy::PressOnly,
+        UiAction::OpenRolesPanel,
+    );
+    router.bind(
+        InputContext::Global,
         KeyCode::Delete,
         Modifiers::NONE,
         RepeatPolicy::PressAndRepeat,
@@ -436,6 +450,16 @@ mod tests {
             resolve(KeyCode::Character('n'), ctrl, &global, false),
             Some(&UiAction::NewProject)
         );
+        assert_eq!(
+            resolve(KeyCode::Character('i'), ctrl, &global, false),
+            Some(&UiAction::OpenLinesPanel)
+        );
+        assert_eq!(
+            resolve(KeyCode::Character('p'), ctrl, &global, false),
+            Some(&UiAction::OpenRolesPanel)
+        );
+        assert_eq!(resolve(KeyCode::Character('i'), ctrl, &global, true), None);
+        assert_eq!(resolve(KeyCode::Character('p'), ctrl, &global, true), None);
         assert_eq!(
             resolve(KeyCode::Character('a'), ctrl, &global, false),
             Some(&UiAction::SelectAll)

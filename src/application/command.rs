@@ -76,6 +76,18 @@ pub enum UiAction {
     OpenRenameCharacterModal,
     OpenAutomation,
     CloseAutomation,
+    OpenLinesPanel,
+    OpenRolesPanel,
+    CloseSidePanel,
+    SetLinesRole {
+        line_ids: Vec<u64>,
+        name: String,
+        color: [f32; 4],
+    },
+    SetRoleColor {
+        role: String,
+        color: [f32; 4],
+    },
     AutomationAddNode {
         kind: crate::automation::AutomationNodeKind,
         x: f32,

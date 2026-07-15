@@ -261,6 +261,14 @@ impl State {
         self.ui_shell.ui.dragging_split_handle()
     }
 
+    pub fn hovering_panel_resize_handle(&self) -> bool {
+        self.ui_shell.ui.hovering_props_handle()
+    }
+
+    pub fn dragging_panel_resize_handle(&self) -> bool {
+        self.ui_shell.ui.dragging_props_handle()
+    }
+
     pub fn hovered_line(&self) -> Option<u64> {
         self.ui_shell.ui.rythmo_state.hovered_line
     }
@@ -1756,6 +1764,41 @@ impl State {
             return;
         }
         self.ui_shell.ui.open_rename_character_modal(characters);
+    }
+
+    pub fn open_lines_panel(&mut self) {
+        self.ui_shell
+            .ui
+            .open_side_panel(crate::ui::side_panel::SidePanelKind::Lines);
+    }
+
+    pub fn open_roles_panel(&mut self) {
+        self.ui_shell
+            .ui
+            .open_side_panel(crate::ui::side_panel::SidePanelKind::Roles);
+    }
+
+    pub fn close_side_panel(&mut self) {
+        self.ui_shell.ui.close_side_panel();
+    }
+
+    pub fn set_lines_role(&mut self, line_ids: Vec<u64>, name: String, color: [f32; 4]) {
+        for line_id in line_ids {
+            self.set_character(line_id, name.clone(), color);
+        }
+    }
+
+    pub fn set_role_color(&mut self, role: String, color: [f32; 4]) {
+        let ids: Vec<u64> = self
+            .project_session
+            .project
+            .lines()
+            .filter(|line| line.character_name == role)
+            .map(|line| line.id)
+            .collect();
+        for line_id in ids {
+            self.set_character(line_id, role.clone(), color);
+        }
     }
 
     pub fn rename_character_everywhere(&mut self, old_name: String, new_name: String) {
@@ -3565,6 +3608,7 @@ impl State {
             width,
             height,
             1.0,
+            &[],
             &[],
             &[],
             &[],

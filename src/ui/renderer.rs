@@ -247,6 +247,13 @@ impl StretchedText {
     }
 }
 
+#[derive(Clone, Copy)]
+enum TextLayer {
+    Base,
+    Overlay,
+    Modal,
+}
+
 pub struct UiRenderer {
     quad_pipeline: wgpu::RenderPipeline,
     icon_pipeline: wgpu::RenderPipeline,
@@ -260,6 +267,7 @@ pub struct UiRenderer {
     swash_cache: SwashCache,
     text_atlas: TextAtlas,
     text_renderer: TextRenderer,
+    overlay_text_renderer: TextRenderer,
     modal_text_renderer: TextRenderer,
     viewport: Viewport,
 
@@ -483,6 +491,8 @@ impl UiRenderer {
         let mut text_atlas = TextAtlas::new(device, queue, &cache, format);
         let text_renderer =
             TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
+        let overlay_text_renderer =
+            TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
         let modal_text_renderer =
             TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
         let (text_raster_requests, text_raster_results) = spawn_text_raster_worker();
@@ -498,6 +508,7 @@ impl UiRenderer {
             swash_cache,
             text_atlas,
             text_renderer,
+            overlay_text_renderer,
             modal_text_renderer,
             viewport,
             text_texture_cache: HashMap::new(),
@@ -964,17 +975,16 @@ impl UiRenderer {
     }
 
     /// Build glyph geometry for the given labels and upload it to the text
-    /// renderer. Caller is responsible for issuing the matching
-    /// `text_renderer.render(...)` inside a render pass. Note: this CLEARS the
-    /// previously prepared glyphs (glyphon keeps a single vertex buffer), so it
-    /// must be paired with a render call before preparing another layer.
+    /// renderer. Each semantic layer owns a distinct glyphon `TextRenderer`,
+    /// because a renderer has a single prepared vertex buffer. This preserves
+    /// every label while enforcing base/overlay/modal ordering.
     fn prepare_text_layer(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         labels: &[LabelInfo],
         ui_scale: f32,
-        is_modal: bool,
+        layer: TextLayer,
     ) {
         if labels.is_empty() {
             return;
@@ -1054,8 +1064,9 @@ impl UiRenderer {
             })
             .collect();
 
-        if is_modal {
-            self.modal_text_renderer
+        match layer {
+            TextLayer::Base => self
+                .text_renderer
                 .prepare(
                     device,
                     queue,
@@ -1065,9 +1076,9 @@ impl UiRenderer {
                     text_areas,
                     &mut self.swash_cache,
                 )
-                .unwrap();
-        } else {
-            self.text_renderer
+                .unwrap(),
+            TextLayer::Overlay => self
+                .overlay_text_renderer
                 .prepare(
                     device,
                     queue,
@@ -1077,7 +1088,19 @@ impl UiRenderer {
                     text_areas,
                     &mut self.swash_cache,
                 )
-                .unwrap();
+                .unwrap(),
+            TextLayer::Modal => self
+                .modal_text_renderer
+                .prepare(
+                    device,
+                    queue,
+                    &mut self.font_system,
+                    &mut self.text_atlas,
+                    &self.viewport,
+                    text_areas,
+                    &mut self.swash_cache,
+                )
+                .unwrap(),
         }
     }
 
@@ -1093,7 +1116,8 @@ impl UiRenderer {
         quads: &[QuadInstance],         // base layer (behind video)
         overlay_quads: &[QuadInstance], // overlay layer (on top of video)
         icons: &[IconInstance],
-        labels: &[LabelInfo],
+        labels: &[LabelInfo],         // text paired with the base layer
+        overlay_labels: &[LabelInfo], // text paired with overlay quads
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         stretched_quads: &[(IconInstance, u64)],
         post_stretched_quads: &[QuadInstance],
@@ -1120,7 +1144,8 @@ impl UiRenderer {
             },
         );
 
-        self.prepare_text_layer(device, queue, labels, ui_scale, false);
+        self.prepare_text_layer(device, queue, labels, ui_scale, TextLayer::Base);
+        self.prepare_text_layer(device, queue, overlay_labels, ui_scale, TextLayer::Overlay);
 
         // Upload dynamic instance buffers once per group. Draws that need different
         // bind groups reuse the same uploaded instance buffer with instance ranges.
@@ -1275,6 +1300,15 @@ impl UiRenderer {
                 }
             }
 
+            // Base text belongs to the workspace and is intentionally drawn
+            // before overlay geometry. It can therefore never bleed through
+            // panels, dropdowns, tooltips or context menus.
+            if !labels.is_empty() {
+                self.text_renderer
+                    .render(&self.text_atlas, &self.viewport, &mut pass)
+                    .unwrap();
+            }
+
             // Draw overlay quads (on top of video, icons, stretched text)
             if !overlay_quads.is_empty() {
                 pass.set_pipeline(&self.quad_pipeline);
@@ -1309,16 +1343,19 @@ impl UiRenderer {
                 }
             }
 
-            // Draw text (normal UI layer)
-            self.text_renderer
-                .render(&self.text_atlas, &self.viewport, &mut pass)
-                .unwrap();
+            // Overlay text is prepared independently and is drawn only after
+            // every overlay background and texture in this layer.
+            if !overlay_labels.is_empty() {
+                self.overlay_text_renderer
+                    .render(&self.text_atlas, &self.viewport, &mut pass)
+                    .unwrap();
+            }
         }
 
         // Second pass: modals on top of everything (quads + text). LoadOp::Load
         // preserves the first pass's output.
         if !modal_quads.is_empty() || !modal_labels.is_empty() {
-            self.prepare_text_layer(device, queue, modal_labels, ui_scale, true);
+            self.prepare_text_layer(device, queue, modal_labels, ui_scale, TextLayer::Modal);
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("UI Modal Pass"),
@@ -1347,10 +1384,13 @@ impl UiRenderer {
                 }
             }
 
-            // Draw modal text
-            self.modal_text_renderer
-                .render(&self.text_atlas, &self.viewport, &mut pass)
-                .unwrap();
+            // Draw modal text only when this frame prepared that layer; this
+            // prevents glyphon's previous modal buffer from leaking forward.
+            if !modal_labels.is_empty() {
+                self.modal_text_renderer
+                    .render(&self.text_atlas, &self.viewport, &mut pass)
+                    .unwrap();
+            }
         }
 
         self.text_atlas.trim();

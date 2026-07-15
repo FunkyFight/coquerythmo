@@ -410,8 +410,12 @@ pub fn run() {
                     };
 
                     let resize_cursor = state.hovering_resize_handle() || state.dragging_resize_handle();
+                    let panel_resize_cursor = state.hovering_panel_resize_handle()
+                        || state.dragging_panel_resize_handle();
 
-                    let next_cursor_icon = if resize_cursor {
+                    let next_cursor_icon = if panel_resize_cursor {
+                        winit::window::CursorIcon::EwResize
+                    } else if resize_cursor {
                         winit::window::CursorIcon::NsResize
                     } else if is_text_cursor {
                         winit::window::CursorIcon::Text

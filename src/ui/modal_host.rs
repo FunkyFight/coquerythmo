@@ -905,7 +905,6 @@ impl ModalHost {
     /// Render the modal layers that must remain above transient overlays.
     pub fn render_top<'a>(
         &'a self,
-        labels: &mut Vec<LabelInfo<'a>>,
         modal_quads: &mut Vec<QuadInstance>,
         modal_labels: &mut Vec<LabelInfo<'a>>,
         screen_w: f32,
@@ -918,7 +917,6 @@ impl ModalHost {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
         if let Some(modal) = &self.file_explorer {
-            labels.clear();
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
     }

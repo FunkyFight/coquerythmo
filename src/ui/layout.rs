@@ -55,22 +55,24 @@ impl Layout {
             height: TOPBAR_H,
         };
 
+        // Optional panels live on the left. The whole workspace starts after
+        // them, while the topbar always spans the complete window.
         let video_preview = Rect {
-            x: 0.0,
+            x: props_w,
             y: TOPBAR_H,
             width: main_w,
             height: video_h,
         };
 
         let toolbar = Rect {
-            x: 0.0,
+            x: props_w,
             y: TOPBAR_H + video_h,
             width: main_w,
             height: TOOLBAR_H,
         };
 
         let rythmo = Rect {
-            x: 0.0,
+            x: props_w,
             y: TOPBAR_H + video_h + TOOLBAR_H,
             width: main_w,
             height: rythmo_h,
@@ -78,7 +80,7 @@ impl Layout {
 
         let properties = if props_visible {
             Some(Rect {
-                x: main_w,
+                x: 0.0,
                 y: TOPBAR_H,
                 width: props_w,
                 height: content_h,
@@ -114,5 +116,22 @@ impl Layout {
             width: self.rythmo.width,
             height: SPLIT_DRAG_ZONE,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn side_panel_shifts_every_workspace_zone_to_the_right() {
+        let layout = Layout::compute(1200.0, 800.0, true, 320.0, 0.5);
+
+        assert_eq!(layout.properties.unwrap().x, 0.0);
+        assert_eq!(layout.video_preview.x, 320.0);
+        assert_eq!(layout.toolbar.x, 320.0);
+        assert_eq!(layout.rythmo.x, 320.0);
+        assert_eq!(layout.rythmo.width, 880.0);
+        assert_eq!(layout.topbar.width, 1200.0);
     }
 }
