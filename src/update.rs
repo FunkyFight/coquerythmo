@@ -1,3 +1,4 @@
+#[cfg(not(target_os = "windows"))]
 use std::process::Command;
 
 const GITHUB_RELEASES_API: &str =
@@ -29,7 +30,42 @@ fn updater_executable_name() -> &'static str {
     }
 }
 
-pub fn promote_pending_updater_from_args() {
+pub fn promote_pending_updater_at_startup() {
+    let exe_dir = match std::env::current_exe()
+        .map_err(|e| format!("Cannot find exe path: {e}"))
+        .and_then(|path| {
+            path.parent()
+                .map(std::path::Path::to_path_buf)
+                .ok_or_else(|| "Cannot get exe directory".to_string())
+        }) {
+        Ok(exe_dir) => exe_dir,
+        Err(e) => {
+            log::warn!("Failed to locate a pending updater: {e}");
+            return;
+        }
+    };
+
+    // The pending file is the durable hand-off between updater.exe and the app.
+    // Do not rely solely on process arguments: launchers and shortcuts are allowed
+    // to discard them, while the file remains next to coquerythmo.exe.
+    let requested_pending = pending_updater_from_args();
+    let pending = pending_updater_to_promote(&exe_dir, requested_pending);
+
+    let Some(pending) = pending else {
+        return;
+    };
+
+    match promote_pending_updater(&pending, &exe_dir) {
+        Ok(()) => log::info!("Promoted updater from {}", pending.display()),
+        Err(e) => log::warn!(
+            "Failed to promote updater from {}: {}",
+            pending.display(),
+            e
+        ),
+    }
+}
+
+fn pending_updater_from_args() -> Option<std::path::PathBuf> {
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         if arg != std::ffi::OsStr::new(PROMOTE_UPDATER_ARG) {
@@ -38,31 +74,39 @@ pub fn promote_pending_updater_from_args() {
 
         let Some(pending) = args.next() else {
             log::warn!("{} passed without path", PROMOTE_UPDATER_ARG);
-            continue;
+            return None;
         };
 
-        let pending = std::path::PathBuf::from(pending);
-        match promote_pending_updater(&pending) {
-            Ok(()) => log::info!("Promoted updater from {}", pending.display()),
-            Err(e) => log::warn!(
-                "Failed to promote updater from {}: {}",
-                pending.display(),
-                e
-            ),
-        }
+        return Some(std::path::PathBuf::from(pending));
+    }
+
+    None
+}
+
+fn pending_updater_path(exe_dir: &std::path::Path) -> std::path::PathBuf {
+    exe_dir.join(format!("{}.pending", updater_executable_name()))
+}
+
+fn pending_updater_to_promote(
+    exe_dir: &std::path::Path,
+    requested_pending: Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    let expected_pending = pending_updater_path(exe_dir);
+    if expected_pending.is_file() {
+        Some(expected_pending)
+    } else {
+        requested_pending
     }
 }
 
-fn promote_pending_updater(pending: &std::path::Path) -> Result<(), String> {
+fn promote_pending_updater(
+    pending: &std::path::Path,
+    exe_dir: &std::path::Path,
+) -> Result<(), String> {
     if !pending.is_file() {
         return Err(format!("pending updater not found: {}", pending.display()));
     }
 
-    let exe_dir = std::env::current_exe()
-        .map_err(|e| format!("Cannot find exe path: {e}"))?
-        .parent()
-        .ok_or("Cannot get exe directory")?
-        .to_path_buf();
     let target = exe_dir.join(updater_executable_name());
     let backup = exe_dir.join(format!("{}.old", updater_executable_name()));
 
@@ -172,8 +216,8 @@ pub fn check() -> bool {
         return false;
     }
 
-    match Command::new(&updater).arg("--tag").arg(&latest_tag).spawn() {
-        Ok(_) => {
+    match launch_updater(&updater, &latest_tag) {
+        Ok(()) => {
             log::info!("Updater launched, exiting for update");
             true
         }
@@ -182,6 +226,89 @@ pub fn check() -> bool {
             false
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn launch_updater(updater: &std::path::Path, latest_tag: &str) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let operation: Vec<u16> = "runas\0".encode_utf16().collect();
+    let executable: Vec<u16> = updater
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let parameters: Vec<u16> = format!("--tag {}", quote_windows_argument(latest_tag))
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // ShellExecuteW with the `runas` verb displays the Windows UAC prompt.
+    // The elevated updater then relaunches coquerythmo with the inherited token.
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            executable.as_ptr(),
+            parameters.as_ptr(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+
+    if result as isize > 32 {
+        Ok(())
+    } else {
+        Err(format!(
+            "Windows refused to launch the updater as administrator (ShellExecuteW code {})",
+            result as isize
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn quote_windows_argument(argument: &str) -> String {
+    if !argument.is_empty()
+        && !argument
+            .chars()
+            .any(|character| character.is_whitespace() || character == '"')
+    {
+        return argument.to_string();
+    }
+
+    let mut quoted = String::from("\"");
+    let mut backslashes = 0;
+    for character in argument.chars() {
+        if character == '\\' {
+            backslashes += 1;
+            continue;
+        }
+
+        if character == '"' {
+            quoted.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+            quoted.push('"');
+        } else {
+            quoted.extend(std::iter::repeat_n('\\', backslashes));
+            quoted.push(character);
+        }
+        backslashes = 0;
+    }
+
+    quoted.extend(std::iter::repeat_n('\\', backslashes * 2));
+    quoted.push('"');
+    quoted
+}
+
+#[cfg(not(target_os = "windows"))]
+fn launch_updater(updater: &std::path::Path, latest_tag: &str) -> Result<(), String> {
+    Command::new(updater)
+        .arg("--tag")
+        .arg(latest_tag)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 pub fn fetch_latest_release() -> Result<ReleaseInfo, String> {
@@ -208,4 +335,52 @@ fn fetch_release(url: &str) -> Result<ReleaseInfo, String> {
     let body = response["body"].as_str().unwrap_or_default().to_string();
 
     Ok(ReleaseInfo { tag_name, body })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(test_name: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after the Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "coquerythmo-{test_name}-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn promotes_the_default_pending_updater_and_removes_the_backup() {
+        let exe_dir = temp_dir("promote-updater");
+        fs::create_dir_all(&exe_dir).unwrap();
+
+        let target = exe_dir.join(updater_executable_name());
+        let pending = pending_updater_path(&exe_dir);
+        let backup = exe_dir.join(format!("{}.old", updater_executable_name()));
+        fs::write(&target, b"old updater").unwrap();
+        fs::write(&pending, b"new updater").unwrap();
+
+        let discovered = pending_updater_to_promote(&exe_dir, None).unwrap();
+        promote_pending_updater(&discovered, &exe_dir).unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"new updater");
+        assert!(!pending.exists());
+        assert!(!backup.exists());
+
+        fs::remove_dir_all(exe_dir).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn quotes_windows_updater_arguments() {
+        assert_eq!(quote_windows_argument("v3.4.0"), "v3.4.0");
+        assert_eq!(quote_windows_argument("v 3.4.0"), "\"v 3.4.0\"");
+        assert_eq!(quote_windows_argument("v\"3"), "\"v\\\"3\"");
+        assert_eq!(quote_windows_argument("v 3\\"), "\"v 3\\\\\"");
+    }
 }

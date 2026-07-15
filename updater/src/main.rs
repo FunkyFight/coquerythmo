@@ -320,8 +320,8 @@ fn extract_zip(zip_path: &Path, dest_dir: &Path, pending_updater: &Path) -> Resu
         }
 
         // A running updater cannot replace itself on Windows. Keep the new one for the app to promote.
-        let out_path = if is_running_updater_entry(&name) {
-            has_pending_updater = true;
+        let is_updater = is_running_updater_entry(&name);
+        let out_path = if is_updater {
             pending_updater.to_path_buf()
         } else {
             long_dest.join(&name)
@@ -329,7 +329,7 @@ fn extract_zip(zip_path: &Path, dest_dir: &Path, pending_updater: &Path) -> Resu
 
         // Create parent directories — if a file blocks the path, nuke it
         if let Some(parent) = out_path.parent() {
-            if let Err(_) = fs::create_dir_all(parent) {
+            if fs::create_dir_all(parent).is_err() {
                 // Something blocked it — try removing any file in the way
                 let mut p = parent.to_path_buf();
                 while p != long_dest && p.exists() && !p.is_dir() {
@@ -343,10 +343,18 @@ fn extract_zip(zip_path: &Path, dest_dir: &Path, pending_updater: &Path) -> Resu
             }
         }
 
-        // Best-effort write — skip on failure
+        // Keep regular assets best-effort for compatibility, but never claim
+        // that an updater is pending unless its complete contents reached disk.
         match fs::File::create(&out_path) {
-            Ok(mut out_file) => {
-                if io::copy(&mut entry, &mut out_file).is_ok() {
+            Ok(mut out_file) => match io::copy(&mut entry, &mut out_file) {
+                Ok(_) => {
+                    if let Err(e) = out_file.flush() {
+                        if is_updater {
+                            return Err(format!("Cannot flush {}: {e}", out_path.display()));
+                        }
+                        eprintln!("  [skip] {}", raw_name);
+                        continue;
+                    }
                     #[cfg(unix)]
                     {
                         let mode = entry.unix_mode().unwrap_or_else(|| {
@@ -361,16 +369,28 @@ fn extract_zip(zip_path: &Path, dest_dir: &Path, pending_updater: &Path) -> Resu
                             fs::Permissions::from_mode(mode & 0o777),
                         );
                     }
-                    if is_running_updater_entry(&name) {
+                    if is_updater {
+                        has_pending_updater = true;
                         println!("  {} -> {}", name.display(), out_path.display());
                     } else {
                         println!("  {}", name.display());
                     }
                 }
+                Err(e) if is_updater => {
+                    return Err(format!(
+                        "Cannot extract pending updater to {}: {e}",
+                        out_path.display()
+                    ));
+                }
+                Err(_) => eprintln!("  [skip] {}", raw_name),
+            },
+            Err(e) if is_updater => {
+                return Err(format!(
+                    "Cannot create pending updater at {}: {e}",
+                    out_path.display()
+                ));
             }
-            Err(_) => {
-                eprintln!("  [skip] {}", raw_name);
-            }
+            Err(_) => eprintln!("  [skip] {}", raw_name),
         }
     }
 
@@ -390,4 +410,47 @@ fn is_executable_entry(path: &Path) -> bool {
         .and_then(|name| name.to_str())
         .map(|name| name == application_executable_name() || name == updater_executable_name())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use zip::write::SimpleFileOptions;
+
+    fn temp_dir(test_name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after the Unix epoch")
+            .as_nanos();
+        env::temp_dir().join(format!(
+            "coquerythmo-updater-{test_name}-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn extracts_the_new_updater_as_a_pending_file() {
+        let test_dir = temp_dir("pending-extraction");
+        let install_dir = test_dir.join("install");
+        let archive_path = test_dir.join("update.zip");
+        fs::create_dir_all(&install_dir).unwrap();
+
+        let archive_file = fs::File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(archive_file);
+        archive
+            .start_file(updater_executable_name(), SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(b"new updater").unwrap();
+        archive.finish().unwrap();
+
+        let pending = pending_updater_path(&install_dir);
+        let extracted = extract_zip(&archive_path, &install_dir, &pending).unwrap();
+
+        assert!(extracted);
+        assert_eq!(fs::read(&pending).unwrap(), b"new updater");
+        assert!(!install_dir.join(updater_executable_name()).exists());
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
 }

@@ -7,7 +7,7 @@ use crate::{config, i18n, platform, update};
 pub(crate) fn initialize() -> bool {
     config::init();
     i18n::init(&config::get().lang);
-    update::promote_pending_updater_from_args();
+    update::promote_pending_updater_at_startup();
     platform::show_untested_platform_warning();
     update::check()
 }

@@ -82,16 +82,16 @@ fn is_space_key(key: &Key) -> bool {
         || matches!(key, Key::Character(text) if text.as_str() == " ")
 }
 pub fn run() {
+    if bootstrap::initialize() {
+        // Updater was launched, exit so it can replace our files
+        return;
+    }
+
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event()
         .build()
         .expect("Failed to create event loop");
     let event_loop_proxy = event_loop.create_proxy();
     let shortcuts = existing_shortcuts();
-
-    if bootstrap::initialize() {
-        // Updater was launched, exit so it can replace our files
-        return;
-    }
 
     let cfg = config::get().clone();
 
