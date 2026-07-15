@@ -288,6 +288,7 @@ pub struct UiRenderer {
     overlay_quad_buffer: DynamicBuffer,
     modal_quad_buffer: DynamicBuffer,
     modal_overlay_quad_buffer: DynamicBuffer,
+    modal_textured_buffer: DynamicBuffer,
     extra_textured_buffer: DynamicBuffer,
     post_texture_quad_buffer: DynamicBuffer,
 }
@@ -532,6 +533,7 @@ impl UiRenderer {
             overlay_quad_buffer: DynamicBuffer::new(),
             modal_quad_buffer: DynamicBuffer::new(),
             modal_overlay_quad_buffer: DynamicBuffer::new(),
+            modal_textured_buffer: DynamicBuffer::new(),
             extra_textured_buffer: DynamicBuffer::new(),
             post_texture_quad_buffer: DynamicBuffer::new(),
         }
@@ -1143,10 +1145,11 @@ impl UiRenderer {
         base_textured: &[(IconInstance, &wgpu::BindGroup)],
         extra_textured: &[(IconInstance, &wgpu::BindGroup)],
         post_texture_quads: &[QuadInstance], // drawn after textured quads (e.g. color picker indicators)
-        modal_quads: &[QuadInstance],        // modal backgrounds (above normal text)
-        modal_labels: &[LabelInfo],          // modal text (above modal backgrounds)
+        modal_textured: &[(IconInstance, &wgpu::BindGroup)],
+        modal_quads: &[QuadInstance], // modal backgrounds (above normal text)
+        modal_labels: &[LabelInfo],   // modal text (above modal backgrounds)
         modal_overlay_quads: &[QuadInstance], // popups above modal content
-        modal_overlay_labels: &[LabelInfo],  // popup text above popup backgrounds
+        modal_overlay_labels: &[LabelInfo], // popup text above popup backgrounds
     ) {
         let ui_scale = ui_scale.max(1.0);
         let uniforms = Uniforms {
@@ -1234,6 +1237,16 @@ impl UiRenderer {
             queue,
             "UI Modal Overlay Quad Buffer",
             modal_overlay_quads,
+        );
+        let modal_textured_instances: Vec<IconInstance> = modal_textured
+            .iter()
+            .map(|(instance, _)| *instance)
+            .collect();
+        self.modal_textured_buffer.upload(
+            device,
+            queue,
+            "UI Modal Textured Quad Buffer",
+            &modal_textured_instances,
         );
 
         {
@@ -1419,6 +1432,19 @@ impl UiRenderer {
                 if let Some(buffer) = self.modal_quad_buffer.buffer() {
                     pass.set_vertex_buffer(0, buffer.slice(..));
                     pass.draw(0..6, 0..modal_quads.len() as u32);
+                }
+            }
+
+            if !modal_textured.is_empty() {
+                pass.set_pipeline(&self.icon_pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
+                if let Some(buffer) = self.modal_textured_buffer.buffer() {
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    for (index, (_, bind_group)) in modal_textured.iter().enumerate() {
+                        let index = index as u32;
+                        pass.set_bind_group(1, *bind_group, &[]);
+                        pass.draw(0..6, index..index + 1);
+                    }
                 }
             }
 

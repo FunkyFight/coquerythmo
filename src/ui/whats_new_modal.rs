@@ -1,19 +1,19 @@
 use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
 
-const CARD_W: f32 = 700.0;
-const CARD_H: f32 = 492.0;
-const MIN_CARD_W: f32 = 420.0;
-const MIN_CARD_H: f32 = 330.0;
+const CARD_W: f32 = 860.0;
+const CARD_H: f32 = 760.0;
+const MIN_CARD_W: f32 = 500.0;
+const MIN_CARD_H: f32 = 380.0;
 const CARD_MARGIN: f32 = 32.0;
 const BODY_PAD_X: f32 = 30.0;
-const BODY_TOP: f32 = 118.0;
-const BODY_BOTTOM: f32 = 76.0;
+const BODY_TOP: f32 = 108.0;
+const BODY_BOTTOM: f32 = 68.0;
 const BODY_INSET_X: f32 = 18.0;
 const BODY_INSET_Y: f32 = 16.0;
-const LINE_H: f32 = 18.0;
-const BODY_FONT_SIZE: f32 = 11.0;
-const HEADING_FONT_SIZE: f32 = 12.5;
+const LINE_H: f32 = 21.0;
+const BODY_FONT_SIZE: f32 = 13.0;
+const HEADING_FONT_SIZE: f32 = 15.0;
 const CHAR_WIDTH: f32 = 6.2;
 const SCROLL_STEP_LINES: usize = 5;
 
@@ -34,7 +34,27 @@ struct NoteLine {
 pub struct WhatsNewModal {
     version_label: String,
     lines: Vec<NoteLine>,
+    pub(crate) thumbnail: Option<ThumbnailImage>,
+    video_url: Option<String>,
     scroll_offset: usize,
+}
+
+#[derive(Clone)]
+pub struct ThumbnailImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl ThumbnailImage {
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let image = image::load_from_memory(bytes).ok()?.to_rgba8();
+        Some(Self {
+            width: image.width(),
+            height: image.height(),
+            rgba: image.into_raw(),
+        })
+    }
 }
 
 pub enum WhatsNewResult {
@@ -43,7 +63,12 @@ pub enum WhatsNewResult {
 }
 
 impl WhatsNewModal {
-    pub fn new(version: impl Into<String>, body: impl Into<String>) -> Self {
+    pub fn new(
+        version: impl Into<String>,
+        body: impl Into<String>,
+        video_url: Option<String>,
+        thumbnail: Option<Vec<u8>>,
+    ) -> Self {
         let version = version.into();
         let max_chars = ((CARD_W - BODY_PAD_X * 2.0 - BODY_INSET_X * 2.0 - 46.0) / CHAR_WIDTH)
             .floor()
@@ -51,6 +76,8 @@ impl WhatsNewModal {
         Self {
             version_label: format!("{} {version}", t("whats_new.version")),
             lines: format_release_notes(&body.into(), max_chars),
+            thumbnail: thumbnail.and_then(|bytes| ThumbnailImage::from_bytes(&bytes)),
+            video_url,
             scroll_offset: 0,
         }
     }
@@ -75,12 +102,17 @@ impl WhatsNewModal {
         }
     }
 
-    fn body_text_rect(body: Rect) -> Rect {
+    fn body_text_rect(&self, body: Rect) -> Rect {
+        let top = if self.video_url.is_some() && self.scroll_offset == 0 {
+            344.0
+        } else {
+            BODY_INSET_Y
+        };
         Rect {
             x: body.x + BODY_INSET_X,
-            y: body.y + BODY_INSET_Y,
+            y: body.y + top,
             width: body.width - BODY_INSET_X * 2.0 - 14.0,
-            height: body.height - BODY_INSET_Y * 2.0,
+            height: body.height - top - BODY_INSET_Y,
         }
     }
 
@@ -93,15 +125,31 @@ impl WhatsNewModal {
         }
     }
 
-    fn visible_line_count(card: Rect) -> usize {
-        let body = Self::body_text_rect(Self::body_rect(card));
+    pub(crate) fn attachment_rect(&self, screen_w: f32, screen_h: f32) -> Option<Rect> {
+        self.video_url.as_ref()?;
+        if self.scroll_offset > 0 {
+            return None;
+        }
+        let card = Self::card_rect(screen_w, screen_h);
+        let width = (card.width - BODY_PAD_X * 2.0).min(560.0);
+        let height = width * 9.0 / 16.0;
+        Some(Rect {
+            x: card.x + (card.width - width) * 0.5,
+            y: card.y + BODY_TOP + BODY_INSET_Y,
+            width,
+            height,
+        })
+    }
+
+    fn visible_line_count(&self, card: Rect) -> usize {
+        let body = self.body_text_rect(Self::body_rect(card));
         (body.height / LINE_H).floor().max(1.0) as usize
     }
 
     fn max_scroll_offset(&self, card: Rect) -> usize {
         self.lines
             .len()
-            .saturating_sub(Self::visible_line_count(card))
+            .saturating_sub(self.visible_line_count(card))
     }
 
     pub fn handle_event(
@@ -128,6 +176,14 @@ impl WhatsNewModal {
                 WhatsNewResult::Consumed
             }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
+                if let Some(rect) = self.attachment_rect(screen_w, screen_h) {
+                    if rect.contains(*x, *y) {
+                        if let Some(url) = &self.video_url {
+                            let _ = open::that(url);
+                        }
+                        return WhatsNewResult::Consumed;
+                    }
+                }
                 if Self::close_rect(card).contains(*x, *y) {
                     return WhatsNewResult::Close;
                 }
@@ -146,7 +202,7 @@ impl WhatsNewModal {
     ) {
         let card = Self::card_rect(screen_w, screen_h);
         let body = Self::body_rect(card);
-        let body_text = Self::body_text_rect(body);
+        let body_text = self.body_text_rect(body);
         let close = Self::close_rect(card);
 
         push_quad(
@@ -225,6 +281,31 @@ impl WhatsNewModal {
             1.0,
             12.0,
         );
+
+        if let Some(attachment) = self.attachment_rect(screen_w, screen_h) {
+            push_quad(
+                overlay_quads,
+                attachment,
+                [0.035, 0.040, 0.060, 1.0],
+                [0.035, 0.040, 0.060, 1.0],
+                [0.80, 0.56, 0.24, 0.95],
+                2.0,
+                10.0,
+            );
+            push_label(
+                labels,
+                "▶",
+                Rect {
+                    x: attachment.x,
+                    y: attachment.y + attachment.height * 0.20,
+                    width: attachment.width,
+                    height: attachment.height * 0.58,
+                },
+                HAlign::Center,
+                Some(72.0),
+                Some([255, 244, 220]),
+            );
+        }
         push_quad(
             overlay_quads,
             Rect {
@@ -240,7 +321,7 @@ impl WhatsNewModal {
             12.0,
         );
 
-        let visible_count = Self::visible_line_count(card);
+        let visible_count = self.visible_line_count(card);
         let max_offset = self.max_scroll_offset(card);
         let start = self.scroll_offset.min(max_offset);
         let end = (start + visible_count).min(self.lines.len());

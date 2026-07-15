@@ -108,6 +108,7 @@ pub struct Ui {
     pub erasing: bool,
     pub brush_picking: bool,
     pub(crate) drawing_overlay_cache: Option<DrawingOverlayCache>,
+    whats_new_thumbnail_texture: Option<WhatsNewThumbnailTexture>,
     pub brush_color_presets: [[f32; 4]; 8],
     pub brush_color_preset_index: usize,
     pub toasts: toast::ToastManager,
@@ -116,6 +117,13 @@ pub struct Ui {
     pub loading_project: Option<(String, std::time::Instant)>,
     automation_editor: automation::AutomationEditor,
     side_panel: side_panel::SidePanel,
+}
+
+struct WhatsNewThumbnailTexture {
+    _texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+    width: u32,
+    height: u32,
 }
 
 impl Ui {
@@ -204,6 +212,7 @@ impl Ui {
             erasing: false,
             brush_picking: false,
             drawing_overlay_cache: None,
+            whats_new_thumbnail_texture: None,
             // Color palette for drawing
             brush_color_presets: [
                 [1.0, 1.0, 1.0, 1.0], // White
@@ -970,8 +979,16 @@ impl Ui {
         self.modal_host.open_proxy_error(detail);
     }
 
-    pub fn open_whats_new_modal(&mut self, version: impl Into<String>, body: impl Into<String>) {
-        self.modal_host.open_whats_new(version, body);
+    pub fn open_whats_new_modal(
+        &mut self,
+        version: impl Into<String>,
+        body: impl Into<String>,
+        video_url: Option<String>,
+        thumbnail: Option<Vec<u8>>,
+    ) {
+        self.whats_new_thumbnail_texture = None;
+        self.modal_host
+            .open_whats_new(version, body, video_url, thumbnail);
     }
 
     pub fn open_save_prompt(&mut self, kind: save_prompt_modal::SavePromptKind) {
@@ -1092,6 +1109,7 @@ impl Ui {
         waveform_offset_frames: i64,
         waveform_is_instrumental: bool,
     ) {
+        self.ensure_whats_new_thumbnail_texture(device, queue, renderer);
         // Update frame info for progress bar
         self.current_frame = current_frame;
 
@@ -1163,6 +1181,7 @@ impl Ui {
         let mut modal_labels: Vec<LabelInfo> = Vec::new(); // modal text (above modal backgrounds)
         let mut modal_overlay_quads: Vec<QuadInstance> = Vec::new();
         let mut modal_overlay_labels: Vec<LabelInfo> = Vec::new();
+        let mut modal_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
 
         // Pricing / support page replaces the entire layout while active.
         if self.modal_host.pricing_page.is_some() {
@@ -1208,6 +1227,7 @@ impl Ui {
                 &base_textured,
                 &extra_textured,
                 &color_picker_fg_quads,
+                &[],
                 &modal_quads,
                 &modal_labels,
                 &modal_overlay_quads,
@@ -1867,6 +1887,22 @@ impl Ui {
             self.screen_h,
         );
 
+        if let (Some(modal), Some(texture)) = (
+            self.modal_host.whats_new.as_ref(),
+            self.whats_new_thumbnail_texture.as_ref(),
+        ) {
+            if let Some(rect) = modal.attachment_rect(self.screen_w, self.screen_h) {
+                modal_textured.push((
+                    IconInstance {
+                        rect: [rect.x, rect.y, rect.width, rect.height],
+                        uv_rect: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0; 4],
+                    },
+                    &texture.bind_group,
+                ));
+            }
+        }
+
         renderer.render(
             device,
             queue,
@@ -1886,11 +1922,93 @@ impl Ui {
             &base_textured,
             &extra_textured,
             &color_picker_fg_quads,
+            &modal_textured,
             &modal_quads,
             &modal_labels,
             &modal_overlay_quads,
             &modal_overlay_labels,
         );
+    }
+
+    fn ensure_whats_new_thumbnail_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        renderer: &UiRenderer,
+    ) {
+        let Some(image) = self
+            .modal_host
+            .whats_new
+            .as_ref()
+            .and_then(|modal| modal.thumbnail.as_ref())
+            .cloned()
+        else {
+            self.whats_new_thumbnail_texture = None;
+            return;
+        };
+
+        if self
+            .whats_new_thumbnail_texture
+            .as_ref()
+            .is_some_and(|texture| texture.width == image.width && texture.height == image.height)
+        {
+            return;
+        }
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("What's New YouTube Thumbnail"),
+            size: wgpu::Extent3d {
+                width: image.width,
+                height: image.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &image.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * image.width),
+                rows_per_image: Some(image.height),
+            },
+            wgpu::Extent3d {
+                width: image.width,
+                height: image.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("What's New YouTube Thumbnail BG"),
+            layout: renderer.texture_bind_group_layout(),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(renderer.texture_sampler()),
+                },
+            ],
+        });
+        self.whats_new_thumbnail_texture = Some(WhatsNewThumbnailTexture {
+            _texture: texture,
+            bind_group,
+            width: image.width,
+            height: image.height,
+        });
     }
 
     fn render_zones<'a>(
@@ -2316,6 +2434,7 @@ impl Ui {
             &base_textured,
             &[], // extra_textured
             &[], // post_texture_quads
+            &[], // modal_textured
             &[], // modal_quads
             &[], // modal_labels
             &[], // modal_overlay_quads

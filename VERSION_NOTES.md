@@ -38,3 +38,4 @@ C'est une mise à jour en deux temps : 3.4.0 qui conclut plus ou moins la partie
 - Suppression automatique des personnages inutilisés.
 - Option projet pour illuminer en jaune le mot lu, prise en charge par l’UI et les renderers CPU/GPU.
 - Shift + clic-glisser vertical, sans décalage temporel, avec repère gris temporaire
+- Updater enfin updaté

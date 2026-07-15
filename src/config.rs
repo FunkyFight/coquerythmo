@@ -349,7 +349,7 @@ pub fn remove_recent_project(video_path: &PathBuf, br_path: &PathBuf) {
 }
 
 pub fn should_show_whats_new(version: &str) -> bool {
-    get().last_whats_new_version.as_deref() != Some(version)
+    DEV_MODE || get().last_whats_new_version.as_deref() != Some(version)
 }
 
 pub fn mark_whats_new_seen(version: &str) {

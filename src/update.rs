@@ -12,6 +12,8 @@ const PROMOTE_UPDATER_RETRY_MS: u64 = 100;
 pub struct ReleaseInfo {
     pub tag_name: String,
     pub body: String,
+    pub youtube_url: Option<String>,
+    pub thumbnail: Option<Vec<u8>>,
 }
 
 pub fn current_version() -> &'static str {
@@ -319,6 +321,30 @@ pub fn fetch_release_by_tag(tag: &str) -> Result<ReleaseInfo, String> {
     fetch_release(&format!("{GITHUB_RELEASES_API}/tags/{tag}"))
 }
 
+pub fn fetch_youtube_thumbnail(url: &str) -> Result<Vec<u8>, String> {
+    let video_id = youtube_video_id(url).ok_or_else(|| "Invalid YouTube URL".to_string())?;
+    let thumbnail_url = format!("https://img.youtube.com/vi/{video_id}/maxresdefault.jpg");
+    let response = ureq::get(&thumbnail_url)
+        .header("User-Agent", "coquerythmo-updater")
+        .call()
+        .map_err(|e| format!("Thumbnail request failed: {e}"))?;
+    response
+        .into_body()
+        .read_to_vec()
+        .map_err(|e| format!("Thumbnail read failed: {e}"))
+}
+
+#[cfg(debug_assertions)]
+pub fn dev_release(version: &str) -> ReleaseInfo {
+    let (body, youtube_url) = extract_youtube_attachment(include_str!("../VERSION_NOTES.md"));
+    ReleaseInfo {
+        tag_name: format!("v{version}"),
+        body,
+        youtube_url,
+        thumbnail: None,
+    }
+}
+
 fn fetch_release(url: &str) -> Result<ReleaseInfo, String> {
     let response: serde_json::Value = ureq::get(url)
         .header("User-Agent", "coquerythmo-updater")
@@ -332,9 +358,73 @@ fn fetch_release(url: &str) -> Result<ReleaseInfo, String> {
         .as_str()
         .map(|s| s.to_string())
         .ok_or_else(|| "No tag_name in response".to_string())?;
-    let body = response["body"].as_str().unwrap_or_default().to_string();
+    let raw_body = response["body"].as_str().unwrap_or_default();
+    let (body, youtube_url) = extract_youtube_attachment(raw_body);
 
-    Ok(ReleaseInfo { tag_name, body })
+    Ok(ReleaseInfo {
+        tag_name,
+        body,
+        youtube_url,
+        thumbnail: None,
+    })
+}
+
+pub(crate) fn extract_youtube_attachment(body: &str) -> (String, Option<String>) {
+    let Some(start) = body.find("<<<[") else {
+        return (body.to_string(), None);
+    };
+    let url_start = start + 4;
+    let Some(end_relative) = body[url_start..].find("]>>>") else {
+        return (body.to_string(), None);
+    };
+    let end = url_start + end_relative;
+    let candidate = body[url_start..end].trim();
+    let Some(video_id) = youtube_video_id(candidate) else {
+        return (body.to_string(), None);
+    };
+
+    let mut cleaned = String::with_capacity(body.len());
+    cleaned.push_str(&body[..start]);
+    cleaned.push_str(&body[end + 4..]);
+    (
+        cleaned,
+        Some(format!("https://www.youtube.com/watch?v={video_id}")),
+    )
+}
+
+fn youtube_video_id(url: &str) -> Option<String> {
+    let url = url.trim();
+    let (host, path_and_query) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .and_then(|rest| rest.split_once('/'))?;
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    let id = if host == "youtu.be" {
+        path_and_query.split(['?', '#']).next()?
+    } else if host == "youtube.com" || host.ends_with(".youtube.com") {
+        if let Some(query) = path_and_query.split_once('?').map(|(_, query)| query) {
+            query.split('&').find_map(|part| part.strip_prefix("v="))?
+        } else {
+            path_and_query
+                .strip_prefix("embed/")
+                .or_else(|| path_and_query.strip_prefix("shorts/"))?
+                .split(['?', '#'])
+                .next()?
+        }
+    } else {
+        return None;
+    };
+    let id = id.trim();
+    if id.len() >= 6
+        && id.len() <= 32
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || "-_".contains(ch))
+    {
+        Some(id.to_string())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -373,6 +463,35 @@ mod tests {
         assert!(!backup.exists());
 
         fs::remove_dir_all(exe_dir).unwrap();
+    }
+
+    #[test]
+    fn extracts_youtube_attachment_and_removes_the_marker() {
+        let (body, url) = extract_youtube_attachment(
+            "# Nouveautés\nRegardez le tutoriel : <<<[https://youtu.be/abc123_XYZ]>>>\nMerci !",
+        );
+        assert_eq!(body, "# Nouveautés\nRegardez le tutoriel : \nMerci !");
+        assert_eq!(
+            url.as_deref(),
+            Some("https://www.youtube.com/watch?v=abc123_XYZ")
+        );
+    }
+
+    #[test]
+    fn accepts_common_youtube_url_shapes() {
+        assert_eq!(
+            youtube_video_id("https://www.youtube.com/watch?v=abc123"),
+            Some("abc123".into())
+        );
+        assert_eq!(
+            youtube_video_id("https://youtube.com/shorts/abc123"),
+            Some("abc123".into())
+        );
+        assert_eq!(
+            youtube_video_id("https://youtu.be/abc123?t=4"),
+            Some("abc123".into())
+        );
+        assert_eq!(youtube_video_id("https://example.com/watch?v=abc123"), None);
     }
 
     #[cfg(target_os = "windows")]

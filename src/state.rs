@@ -502,8 +502,16 @@ impl State {
         self.ui_shell.ui.open_proxy_error_modal(detail);
     }
 
-    pub fn open_whats_new_modal(&mut self, version: impl Into<String>, body: impl Into<String>) {
-        self.ui_shell.ui.open_whats_new_modal(version, body);
+    pub fn open_whats_new_modal(
+        &mut self,
+        version: impl Into<String>,
+        body: impl Into<String>,
+        video_url: Option<String>,
+        thumbnail: Option<Vec<u8>>,
+    ) {
+        self.ui_shell
+            .ui
+            .open_whats_new_modal(version, body, video_url, thumbnail);
     }
 
     pub fn open_pricing_page(&mut self) {
@@ -3631,6 +3639,7 @@ impl State {
             &[],
             &[],
             &[],
+            &[], // no modal textured quads
             &[], // no modal quads
             &[], // no modal labels
             &[], // no modal overlay quads

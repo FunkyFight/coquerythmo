@@ -29,7 +29,27 @@ pub(crate) enum AppEvent {
 fn start_whats_new_fetch(version: String, proxy: EventLoopProxy<AppEvent>) {
     let tag = format!("v{version}");
     std::thread::spawn(move || {
-        let result = update::fetch_release_by_tag(&tag);
+        let fetch = if config::dev_mode() {
+            #[cfg(debug_assertions)]
+            {
+                Ok(update::dev_release(&version))
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                update::fetch_release_by_tag(&tag)
+            }
+        } else {
+            update::fetch_release_by_tag(&tag)
+        };
+        let result = fetch.map(|mut release| {
+            if let Some(url) = release.youtube_url.clone() {
+                match update::fetch_youtube_thumbnail(&url) {
+                    Ok(thumbnail) => release.thumbnail = Some(thumbnail),
+                    Err(error) => log::warn!("Could not fetch YouTube thumbnail: {error}"),
+                }
+            }
+            release
+        });
         let _ = proxy.send_event(AppEvent::WhatsNewFetched { version, result });
     });
 }
@@ -50,7 +70,12 @@ fn handle_whats_new_result(
                 );
                 return;
             }
-            state.open_whats_new_modal(version.clone(), release.body);
+            state.open_whats_new_modal(
+                version.clone(),
+                release.body,
+                release.youtube_url,
+                release.thumbnail,
+            );
             config::mark_whats_new_seen(&version);
         }
         Err(e) => {

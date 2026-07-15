@@ -794,8 +794,16 @@ impl ModalHost {
         self.proxy_error = Some(super::proxy_error_modal::ProxyErrorModal::new(detail));
     }
 
-    pub fn open_whats_new(&mut self, version: impl Into<String>, body: impl Into<String>) {
-        self.whats_new = Some(super::whats_new_modal::WhatsNewModal::new(version, body));
+    pub fn open_whats_new(
+        &mut self,
+        version: impl Into<String>,
+        body: impl Into<String>,
+        video_url: Option<String>,
+        thumbnail: Option<Vec<u8>>,
+    ) {
+        self.whats_new = Some(super::whats_new_modal::WhatsNewModal::new(
+            version, body, video_url, thumbnail,
+        ));
     }
 
     pub fn open_save_prompt(&mut self, kind: super::save_prompt_modal::SavePromptKind) {
