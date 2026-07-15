@@ -266,6 +266,29 @@ pub fn measure_rythmo_text_width_standalone(text: &str, font_size: f32) -> Optio
     })
 }
 
+/// Measure every character boundary using the same shaping configuration as
+/// the bande rythmo text renderer. Ratios are relative to the full text width.
+pub fn measure_rythmo_text_char_ratios_standalone(text: &str, font_size: f32) -> Option<Vec<f32>> {
+    if text.is_empty() {
+        return None;
+    }
+
+    let font_family = rythmo_font_family_name();
+    let line_height = (font_size * 1.4).ceil().max(1.0);
+    MEASURE_FONT_SYSTEM.with(|font_system| {
+        Some(
+            measure_text(
+                &mut font_system.borrow_mut(),
+                text,
+                font_size,
+                line_height,
+                &font_family,
+            )
+            .1,
+        )
+    })
+}
+
 /// Measure text for non-UI artifacts without requiring `config::init()`.
 /// A font embedded with the active project is preferred; otherwise the system
 /// sans-serif fallback chain is used.

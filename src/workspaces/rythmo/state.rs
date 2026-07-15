@@ -41,6 +41,12 @@ struct KaraokeTextWidthCacheEntry {
     width: f32,
 }
 
+#[derive(Clone, Debug)]
+struct SyllableVisualRatiosCacheEntry {
+    signature: u64,
+    ratios: Vec<f32>,
+}
+
 struct CachedKaraokeUiIndex {
     signature: u64,
     index: KaraokeUiIndex,
@@ -87,6 +93,7 @@ pub struct RythmoState {
     cached_layout_signature: RefCell<u64>,
     cached_layout_ctx: RefCell<Option<EditorLayoutCtx>>,
     syllable_breaks_cache: RefCell<HashMap<u64, (Vec<usize>, u64)>>, // line_id -> (breaks, text_hash)
+    syllable_visual_ratios_cache: RefCell<HashMap<u64, SyllableVisualRatiosCacheEntry>>,
 }
 
 impl Default for RythmoState {
@@ -215,6 +222,7 @@ impl RythmoState {
             cached_layout_signature: RefCell::new(0),
             cached_layout_ctx: RefCell::new(None),
             syllable_breaks_cache: RefCell::new(HashMap::new()),
+            syllable_visual_ratios_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -308,6 +316,50 @@ impl RythmoState {
         let breaks = crate::syllable::syllable_breaks(&line.text, lang);
         cache.insert(line.id, (breaks.clone(), text_hash));
         breaks
+    }
+
+    pub(super) fn default_syllable_visual_ratios(
+        &self,
+        line: &crate::rythmo_line::RythmoLine,
+        lang: &str,
+        breaks: &[usize],
+    ) -> Vec<f32> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let font_size = crate::config::get().ui.font_size * 2.0;
+        let font_family = crate::vector_text::rythmo_font_family_name();
+        let mut hasher = DefaultHasher::new();
+        line.text.hash(&mut hasher);
+        lang.hash(&mut hasher);
+        breaks.hash(&mut hasher);
+        font_family.hash(&mut hasher);
+        font_size.to_bits().hash(&mut hasher);
+        let signature = hasher.finish();
+
+        if let Some(entry) = self.syllable_visual_ratios_cache.borrow().get(&line.id) {
+            if entry.signature == signature {
+                return entry.ratios.clone();
+            }
+        }
+
+        let ratios =
+            crate::vector_text::measure_rythmo_text_char_ratios_standalone(&line.text, font_size)
+                .and_then(|positions| {
+                    crate::syllable::visual_ratios_from_char_positions(
+                        &line.text, breaks, &positions,
+                    )
+                })
+                .unwrap_or_else(|| crate::syllable::default_ratios_from_breaks(&line.text, breaks));
+
+        self.syllable_visual_ratios_cache.borrow_mut().insert(
+            line.id,
+            SyllableVisualRatiosCacheEntry {
+                signature,
+                ratios: ratios.clone(),
+            },
+        );
+        ratios
     }
 
     pub(super) fn karaoke_ui_text_width_for_render(

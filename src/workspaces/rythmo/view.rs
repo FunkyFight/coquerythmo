@@ -161,6 +161,35 @@ mod tests {
     }
 
     #[test]
+    fn untouched_line_keeps_a_single_text_run() {
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 24, 0.25);
+        project.get_line_mut(line_id).unwrap().text = "tambourine".to_string();
+        let state = RythmoState::new();
+        let line = project.get_line(line_id).unwrap();
+
+        assert!(
+            visible_syllable_segments(line, None, "en-us", false, &state).is_none(),
+            "default timings must not split and independently stretch syllables"
+        );
+    }
+
+    #[test]
+    fn explicitly_saved_syllable_timings_enable_segmented_rendering() {
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 24, 0.25);
+        let line = project.get_line_mut(line_id).unwrap();
+        line.text = "tambourine".to_string();
+        line.syllable_ratios = vec![0.2, 0.3, 0.5];
+        let state = RythmoState::new();
+        let line = project.get_line(line_id).unwrap();
+
+        let (_, ratios) = visible_syllable_segments(line, None, "en-us", false, &state)
+            .expect("saved timings should render as syllable segments");
+        assert_eq!(ratios, vec![0.2, 0.3, 0.5]);
+    }
+
+    #[test]
     fn adjacent_karaoke_preview_ignores_distant_lines() {
         let mut project = Project::new();
         let active_id = project.add_line(0, 24, 0.25);
@@ -1595,18 +1624,28 @@ fn visible_syllable_segments(
         return None;
     }
 
-    let drag = drag.filter(|drag| drag.line_id == line.id);
-    let ratios = if let Some(drag) = drag {
-        drag.ratios.clone()
-    } else {
-        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang)
-    };
-
-    if !ratios.is_empty() {
-        Some((breaks, ratios))
-    } else {
-        None
+    if let Some(drag) = drag.filter(|drag| drag.line_id == line.id) {
+        return Some((breaks, drag.ratios.clone()));
     }
+
+    // An untouched line must be shaped and stretched as one text run. Splitting
+    // every syllable into the default timing slots scales each run separately,
+    // which makes some syllables look condensed and others widely spaced.
+    // Segment the text only after the user has explicitly saved valid timings.
+    valid_saved_syllable_ratios(line, breaks.len() + 1, lang).map(|ratios| (breaks, ratios))
+}
+
+fn valid_saved_syllable_ratios(
+    line: &crate::rythmo_line::RythmoLine,
+    syllable_count: usize,
+    lang: &str,
+) -> Option<Vec<f32>> {
+    (line.syllable_ratios.len() == syllable_count
+        && line
+            .syllable_ratios
+            .iter()
+            .all(|ratio| ratio.is_finite() && *ratio > 0.0))
+    .then(|| crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang))
 }
 
 fn cursor_ratios_from_segments(text: &str, breaks: &[usize], ratios: &[f32]) -> Vec<f32> {
@@ -1884,8 +1923,9 @@ fn syllable_ratios_for_line(
     line: &crate::rythmo_line::RythmoLine,
     drag: Option<&SyllableDrag>,
     lang: &str,
+    state: &RythmoState,
 ) -> Option<Vec<f32>> {
-    let breaks = crate::syllable::syllable_breaks(&line.text, lang);
+    let breaks = state.get_syllable_breaks(line, lang);
     if breaks.is_empty() {
         return None;
     }
@@ -1894,11 +1934,11 @@ fn syllable_ratios_for_line(
         return Some(drag.ratios.clone());
     }
 
-    Some(crate::syllable::timing_ratios(
-        &line.text,
-        &line.syllable_ratios,
-        lang,
-    ))
+    if let Some(ratios) = valid_saved_syllable_ratios(line, breaks.len() + 1, lang) {
+        return Some(ratios);
+    }
+
+    Some(state.default_syllable_visual_ratios(line, lang, &breaks))
 }
 
 fn render_syllable_handles(
@@ -2369,7 +2409,7 @@ pub fn render_lines<'a>(
             state.syllable_drag.as_ref().map(|d| d.line_id) == Some(line.id);
         if !(karaoke_preview && line.karaoke) && (is_hovered || is_syllable_drag_line) {
             if let Some(ratios) =
-                syllable_ratios_for_line(line, state.syllable_drag.as_ref(), &karaoke_lang)
+                syllable_ratios_for_line(line, state.syllable_drag.as_ref(), &karaoke_lang, state)
             {
                 render_syllable_handles(&data.rect, &ratios, true, syllable_quads);
             }
@@ -4009,12 +4049,8 @@ pub fn render_studio_rythmo<'a>(
                     })
                     .flatten();
                 let breaks = crate::syllable::syllable_breaks(&line.text, &karaoke_lang);
-                let ratios = crate::syllable::timing_ratios(
-                    &line.text,
-                    &line.syllable_ratios,
-                    &karaoke_lang,
-                );
-                if !ratios.is_empty() {
+                let ratios = valid_saved_syllable_ratios(line, breaks.len() + 1, &karaoke_lang);
+                if let Some(ratios) = ratios {
                     let chars: Vec<char> = line.text.chars().collect();
                     let mut seg_x = x1;
                     let mut prev_break = 0usize;

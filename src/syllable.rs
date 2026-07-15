@@ -466,6 +466,45 @@ pub fn default_ratios_from_breaks(text: &str, breaks: &[usize]) -> Vec<f32> {
     lengths.iter().map(|l| l / sum).collect()
 }
 
+/// Convert shaped character boundary positions into one width ratio per
+/// syllable. This keeps untouched handles aligned with the rendered glyphs
+/// instead of approximating their positions from character counts.
+pub fn visual_ratios_from_char_positions(
+    text: &str,
+    breaks: &[usize],
+    char_x_ratios: &[f32],
+) -> Option<Vec<f32>> {
+    let char_count = text.chars().count();
+    if breaks.is_empty() || char_x_ratios.len() != char_count + 1 {
+        return None;
+    }
+
+    let mut boundaries = Vec::with_capacity(breaks.len() + 2);
+    boundaries.push(0.0_f32);
+    for &char_index in breaks {
+        if char_index == 0 || char_index >= char_count {
+            return None;
+        }
+        boundaries.push(*char_x_ratios.get(char_index)?);
+    }
+    boundaries.push(1.0);
+
+    let mut ratios = Vec::with_capacity(boundaries.len() - 1);
+    for pair in boundaries.windows(2) {
+        let ratio = pair[1] - pair[0];
+        if !ratio.is_finite() || ratio <= f32::EPSILON {
+            return None;
+        }
+        ratios.push(ratio);
+    }
+
+    let sum: f32 = ratios.iter().sum();
+    if (sum - 1.0).abs() > 0.001 {
+        return None;
+    }
+    Some(ratios)
+}
+
 /// Uniform ratios (legacy, used where char proportions are not available).
 pub fn default_ratios(count: usize) -> Vec<f32> {
     if count <= 1 {
@@ -796,6 +835,18 @@ mod tests {
         assert!(r[0] < r[1], "J' should be smaller than adore: {:?}", r);
         let sum: f32 = r.iter().sum();
         assert!((sum - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn visual_ratios_follow_shaped_character_positions() {
+        let ratios = visual_ratios_from_char_positions(
+            "iiWWWW",
+            &[2],
+            &[0.0, 0.05, 0.10, 0.30, 0.53, 0.76, 1.0],
+        )
+        .unwrap();
+
+        assert_eq!(ratios, vec![0.10, 0.90]);
     }
 
     #[test]
