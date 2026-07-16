@@ -653,17 +653,10 @@ impl CpuRenderer {
 
         // -- Lines (no handles, no border -- clean export) --
         // Precompute every visible line's rect + character name so a badge can be tested
-        // against OTHER lines (same char → hide, different char → 50% opacity).
+        // against OTHER lines (same char → hide, different char → 60% opacity).
         let mut compute_line_rect = |scene_line: &SceneLine| -> Option<Rect> {
             let line = &scene_line.line;
-            let karaoke_active = scene_line.karaoke_active;
-            let karaoke_prestart_scroll = scene_line.karaoke_prestart_scroll;
-            let karaoke_upcoming_stack = scene_line.karaoke_upcoming_stack;
-            if line.karaoke
-                && !karaoke_active
-                && !karaoke_prestart_scroll
-                && !karaoke_upcoming_stack
-            {
+            if line.karaoke && !scene_line.karaoke_should_be_visible() {
                 return None;
             }
             let (x1, lw) = if scene_line.karaoke_should_be_centered() {
@@ -714,15 +707,8 @@ impl CpuRenderer {
         }
         for scene_line in &scene.lines {
             let line = &scene_line.line;
-            let karaoke_active = scene_line.karaoke_active;
             let karaoke_count_in = scene_line.karaoke_count_in_progress.is_some();
-            let karaoke_prestart_scroll = scene_line.karaoke_prestart_scroll;
-            let karaoke_upcoming_stack = scene_line.karaoke_upcoming_stack;
-            if line.karaoke
-                && !karaoke_active
-                && !karaoke_prestart_scroll
-                && !karaoke_upcoming_stack
-            {
+            if line.karaoke && !scene_line.karaoke_should_be_visible() {
                 continue;
             }
 
@@ -869,7 +855,7 @@ impl CpuRenderer {
                 }
             }
 
-            // Overlap detection vs OTHER lines: hide if same character, 50% opacity if different
+            // Overlap detection vs OTHER lines: hide if same character, 60% opacity if different
             let mut badge_hidden = false;
             let mut badge_overlap_alpha = 255u8;
             for (&oid, (other_rect, other_name)) in &line_rects {
@@ -885,7 +871,8 @@ impl CpuRenderer {
                         badge_hidden = true;
                         break;
                     } else {
-                        badge_overlap_alpha = 128;
+                        badge_overlap_alpha =
+                            (255.0 * constants::CHARACTER_BADGE_COLLISION_OPACITY) as u8;
                     }
                 }
             }

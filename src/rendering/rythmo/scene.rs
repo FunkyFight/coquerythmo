@@ -52,11 +52,18 @@ pub struct SceneLine {
 
 impl SceneLine {
     /// Karaoke lines are a fixed centered overlay in the exported rythmo.
-    /// This includes the short count-in and stacked preview states; only
-    /// ordinary lines travel with the timeline.
+    /// This includes every count-in and stacked preview state; only ordinary
+    /// lines travel with the timeline.
     pub fn karaoke_should_be_centered(&self) -> bool {
         self.line.karaoke
-            && (self.karaoke_active || self.karaoke_prestart_scroll || self.karaoke_upcoming_stack)
+            && (self.karaoke_active
+                || self.karaoke_count_in_progress.is_some()
+                || self.karaoke_prestart_scroll
+                || self.karaoke_upcoming_stack)
+    }
+
+    pub fn karaoke_should_be_visible(&self) -> bool {
+        self.karaoke_should_be_centered()
     }
 }
 
@@ -401,5 +408,36 @@ mod tests {
         };
 
         assert!(scene_line.karaoke_should_be_centered());
+    }
+
+    #[test]
+    fn karaoke_count_in_is_centered_without_other_preview_state() {
+        let line = RythmoLine {
+            id: 1,
+            start_frame: 48,
+            duration_frames: 24,
+            y_slot: 0.0,
+            text: "karaoke".into(),
+            character_name: "Actor".into(),
+            character_color: [1.0, 1.0, 1.0, 1.0],
+            voice_actor_names: Vec::new(),
+            syllable_ratios: Vec::new(),
+            karaoke: true,
+            note: String::new(),
+        };
+        let scene_line = SceneLine {
+            line,
+            track_index: 0,
+            karaoke_progress: None,
+            karaoke_active: false,
+            karaoke_count_in_progress: Some(0.25),
+            karaoke_prestart_scroll: false,
+            karaoke_upcoming_stack: false,
+            karaoke_stack_row: 0,
+            character_label_visible: false,
+        };
+
+        assert!(scene_line.karaoke_should_be_centered());
+        assert!(scene_line.karaoke_should_be_visible());
     }
 }

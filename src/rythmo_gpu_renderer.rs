@@ -2097,17 +2097,10 @@ impl GpuRenderer {
 
         // ── Lines ──
         // Precompute every visible line's rect + character name so a badge can be tested
-        // against OTHER lines (same char → hide, different char → 50% opacity).
+        // against OTHER lines (same char → hide, different char → 60% opacity).
         let mut compute_line_rect = |scene_line: &SceneLine| -> Option<Rect> {
             let line = &scene_line.line;
-            let karaoke_active = scene_line.karaoke_active;
-            let karaoke_prestart_scroll = scene_line.karaoke_prestart_scroll;
-            let karaoke_upcoming_stack = scene_line.karaoke_upcoming_stack;
-            if line.karaoke
-                && !karaoke_active
-                && !karaoke_prestart_scroll
-                && !karaoke_upcoming_stack
-            {
+            if line.karaoke && !scene_line.karaoke_should_be_visible() {
                 return None;
             }
             let (x1, lw) = if scene_line.karaoke_should_be_centered() {
@@ -2158,15 +2151,8 @@ impl GpuRenderer {
         }
         for scene_line in &common_scene.lines {
             let line = &scene_line.line;
-            let karaoke_active = scene_line.karaoke_active;
             let karaoke_count_in = scene_line.karaoke_count_in_progress.is_some();
-            let karaoke_prestart_scroll = scene_line.karaoke_prestart_scroll;
-            let karaoke_upcoming_stack = scene_line.karaoke_upcoming_stack;
-            if line.karaoke
-                && !karaoke_active
-                && !karaoke_prestart_scroll
-                && !karaoke_upcoming_stack
-            {
+            if line.karaoke && !scene_line.karaoke_should_be_visible() {
                 continue;
             }
 
@@ -2211,7 +2197,7 @@ impl GpuRenderer {
             // Rectangular, top-aligned, right edge a few px left of the line's left edge.
             let badge_y = line_y;
 
-            // Overlap detection vs OTHER lines: hide if same character, 50% opacity if different
+            // Overlap detection vs OTHER lines: hide if same character, 60% opacity if different
             let mut badge_hidden = false;
             let mut badge_overlap_alpha = 1.0_f32;
             for (&oid, (other_rect, other_name)) in &line_rects {
@@ -2227,7 +2213,7 @@ impl GpuRenderer {
                         badge_hidden = true;
                         break;
                     } else {
-                        badge_overlap_alpha = 0.5;
+                        badge_overlap_alpha = constants::CHARACTER_BADGE_COLLISION_OPACITY;
                     }
                 }
             }

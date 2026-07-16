@@ -41,6 +41,25 @@ const KARAOKE_TEXTURE_PREWARM_LOOKAHEAD_SECONDS: f64 = 60.0;
 const KARAOKE_TEXTURE_PREWARM_CANDIDATES_PER_FRAME: usize = 32;
 const KARAOKE_TEXTURE_PREWARM_PUSHES_PER_FRAME: usize = 2;
 
+fn character_badge_collision_style(
+    line_id: u64,
+    character_name: &str,
+    badge_rect: &Rect,
+    other_lines: &[(u64, Rect, &str)],
+) -> (bool, f32) {
+    let mut alpha = 1.0;
+    for (other_id, other_rect, other_character_name) in other_lines {
+        if *other_id == line_id || !rects_overlap(badge_rect, other_rect) {
+            continue;
+        }
+        if *other_character_name == character_name {
+            return (true, 1.0);
+        }
+        alpha = constants::CHARACTER_BADGE_COLLISION_OPACITY;
+    }
+    (false, alpha)
+}
+
 #[path = "state.rs"]
 mod state;
 pub use state::*;
@@ -424,6 +443,95 @@ mod tests {
         assert!((normal_rect.height - normal_body_h).abs() < f32::EPSILON);
         assert!(karaoke_body.height > normal_body_h * 1.9);
         assert!((karaoke_rect.height - normal_body_h).abs() < 0.01);
+    }
+
+    #[test]
+    fn karaoke_count_in_rect_is_centered_immediately() {
+        crate::config::init();
+        let mut project = Project::new();
+        let previous_id = project.add_line(30, 24, 0.25);
+        let line_id = project.add_line(48, 24, 0.25);
+        project.get_line_mut(previous_id).unwrap().karaoke = true;
+        {
+            let line = project.get_line_mut(line_id).unwrap();
+            line.karaoke = true;
+            line.text = "Directly centered".to_string();
+        }
+        let zone = Rect {
+            x: 20.0,
+            y: 10.0,
+            width: 800.0,
+            height: 300.0,
+        };
+        let layout_ctx = EditorLayoutCtx::new(&project, &zone);
+        let line = project.get_line(line_id).unwrap();
+        let count_in_frames = karaoke_count_in_frames(24.0);
+        let index = KaraokeUiIndex::new(&project, karaoke_adjacent_max_gap_frames(24.0));
+        assert!(karaoke_count_in_visible(line, 24.0, count_in_frames));
+        assert!(!index.prestart_scroll_visible(line, 24.0, count_in_frames));
+        assert!(!index.upcoming_stack_visible(line, 24.0));
+        let rect = karaoke_preview_line_rect_with_state(
+            &layout_ctx,
+            line,
+            24.0,
+            &zone,
+            true,
+            false,
+            0,
+            None,
+        );
+        let expected_width = karaoke_ui_text_width(&line.text);
+        let expected_x = zone.x + (zone.width - expected_width) / 2.0;
+
+        assert!((rect.x - expected_x).abs() < 0.01);
+        assert!((rect.width - expected_width).abs() < 0.01);
+    }
+
+    #[test]
+    fn character_badge_collision_uses_the_other_line_body() {
+        let badge = Rect {
+            x: 10.0,
+            y: 10.0,
+            width: 80.0,
+            height: 20.0,
+        };
+        let colliding_line = Rect {
+            x: 50.0,
+            y: 5.0,
+            width: 100.0,
+            height: 30.0,
+        };
+
+        assert_eq!(
+            character_badge_collision_style(1, "Alice", &badge, &[(2, colliding_line, "Bob")]),
+            (false, constants::CHARACTER_BADGE_COLLISION_OPACITY)
+        );
+        assert_eq!(
+            character_badge_collision_style(1, "Alice", &badge, &[(2, colliding_line, "Alice")]),
+            (true, 1.0)
+        );
+    }
+
+    #[test]
+    fn same_character_collision_takes_priority_over_transparency() {
+        let badge = Rect {
+            x: 10.0,
+            y: 10.0,
+            width: 80.0,
+            height: 20.0,
+        };
+        let colliding_line = Rect {
+            x: 50.0,
+            y: 5.0,
+            width: 100.0,
+            height: 30.0,
+        };
+        let other_lines = [(2, colliding_line, "Bob"), (3, colliding_line, "Alice")];
+
+        assert_eq!(
+            character_badge_collision_style(1, "Alice", &badge, &other_lines),
+            (true, 1.0)
+        );
     }
 
     #[test]
@@ -1372,6 +1480,7 @@ impl KaraokeUiIndex {
         self.line_state(line).stack_row
     }
 
+    #[cfg(test)]
     fn prestart_scroll_visible(
         &self,
         line: &crate::rythmo_line::RythmoLine,
@@ -1552,12 +1661,12 @@ fn karaoke_preview_line_rect_with_state(
     line: &crate::rythmo_line::RythmoLine,
     current_frame: f64,
     zone: &Rect,
-    prestart_count_in: bool,
+    count_in: bool,
     upcoming_stack: bool,
     stack_row: usize,
     centered_karaoke_width: Option<f32>,
 ) -> Rect {
-    let (x1, width) = if line.karaoke_active(current_frame) || prestart_count_in || upcoming_stack {
+    let (x1, width) = if line.karaoke_active(current_frame) || count_in || upcoming_stack {
         let width = centered_karaoke_width.unwrap_or_else(|| karaoke_ui_text_width(&line.text));
         karaoke_centered_x_width_with_width(zone, width)
     } else {
@@ -2108,12 +2217,6 @@ pub fn render_lines<'a>(
         let karaoke_active = line.karaoke_active(current_frame);
         let karaoke_count_in = karaoke_preview
             && karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
-        let karaoke_prestart_count_in = karaoke_preview
-            && karaoke_index.prestart_scroll_visible(
-                line,
-                current_frame,
-                karaoke_count_in_frame_count,
-            );
         let karaoke_upcoming_stack =
             karaoke_preview && karaoke_index.upcoming_stack_visible(line, current_frame);
 
@@ -2121,7 +2224,6 @@ pub fn render_lines<'a>(
             && line.karaoke
             && !karaoke_active
             && !karaoke_count_in
-            && !karaoke_prestart_count_in
             && !karaoke_upcoming_stack
         {
             continue;
@@ -2129,7 +2231,7 @@ pub fn render_lines<'a>(
 
         let centered_karaoke_width = if karaoke_preview
             && line.karaoke
-            && (karaoke_active || karaoke_prestart_count_in || karaoke_upcoming_stack)
+            && (karaoke_active || karaoke_count_in || karaoke_upcoming_stack)
         {
             Some(state.karaoke_ui_text_width_for_render(line))
         } else {
@@ -2141,7 +2243,7 @@ pub fn render_lines<'a>(
                 line,
                 current_frame,
                 zone,
-                karaoke_prestart_count_in,
+                karaoke_count_in,
                 karaoke_upcoming_stack,
                 karaoke_index.stack_row(line),
                 centered_karaoke_width,
@@ -2201,7 +2303,8 @@ pub fn render_lines<'a>(
         ));
     }
 
-    // Optimize badge overlap: sort by y, then sweep line O(n log n) instead of O(n²)
+    // Keep a stable vertical draw order, then compare every badge with the
+    // actual body of the other visible lines.
     line_data.sort_by(|a, b| {
         a.1.badge_rect
             .y
@@ -2210,34 +2313,27 @@ pub fn render_lines<'a>(
     });
     let mut badge_hidden: HashMap<u64, bool> = HashMap::new();
     let mut badge_overlap_alpha: HashMap<u64, f32> = HashMap::new();
+    let collision_targets: Vec<(u64, Rect, &str)> = line_data
+        .iter()
+        .filter_map(|(line_id, data)| {
+            project
+                .get_line(*line_id)
+                .map(|line| (*line_id, data.rect, line.character_name.as_str()))
+        })
+        .collect();
 
-    for i in 0..line_data.len() {
-        let (id_i, data_i) = &line_data[i];
-        let mut hidden = false;
-        let mut alpha = 1.0;
-
-        // Only check nearby badges (spatially close in Y)
-        for j in (i + 1)..line_data.len() {
-            let (id_j, data_j) = &line_data[j];
-            if data_j.badge_rect.y > data_i.badge_rect.y + data_i.badge_rect.height + 2.0 {
-                break; // Too far down, no more overlaps possible
-            }
-            if rects_overlap(&data_i.badge_rect, &data_j.badge_rect) {
-                // Need to compare actual character names
-                let name_i = project.get_line(*id_i).map(|l| &l.character_name);
-                let name_j = project.get_line(*id_j).map(|l| &l.character_name);
-                if let (Some(ni), Some(nj)) = (name_i, name_j) {
-                    if ni == nj {
-                        hidden = true;
-                        break;
-                    } else {
-                        alpha = 0.5;
-                    }
-                }
-            }
-        }
-        badge_hidden.insert(*id_i, hidden);
-        badge_overlap_alpha.insert(*id_i, alpha);
+    for (line_id, data) in &line_data {
+        let Some(line) = project.get_line(*line_id) else {
+            continue;
+        };
+        let (hidden, alpha) = character_badge_collision_style(
+            *line_id,
+            &line.character_name,
+            &data.badge_rect,
+            &collision_targets,
+        );
+        badge_hidden.insert(*line_id, hidden);
+        badge_overlap_alpha.insert(*line_id, alpha);
     }
 
     // Now render all lines using precomputed data
@@ -3886,18 +3982,12 @@ pub fn render_studio_rythmo<'a>(
         let Some(line) = project.get_line(scene_line.line.id) else {
             continue;
         };
-        let karaoke_active = scene_line.karaoke_active;
         let karaoke_count_in = scene_line.karaoke_count_in_progress.is_some();
-        let karaoke_prestart_count_in = scene_line.karaoke_prestart_scroll;
-        let karaoke_upcoming_stack = scene_line.karaoke_upcoming_stack;
-        if line.karaoke && !karaoke_active && !karaoke_prestart_count_in && !karaoke_upcoming_stack
-        {
+        if line.karaoke && !scene_line.karaoke_should_be_visible() {
             continue;
         }
 
-        let (x1, lw) = if line.karaoke
-            && (karaoke_active || karaoke_prestart_count_in || karaoke_upcoming_stack)
-        {
+        let (x1, lw) = if scene_line.karaoke_should_be_centered() {
             let width = rythmo_state.karaoke_ui_text_width_for_render(line);
             (center_x - width / 2.0, width)
         } else {
