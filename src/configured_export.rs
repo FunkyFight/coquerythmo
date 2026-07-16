@@ -399,7 +399,7 @@ fn fit_even_within_limit(mut width: f64, mut height: f64) -> (u32, u32) {
 
 fn even(value: u32) -> u32 {
     let value = value.clamp(16, 8192);
-    if value % 2 == 0 {
+    if value.is_multiple_of(2) {
         value
     } else {
         (value + 1).min(8192)
@@ -473,9 +473,11 @@ mod tests {
 
     #[test]
     fn output_dimensions_cover_presets() {
-        let mut configuration = ExportConfiguration::default();
-        configuration.video_quality = VideoExportQuality::P720;
-        configuration.video_aspect = VideoExportAspect::Landscape16x9;
+        let mut configuration = ExportConfiguration {
+            video_quality: VideoExportQuality::P720,
+            video_aspect: VideoExportAspect::Landscape16x9,
+            ..ExportConfiguration::default()
+        };
         assert_eq!(
             resolve_video_dimensions(&configuration, 1920, 1080),
             (1280, 720)
@@ -489,9 +491,11 @@ mod tests {
 
     #[test]
     fn extreme_source_aspect_is_preserved_when_limited() {
-        let mut configuration = ExportConfiguration::default();
-        configuration.video_quality = VideoExportQuality::P8k;
-        configuration.video_aspect = VideoExportAspect::Source;
+        let configuration = ExportConfiguration {
+            video_quality: VideoExportQuality::P8k,
+            video_aspect: VideoExportAspect::Source,
+            ..ExportConfiguration::default()
+        };
         let (width, height) = resolve_video_dimensions(&configuration, 3840, 1080);
         assert_eq!(width, 8192);
         assert!((width as f64 / height as f64 - 3840.0 / 1080.0).abs() < 0.01);

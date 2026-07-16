@@ -17,6 +17,7 @@ pub struct ProxyModal {
     target_text: String,
     crf: u8,
     crf_text: String,
+    keyboard_focus: usize,
 }
 
 pub enum ProxyModalResult {
@@ -38,6 +39,7 @@ impl ProxyModal {
             target_text: String::new(),
             crf: 24,
             crf_text: String::new(),
+            keyboard_focus: 0,
         };
         modal.update_texts();
         modal
@@ -98,9 +100,52 @@ impl ProxyModal {
                 if text == "\x1b" {
                     return ProxyModalResult::Close;
                 }
-                if text == "\r" || text == "\n" {
-                    return self.create_result();
+                if text == "\t" || text == "\u{b}" {
+                    self.keyboard_focus = if text == "\t" {
+                        (self.keyboard_focus + 1) % 4
+                    } else {
+                        (self.keyboard_focus + 3) % 4
+                    };
+                    return ProxyModalResult::Consumed;
                 }
+                if text == "\r" || text == "\n" {
+                    return match self.keyboard_focus {
+                        2 => self.create_result(),
+                        3 => ProxyModalResult::Close,
+                        _ => ProxyModalResult::Consumed,
+                    };
+                }
+                ProxyModalResult::Consumed
+            }
+            UiEvent::CursorLeft | UiEvent::CursorUp if self.keyboard_focus == 0 => {
+                let index = PRESETS
+                    .iter()
+                    .position(|preset| *preset == self.selected_max_height)
+                    .unwrap_or(1)
+                    .saturating_sub(1);
+                self.selected_max_height = PRESETS[index];
+                self.update_target();
+                ProxyModalResult::Consumed
+            }
+            UiEvent::CursorRight | UiEvent::CursorDown if self.keyboard_focus == 0 => {
+                let index = (PRESETS
+                    .iter()
+                    .position(|preset| *preset == self.selected_max_height)
+                    .unwrap_or(1)
+                    + 1)
+                .min(PRESETS.len() - 1);
+                self.selected_max_height = PRESETS[index];
+                self.update_target();
+                ProxyModalResult::Consumed
+            }
+            UiEvent::CursorLeft | UiEvent::CursorDown if self.keyboard_focus == 1 => {
+                self.crf = self.crf.saturating_sub(1).max(18);
+                self.update_texts();
+                ProxyModalResult::Consumed
+            }
+            UiEvent::CursorRight | UiEvent::CursorUp if self.keyboard_focus == 1 => {
+                self.crf = (self.crf + 1).min(32);
+                self.update_texts();
                 ProxyModalResult::Consumed
             }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {

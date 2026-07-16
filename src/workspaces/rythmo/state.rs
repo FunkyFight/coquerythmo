@@ -62,6 +62,9 @@ struct KaraokeWidthPrewarmState {
 pub struct RythmoState {
     pub hovered_line: Option<u64>,
     pub hovered_track: Option<usize>,
+    /// Track used by keyboard-only line creation and playhead cycling.
+    pub keyboard_track: usize,
+    pub keyboard_cycle_frame: Option<i64>,
     pub selected: Option<Selection>,
     pub editing_line: Option<u64>,
     pub line_input: crate::ui::text_input::TextInputState,
@@ -81,6 +84,9 @@ pub struct RythmoState {
     pub pending_cursor_click: Option<(f32, bool)>, // (x_ratio, is_shift_click)
     pub pan_last_x: f32,
     pub pan_accum: f32,
+    pub keyboard_pan_direction: i32,
+    pub keyboard_pan_last_tick: Option<std::time::Instant>,
+    pub keyboard_pan_accum_px: f32,
     pub syllable_drag: Option<SyllableDrag>,
     pub context_menu: Option<LineContextMenu>,
     pub active_stroke: Option<crate::rythmo_drawing::DrawingStroke>,
@@ -191,6 +197,8 @@ impl RythmoState {
         Self {
             hovered_line: None,
             hovered_track: None,
+            keyboard_track: 0,
+            keyboard_cycle_frame: None,
             selected: None,
             editing_line: None,
             line_input: crate::ui::text_input::TextInputState::new(),
@@ -210,6 +218,9 @@ impl RythmoState {
             pending_cursor_click: None,
             pan_last_x: 0.0,
             pan_accum: 0.0,
+            keyboard_pan_direction: 0,
+            keyboard_pan_last_tick: None,
+            keyboard_pan_accum_px: 0.0,
             syllable_drag: None,
             context_menu: None,
             active_stroke: None,
@@ -487,6 +498,7 @@ impl RythmoState {
     pub fn needs_animation_or_interaction(&self) -> bool {
         self.dragging.is_some()
             || self.panning
+            || self.keyboard_pan_direction != 0
             || self.ghost_preview.is_some()
             || self.syllable_drag.is_some()
     }

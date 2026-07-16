@@ -22,6 +22,7 @@ pub struct RenameCharacterModal {
     name_input: TextInputState,
     selecting_name: bool,
     error_key: Option<&'static str>,
+    keyboard_focus: usize,
 }
 
 pub enum RenameCharacterModalResult {
@@ -42,6 +43,7 @@ impl RenameCharacterModal {
             name_input: TextInputState::new(),
             selecting_name: false,
             error_key: None,
+            keyboard_focus: 0,
         };
         modal.name_input.activate("");
         modal
@@ -245,10 +247,42 @@ impl RenameCharacterModal {
                 if text == "\x1b" {
                     return RenameCharacterModalResult::Close;
                 }
-                if text == "\r" || text == "\n" {
-                    return self.rename_result();
+                if text == "\t" {
+                    self.keyboard_focus = (self.keyboard_focus + 1) % 4;
+                    return RenameCharacterModalResult::Consumed;
                 }
-                self.handle_name_key(text);
+                if text == "\u{b}" {
+                    self.keyboard_focus = (self.keyboard_focus + 3) % 4;
+                    return RenameCharacterModalResult::Consumed;
+                }
+                if text == "\r" || text == "\n" {
+                    return match self.keyboard_focus {
+                        0 => {
+                            if let Some(index) = self.selected_index {
+                                self.select_character(index);
+                                self.keyboard_focus = 1;
+                            }
+                            RenameCharacterModalResult::Consumed
+                        }
+                        2 => RenameCharacterModalResult::Close,
+                        3 => self.rename_result(),
+                        _ => RenameCharacterModalResult::Consumed,
+                    };
+                }
+                if self.keyboard_focus == 1 {
+                    self.handle_name_key(text);
+                }
+                RenameCharacterModalResult::Consumed
+            }
+            UiEvent::CursorUp if self.keyboard_focus == 0 => {
+                let index = self.selected_index.unwrap_or(0).saturating_sub(1);
+                self.select_character(index);
+                RenameCharacterModalResult::Consumed
+            }
+            UiEvent::CursorDown if self.keyboard_focus == 0 => {
+                let index = (self.selected_index.map_or(0, |index| index + 1))
+                    .min(self.characters.len().saturating_sub(1));
+                self.select_character(index);
                 RenameCharacterModalResult::Consumed
             }
             UiEvent::MouseMove { x, y } => {
@@ -269,19 +303,23 @@ impl RenameCharacterModal {
             }
             UiEvent::MousePress { x, y } => {
                 if let Some(index) = self.index_at_point(list, *x, *y) {
+                    self.keyboard_focus = 0;
                     self.select_character(index);
                     return RenameCharacterModalResult::Consumed;
                 }
                 if name.contains(*x, *y) {
+                    self.keyboard_focus = 1;
                     self.start_name_selection(name, *x, false);
                     return RenameCharacterModalResult::Consumed;
                 }
 
                 let (cancel, rename) = Self::button_rects(card);
                 if cancel.contains(*x, *y) {
+                    self.keyboard_focus = 2;
                     return RenameCharacterModalResult::Close;
                 }
                 if rename.contains(*x, *y) {
+                    self.keyboard_focus = 3;
                     return self.rename_result();
                 }
                 RenameCharacterModalResult::Consumed

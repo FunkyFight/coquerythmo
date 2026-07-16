@@ -225,19 +225,18 @@ impl AutomationGraph {
         let Some(target) = self.node(edge.to_node) else {
             return false;
         };
-        let valid_input = match (&edge.kind, &target.kind) {
+        let valid_input = matches!(
+            (&edge.kind, &target.kind),
             (
                 AutomationEdgeKind::Execution,
                 AutomationNodeKind::IfRole | AutomationNodeKind::SetTrack { .. },
-            ) => true,
-            (
+            ) | (
                 AutomationEdgeKind::Line,
                 AutomationNodeKind::IfRole
-                | AutomationNodeKind::SetTrack { .. }
-                | AutomationNodeKind::LineReroute,
-            ) => true,
-            _ => false,
-        };
+                    | AutomationNodeKind::SetTrack { .. }
+                    | AutomationNodeKind::LineReroute,
+            )
+        );
         if !valid_output || !valid_input {
             return false;
         }

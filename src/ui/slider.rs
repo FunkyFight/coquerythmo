@@ -57,6 +57,42 @@ impl Widget for Slider {
 
     fn handle_event(&mut self, event: &UiEvent) -> EventResponse {
         match event {
+            UiEvent::CursorLeft | UiEvent::CursorDown => {
+                self.value = (self.value - 0.05).clamp(0.0, 1.0);
+                let response = (self.on_change)(self.value);
+                if response == EventResponse::Ignored {
+                    EventResponse::Consumed
+                } else {
+                    response
+                }
+            }
+            UiEvent::CursorRight | UiEvent::CursorUp => {
+                self.value = (self.value + 0.05).clamp(0.0, 1.0);
+                let response = (self.on_change)(self.value);
+                if response == EventResponse::Ignored {
+                    EventResponse::Consumed
+                } else {
+                    response
+                }
+            }
+            UiEvent::Home => {
+                self.value = 0.0;
+                let response = (self.on_change)(self.value);
+                if response == EventResponse::Ignored {
+                    EventResponse::Consumed
+                } else {
+                    response
+                }
+            }
+            UiEvent::End => {
+                self.value = 1.0;
+                let response = (self.on_change)(self.value);
+                if response == EventResponse::Ignored {
+                    EventResponse::Consumed
+                } else {
+                    response
+                }
+            }
             UiEvent::MouseMove { x, y } => {
                 if self.dragging {
                     self.value = self.value_from_x(*x);
@@ -166,5 +202,9 @@ impl Widget for Slider {
 
     fn labels(&self) -> Vec<LabelInfo<'_>> {
         vec![]
+    }
+
+    fn accessible_role(&self) -> super::focus::AccessibleRole {
+        super::focus::AccessibleRole::Slider
     }
 }

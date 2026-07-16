@@ -2,6 +2,7 @@
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiAction {
+    Accessibility(crate::accessibility::AccessibilityEvent),
     CloseApp,
     CloseSecondaryDisplay,
     Undo,
@@ -11,6 +12,8 @@ pub enum UiAction {
     ImportProject,
     ImportCappelaProject,
     ImportSrtProject,
+    /// Open the single subtitle/project import picker and detect the format.
+    ImportSubtitles,
     ExportProject,
     OpenExportModal,
     OpenLanguages,
@@ -144,6 +147,7 @@ pub enum UiAction {
     CancelExport,
     TogglePlayPause,
     SetVolume(f32),
+    AdjustVolume(f32),
     ToggleMute,
     PrevFrame,
     NextFrame,
@@ -157,6 +161,16 @@ pub enum UiAction {
         frame: i64,
         y_slot: f32,
     },
+    CreateLineAtPlayhead,
+    SelectLineAtPlayhead,
+    SetSelectedLineStartAtPlayhead,
+    SetSelectedLineEndAtPlayhead,
+    StartEditingSelectedLine,
+    StartEditingSelectedCharacter,
+    BeginKeyboardPan {
+        direction: i32,
+    },
+    EndKeyboardPan,
     ResizeLine {
         id: u64,
         start_frame: i64,
@@ -166,6 +180,14 @@ pub enum UiAction {
         id: u64,
         start_frame: i64,
         y_slot: f32,
+    },
+    /// Move the currently selected rythmo line to the adjacent track.
+    ///
+    /// A semantic action is used here instead of mutating the line directly
+    /// from the keyboard router so mouse and keyboard edits continue to share
+    /// the same command/history path.
+    MoveSelectedLineTrack {
+        direction: i32,
     },
     MoveLines {
         moves: Vec<(u64, i64, f32)>,
@@ -230,6 +252,7 @@ pub enum UiAction {
         video_path: std::path::PathBuf,
         br_path: std::path::PathBuf,
     },
+    OpenRecentProjects,
     RemoveRecentProject {
         video_path: std::path::PathBuf,
         br_path: std::path::PathBuf,
@@ -289,6 +312,7 @@ pub enum UiAction {
     // Studio mode
     EnterStudioMode,
     ShowStudioWarning,
+    ToggleScreenReader,
     // Notes
     AddNote,
     UpdateLineNote {

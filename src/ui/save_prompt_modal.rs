@@ -16,6 +16,7 @@ pub enum SavePromptKind {
 
 pub struct SavePromptModal {
     kind: SavePromptKind,
+    focused: usize,
 }
 
 pub enum SavePromptResult {
@@ -33,7 +34,7 @@ impl Default for SavePromptModal {
 
 impl SavePromptModal {
     pub fn new(kind: SavePromptKind) -> Self {
-        Self { kind }
+        Self { kind, focused: 2 }
     }
 
     pub fn kind(&self) -> SavePromptKind {
@@ -65,6 +66,19 @@ impl SavePromptModal {
         let card = Self::card_rect(sw, sh);
         match event {
             UiEvent::KeyInput { text } if text == "\x1b" => SavePromptResult::Cancel,
+            UiEvent::KeyInput { text } if text == "\t" => {
+                self.focused = (self.focused + 1) % 3;
+                SavePromptResult::Consumed
+            }
+            UiEvent::KeyInput { text } if text == "\u{b}" => {
+                self.focused = (self.focused + 2) % 3;
+                SavePromptResult::Consumed
+            }
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => match self.focused {
+                0 => SavePromptResult::Save,
+                1 => SavePromptResult::Discard,
+                _ => SavePromptResult::Cancel,
+            },
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 if !card.contains(*x, *y) {
                     return SavePromptResult::Cancel;
@@ -173,13 +187,18 @@ impl SavePromptModal {
             (t("save_prompt.cancel"), [0.25, 0.25, 0.32, 1.0]),
         ];
 
-        for (button, (label, color)) in button_rects.into_iter().zip(buttons) {
+        for (index, (button, (label, color))) in button_rects.into_iter().zip(buttons).enumerate() {
+            let focused = self.focused == index;
             quads.push(QuadInstance {
                 rect: [button.x, button.y, button.width, button.height],
                 color,
                 color_bottom: [color[0] * 0.82, color[1] * 0.82, color[2] * 0.82, color[3]],
-                border_color: [0.62, 0.62, 0.70, 0.45],
-                border_width: 1.0,
+                border_color: if focused {
+                    [0.30, 0.62, 1.0, 1.0]
+                } else {
+                    [0.62, 0.62, 0.70, 0.45]
+                },
+                border_width: if focused { 2.5 } else { 1.0 },
                 border_radius: 8.0,
                 shadow_offset: [0.0, 2.0],
                 shadow_color: [0.0, 0.0, 0.0, 0.28],

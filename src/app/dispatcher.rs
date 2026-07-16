@@ -106,7 +106,11 @@ impl CommandDispatcher {
         state: &mut State,
         elwt: &EventLoopWindowTarget<AppEvent>,
     ) -> bool {
+        if let Some(event) = crate::accessibility::event_for_action(&action) {
+            state.announce_accessibility(event);
+        }
         match action {
+            UiAction::Accessibility(event) => state.announce_accessibility(event),
             UiAction::CloseApp => {
                 if state.is_project_save_in_progress() {
                     state.show_toast(i18n::t("toast.close_blocked_saving"), 5.0);
@@ -187,6 +191,27 @@ impl CommandDispatcher {
                     None,
                 );
             }
+            UiAction::ImportSubtitles => {
+                let filters = open_dialog_filters(
+                    "Sous-titrages et projets",
+                    &[
+                        crate::project_archive::PROJECT_EXTENSION,
+                        "json",
+                        "srt",
+                        "ass",
+                        "detx",
+                    ],
+                );
+                open_file_picker(
+                    state,
+                    i18n::t("picker.import.srt.title"),
+                    FileExplorerMode::Open,
+                    FilePickerIntent::ImportSrtProject,
+                    filters,
+                    project_or_video_dir(state),
+                    None,
+                );
+            }
             UiAction::QuickSave => {
                 if state.project_session.project_path.is_some() {
                     quick_save_existing(state);
@@ -215,6 +240,16 @@ impl CommandDispatcher {
             UiAction::SetVolume(vol) => {
                 state.set_volume(vol);
             }
+            UiAction::AdjustVolume(delta) => {
+                // Text editing owns every arrow key. Keep this guard at the
+                // command boundary as well as in the event loop so a stale
+                // modifier state can never turn a caret move into a volume
+                // change.
+                if !state.is_rythmo_text_editing() {
+                    let target = (state.ui_shell.ui.volume() + delta).clamp(0.0, 1.0);
+                    state.set_volume(target);
+                }
+            }
             UiAction::ToggleMute => {
                 state.toggle_mute();
             }
@@ -240,6 +275,31 @@ impl CommandDispatcher {
                 let line_id = state.create_line(frame, y_slot);
                 state.start_editing_line(line_id);
             }
+            UiAction::CreateLineAtPlayhead => {
+                let line_id = state.create_line_at_playhead();
+                state.start_editing_line(line_id);
+            }
+            UiAction::SelectLineAtPlayhead => {
+                state.select_line_at_playhead();
+            }
+            UiAction::SetSelectedLineStartAtPlayhead => {
+                state.set_selected_line_start_at_playhead();
+            }
+            UiAction::SetSelectedLineEndAtPlayhead => {
+                state.set_selected_line_end_at_playhead();
+            }
+            UiAction::StartEditingSelectedLine => {
+                state.start_editing_selected_line();
+            }
+            UiAction::StartEditingSelectedCharacter => {
+                state.start_editing_selected_character();
+            }
+            UiAction::BeginKeyboardPan { direction } => {
+                state.begin_keyboard_pan(direction);
+            }
+            UiAction::EndKeyboardPan => {
+                state.end_keyboard_pan();
+            }
             UiAction::ResizeLine {
                 id,
                 start_frame,
@@ -254,6 +314,9 @@ impl CommandDispatcher {
             } => {
                 state.move_line(id, start_frame, y_slot);
             }
+            UiAction::MoveSelectedLineTrack { direction } => {
+                state.move_selected_line_track(direction);
+            }
             UiAction::MoveLines { moves } => {
                 state.move_lines(moves);
             }
@@ -266,6 +329,7 @@ impl CommandDispatcher {
                 color,
             } => {
                 state.set_character(line_id, name, color);
+                state.announce_character(line_id);
             }
             UiAction::SetCharacterColor { line_id, color } => {
                 state.set_character_color(line_id, color);
@@ -663,6 +727,7 @@ impl CommandDispatcher {
             }
             UiAction::StopEditing => {
                 state.broadcast_finalize();
+                state.announce_selected_line();
             }
             UiAction::OpenRecentProject {
                 video_path,
@@ -696,6 +761,9 @@ impl CommandDispatcher {
             } => {
                 config::remove_recent_project(&video_path, &br_path);
                 state.rebuild_topbar_for_network();
+            }
+            UiAction::OpenRecentProjects => {
+                state.ui_shell.ui.open_recent_projects();
             }
             UiAction::ToggleKaraokeForSelection => {
                 state.toggle_karaoke_for_selection();
@@ -955,6 +1023,9 @@ impl CommandDispatcher {
             }
             UiAction::ShowStudioWarning => {
                 state.open_studio_warning();
+            }
+            UiAction::ToggleScreenReader => {
+                state.toggle_screen_reader();
             }
             UiAction::AddNote => {
                 state.start_editing_note_selected();

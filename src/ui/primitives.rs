@@ -86,6 +86,16 @@ pub enum UiEvent {
     ShiftCursorRight,
     CursorUp,
     CursorDown,
+    FocusNext,
+    FocusPrevious,
+    Activate,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    AltCursorLeft,
+    AltCursorRight,
+    OpenContextMenu,
     Delete,
     SelectAll,
     Copy,
@@ -139,6 +149,16 @@ pub trait Widget {
     /// Tooltip text shown on hover. Return None for no tooltip.
     fn tooltip(&self) -> Option<&str> {
         None
+    }
+    fn accessible_label(&self) -> Option<&str> {
+        self.tooltip()
+    }
+    fn accessible_role(&self) -> super::focus::AccessibleRole {
+        super::focus::AccessibleRole::Button
+    }
+    /// Open a specific submenu from a semantic shortcut.
+    fn open_submenu(&mut self, _trigger_index: usize) -> bool {
+        false
     }
 }
 

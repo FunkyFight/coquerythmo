@@ -33,6 +33,7 @@ pub struct Config {
     pub ui: UiConfig,
     pub lang: String,
     pub network: NetworkConfig,
+    pub accessibility: AccessibilityConfig,
     pub last_whats_new_version: Option<String>,
     #[serde(default)]
     pub recent_projects: Vec<RecentProject>,
@@ -40,6 +41,24 @@ pub struct Config {
     pub license_key: String,
     #[serde(default)]
     pub license_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccessibilityConfig {
+    pub screen_reader_enabled: bool,
+    pub voice_volume: f32,
+    pub media_ducking: f32,
+}
+
+impl Default for AccessibilityConfig {
+    fn default() -> Self {
+        Self {
+            screen_reader_enabled: false,
+            voice_volume: 1.0,
+            media_ducking: 0.35,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +126,7 @@ impl Default for Config {
             ui: UiConfig::default(),
             lang: "fr-fr".into(),
             network: NetworkConfig::default(),
+            accessibility: AccessibilityConfig::default(),
             last_whats_new_version: None,
             recent_projects: Vec::new(),
             license_key: String::new(),
@@ -338,6 +358,13 @@ pub fn add_recent_project(video_path: PathBuf, br_path: PathBuf) {
 
 pub fn recent_projects() -> Vec<RecentProject> {
     get().recent_projects.clone()
+}
+
+pub fn set_screen_reader_enabled(enabled: bool) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    cfg.accessibility.screen_reader_enabled = enabled;
+    cfg.save();
 }
 
 pub fn remove_recent_project(video_path: &PathBuf, br_path: &PathBuf) {

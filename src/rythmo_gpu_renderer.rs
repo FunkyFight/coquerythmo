@@ -2116,9 +2116,11 @@ impl GpuRenderer {
                 rythmo_layout::leading_visual_bounds(
                     badge_x,
                     badge_w,
-                    (!line.karaoke)
-                        .then_some(line.voice_actor_names.len())
-                        .unwrap_or(0),
+                    if !line.karaoke {
+                        line.voice_actor_names.len()
+                    } else {
+                        0
+                    },
                     actor_icon_size,
                     3.0 * s,
                 )
@@ -2169,9 +2171,11 @@ impl GpuRenderer {
                 rythmo_layout::leading_visual_bounds(
                     badge_x,
                     badge_w,
-                    (!line.karaoke)
-                        .then_some(line.voice_actor_names.len())
-                        .unwrap_or(0),
+                    if !line.karaoke {
+                        line.voice_actor_names.len()
+                    } else {
+                        0
+                    },
                     actor_icon_size,
                     3.0 * s,
                 )

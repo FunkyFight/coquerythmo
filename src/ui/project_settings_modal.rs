@@ -7,6 +7,7 @@ pub const PROJECT_SETTINGS_H: f32 = 270.0;
 pub struct ProjectSettingsModal {
     pub instrumental_audio_path: String,
     pub highlight_read_word: bool,
+    keyboard_focus: usize,
 }
 
 pub enum ProjectSettingsModalResult {
@@ -33,11 +34,22 @@ impl ProjectSettingsModal {
         Self {
             instrumental_audio_path: path.unwrap_or_default(),
             highlight_read_word,
+            keyboard_focus: 0,
         }
     }
 
     pub fn set_instrumental_audio_path(&mut self, path: impl Into<String>) {
         self.instrumental_audio_path = path.into();
+    }
+
+    pub fn keyboard_focus_label(&self) -> &'static str {
+        match self.keyboard_focus {
+            0 => t("project_settings.browse"),
+            1 => t("project_settings.clear"),
+            2 => t("project_settings.highlight_read_word"),
+            3 => t("settings.save"),
+            _ => t("project_settings.close"),
+        }
     }
 
     pub fn handle_event(
@@ -49,6 +61,42 @@ impl ProjectSettingsModal {
         let card = card_rect(screen_w, screen_h);
         match event {
             UiEvent::KeyInput { text } if text == "\x1b" => ProjectSettingsModalResult::Close,
+            UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}" => {
+                self.keyboard_focus = if text == "\t" {
+                    (self.keyboard_focus + 1) % 5
+                } else {
+                    (self.keyboard_focus + 4) % 5
+                };
+                ProjectSettingsModalResult::Consumed
+            }
+            UiEvent::KeyInput { text }
+                if text == "\r" || text == "\n" || text == " " => match self.keyboard_focus {
+                0 => ProjectSettingsModalResult::PickInstrumentalAudio,
+                1 => {
+                    self.instrumental_audio_path.clear();
+                    ProjectSettingsModalResult::Consumed
+                }
+                2 => {
+                    self.highlight_read_word = !self.highlight_read_word;
+                    ProjectSettingsModalResult::Consumed
+                }
+                3 => {
+                    let path = self.instrumental_audio_path.trim();
+                    ProjectSettingsModalResult::Save {
+                        instrumental_audio_path: (!path.is_empty()).then(|| path.to_string()),
+                        highlight_read_word: self.highlight_read_word,
+                    }
+                }
+                _ => ProjectSettingsModalResult::Close,
+            },
+            UiEvent::CursorUp | UiEvent::CursorLeft => {
+                self.keyboard_focus = (self.keyboard_focus + 4) % 5;
+                ProjectSettingsModalResult::Consumed
+            }
+            UiEvent::CursorDown | UiEvent::CursorRight => {
+                self.keyboard_focus = (self.keyboard_focus + 1) % 5;
+                ProjectSettingsModalResult::Consumed
+            }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 if !card.contains(*x, *y) {
                     return ProjectSettingsModalResult::Close;

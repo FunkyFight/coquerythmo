@@ -33,7 +33,16 @@ pub(crate) fn handle_autocomplete_nav(
                 }
             };
             state.autocomplete_index = new_idx;
-            return EventResponse::Consumed;
+            return new_idx
+                .and_then(|index| suggestions.get(index))
+                .map(|suggestion| {
+                    EventResponse::Action(UiAction::Accessibility(
+                        crate::accessibility::AccessibilityEvent::Selection {
+                            label: suggestion.name.clone(),
+                        },
+                    ))
+                })
+                .unwrap_or(EventResponse::Consumed);
         }
     }
     EventResponse::Ignored

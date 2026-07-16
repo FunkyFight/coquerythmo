@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module)]
+
 use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
 
@@ -35,6 +37,7 @@ pub struct LanguageModal {
     name_input: String,
     editing_name: bool,
     replace_name: bool,
+    keyboard_focus: usize,
 }
 
 impl LanguageModal {
@@ -57,6 +60,7 @@ impl LanguageModal {
             name_input,
             editing_name: false,
             replace_name: false,
+            keyboard_focus: 0,
         }
     }
 
@@ -117,6 +121,10 @@ impl LanguageModal {
         self.languages
             .iter()
             .find(|language| language.id == self.selected_id)
+    }
+
+    pub fn keyboard_selection_label(&self) -> Option<String> {
+        self.selected().map(|language| language.name.clone())
     }
 
     fn sync_name_from_selection(&mut self) {
@@ -202,13 +210,77 @@ impl LanguageModal {
                 if text == "\x1b" {
                     return LanguageModalResult::Close;
                 }
-                if self.editing_name {
-                    if text == "\r" || text == "\n" {
-                        self.editing_name = false;
-                        self.replace_name = false;
+                if text == "\t" || text == "\u{b}" {
+                    self.keyboard_focus = if text == "\t" {
+                        (self.keyboard_focus + 1) % 9
                     } else {
-                        self.handle_name_key(text);
-                    }
+                        (self.keyboard_focus + 8) % 9
+                    };
+                    self.editing_name = self.keyboard_focus == 1;
+                    self.replace_name = self.editing_name;
+                    return LanguageModalResult::Consumed;
+                }
+                if text == "\r" || text == "\n" {
+                    let trimmed = self.name_input.trim().to_string();
+                    return match self.keyboard_focus {
+                        0 | 1 => LanguageModalResult::Consumed,
+                        2 if !trimmed.is_empty() => LanguageModalResult::Create { name: trimmed },
+                        3 if !trimmed.is_empty() && self.selected().is_some() => {
+                            LanguageModalResult::Rename {
+                                id: self.selected_id,
+                                name: trimmed,
+                            }
+                        }
+                        4 if self.selected().is_some() => LanguageModalResult::Select {
+                            id: self.selected_id,
+                        },
+                        5 if self.selected().is_some() => LanguageModalResult::PickInstrumental {
+                            id: self.selected_id,
+                        },
+                        6 if self.languages.len() > 1 && self.selected().is_some() => {
+                            LanguageModalResult::Delete {
+                                id: self.selected_id,
+                            }
+                        }
+                        7 if self
+                            .selected()
+                            .and_then(|language| language.instrumental_audio_path.as_ref())
+                            .is_some() =>
+                        {
+                            LanguageModalResult::ClearInstrumental {
+                                id: self.selected_id,
+                            }
+                        }
+                        8 => LanguageModalResult::Close,
+                        _ => LanguageModalResult::Consumed,
+                    };
+                }
+                if self.editing_name {
+                    self.handle_name_key(text);
+                }
+                LanguageModalResult::Consumed
+            }
+            UiEvent::CursorUp if self.keyboard_focus == 0 => {
+                if let Some(index) = self
+                    .languages
+                    .iter()
+                    .position(|language| language.id == self.selected_id)
+                {
+                    let next = index.saturating_sub(1);
+                    self.selected_id = self.languages[next].id;
+                    self.sync_name_from_selection();
+                }
+                LanguageModalResult::Consumed
+            }
+            UiEvent::CursorDown if self.keyboard_focus == 0 => {
+                if let Some(index) = self
+                    .languages
+                    .iter()
+                    .position(|language| language.id == self.selected_id)
+                {
+                    let next = (index + 1).min(self.languages.len().saturating_sub(1));
+                    self.selected_id = self.languages[next].id;
+                    self.sync_name_from_selection();
                 }
                 LanguageModalResult::Consumed
             }

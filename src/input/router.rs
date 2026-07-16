@@ -3,7 +3,8 @@
 use super::binding::{Binding, KeyPattern, RepeatPolicy};
 use super::context::{InputContext, InputContextStack};
 use super::key::{KeyCode, KeyStroke, Modifiers};
-use crate::application::command::{TextCommand, UiAction};
+use crate::application::command::{TextCommand, ToolMode, ToolbarDropdown, UiAction};
+use crate::rythmo_line::MarkerKind;
 
 #[derive(Debug, Clone, Default)]
 pub struct ShortcutRouter<C> {
@@ -31,6 +32,26 @@ impl<C> ShortcutRouter<C> {
                 key,
                 modifiers,
                 repeat,
+                pressed: true,
+            },
+            command,
+        });
+    }
+
+    pub fn bind_release(
+        &mut self,
+        context: InputContext,
+        key: KeyCode,
+        modifiers: Modifiers,
+        command: C,
+    ) {
+        self.bindings.push(Binding {
+            context,
+            pattern: KeyPattern {
+                key,
+                modifiers,
+                repeat: RepeatPolicy::PressOnly,
+                pressed: false,
             },
             command,
         });
@@ -70,6 +91,23 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         shift: true,
         ..Modifiers::NONE
     };
+    let ctrl_alt = Modifiers {
+        ctrl: true,
+        alt: true,
+        ..Modifiers::NONE
+    };
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::NONE
+    };
+
+    router.bind(
+        InputContext::Accessibility,
+        KeyCode::Character('n'),
+        ctrl_shift,
+        RepeatPolicy::PressOnly,
+        UiAction::ToggleScreenReader,
+    );
 
     router.bind(
         InputContext::TextEditing,
@@ -157,6 +195,13 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         UiAction::ShowStudioWarning,
     );
     router.bind(
+        InputContext::VideoLoaded,
+        KeyCode::Character('s'),
+        ctrl_alt,
+        RepeatPolicy::PressOnly,
+        UiAction::ShowStudioWarning,
+    );
+    router.bind(
         InputContext::Studio,
         KeyCode::Escape,
         Modifiers::NONE,
@@ -177,12 +222,150 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         RepeatPolicy::PressAndRepeat,
         UiAction::TogglePlayPause,
     );
+    for (key, command) in [
+        (KeyCode::Numpad1, UiAction::AddMarker(MarkerKind::Boucle)),
+        (KeyCode::Numpad2, UiAction::AddMarker(MarkerKind::Out)),
+        (
+            KeyCode::Numpad3,
+            UiAction::AddMarker(MarkerKind::SceneChange),
+        ),
+        (
+            KeyCode::Numpad4,
+            UiAction::OpenDropdown(ToolbarDropdown::Respirations),
+        ),
+        (
+            KeyCode::Numpad5,
+            UiAction::OpenDropdown(ToolbarDropdown::Reactions),
+        ),
+        (KeyCode::Numpad6, UiAction::AddNote),
+        (
+            KeyCode::Numpad7,
+            UiAction::AddMarker(MarkerKind::LiaisonLeft),
+        ),
+        (
+            KeyCode::Numpad8,
+            UiAction::AddMarker(MarkerKind::LiaisonRight),
+        ),
+        (KeyCode::Numpad9, UiAction::ToggleKaraokeForSelection),
+    ] {
+        router.bind(
+            InputContext::Workspace,
+            key,
+            Modifiers::NONE,
+            RepeatPolicy::PressOnly,
+            command,
+        );
+    }
+    for (key, command) in [
+        (KeyCode::Insert, UiAction::CreateLineAtPlayhead),
+        (KeyCode::Enter, UiAction::SelectLineAtPlayhead),
+        (
+            KeyCode::Character('i'),
+            UiAction::SetSelectedLineStartAtPlayhead,
+        ),
+        (
+            KeyCode::Character('o'),
+            UiAction::SetSelectedLineEndAtPlayhead,
+        ),
+        (KeyCode::Character('t'), UiAction::StartEditingSelectedLine),
+        (
+            KeyCode::Character('p'),
+            UiAction::StartEditingSelectedCharacter,
+        ),
+        (
+            KeyCode::Character('c'),
+            UiAction::SetToolMode(ToolMode::Select),
+        ),
+    ] {
+        router.bind(
+            InputContext::Workspace,
+            key,
+            Modifiers::NONE,
+            RepeatPolicy::PressOnly,
+            command,
+        );
+    }
     router.bind(
-        InputContext::Global,
-        KeyCode::Tab,
+        InputContext::Workspace,
+        KeyCode::Character('d'),
+        ctrl,
+        RepeatPolicy::PressOnly,
+        UiAction::SetToolMode(ToolMode::Draw),
+    );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::Character('q'),
         Modifiers::NONE,
+        RepeatPolicy::PressOnly,
+        UiAction::BeginKeyboardPan { direction: -1 },
+    );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::Character('d'),
+        Modifiers::NONE,
+        RepeatPolicy::PressOnly,
+        UiAction::BeginKeyboardPan { direction: 1 },
+    );
+    router.bind_release(
+        InputContext::Workspace,
+        KeyCode::Character('q'),
+        Modifiers::NONE,
+        UiAction::EndKeyboardPan,
+    );
+    router.bind_release(
+        InputContext::Workspace,
+        KeyCode::Character('d'),
+        Modifiers::NONE,
+        UiAction::EndKeyboardPan,
+    );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::ArrowLeft,
+        ctrl,
         RepeatPolicy::PressAndRepeat,
-        UiAction::ToggleActiveAudio,
+        UiAction::PrevFrame,
+    );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::ArrowRight,
+        ctrl,
+        RepeatPolicy::PressAndRepeat,
+        UiAction::NextFrame,
+    );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::ArrowUp,
+        Modifiers::NONE,
+        RepeatPolicy::PressOnly,
+        UiAction::MoveSelectedLineTrack { direction: -1 },
+    );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::ArrowDown,
+        Modifiers::NONE,
+        RepeatPolicy::PressOnly,
+        UiAction::MoveSelectedLineTrack { direction: 1 },
+    );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::ArrowUp,
+        shift,
+        RepeatPolicy::PressAndRepeat,
+        UiAction::AdjustVolume(0.05),
+    );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::ArrowDown,
+        shift,
+        RepeatPolicy::PressAndRepeat,
+        UiAction::AdjustVolume(-0.05),
+    );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::NumpadSubtract,
+        shift,
+        RepeatPolicy::PressOnly,
+        UiAction::ToggleMute,
     );
     router.bind(
         InputContext::Global,
@@ -254,6 +437,31 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         RepeatPolicy::PressOnly,
         UiAction::OpenRolesPanel,
     );
+    for (key, modifiers, command) in [
+        (
+            KeyCode::Character('i'),
+            ctrl_shift,
+            UiAction::ImportSubtitles,
+        ),
+        (KeyCode::Character('r'), ctrl_shift, UiAction::RestoreBackup),
+        (KeyCode::Character('r'), ctrl, UiAction::OpenRecentProjects),
+        (KeyCode::Delete, ctrl, UiAction::CloseProject),
+        (KeyCode::Character('m'), ctrl, UiAction::OpenExportModal),
+        (
+            KeyCode::Character('p'),
+            ctrl_shift,
+            UiAction::OpenRenameCharacterModal,
+        ),
+        (KeyCode::Character('o'), ctrl, UiAction::OpenProjectSettings),
+    ] {
+        router.bind(
+            InputContext::Global,
+            key,
+            modifiers,
+            RepeatPolicy::PressOnly,
+            command,
+        );
+    }
     router.bind(
         InputContext::Global,
         KeyCode::Delete,
@@ -293,6 +501,8 @@ mod tests {
     fn stroke(key: KeyCode, modifiers: Modifiers, repeat: bool) -> KeyStroke {
         KeyStroke {
             key,
+            physical_key: None,
+            location: winit::keyboard::KeyLocation::Standard,
             modifiers,
             pressed: true,
             repeat,
@@ -434,10 +644,7 @@ mod tests {
             resolve(KeyCode::Space, Modifiers::NONE, &workspace, false),
             Some(&UiAction::TogglePlayPause)
         );
-        assert_eq!(
-            resolve(KeyCode::Tab, Modifiers::NONE, &global, false),
-            Some(&UiAction::ToggleActiveAudio)
-        );
+        assert_eq!(resolve(KeyCode::Tab, Modifiers::NONE, &global, false), None);
         assert_eq!(
             resolve(KeyCode::Character('k'), ctrl, &global, false),
             Some(&UiAction::SplitDialogue)
@@ -519,6 +726,8 @@ mod tests {
         let secondary = InputContextStack::new([InputContext::SecondaryWindow]);
         let secondary_stroke = KeyStroke {
             key: KeyCode::Space,
+            physical_key: None,
+            location: winit::keyboard::KeyLocation::Standard,
             modifiers: Modifiers::NONE,
             pressed: true,
             repeat: false,
@@ -532,5 +741,216 @@ mod tests {
             router.resolve(&stroke(KeyCode::Space, Modifiers::NONE, false), &secondary,),
             None
         );
+    }
+
+    #[test]
+    fn accessibility_shortcuts_table_is_complete() {
+        let router = existing_shortcuts();
+        let global = InputContextStack::new([InputContext::Global]);
+        let workspace = InputContextStack::new([InputContext::Workspace, InputContext::Global]);
+        let accessibility = InputContextStack::new([InputContext::Accessibility]);
+        let video_loaded = InputContextStack::new([InputContext::VideoLoaded]);
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::NONE
+        };
+        let ctrl_shift = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::NONE
+        };
+        let ctrl_alt = Modifiers {
+            ctrl: true,
+            alt: true,
+            ..Modifiers::NONE
+        };
+
+        for (key, modifiers, contexts, expected) in [
+            (
+                KeyCode::Character('i'),
+                ctrl_shift,
+                &global,
+                UiAction::ImportSubtitles,
+            ),
+            (
+                KeyCode::Character('r'),
+                ctrl_shift,
+                &global,
+                UiAction::RestoreBackup,
+            ),
+            (
+                KeyCode::Character('r'),
+                ctrl,
+                &global,
+                UiAction::OpenRecentProjects,
+            ),
+            (KeyCode::Delete, ctrl, &global, UiAction::CloseProject),
+            (
+                KeyCode::Character('m'),
+                ctrl,
+                &global,
+                UiAction::OpenExportModal,
+            ),
+            (
+                KeyCode::Character('p'),
+                ctrl_shift,
+                &global,
+                UiAction::OpenRenameCharacterModal,
+            ),
+            (
+                KeyCode::Character('o'),
+                ctrl,
+                &global,
+                UiAction::OpenProjectSettings,
+            ),
+            (
+                KeyCode::Character('s'),
+                ctrl_alt,
+                &video_loaded,
+                UiAction::ShowStudioWarning,
+            ),
+            (
+                KeyCode::Character('n'),
+                ctrl_shift,
+                &accessibility,
+                UiAction::ToggleScreenReader,
+            ),
+            (KeyCode::ArrowLeft, ctrl, &workspace, UiAction::PrevFrame),
+            (KeyCode::ArrowRight, ctrl, &workspace, UiAction::NextFrame),
+            (
+                KeyCode::ArrowUp,
+                shift,
+                &workspace,
+                UiAction::AdjustVolume(0.05),
+            ),
+            (
+                KeyCode::ArrowDown,
+                shift,
+                &workspace,
+                UiAction::AdjustVolume(-0.05),
+            ),
+            (
+                KeyCode::NumpadSubtract,
+                shift,
+                &workspace,
+                UiAction::ToggleMute,
+            ),
+            (
+                KeyCode::Insert,
+                Modifiers::NONE,
+                &workspace,
+                UiAction::CreateLineAtPlayhead,
+            ),
+            (
+                KeyCode::Enter,
+                Modifiers::NONE,
+                &workspace,
+                UiAction::SelectLineAtPlayhead,
+            ),
+            (
+                KeyCode::Character('i'),
+                Modifiers::NONE,
+                &workspace,
+                UiAction::SetSelectedLineStartAtPlayhead,
+            ),
+            (
+                KeyCode::Character('o'),
+                Modifiers::NONE,
+                &workspace,
+                UiAction::SetSelectedLineEndAtPlayhead,
+            ),
+            (
+                KeyCode::Character('t'),
+                Modifiers::NONE,
+                &workspace,
+                UiAction::StartEditingSelectedLine,
+            ),
+            (
+                KeyCode::Character('p'),
+                Modifiers::NONE,
+                &workspace,
+                UiAction::StartEditingSelectedCharacter,
+            ),
+            (
+                KeyCode::Character('c'),
+                Modifiers::NONE,
+                &workspace,
+                UiAction::SetToolMode(ToolMode::Select),
+            ),
+            (
+                KeyCode::Character('d'),
+                ctrl,
+                &workspace,
+                UiAction::SetToolMode(ToolMode::Draw),
+            ),
+        ] {
+            assert_eq!(
+                router.resolve(&stroke(key, modifiers, false), contexts),
+                Some(&expected)
+            );
+            let repeats = matches!(
+                key,
+                KeyCode::ArrowLeft | KeyCode::ArrowRight | KeyCode::ArrowUp | KeyCode::ArrowDown
+            );
+            assert_eq!(
+                router.resolve(&stroke(key, modifiers, true), contexts),
+                repeats.then_some(&expected)
+            );
+        }
+
+        let numpad_actions = [
+            UiAction::AddMarker(MarkerKind::Boucle),
+            UiAction::AddMarker(MarkerKind::Out),
+            UiAction::AddMarker(MarkerKind::SceneChange),
+            UiAction::OpenDropdown(ToolbarDropdown::Respirations),
+            UiAction::OpenDropdown(ToolbarDropdown::Reactions),
+            UiAction::AddNote,
+            UiAction::AddMarker(MarkerKind::LiaisonLeft),
+            UiAction::AddMarker(MarkerKind::LiaisonRight),
+            UiAction::ToggleKaraokeForSelection,
+        ];
+        let numpad_keys = [
+            KeyCode::Numpad1,
+            KeyCode::Numpad2,
+            KeyCode::Numpad3,
+            KeyCode::Numpad4,
+            KeyCode::Numpad5,
+            KeyCode::Numpad6,
+            KeyCode::Numpad7,
+            KeyCode::Numpad8,
+            KeyCode::Numpad9,
+        ];
+        for (key, expected) in numpad_keys.into_iter().zip(numpad_actions) {
+            assert_eq!(
+                router.resolve(&stroke(key, Modifiers::NONE, false), &workspace),
+                Some(&expected)
+            );
+        }
+    }
+
+    #[test]
+    fn continuous_pan_starts_once_and_stops_on_key_up() {
+        let router = existing_shortcuts();
+        let workspace = InputContextStack::new([InputContext::Workspace]);
+        for (key, direction) in [(KeyCode::Character('q'), -1), (KeyCode::Character('d'), 1)] {
+            assert_eq!(
+                router.resolve(&stroke(key, Modifiers::NONE, false), &workspace),
+                Some(&UiAction::BeginKeyboardPan { direction })
+            );
+            assert_eq!(
+                router.resolve(&stroke(key, Modifiers::NONE, true), &workspace),
+                None
+            );
+            let mut released = stroke(key, Modifiers::NONE, false);
+            released.pressed = false;
+            assert_eq!(
+                router.resolve(&released, &workspace),
+                Some(&UiAction::EndKeyboardPan)
+            );
+        }
     }
 }

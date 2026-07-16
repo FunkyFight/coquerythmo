@@ -58,8 +58,41 @@ impl FileExplorerModal {
         self.render_sidebar(quads, labels, &layout);
         self.render_list(quads, labels, &layout);
         self.render_footer(quads, labels, &layout);
+        let focus = self.focus_rect(&layout);
+        quads.push(super::quad(
+            Rect {
+                x: focus.x - 2.0,
+                y: focus.y - 2.0,
+                width: focus.width + 4.0,
+                height: focus.height + 4.0,
+            },
+            [0.0; 4],
+            [0.0; 4],
+            [0.25, 0.52, 1.0, 1.0],
+            2.0,
+            5.0,
+        ));
         if self.overwrite_path.is_some() {
             self.render_overwrite_prompt(overlay_quads, overlay_labels, &layout);
+            let (_, cancel, overwrite) = super::overwrite_rects(layout.card);
+            let focused = if self.overwrite_focus_replace {
+                overwrite
+            } else {
+                cancel
+            };
+            overlay_quads.push(super::quad(
+                Rect {
+                    x: focused.x - 2.0,
+                    y: focused.y - 2.0,
+                    width: focused.width + 4.0,
+                    height: focused.height + 4.0,
+                },
+                [0.0; 4],
+                [0.0; 4],
+                [0.25, 0.52, 1.0, 1.0],
+                2.0,
+                5.0,
+            ));
         } else {
             self.render_filename_suggestions(overlay_quads, overlay_labels, &layout);
             if self.show_filter_dropdown {

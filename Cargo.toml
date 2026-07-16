@@ -29,6 +29,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62.2", features = ["Win32_Media_Speech", "Win32_System_Com"] }
 
 [build-dependencies]
 winres = "0.1"

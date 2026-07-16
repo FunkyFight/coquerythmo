@@ -77,6 +77,10 @@ impl ConnectModal {
     ) -> ConnectModalResult {
         match event {
             UiEvent::KeyInput { text } => {
+                if text == "\u{b}" {
+                    self.focus_prev();
+                    return ConnectModalResult::Consumed;
+                }
                 if text == "\x1b" {
                     return ConnectModalResult::Close;
                 }

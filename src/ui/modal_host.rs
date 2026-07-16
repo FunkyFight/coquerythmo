@@ -24,6 +24,26 @@ use super::studio_warning_modal::StudioWarningModal;
 use super::voice_actor_modal::VoiceActorModal;
 use super::whats_new_modal::WhatsNewModal;
 
+fn legacy_keyboard_event(event: &UiEvent) -> Option<UiEvent> {
+    match event {
+        // Modal controllers are being migrated incrementally.  Translating the
+        // common semantic events here keeps every existing modal operable from
+        // the keyboard while preserving the richer events for the explorer.
+        UiEvent::FocusNext => Some(UiEvent::KeyInput {
+            text: "\t".to_string(),
+        }),
+        // Vertical tab is an internal-only token for reverse traversal; it is
+        // never inserted into a text field.
+        UiEvent::FocusPrevious => Some(UiEvent::KeyInput {
+            text: "\u{b}".to_string(),
+        }),
+        UiEvent::Activate => Some(UiEvent::KeyInput {
+            text: "\r".to_string(),
+        }),
+        _ => None,
+    }
+}
+
 /// Result of dispatching an interaction to the active modal.
 ///
 /// The host owns modal lifecycle; the shell only translates this small result
@@ -112,6 +132,7 @@ impl ModalHost {
         self.file_explorer
             .as_ref()
             .is_some_and(|modal| modal.is_editing_text())
+            || self.project_settings.is_some()
             || self.connect.is_some()
             || self.export.is_some()
             || self.languages.is_some()
@@ -123,6 +144,12 @@ impl ModalHost {
             || self.pricing_page.is_some()
             || self.pricing_plan.is_some()
             || self.pricing_license.is_some()
+    }
+
+    /// Conservative redaction boundary: these dialogs may contain credentials
+    /// or licence material, so typed values are never repeated verbatim.
+    pub fn is_sensitive_text_context(&self) -> bool {
+        self.connect.is_some() || self.pricing_license.is_some()
     }
 
     /// Route an event using the existing modal priority, keeping all modal
@@ -147,16 +174,31 @@ impl ModalHost {
         screen_h: f32,
     ) -> Option<ModalOutcome> {
         if self.pricing_page.is_some() {
-            return Some(self.handle_pricing_event(event, screen_w, screen_h));
+            let translated = legacy_keyboard_event(event);
+            return Some(self.handle_pricing_event(
+                translated.as_ref().unwrap_or(event),
+                screen_w,
+                screen_h,
+            ));
         }
         if self.file_explorer.is_some() {
             return Some(self.handle_file_explorer_event(event, screen_w, screen_h));
         }
         if self.proxy_error.is_some() {
-            return Some(self.handle_proxy_error_event(event, screen_w, screen_h));
+            let translated = legacy_keyboard_event(event);
+            return Some(self.handle_proxy_error_event(
+                translated.as_ref().unwrap_or(event),
+                screen_w,
+                screen_h,
+            ));
         }
         if self.whats_new.is_some() {
-            return Some(self.handle_whats_new_event(event, screen_w, screen_h));
+            let translated = legacy_keyboard_event(event);
+            return Some(self.handle_whats_new_event(
+                translated.as_ref().unwrap_or(event),
+                screen_w,
+                screen_h,
+            ));
         }
         None
     }
@@ -167,6 +209,8 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> Option<ModalOutcome> {
+        let translated = legacy_keyboard_event(event);
+        let event = translated.as_ref().unwrap_or(event);
         if self.settings.is_some() {
             return Some(self.handle_settings_event(event, screen_w, screen_h));
         }
@@ -280,12 +324,46 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self
+        let focus_navigation = matches!(
+            event,
+            UiEvent::FocusNext
+                | UiEvent::FocusPrevious
+                | UiEvent::CursorUp
+                | UiEvent::CursorDown
+                | UiEvent::CursorLeft
+                | UiEvent::CursorRight
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let activation = matches!(event, UiEvent::Activate)
+            || matches!(event, UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " ");
+        let result = self
             .project_settings
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
-        {
+            .handle_event(event, screen_w, screen_h);
+        if focus_navigation {
+            if let Some(modal) = self.project_settings.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label().to_string(),
+                        role: "control".to_string(),
+                    },
+                ));
+            }
+        }
+        let consumed = matches!(
+            &result,
+            &super::project_settings_modal::ProjectSettingsModalResult::Consumed
+        );
+        if activation && consumed {
+            if let Some(modal) = self.project_settings.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Activation {
+                        label: modal.keyboard_focus_label().to_string(),
+                    },
+                ));
+            }
+        }
+        match result {
             super::project_settings_modal::ProjectSettingsModalResult::Consumed => {
                 ModalOutcome::Consumed
             }
@@ -315,12 +393,48 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self
+        let list_navigation = matches!(event, UiEvent::CursorUp | UiEvent::CursorDown);
+        let focus_navigation = list_navigation
+            || matches!(
+                event,
+                UiEvent::FocusNext
+                    | UiEvent::FocusPrevious
+                    | UiEvent::CursorLeft
+                    | UiEvent::CursorRight
+            )
+            || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let activation = matches!(event, UiEvent::Activate)
+            || matches!(event, UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " ");
+        let result = self
             .export
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
-        {
+            .handle_event(event, screen_w, screen_h);
+        if focus_navigation {
+            if let Some(modal) = self.export.as_ref() {
+                let event = modal
+                    .keyboard_selection_label()
+                    .map(|label| crate::accessibility::AccessibilityEvent::Selection { label })
+                    .unwrap_or_else(|| crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label().to_string(),
+                        role: "control".to_string(),
+                    });
+                return ModalOutcome::Action(UiAction::Accessibility(event));
+            }
+        }
+        let consumed = matches!(&result, &super::export_modal::ExportModalResult::Consumed);
+        if activation && consumed {
+            if let Some(modal) = self.export.as_ref() {
+                let event = modal
+                    .keyboard_selection_label()
+                    .map(|label| crate::accessibility::AccessibilityEvent::Selection { label })
+                    .unwrap_or_else(|| crate::accessibility::AccessibilityEvent::Activation {
+                        label: modal.keyboard_focus_label().to_string(),
+                    });
+                return ModalOutcome::Action(UiAction::Accessibility(event));
+            }
+        }
+        match result {
             super::export_modal::ExportModalResult::Consumed => ModalOutcome::Consumed,
             super::export_modal::ExportModalResult::Close { configuration } => {
                 self.export = None;
@@ -340,12 +454,25 @@ impl ModalHost {
         screen_h: f32,
     ) -> ModalOutcome {
         use super::language_modal::LanguageModalResult;
-        match self
+        let result = self
             .languages
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
+            .handle_event(event, screen_w, screen_h);
+        if matches!(event, UiEvent::CursorUp | UiEvent::CursorDown)
+            && matches!(result, LanguageModalResult::Consumed)
         {
+            if let Some(label) = self
+                .languages
+                .as_ref()
+                .and_then(|modal| modal.keyboard_selection_label())
+            {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Selection { label },
+                ));
+            }
+        }
+        match result {
             LanguageModalResult::Consumed => ModalOutcome::Consumed,
             LanguageModalResult::Close => {
                 self.languages = None;
@@ -385,6 +512,9 @@ impl ModalHost {
             .handle_event(event, screen_w, screen_h)
         {
             FileExplorerResult::Consumed => ModalOutcome::Consumed,
+            FileExplorerResult::Accessibility(event) => {
+                ModalOutcome::Action(UiAction::Accessibility(event))
+            }
             FileExplorerResult::Close => {
                 self.file_explorer = None;
                 ModalOutcome::Consumed

@@ -2269,9 +2269,11 @@ pub fn render_lines<'a>(
             rythmo_layout::leading_visual_bounds(
                 badge_rect.x,
                 badge_rect.width,
-                (!line.karaoke)
-                    .then_some(line.voice_actor_names.len())
-                    .unwrap_or(0),
+                if !line.karaoke {
+                    line.voice_actor_names.len()
+                } else {
+                    0
+                },
                 ACTOR_ICON_SIZE,
                 ACTOR_ICON_GAP,
             )
@@ -3484,6 +3486,124 @@ pub fn handle_context_menu_event(
         UiEvent::KeyInput { text } if text == "\x1b" => {
             state.context_menu = None;
             EventResponse::Consumed
+        }
+        UiEvent::CursorRight => {
+            let Some(menu) = state.context_menu.as_mut() else {
+                return EventResponse::Ignored;
+            };
+            if menu.hover_main {
+                menu.hover_main = false;
+                menu.hover_actor_index = Some(0);
+            } else if menu.hover_actor_index.is_some() {
+                menu.hover_action_index = Some(0);
+            }
+            EventResponse::Consumed
+        }
+        UiEvent::CursorLeft => {
+            let Some(menu) = state.context_menu.as_mut() else {
+                return EventResponse::Ignored;
+            };
+            if menu.hover_action_index.take().is_none() {
+                menu.hover_actor_index = None;
+                menu.hover_main = true;
+            }
+            EventResponse::Consumed
+        }
+        UiEvent::CursorUp | UiEvent::CursorDown => {
+            let Some(menu) = state.context_menu.as_mut() else {
+                return EventResponse::Ignored;
+            };
+            let direction = if matches!(event, UiEvent::CursorDown) {
+                1
+            } else {
+                -1
+            };
+            if let Some(action) = menu.hover_action_index.as_mut() {
+                *action = (*action as i32 + direction).rem_euclid(4) as usize;
+            } else if !menu.hover_main {
+                let len = project.voice_actors().len() + 1;
+                let current = menu.hover_actor_index.unwrap_or(0);
+                menu.hover_actor_index =
+                    Some((current as i32 + direction).rem_euclid(len as i32) as usize);
+            }
+            let label = state.context_menu.as_ref().and_then(|menu| {
+                if let Some(action) = menu.hover_action_index {
+                    Some(
+                        [
+                            t("context.voice_actor.assign_line"),
+                            t("context.voice_actor.assign_character"),
+                            t("context.voice_actor.unassign_line"),
+                            t("context.voice_actor.unassign_character"),
+                        ][action],
+                    )
+                } else if let Some(actor_index) = menu.hover_actor_index {
+                    if actor_index == project.voice_actors().len() {
+                        Some(t("context.voice_actor.create"))
+                    } else {
+                        project
+                            .voice_actor(actor_index)
+                            .map(|actor| actor.name.as_str())
+                    }
+                } else {
+                    Some(t("context.voice_actor.assign_to_actor"))
+                }
+            });
+            label.map_or(EventResponse::Consumed, |label| {
+                EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Selection {
+                        label: label.to_string(),
+                    },
+                ))
+            })
+        }
+        UiEvent::Activate => {
+            let Some(menu) = state.context_menu.as_ref() else {
+                return EventResponse::Ignored;
+            };
+            if menu.hover_main {
+                let menu = state.context_menu.as_mut().unwrap();
+                menu.hover_main = false;
+                menu.hover_actor_index = Some(0);
+                return EventResponse::Consumed;
+            }
+            let line_id = menu.line_id;
+            let Some(actor_index) = menu.hover_actor_index else {
+                return EventResponse::Consumed;
+            };
+            if actor_index == project.voice_actors().len() {
+                state.context_menu = None;
+                return EventResponse::Action(UiAction::OpenVoiceActorModal);
+            }
+            let Some(action_index) = menu.hover_action_index else {
+                state.context_menu.as_mut().unwrap().hover_action_index = Some(0);
+                return EventResponse::Consumed;
+            };
+            let actor_name = project
+                .voice_actor(actor_index)
+                .map(|actor| actor.name.clone());
+            state.context_menu = None;
+            let Some(actor_name) = actor_name else {
+                return EventResponse::Consumed;
+            };
+            match action_index {
+                0 => EventResponse::Action(UiAction::AssignVoiceActorLine {
+                    line_id,
+                    actor_name,
+                }),
+                1 => EventResponse::Action(UiAction::AssignVoiceActorCharacter {
+                    line_id,
+                    actor_name,
+                }),
+                2 => EventResponse::Action(UiAction::UnassignVoiceActorLine {
+                    line_id,
+                    actor_name,
+                }),
+                3 => EventResponse::Action(UiAction::UnassignVoiceActorCharacter {
+                    line_id,
+                    actor_name,
+                }),
+                _ => EventResponse::Consumed,
+            }
         }
         _ => {
             if state.context_menu.is_some() {

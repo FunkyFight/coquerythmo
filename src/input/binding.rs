@@ -14,13 +14,14 @@ pub struct KeyPattern {
     pub key: KeyCode,
     pub modifiers: Modifiers,
     pub repeat: RepeatPolicy,
+    pub pressed: bool,
 }
 
 impl KeyPattern {
     pub fn matches(&self, stroke: &KeyStroke) -> bool {
         self.key == stroke.key
             && self.modifiers == stroke.modifiers
-            && stroke.pressed
+            && self.pressed == stroke.pressed
             && (self.repeat == RepeatPolicy::PressAndRepeat || !stroke.repeat)
     }
 }

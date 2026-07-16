@@ -315,6 +315,41 @@ impl TextInputState {
         }
     }
 
+    pub fn move_home(&mut self, shift: bool) {
+        if !self.active {
+            return;
+        }
+        let anchor = self
+            .selection
+            .map(|(anchor, _)| anchor)
+            .unwrap_or(self.cursor_pos);
+        self.cursor_pos = 0;
+        self.selection = if shift && anchor != 0 {
+            Some((anchor, 0))
+        } else {
+            None
+        };
+        self.cursor_blink = Instant::now();
+    }
+
+    pub fn move_end(&mut self, text: &str, shift: bool) {
+        if !self.active {
+            return;
+        }
+        let end = text.chars().count();
+        let anchor = self
+            .selection
+            .map(|(anchor, _)| anchor)
+            .unwrap_or(self.cursor_pos);
+        self.cursor_pos = end;
+        self.selection = if shift && anchor != end {
+            Some((anchor, end))
+        } else {
+            None
+        };
+        self.cursor_blink = Instant::now();
+    }
+
     /// Set cursor position from mouse click (clears selection)
     pub fn set_cursor_pos(&mut self, pos: usize) {
         self.cursor_pos = pos;

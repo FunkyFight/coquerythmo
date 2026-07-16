@@ -50,6 +50,14 @@ impl Widget for IconButton {
     }
 
     fn handle_event(&mut self, event: &UiEvent) -> EventResponse {
+        if matches!(event, UiEvent::Activate) {
+            let response = (self.on_click)();
+            return if response == EventResponse::Ignored {
+                EventResponse::Consumed
+            } else {
+                response
+            };
+        }
         match self.state.handle(event, &self.bounds) {
             InteractiveResult::Clicked => {
                 let r = (self.on_click)();

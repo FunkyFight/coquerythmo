@@ -43,7 +43,7 @@ pub(crate) fn handle_transform_drag(
                 }
             }
             if !current_min_y.is_finite() || !current_max_y.is_finite() {
-                current_min_y = start_bbox.1 as f32;
+                current_min_y = start_bbox.1;
                 current_max_y = start_bbox.3;
             }
             let new_min_y = current_min_y + dy_frac;

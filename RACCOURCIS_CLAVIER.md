@@ -1,79 +1,124 @@
-# Liste des raccourcis claviers
-## Raccourcis existants
+# Raccourcis clavier
 
-Les raccourcis suivants sont actuellement disponibles dans l’application. Leur
-action peut varier selon le contexte actif (édition de texte, espace de travail,
-studio ou fenêtre secondaire).
+Les raccourcis sont interprétés selon le contexte actif. Un champ texte est
+prioritaire sur les raccourcis de l’espace de travail. Dans une modale, le
+focus reste enfermé dans la modale jusqu’à sa fermeture.
+
+## Navigation commune
 
 | Raccourci | Action | Contexte |
 |---|---|---|
-| `Ctrl + K` | Découper le dialogue | Global et édition de texte |
-| `Ctrl + S` | Sauvegarde rapide | Global |
-| `Ctrl + N` | Créer un nouveau projet | Global |
-| `Ctrl + I` | Ouvrir le panneau des lignes | Global |
-| `Ctrl + P` | Ouvrir le panneau des rôles | Global |
-| `Ctrl + L` | Ouvrir le sélecteur de langues | Global, hors modale |
-| `Ctrl + A` | Tout sélectionner (texte ou lignes) | Global et édition de texte |
-| `Ctrl + C` | Copier la sélection (texte ou ligne) | Global et édition de texte |
-| `Ctrl + X` | Couper la sélection (texte ou ligne) | Global et édition de texte |
-| `Ctrl + V` | Coller (texte ou ligne) | Global et édition de texte |
-| `Ctrl + Z` | Annuler | Global et édition de texte |
-| `Ctrl + Maj + Z` | Rétablir | Global |
-| `Suppr` | Supprimer la sélection ou le caractère suivant | Global et édition de texte |
-| `Tab` | Basculer la piste audio active | Global |
-| `Espace` | Lecture / pause | Espace de travail, studio et fenêtre secondaire |
-| `F5` | Afficher l’avertissement avant d’entrer dans le studio | Vidéo chargée |
-| `Échap` | Quitter le studio, fermer la fenêtre secondaire ou fermer une modale | Selon le contexte |
-| `Entrée` | Valider ou terminer la saisie | Champs texte et modales |
-| `Retour arrière` | Supprimer le caractère précédent | Champs texte |
-| `←` / `→` | Déplacer le curseur | Champs texte |
-| `Maj + ←` / `Maj + →` | Étendre la sélection du texte | Champs texte |
-| `↑` / `↓` | Naviguer dans les suggestions ou la liste active | Champs texte et sélecteurs |
+| `Tab` | Focus suivant | Contrôles, listes, menus et modales |
+| `Maj + Tab` | Focus précédent | Contrôles, listes, menus et modales |
+| `Entrée` / `Espace` | Activer le contrôle focalisé | Contrôles, listes, menus et modales |
+| `Échap` | Fermer le niveau courant ou annuler | Modales, menus et éditeurs |
+| `↑` / `↓` | Parcourir une liste ou modifier une valeur | Contrôles focalisés |
+| `←` / `→` | Parcourir ou régler le contrôle | Contrôles focalisés |
+| `Début` / `Fin` | Aller au premier/dernier élément | Listes et contrôles |
+| `Page haut` / `Page bas` | Parcourir par page | Listes |
+| `Maj + F10` | Ouvrir le menu contextuel de l’élément focalisé | Contrôles et lignes |
 
+## Barre supérieure et projet
 
-## Raccourcis à ajouter
-### Top Bar
-CTRL + SHIFT + I :
-    - Importer une bande rythmo
-    - Ce n'est plus une liste déroulante, en un clic on peut choisir n'importe quel type
-    - On renomme d'ailleur en "Importer un sous-titrage"
-CTRL + SHIFT + R  - Restorer la dernière bande rythmo perdue
-CTRL + R :
-    - Récents
-    - Les flèches bas et haut permettent de naviguer. On change le thème des listes comme ça dans toute l'app pour que l'option hovered soit bleue.
-CTRL + Suppr - Fermer le projet
-CTRL + M - Exporter
-CTRL + ALT + S - Mode Studio
-CTRL + SHIFT + P - Renommer un personnage
-CTRL + O - Paramètre du projet
+| Raccourci | Action |
+|---|---|
+| `Ctrl + S` | Sauvegarde rapide |
+| `Ctrl + Maj + I` | Importer un sous-titrage (`.coquerythmo`, `.json`, `.srt`, `.ass`, `.detx`) |
+| `Ctrl + Maj + R` | Restaurer la dernière sauvegarde disponible |
+| `Ctrl + R` | Ouvrir les projets récents |
+| `Ctrl + Suppr` | Fermer le projet |
+| `Ctrl + M` | Ouvrir l’export du projet |
+| `Ctrl + Alt + S` | Afficher l’avertissement et ouvrir le mode Studio |
+| `Ctrl + Maj + P` | Renommer le personnage sélectionné |
+| `Ctrl + O` | Ouvrir les paramètres du projet |
+| `Ctrl + N` | Créer un nouveau projet |
+| `Ctrl + I` | Ouvrir le panneau des lignes |
+| `Ctrl + P` | Ouvrir le panneau des rôles |
+| `Ctrl + L` | Ouvrir le sélecteur de langues (hors modale) |
+| `F5` | Afficher l’avertissement Studio lorsqu’une vidéo est chargée |
 
-### Tools
-CTRL + <- - Image précédente
-CTRL + -> - Image suivante
-Numpad 1 - Ajouter une boucle
-Numpad 2 - Ajouter un out
-Numpad 3 - Changement de scène
-Numpad 4 - Respirations
-Numpad 5 - Réactions
-Numpad 6 - Ajouter une note
-Numpad 7 - Liaison à gauche
-Numpad 8 - Liaison à droite
-Numpad 9 - Activer / Désactiver le karaoké
-c - Mode sélection
-d - Mode dessin
-SHIFT + Arrow Up - Augmenter le son
-SHIFT + Arrow Down - Baisser le son
-SHIFT + Numpad Minus - Activer / Désactiver le son
+Dans la liste des projets récents : `↑`/`↓` parcourent les projets, `Entrée`
+ouvre le projet, `Suppr` le retire de la liste et `Échap` ferme la liste.
 
-### Bande Rythmo
-Inser - Créer une ligne à la position actuelle
-Entrée - Sélectionner la ligne sur le curseur (Si appuyé plusieurs fois, switch entre pistes si y'a plusieurs lignes sur plusieurs pistes à ce moment là)
-I - Définir le début de la ligne sélectionnée
-O - Définir la fin de la ligne sélectionnée
-Q - Aller fluidement à gauche (équivalent du MOLETTE CLICK DRAG)
-D - Aller fluidement à droite (équivalent du MOLETTE CLICK DRAG)
-T - Modifier le texte de la ligne sélectionnée
-P - Modifier le personnage de la ligne sélectionnée
+## Outils et lecture
 
-### Autres
-CTRL + SHIFT + N - Activer la lecture d'écran
+| Raccourci | Action |
+|---|---|
+| `Ctrl + ←` / `Ctrl + →` | Image précédente/suivante |
+| `Numpad 1` | Ajouter une boucle |
+| `Numpad 2` | Ajouter un point Out |
+| `Numpad 3` | Ajouter un changement de scène |
+| `Numpad 4` | Ouvrir les respirations |
+| `Numpad 5` | Ouvrir les réactions |
+| `Numpad 6` | Ajouter une note |
+| `Numpad 7` / `Numpad 8` | Ajouter une liaison à gauche/droite |
+| `Numpad 9` | Activer/désactiver le karaoké |
+| `C` | Outil Sélection |
+| `Ctrl + D` | Outil Dessin |
+| `Maj + ↑` / `Maj + ↓` | Augmenter/diminuer le volume par pas de 5 % |
+| `Maj + Numpad -` | Activer/désactiver le muet |
+| `Espace` | Lecture/pause |
+
+## Bande rythmo
+
+| Raccourci | Action |
+|---|---|
+| `Insert` | Créer une ligne au curseur |
+| `Entrée` | Sélectionner successivement les lignes présentes au frame courant |
+| `↑` / `↓` (ligne sélectionnée) | Déplacer la ligne vers la piste précédente/suivante |
+| `I` / `O` | Fixer le début/la fin de la ligne sélectionnée |
+| `Q` / `D` (maintenir) | Déplacer continuellement la timeline à gauche/droite |
+| `T` | Modifier le texte de la ligne sélectionnée |
+| `P` | Modifier le personnage de la ligne sélectionnée |
+| `Suppr` | Supprimer la ligne sélectionnée |
+| `Ctrl + C` | Copier la ligne sélectionnée |
+| `Ctrl + X` | Couper la ligne sélectionnée |
+| `Ctrl + V` | Coller la ligne sur la piste sous le curseur de souris |
+
+Si la souris est hors de la bande rythmo, `Ctrl + V` utilise la piste clavier
+active. Pendant l’édition d’une ligne ou d’un personnage, les flèches déplacent
+le caret et ne modifient pas le volume.
+
+## Export
+
+| Raccourci | Action |
+|---|---|
+| `Tab` / `Maj + Tab` | Parcourir tous les réglages, formats, langues et boutons |
+| `↑` / `↓` sur le menu des pages | Passer entre Vidéo, Sous-titres, Audio et Références |
+| `←` / `→` sur le menu des pages | Passer entre les pages d’export |
+| `↑` / `↓` sur un réglage | Modifier sa valeur |
+| `Entrée` / `Espace` | Activer un format, une langue ou un bouton |
+| `Échap` | Fermer l’export |
+
+Les champs largeur et hauteur acceptent les chiffres, `Retour arrière` et
+`Entrée` termine leur édition.
+
+## Champs texte et modales
+
+| Raccourci | Action |
+|---|---|
+| `Ctrl + A` | Tout sélectionner |
+| `Ctrl + C` / `Ctrl + X` / `Ctrl + V` | Copier/couper/coller le texte |
+| `Ctrl + Z` | Annuler |
+| `Ctrl + Maj + Z` | Rétablir |
+| `←` / `→` | Déplacer le caret |
+| `Maj + ←` / `Maj + →` | Étendre la sélection |
+| `↑` / `↓` | Parcourir les suggestions ou les éléments de liste |
+| `Retour arrière` / `Suppr` | Supprimer le caractère précédent/suivant |
+
+Dans l’Explorateur de fichiers, `Alt + ←`/`Alt + →` parcourent l’historique,
+`Retour arrière` remonte au dossier parent et `Entrée` ouvre le fichier ou
+valide l’action principale.
+
+## Lecture vocale interne
+
+| Raccourci | Action |
+|---|---|
+| `Ctrl + Maj + N` | Activer/désactiver la lecture vocale interne |
+
+Chaque changement de focus, sélection, activation, valeur et résultat d’action
+est annoncé. Pour `Q`/`D`, le timecode est annoncé une seule fois au
+relâchement de la touche, avec les heures, minutes, secondes et centièmes.
+
+Sur Linux, la lecture vocale interne reste indisponible et le raccourci affiche
+un message localisé.

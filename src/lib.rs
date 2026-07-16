@@ -4,6 +4,7 @@
 //! composition belongs to [`app`]; the existing product modules remain
 //! private to the crate while their unit tests run through this library target.
 
+pub mod accessibility;
 pub mod app;
 pub mod application;
 pub mod automation;

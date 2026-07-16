@@ -41,9 +41,56 @@ impl FileExplorerModal {
         }
 
         match event {
-            UiEvent::KeyInput { text } => self.handle_key(text),
+            UiEvent::KeyInput { text } => self.handle_key(text, &layout),
+            UiEvent::FocusNext => {
+                self.move_focus(1);
+                self.keyboard_focus_result()
+            }
+            UiEvent::FocusPrevious => {
+                self.move_focus(-1);
+                self.keyboard_focus_result()
+            }
+            UiEvent::Activate => self.activate_focus(&layout),
+            UiEvent::AltCursorLeft => {
+                self.navigate_back();
+                FileExplorerResult::Consumed
+            }
+            UiEvent::AltCursorRight => {
+                self.navigate_forward();
+                FileExplorerResult::Consumed
+            }
+            UiEvent::Home => {
+                if self.active_field.is_some() {
+                    self.move_cursor_edge(false);
+                } else if self.focus == super::ExplorerFocus::Entries {
+                    self.select_edge(false, &layout);
+                }
+                FileExplorerResult::Consumed
+            }
+            UiEvent::End => {
+                if self.active_field.is_some() {
+                    self.move_cursor_edge(true);
+                } else if self.focus == super::ExplorerFocus::Entries {
+                    self.select_edge(true, &layout);
+                }
+                FileExplorerResult::Consumed
+            }
+            UiEvent::PageUp => {
+                if self.focus == super::ExplorerFocus::Entries {
+                    self.page_selection(-1, &layout);
+                }
+                FileExplorerResult::Consumed
+            }
+            UiEvent::PageDown => {
+                if self.focus == super::ExplorerFocus::Entries {
+                    self.page_selection(1, &layout);
+                }
+                FileExplorerResult::Consumed
+            }
             UiEvent::CursorLeft => {
-                self.move_cursor_active(-1, false);
+                if self.active_field.is_some() {
+                    self.move_cursor_active(-1, false);
+                }
                 FileExplorerResult::Consumed
             }
             UiEvent::CursorRight => {
@@ -59,14 +106,37 @@ impl FileExplorerModal {
                 FileExplorerResult::Consumed
             }
             UiEvent::CursorUp => {
-                if !self.move_filename_suggestion(-1) {
+                if self.focus == super::ExplorerFocus::Sidebar {
+                    self.move_sidebar_selection(-1);
+                    return self.keyboard_selection_result();
+                } else if self.focus == super::ExplorerFocus::Filter && self.show_filter_dropdown {
+                    self.selected_filter = self.selected_filter.saturating_sub(1);
+                    return self.keyboard_selection_result();
+                } else if self.active_field == Some(super::ActiveField::Filename)
+                    && self.move_filename_suggestion(-1)
+                {
+                    return self.keyboard_selection_result();
+                } else if self.focus == super::ExplorerFocus::Entries {
                     self.move_selection(-1, &layout);
+                    return self.keyboard_selection_result();
                 }
                 FileExplorerResult::Consumed
             }
             UiEvent::CursorDown => {
-                if !self.move_filename_suggestion(1) {
+                if self.focus == super::ExplorerFocus::Sidebar {
+                    self.move_sidebar_selection(1);
+                    return self.keyboard_selection_result();
+                } else if self.focus == super::ExplorerFocus::Filter && self.show_filter_dropdown {
+                    self.selected_filter =
+                        (self.selected_filter + 1).min(self.filters.len().saturating_sub(1));
+                    return self.keyboard_selection_result();
+                } else if self.active_field == Some(super::ActiveField::Filename)
+                    && self.move_filename_suggestion(1)
+                {
+                    return self.keyboard_selection_result();
+                } else if self.focus == super::ExplorerFocus::Entries {
                     self.move_selection(1, &layout);
+                    return self.keyboard_selection_result();
                 }
                 FileExplorerResult::Consumed
             }

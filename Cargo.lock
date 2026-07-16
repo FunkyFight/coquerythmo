@@ -742,6 +742,7 @@ dependencies = [
  "toml 0.8.23",
  "ureq",
  "wgpu",
+ "windows 0.62.2",
  "windows-sys 0.61.2",
  "winit",
  "winres",

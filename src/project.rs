@@ -42,7 +42,7 @@ pub enum VideoExportQuality {
     Custom,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubtitleExportFormats {
     #[serde(default)]
     pub json: bool,
@@ -54,18 +54,7 @@ pub struct SubtitleExportFormats {
     pub detx: bool,
 }
 
-impl Default for SubtitleExportFormats {
-    fn default() -> Self {
-        Self {
-            json: false,
-            srt: false,
-            ass: false,
-            detx: false,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioExportFormats {
     #[serde(default)]
     pub mp3: bool,
@@ -75,31 +64,12 @@ pub struct AudioExportFormats {
     pub bwf_stems: bool,
 }
 
-impl Default for AudioExportFormats {
-    fn default() -> Self {
-        Self {
-            mp3: false,
-            wav: false,
-            bwf_stems: false,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CrossReferenceExportFormats {
     #[serde(default)]
     pub csv: bool,
     #[serde(default)]
     pub pdf: bool,
-}
-
-impl Default for CrossReferenceExportFormats {
-    fn default() -> Self {
-        Self {
-            csv: false,
-            pdf: false,
-        }
-    }
 }
 
 fn default_true() -> bool {

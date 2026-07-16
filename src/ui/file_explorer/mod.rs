@@ -70,6 +70,7 @@ pub struct FileExplorerRequest {
 
 pub enum FileExplorerResult {
     Consumed,
+    Accessibility(crate::accessibility::AccessibilityEvent),
     Close,
     Selected {
         intent: FilePickerIntent,
@@ -107,6 +108,39 @@ enum ActiveField {
     NameFilter,
     Filename,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExplorerFocus {
+    Back,
+    Forward,
+    Up,
+    Refresh,
+    Address,
+    Search,
+    Sidebar,
+    Entries,
+    Filename,
+    Filter,
+    NewFolder,
+    Primary,
+    Cancel,
+}
+
+const EXPLORER_FOCUS_ORDER: [ExplorerFocus; 13] = [
+    ExplorerFocus::Back,
+    ExplorerFocus::Forward,
+    ExplorerFocus::Up,
+    ExplorerFocus::Refresh,
+    ExplorerFocus::Address,
+    ExplorerFocus::Search,
+    ExplorerFocus::Sidebar,
+    ExplorerFocus::Entries,
+    ExplorerFocus::Filename,
+    ExplorerFocus::Filter,
+    ExplorerFocus::NewFolder,
+    ExplorerFocus::Primary,
+    ExplorerFocus::Cancel,
+];
 
 struct ExplorerLayout {
     card: Rect,
@@ -150,6 +184,9 @@ pub struct FileExplorerModal {
     error: Option<String>,
     status_text: String,
     active_field: Option<ActiveField>,
+    focus: ExplorerFocus,
+    sidebar_selected: usize,
+    overwrite_focus_replace: bool,
     address_input: TextInputState,
     name_filter_input: TextInputState,
     filename_input: TextInputState,
@@ -291,17 +328,13 @@ impl FileExplorerModal {
         }
     }
 
-    fn handle_key(&mut self, text: &str) -> FileExplorerResult {
+    fn handle_key(&mut self, text: &str, layout: &ExplorerLayout) -> FileExplorerResult {
         if text == "\x1b" {
             return FileExplorerResult::Close;
         }
 
         if text == "\r" || text == "\n" {
-            if self.active_field == Some(ActiveField::Address) {
-                self.submit_address();
-                return FileExplorerResult::Consumed;
-            }
-            return self.complete_selection();
+            return self.activate_focus(layout);
         }
 
         if text == "\x08" && self.active_field.is_none() {
@@ -310,8 +343,8 @@ impl FileExplorerModal {
         }
 
         if text == "\t" {
-            self.toggle_focus();
-            return FileExplorerResult::Consumed;
+            self.move_focus(1);
+            return self.keyboard_focus_result();
         }
 
         if self.active_field.is_some() {
@@ -344,6 +377,39 @@ impl FileExplorerModal {
             }
         }
 
+        let focus = if layout.back.contains(x, y) {
+            Some(ExplorerFocus::Back)
+        } else if layout.forward.contains(x, y) {
+            Some(ExplorerFocus::Forward)
+        } else if layout.up.contains(x, y) {
+            Some(ExplorerFocus::Up)
+        } else if layout.refresh.contains(x, y) {
+            Some(ExplorerFocus::Refresh)
+        } else if layout.address.contains(x, y) {
+            Some(ExplorerFocus::Address)
+        } else if layout.name_filter.contains(x, y) {
+            Some(ExplorerFocus::Search)
+        } else if layout.sidebar.contains(x, y) {
+            Some(ExplorerFocus::Sidebar)
+        } else if layout.rows.contains(x, y) {
+            Some(ExplorerFocus::Entries)
+        } else if layout.filename.contains(x, y) {
+            Some(ExplorerFocus::Filename)
+        } else if layout.filter.contains(x, y) {
+            Some(ExplorerFocus::Filter)
+        } else if layout.new_folder.contains(x, y) {
+            Some(ExplorerFocus::NewFolder)
+        } else if layout.primary.contains(x, y) {
+            Some(ExplorerFocus::Primary)
+        } else if layout.cancel.contains(x, y) {
+            Some(ExplorerFocus::Cancel)
+        } else {
+            None
+        };
+        if let Some(focus) = focus {
+            self.set_focus(focus);
+        }
+
         if layout.back.contains(x, y) {
             self.navigate_back();
         } else if layout.forward.contains(x, y) {
@@ -357,6 +423,7 @@ impl FileExplorerModal {
         } else if layout.name_filter.contains(x, y) {
             self.activate_field_at(ActiveField::NameFilter, layout.name_filter, x, false);
         } else if let Some(index) = self.sidebar_index_at(x, y, layout) {
+            self.sidebar_selected = index;
             let path = self.sidebar[index].path.clone();
             self.navigate_to(path, true);
         } else if self.scrollbar_track_contains(x, y, layout) {
@@ -421,7 +488,35 @@ impl FileExplorerModal {
                 self.overwrite_path = None;
                 FileExplorerResult::Consumed
             }
-            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => self.confirm_overwrite(),
+            UiEvent::FocusNext | UiEvent::FocusPrevious => {
+                self.overwrite_focus_replace = !self.overwrite_focus_replace;
+                FileExplorerResult::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: if self.overwrite_focus_replace {
+                            t("file_explorer.overwrite.confirm").to_string()
+                        } else {
+                            t("file_explorer.cancel").to_string()
+                        },
+                        role: "button".to_string(),
+                    },
+                )
+            }
+            UiEvent::Activate => {
+                if self.overwrite_focus_replace {
+                    self.confirm_overwrite()
+                } else {
+                    self.overwrite_path = None;
+                    FileExplorerResult::Consumed
+                }
+            }
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => {
+                if self.overwrite_focus_replace {
+                    self.confirm_overwrite()
+                } else {
+                    self.overwrite_path = None;
+                    FileExplorerResult::Consumed
+                }
+            }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 if overwrite.contains(*x, *y) {
                     self.confirm_overwrite()
@@ -491,6 +586,7 @@ impl FileExplorerModal {
                     return FileExplorerResult::Consumed;
                 }
                 if path.exists() {
+                    self.overwrite_focus_replace = false;
                     self.overwrite_path = Some(path);
                     return FileExplorerResult::Consumed;
                 }
@@ -731,6 +827,69 @@ impl FileExplorerModal {
         };
         self.select_entry(visible_indices[next_pos]);
         self.clamp_scroll(layout);
+    }
+
+    fn keyboard_selection_result(&self) -> FileExplorerResult {
+        let label = match self.focus {
+            ExplorerFocus::Sidebar => self
+                .sidebar
+                .get(self.sidebar_selected)
+                .map(|item| item.label.clone()),
+            ExplorerFocus::Entries => self
+                .selected
+                .and_then(|index| self.entries.get(index))
+                .map(|entry| entry.name.clone()),
+            ExplorerFocus::Filter => self
+                .filters
+                .get(self.selected_filter)
+                .map(|filter| filter.name.clone()),
+            ExplorerFocus::Filename => self
+                .filename_suggestion
+                .and_then(|index| self.entries.get(index))
+                .map(|entry| entry.name.clone()),
+            _ => None,
+        };
+        label.map_or(FileExplorerResult::Consumed, |label| {
+            FileExplorerResult::Accessibility(crate::accessibility::AccessibilityEvent::Selection {
+                label,
+            })
+        })
+    }
+
+    fn keyboard_focus_result(&self) -> FileExplorerResult {
+        let (label, role) = match self.focus {
+            ExplorerFocus::Back => (t("file_explorer.back").to_string(), "button"),
+            ExplorerFocus::Forward => (t("file_explorer.forward").to_string(), "button"),
+            ExplorerFocus::Up => (t("file_explorer.up").to_string(), "button"),
+            ExplorerFocus::Refresh => (t("file_explorer.refresh").to_string(), "button"),
+            ExplorerFocus::Address => (t("file_explorer.address").to_string(), "text field"),
+            ExplorerFocus::Search => (t("file_explorer.search").to_string(), "text field"),
+            ExplorerFocus::Sidebar => (t("file_explorer.sidebar.title").to_string(), "list"),
+            ExplorerFocus::Entries => {
+                let label = self
+                    .selected
+                    .and_then(|index| self.entries.get(index))
+                    .map(|entry| entry.name.clone())
+                    .unwrap_or_else(|| t("file_explorer.column.name").to_string());
+                (label, "file list")
+            }
+            ExplorerFocus::Filename => (t("file_explorer.filename").to_string(), "text field"),
+            ExplorerFocus::Filter => (t("file_explorer.filter").to_string(), "list"),
+            ExplorerFocus::NewFolder => (t("file_explorer.new_folder").to_string(), "button"),
+            ExplorerFocus::Primary => (
+                match self.mode {
+                    FileExplorerMode::Open => t("file_explorer.open"),
+                    FileExplorerMode::Save => t("file_explorer.save"),
+                }
+                .to_string(),
+                "button",
+            ),
+            ExplorerFocus::Cancel => (t("file_explorer.cancel").to_string(), "button"),
+        };
+        FileExplorerResult::Accessibility(crate::accessibility::AccessibilityEvent::Focus {
+            label,
+            role: role.to_string(),
+        })
     }
 
     fn filename_suggestion_indices(&self) -> Vec<usize> {
@@ -987,11 +1146,120 @@ impl FileExplorerModal {
         self.filename_input.deactivate();
     }
 
-    fn toggle_focus(&mut self) {
-        match self.active_field {
-            Some(ActiveField::Address) => self.activate_field(ActiveField::NameFilter),
-            Some(ActiveField::NameFilter) => self.activate_field(ActiveField::Filename),
-            _ => self.activate_field(ActiveField::Address),
+    fn focus_available(&self, focus: ExplorerFocus) -> bool {
+        match focus {
+            ExplorerFocus::Back => !self.history_back.is_empty(),
+            ExplorerFocus::Forward => !self.history_forward.is_empty(),
+            ExplorerFocus::Sidebar => !self.sidebar.is_empty(),
+            ExplorerFocus::Entries => !self.entries.is_empty(),
+            ExplorerFocus::Filename => self.mode == FileExplorerMode::Save,
+            _ => true,
+        }
+    }
+
+    fn set_focus(&mut self, focus: ExplorerFocus) {
+        self.focus = focus;
+        match focus {
+            ExplorerFocus::Address => self.activate_field(ActiveField::Address),
+            ExplorerFocus::Search => self.activate_field(ActiveField::NameFilter),
+            ExplorerFocus::Filename => self.activate_field(ActiveField::Filename),
+            _ => self.deactivate_fields(),
+        }
+    }
+
+    fn move_focus(&mut self, direction: i32) {
+        let current = EXPLORER_FOCUS_ORDER
+            .iter()
+            .position(|focus| *focus == self.focus)
+            .unwrap_or(0) as i32;
+        let len = EXPLORER_FOCUS_ORDER.len() as i32;
+        for offset in 1..=len {
+            let index = (current + direction * offset).rem_euclid(len) as usize;
+            let focus = EXPLORER_FOCUS_ORDER[index];
+            if self.focus_available(focus) {
+                self.set_focus(focus);
+                return;
+            }
+        }
+    }
+
+    fn activate_focus(&mut self, layout: &ExplorerLayout) -> FileExplorerResult {
+        match self.focus {
+            ExplorerFocus::Back => self.navigate_back(),
+            ExplorerFocus::Forward => self.navigate_forward(),
+            ExplorerFocus::Up => self.navigate_parent(),
+            ExplorerFocus::Refresh => self.start_scan(),
+            ExplorerFocus::Address => {
+                self.submit_address();
+                return FileExplorerResult::Consumed;
+            }
+            ExplorerFocus::Search => return FileExplorerResult::Consumed,
+            ExplorerFocus::Sidebar => {
+                if let Some(item) = self.sidebar.get(self.sidebar_selected) {
+                    self.navigate_to(item.path.clone(), true);
+                }
+            }
+            ExplorerFocus::Entries => return self.complete_selection(),
+            ExplorerFocus::Filename => return self.complete_selection(),
+            ExplorerFocus::Filter => {
+                if self.show_filter_dropdown {
+                    self.show_filter_dropdown = false;
+                    self.start_scan();
+                } else {
+                    self.show_filter_dropdown = true;
+                }
+                return FileExplorerResult::Consumed;
+            }
+            ExplorerFocus::NewFolder => self.create_new_folder(),
+            ExplorerFocus::Primary => return self.complete_selection(),
+            ExplorerFocus::Cancel => return FileExplorerResult::Close,
+        }
+        self.clamp_scroll(layout);
+        FileExplorerResult::Consumed
+    }
+
+    fn focus_rect(&self, layout: &ExplorerLayout) -> Rect {
+        match self.focus {
+            ExplorerFocus::Back => layout.back,
+            ExplorerFocus::Forward => layout.forward,
+            ExplorerFocus::Up => layout.up,
+            ExplorerFocus::Refresh => layout.refresh,
+            ExplorerFocus::Address => layout.address,
+            ExplorerFocus::Search => layout.name_filter,
+            ExplorerFocus::Sidebar => layout.sidebar,
+            ExplorerFocus::Entries => layout.rows,
+            ExplorerFocus::Filename => layout.filename,
+            ExplorerFocus::Filter => layout.filter,
+            ExplorerFocus::NewFolder => layout.new_folder,
+            ExplorerFocus::Primary => layout.primary,
+            ExplorerFocus::Cancel => layout.cancel,
+        }
+    }
+
+    fn move_sidebar_selection(&mut self, direction: i32) {
+        if self.sidebar.is_empty() {
+            return;
+        }
+        self.sidebar_selected = if direction < 0 {
+            self.sidebar_selected.saturating_sub(1)
+        } else {
+            (self.sidebar_selected + 1).min(self.sidebar.len() - 1)
+        };
+    }
+
+    fn select_edge(&mut self, end: bool, layout: &ExplorerLayout) {
+        let visible = self.visible_entry_indices();
+        let Some(index) = if end { visible.last() } else { visible.first() }.copied() else {
+            return;
+        };
+        self.select_entry(index);
+        self.clamp_scroll(layout);
+    }
+
+    fn page_selection(&mut self, direction: i32, layout: &ExplorerLayout) {
+        let rows = (layout.rows.height / ROW_H).floor().max(1.0) as i32;
+        for _ in 0..rows {
+            self.move_selection(direction, layout);
         }
     }
 
@@ -1068,6 +1336,33 @@ impl FileExplorerModal {
                     self.filename_input.move_right_shift(&self.filename);
                 } else {
                     self.filename_input.move_right(&self.filename);
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn move_cursor_edge(&mut self, end: bool) {
+        match self.active_field {
+            Some(ActiveField::Address) => {
+                if end {
+                    self.address_input.move_end(&self.address, false)
+                } else {
+                    self.address_input.move_home(false)
+                }
+            }
+            Some(ActiveField::NameFilter) => {
+                if end {
+                    self.name_filter_input.move_end(&self.name_filter, false)
+                } else {
+                    self.name_filter_input.move_home(false)
+                }
+            }
+            Some(ActiveField::Filename) => {
+                if end {
+                    self.filename_input.move_end(&self.filename, false)
+                } else {
+                    self.filename_input.move_home(false)
                 }
             }
             None => {}
@@ -2224,4 +2519,90 @@ fn render_button<'a>(
         color_override: Some([236, 236, 248]),
         font_family_override: None,
     });
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+
+    fn request(mode: FileExplorerMode, directory: PathBuf) -> FileExplorerRequest {
+        FileExplorerRequest {
+            title: "test".into(),
+            mode,
+            intent: FilePickerIntent::AddVideo,
+            filters: vec![FileFilterSpec::new("All", &["*"])],
+            initial_dir: Some(directory),
+            default_extension: None,
+            initial_filename: None,
+            extra_locations: Vec::new(),
+        }
+    }
+
+    fn temporary_directory(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "coquerythmo-file-explorer-{name}-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn tab_order_skips_unavailable_history_and_entries() {
+        let directory = temporary_directory("focus");
+        let mut modal = FileExplorerModal::new(request(FileExplorerMode::Open, directory.clone()));
+        modal.entries.clear();
+        modal.sidebar.clear();
+        modal.focus = ExplorerFocus::Back;
+        modal.move_focus(1);
+        assert_eq!(modal.focus, ExplorerFocus::Up);
+        modal.move_focus(-1);
+        assert_eq!(modal.focus, ExplorerFocus::Cancel);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn keyboard_can_open_a_selected_file() {
+        let directory = temporary_directory("open");
+        let path = directory.join("movie.mp4");
+        fs::write(&path, b"test").unwrap();
+        let mut modal = FileExplorerModal::new(request(FileExplorerMode::Open, directory.clone()));
+        modal.entries = vec![DirectoryEntry {
+            path: path.clone(),
+            name: "movie.mp4".into(),
+            sort_name: "movie.mp4".into(),
+            is_dir: false,
+            modified_text: String::new(),
+            type_text: String::new(),
+            size_text: String::new(),
+        }];
+        modal.selected = Some(0);
+        modal.focus = ExplorerFocus::Entries;
+        let result = modal.handle_event(&UiEvent::Activate, 1024.0, 720.0);
+        assert!(
+            matches!(result, FileExplorerResult::Selected { path: selected, .. } if selected == path)
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn overwrite_scope_starts_on_cancel_then_reaches_replace() {
+        let directory = temporary_directory("overwrite");
+        let path = directory.join("existing.json");
+        fs::write(&path, b"test").unwrap();
+        let mut modal = FileExplorerModal::new(request(FileExplorerMode::Save, directory.clone()));
+        modal.overwrite_path = Some(path.clone());
+        modal.overwrite_focus_replace = false;
+        assert!(matches!(
+            modal.handle_event(&UiEvent::Activate, 1024.0, 720.0),
+            FileExplorerResult::Consumed
+        ));
+        modal.overwrite_path = Some(path.clone());
+        modal.handle_event(&UiEvent::FocusNext, 1024.0, 720.0);
+        let result = modal.handle_event(&UiEvent::Activate, 1024.0, 720.0);
+        assert!(
+            matches!(result, FileExplorerResult::Selected { path: selected, .. } if selected == path)
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
 }

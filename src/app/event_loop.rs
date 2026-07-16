@@ -141,6 +141,7 @@ pub fn run() {
     let mut last_click_time = None;
     let mut ctrl_held = false;
     let mut shift_held = false;
+    let mut keyboard_modifiers = Modifiers::NONE;
     let mut cursor_icon = winit::window::CursorIcon::Default;
 
     event_loop
@@ -222,13 +223,59 @@ pub fn run() {
                     state.request_redraw();
                 }
                 WindowEvent::ModifiersChanged(modifiers) => {
+                    keyboard_modifiers = Modifiers::from_winit(modifiers.state());
                     ctrl_held = modifiers.state().control_key();
                     shift_held = modifiers.state().shift_key();
                     state.set_ctrl_held(ctrl_held);
                     state.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
+                    // Release-driven commands (notably continuous Q/D panning)
+                    // must be routed even though text input only consumes presses.
+                    if event.state == ElementState::Released {
+                        if !state.is_editing_text()
+                            && !state.captures_modal_input()
+                            && !state.is_studio_mode()
+                        {
+                            if let Some(stroke) = KeyStroke::from_winit(
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                            ) {
+                                if let Some(action) = shortcuts
+                                    .resolve(
+                                        &stroke,
+                                        &InputContextStack::new([InputContext::Workspace]),
+                                    )
+                                    .cloned()
+                                {
+                                    CommandDispatcher::dispatch(action, &mut state, elwt);
+                                    state.request_redraw();
+                                }
+                            }
+                        }
+                        return;
+                    }
                     if event.state == ElementState::Pressed {
+                        // Accessibility is deliberately above progress dialogs,
+                        // modal traps and text editing so speech can always stop.
+                        if let Some(stroke) = KeyStroke::from_winit(
+                            &event,
+                            keyboard_modifiers,
+                            InputWindow::Main,
+                        ) {
+                            if let Some(action) = shortcuts
+                                .resolve(
+                                    &stroke,
+                                    &InputContextStack::new([InputContext::Accessibility]),
+                                )
+                                .cloned()
+                            {
+                                CommandDispatcher::dispatch(action, &mut state, elwt);
+                                state.request_redraw();
+                                return;
+                            }
+                        }
                         if state.ui_shell.ui.has_active_progress() {
                             if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                                 CommandDispatcher::dispatch(
@@ -243,6 +290,32 @@ pub fn run() {
                         if state.ui_shell.ui.loading_project.is_some() {
                             return;
                         }
+                        // A rythmo text editor owns every arrow key.  This
+                        // guard is intentionally before the workspace
+                        // shortcut table so Shift+Up/Down cannot leak into
+                        // the volume command while a line or character is
+                        // being edited.
+                        if state.is_rythmo_text_editing() {
+                            let text_navigation = match &event.logical_key {
+                                Key::Named(NamedKey::ArrowLeft) => Some(if shift_held {
+                                    UiEvent::ShiftCursorLeft
+                                } else {
+                                    UiEvent::CursorLeft
+                                }),
+                                Key::Named(NamedKey::ArrowRight) => Some(if shift_held {
+                                    UiEvent::ShiftCursorRight
+                                } else {
+                                    UiEvent::CursorRight
+                                }),
+                                Key::Named(NamedKey::ArrowUp) => Some(UiEvent::CursorUp),
+                                Key::Named(NamedKey::ArrowDown) => Some(UiEvent::CursorDown),
+                                _ => None,
+                            };
+                            if let Some(text_navigation) = text_navigation {
+                                dispatch(text_navigation, &mut state, elwt);
+                                return;
+                            }
+                        }
                         // The translation manager is global, but never stack it over an
                         // existing modal whose event routing would remain underneath it.
                         if ctrl_held
@@ -255,8 +328,13 @@ pub fn run() {
                             return;
                         }
                         let mut contexts = Vec::new();
-                        if state.is_rythmo_text_editing() {
+                        if state.captures_modal_input() {
+                            contexts.push(InputContext::Modal);
+                        } else if state.is_rythmo_text_editing() {
                             contexts.push(InputContext::TextEditing);
+                        } else if state.has_keyboard_focus() {
+                            contexts.push(InputContext::MainWindow);
+                            contexts.push(InputContext::Global);
                         } else if !state.is_editing_text() {
                             if state.video_path().is_some() {
                                 contexts.push(InputContext::VideoLoaded);
@@ -269,14 +347,9 @@ pub fn run() {
                             }
                         }
                         let context_stack = InputContextStack::new(contexts);
-                        let modifiers = Modifiers {
-                            ctrl: ctrl_held,
-                            shift: shift_held,
-                            ..Modifiers::NONE
-                        };
                         if let Some(stroke) = KeyStroke::from_winit(
                             &event,
-                            modifiers,
+                            keyboard_modifiers,
                             InputWindow::Main,
                         ) {
                             if let Some(action) = shortcuts.resolve(&stroke, &context_stack).cloned() {
@@ -312,6 +385,70 @@ pub fn run() {
                         } else {
                             key_text
                         };
+
+                        if matches!(event.logical_key, Key::Named(NamedKey::Tab)) {
+                            dispatch(
+                                if shift_held {
+                                    UiEvent::FocusPrevious
+                                } else {
+                                    UiEvent::FocusNext
+                                },
+                                &mut state,
+                                elwt,
+                            );
+                            return;
+                        }
+                        if keyboard_modifiers.alt
+                            && matches!(event.logical_key, Key::Named(NamedKey::ArrowLeft))
+                        {
+                            dispatch(UiEvent::AltCursorLeft, &mut state, elwt);
+                            return;
+                        }
+                        if keyboard_modifiers.alt
+                            && matches!(event.logical_key, Key::Named(NamedKey::ArrowRight))
+                        {
+                            dispatch(UiEvent::AltCursorRight, &mut state, elwt);
+                            return;
+                        }
+                        if shift_held
+                            && matches!(event.logical_key, Key::Named(NamedKey::F10))
+                        {
+                            dispatch(UiEvent::OpenContextMenu, &mut state, elwt);
+                            return;
+                        }
+                        let navigation_event = match &event.logical_key {
+                            Key::Named(NamedKey::Home) => Some(UiEvent::Home),
+                            Key::Named(NamedKey::End) => Some(UiEvent::End),
+                            Key::Named(NamedKey::PageUp) => Some(UiEvent::PageUp),
+                            Key::Named(NamedKey::PageDown) => Some(UiEvent::PageDown),
+                            _ => None,
+                        };
+                        if let Some(navigation_event) = navigation_event {
+                            dispatch(navigation_event, &mut state, elwt);
+                            return;
+                        }
+                        if !state.is_editing_text()
+                            && state.has_keyboard_focus()
+                            && (matches!(event.logical_key, Key::Named(NamedKey::Enter))
+                                || is_space_key(&event.logical_key))
+                        {
+                            dispatch(UiEvent::Activate, &mut state, elwt);
+                            return;
+                        }
+                        if !state.is_editing_text() && state.has_keyboard_focus() {
+                            let focused_navigation = match &event.logical_key {
+                                Key::Named(NamedKey::ArrowLeft) => Some(UiEvent::CursorLeft),
+                                Key::Named(NamedKey::ArrowRight) => Some(UiEvent::CursorRight),
+                                Key::Named(NamedKey::ArrowUp) => Some(UiEvent::CursorUp),
+                                Key::Named(NamedKey::ArrowDown) => Some(UiEvent::CursorDown),
+                                Key::Named(NamedKey::Delete) => Some(UiEvent::Delete),
+                                _ => None,
+                            };
+                            if let Some(focused_navigation) = focused_navigation {
+                                dispatch(focused_navigation, &mut state, elwt);
+                                return;
+                            }
+                        }
 
                         if state.is_studio_mode() {
                             // In studio mode: only Space (play/pause) is allowed

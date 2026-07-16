@@ -2005,9 +2005,11 @@ mod tests {
     #[test]
     fn audio_export_honors_pre_cancel_without_starting_ffmpeg() {
         let mut project = Project::new();
-        let mut settings = ProjectSettings::default();
-        settings.source_audio_offset_frames = 10;
-        settings.instrumental_audio_offset_frames = -10;
+        let settings = ProjectSettings {
+            source_audio_offset_frames: 10,
+            instrumental_audio_offset_frames: -10,
+            ..ProjectSettings::default()
+        };
         project.set_settings(settings);
         let cancel = AtomicBool::new(true);
         let result = export_mp3_audio(

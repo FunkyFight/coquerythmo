@@ -181,6 +181,10 @@ pub(crate) fn import_subtitle_from_path(state: &mut State, path: PathBuf) {
         .and_then(|extension| extension.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
+    if extension.eq_ignore_ascii_case(crate::project_archive::PROJECT_EXTENSION) {
+        import_project_from_path(state, path);
+        return;
+    }
     let result = match extension.as_str() {
         "json" => export::JsonImporter.import(&path),
         "srt" => export::import_srt(&path, fps),

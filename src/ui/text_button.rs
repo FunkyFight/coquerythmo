@@ -47,6 +47,14 @@ impl Widget for TextButton {
     }
 
     fn handle_event(&mut self, event: &UiEvent) -> EventResponse {
+        if matches!(event, UiEvent::Activate) {
+            let response = (self.on_click)();
+            return if response == EventResponse::Ignored {
+                EventResponse::Consumed
+            } else {
+                response
+            };
+        }
         match self.state.handle(event, &self.bounds) {
             InteractiveResult::Clicked => {
                 let r = (self.on_click)();
@@ -126,5 +134,9 @@ impl Widget for TextButton {
             color_override: Some(text_color),
             font_family_override: None,
         }]
+    }
+
+    fn accessible_label(&self) -> Option<&str> {
+        Some(&self.label)
     }
 }

@@ -13,6 +13,7 @@ pub mod context_menu;
 pub mod dropdown;
 pub mod export_modal;
 pub mod file_explorer;
+pub mod focus;
 pub mod icon_button;
 pub mod icons;
 pub mod interactive;
@@ -61,6 +62,7 @@ use crate::render_index::ProjectRenderIndex;
 use crate::rendering::rythmo::scene::{FrameWindow, RythmoScene, SceneOptions};
 
 use self::actor_icon_cache::ActorIconCache;
+use self::focus::{AccessibleNode, FocusId, FocusManager};
 use self::icons::IconAtlas;
 use self::modal_host::ModalHost;
 use self::renderer::UiRenderer;
@@ -117,6 +119,7 @@ pub struct Ui {
     pub loading_project: Option<(String, std::time::Instant)>,
     automation_editor: automation::AutomationEditor,
     side_panel: side_panel::SidePanel,
+    focus: FocusManager,
 }
 
 struct WhatsNewThumbnailTexture {
@@ -206,6 +209,7 @@ impl Ui {
             loading_project: None,
             automation_editor: automation::AutomationEditor::default(),
             side_panel: side_panel::SidePanel::default(),
+            focus: FocusManager::default(),
             active_mode: Some(ToolMode::Select),
             brush_color: [1.0, 1.0, 1.0, 1.0],
             brush_radius_index: 0,
@@ -227,7 +231,92 @@ impl Ui {
             brush_color_preset_index: 0,
         };
         ui.toolbar_widgets = shell::build_toolbar(ui.toolbar_build_context());
+        ui.refresh_root_focus_nodes();
         ui
+    }
+
+    fn refresh_root_focus_nodes(&mut self) {
+        let mut nodes = Vec::new();
+        for (index, widget) in self.topbar_widgets.iter().enumerate() {
+            let label = widget
+                .accessible_label()
+                .map(str::to_string)
+                .or_else(|| widget.labels().first().map(|label| label.text.to_string()))
+                .unwrap_or_else(|| format!("Contrôle {}", index + 1));
+            nodes.push(AccessibleNode::focusable(
+                format!("topbar.{index}"),
+                widget.accessible_role(),
+                label,
+            ));
+        }
+        for (index, widget) in self.toolbar_widgets.iter().enumerate() {
+            let label = widget
+                .accessible_label()
+                .map(str::to_string)
+                .or_else(|| widget.labels().first().map(|label| label.text.to_string()))
+                .unwrap_or_else(|| format!("Outil {}", index + 1));
+            nodes.push(AccessibleNode::focusable(
+                format!("toolbar.{index}"),
+                widget.accessible_role(),
+                label,
+            ));
+        }
+        self.focus.replace_root(nodes);
+    }
+
+    fn focused_widget_mut(&mut self) -> Option<&mut Box<dyn Widget>> {
+        let id = self.focus.current_id()?.0.clone();
+        let (group, index) = id.split_once('.')?;
+        let index = index.parse::<usize>().ok()?;
+        match group {
+            "topbar" => self.topbar_widgets.get_mut(index),
+            "toolbar" => self.toolbar_widgets.get_mut(index),
+            _ => None,
+        }
+    }
+
+    fn focused_widget(&self) -> Option<&dyn Widget> {
+        let id = self.focus.current_id()?.0.as_str();
+        let (group, index) = id.split_once('.')?;
+        let index = index.parse::<usize>().ok()?;
+        match group {
+            "topbar" => self.topbar_widgets.get(index).map(|widget| widget.as_ref()),
+            "toolbar" => self
+                .toolbar_widgets
+                .get(index)
+                .map(|widget| widget.as_ref()),
+            _ => None,
+        }
+    }
+
+    pub fn has_keyboard_focus(&self) -> bool {
+        self.focus.current_id().is_some()
+    }
+
+    pub fn is_sensitive_text_context(&self) -> bool {
+        self.modal_host.is_sensitive_text_context()
+    }
+
+    fn focus_widget_at(&mut self, x: f32, y: f32) {
+        if let Some((index, _)) = self
+            .topbar_widgets
+            .iter()
+            .enumerate()
+            .find(|(_, widget)| widget.bounds().contains(x, y))
+        {
+            self.focus.focus(&FocusId::new(format!("topbar.{index}")));
+            return;
+        }
+        if let Some((index, _)) = self
+            .toolbar_widgets
+            .iter()
+            .enumerate()
+            .find(|(_, widget)| widget.bounds().contains(x, y))
+        {
+            self.focus.focus(&FocusId::new(format!("toolbar.{index}")));
+            return;
+        }
+        self.focus.clear();
     }
 
     fn rebuild_layout(&mut self) {
@@ -239,6 +328,7 @@ impl Ui {
             self.video_split,
         );
         self.toolbar_widgets = shell::build_toolbar(self.toolbar_build_context());
+        self.refresh_root_focus_nodes();
     }
 
     pub fn rebuild_topbar(&mut self, in_room: bool) {
@@ -250,6 +340,7 @@ impl Ui {
             self.uv("settings"),
             self.uv("project"),
         );
+        self.refresh_root_focus_nodes();
     }
 
     pub fn set_network_room_code(&mut self, code: Option<&str>) {
@@ -260,6 +351,7 @@ impl Ui {
 
     pub fn rebuild_toolbar(&mut self) {
         self.toolbar_widgets = shell::build_toolbar(self.toolbar_build_context());
+        self.refresh_root_focus_nodes();
     }
 
     fn toolbar_build_context(&self) -> shell::ToolbarBuildContext<'_> {
@@ -288,6 +380,10 @@ impl Ui {
     ) -> EventResponse {
         if let UiEvent::MouseMove { x, y } = event {
             self.cursor_pos = (*x, *y);
+        }
+
+        if let UiEvent::MousePress { x, y } = event {
+            self.focus_widget_at(*x, *y);
         }
 
         // Project loading modal blocks all input while a BR is being parsed.
@@ -333,6 +429,87 @@ impl Ui {
             return outcome.into_event_response();
         }
 
+        // A rythmo text editor owns cursor navigation before any toolbar
+        // widget sees it. In particular, the volume slider also interprets
+        // Up/Down as value changes; letting it inspect these events while a
+        // line is being edited makes the caret appear to change the volume.
+        if self.rythmo_state.is_editing()
+            && matches!(
+                event,
+                UiEvent::CursorLeft
+                    | UiEvent::CursorRight
+                    | UiEvent::ShiftCursorLeft
+                    | UiEvent::ShiftCursorRight
+                    | UiEvent::CursorUp
+                    | UiEvent::CursorDown
+            )
+        {
+            let response = rythmo::handle_rythmo_event(
+                event,
+                &self.layout.rythmo,
+                project,
+                render_index,
+                render_frame,
+                self.playing,
+                fps,
+                &mut self.rythmo_state,
+                self.active_mode.unwrap_or(ToolMode::Select),
+                self.brush_color,
+                match self.brush_radius_index {
+                    0 => 0.006,
+                    1 => 0.012,
+                    2 => 0.024,
+                    _ => 0.012,
+                },
+                self.erasing,
+            );
+            return if response == EventResponse::Ignored {
+                EventResponse::Consumed
+            } else {
+                response
+            };
+        }
+
+        match event {
+            UiEvent::FocusNext => {
+                if let Some(node) = self.focus.focus_next() {
+                    return EventResponse::Action(UiAction::Accessibility(
+                        crate::accessibility::AccessibilityEvent::Focus {
+                            label: node.label.clone(),
+                            role: format!("{:?}", node.role),
+                        },
+                    ));
+                }
+                return EventResponse::Consumed;
+            }
+            UiEvent::FocusPrevious => {
+                if let Some(node) = self.focus.focus_previous() {
+                    return EventResponse::Action(UiAction::Accessibility(
+                        crate::accessibility::AccessibilityEvent::Focus {
+                            label: node.label.clone(),
+                            role: format!("{:?}", node.role),
+                        },
+                    ));
+                }
+                return EventResponse::Consumed;
+            }
+            UiEvent::Activate => {
+                if let Some(widget) = self.focused_widget_mut() {
+                    let response = widget.handle_event(event);
+                    return if response == EventResponse::Ignored {
+                        EventResponse::Consumed
+                    } else {
+                        response
+                    };
+                }
+            }
+            UiEvent::KeyInput { text } if text == "\x1b" && self.focus.current_id().is_some() => {
+                self.focus.clear();
+                return EventResponse::Consumed;
+            }
+            _ => {}
+        }
+
         // The resize handle straddles the panel boundary, so it owns pointer
         // events before the panel content does.
         if let Some(response) = self.handle_props_drag(event) {
@@ -345,6 +522,22 @@ impl Ui {
             if let Some(response) = self.side_panel.handle_event(event, panel, project) {
                 return response;
             }
+        }
+
+        if matches!(event, UiEvent::OpenContextMenu) {
+            if let Some(rythmo::Selection::Line(line_id)) = self.rythmo_state.selected {
+                let zone = self.layout.rythmo;
+                self.rythmo_state.context_menu = Some(rythmo::LineContextMenu {
+                    line_id,
+                    x: zone.x + zone.width * 0.5,
+                    y: zone.y + zone.height * 0.5,
+                    hover_main: true,
+                    hover_actor_index: None,
+                    hover_action_index: None,
+                    actor_scroll: 0.0,
+                });
+            }
+            return EventResponse::Consumed;
         }
 
         if self.rythmo_state.context_menu.is_some() || matches!(event, UiEvent::ContextMenu { .. })
@@ -773,6 +966,17 @@ impl Ui {
             self.active_dropdown = None;
         } else {
             self.active_dropdown = Some(dd);
+        }
+    }
+
+    pub fn open_recent_projects(&mut self) {
+        // Replaced by the keyboard focus/popup implementation below. Keeping
+        // this semantic entry point prevents shortcuts from depending on the
+        // topbar widget order.
+        self.rebuild_topbar(self.network_in_room);
+        if let Some(project_menu) = self.topbar_widgets.first_mut() {
+            project_menu.open_submenu(4);
+            self.focus.focus(&FocusId::new("topbar.0"));
         }
     }
 
@@ -1487,6 +1691,28 @@ impl Ui {
                 icons.extend(widget.render_icons());
                 labels.extend(widget.labels());
             }
+        }
+
+        if let Some(widget) = self.focused_widget() {
+            let bounds = widget.bounds();
+            overlay_quads.push(QuadInstance {
+                rect: [
+                    bounds.x - 2.0,
+                    bounds.y - 2.0,
+                    bounds.width + 4.0,
+                    bounds.height + 4.0,
+                ],
+                color: [0.0; 4],
+                color_bottom: [0.0; 4],
+                border_color: [0.25, 0.52, 1.0, 1.0],
+                border_width: 2.0,
+                border_radius: 6.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
         }
 
         // Capturing widgets → overlay (on top of video)

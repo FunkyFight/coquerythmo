@@ -38,6 +38,9 @@ impl FileExplorerModal {
             error: None,
             status_text: t("file_explorer.loading").to_string(),
             active_field: None,
+            focus: super::ExplorerFocus::Back,
+            sidebar_selected: 0,
+            overwrite_focus_replace: false,
             address_input: super::TextInputState::new(),
             name_filter_input: super::TextInputState::new(),
             filename_input: super::TextInputState::new(),
@@ -49,6 +52,7 @@ impl FileExplorerModal {
             scrollbar_drag_anchor_offset: 0.0,
         };
         if modal.mode == FileExplorerMode::Save {
+            modal.focus = super::ExplorerFocus::Filename;
             modal.activate_field(ActiveField::Filename);
         }
         modal.start_scan();

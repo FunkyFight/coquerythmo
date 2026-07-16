@@ -7,6 +7,7 @@ use winit::window::{Window, WindowId};
 
 use std::time::{Duration, Instant};
 
+use crate::accessibility::{AccessibilityEvent, NarrationService};
 use crate::application::collaboration_service::{CollaborationSession, PingResult};
 use crate::application::context::AppContext;
 use crate::application::delta_codec::{decode_delta, encode_delta};
@@ -50,6 +51,7 @@ pub struct State {
     pub jobs: JobManager,
     pub project_session: ProjectSession,
     pub workspace_host: WorkspaceHost<RythmoWorkspace>,
+    pub narration: NarrationService,
     last_autosave: Instant,
     line_clipboard: Option<RythmoLine>,
     automation_last_run: Option<(u64, u64)>,
@@ -72,6 +74,9 @@ impl State {
             jobs: JobManager::new(),
             project_session: ProjectSession::new(),
             workspace_host: WorkspaceHost::new(RythmoWorkspace::new()),
+            narration: NarrationService::new(
+                crate::config::get().accessibility.screen_reader_enabled,
+            ),
             last_autosave: Instant::now(),
             line_clipboard: None,
             automation_last_run: None,
@@ -251,6 +256,14 @@ impl State {
 
     pub fn is_editing_text(&self) -> bool {
         self.ui_shell.ui.is_editing_text()
+    }
+
+    pub fn has_keyboard_focus(&self) -> bool {
+        self.ui_shell.ui.has_keyboard_focus()
+    }
+
+    pub fn is_sensitive_text_context(&self) -> bool {
+        self.ui_shell.ui.is_sensitive_text_context()
     }
 
     pub fn hovering_resize_handle(&self) -> bool {
@@ -896,6 +909,46 @@ impl State {
             .map_or(0, |p| p.current_frame())
     }
 
+    fn timecode_for_frame(&self, frame: i64) -> String {
+        let fps = self.fps().max(1.0);
+        let total_centiseconds = ((frame.max(0) as f64 / fps) * 100.0).round() as i64;
+        let hours = total_centiseconds / 360_000;
+        let minutes = (total_centiseconds / 6_000) % 60;
+        let seconds = (total_centiseconds / 100) % 60;
+        let centiseconds = total_centiseconds % 100;
+        let hour_label = if hours == 1 {
+            crate::i18n::t("accessibility.hour")
+        } else {
+            crate::i18n::t("accessibility.hours")
+        };
+        let minute_label = if minutes == 1 {
+            crate::i18n::t("accessibility.minute")
+        } else {
+            crate::i18n::t("accessibility.minutes")
+        };
+        let second_label = if seconds == 1 {
+            crate::i18n::t("accessibility.second")
+        } else {
+            crate::i18n::t("accessibility.seconds")
+        };
+        let centisecond_label = if centiseconds == 1 {
+            crate::i18n::t("accessibility.hundredth")
+        } else {
+            crate::i18n::t("accessibility.hundredths")
+        };
+        format!(
+            "{hours} {hour_label}, {minutes} {minute_label}, {seconds} {second_label}, {centiseconds} {centisecond_label}"
+        )
+    }
+
+    fn announce_current_timecode(&self) {
+        self.narration
+            .announce_event(AccessibilityEvent::ValueChanged {
+                label: crate::i18n::t("accessibility.timecode").to_string(),
+                value: self.timecode_for_frame(self.current_frame()),
+            });
+    }
+
     pub fn render_frame(&self) -> f64 {
         self.playback
             .video_player
@@ -1246,19 +1299,33 @@ impl State {
     }
 
     pub fn toggle_play_pause(&mut self) {
-        if let Some(player) = &mut self.playback.video_player {
+        let playing = {
+            let Some(player) = &mut self.playback.video_player else {
+                return;
+            };
             if !player.toggle() {
                 return;
             }
-            if self.ui_shell.ui.is_playing() != player.is_playing() {
+            let playing = player.is_playing();
+            if self.ui_shell.ui.is_playing() != playing {
                 self.ui_shell.ui.toggle_play_pause();
             }
-            if player.is_playing() {
+            if playing {
                 self.playback.timeline.emit(TimelineEvent::PlaybackStarted);
             } else {
                 self.playback.timeline.emit(TimelineEvent::PlaybackStopped);
             }
-        }
+            playing
+        };
+        self.narration
+            .announce_event(AccessibilityEvent::Activation {
+                label: crate::i18n::t(if playing {
+                    "toolbar.play"
+                } else {
+                    "toolbar.stop"
+                })
+                .to_string(),
+            });
     }
 
     pub fn toggle_active_audio(&mut self) {
@@ -1338,6 +1405,11 @@ impl State {
         if let Some(player) = &mut self.playback.video_player {
             player.set_volume(vol);
         }
+        self.narration
+            .announce_event(AccessibilityEvent::ValueChanged {
+                label: crate::i18n::t("accessibility.volume").to_string(),
+                value: format!("{} %", (vol.clamp(0.0, 1.0) * 100.0).round()),
+            });
     }
 
     pub fn toggle_mute(&mut self) {
@@ -1347,6 +1419,30 @@ impl State {
             self.playback.last_nonzero_volume.max(0.75)
         };
         self.set_volume(target);
+    }
+
+    pub fn toggle_screen_reader(&mut self) {
+        if !self.narration.is_available() {
+            self.show_toast(crate::i18n::t("accessibility.unavailable"), 4.0);
+            return;
+        }
+        let enabled = self.narration.set_enabled(!self.narration.is_enabled());
+        crate::config::set_screen_reader_enabled(enabled);
+        let message = if enabled {
+            crate::i18n::t("accessibility.enabled")
+        } else {
+            crate::i18n::t("accessibility.disabled")
+        };
+        self.show_toast(message, 3.0);
+        if enabled {
+            self.narration.announce_event(AccessibilityEvent::Success {
+                message: message.to_string(),
+            });
+        }
+    }
+
+    pub fn announce_accessibility(&self, event: AccessibilityEvent) {
+        self.narration.announce_event(event);
     }
 
     pub fn prev_frame(&mut self) {
@@ -1907,6 +2003,7 @@ impl State {
             return;
         }
         use crate::workspaces::rythmo::view::Selection;
+        let mut deleted_lines = 0usize;
         if let Some(ref sel) = self.ui_shell.ui.rythmo_state().selected {
             match sel {
                 Selection::Line(id) => {
@@ -1915,6 +2012,7 @@ impl State {
                         self.project_session.project.line_index(*id),
                     ) {
                         self.execute_and_broadcast(Command::DeleteLine { snapshot, index });
+                        deleted_lines = 1;
                     }
                 }
                 Selection::Marker(idx) => {
@@ -1941,6 +2039,7 @@ impl State {
                         })
                         .collect();
                     if !lines.is_empty() {
+                        deleted_lines = lines.len();
                         self.execute_and_broadcast(Command::DeleteLines { lines });
                     }
                 }
@@ -1952,13 +2051,33 @@ impl State {
             }
             self.ui_shell.ui.clear_selection();
         }
+        if deleted_lines > 0 {
+            let key = if deleted_lines == 1 {
+                "accessibility.line_deleted"
+            } else {
+                "accessibility.lines_deleted"
+            };
+            self.narration.announce_event(AccessibilityEvent::Success {
+                message: crate::i18n::t(key).to_string(),
+            });
+        }
     }
 
     pub fn copy_selected_line(&mut self) {
         use crate::workspaces::rythmo::view::Selection;
         if let Some(Selection::Line(id)) = self.ui_shell.ui.rythmo_state().selected {
-            self.line_clipboard = self.project_session.project.get_line(id).cloned();
+            if let Some(line) = self.project_session.project.get_line(id).cloned() {
+                self.line_clipboard = Some(line.clone());
+                crate::platform::clipboard_set(&line.text);
+                self.narration.announce_event(AccessibilityEvent::Success {
+                    message: crate::i18n::t("accessibility.line_copied").to_string(),
+                });
+                return;
+            }
         }
+        self.narration.announce_event(AccessibilityEvent::Error {
+            message: crate::i18n::t("accessibility.no_line_selected").to_string(),
+        });
     }
 
     pub fn cut_selected_line(&mut self) {
@@ -1968,6 +2087,9 @@ impl State {
 
     pub fn paste_line(&mut self) {
         let Some(snapshot) = self.line_clipboard.clone() else {
+            self.narration.announce_event(AccessibilityEvent::Error {
+                message: crate::i18n::t("accessibility.no_line_clipboard").to_string(),
+            });
             return;
         };
         let mut line = snapshot;
@@ -1977,10 +2099,24 @@ impl State {
             .project
             .settings()
             .source_audio_offset_frames;
+        // Pasting follows the track currently under the mouse.  When the
+        // pointer is outside the rythmo band, retain the keyboard-selected
+        // track as the deterministic fallback used by Insert.
+        let target_track = self
+            .ui_shell
+            .ui
+            .rythmo_state
+            .hovered_track
+            .unwrap_or(self.ui_shell.ui.rythmo_state.keyboard_track);
+        line.y_slot = crate::rythmo_layout::y_slot_for_track_index(target_track);
+        self.ui_shell.ui.rythmo_state.keyboard_track = target_track;
         let index = self.project_session.project.line_count();
         self.execute_and_broadcast(Command::InsertLine {
             snapshot: line,
             index,
+        });
+        self.narration.announce_event(AccessibilityEvent::Success {
+            message: crate::i18n::t("accessibility.line_pasted").to_string(),
         });
     }
 
@@ -2250,6 +2386,275 @@ impl State {
             EditExecutor::create_line(&mut self.project_session, frame, dur, y_slot, String::new());
         self.broadcast_delta(&command);
         line_id
+    }
+
+    pub fn create_line_at_playhead(&mut self) -> u64 {
+        let frame = self.current_frame();
+        let track = self.ui_shell.ui.rythmo_state.keyboard_track;
+        let y_slot = crate::rythmo_layout::y_slot_for_track_index(track);
+        let id = self.create_line(frame, y_slot);
+        self.narration.announce_event(AccessibilityEvent::Success {
+            message: crate::i18n::t("accessibility.line_created").to_string(),
+        });
+        id
+    }
+
+    pub fn select_line_at_playhead(&mut self) -> Option<u64> {
+        use crate::workspaces::rythmo::view::Selection;
+
+        let frame = self.current_frame();
+        let mut candidates: Vec<(usize, u64)> = self
+            .project_session
+            .project
+            .lines()
+            .filter(|line| line.start_frame <= frame && frame < line.end_frame())
+            .map(|line| {
+                (
+                    crate::rythmo_layout::track_index_for_y_slot(line.y_slot),
+                    line.id,
+                )
+            })
+            .collect();
+        candidates.sort_unstable();
+        if candidates.is_empty() {
+            self.ui_shell.ui.rythmo_state.selected = None;
+            self.ui_shell.ui.rythmo_state.keyboard_cycle_frame = Some(frame);
+            self.narration.announce_event(AccessibilityEvent::Error {
+                message: crate::i18n::t("accessibility.no_line_at_cursor").to_string(),
+            });
+            return None;
+        }
+
+        let current = match self.ui_shell.ui.rythmo_state.selected {
+            Some(Selection::Line(id)) => candidates
+                .iter()
+                .position(|(_, candidate)| *candidate == id),
+            _ => None,
+        };
+        let next = if self.ui_shell.ui.rythmo_state.keyboard_cycle_frame == Some(frame) {
+            current.map_or(0, |index| (index + 1) % candidates.len())
+        } else {
+            0
+        };
+        let (track, id) = candidates[next];
+        self.ui_shell.ui.rythmo_state.keyboard_track = track;
+        self.ui_shell.ui.rythmo_state.keyboard_cycle_frame = Some(frame);
+        self.ui_shell.ui.rythmo_state.selected = Some(Selection::Line(id));
+        self.announce_line(id);
+        Some(id)
+    }
+
+    fn line_accessibility_label(&self, id: u64) -> String {
+        self.project_session
+            .project
+            .get_line(id)
+            .map(|line| {
+                let mut parts = Vec::new();
+                if !line.character_name.trim().is_empty() {
+                    parts.push(line.character_name.clone());
+                }
+                if !line.text.trim().is_empty() {
+                    parts.push(line.text.clone());
+                }
+                if parts.is_empty() {
+                    crate::i18n::t("accessibility.line").to_string()
+                } else {
+                    parts.join(", ")
+                }
+            })
+            .unwrap_or_else(|| crate::i18n::t("accessibility.line").to_string())
+    }
+
+    pub fn announce_line(&self, id: u64) {
+        self.narration
+            .announce_event(AccessibilityEvent::Selection {
+                label: self.line_accessibility_label(id),
+            });
+    }
+
+    pub fn announce_character(&self, id: u64) {
+        let label = self
+            .project_session
+            .project
+            .get_line(id)
+            .map(|line| line.character_name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| crate::i18n::t("accessibility.character").to_string());
+        self.narration
+            .announce_event(AccessibilityEvent::Selection { label });
+    }
+
+    pub fn announce_selected_line(&self) {
+        if let Some(id) = self.selected_line_id() {
+            self.announce_line(id);
+        }
+    }
+
+    /// Move the selected line to the neighbouring rythmo track.
+    ///
+    /// Keeping this as a state-level operation means the keyboard shortcut
+    /// follows the same reversible `MoveLine` command path as a mouse drag,
+    /// while also giving screen-reader users a concise confirmation of the
+    /// resulting track number.
+    pub fn move_selected_line_track(&mut self, direction: i32) -> bool {
+        let Some(id) = self.selected_line_id() else {
+            self.narration.announce_event(AccessibilityEvent::Error {
+                message: crate::i18n::t("accessibility.no_line_selected").to_string(),
+            });
+            return false;
+        };
+        let Some((start_frame, current_track)) = self
+            .project_session
+            .project
+            .get_line(id)
+            .map(|line| {
+                (
+                    line.start_frame,
+                    crate::rythmo_layout::track_index_for_y_slot(line.y_slot),
+                )
+            })
+        else {
+            self.narration.announce_event(AccessibilityEvent::Error {
+                message: crate::i18n::t("accessibility.no_line_selected").to_string(),
+            });
+            return false;
+        };
+
+        let last_track = crate::rythmo_layout::track_count().saturating_sub(1);
+        let target_track = (current_track as i32 + direction.signum())
+            .clamp(0, last_track as i32) as usize;
+        if target_track == current_track {
+            self.narration.announce_event(AccessibilityEvent::Error {
+                message: format!(
+                    "{} {}",
+                    crate::i18n::t("accessibility.track_limit"),
+                    current_track + 1
+                ),
+            });
+            return false;
+        }
+
+        self.move_line(
+            id,
+            start_frame,
+            crate::rythmo_layout::y_slot_for_track_index(target_track),
+        );
+        self.ui_shell.ui.rythmo_state.keyboard_track = target_track;
+        self.narration
+            .announce_event(AccessibilityEvent::ValueChanged {
+                label: crate::i18n::t("accessibility.track").to_string(),
+                value: (target_track + 1).to_string(),
+            });
+        true
+    }
+
+    fn selected_line_id(&self) -> Option<u64> {
+        match self.ui_shell.ui.rythmo_state.selected {
+            Some(crate::workspaces::rythmo::view::Selection::Line(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    pub fn set_selected_line_start_at_playhead(&mut self) -> bool {
+        let Some(id) = self.selected_line_id() else {
+            self.narration.announce_event(AccessibilityEvent::Error {
+                message: crate::i18n::t("accessibility.no_line_selected").to_string(),
+            });
+            return false;
+        };
+        let Some(line) = self.project_session.project.get_line(id) else {
+            return false;
+        };
+        let frame = self.current_frame();
+        let end = line.end_frame();
+        if frame >= end {
+            self.narration.announce_event(AccessibilityEvent::Error {
+                message: crate::i18n::t("accessibility.invalid_line_limit").to_string(),
+            });
+            return false;
+        }
+        self.resize_line(id, frame, end - frame);
+        true
+    }
+
+    pub fn set_selected_line_end_at_playhead(&mut self) -> bool {
+        let Some(id) = self.selected_line_id() else {
+            self.narration.announce_event(AccessibilityEvent::Error {
+                message: crate::i18n::t("accessibility.no_line_selected").to_string(),
+            });
+            return false;
+        };
+        let Some(line) = self.project_session.project.get_line(id) else {
+            return false;
+        };
+        let frame = self.current_frame();
+        if frame <= line.start_frame {
+            self.narration.announce_event(AccessibilityEvent::Error {
+                message: crate::i18n::t("accessibility.invalid_line_limit").to_string(),
+            });
+            return false;
+        }
+        self.resize_line(id, line.start_frame, frame - line.start_frame);
+        true
+    }
+
+    pub fn start_editing_selected_line(&mut self) -> bool {
+        let Some(id) = self.selected_line_id() else {
+            return false;
+        };
+        self.start_editing_line(id);
+        true
+    }
+
+    pub fn start_editing_selected_character(&mut self) -> bool {
+        let Some(id) = self.selected_line_id() else {
+            return false;
+        };
+        let Some(line) = self.project_session.project.get_line(id) else {
+            return false;
+        };
+        let name = line.character_name.clone();
+        self.ui_shell.ui.rythmo_state.editing_character = Some(id);
+        self.ui_shell.ui.rythmo_state.char_input.activate(&name);
+        self.ui_shell.ui.rythmo_state.char_input.select_all(&name);
+        true
+    }
+
+    pub fn begin_keyboard_pan(&mut self, direction: i32) {
+        let state = &mut self.ui_shell.ui.rythmo_state;
+        state.keyboard_pan_direction = direction.signum();
+        state.keyboard_pan_last_tick = Some(Instant::now());
+        state.keyboard_pan_accum_px = 0.0;
+    }
+
+    pub fn end_keyboard_pan(&mut self) {
+        let state = &mut self.ui_shell.ui.rythmo_state;
+        state.keyboard_pan_direction = 0;
+        state.keyboard_pan_last_tick = None;
+        state.keyboard_pan_accum_px = 0.0;
+        self.finish_seek();
+        self.announce_current_timecode();
+    }
+
+    fn tick_keyboard_pan(&mut self) -> bool {
+        let now = Instant::now();
+        let state = &mut self.ui_shell.ui.rythmo_state;
+        if state.keyboard_pan_direction == 0 {
+            return false;
+        }
+        let last = state.keyboard_pan_last_tick.replace(now).unwrap_or(now);
+        let elapsed = now.saturating_duration_since(last).as_secs_f32().min(0.05);
+        let scroll_speed = crate::config::scroll_speed();
+        state.keyboard_pan_accum_px +=
+            state.keyboard_pan_direction as f32 * 240.0 * scroll_speed * elapsed;
+        let ppf = crate::constants::PIXELS_PER_FRAME * scroll_speed;
+        let frames = (state.keyboard_pan_accum_px / ppf).trunc() as i32;
+        if frames == 0 {
+            return false;
+        }
+        state.keyboard_pan_accum_px -= frames as f32 * ppf;
+        self.seek_relative(frames);
+        true
     }
 
     pub fn start_editing_line(&mut self, line_id: u64) {
@@ -3175,6 +3580,8 @@ impl State {
 
     pub fn tick_background(&mut self) -> bool {
         let mut changed = false;
+
+        changed |= self.tick_keyboard_pan();
 
         if let Ok(mut results) = self.collaboration.ping_results.try_lock() {
             for r in results.drain(..) {

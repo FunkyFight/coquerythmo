@@ -4,7 +4,9 @@ use crate::i18n::t;
 const CARD_W: f32 = 500.0;
 const CARD_H: f32 = 220.0;
 
-pub struct StudioWarningModal;
+pub struct StudioWarningModal {
+    focused_confirm: bool,
+}
 
 pub enum StudioWarningResult {
     Consumed,
@@ -20,7 +22,9 @@ impl Default for StudioWarningModal {
 
 impl StudioWarningModal {
     pub fn new() -> Self {
-        Self
+        Self {
+            focused_confirm: false,
+        }
     }
 
     fn card_rect(sw: f32, sh: f32) -> Rect {
@@ -36,6 +40,17 @@ impl StudioWarningModal {
         let card = Self::card_rect(sw, sh);
         match event {
             UiEvent::KeyInput { text } if text == "\x1b" => StudioWarningResult::Cancel,
+            UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}" => {
+                self.focused_confirm = !self.focused_confirm;
+                StudioWarningResult::Consumed
+            }
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => {
+                if self.focused_confirm {
+                    StudioWarningResult::Confirm
+                } else {
+                    StudioWarningResult::Cancel
+                }
+            }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 if !card.contains(*x, *y) {
                     // Click outside modal: consume but don't close (let ESC do that)
@@ -203,13 +218,18 @@ impl StudioWarningModal {
             ),
         ];
 
-        for (bx, label, color) in buttons {
+        for (index, (bx, label, color)) in buttons.into_iter().enumerate() {
+            let focused = self.focused_confirm == (index == 0);
             quads.push(QuadInstance {
                 rect: [bx, btn_y, btn_w, 30.0],
                 color,
                 color_bottom: color,
-                border_color: [0.5, 0.5, 0.55, 0.5],
-                border_width: 1.0,
+                border_color: if focused {
+                    [0.30, 0.62, 1.0, 1.0]
+                } else {
+                    [0.5, 0.5, 0.55, 0.5]
+                },
+                border_width: if focused { 2.5 } else { 1.0 },
                 border_radius: 4.0,
                 shadow_offset: [0.0; 2],
                 shadow_color: [0.0; 4],

@@ -401,7 +401,7 @@ impl SidePanel {
                     self.color_picker.open(ox, oy, color);
                     self.color_role = Some(name.to_string());
                 } else if modifier == 3 {
-                    self.start_edit(EditField::RoleName, &name);
+                    self.start_edit(EditField::RoleName, name);
                 }
             }
         }
@@ -705,7 +705,7 @@ impl SidePanel {
                     {
                         self.edit_buffer.as_str()
                     } else {
-                        *name
+                        name
                     };
                     if self.editing == Some(EditField::RoleName) && self.edit_original == *name {
                         solid(

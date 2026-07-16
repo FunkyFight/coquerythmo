@@ -15,6 +15,7 @@ pub struct SettingsModal {
     pub font_scroll_offset: f32,
     pub selected_font_index: Option<usize>,
     pub hovered_font_index: Option<usize>,
+    keyboard_focus: usize,
 }
 
 pub fn card_rect(screen_w: f32, screen_h: f32) -> Rect {
@@ -53,6 +54,7 @@ impl SettingsModal {
             font_scroll_offset: 0.0,
             selected_font_index,
             hovered_font_index: None,
+            keyboard_focus: 0,
         }
     }
 
@@ -66,6 +68,70 @@ impl SettingsModal {
 
         match event {
             UiEvent::KeyInput { text } if text == "\x1b" => SettingsModalResult::Close,
+            UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}" => {
+                self.keyboard_focus = if text == "\t" {
+                    (self.keyboard_focus + 1) % 6
+                } else {
+                    (self.keyboard_focus + 5) % 6
+                };
+                SettingsModalResult::Consumed
+            }
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => match self.keyboard_focus
+            {
+                2 => {
+                    self.selected_font_index = None;
+                    self.rythmo_font = None;
+                    SettingsModalResult::Consumed
+                }
+                4 => SettingsModalResult::Save {
+                    lang: self.lang.clone(),
+                    rythmo_font: self.rythmo_font.clone(),
+                    scroll_speed: self.scroll_speed,
+                },
+                5 => SettingsModalResult::Close,
+                _ => SettingsModalResult::Consumed,
+            },
+            UiEvent::CursorLeft | UiEvent::CursorUp if self.keyboard_focus == 0 => {
+                self.lang = match self.lang.as_str() {
+                    "es-es" => "en-us",
+                    "en-us" => "fr-fr",
+                    _ => "fr-fr",
+                }
+                .into();
+                SettingsModalResult::Consumed
+            }
+            UiEvent::CursorRight | UiEvent::CursorDown if self.keyboard_focus == 0 => {
+                self.lang = match self.lang.as_str() {
+                    "fr-fr" => "en-us",
+                    "en-us" => "es-es",
+                    _ => "es-es",
+                }
+                .into();
+                SettingsModalResult::Consumed
+            }
+            UiEvent::CursorUp if self.keyboard_focus == 1 => {
+                let index = self.selected_font_index.unwrap_or(0).saturating_sub(1);
+                self.selected_font_index = Some(index);
+                self.rythmo_font = self.available_fonts.get(index).cloned();
+                SettingsModalResult::Consumed
+            }
+            UiEvent::CursorDown if self.keyboard_focus == 1 => {
+                let index = (self.selected_font_index.map_or(0, |index| index + 1))
+                    .min(self.available_fonts.len().saturating_sub(1));
+                self.selected_font_index = Some(index);
+                self.rythmo_font = self.available_fonts.get(index).cloned();
+                SettingsModalResult::Consumed
+            }
+            UiEvent::CursorLeft | UiEvent::CursorDown if self.keyboard_focus == 3 => {
+                self.scroll_speed = (self.scroll_speed - 0.25).max(0.25);
+                self.scroll_speed_text = format!("Ã—{:.2}", self.scroll_speed);
+                SettingsModalResult::Consumed
+            }
+            UiEvent::CursorRight | UiEvent::CursorUp if self.keyboard_focus == 3 => {
+                self.scroll_speed = (self.scroll_speed + 0.25).min(4.0);
+                self.scroll_speed_text = format!("Ã—{:.2}", self.scroll_speed);
+                SettingsModalResult::Consumed
+            }
             UiEvent::MouseMove { x, y } => {
                 let list_x = card.x + 20.0;
                 let list_y = card.y + 126.0;
