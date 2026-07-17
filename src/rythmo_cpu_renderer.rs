@@ -607,6 +607,7 @@ impl CpuRenderer {
                 slot_header_height: slot_header_h,
                 badge_gap,
                 scale: s,
+                dynamic_track_layout: false,
             },
         );
         let track_layouts = &scene.tracks;

@@ -376,6 +376,13 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
     );
     router.bind(
         InputContext::Global,
+        KeyCode::Tab,
+        ctrl,
+        RepeatPolicy::PressOnly,
+        UiAction::ToggleActiveAudio,
+    );
+    router.bind(
+        InputContext::Global,
         KeyCode::Character('s'),
         ctrl,
         RepeatPolicy::PressAndRepeat,
@@ -645,6 +652,11 @@ mod tests {
             Some(&UiAction::TogglePlayPause)
         );
         assert_eq!(resolve(KeyCode::Tab, Modifiers::NONE, &global, false), None);
+        assert_eq!(
+            resolve(KeyCode::Tab, ctrl, &global, false),
+            Some(&UiAction::ToggleActiveAudio)
+        );
+        assert_eq!(resolve(KeyCode::Tab, ctrl, &global, true), None);
         assert_eq!(
             resolve(KeyCode::Character('k'), ctrl, &global, false),
             Some(&UiAction::SplitDialogue)

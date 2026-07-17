@@ -58,6 +58,7 @@ ouvre le projet, `Suppr` le retire de la liste et `Échap` ferme la liste.
 | `Maj + ↑` / `Maj + ↓` | Augmenter/diminuer le volume par pas de 5 % |
 | `Maj + Numpad -` | Activer/désactiver le muet |
 | `Espace` | Lecture/pause |
+| `Ctrl + Tab` | Basculer entre l’audio original et l’audio instrumental |
 
 ## Bande rythmo
 
@@ -65,19 +66,21 @@ ouvre le projet, `Suppr` le retire de la liste et `Échap` ferme la liste.
 |---|---|
 | `Insert` | Créer une ligne au curseur |
 | `Entrée` | Sélectionner successivement les lignes présentes au frame courant |
-| `↑` / `↓` (ligne sélectionnée) | Déplacer la ligne vers la piste précédente/suivante |
+| `Maj + clic-glissé` (zone vide) | Ajouter les lignes du rectangle à la sélection existante |
+| `↑` / `↓` (sélection active) | Déplacer la ou les lignes vers la piste précédente/suivante |
 | `I` / `O` | Fixer le début/la fin de la ligne sélectionnée |
 | `Q` / `D` (maintenir) | Déplacer continuellement la timeline à gauche/droite |
 | `T` | Modifier le texte de la ligne sélectionnée |
 | `P` | Modifier le personnage de la ligne sélectionnée |
-| `Suppr` | Supprimer la ligne sélectionnée |
-| `Ctrl + C` | Copier la ligne sélectionnée |
-| `Ctrl + X` | Couper la ligne sélectionnée |
-| `Ctrl + V` | Coller la ligne sur la piste sous le curseur de souris |
+| `Suppr` | Supprimer la ou les lignes sélectionnées |
+| `Ctrl + C` | Copier la ou les lignes sélectionnées |
+| `Ctrl + X` | Couper la ou les lignes sélectionnées |
+| `Ctrl + V` | Coller la ou les lignes au curseur de lecture, sur la piste sous la souris |
 
-Si la souris est hors de la bande rythmo, `Ctrl + V` utilise la piste clavier
-active. Pendant l’édition d’une ligne ou d’un personnage, les flèches déplacent
-le caret et ne modifient pas le volume.
+Le collage multiple conserve les écarts temporels et les écarts de piste entre
+les lignes. Si la souris est hors de la bande rythmo, `Ctrl + V` utilise la piste
+clavier active. Pendant l’édition d’une ligne ou d’un personnage, les flèches
+déplacent le caret et ne modifient pas le volume.
 
 ## Export
 

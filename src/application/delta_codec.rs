@@ -18,6 +18,7 @@ pub fn encode_delta(command: &Command, project: &Project) -> Option<serde_json::
         Command::InsertLine { snapshot, .. } => {
             serde_json::json!({ "action": "create_line", "line": serde_json::to_value(snapshot).ok()? })
         }
+        Command::InsertLines { .. } => return None,
         Command::DeleteLine { snapshot, .. } => {
             serde_json::json!({ "action": "delete_line", "line_id": snapshot.id })
         }

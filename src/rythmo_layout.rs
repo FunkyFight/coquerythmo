@@ -120,6 +120,26 @@ pub fn track_has_karaoke(project: &Project, track_index: usize) -> bool {
         .any(|line| line.karaoke && track_index_for_y_slot(line.y_slot) == track_index)
 }
 
+/// Returns whether a karaoke line is being played on the track at this exact
+/// timeline position.
+pub fn track_has_active_karaoke(project: &Project, track_index: usize, current_frame: f64) -> bool {
+    project.lines().any(|line| {
+        line.karaoke
+            && line.karaoke_active(current_frame)
+            && track_index_for_y_slot(line.y_slot) == track_index
+    })
+}
+
+pub fn active_karaoke_tracks(project: &Project, current_frame: f64) -> Vec<bool> {
+    let mut tracks = vec![false; track_count()];
+    for line in project.lines() {
+        if line.karaoke && line.karaoke_active(current_frame) {
+            tracks[track_index_for_y_slot(line.y_slot)] = true;
+        }
+    }
+    tracks
+}
+
 pub fn karaoke_stack_gap(height: f32, scale: f32) -> f32 {
     (2.0 * scale.max(0.5)).min((height * 0.2).max(0.0))
 }
@@ -141,6 +161,39 @@ pub fn build_track_layouts(
         .iter()
         .map(|&track_index| {
             let has_karaoke = track_has_karaoke(project, track_index);
+            let body_h = if has_karaoke {
+                karaoke_track_body_height(normal_body_h, scale)
+            } else {
+                normal_body_h
+            };
+            let total_h = slot_header_h + badge_gap + body_h;
+            let layout = TrackLayout {
+                track_index,
+                top,
+                total_h,
+                body_h,
+                has_karaoke,
+            };
+            top += total_h;
+            layout
+        })
+        .collect()
+}
+
+pub fn build_track_layouts_at_frame(
+    project: &Project,
+    track_indices: &[usize],
+    current_frame: f64,
+    normal_body_h: f32,
+    slot_header_h: f32,
+    badge_gap: f32,
+    scale: f32,
+) -> Vec<TrackLayout> {
+    let mut top = 0.0;
+    track_indices
+        .iter()
+        .map(|&track_index| {
+            let has_karaoke = track_has_active_karaoke(project, track_index, current_frame);
             let body_h = if has_karaoke {
                 karaoke_track_body_height(normal_body_h, scale)
             } else {
@@ -206,6 +259,25 @@ mod tests {
             total_tracks_height(&layouts),
             normal.total_h + karaoke.total_h
         );
+    }
+
+    #[test]
+    fn track_height_only_doubles_while_karaoke_is_active() {
+        let mut project = Project::new();
+        let karaoke_id = project.add_line(24, 24, 0.5);
+        project.get_line_mut(karaoke_id).unwrap().karaoke = true;
+
+        let tracks = used_track_indices(&project);
+        let before = build_track_layouts_at_frame(&project, &tracks, 23.0, 40.0, 28.0, 2.0, 1.0);
+        let active = build_track_layouts_at_frame(&project, &tracks, 24.0, 40.0, 28.0, 2.0, 1.0);
+        let after = build_track_layouts_at_frame(&project, &tracks, 48.1, 40.0, 28.0, 2.0, 1.0);
+
+        assert_eq!(track_for_index(&before, 2).unwrap().body_h, 40.0);
+        assert_eq!(
+            track_for_index(&active, 2).unwrap().body_h,
+            karaoke_track_body_height(40.0, 1.0)
+        );
+        assert_eq!(track_for_index(&after, 2).unwrap().body_h, 40.0);
     }
 
     #[test]

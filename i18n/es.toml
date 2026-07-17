@@ -36,7 +36,9 @@
 "accessibility.line_deleted" = "Línea eliminada"
 "accessibility.lines_deleted" = "Líneas eliminadas"
 "accessibility.line_copied" = "Línea copiada"
+"accessibility.lines_copied" = "Líneas copiadas"
 "accessibility.line_pasted" = "Línea pegada"
+"accessibility.lines_pasted" = "Líneas pegadas"
 "accessibility.no_line_clipboard" = "No hay ninguna línea copiada"
 "accessibility.track" = "Pista"
 "accessibility.track_limit" = "Límite de pista alcanzado"
@@ -251,6 +253,7 @@
 "whats_new.scroll_hint" = "Usa la rueda del ratón para seguir leyendo"
 
 # Voice actor context menu
+"context.change_character" = "Cambiar el personaje"
 "context.voice_actor.assign_to_actor" = "Asignar a un actor de voz"
 "context.voice_actor.create" = "Crear un actor de voz"
 "context.voice_actor.assign_line" = "Asignar línea"

@@ -30,12 +30,19 @@ pub(crate) fn handle_ctrl_click(
     if !ctx.zone.contains(x, y) {
         return EventResponse::Ignored;
     }
+
+    // Ctrl+clicking a syllable handle edits that handle in place instead of
+    // creating a line. The drag keeps all earlier syllable boundaries fixed.
+    if let Some(response) = syllable_mouse_press(ctx, state, x, y, true) {
+        return response;
+    }
+
     state.stop_line_editing();
     state.stop_char_editing();
     state.stop_note_editing();
     EventResponse::Action(UiAction::CreateLine {
         frame: x_to_frame(x, ctx.current_frame, ctx.zone),
-        y_slot: y_to_slot(ctx.project, y, ctx.zone),
+        y_slot: y_to_slot_at_frame(ctx.project, y, ctx.current_frame, ctx.zone),
     })
 }
 
@@ -79,14 +86,26 @@ pub(crate) fn handle_shift_mouse_press(
         }
     }
 
-    // Outside text editing, Shift+drag locks the line's timing and only
-    // changes its vertical track.
+    // Outside text editing, Shift+drag on a line locks timing and changes
+    // only its vertical track. Preserve an existing multi-line selection so
+    // the whole group can move vertically together.
     for line in ctx.project.lines() {
         let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
         if !rect.contains(x, y) {
             continue;
         }
-        state.selected = Some(Selection::Line(line.id));
+        let group_origins = if let Some(selection) = state.selected.clone() {
+            let origins = selected_line_origins(ctx.project, &selection);
+            if !origins.is_empty() && origins.iter().any(|origin| origin.line_id == line.id) {
+                origins
+            } else {
+                state.selected = Some(Selection::Line(line.id));
+                Vec::new()
+            }
+        } else {
+            state.selected = Some(Selection::Line(line.id));
+            Vec::new()
+        };
         state.dragging = Some(DragState {
             target: DragTarget::Line(line.id),
             drag_start_x: x,
@@ -95,9 +114,13 @@ pub(crate) fn handle_shift_mouse_press(
             original_y_slot: line.y_slot,
             drag_start_y: y,
             handle: DragHandle::VerticalOnly,
-            group_origins: Vec::new(),
+            group_origins,
         });
         return EventResponse::Consumed;
+    }
+
+    if ctx.active_mode == ToolMode::Select {
+        return handle_selection_drag(state, x, y, true);
     }
 
     EventResponse::Ignored

@@ -3,7 +3,9 @@
 use crate::project::Project;
 use crate::render_index::ProjectRenderIndex;
 use crate::rythmo_drawing::DrawingStroke;
-use crate::rythmo_layout::{build_track_layouts, used_track_indices, TrackLayout};
+use crate::rythmo_layout::{
+    build_track_layouts, build_track_layouts_at_frame, used_track_indices, TrackLayout,
+};
 use crate::rythmo_line::{MarkerKind, RythmoLine};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +23,9 @@ pub struct SceneOptions {
     pub slot_header_height: f32,
     pub badge_gap: f32,
     pub scale: f32,
+    /// Keep export dimensions stable when false; interactive previews follow
+    /// the active karaoke lines when true.
+    pub dynamic_track_layout: bool,
 }
 
 impl Default for SceneOptions {
@@ -33,6 +38,7 @@ impl Default for SceneOptions {
             slot_header_height: 28.0,
             badge_gap: 2.0,
             scale: 1.0,
+            dynamic_track_layout: true,
         }
     }
 }
@@ -151,14 +157,27 @@ impl RythmoScene {
             .cloned()
             .collect();
 
-        let tracks = build_track_layouts(
-            project,
-            &used_track_indices(project),
-            options.normal_body_height,
-            options.slot_header_height,
-            options.badge_gap,
-            options.scale,
-        );
+        let track_indices = used_track_indices(project);
+        let tracks = if options.dynamic_track_layout {
+            build_track_layouts_at_frame(
+                project,
+                &track_indices,
+                options.current_frame,
+                options.normal_body_height,
+                options.slot_header_height,
+                options.badge_gap,
+                options.scale,
+            )
+        } else {
+            build_track_layouts(
+                project,
+                &track_indices,
+                options.normal_body_height,
+                options.slot_header_height,
+                options.badge_gap,
+                options.scale,
+            )
+        };
 
         Self {
             frame_window: options.frame_window,

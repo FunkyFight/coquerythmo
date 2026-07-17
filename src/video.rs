@@ -369,15 +369,16 @@ impl VideoPlayer {
     }
 
     /// Move current_frame by delta WITHOUT decoding (instant, for scroll).
+    ///
+    /// Seeking always invalidates the decoder streams, including while paused:
+    /// otherwise pressing play before the debounced frame decode can reuse the
+    /// old audio stream and start it at the previous video position.
     pub fn seek_frame_instant(&mut self, delta: i32) {
         let was_playing = self.playing;
-        if was_playing {
-            // The decoder FIFO still contains frames from the old position.
-            // Drop it now and let the debounced seek callback start a fresh
-            // stream from the new position. Keeping the old FIFO is what made
-            // timeline seeks during playback appear to freeze.
-            self.stop_decoders();
-        }
+        // The decoder FIFOs still contain frames/audio from the old position.
+        // Drop them now and let the debounced seek callback (or the next play)
+        // start fresh streams from the new position.
+        self.stop_decoders();
 
         let target = (self.current_frame + delta as i64).max(0);
         let target = if self.total_frames > 0 {
@@ -1400,7 +1401,9 @@ fn decode_waveform_peaks(path: &Path, fps: f64, total_frames: usize) -> Result<V
 
 #[cfg(test)]
 mod tests {
-    use super::VideoPlayer;
+    use std::sync::{mpsc, Arc};
+
+    use super::{AudioOutputState, VideoPlayer};
 
     #[test]
     fn interactive_seek_pauses_active_playback() {
@@ -1410,5 +1413,21 @@ mod tests {
         assert!(player.pause_for_seek());
         assert!(!player.is_playing());
         assert!(!player.pause_for_seek());
+    }
+
+    #[test]
+    fn seek_invalidates_audio_stream_while_paused() {
+        let mut player = VideoPlayer::new();
+        let (_, receiver) = mpsc::sync_channel(1);
+        player.receiver = Some(receiver);
+        player.audio_clock = Some(Arc::new(AudioOutputState::new(48_000, 1.0)));
+        player.current_frame = 100;
+        player.total_frames = 200;
+
+        player.seek_frame_instant(-10);
+
+        assert_eq!(player.current_frame(), 90);
+        assert!(player.receiver.is_none());
+        assert!(player.audio_clock.is_none());
     }
 }

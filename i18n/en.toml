@@ -36,7 +36,9 @@
 "accessibility.line_deleted" = "Line deleted"
 "accessibility.lines_deleted" = "Lines deleted"
 "accessibility.line_copied" = "Line copied"
+"accessibility.lines_copied" = "Lines copied"
 "accessibility.line_pasted" = "Line pasted"
+"accessibility.lines_pasted" = "Lines pasted"
 "accessibility.no_line_clipboard" = "No line copied"
 "accessibility.track" = "Track"
 "accessibility.track_limit" = "Track limit reached"
@@ -251,6 +253,7 @@
 "whats_new.scroll_hint" = "Use the mouse wheel to keep reading"
 
 # Voice actor context menu
+"context.change_character" = "Change character"
 "context.voice_actor.assign_to_actor" = "Assign to a voice actor"
 "context.voice_actor.create" = "Create a voice actor"
 "context.voice_actor.assign_line" = "Assign line"

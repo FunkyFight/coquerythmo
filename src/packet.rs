@@ -205,7 +205,10 @@ use crate::command::Command;
 
 impl Packetable for Command {
     fn to_packet(&self, project: &Project) -> Packet {
-        if matches!(self, Command::DeleteLines { .. }) {
+        if matches!(
+            self,
+            Command::InsertLines { .. } | Command::DeleteLines { .. }
+        ) {
             return Packet::Sync {
                 project: ProjectData::from_project(project),
             };
@@ -217,6 +220,7 @@ impl Packetable for Command {
             Command::InsertLine { snapshot, .. } => CommandPayload::CreateLine {
                 line: snapshot.clone(),
             },
+            Command::InsertLines { .. } => unreachable!("handled as a full sync above"),
             Command::DeleteLine { snapshot, .. } => CommandPayload::DeleteLine {
                 line_id: snapshot.id,
             },

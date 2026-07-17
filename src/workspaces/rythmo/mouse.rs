@@ -8,10 +8,7 @@ fn hit_test_line_and_track(
     x: f32,
     y: f32,
 ) -> (Option<u64>, Option<usize>) {
-    let max_gap_frames = karaoke_adjacent_max_gap_frames(ctx.fps);
-    let karaoke_index = state.cached_karaoke_ui_index(ctx.project, max_gap_frames);
-    let layout_ctx =
-        state.get_or_create_layout_ctx(ctx.project, karaoke_index.karaoke_tracks(), ctx.zone);
+    let layout_ctx = state.get_or_create_layout_ctx(ctx.project, ctx.current_frame, ctx.zone);
 
     // A line can only contain the pointer if its timeline interval contains
     // the frame under the pointer. Querying that frame avoids scanning every
@@ -71,8 +68,8 @@ pub(crate) fn handle_mouse_move(
             // pointer is released after leaving the zone.
             let clamped_x = x.clamp(ctx.zone.x, ctx.zone.x + ctx.zone.width);
             let clamped_y = y.clamp(ctx.zone.y, ctx.zone.y + ctx.zone.height);
-            drag.width = clamped_x - drag.x;
-            drag.height = clamped_y - drag.y;
+            drag.rect.width = clamped_x - drag.rect.x;
+            drag.rect.height = clamped_y - drag.rect.y;
             return EventResponse::Consumed;
         }
     }
@@ -124,9 +121,14 @@ pub(crate) fn handle_mouse_move(
                         EventResponse::Consumed
                     }
                     DragHandle::Body => {
-                        let candidate = y_to_slot(ctx.project, y, ctx.zone);
+                        let candidate =
+                            y_to_slot_at_frame(ctx.project, y, ctx.current_frame, ctx.zone);
                         let new_y_slot = if candidate != drag.original_y_slot {
-                            let layouts = editor_track_layouts(ctx.project, ctx.zone);
+                            let layouts = editor_track_layouts_at_frame(
+                                ctx.project,
+                                ctx.current_frame,
+                                ctx.zone,
+                            );
                             let orig_track_idx =
                                 rythmo_layout::track_index_for_y_slot(drag.original_y_slot);
                             let orig_track =
@@ -148,10 +150,11 @@ pub(crate) fn handle_mouse_move(
                         } else {
                             drag.original_y_slot
                         };
-                        if !drag.group_origins.is_empty()
-                            && matches!(state.selected, Some(Selection::AllLines))
-                        {
-                            let y_delta = new_y_slot - drag.original_y_slot;
+                        if !drag.group_origins.is_empty() {
+                            let y_delta = clamp_group_y_delta(
+                                &drag.group_origins,
+                                new_y_slot - drag.original_y_slot,
+                            );
                             let moves = drag
                                 .group_origins
                                 .iter()
@@ -159,7 +162,7 @@ pub(crate) fn handle_mouse_move(
                                     (
                                         origin.line_id,
                                         origin.original_frame + dx_frames,
-                                        (origin.original_y_slot + y_delta).clamp(0.0, 0.75),
+                                        origin.original_y_slot + y_delta,
                                     )
                                 })
                                 .collect();
@@ -171,11 +174,34 @@ pub(crate) fn handle_mouse_move(
                             y_slot: new_y_slot,
                         })
                     }
-                    DragHandle::VerticalOnly => EventResponse::Action(UiAction::MoveLine {
-                        id: line_id,
-                        start_frame: drag.original_frame,
-                        y_slot: y_to_slot(ctx.project, y, ctx.zone),
-                    }),
+                    DragHandle::VerticalOnly => {
+                        let new_y_slot =
+                            y_to_slot_at_frame(ctx.project, y, ctx.current_frame, ctx.zone);
+                        if !drag.group_origins.is_empty() {
+                            let y_delta = clamp_group_y_delta(
+                                &drag.group_origins,
+                                new_y_slot - drag.original_y_slot,
+                            );
+                            let moves = drag
+                                .group_origins
+                                .iter()
+                                .map(|origin| {
+                                    (
+                                        origin.line_id,
+                                        origin.original_frame,
+                                        origin.original_y_slot + y_delta,
+                                    )
+                                })
+                                .collect();
+                            EventResponse::Action(UiAction::MoveLines { moves })
+                        } else {
+                            EventResponse::Action(UiAction::MoveLine {
+                                id: line_id,
+                                start_frame: drag.original_frame,
+                                y_slot: new_y_slot,
+                            })
+                        }
+                    }
                 }
             }
         };
@@ -186,7 +212,7 @@ pub(crate) fn handle_mouse_move(
         let on_line = hit_test_line_and_track(ctx, state, x, y).0.is_some();
         if !on_line {
             let frame = x_to_frame(x, ctx.current_frame, ctx.zone);
-            let y_slot = y_to_slot(ctx.project, y, ctx.zone);
+            let y_slot = y_to_slot_at_frame(ctx.project, y, ctx.current_frame, ctx.zone);
             state.ghost_preview = Some(GhostPreview {
                 frame,
                 y_slot,

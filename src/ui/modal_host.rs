@@ -1086,8 +1086,6 @@ impl ModalHost {
         }
         if let Some(modal) = &self.file_explorer {
             modal.render(
-                modal_quads,
-                modal_labels,
                 modal_overlay_quads,
                 modal_overlay_labels,
                 screen_w,

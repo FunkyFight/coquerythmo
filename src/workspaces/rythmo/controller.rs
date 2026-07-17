@@ -158,7 +158,7 @@ pub fn handle_rythmo_event(
 
     match event {
         UiEvent::MousePress { x, y } => {
-            if let Some(resp) = syllable_mouse_press(&ctx, state, *x, *y) {
+            if let Some(resp) = syllable_mouse_press(&ctx, state, *x, *y, false) {
                 return resp;
             }
         }

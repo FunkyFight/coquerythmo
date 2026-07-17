@@ -6,6 +6,7 @@ use super::*;
 #[derive(Clone, PartialEq, Debug)]
 pub enum Selection {
     Line(u64),
+    Lines(Vec<u64>),
     Marker(usize),
     AllLines,
     Strokes(Vec<u64>),
@@ -18,6 +19,12 @@ pub struct GhostPreview {
     pub duration_frames: i64,
 }
 
+#[derive(Clone, Copy)]
+pub struct SelectionDrag {
+    pub rect: Rect,
+    pub additive: bool,
+}
+
 pub struct VoiceActorIconDraw {
     pub actor_name: String,
     pub rect: Rect,
@@ -28,6 +35,7 @@ pub struct LineContextMenu {
     pub x: f32,
     pub y: f32,
     pub hover_main: bool,
+    pub hover_change_character: bool,
     pub hover_actor_index: Option<usize>,
     pub hover_action_index: Option<usize>,
     pub actor_scroll: f32,
@@ -91,7 +99,7 @@ pub struct RythmoState {
     pub context_menu: Option<LineContextMenu>,
     pub active_stroke: Option<crate::rythmo_drawing::DrawingStroke>,
     pub drawing_dirty: bool,
-    pub selection_drag: Option<Rect>,
+    pub selection_drag: Option<SelectionDrag>,
     pub transform_handle: Option<TransformHandle>,
     karaoke_text_width_cache: RefCell<HashMap<u64, KaraokeTextWidthCacheEntry>>,
     karaoke_index_cache: RefCell<Option<CachedKaraokeUiIndex>>,
@@ -114,6 +122,8 @@ pub struct SyllableDrag {
     pub ratios: Vec<f32>,       // working copy of ratios
     pub drag_start_x: f32,
     pub line_rect: Rect,
+    /// Ctrl+click keeps every boundary before the selected handle fixed.
+    pub preserve_prefix: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -260,7 +270,7 @@ impl RythmoState {
         })
     }
 
-    fn layout_signature(project: &Project, zone: &Rect) -> u64 {
+    fn layout_signature(project: &Project, zone: &Rect, active_karaoke_tracks: &[bool]) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
@@ -268,16 +278,19 @@ impl RythmoState {
         // usage. Re-scanning all lines here made every pointer move O(n).
         project.revision().hash(&mut hasher);
         zone.height.to_bits().hash(&mut hasher);
+        active_karaoke_tracks.hash(&mut hasher);
         hasher.finish()
     }
 
     pub(super) fn get_or_create_layout_ctx(
         &self,
         project: &Project,
-        karaoke_tracks: &[bool],
+        current_frame: f64,
         zone: &Rect,
     ) -> std::cell::Ref<'_, EditorLayoutCtx> {
-        let signature = Self::layout_signature(project, zone);
+        let active_karaoke_tracks =
+            crate::rythmo_layout::active_karaoke_tracks(project, current_frame);
+        let signature = Self::layout_signature(project, zone, &active_karaoke_tracks);
         {
             let cached_sig = self.cached_layout_signature.borrow();
             let cached_ctx = self.cached_layout_ctx.borrow();
@@ -286,11 +299,11 @@ impl RythmoState {
             }
         }
 
-        let karaoke_track_count = karaoke_tracks.iter().filter(|&&k| k).count();
+        let karaoke_track_count = active_karaoke_tracks.iter().filter(|&&k| k).count();
         let normal_body_h = editor_normal_body_height_for_karaoke_tracks(karaoke_track_count, zone);
         let track_layouts = build_track_layouts_from_karaoke_flags(
             &rythmo_layout::all_track_indices(),
-            karaoke_tracks,
+            &active_karaoke_tracks,
             normal_body_h,
             slot_header_height(),
             BADGE_GAP,
@@ -497,6 +510,7 @@ impl RythmoState {
 
     pub fn needs_animation_or_interaction(&self) -> bool {
         self.dragging.is_some()
+            || self.selection_drag.is_some()
             || self.panning
             || self.keyboard_pan_direction != 0
             || self.ghost_preview.is_some()

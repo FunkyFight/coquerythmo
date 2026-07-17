@@ -470,6 +470,19 @@ impl Ui {
             };
         }
 
+        // An open top-bar dropdown can extend over the side panel. Give it
+        // pointer and keyboard priority so the panel underneath cannot consume
+        // clicks on its items or on the area outside the dropdown.
+        for widget in self.topbar_widgets.iter_mut() {
+            if widget.captures_all() {
+                let response = widget.handle_event(event);
+                if response != EventResponse::Ignored {
+                    self.update_tooltip();
+                    return response;
+                }
+            }
+        }
+
         match event {
             UiEvent::FocusNext => {
                 if let Some(node) = self.focus.focus_next() {
@@ -525,13 +538,20 @@ impl Ui {
         }
 
         if matches!(event, UiEvent::OpenContextMenu) {
-            if let Some(rythmo::Selection::Line(line_id)) = self.rythmo_state.selected {
+            let line_id = match self.rythmo_state.selected.as_ref() {
+                Some(rythmo::Selection::Line(line_id)) => Some(*line_id),
+                Some(rythmo::Selection::Lines(line_ids)) => line_ids.first().copied(),
+                Some(rythmo::Selection::AllLines) => project.lines().next().map(|line| line.id),
+                _ => None,
+            };
+            if let Some(line_id) = line_id {
                 let zone = self.layout.rythmo;
                 self.rythmo_state.context_menu = Some(rythmo::LineContextMenu {
                     line_id,
                     x: zone.x + zone.width * 0.5,
                     y: zone.y + zone.height * 0.5,
                     hover_main: true,
+                    hover_change_character: false,
                     hover_actor_index: None,
                     hover_action_index: None,
                     actor_scroll: 0.0,
@@ -582,11 +602,7 @@ impl Ui {
                 }
             }
         }
-        for widget in self
-            .topbar_widgets
-            .iter_mut()
-            .chain(self.toolbar_widgets.iter_mut())
-        {
+        for widget in self.toolbar_widgets.iter_mut() {
             if widget.captures_all() {
                 let response = widget.handle_event(event);
                 if response != EventResponse::Ignored {
@@ -857,6 +873,19 @@ impl Ui {
         self.close_automation();
         self.props_visible = true;
         self.side_panel.open(kind);
+        self.rebuild_layout();
+        self.tooltip = None;
+    }
+
+    pub fn open_side_panel_with_selection(
+        &mut self,
+        kind: side_panel::SidePanelKind,
+        selected_line_ids: impl IntoIterator<Item = u64>,
+    ) {
+        self.close_automation();
+        self.props_visible = true;
+        self.side_panel
+            .open_with_selection(kind, selected_line_ids);
         self.rebuild_layout();
         self.tooltip = None;
     }

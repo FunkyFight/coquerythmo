@@ -13,6 +13,41 @@ pub(crate) fn all_line_origins(project: &Project) -> Vec<DragLineOrigin> {
         .collect()
 }
 
+pub(crate) fn selected_line_origins(
+    project: &Project,
+    selection: &Selection,
+) -> Vec<DragLineOrigin> {
+    match selection {
+        Selection::AllLines => all_line_origins(project),
+        Selection::Lines(ids) => project
+            .lines()
+            .filter(|line| ids.contains(&line.id))
+            .map(|line| DragLineOrigin {
+                line_id: line.id,
+                original_frame: line.start_frame,
+                original_y_slot: line.y_slot,
+            })
+            .collect(),
+        Selection::Line(_) | Selection::Marker(_) | Selection::Strokes(_) => Vec::new(),
+    }
+}
+
+pub(crate) fn clamp_group_y_delta(origins: &[DragLineOrigin], requested_delta: f32) -> f32 {
+    let min_y = origins
+        .iter()
+        .map(|origin| origin.original_y_slot)
+        .fold(f32::INFINITY, f32::min);
+    let max_y = origins
+        .iter()
+        .map(|origin| origin.original_y_slot)
+        .fold(f32::NEG_INFINITY, f32::max);
+    if origins.is_empty() {
+        requested_delta
+    } else {
+        requested_delta.clamp(-min_y, 0.75 - max_y)
+    }
+}
+
 /// Compute the screen-space bounding box of selected strokes.
 /// Returns (min_x, min_y, max_x, max_y) in screen pixels, or None if no strokes selected.
 pub(crate) fn selected_strokes_screen_bbox(
@@ -64,10 +99,11 @@ pub(crate) fn render_selection_overlay(
 
     // Live marquee rectangle (screen-space Rect in pixels)
     if let Some(drag) = &state.selection_drag {
-        let x = drag.x.min(drag.x + drag.width);
-        let y = drag.y.min(drag.y + drag.height);
-        let w = drag.width.abs();
-        let h = drag.height.abs();
+        let rect = drag.rect;
+        let x = rect.x.min(rect.x + rect.width);
+        let y = rect.y.min(rect.y + rect.height);
+        let w = rect.width.abs();
+        let h = rect.height.abs();
         let fill: [f32; 4] = [0.2, 0.8, 0.9, 0.12];
         quads.push(QuadInstance {
             rect: [x, y, w, h],
@@ -234,18 +270,19 @@ pub(crate) fn start_transform_drag(
     });
 }
 
-/// Finalize a marquee selection: convert the live drag rectangle into a
-/// frame-space query and select the enclosed strokes (clears selection if none).
+/// Finalize a marquee selection: select overlapping lines first, then drawing
+/// strokes. An additive drag merges with the compatible current selection.
 pub(crate) fn finalize_marquee_selection(ctx: &RythmoCtx, state: &mut RythmoState) {
     if let Some(drag) = state.selection_drag.take() {
+        let rect = drag.rect;
         let zone_min_x = ctx.zone.x;
         let zone_max_x = ctx.zone.x + ctx.zone.width;
         let zone_min_y = ctx.zone.y;
         let zone_max_y = ctx.zone.y + ctx.zone.height;
-        let start_x = drag.x.clamp(zone_min_x, zone_max_x);
-        let end_x = (drag.x + drag.width).clamp(zone_min_x, zone_max_x);
-        let start_y = drag.y.clamp(zone_min_y, zone_max_y);
-        let end_y = (drag.y + drag.height).clamp(zone_min_y, zone_max_y);
+        let start_x = rect.x.clamp(zone_min_x, zone_max_x);
+        let end_x = (rect.x + rect.width).clamp(zone_min_x, zone_max_x);
+        let start_y = rect.y.clamp(zone_min_y, zone_max_y);
+        let end_y = (rect.y + rect.height).clamp(zone_min_y, zone_max_y);
         let min_x = start_x.min(end_x);
         let max_x = start_x.max(end_x);
         let min_y = start_y.min(end_y);
@@ -256,13 +293,77 @@ pub(crate) fn finalize_marquee_selection(ctx: &RythmoCtx, state: &mut RythmoStat
         let max_frame = ctx.current_frame + (max_x - center_x) as f64 / ppf as f64;
         let min_y_frac = ((min_y - ctx.zone.y) / ctx.zone.height).clamp(0.0, 1.0);
         let max_y_frac = ((max_y - ctx.zone.y) / ctx.zone.height).clamp(0.0, 1.0);
+
+        let selection_rect = Rect {
+            x: min_x,
+            y: min_y,
+            width: max_x - min_x,
+            height: max_y - min_y,
+        };
+        let line_ids: Vec<u64> = ctx
+            .project
+            .lines()
+            .filter(|line| {
+                rects_overlap(
+                    &line_rect(ctx.project, line, ctx.current_frame, ctx.zone),
+                    &selection_rect,
+                )
+            })
+            .map(|line| line.id)
+            .collect();
+        if !line_ids.is_empty() {
+            if drag.additive && matches!(state.selected.as_ref(), Some(Selection::AllLines)) {
+                return;
+            }
+            let mut selected_ids = if drag.additive {
+                match state.selected.as_ref() {
+                    Some(Selection::Line(id)) => vec![*id],
+                    Some(Selection::Lines(ids)) => ids.clone(),
+                    _ => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            };
+            for line_id in line_ids {
+                if !selected_ids.contains(&line_id) {
+                    selected_ids.push(line_id);
+                }
+            }
+            let selected_ids: Vec<u64> = ctx
+                .project
+                .lines()
+                .filter(|line| selected_ids.contains(&line.id))
+                .map(|line| line.id)
+                .collect();
+            state.selected = Some(if selected_ids.len() == 1 {
+                Selection::Line(selected_ids[0])
+            } else {
+                Selection::Lines(selected_ids)
+            });
+            return;
+        }
+
         let stroke_ids = ctx.project.drawing().strokes_in_rect(
             min_frame.min(max_frame),
             min_y_frac.min(max_y_frac),
             min_frame.max(max_frame),
             min_y_frac.max(max_y_frac),
         );
-        state.selected = if stroke_ids.is_empty() {
+        state.selected = if drag.additive {
+            match state.selected.take() {
+                Some(Selection::Strokes(mut selected_ids)) => {
+                    for stroke_id in stroke_ids {
+                        if !selected_ids.contains(&stroke_id) {
+                            selected_ids.push(stroke_id);
+                        }
+                    }
+                    Some(Selection::Strokes(selected_ids))
+                }
+                Some(selection) => Some(selection),
+                None if stroke_ids.is_empty() => None,
+                None => Some(Selection::Strokes(stroke_ids)),
+            }
+        } else if stroke_ids.is_empty() {
             None
         } else {
             Some(Selection::Strokes(stroke_ids))
@@ -276,19 +377,129 @@ pub(crate) fn handle_selection_drag(
     state: &mut RythmoState,
     x: f32,
     y: f32,
-    event: &UiEvent,
-) -> Option<EventResponse> {
-    match event {
-        UiEvent::MousePress { .. } => {
-            // Start marquee selection on empty space
-            state.selection_drag = Some(Rect {
-                x,
-                y,
-                width: 0.0,
-                height: 0.0,
-            });
-            Some(EventResponse::Consumed)
+    additive: bool,
+) -> EventResponse {
+    state.selection_drag = Some(SelectionDrag {
+        rect: Rect {
+            x,
+            y,
+            width: 0.0,
+            height: 0.0,
+        },
+        additive,
+    });
+    EventResponse::Consumed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marquee_selects_multiple_lines() {
+        crate::config::init();
+        let mut project = Project::new();
+        let first = project.add_line_full(
+            0,
+            20,
+            0.0,
+            "First".into(),
+            "Alice".into(),
+            [1.0, 0.0, 0.0, 1.0],
+        );
+        let second = project.add_line_full(
+            30,
+            20,
+            0.25,
+            "Second".into(),
+            "Bob".into(),
+            [0.0, 1.0, 0.0, 1.0],
+        );
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 600.0,
+        };
+        let first_rect = line_rect(&project, project.get_line(first).unwrap(), 0.0, &zone);
+        let second_rect = line_rect(&project, project.get_line(second).unwrap(), 0.0, &zone);
+        let min_x = first_rect.x.min(second_rect.x) - 2.0;
+        let min_y = first_rect.y.min(second_rect.y) - 2.0;
+        let max_x = (first_rect.x + first_rect.width).max(second_rect.x + second_rect.width) + 2.0;
+        let max_y =
+            (first_rect.y + first_rect.height).max(second_rect.y + second_rect.height) + 2.0;
+        let render_index = ProjectRenderIndex::new();
+        let ctx = RythmoCtx {
+            zone: &zone,
+            project: &project,
+            render_index: &render_index,
+            current_frame: 0.0,
+            karaoke_preview: false,
+            fps: 30.0,
+            active_mode: ToolMode::Select,
+        };
+        let mut state = RythmoState::new();
+        state.selection_drag = Some(SelectionDrag {
+            rect: Rect {
+                x: min_x,
+                y: min_y,
+                width: max_x - min_x,
+                height: max_y - min_y,
+            },
+            additive: false,
+        });
+
+        finalize_marquee_selection(&ctx, &mut state);
+
+        match state.selected.as_ref() {
+            Some(Selection::Lines(ids)) => {
+                assert_eq!(ids.as_slice(), &[first, second]);
+            }
+            other => panic!("expected multiple line selection, got {other:?}"),
         }
-        _ => None,
+
+        state.selected = Some(Selection::Line(first));
+        let response = handle_shift_mouse_press(&ctx, &mut state, zone.x + 2.0, zone.y + 2.0);
+        assert!(matches!(response, EventResponse::Consumed));
+        assert!(state
+            .selection_drag
+            .take()
+            .is_some_and(|drag| drag.additive));
+
+        state.selection_drag = Some(SelectionDrag {
+            rect: Rect {
+                x: second_rect.x - 2.0,
+                y: second_rect.y - 2.0,
+                width: second_rect.width + 4.0,
+                height: second_rect.height + 4.0,
+            },
+            additive: true,
+        });
+
+        finalize_marquee_selection(&ctx, &mut state);
+
+        match state.selected.as_ref() {
+            Some(Selection::Lines(ids)) => assert_eq!(ids.as_slice(), &[first, second]),
+            other => panic!("expected additive line selection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn group_vertical_delta_preserves_spacing_at_track_boundaries() {
+        let origins = vec![
+            DragLineOrigin {
+                line_id: 1,
+                original_frame: 0,
+                original_y_slot: 0.25,
+            },
+            DragLineOrigin {
+                line_id: 2,
+                original_frame: 0,
+                original_y_slot: 0.75,
+            },
+        ];
+
+        assert_eq!(clamp_group_y_delta(&origins, 0.25), 0.0);
+        assert_eq!(clamp_group_y_delta(&origins, -0.5), -0.25);
     }
 }

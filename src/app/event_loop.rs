@@ -316,6 +316,23 @@ pub fn run() {
                                 return;
                             }
                         }
+                        // Escape leaves the shell's keyboard-focus mode. Keep
+                        // modal and text-editor Escape handling ahead of this
+                        // so their own cancel/close behavior remains intact.
+                        if matches!(event.logical_key, Key::Named(NamedKey::Escape))
+                            && !state.captures_modal_input()
+                            && !state.is_editing_text()
+                            && state.has_keyboard_focus()
+                        {
+                            dispatch(
+                                UiEvent::KeyInput {
+                                    text: "\x1b".into(),
+                                },
+                                &mut state,
+                                elwt,
+                            );
+                            return;
+                        }
                         // The translation manager is global, but never stack it over an
                         // existing modal whose event routing would remain underneath it.
                         if ctrl_held
@@ -527,9 +544,6 @@ pub fn run() {
                             state.request_redraw();
                         } else if matches!(event.logical_key, Key::Named(NamedKey::Delete)) {
                             dispatch(UiEvent::Delete, &mut state, elwt);
-                        } else if matches!(event.logical_key, Key::Named(NamedKey::Tab)) {
-                            CommandDispatcher::dispatch(UiAction::ToggleActiveAudio, &mut state, elwt);
-                            state.request_redraw();
                         } else if is_space_key(&event.logical_key) {
                             state.toggle_play_pause();
                             state.request_redraw();

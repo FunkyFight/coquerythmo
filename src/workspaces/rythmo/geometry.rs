@@ -90,9 +90,19 @@ pub(crate) fn clamped_new_line_duration(
         .unwrap_or(default_dur)
 }
 
+#[cfg(test)]
 pub(crate) fn y_to_slot(project: &Project, y: f32, zone: &Rect) -> f32 {
+    y_to_slot_at_frame(project, y, 0.0, zone)
+}
+
+pub(crate) fn y_to_slot_at_frame(
+    project: &Project,
+    y: f32,
+    current_frame: f64,
+    zone: &Rect,
+) -> f32 {
     let relative_y = y - zone.y - constants::RULER_HEIGHT;
-    let layouts = editor_track_layouts(project, zone);
+    let layouts = editor_track_layouts_at_frame(project, current_frame, zone);
     let layout = layouts
         .iter()
         .find(|layout| relative_y < layout.top + layout.total_h)
@@ -208,7 +218,7 @@ pub(crate) fn badge_rect_for_name_with_karaoke_preview(
     karaoke_preview: bool,
 ) -> Rect {
     let (x1, _) = line_visual_x_width(line, current_frame, zone, karaoke_preview);
-    let body_rect = editor_track_body_rect(project, line.y_slot, zone);
+    let body_rect = editor_track_body_rect_at_frame(project, line.y_slot, current_frame, zone);
     let w = badge_width(name);
     // Right edge a few px to the left of the line's top-left corner, top-aligned.
     let right = x1 - BADGE_GAP;
@@ -237,6 +247,7 @@ pub(crate) fn color_picker_origin_for_badge(badge: &Rect, zone: &Rect) -> (f32, 
     (x, y)
 }
 
+#[cfg(test)]
 pub(crate) fn collect_track_usage(project: &Project) -> (Vec<bool>, Vec<bool>) {
     let track_count = rythmo_layout::track_count();
     let mut used_tracks = vec![false; track_count];
@@ -317,16 +328,6 @@ pub(crate) fn editor_normal_body_height_for_karaoke_tracks(
     body_h
 }
 
-#[cfg(test)]
-pub(crate) fn editor_normal_body_height(project: &Project, zone: &Rect) -> f32 {
-    let (_, karaoke_tracks) = collect_track_usage(project);
-    let karaoke_track_count = karaoke_tracks
-        .iter()
-        .filter(|has_karaoke| **has_karaoke)
-        .count();
-    editor_normal_body_height_for_karaoke_tracks(karaoke_track_count, zone)
-}
-
 pub(crate) struct EditorLayoutCtx {
     pub(crate) normal_body_h: f32,
     track_layouts: Vec<rythmo_layout::TrackLayout>,
@@ -334,9 +335,17 @@ pub(crate) struct EditorLayoutCtx {
 }
 
 impl EditorLayoutCtx {
+    #[cfg(test)]
     pub(crate) fn new(project: &Project, zone: &Rect) -> Self {
         let (_, karaoke_tracks) = collect_track_usage(project);
         Self::from_karaoke_tracks(&karaoke_tracks, zone)
+    }
+
+    pub(crate) fn new_at_frame(project: &Project, current_frame: f64, zone: &Rect) -> Self {
+        Self::from_karaoke_tracks(
+            &rythmo_layout::active_karaoke_tracks(project, current_frame),
+            zone,
+        )
     }
 
     pub(crate) fn from_karaoke_tracks(karaoke_tracks: &[bool], zone: &Rect) -> Self {
@@ -452,6 +461,7 @@ impl EditorLayoutCtx {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn editor_track_layouts(
     project: &Project,
     zone: &Rect,
@@ -459,8 +469,21 @@ pub(crate) fn editor_track_layouts(
     EditorLayoutCtx::new(project, zone).track_layouts
 }
 
-pub(crate) fn editor_track_body_rect(project: &Project, y_slot: f32, zone: &Rect) -> Rect {
-    EditorLayoutCtx::new(project, zone).track_body_rect(y_slot, zone)
+pub(crate) fn editor_track_layouts_at_frame(
+    project: &Project,
+    current_frame: f64,
+    zone: &Rect,
+) -> Vec<rythmo_layout::TrackLayout> {
+    EditorLayoutCtx::new_at_frame(project, current_frame, zone).track_layouts
+}
+
+pub(crate) fn editor_track_body_rect_at_frame(
+    project: &Project,
+    y_slot: f32,
+    current_frame: f64,
+    zone: &Rect,
+) -> Rect {
+    EditorLayoutCtx::new_at_frame(project, current_frame, zone).track_body_rect(y_slot, zone)
 }
 
 pub(crate) fn line_rect(
@@ -479,7 +502,7 @@ pub(crate) fn line_rect_with_karaoke_preview(
     zone: &Rect,
     karaoke_preview: bool,
 ) -> Rect {
-    EditorLayoutCtx::new(project, zone).line_rect_with_karaoke_width(
+    EditorLayoutCtx::new_at_frame(project, current_frame, zone).line_rect_with_karaoke_width(
         line,
         current_frame,
         zone,

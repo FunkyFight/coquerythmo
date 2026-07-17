@@ -9,6 +9,7 @@ pub(crate) fn syllable_mouse_press(
     state: &mut RythmoState,
     x: f32,
     y: f32,
+    preserve_prefix: bool,
 ) -> Option<EventResponse> {
     if !ctx.zone.contains(x, y) {
         return None;
@@ -50,6 +51,7 @@ pub(crate) fn syllable_mouse_press(
                 ratios: ratios.clone(),
                 drag_start_x: x,
                 line_rect: r,
+                preserve_prefix,
             });
             return Some(EventResponse::Consumed);
         }
@@ -67,6 +69,26 @@ pub(crate) fn syllable_mouse_move(state: &mut RythmoState, x: f32) -> Option<Eve
     let i = drag.separator_index;
     let min_ratio = syllable_drag_min_ratio(drag.ratios.len(), drag.line_rect.width);
     if delta_ratio.abs() <= 0.0001 || i + 1 >= drag.ratios.len() {
+        return Some(EventResponse::Consumed);
+    }
+
+    if drag.preserve_prefix {
+        let left = i;
+        let right = i + 1;
+        let applied = if delta_ratio > 0.0 {
+            delta_ratio.min((drag.ratios[right] - min_ratio).max(0.0))
+        } else {
+            (-delta_ratio).min((drag.ratios[left] - min_ratio).max(0.0))
+        };
+        if applied > 0.0 {
+            if delta_ratio > 0.0 {
+                drag.ratios[left] += applied;
+                drag.ratios[right] -= applied;
+            } else {
+                drag.ratios[left] -= applied;
+                drag.ratios[right] += applied;
+            }
+        }
         return Some(EventResponse::Consumed);
     }
 

@@ -112,13 +112,23 @@ pub(crate) fn handle_mouse_press(
         } else {
             DragHandle::Body
         };
-        let group_origins =
-            if handle == DragHandle::Body && matches!(state.selected, Some(Selection::AllLines)) {
-                all_line_origins(ctx.project)
+        let group_origins = if handle == DragHandle::Body {
+            if let Some(selection) = state.selected.clone() {
+                let origins = selected_line_origins(ctx.project, &selection);
+                if !origins.is_empty() && origins.iter().any(|origin| origin.line_id == line.id) {
+                    origins
+                } else {
+                    state.selected = Some(Selection::Line(line.id));
+                    Vec::new()
+                }
             } else {
                 state.selected = Some(Selection::Line(line.id));
                 Vec::new()
-            };
+            }
+        } else {
+            state.selected = Some(Selection::Line(line.id));
+            Vec::new()
+        };
 
         state.dragging = Some(DragState {
             target: DragTarget::Line(line.id),
@@ -154,9 +164,7 @@ pub(crate) fn handle_mouse_press(
             state.selected = Some(Selection::Strokes(ids));
             return EventResponse::Consumed;
         }
-        if let Some(resp) = handle_selection_drag(state, x, y, &UiEvent::MousePress { x, y }) {
-            return resp;
-        }
+        return handle_selection_drag(state, x, y, false);
     }
 
     // Click on empty space → deselect & stop editing

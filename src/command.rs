@@ -29,6 +29,9 @@ pub enum Command {
         snapshot: RythmoLine,
         index: usize,
     },
+    InsertLines {
+        lines: Vec<(RythmoLine, usize)>,
+    },
     DeleteLine {
         snapshot: RythmoLine,
         index: usize,
@@ -143,6 +146,13 @@ impl Command {
             Command::InsertLine { snapshot, index } => {
                 project.upsert_line_at(*index, snapshot.clone());
             }
+            Command::InsertLines { lines } => {
+                let mut lines = lines.clone();
+                lines.sort_by_key(|(_, index)| *index);
+                for (snapshot, index) in lines {
+                    project.upsert_line_at(index, snapshot);
+                }
+            }
             Command::DeleteLine { snapshot, .. } => {
                 project.remove_line(snapshot.id);
             }
@@ -235,9 +245,7 @@ impl Command {
             Command::SetCharacterColor {
                 line_id, new_color, ..
             } => {
-                if let Some(l) = project.get_line_mut(*line_id) {
-                    l.character_color = *new_color;
-                }
+                project.set_line_character_color(*line_id, *new_color);
             }
             Command::RenameCharacter {
                 changes,
@@ -303,6 +311,11 @@ impl Command {
             }
             Command::InsertLine { snapshot, .. } => {
                 project.remove_line(snapshot.id);
+            }
+            Command::InsertLines { lines } => {
+                for (snapshot, _) in lines {
+                    project.remove_line(snapshot.id);
+                }
             }
             Command::DeleteLine { snapshot, index } => {
                 project.insert_line_at(*index, snapshot.clone());
@@ -412,9 +425,7 @@ impl Command {
             Command::SetCharacterColor {
                 line_id, old_color, ..
             } => {
-                if let Some(l) = project.get_line_mut(*line_id) {
-                    l.character_color = *old_color;
-                }
+                project.set_line_character_color(*line_id, *old_color);
             }
             Command::RenameCharacter {
                 changes,
@@ -642,6 +653,36 @@ mod tests {
 
         history.redo(&mut project);
         assert_eq!(project.line_count(), 0);
+    }
+
+    #[test]
+    fn test_undo_redo_insert_multiple_is_one_history_command() {
+        let mut source = Project::new();
+        let first = source.add_line_full(0, 10, 0.25, "first".into(), "A".into(), [1.0; 4]);
+        let second = source.add_line_full(10, 10, 0.5, "second".into(), "B".into(), [1.0; 4]);
+        let lines = vec![
+            (source.get_line(first).unwrap().clone(), 0),
+            (source.get_line(second).unwrap().clone(), 1),
+        ];
+        let mut project = Project::new();
+        let mut history = CommandHistory::new();
+        let command = Command::InsertLines { lines };
+        command.apply(&mut project);
+        history.push(command);
+        assert_eq!(project.line_count(), 2);
+
+        history.undo(&mut project);
+        assert_eq!(project.line_count(), 0);
+
+        history.redo(&mut project);
+        assert_eq!(project.line_count(), 2);
+        assert_eq!(
+            project
+                .lines()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
     }
 
     #[test]

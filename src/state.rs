@@ -41,6 +41,30 @@ enum DialogueSplitTarget {
     Playhead { line_id: u64, progress: f32 },
 }
 
+fn rebase_pasted_start_frame(source_start: i64, source_anchor: i64, target_anchor: i64) -> i64 {
+    target_anchor.saturating_add(source_start.saturating_sub(source_anchor))
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::rebase_pasted_start_frame;
+
+    #[test]
+    fn pasted_lines_are_rebased_to_the_playhead_and_keep_their_spacing() {
+        let source_anchor = 120;
+        let playhead = 900;
+
+        assert_eq!(
+            rebase_pasted_start_frame(source_anchor, source_anchor, playhead),
+            playhead
+        );
+        assert_eq!(
+            rebase_pasted_start_frame(165, source_anchor, playhead),
+            playhead + 45
+        );
+    }
+}
+
 pub struct State {
     pub render: RenderCoordinator,
     pub window_manager: WindowManager,
@@ -53,7 +77,7 @@ pub struct State {
     pub workspace_host: WorkspaceHost<RythmoWorkspace>,
     pub narration: NarrationService,
     last_autosave: Instant,
-    line_clipboard: Option<RythmoLine>,
+    line_clipboard: Option<Vec<RythmoLine>>,
     automation_last_run: Option<(u64, u64)>,
 }
 
@@ -540,40 +564,41 @@ impl State {
     }
 
     pub fn toggle_karaoke_for_selection(&mut self) {
-        let line_id = match self.ui_shell.ui.rythmo_state.selected {
-            Some(crate::workspaces::rythmo::view::Selection::Line(id)) => Some(id),
-            _ => self.ui_shell.ui.rythmo_state.hovered_line,
-        };
-        let Some(line_id) = line_id else {
+        let mut line_ids = self.selected_line_ids();
+        if line_ids.is_empty() {
+            line_ids.extend(self.ui_shell.ui.rythmo_state.hovered_line);
+        }
+        if line_ids.is_empty() {
             self.show_toast(crate::i18n::t("toast.karaoke_select_line"), 3.0);
             return;
-        };
+        }
 
-        let Some(line) = self.project_session.project.get_line(line_id) else {
-            return;
-        };
-        let old_karaoke = line.karaoke;
-        let old_ratios = line.syllable_ratios.clone();
-        let new_karaoke = !old_karaoke;
-        let new_ratios = if new_karaoke {
-            crate::syllable::timing_ratios(
-                &line.text,
-                &line.syllable_ratios,
-                &crate::config::get().lang,
-            )
-        } else {
-            old_ratios.clone()
-        };
-
-        self.ui_shell.ui.rythmo_state.selected =
-            Some(crate::workspaces::rythmo::view::Selection::Line(line_id));
-        self.execute_and_broadcast(Command::SetLineKaraoke {
-            line_id,
-            old_karaoke,
-            old_ratios,
-            new_karaoke,
-            new_ratios,
-        });
+        let lang = crate::config::get().lang.clone();
+        let commands: Vec<_> = line_ids
+            .into_iter()
+            .filter_map(|line_id| {
+                self.project_session.project.get_line(line_id).map(|line| {
+                    let old_karaoke = line.karaoke;
+                    let old_ratios = line.syllable_ratios.clone();
+                    let new_karaoke = !old_karaoke;
+                    let new_ratios = if new_karaoke {
+                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, &lang)
+                    } else {
+                        old_ratios.clone()
+                    };
+                    Command::SetLineKaraoke {
+                        line_id,
+                        old_karaoke,
+                        old_ratios,
+                        new_karaoke,
+                        new_ratios,
+                    }
+                })
+            })
+            .collect();
+        for command in commands {
+            self.execute_and_broadcast(command);
+        }
     }
 
     pub fn open_export_modal(&mut self) {
@@ -1734,8 +1759,10 @@ impl State {
     /// delta. Encoding happens before `apply` because move-marker deltas read
     /// the marker's current position from the project.
     fn execute_and_broadcast(&mut self, cmd: Command) {
-        let requires_full_sync =
-            matches!(cmd, Command::DeleteLines { .. }) && self.collaboration.network.is_in_room();
+        let requires_full_sync = matches!(
+            cmd,
+            Command::InsertLines { .. } | Command::DeleteLines { .. }
+        ) && self.collaboration.network.is_in_room();
         let payload = if self.collaboration.network.is_in_room() {
             encode_delta(&cmd, &self.project_session.project)
         } else {
@@ -1885,7 +1912,10 @@ impl State {
     pub fn open_lines_panel(&mut self) {
         self.ui_shell
             .ui
-            .open_side_panel(crate::ui::side_panel::SidePanelKind::Lines);
+            .open_side_panel_with_selection(
+                crate::ui::side_panel::SidePanelKind::Lines,
+                self.selected_line_ids(),
+            );
     }
 
     pub fn open_roles_panel(&mut self) {
@@ -2015,6 +2045,24 @@ impl State {
                         deleted_lines = 1;
                     }
                 }
+                Selection::Lines(ids) => {
+                    let lines: Vec<_> = self
+                        .project_session
+                        .project
+                        .lines()
+                        .filter(|line| ids.contains(&line.id))
+                        .filter_map(|line| {
+                            self.project_session
+                                .project
+                                .line_index(line.id)
+                                .map(|index| (line.clone(), index))
+                        })
+                        .collect();
+                    if !lines.is_empty() {
+                        deleted_lines = lines.len();
+                        self.execute_and_broadcast(Command::DeleteLines { lines });
+                    }
+                }
                 Selection::Marker(idx) => {
                     if let Some(marker) = self.project_session.project.marker(*idx).cloned() {
                         self.execute_and_broadcast(Command::RemoveMarker {
@@ -2065,15 +2113,41 @@ impl State {
 
     pub fn copy_selected_line(&mut self) {
         use crate::workspaces::rythmo::view::Selection;
-        if let Some(Selection::Line(id)) = self.ui_shell.ui.rythmo_state().selected {
-            if let Some(line) = self.project_session.project.get_line(id).cloned() {
-                self.line_clipboard = Some(line.clone());
-                crate::platform::clipboard_set(&line.text);
-                self.narration.announce_event(AccessibilityEvent::Success {
-                    message: crate::i18n::t("accessibility.line_copied").to_string(),
-                });
-                return;
-            }
+        let lines: Vec<RythmoLine> = match self.ui_shell.ui.rythmo_state().selected.as_ref() {
+            Some(Selection::Line(id)) => self
+                .project_session
+                .project
+                .get_line(*id)
+                .cloned()
+                .into_iter()
+                .collect(),
+            Some(Selection::Lines(ids)) => self
+                .project_session
+                .project
+                .lines()
+                .filter(|line| ids.contains(&line.id))
+                .cloned()
+                .collect(),
+            Some(Selection::AllLines) => self.project_session.project.lines().cloned().collect(),
+            _ => Vec::new(),
+        };
+        if !lines.is_empty() {
+            let clipboard_text = lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.line_clipboard = Some(lines.clone());
+            crate::platform::clipboard_set(&clipboard_text);
+            let key = if lines.len() == 1 {
+                "accessibility.line_copied"
+            } else {
+                "accessibility.lines_copied"
+            };
+            self.narration.announce_event(AccessibilityEvent::Success {
+                message: crate::i18n::t(key).to_string(),
+            });
+            return;
         }
         self.narration.announce_event(AccessibilityEvent::Error {
             message: crate::i18n::t("accessibility.no_line_selected").to_string(),
@@ -2086,19 +2160,18 @@ impl State {
     }
 
     pub fn paste_line(&mut self) {
-        let Some(snapshot) = self.line_clipboard.clone() else {
+        let Some(snapshots) = self.line_clipboard.clone() else {
             self.narration.announce_event(AccessibilityEvent::Error {
                 message: crate::i18n::t("accessibility.no_line_clipboard").to_string(),
             });
             return;
         };
-        let mut line = snapshot;
-        line.id = self.project_session.project.generate_line_id();
-        line.start_frame += self
-            .project_session
-            .project
-            .settings()
-            .source_audio_offset_frames;
+        let Some(first_snapshot) = snapshots.first() else {
+            self.narration.announce_event(AccessibilityEvent::Error {
+                message: crate::i18n::t("accessibility.no_line_clipboard").to_string(),
+            });
+            return;
+        };
         // Pasting follows the track currently under the mouse.  When the
         // pointer is outside the rythmo band, retain the keyboard-selected
         // track as the deterministic fallback used by Insert.
@@ -2108,15 +2181,67 @@ impl State {
             .rythmo_state
             .hovered_track
             .unwrap_or(self.ui_shell.ui.rythmo_state.keyboard_track);
-        line.y_slot = crate::rythmo_layout::y_slot_for_track_index(target_track);
-        self.ui_shell.ui.rythmo_state.keyboard_track = target_track;
-        let index = self.project_session.project.line_count();
-        self.execute_and_broadcast(Command::InsertLine {
-            snapshot: line,
-            index,
+        let target_anchor_frame = self.current_frame();
+        let source_anchor_frame = snapshots
+            .iter()
+            .map(|line| line.start_frame)
+            .min()
+            .unwrap_or(first_snapshot.start_frame);
+        let source_anchor_track =
+            crate::rythmo_layout::track_index_for_y_slot(first_snapshot.y_slot) as i32;
+        let last_track = crate::rythmo_layout::track_count().saturating_sub(1) as i32;
+        let source_track_offsets: Vec<i32> = snapshots
+            .iter()
+            .map(|line| {
+                crate::rythmo_layout::track_index_for_y_slot(line.y_slot) as i32
+                    - source_anchor_track
+            })
+            .collect();
+        let min_offset = source_track_offsets.iter().copied().min().unwrap_or(0);
+        let max_offset = source_track_offsets.iter().copied().max().unwrap_or(0);
+        let target_anchor_track = (target_track as i32).clamp(-min_offset, last_track - max_offset);
+        self.ui_shell.ui.rythmo_state.keyboard_track = target_anchor_track as usize;
+        let pasted_count = snapshots.len();
+        let base_index = self.project_session.project.line_count();
+        let mut inserted_lines: Vec<(RythmoLine, usize)> = Vec::with_capacity(pasted_count);
+        for (offset, mut line) in snapshots.into_iter().enumerate() {
+            let source_track = crate::rythmo_layout::track_index_for_y_slot(line.y_slot) as i32;
+            let pasted_track = target_anchor_track + source_track - source_anchor_track;
+            line.id = loop {
+                let id = self.project_session.project.generate_line_id();
+                if inserted_lines.iter().all(|(inserted, _)| inserted.id != id) {
+                    break id;
+                }
+            };
+            line.start_frame = rebase_pasted_start_frame(
+                line.start_frame,
+                source_anchor_frame,
+                target_anchor_frame,
+            );
+            line.y_slot = crate::rythmo_layout::y_slot_for_track_index(pasted_track as usize);
+            inserted_lines.push((line, base_index + offset));
+        }
+        let pasted_ids: Vec<u64> = inserted_lines.iter().map(|(line, _)| line.id).collect();
+        if inserted_lines.len() == 1 {
+            let (snapshot, index) = inserted_lines.pop().unwrap();
+            self.execute_and_broadcast(Command::InsertLine { snapshot, index });
+        } else {
+            self.execute_and_broadcast(Command::InsertLines {
+                lines: inserted_lines,
+            });
+        }
+        self.ui_shell.ui.rythmo_state.selected = Some(if pasted_ids.len() == 1 {
+            crate::workspaces::rythmo::view::Selection::Line(pasted_ids[0])
+        } else {
+            crate::workspaces::rythmo::view::Selection::Lines(pasted_ids)
         });
+        let key = if pasted_count == 1 {
+            "accessibility.line_pasted"
+        } else {
+            "accessibility.lines_pasted"
+        };
         self.narration.announce_event(AccessibilityEvent::Success {
-            message: crate::i18n::t("accessibility.line_pasted").to_string(),
+            message: crate::i18n::t(key).to_string(),
         });
     }
 
@@ -2497,62 +2622,105 @@ impl State {
     /// while also giving screen-reader users a concise confirmation of the
     /// resulting track number.
     pub fn move_selected_line_track(&mut self, direction: i32) -> bool {
-        let Some(id) = self.selected_line_id() else {
+        let selected_ids = self.selected_line_ids();
+        if selected_ids.is_empty() {
             self.narration.announce_event(AccessibilityEvent::Error {
                 message: crate::i18n::t("accessibility.no_line_selected").to_string(),
             });
             return false;
-        };
-        let Some((start_frame, current_track)) = self
-            .project_session
-            .project
-            .get_line(id)
-            .map(|line| {
-                (
-                    line.start_frame,
-                    crate::rythmo_layout::track_index_for_y_slot(line.y_slot),
-                )
+        }
+        let selected_lines: Vec<_> = selected_ids
+            .into_iter()
+            .filter_map(|id| {
+                self.project_session.project.get_line(id).map(|line| {
+                    (
+                        id,
+                        line.start_frame,
+                        crate::rythmo_layout::track_index_for_y_slot(line.y_slot),
+                    )
+                })
             })
-        else {
+            .collect();
+        let Some((_, _, primary_track)) = selected_lines.first().copied() else {
             self.narration.announce_event(AccessibilityEvent::Error {
                 message: crate::i18n::t("accessibility.no_line_selected").to_string(),
             });
             return false;
         };
-
         let last_track = crate::rythmo_layout::track_count().saturating_sub(1);
-        let target_track = (current_track as i32 + direction.signum())
-            .clamp(0, last_track as i32) as usize;
-        if target_track == current_track {
+        let track_delta = direction.signum();
+        let can_move_group = selected_lines.iter().all(|(_, _, current_track)| {
+            let target_track = *current_track as i32 + track_delta;
+            (0..=last_track as i32).contains(&target_track)
+        });
+        if !can_move_group {
             self.narration.announce_event(AccessibilityEvent::Error {
                 message: format!(
                     "{} {}",
                     crate::i18n::t("accessibility.track_limit"),
-                    current_track + 1
+                    primary_track + 1
                 ),
             });
             return false;
         }
 
-        self.move_line(
-            id,
-            start_frame,
-            crate::rythmo_layout::y_slot_for_track_index(target_track),
-        );
-        self.ui_shell.ui.rythmo_state.keyboard_track = target_track;
+        let moves: Vec<_> = selected_lines
+            .iter()
+            .map(|(id, start_frame, current_track)| {
+                let target_track = (*current_track as i32 + track_delta) as usize;
+                (
+                    *id,
+                    *start_frame,
+                    crate::rythmo_layout::y_slot_for_track_index(target_track),
+                )
+            })
+            .collect();
+
+        let primary_target_track = (primary_track as i32 + track_delta) as usize;
+        if moves.len() == 1 {
+            let (id, start_frame, y_slot) = moves[0];
+            self.move_line(id, start_frame, y_slot);
+        } else {
+            self.move_lines(moves);
+        }
+        self.ui_shell.ui.rythmo_state.keyboard_track = primary_target_track;
         self.narration
             .announce_event(AccessibilityEvent::ValueChanged {
                 label: crate::i18n::t("accessibility.track").to_string(),
-                value: (target_track + 1).to_string(),
+                value: (primary_target_track + 1).to_string(),
             });
         true
     }
 
-    fn selected_line_id(&self) -> Option<u64> {
-        match self.ui_shell.ui.rythmo_state.selected {
-            Some(crate::workspaces::rythmo::view::Selection::Line(id)) => Some(id),
-            _ => None,
+    fn selected_line_ids(&self) -> Vec<u64> {
+        use crate::workspaces::rythmo::view::Selection;
+
+        match self.ui_shell.ui.rythmo_state.selected.as_ref() {
+            Some(Selection::Line(id)) => self
+                .project_session
+                .project
+                .get_line(*id)
+                .map(|_| vec![*id])
+                .unwrap_or_default(),
+            Some(Selection::Lines(ids)) => self
+                .project_session
+                .project
+                .lines()
+                .filter(|line| ids.contains(&line.id))
+                .map(|line| line.id)
+                .collect(),
+            Some(Selection::AllLines) => self
+                .project_session
+                .project
+                .lines()
+                .map(|line| line.id)
+                .collect(),
+            Some(Selection::Marker(_) | Selection::Strokes(_)) | None => Vec::new(),
         }
+    }
+
+    fn selected_line_id(&self) -> Option<u64> {
+        self.selected_line_ids().into_iter().next()
     }
 
     pub fn set_selected_line_start_at_playhead(&mut self) -> bool {
@@ -2614,6 +2782,8 @@ impl State {
             return false;
         };
         let name = line.character_name.clone();
+        self.ui_shell.ui.rythmo_state.selected =
+            Some(crate::workspaces::rythmo::view::Selection::Line(id));
         self.ui_shell.ui.rythmo_state.editing_character = Some(id);
         self.ui_shell.ui.rythmo_state.char_input.activate(&name);
         self.ui_shell.ui.rythmo_state.char_input.select_all(&name);
@@ -3227,9 +3397,7 @@ impl State {
     }
 
     pub fn start_editing_note_selected(&mut self) {
-        if let Some(crate::workspaces::rythmo::view::Selection::Line(id)) =
-            self.ui_shell.ui.rythmo_state.selected
-        {
+        if let Some(id) = self.selected_line_id() {
             self.start_editing_note(id);
         }
     }

@@ -1216,6 +1216,39 @@ impl Project {
         self.reconcile_known_characters();
     }
 
+    pub fn set_line_character_color(&mut self, line_id: u64, color: [f32; 4]) {
+        let Some(line) = self.get_line(line_id) else {
+            return;
+        };
+        let character_name = line.character_name.clone();
+        let is_only_line_for_character = !character_name.trim().is_empty()
+            && self
+                .lines()
+                .filter(|candidate| candidate.character_name == character_name)
+                .count()
+                == 1;
+
+        if let Some(line) = self.get_line_mut(line_id) {
+            line.character_color = color;
+        }
+
+        if is_only_line_for_character {
+            if let Some(character) = self
+                .known_characters
+                .iter_mut()
+                .find(|character| character.name == character_name)
+            {
+                character.color = color;
+            } else {
+                self.known_characters.push(Character {
+                    name: character_name,
+                    color,
+                });
+            }
+        }
+        self.bump_revision();
+    }
+
     fn upsert_known_character(&mut self, name: &str, color: [f32; 4]) {
         // Update or add to known characters
         if !name.is_empty() {
@@ -1584,6 +1617,25 @@ mod tests {
         assert_eq!(p.get_line(id).unwrap().character_name, "Alice");
         assert_eq!(p.known_characters.len(), 1);
         assert_eq!(p.known_characters[0].name, "Alice");
+    }
+
+    #[test]
+    fn changing_the_only_line_character_color_updates_the_character_catalog() {
+        let mut p = Project::new();
+        let id = p.add_line_full(
+            0,
+            48,
+            0.5,
+            "hello".into(),
+            "Alice".into(),
+            [1.0, 0.0, 0.0, 1.0],
+        );
+
+        let color = [0.0, 1.0, 0.0, 1.0];
+        p.set_line_character_color(id, color);
+
+        assert_eq!(p.get_line(id).unwrap().character_color, color);
+        assert_eq!(p.find_character("Alice").unwrap().color, color);
     }
 
     #[test]

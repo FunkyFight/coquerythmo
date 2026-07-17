@@ -144,6 +144,7 @@ mod tests {
                 width: 100.0,
                 height: 20.0,
             },
+            preserve_prefix: false,
         });
 
         let _ = syllable_mouse_move(&mut state, 90.0);
@@ -154,6 +155,32 @@ mod tests {
         assert!(ratios[2] > 0.2);
         assert!(ratios[3] > 0.3);
         assert!(ratios[3] > ratios[2]);
+    }
+
+    #[test]
+    fn ctrl_syllable_drag_keeps_previous_boundaries_fixed() {
+        let mut state = RythmoState::new();
+        state.syllable_drag = Some(SyllableDrag {
+            line_id: 1,
+            separator_index: 1,
+            ratios: vec![0.2, 0.3, 0.2, 0.3],
+            drag_start_x: 100.0,
+            line_rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 20.0,
+            },
+            preserve_prefix: true,
+        });
+
+        let _ = syllable_mouse_move(&mut state, 90.0);
+        let ratios = &state.syllable_drag.as_ref().unwrap().ratios;
+
+        assert!((ratios[0] - 0.2).abs() < 0.0001);
+        assert!((ratios[1] - 0.2).abs() < 0.0001);
+        assert!((ratios[2] - 0.3).abs() < 0.0001);
+        assert!((ratios[3] - 0.3).abs() < 0.0001);
     }
 
     #[test]
@@ -170,6 +197,7 @@ mod tests {
                 width: 100.0,
                 height: 20.0,
             },
+            preserve_prefix: false,
         });
 
         let _ = syllable_mouse_move(&mut state, 102.0);
@@ -429,9 +457,9 @@ mod tests {
             height: 300.0,
         };
 
-        let normal_body_h = editor_normal_body_height(&project, &zone);
+        let normal_body_h = editor_normal_body_height_for_karaoke_tracks(0, &zone);
         let normal_rect = line_rect(&project, project.get_line(normal_id).unwrap(), 0.0, &zone);
-        let karaoke_body = editor_track_body_rect(&project, 0.5, &zone);
+        let karaoke_body = editor_track_body_rect_at_frame(&project, 0.5, 24.0, &zone);
         let karaoke_rect = karaoke_preview_line_rect(
             &project,
             project.get_line(karaoke_id).unwrap(),
@@ -441,8 +469,14 @@ mod tests {
         );
 
         assert!((normal_rect.height - normal_body_h).abs() < f32::EPSILON);
-        assert!(karaoke_body.height > normal_body_h * 1.9);
-        assert!((karaoke_rect.height - normal_body_h).abs() < 0.01);
+        let active_normal_body_h = editor_normal_body_height_for_karaoke_tracks(1, &zone);
+        assert!(
+            (karaoke_body.height
+                - rythmo_layout::karaoke_track_body_height(active_normal_body_h, 1.0))
+                .abs()
+                < 0.01
+        );
+        assert!((karaoke_rect.height - active_normal_body_h).abs() < 0.01);
     }
 
     #[test]
@@ -678,12 +712,15 @@ mod tests {
             width: 800.0,
             height: 300.0,
         };
-        let ctx = EditorLayoutCtx::new(&project, &zone);
+        let ctx = EditorLayoutCtx::new_at_frame(&project, 0.0, &zone);
 
-        assert!((ctx.normal_body_h - editor_normal_body_height(&project, &zone)).abs() < 0.01);
+        assert!(
+            (ctx.normal_body_h - editor_normal_body_height_for_karaoke_tracks(0, &zone)).abs()
+                < 0.01
+        );
         assert_rect_approx_eq(
             ctx.track_body_rect(0.5, &zone),
-            editor_track_body_rect(&project, 0.5, &zone),
+            editor_track_body_rect_at_frame(&project, 0.5, 0.0, &zone),
         );
         assert_rect_approx_eq(
             ctx.line_rect_with_karaoke_width(
@@ -699,9 +736,10 @@ mod tests {
         let max_gap_frames = karaoke_adjacent_max_gap_frames(24.0);
         let karaoke = project.get_line(karaoke_id).unwrap();
         let index = KaraokeUiIndex::new(&project, max_gap_frames);
+        let karaoke_ctx = EditorLayoutCtx::new_at_frame(&project, 24.0, &zone);
         assert_rect_approx_eq(
             karaoke_preview_line_rect_with_state(
-                &ctx,
+                &karaoke_ctx,
                 karaoke,
                 24.0,
                 &zone,
@@ -953,16 +991,13 @@ fn active_karaoke_skip_ranges(
     scene: &crate::rendering::rythmo::scene::RythmoScene,
     zone: &Rect,
     karaoke_preview: bool,
-    fps: f64,
     state: &RythmoState,
 ) -> Vec<(f32, f32)> {
     if !karaoke_preview {
         return Vec::new();
     }
 
-    let max_gap_frames = karaoke_adjacent_max_gap_frames(fps);
-    let karaoke_index = state.cached_karaoke_ui_index(project, max_gap_frames);
-    let layout_ctx = EditorLayoutCtx::from_karaoke_tracks(karaoke_index.karaoke_tracks(), zone);
+    let layout_ctx = state.get_or_create_layout_ctx(project, scene.current_frame, zone);
     scene
         .lines
         .iter()
@@ -992,7 +1027,7 @@ pub fn render_rythmo_base(
     waveform_offset_frames: i64,
     waveform_is_instrumental: bool,
     karaoke_preview: bool,
-    fps: f64,
+    _fps: f64,
     state: &RythmoState,
     scene: &crate::rendering::rythmo::scene::RythmoScene,
 ) -> Vec<QuadInstance> {
@@ -1099,7 +1134,7 @@ pub fn render_rythmo_base(
     // Ticks removed from UI (kept in CPU/GPU export renderers)
 
     let playhead_x = zone.x + (zone.width - PLAYHEAD_WIDTH) / 2.0;
-    let skip_ranges = active_karaoke_skip_ranges(project, scene, zone, karaoke_preview, fps, state);
+    let skip_ranges = active_karaoke_skip_ranges(project, scene, zone, karaoke_preview, state);
     push_playhead_segments(
         &mut quads,
         playhead_x,
@@ -1362,7 +1397,6 @@ struct KaraokeUiIndex {
     signature: u64,
     by_line_id: HashMap<u64, KaraokeLineUiState>,
     used_tracks: Vec<bool>,
-    karaoke_tracks: Vec<bool>,
     karaoke_timeline: Vec<(i64, u64)>,
 }
 
@@ -1379,7 +1413,6 @@ impl KaraokeUiIndex {
     fn new_with_signature(project: &Project, max_gap_frames: i64, signature: u64) -> Self {
         let track_count = rythmo_layout::track_count();
         let mut used_tracks = vec![false; track_count];
-        let mut karaoke_tracks = vec![false; track_count];
         let mut karaoke_timeline = Vec::new();
         let mut lines_by_track: Vec<Vec<&crate::rythmo_line::RythmoLine>> =
             (0..track_count).map(|_| Vec::new()).collect();
@@ -1387,7 +1420,6 @@ impl KaraokeUiIndex {
             let track_index = rythmo_layout::track_index_for_y_slot(line.y_slot);
             used_tracks[track_index] = true;
             if line.karaoke {
-                karaoke_tracks[track_index] = true;
                 karaoke_timeline.push((line.start_frame, line.id));
             }
             if let Some(track_lines) = lines_by_track.get_mut(track_index) {
@@ -1448,7 +1480,6 @@ impl KaraokeUiIndex {
             signature,
             by_line_id,
             used_tracks,
-            karaoke_tracks,
             karaoke_timeline,
         }
     }
@@ -1461,10 +1492,6 @@ impl KaraokeUiIndex {
 
     fn used_tracks(&self) -> &[bool] {
         &self.used_tracks
-    }
-
-    fn karaoke_tracks(&self) -> &[bool] {
-        &self.karaoke_tracks
     }
 
     fn line_state(&self, line: &crate::rythmo_line::RythmoLine) -> KaraokeLineUiState {
@@ -1679,7 +1706,11 @@ fn karaoke_preview_line_rect_with_state(
         width,
         height: body_rect.height,
     };
-    karaoke_stack_rect(rect, stack_row, 1.0)
+    if layout_ctx.track_for_y_slot(line.y_slot).has_karaoke {
+        karaoke_stack_rect(rect, stack_row, 1.0)
+    } else {
+        rect
+    }
 }
 
 #[cfg(test)]
@@ -1692,7 +1723,7 @@ fn karaoke_preview_line_rect(
 ) -> Rect {
     let upcoming_stack =
         karaoke_upcoming_stack_visible(project, line, current_frame, max_gap_frames);
-    let layout_ctx = EditorLayoutCtx::new(project, zone);
+    let layout_ctx = EditorLayoutCtx::new_at_frame(project, current_frame, zone);
     karaoke_preview_line_rect_with_state(
         &layout_ctx,
         line,
@@ -2171,7 +2202,7 @@ pub fn render_lines<'a>(
         if karaoke_preview { 2 } else { 8 },
     );
     let karaoke_count_in_frame_count = karaoke_count_in_frames(fps);
-    let layout_ctx = state.get_or_create_layout_ctx(project, karaoke_index.karaoke_tracks(), zone);
+    let layout_ctx = state.get_or_create_layout_ctx(project, current_frame, zone);
 
     // Rend le highlight de la track survolée (s'il y en a une et qu'elle est valide)
     if let Some(track_idx) = state.hovered_track {
@@ -2346,6 +2377,7 @@ pub fn render_lines<'a>(
 
         let is_hovered = state.hovered_line == Some(line.id);
         let is_selected = matches!(state.selected, Some(Selection::Line(id)) if id == line.id)
+            || matches!(state.selected, Some(Selection::Lines(ref ids)) if ids.contains(&line.id))
             || matches!(state.selected, Some(Selection::AllLines));
         let is_editing = state.editing_line == Some(line.id);
         let karaoke_playback_line = karaoke_preview && line.karaoke;
@@ -3385,16 +3417,25 @@ pub fn handle_context_menu_event(
                 })
                 .map(|line| line.id);
             if let Some(line_id) = line_id {
+                let line_was_selected = match state.selected.as_ref() {
+                    Some(Selection::Line(id)) => *id == line_id,
+                    Some(Selection::Lines(ids)) => ids.contains(&line_id),
+                    Some(Selection::AllLines) => true,
+                    _ => false,
+                };
                 state.context_menu = Some(LineContextMenu {
                     line_id,
                     x: *x,
                     y: *y,
                     hover_main: true,
+                    hover_change_character: false,
                     hover_actor_index: None,
                     hover_action_index: None,
                     actor_scroll: 0.0,
                 });
-                state.selected = Some(Selection::Line(line_id));
+                if !line_was_selected {
+                    state.selected = Some(Selection::Line(line_id));
+                }
                 state.dragging = None;
                 return EventResponse::Consumed;
             }
@@ -3431,6 +3472,14 @@ pub fn handle_context_menu_event(
             };
             let (root_rect, actor_rect, action_rect, actor_scroll, _) =
                 context_menu_layout(project, screen_w, screen_h, menu);
+
+            if root_rect.contains(*x, *y) {
+                let root_item = ((*y - root_rect.y) / MENU_ITEM_H).floor() as usize;
+                if root_item == 1 {
+                    state.context_menu = None;
+                    return EventResponse::Action(UiAction::OpenLinesPanel);
+                }
+            }
 
             if let (Some(actor_index), Some(action_index)) =
                 (menu.hover_actor_index, menu.hover_action_index)
@@ -3506,6 +3555,7 @@ pub fn handle_context_menu_event(
             if menu.hover_action_index.take().is_none() {
                 menu.hover_actor_index = None;
                 menu.hover_main = true;
+                menu.hover_change_character = false;
             }
             EventResponse::Consumed
         }
@@ -3518,9 +3568,15 @@ pub fn handle_context_menu_event(
             } else {
                 -1
             };
-            if let Some(action) = menu.hover_action_index.as_mut() {
+            if menu.hover_main && direction > 0 {
+                menu.hover_main = false;
+                menu.hover_change_character = true;
+            } else if menu.hover_change_character && direction < 0 {
+                menu.hover_change_character = false;
+                menu.hover_main = true;
+            } else if let Some(action) = menu.hover_action_index.as_mut() {
                 *action = (*action as i32 + direction).rem_euclid(4) as usize;
-            } else if !menu.hover_main {
+            } else if !menu.hover_main && !menu.hover_change_character {
                 let len = project.voice_actors().len() + 1;
                 let current = menu.hover_actor_index.unwrap_or(0);
                 menu.hover_actor_index =
@@ -3536,6 +3592,8 @@ pub fn handle_context_menu_event(
                             t("context.voice_actor.unassign_character"),
                         ][action],
                     )
+                } else if menu.hover_change_character {
+                    Some(t("context.change_character"))
                 } else if let Some(actor_index) = menu.hover_actor_index {
                     if actor_index == project.voice_actors().len() {
                         Some(t("context.voice_actor.create"))
@@ -3565,6 +3623,10 @@ pub fn handle_context_menu_event(
                 menu.hover_main = false;
                 menu.hover_actor_index = Some(0);
                 return EventResponse::Consumed;
+            }
+            if menu.hover_change_character {
+                state.context_menu = None;
+                return EventResponse::Action(UiAction::OpenLinesPanel);
             }
             let line_id = menu.line_id;
             let Some(actor_index) = menu.hover_actor_index else {
@@ -3633,10 +3695,28 @@ pub fn render_context_menu<'a>(
     render_menu_item(
         quads,
         labels,
-        root_rect,
+        Rect {
+            x: root_rect.x,
+            y: root_rect.y,
+            width: root_rect.width,
+            height: MENU_ITEM_H,
+        },
         t("context.voice_actor.assign_to_actor"),
         menu.hover_main,
         true,
+    );
+    render_menu_item(
+        quads,
+        labels,
+        Rect {
+            x: root_rect.x,
+            y: root_rect.y + MENU_ITEM_H,
+            width: root_rect.width,
+            height: MENU_ITEM_H,
+        },
+        t("context.change_character"),
+        menu.hover_change_character,
+        false,
     );
 
     if !context_actor_menu_visible(menu) {
@@ -3727,7 +3807,7 @@ fn context_menu_layout(
     screen_h: f32,
     menu: &LineContextMenu,
 ) -> (Rect, Rect, Rect, f32, f32) {
-    let root_h = MENU_ITEM_H;
+    let root_h = MENU_ITEM_H * 2.0;
     let (root_x, root_y) =
         clamped_menu_origin(menu.x, menu.y, MENU_ROOT_W, root_h, screen_w, screen_h);
     let root_rect = Rect {
@@ -3856,7 +3936,13 @@ fn update_context_menu_hover(
         actor_hover = menu.hover_actor_index;
     }
 
-    menu.hover_main = root_hover || root_actor_bridge;
+    let root_item = if root_hover {
+        Some(((y - root_rect.y) / MENU_ITEM_H).floor() as usize)
+    } else {
+        None
+    };
+    menu.hover_main = root_actor_bridge || root_item == Some(0);
+    menu.hover_change_character = root_item == Some(1);
     menu.hover_actor_index = actor_hover;
     menu.hover_action_index = action_hover;
 }
@@ -3996,10 +4082,11 @@ pub fn render_studio_rythmo<'a>(
     let karaoke_max_gap_frames = karaoke_adjacent_max_gap_frames(fps);
     let karaoke_index = rythmo_state.cached_karaoke_ui_index(project, karaoke_max_gap_frames);
     // Studio mode: render with proportions scaled to the same height chosen above.
+    let active_karaoke_tracks = rythmo_layout::active_karaoke_tracks(project, current_frame);
     let scale = zone.height
         / studio_reference_height_from_track_flags(
             karaoke_index.used_tracks(),
-            karaoke_index.karaoke_tracks(),
+            &active_karaoke_tracks,
         );
 
     // Readable sizes (increase text)
@@ -4032,6 +4119,7 @@ pub fn render_studio_rythmo<'a>(
             slot_header_height: slot_header_h,
             badge_gap,
             scale,
+            dynamic_track_layout: true,
         },
     );
     let track_layouts = &common_scene.tracks;

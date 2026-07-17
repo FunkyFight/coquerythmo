@@ -86,6 +86,15 @@ impl SidePanel {
         self.dragging_scrollbar = false;
     }
 
+    pub fn open_with_selection(
+        &mut self,
+        kind: SidePanelKind,
+        selected_line_ids: impl IntoIterator<Item = u64>,
+    ) {
+        self.open(kind);
+        self.selected.extend(selected_line_ids);
+    }
+
     pub fn close(&mut self) {
         *self = Self::default();
     }

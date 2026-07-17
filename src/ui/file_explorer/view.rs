@@ -8,8 +8,6 @@ impl FileExplorerModal {
         &'a self,
         quads: &mut Vec<QuadInstance>,
         labels: &mut Vec<LabelInfo<'a>>,
-        overlay_quads: &mut Vec<QuadInstance>,
-        overlay_labels: &mut Vec<LabelInfo<'a>>,
         screen_w: f32,
         screen_h: f32,
     ) {
@@ -73,14 +71,14 @@ impl FileExplorerModal {
             5.0,
         ));
         if self.overwrite_path.is_some() {
-            self.render_overwrite_prompt(overlay_quads, overlay_labels, &layout);
+            self.render_overwrite_prompt(quads, labels, &layout);
             let (_, cancel, overwrite) = super::overwrite_rects(layout.card);
             let focused = if self.overwrite_focus_replace {
                 overwrite
             } else {
                 cancel
             };
-            overlay_quads.push(super::quad(
+            quads.push(super::quad(
                 Rect {
                     x: focused.x - 2.0,
                     y: focused.y - 2.0,
@@ -94,9 +92,9 @@ impl FileExplorerModal {
                 5.0,
             ));
         } else {
-            self.render_filename_suggestions(overlay_quads, overlay_labels, &layout);
+            self.render_filename_suggestions(quads, labels, &layout);
             if self.show_filter_dropdown {
-                self.render_filter_dropdown(overlay_quads, overlay_labels, &layout);
+                self.render_filter_dropdown(quads, labels, &layout);
             }
         }
     }
