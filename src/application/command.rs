@@ -161,7 +161,6 @@ pub enum UiAction {
         frame: i64,
         y_slot: f32,
     },
-    CreateLineAtPlayhead,
     SelectLineAtPlayhead,
     SetSelectedLineStartAtPlayhead,
     SetSelectedLineEndAtPlayhead,
@@ -188,6 +187,10 @@ pub enum UiAction {
     /// the same command/history path.
     MoveSelectedLineTrack {
         direction: i32,
+    },
+    /// Shift the selected line group horizontally without changing duration.
+    NudgeSelectedLines {
+        delta_frames: i64,
     },
     MoveLines {
         moves: Vec<(u64, i64, f32)>,
@@ -313,6 +316,9 @@ pub enum UiAction {
     EnterStudioMode,
     ShowStudioWarning,
     ToggleScreenReader,
+    CreateLineAtTrack {
+        track: usize,
+    },
     // Notes
     AddNote,
     UpdateLineNote {

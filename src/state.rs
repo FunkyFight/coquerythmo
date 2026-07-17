@@ -82,7 +82,10 @@ pub struct State {
 }
 
 impl State {
-    pub async fn new(window: Arc<Window>) -> Self {
+    pub async fn new(
+        window: Arc<Window>,
+        accessibility_sender: Option<std::sync::mpsc::Sender<AccessibilityEvent>>,
+    ) -> Self {
         let render = RenderCoordinator::new(window.clone()).await;
         let ui_scale = Self::window_ui_scale(&window);
         let (ui_width, ui_height) = Self::logical_ui_size(render.gfx.size, ui_scale);
@@ -100,6 +103,7 @@ impl State {
             workspace_host: WorkspaceHost::new(RythmoWorkspace::new()),
             narration: NarrationService::new(
                 crate::config::get().accessibility.screen_reader_enabled,
+                accessibility_sender,
             ),
             last_autosave: Instant::now(),
             line_clipboard: None,
@@ -521,6 +525,9 @@ impl State {
 
     pub fn close_project_settings_modal(&mut self) {
         self.ui_shell.ui.close_project_settings_modal();
+        self.announce_accessibility(AccessibilityEvent::Closed {
+            label: crate::i18n::t("project_settings.title").to_string(),
+        });
     }
 
     pub fn save_project_settings(
@@ -569,6 +576,10 @@ impl State {
 
     pub fn open_save_prompt(&mut self, kind: crate::ui::save_prompt_modal::SavePromptKind) {
         self.ui_shell.ui.open_save_prompt(kind);
+        self.narration.announce_event(AccessibilityEvent::Focus {
+            label: crate::i18n::t("save_prompt.cancel").to_string(),
+            role: "button".to_string(),
+        });
     }
 
     pub fn toggle_karaoke_for_selection(&mut self) {
@@ -657,7 +668,16 @@ impl State {
     pub fn open_languages_modal(&mut self) {
         let active = self.project_session.project.active_language_id();
         let languages = self.language_modal_items();
+        let first_label = languages
+            .iter()
+            .find(|language| language.id == active)
+            .or_else(|| languages.first())
+            .map(|language| language.name.clone());
         self.ui_shell.ui.open_languages_modal(languages, active);
+        if let Some(label) = first_label {
+            self.narration
+                .announce_event(AccessibilityEvent::Selection { label });
+        }
     }
 
     fn refresh_languages_modal(&mut self) {
@@ -796,6 +816,9 @@ impl State {
     pub fn close_settings_modal(&mut self) {
         self.ui_shell.ui.close_settings_modal();
         self.render.ui_renderer.clear_text_cache();
+        self.announce_accessibility(AccessibilityEvent::Closed {
+            label: crate::i18n::t("settings.title").to_string(),
+        });
     }
 
     pub fn rebuild_topbar_for_network(&mut self) {
@@ -1219,6 +1242,18 @@ impl State {
             receiver: rx,
         });
         self.ui_shell.ui.loading_project = Some((label, Instant::now()));
+        self.narration.announce_event(AccessibilityEvent::Opened {
+            label: format!(
+                "{} {}",
+                crate::i18n::t("loading_project.title"),
+                self.ui_shell
+                    .ui
+                    .loading_project
+                    .as_ref()
+                    .map(|(label, _)| label.as_str())
+                    .unwrap_or_default()
+            ),
+        });
         self.request_redraw();
     }
 
@@ -1476,6 +1511,14 @@ impl State {
 
     pub fn announce_accessibility(&self, event: AccessibilityEvent) {
         self.narration.announce_event(event);
+    }
+
+    pub fn stop_narration(&self) {
+        self.narration.stop();
+    }
+
+    pub fn resume_narration(&self) {
+        self.narration.resume();
     }
 
     pub fn prev_frame(&mut self) {
@@ -2182,7 +2225,7 @@ impl State {
         };
         // Pasting follows the track currently under the mouse.  When the
         // pointer is outside the rythmo band, retain the keyboard-selected
-        // track as the deterministic fallback used by Insert.
+        // track as the deterministic fallback used by keyboard operations.
         let target_track = self
             .ui_shell
             .ui
@@ -2521,10 +2564,9 @@ impl State {
         line_id
     }
 
-    pub fn create_line_at_playhead(&mut self) -> u64 {
+    pub fn create_line_at_track(&mut self, track: usize) -> u64 {
         let frame = self.current_frame();
-        let track = self.ui_shell.ui.rythmo_state.keyboard_track;
-        let y_slot = crate::rythmo_layout::y_slot_for_track_index(track);
+        let y_slot = crate::rythmo_layout::y_slot_for_track_index(track.min(3));
         let id = self.create_line(frame, y_slot);
         self.narration.announce_event(AccessibilityEvent::Success {
             message: crate::i18n::t("accessibility.line_created").to_string(),
@@ -2698,6 +2740,57 @@ impl State {
                 value: (primary_target_track + 1).to_string(),
             });
         true
+    }
+
+    /// Shift every selected line by the same number of frames while preserving
+    /// durations, tracks and spacing. Moving left stops at frame zero for the
+    /// whole group so a multi-selection never gets compressed.
+    pub fn nudge_selected_lines(&mut self, delta_frames: i64) -> bool {
+        if delta_frames == 0 {
+            return false;
+        }
+        let selected_lines: Vec<_> = self
+            .selected_line_ids()
+            .into_iter()
+            .filter_map(|id| {
+                self.project_session
+                    .project
+                    .get_line(id)
+                    .map(|line| (id, line.start_frame, line.y_slot))
+            })
+            .collect();
+        if selected_lines.is_empty() {
+            self.narration.announce_event(AccessibilityEvent::Error {
+                message: crate::i18n::t("accessibility.no_line_selected").to_string(),
+            });
+            return false;
+        }
+
+        let minimum_start = selected_lines
+            .iter()
+            .map(|(_, start_frame, _)| *start_frame)
+            .min()
+            .unwrap_or(0);
+        let effective_delta = delta_frames.max(-minimum_start);
+        let primary_start = selected_lines[0].1 + effective_delta;
+        if effective_delta != 0 {
+            let moves: Vec<_> = selected_lines
+                .iter()
+                .map(|(id, start_frame, y_slot)| (*id, *start_frame + effective_delta, *y_slot))
+                .collect();
+            if moves.len() == 1 {
+                let (id, start_frame, y_slot) = moves[0];
+                self.move_line(id, start_frame, y_slot);
+            } else {
+                self.move_lines(moves);
+            }
+        }
+        self.narration
+            .announce_event(AccessibilityEvent::ValueChanged {
+                label: crate::i18n::t("accessibility.line").to_string(),
+                value: self.timecode_for_frame(primary_start),
+            });
+        effective_delta != 0
     }
 
     fn selected_line_ids(&self) -> Vec<u64> {
@@ -3641,6 +3734,9 @@ impl State {
                         let message = crate::i18n::t("toast.import_video_failed");
                         log::error!("{message} {}", source.display());
                         self.show_toast(message, 7.0);
+                        self.narration.announce_event(AccessibilityEvent::Error {
+                            message: crate::i18n::t("accessibility.project_load_failed").to_string(),
+                        });
                         return true;
                     }
                 }
@@ -3683,6 +3779,16 @@ impl State {
                 }
                 self.rebuild_topbar_for_network();
                 log::info!("Project imported from {}", job.br_path.display());
+                self.narration.announce_event(AccessibilityEvent::Success {
+                    message: format!(
+                        "{} {}",
+                        crate::i18n::t("accessibility.project_loaded"),
+                        job.br_path
+                            .file_stem()
+                            .map(|name| name.to_string_lossy())
+                            .unwrap_or_default()
+                    ),
+                });
             }
             Err(e) => {
                 log::error!("Import failed: {e}");
@@ -3690,6 +3796,13 @@ impl State {
                     format!("{} {e}", crate::i18n::t("toast.import_failed")),
                     6.0,
                 );
+                self.narration.announce_event(AccessibilityEvent::Error {
+                    message: format!(
+                        "{} {}",
+                        crate::i18n::t("accessibility.project_load_failed"),
+                        e
+                    ),
+                });
             }
         }
 

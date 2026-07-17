@@ -95,4 +95,28 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn every_language_contains_all_shortcut_names() {
+        let french = FR_TOML
+            .parse::<toml::Table>()
+            .expect("valid French translations");
+        let shortcut_keys: Vec<_> = french
+            .keys()
+            .filter(|key| key.starts_with("shortcut."))
+            .cloned()
+            .collect();
+        assert!(!shortcut_keys.is_empty());
+        for source in [EN_TOML, ES_TOML] {
+            let table = source
+                .parse::<toml::Table>()
+                .expect("valid translation TOML");
+            for key in &shortcut_keys {
+                assert!(
+                    table.get(key).is_some_and(toml::Value::is_str),
+                    "missing translation key {key}"
+                );
+            }
+        }
+    }
 }

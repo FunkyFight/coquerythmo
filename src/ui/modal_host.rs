@@ -51,6 +51,24 @@ fn legacy_keyboard_event(event: &UiEvent) -> Option<UiEvent> {
 pub enum ModalOutcome {
     Consumed,
     Action(UiAction),
+    Actions(Vec<UiAction>),
+}
+
+fn closed_modal(label: impl Into<String>) -> ModalOutcome {
+    ModalOutcome::Action(UiAction::Accessibility(
+        crate::accessibility::AccessibilityEvent::Closed {
+            label: label.into(),
+        },
+    ))
+}
+
+fn action_closed_modal(action: UiAction, label: impl Into<String>) -> ModalOutcome {
+    ModalOutcome::Actions(vec![
+        action,
+        UiAction::Accessibility(crate::accessibility::AccessibilityEvent::Closed {
+            label: label.into(),
+        }),
+    ])
 }
 
 impl ModalOutcome {
@@ -58,6 +76,7 @@ impl ModalOutcome {
         match self {
             Self::Consumed => EventResponse::Consumed,
             Self::Action(action) => EventResponse::Action(action),
+            Self::Actions(actions) => EventResponse::Actions(actions),
         }
     }
 }
@@ -266,7 +285,7 @@ impl ModalHost {
             super::connect_modal::ConnectModalResult::Consumed => ModalOutcome::Consumed,
             super::connect_modal::ConnectModalResult::Close => {
                 self.connect = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("menu.connect"))
             }
             super::connect_modal::ConnectModalResult::Connect {
                 ip,
@@ -276,13 +295,13 @@ impl ModalHost {
                 room_code,
             } => {
                 self.connect = None;
-                ModalOutcome::Action(UiAction::NetworkConnect {
+                action_closed_modal(UiAction::NetworkConnect {
                     ip,
                     port,
                     password,
                     username,
                     room_code,
-                })
+                }, crate::i18n::t("menu.connect"))
             }
         }
     }
@@ -336,7 +355,7 @@ impl ModalHost {
             super::settings_modal::SettingsModalResult::Consumed => ModalOutcome::Consumed,
             super::settings_modal::SettingsModalResult::Close => {
                 self.settings = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("settings.title"))
             }
             super::settings_modal::SettingsModalResult::Save {
                 lang,
@@ -404,7 +423,7 @@ impl ModalHost {
             }
             super::project_settings_modal::ProjectSettingsModalResult::Close => {
                 self.project_settings = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("project_settings.title"))
             }
             super::project_settings_modal::ProjectSettingsModalResult::PickInstrumentalAudio => {
                 ModalOutcome::Action(UiAction::PickProjectInstrumentalAudio)
@@ -414,10 +433,10 @@ impl ModalHost {
                 highlight_read_word,
             } => {
                 self.project_settings = None;
-                ModalOutcome::Action(UiAction::SaveProjectSettings {
+                action_closed_modal(UiAction::SaveProjectSettings {
                     instrumental_audio_path,
                     highlight_read_word,
-                })
+                }, crate::i18n::t("project_settings.title"))
             }
         }
     }
@@ -473,11 +492,17 @@ impl ModalHost {
             super::export_modal::ExportModalResult::Consumed => ModalOutcome::Consumed,
             super::export_modal::ExportModalResult::Close { configuration } => {
                 self.export = None;
-                ModalOutcome::Action(UiAction::SaveExportConfiguration { configuration })
+                action_closed_modal(
+                    UiAction::SaveExportConfiguration { configuration },
+                    crate::i18n::t("export_modal.title"),
+                )
             }
             super::export_modal::ExportModalResult::Export { configuration } => {
                 self.export = None;
-                ModalOutcome::Action(UiAction::StartConfiguredExport { configuration })
+                action_closed_modal(
+                    UiAction::StartConfiguredExport { configuration },
+                    crate::i18n::t("export_modal.title"),
+                )
             }
         }
     }
@@ -507,11 +532,30 @@ impl ModalHost {
                 ));
             }
         }
+        let focus_navigation = match event {
+            UiEvent::FocusNext | UiEvent::FocusPrevious => true,
+            UiEvent::KeyInput { text } => text == "\t" || text == "\u{b}",
+            _ => false,
+        };
+        if focus_navigation && matches!(result, LanguageModalResult::Consumed) {
+            if let Some(label) = self
+                .languages
+                .as_ref()
+                .map(|modal| modal.keyboard_focus_label())
+            {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label,
+                        role: "control".to_string(),
+                    },
+                ));
+            }
+        }
         match result {
             LanguageModalResult::Consumed => ModalOutcome::Consumed,
             LanguageModalResult::Close => {
                 self.languages = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("languages.title"))
             }
             LanguageModalResult::Create { name } => {
                 ModalOutcome::Action(UiAction::CreateLanguage { name })
@@ -552,14 +596,17 @@ impl ModalHost {
             }
             FileExplorerResult::Close => {
                 self.file_explorer = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("accessibility.file_explorer"))
             }
             FileExplorerResult::Clipboard(text) => {
                 ModalOutcome::Action(UiAction::SetClipboard(text))
             }
             FileExplorerResult::Selected { intent, path } => {
                 self.file_explorer = None;
-                ModalOutcome::Action(UiAction::FilePickerSelected { intent, path })
+                action_closed_modal(
+                    UiAction::FilePickerSelected { intent, path },
+                    crate::i18n::t("accessibility.file_explorer"),
+                )
             }
         }
     }
@@ -579,7 +626,7 @@ impl ModalHost {
             super::voice_actor_modal::VoiceActorModalResult::Consumed => ModalOutcome::Consumed,
             super::voice_actor_modal::VoiceActorModalResult::Close => {
                 self.voice_actor = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("voice_actor_modal.title"))
             }
             super::voice_actor_modal::VoiceActorModalResult::PickIcon => {
                 ModalOutcome::Action(UiAction::PickVoiceActorIcon)
@@ -589,7 +636,10 @@ impl ModalHost {
             }
             super::voice_actor_modal::VoiceActorModalResult::Create { name, icon_path } => {
                 self.voice_actor = None;
-                ModalOutcome::Action(UiAction::CreateVoiceActor { name, icon_path })
+                action_closed_modal(
+                    UiAction::CreateVoiceActor { name, icon_path },
+                    crate::i18n::t("voice_actor_modal.title"),
+                )
             }
         }
     }
@@ -611,7 +661,7 @@ impl ModalHost {
             }
             super::rename_character_modal::RenameCharacterModalResult::Close => {
                 self.rename_character = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("rename_character_modal.title"))
             }
             super::rename_character_modal::RenameCharacterModalResult::Clipboard(text) => {
                 ModalOutcome::Action(UiAction::SetClipboard(text))
@@ -621,7 +671,10 @@ impl ModalHost {
                 new_name,
             } => {
                 self.rename_character = None;
-                ModalOutcome::Action(UiAction::RenameCharacter { old_name, new_name })
+                action_closed_modal(
+                    UiAction::RenameCharacter { old_name, new_name },
+                    crate::i18n::t("rename_character_modal.title"),
+                )
             }
         }
     }
@@ -641,11 +694,14 @@ impl ModalHost {
             super::proxy_modal::ProxyModalResult::Consumed => ModalOutcome::Consumed,
             super::proxy_modal::ProxyModalResult::Close => {
                 self.proxy = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("proxy_modal.title"))
             }
             super::proxy_modal::ProxyModalResult::Create { width, height, crf } => {
                 self.proxy = None;
-                ModalOutcome::Action(UiAction::CreateProxy { width, height, crf })
+                action_closed_modal(
+                    UiAction::CreateProxy { width, height, crf },
+                    crate::i18n::t("proxy_modal.title"),
+                )
             }
         }
     }
@@ -665,7 +721,7 @@ impl ModalHost {
             super::proxy_error_modal::ProxyErrorResult::Consumed => ModalOutcome::Consumed,
             super::proxy_error_modal::ProxyErrorResult::Close => {
                 self.proxy_error = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("proxy_error.title"))
             }
         }
     }
@@ -685,7 +741,7 @@ impl ModalHost {
             super::whats_new_modal::WhatsNewResult::Consumed => ModalOutcome::Consumed,
             super::whats_new_modal::WhatsNewResult::Close => {
                 self.whats_new = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("whats_new.title"))
             }
         }
     }
@@ -705,23 +761,29 @@ impl ModalHost {
             super::server_browser::BrowserResult::Consumed => ModalOutcome::Consumed,
             super::server_browser::BrowserResult::Close => {
                 self.server_browser = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("server_browser.title"))
             }
             super::server_browser::BrowserResult::CreateRoom { ip, port } => {
                 self.server_browser = None;
-                ModalOutcome::Action(UiAction::OpenConnectModal {
-                    ip,
-                    port,
-                    join: false,
-                })
+                action_closed_modal(
+                    UiAction::OpenConnectModal {
+                        ip,
+                        port,
+                        join: false,
+                    },
+                    crate::i18n::t("server_browser.title"),
+                )
             }
             super::server_browser::BrowserResult::JoinRoom { ip, port } => {
                 self.server_browser = None;
-                ModalOutcome::Action(UiAction::OpenConnectModal {
-                    ip,
-                    port,
-                    join: true,
-                })
+                action_closed_modal(
+                    UiAction::OpenConnectModal {
+                        ip,
+                        port,
+                        join: true,
+                    },
+                    crate::i18n::t("server_browser.title"),
+                )
             }
             super::server_browser::BrowserResult::AddServer => {
                 ModalOutcome::Action(UiAction::OpenAddServerModal)
@@ -750,11 +812,14 @@ impl ModalHost {
             super::server_browser::AddServerResult::Consumed => ModalOutcome::Consumed,
             super::server_browser::AddServerResult::Close => {
                 self.add_server = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("server_browser.add_title"))
             }
             super::server_browser::AddServerResult::Add { ip, port } => {
                 self.add_server = None;
-                ModalOutcome::Action(UiAction::AddServer { ip, port })
+                action_closed_modal(
+                    UiAction::AddServer { ip, port },
+                    crate::i18n::t("server_browser.add_title"),
+                )
             }
         }
     }
@@ -765,17 +830,36 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
+        let focus_navigation = matches!(
+            event,
+            UiEvent::FocusNext
+                | UiEvent::FocusPrevious
+                | UiEvent::CursorUp
+                | UiEvent::CursorDown
+                | UiEvent::CursorLeft
+                | UiEvent::CursorRight
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
         let kind = self.save_prompt.as_ref().unwrap().kind();
-        match self
+        let result = self
             .save_prompt
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
-        {
+            .handle_event(event, screen_w, screen_h);
+        if focus_navigation {
+            if let Some(modal) = self.save_prompt.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label(),
+                        role: "button".to_string(),
+                    },
+                ));
+            }
+        }
+        match result {
             super::save_prompt_modal::SavePromptResult::Consumed => ModalOutcome::Consumed,
             super::save_prompt_modal::SavePromptResult::Save => {
                 self.save_prompt = None;
-                ModalOutcome::Action(match kind {
+                action_closed_modal(match kind {
                     super::save_prompt_modal::SavePromptKind::NewProject => {
                         UiAction::NewProjectSave
                     }
@@ -785,11 +869,11 @@ impl ModalHost {
                     super::save_prompt_modal::SavePromptKind::ExitApplication => {
                         UiAction::ExitApplicationSave
                     }
-                })
+                }, crate::i18n::t("save_prompt.title"))
             }
             super::save_prompt_modal::SavePromptResult::Discard => {
                 self.save_prompt = None;
-                ModalOutcome::Action(match kind {
+                action_closed_modal(match kind {
                     super::save_prompt_modal::SavePromptKind::NewProject => {
                         UiAction::NewProjectDiscard
                     }
@@ -799,11 +883,11 @@ impl ModalHost {
                     super::save_prompt_modal::SavePromptKind::ExitApplication => {
                         UiAction::ExitApplicationDiscard
                     }
-                })
+                }, crate::i18n::t("save_prompt.title"))
             }
             super::save_prompt_modal::SavePromptResult::Cancel => {
                 self.save_prompt = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("save_prompt.title"))
             }
         }
     }
@@ -823,11 +907,14 @@ impl ModalHost {
             super::studio_warning_modal::StudioWarningResult::Consumed => ModalOutcome::Consumed,
             super::studio_warning_modal::StudioWarningResult::Confirm => {
                 self.studio_warning = None;
-                ModalOutcome::Action(UiAction::EnterStudioMode)
+                action_closed_modal(
+                    UiAction::EnterStudioMode,
+                    crate::i18n::t("studio_warning.title"),
+                )
             }
             super::studio_warning_modal::StudioWarningResult::Cancel => {
                 self.studio_warning = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("studio_warning.title"))
             }
         }
     }
@@ -845,11 +932,14 @@ impl ModalHost {
                 }
                 super::pricing_license_modal::PricingLicenseModalResult::Close => {
                     self.pricing_license = None;
-                    ModalOutcome::Consumed
+                    closed_modal(crate::i18n::t("pricing.title"))
                 }
                 super::pricing_license_modal::PricingLicenseModalResult::Activate(key) => {
                     self.pricing_license = None;
-                    ModalOutcome::Action(UiAction::ActivateLicense { key })
+                    action_closed_modal(
+                        UiAction::ActivateLicense { key },
+                        crate::i18n::t("pricing.title"),
+                    )
                 }
             };
         }
@@ -861,11 +951,14 @@ impl ModalHost {
                 }
                 super::pricing_plan_modal::PricingPlanModalResult::Close => {
                     self.pricing_plan = None;
-                    ModalOutcome::Consumed
+                    closed_modal(crate::i18n::t("pricing.title"))
                 }
                 super::pricing_plan_modal::PricingPlanModalResult::Confirm(plan) => {
                     self.pricing_plan = None;
-                    ModalOutcome::Action(UiAction::SubscribePlan { plan })
+                    action_closed_modal(
+                        UiAction::SubscribePlan { plan },
+                        crate::i18n::t("pricing.title"),
+                    )
                 }
             };
         }
@@ -879,7 +972,7 @@ impl ModalHost {
             super::pricing_page::PricingResult::Consumed => ModalOutcome::Consumed,
             super::pricing_page::PricingResult::Close => {
                 self.pricing_page = None;
-                ModalOutcome::Consumed
+                closed_modal(crate::i18n::t("pricing.title"))
             }
             super::pricing_page::PricingResult::SelectPlan(plan) => {
                 self.pricing_plan = Some(super::pricing_plan_modal::PricingPlanModal::new(

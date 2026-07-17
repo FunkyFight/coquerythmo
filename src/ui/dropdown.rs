@@ -177,6 +177,37 @@ impl Dropdown {
         }
     }
 
+    fn list_label(&self) -> String {
+        self.trigger_label
+            .clone()
+            .or_else(|| self.options.get(self.selected).cloned())
+            .unwrap_or_else(|| "Liste".to_string())
+    }
+
+    fn closed_response(&self) -> EventResponse {
+        EventResponse::Action(UiAction::Accessibility(
+            crate::accessibility::AccessibilityEvent::Collapsed {
+                label: self.list_label(),
+            },
+        ))
+    }
+
+    fn with_closed_response(&self, response: EventResponse, label: String) -> EventResponse {
+        let closed = UiAction::Accessibility(crate::accessibility::AccessibilityEvent::Collapsed {
+            label,
+        });
+        match response {
+            EventResponse::Action(action) => EventResponse::Actions(vec![action, closed]),
+            EventResponse::Actions(mut actions) => {
+                actions.push(closed);
+                EventResponse::Actions(actions)
+            }
+            EventResponse::Ignored | EventResponse::Consumed => {
+                EventResponse::Action(closed)
+            }
+        }
+    }
+
     fn is_disabled(&self, index: usize) -> bool {
         self.disabled_items.get(index).copied().unwrap_or(false)
     }
@@ -274,7 +305,7 @@ impl Dropdown {
         if !self.open {
             self.open = true;
             self.hovered_option = self.first_enabled();
-            return EventResponse::Consumed;
+            return self.announce_keyboard_selection();
         }
         if let Some(sub_index) = self.submenus.iter().position(|submenu| submenu.open) {
             let item_index = self.submenus[sub_index].hovered.unwrap_or(0);
@@ -283,17 +314,13 @@ impl Dropdown {
             };
             let response = (self.submenus[sub_index].on_select)(item_index, &label);
             self.close();
-            return if response == EventResponse::Ignored {
-                EventResponse::Consumed
-            } else {
-                response
-            };
+            return self.with_closed_response(response, self.list_label());
         }
         let Some(index) = self.hovered_option.or(self.first_enabled()) else {
             return EventResponse::Consumed;
         };
         if self.open_hovered_submenu() {
-            return EventResponse::Consumed;
+            return self.announce_keyboard_selection();
         }
         if self.is_disabled(index) {
             return EventResponse::Consumed;
@@ -302,11 +329,7 @@ impl Dropdown {
         let label = self.options[index].clone();
         let response = (self.on_select)(index, &label);
         self.close();
-        if response == EventResponse::Ignored {
-            EventResponse::Consumed
-        } else {
-            response
-        }
+        self.with_closed_response(response, self.list_label())
     }
 
     fn remove_keyboard_submenu_item(&mut self) -> EventResponse {
@@ -322,11 +345,7 @@ impl Dropdown {
         };
         let response = on_remove(item_index, &label);
         self.close();
-        if response == EventResponse::Ignored {
-            EventResponse::Consumed
-        } else {
-            response
-        }
+        self.with_closed_response(response, self.list_label())
     }
 
     fn announce_keyboard_selection(&self) -> EventResponse {
@@ -427,22 +446,31 @@ impl Widget for Dropdown {
                 return self.announce_keyboard_selection();
             }
             UiEvent::CursorRight if self.open => {
-                self.open_hovered_submenu();
-                return EventResponse::Consumed;
+                return if self.open_hovered_submenu() {
+                    self.announce_keyboard_selection()
+                } else {
+                    EventResponse::Consumed
+                };
             }
             UiEvent::CursorLeft if self.open => {
                 if let Some(sub) = self.submenus.iter_mut().find(|submenu| submenu.open) {
+                    let label = self
+                        .options
+                        .get(sub.trigger_index)
+                        .cloned()
+                        .unwrap_or_else(|| "Liste".to_string());
                     sub.open = false;
                     sub.hovered = None;
+                    return self.with_closed_response(EventResponse::Consumed, label);
                 } else {
                     self.close();
                 }
-                return EventResponse::Consumed;
+                return self.closed_response();
             }
             UiEvent::Delete if self.open => return self.remove_keyboard_submenu_item(),
             UiEvent::KeyInput { text } if self.open && text == "\x1b" => {
                 self.close();
-                return EventResponse::Consumed;
+                return self.closed_response();
             }
             UiEvent::MouseMove { x, y } => {
                 if self.open {
@@ -536,9 +564,10 @@ impl Widget for Dropdown {
                     {
                         EventResponse::Consumed
                     } else {
+                        let label = self.list_label();
                         self.close();
                         self.trigger_state = DropdownState::Normal;
-                        EventResponse::Consumed
+                        self.with_closed_response(EventResponse::Consumed, label)
                     }
                 } else if self.bounds.contains(*x, *y) {
                     self.trigger_state = DropdownState::Pressed;
@@ -559,22 +588,14 @@ impl Widget for Dropdown {
                             };
                         self.close();
                         self.trigger_state = DropdownState::Normal;
-                        return if response != EventResponse::Ignored {
-                            response
-                        } else {
-                            EventResponse::Consumed
-                        };
+                        return self.with_closed_response(response, self.list_label());
                     }
                     if let Some((sub_idx, item_idx)) = self.hit_submenu_option(*x, *y) {
                         let label = self.submenus[sub_idx].items[item_idx].clone();
                         let response = (self.submenus[sub_idx].on_select)(item_idx, &label);
                         self.close();
                         self.trigger_state = DropdownState::Normal;
-                        return if response != EventResponse::Ignored {
-                            response
-                        } else {
-                            EventResponse::Consumed
-                        };
+                        return self.with_closed_response(response, self.list_label());
                     }
 
                     let is_submenu_trigger = self
@@ -595,26 +616,25 @@ impl Widget for Dropdown {
                         } else {
                             DropdownState::Normal
                         };
-                        if response != EventResponse::Ignored {
-                            response
-                        } else {
-                            EventResponse::Consumed
-                        }
+                        self.with_closed_response(response, self.list_label())
                     } else if self.bounds.contains(*x, *y) {
+                        let label = self.list_label();
                         self.close();
                         self.trigger_state = DropdownState::Hovered;
-                        EventResponse::Consumed
+                        self.with_closed_response(EventResponse::Consumed, label)
                     } else {
+                        let label = self.list_label();
                         self.close();
                         self.trigger_state = DropdownState::Normal;
-                        EventResponse::Consumed
+                        self.with_closed_response(EventResponse::Consumed, label)
                     }
                 } else if self.trigger_state == DropdownState::Pressed
                     && self.bounds.contains(*x, *y)
                 {
                     self.open = true;
+                    self.hovered_option = self.first_enabled();
                     self.trigger_state = DropdownState::Hovered;
-                    EventResponse::Consumed
+                    self.announce_keyboard_selection()
                 } else {
                     self.trigger_state = if self.bounds.contains(*x, *y) {
                         DropdownState::Hovered
@@ -919,5 +939,60 @@ impl Widget for Dropdown {
             };
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opening_a_list_announces_its_first_enabled_item() {
+        let mut dropdown = Dropdown::new(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 30.0,
+            },
+            vec!["disabled".into(), "first".into(), "second".into()],
+            |_, _| EventResponse::Consumed,
+        )
+        .with_disabled_items(vec![true, false, false]);
+
+        assert_eq!(
+            dropdown.handle_event(&UiEvent::Activate),
+            EventResponse::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Selection {
+                    label: "first".into(),
+                },
+            ))
+        );
+    }
+
+    #[test]
+    fn escaping_an_open_list_announces_that_it_collapsed() {
+        let mut dropdown = Dropdown::new(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 30.0,
+            },
+            vec!["first".into(), "second".into()],
+            |_, _| EventResponse::Consumed,
+        );
+
+        let _ = dropdown.handle_event(&UiEvent::Activate);
+        assert_eq!(
+            dropdown.handle_event(&UiEvent::KeyInput {
+                text: "\x1b".into(),
+            }),
+            EventResponse::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Collapsed {
+                    label: "first".into(),
+                },
+            ))
+        );
     }
 }

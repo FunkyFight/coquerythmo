@@ -6,6 +6,6 @@ mod event_loop;
 mod file_picker;
 
 /// Start the existing application event loop.
-pub fn run() {
-    event_loop::run();
+pub fn run(startup_path: Option<std::path::PathBuf>) {
+    event_loop::run(startup_path);
 }

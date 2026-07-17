@@ -8,6 +8,10 @@ use crate::state::State;
 use crate::ui::file_explorer::{
     FileExplorerMode, FileExplorerRequest, FileFilterSpec, FilePickerIntent,
 };
+use winit::event_loop::EventLoopWindowTarget;
+
+use super::dispatcher::handle_file_picker_selected;
+use super::event_loop::AppEvent;
 pub(crate) fn open_dialog_filters(filter_name: &str, extensions: &[&str]) -> Vec<FileFilterSpec> {
     vec![
         FileFilterSpec::new(i18n::t("picker.filter.all_files"), &["*"]),
@@ -81,6 +85,7 @@ pub(crate) fn picker_extra_locations(state: &State) -> Vec<(String, PathBuf)> {
 
 pub(crate) fn open_file_picker(
     state: &mut State,
+    elwt: &EventLoopWindowTarget<AppEvent>,
     title: &str,
     mode: FileExplorerMode,
     intent: FilePickerIntent,
@@ -88,6 +93,13 @@ pub(crate) fn open_file_picker(
     initial_dir: Option<PathBuf>,
     default_extension: Option<&str>,
 ) {
+    if state.narration.is_enabled() {
+        if let Some(path) = native_file_picker(title, mode, &filters, initial_dir.as_deref()) {
+            handle_file_picker_selected(intent, path, state, elwt);
+        }
+        return;
+    }
+
     state.open_file_explorer(FileExplorerRequest {
         title: title.to_string(),
         mode,
@@ -98,6 +110,34 @@ pub(crate) fn open_file_picker(
         initial_filename: None,
         extra_locations: picker_extra_locations(state),
     });
+}
+
+fn native_file_picker(
+    title: &str,
+    mode: FileExplorerMode,
+    filters: &[FileFilterSpec],
+    initial_dir: Option<&std::path::Path>,
+) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new().set_title(title);
+    if let Some(initial_dir) = initial_dir {
+        dialog = dialog.set_directory(initial_dir);
+    }
+    for filter in filters {
+        let extensions: Vec<_> = filter
+            .extensions
+            .iter()
+            .filter(|extension| extension.as_str() != "*")
+            .map(String::as_str)
+            .collect();
+        if !extensions.is_empty() {
+            dialog = dialog.add_filter(&filter.name, &extensions);
+        }
+    }
+
+    match mode {
+        FileExplorerMode::Open => dialog.pick_file(),
+        FileExplorerMode::Save => dialog.save_file(),
+    }
 }
 
 pub(crate) fn save_project_as(state: &mut State, path: PathBuf) -> bool {

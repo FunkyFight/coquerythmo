@@ -5,20 +5,15 @@ use std::collections::{HashMap, VecDeque};
 use std::process::Child;
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
+#[cfg(target_os = "macos")]
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::Mutex;
+#[cfg(target_os = "macos")]
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
-#[cfg(target_os = "windows")]
-use windows::core::{HSTRING, PCWSTR};
-#[cfg(target_os = "windows")]
-use windows::Win32::Media::Speech::{
-    ISpVoice, SpVoice, SPF_ASYNC, SPF_PURGEBEFORESPEAK, SPRS_IS_SPEAKING, SPVOICESTATUS,
-};
-#[cfg(target_os = "windows")]
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-    COINIT_APARTMENTTHREADED,
-};
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AccessibilityEvent {
@@ -46,6 +41,9 @@ pub enum AccessibilityEvent {
         label: String,
     },
     Closed {
+        label: String,
+    },
+    Collapsed {
         label: String,
     },
     CharacterTyped {
@@ -222,33 +220,60 @@ pub fn event_for_action(
     })
 }
 
+/// Return an announcement for every routed keyboard command. Commands with a
+/// semantic action name keep that name; every other command falls back to the
+/// localized key chord so adding a new shortcut can never make it silent.
+pub fn event_for_keyboard_shortcut(
+    action: &crate::application::command::UiAction,
+    shortcut_label: &str,
+) -> AccessibilityEvent {
+    event_for_action(action).unwrap_or_else(|| AccessibilityEvent::Activation {
+        label: shortcut_label.to_string(),
+    })
+}
+
+#[cfg(target_os = "macos")]
 enum WorkerCommand {
     Speak(Announcement),
-    Stop,
+    Stop { resumable: bool },
+    Resume,
     Shutdown,
 }
 
 pub struct NarrationService {
     enabled: bool,
     available: bool,
+    accessibility_sender: Option<Sender<AccessibilityEvent>>,
+    paused: AtomicBool,
+    last_event: Mutex<Option<AccessibilityEvent>>,
+    #[cfg(target_os = "macos")]
     sender: Sender<WorkerCommand>,
+    #[cfg(target_os = "macos")]
     worker: Option<JoinHandle<()>>,
 }
 
 impl NarrationService {
-    pub fn new(enabled: bool) -> Self {
-        let available = cfg!(any(target_os = "windows", target_os = "macos"));
+    pub fn new(enabled: bool, accessibility_sender: Option<Sender<AccessibilityEvent>>) -> Self {
+        let available = cfg!(target_os = "macos")
+            || (cfg!(target_os = "windows") && accessibility_sender.is_some());
+        #[cfg(target_os = "macos")]
         let (sender, receiver) = mpsc::channel();
-        let worker = available.then(|| {
+        #[cfg(target_os = "macos")]
+        let worker = Some(
             thread::Builder::new()
                 .name("coquerythmo-narration".into())
                 .spawn(move || speech_worker(receiver))
-                .expect("spawn narration worker")
-        });
+                .expect("spawn narration worker"),
+        );
         Self {
             enabled: enabled && available,
             available,
+            accessibility_sender,
+            paused: AtomicBool::new(false),
+            last_event: Mutex::new(None),
+            #[cfg(target_os = "macos")]
             sender,
+            #[cfg(target_os = "macos")]
             worker,
         }
     }
@@ -263,8 +288,10 @@ impl NarrationService {
 
     pub fn set_enabled(&mut self, enabled: bool) -> bool {
         self.enabled = enabled && self.available;
+        self.paused.store(false, Ordering::Release);
         if !self.enabled {
-            let _ = self.sender.send(WorkerCommand::Stop);
+            #[cfg(target_os = "macos")]
+            let _ = self.sender.send(WorkerCommand::Stop { resumable: false });
         }
         self.enabled
     }
@@ -273,6 +300,7 @@ impl NarrationService {
         let mut announcement = announcement;
         announcement.text = words_only(&announcement.text);
         if self.enabled && !announcement.text.trim().is_empty() {
+            #[cfg(target_os = "macos")]
             let _ = self.sender.send(WorkerCommand::Speak(announcement));
         }
     }
@@ -288,7 +316,43 @@ impl NarrationService {
         ) {
             return;
         }
+        if !self.enabled {
+            return;
+        }
+        if let Ok(mut last_event) = self.last_event.lock() {
+            *last_event = Some(event.clone());
+        }
+        if self.paused.load(Ordering::Acquire) {
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(sender) = &self.accessibility_sender {
+            let _ = sender.send(event);
+            return;
+        }
         self.announce(format_event(event));
+    }
+
+    pub fn stop(&self) {
+        self.paused.store(true, Ordering::Release);
+        #[cfg(target_os = "macos")]
+        let _ = self.sender.send(WorkerCommand::Stop { resumable: true });
+    }
+
+    pub fn resume(&self) {
+        if !self.enabled || !self.paused.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        if let (Some(sender), Ok(last_event)) = (&self.accessibility_sender, self.last_event.lock())
+        {
+            if let Some(event) = last_event.clone() {
+                let _ = sender.send(event);
+            }
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        let _ = self.sender.send(WorkerCommand::Resume);
     }
 }
 
@@ -315,6 +379,7 @@ pub fn words_only(text: &str) -> String {
     output
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for NarrationService {
     fn drop(&mut self) {
         let _ = self.sender.send(WorkerCommand::Shutdown);
@@ -355,6 +420,11 @@ fn format_event(event: AccessibilityEvent) -> Announcement {
             AnnouncementPriority::Action,
             false,
         ),
+        Event::Collapsed { label } => (
+            format!("{label}, {}", crate::i18n::t("accessibility.collapsed")),
+            AnnouncementPriority::Action,
+            false,
+        ),
         Event::CharacterTyped { character, secret } => {
             let text = if secret {
                 crate::i18n::t("accessibility.character_typed").to_string()
@@ -380,18 +450,224 @@ fn format_event(event: AccessibilityEvent) -> Announcement {
     }
 }
 
-enum ActiveSpeech {
-    #[cfg(target_os = "windows")]
-    Windows(WindowsSpeech),
-    #[cfg(target_os = "macos")]
-    Mac(Child),
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    Unavailable,
+#[cfg(target_os = "windows")]
+const ACCESSKIT_ROOT_ID: accesskit::NodeId = accesskit::NodeId(0);
+#[cfg(target_os = "windows")]
+const ACCESSKIT_INITIAL_FOCUS_ID: accesskit::NodeId = accesskit::NodeId(1);
+
+/// Publishes the application's existing semantic accessibility events through
+/// UI Automation. Windows screen readers remain responsible for speech,
+/// voices, punctuation and interruption policy.
+#[cfg(target_os = "windows")]
+pub struct WindowsAccessibilityAdapter {
+    adapter: accesskit_winit::Adapter,
+    state: std::sync::Arc<Mutex<AccessKitTreeState>>,
 }
 
+#[cfg(target_os = "windows")]
+impl WindowsAccessibilityAdapter {
+    pub fn new<T>(
+        window: &winit::window::Window,
+        proxy: winit::event_loop::EventLoopProxy<T>,
+    ) -> Self
+    where
+        T: From<accesskit_winit::ActionRequestEvent> + Send + 'static,
+    {
+        let state = std::sync::Arc::new(Mutex::new(AccessKitTreeState::new()));
+        let initial_state = std::sync::Arc::clone(&state);
+        let adapter = accesskit_winit::Adapter::new(
+            window,
+            move || {
+                initial_state
+                    .lock()
+                    .expect("AccessKit state poisoned")
+                    .full_tree()
+            },
+            proxy,
+        );
+        Self { adapter, state }
+    }
+
+    pub fn process_event(&self, window: &winit::window::Window, event: &winit::event::WindowEvent) {
+        self.adapter.process_event(window, event);
+    }
+
+    pub fn announce(&self, event: AccessibilityEvent) {
+        let update = self
+            .state
+            .lock()
+            .expect("AccessKit state poisoned")
+            .apply_event(event);
+        self.adapter.update_if_active(move || update);
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct AccessKitTreeState {
+    node_classes: accesskit::NodeClassSet,
+    next_node_id: u64,
+    focus_id: accesskit::NodeId,
+    focus_node: accesskit::Node,
+    live_node: Option<(accesskit::NodeId, accesskit::Node)>,
+}
+
+#[cfg(target_os = "windows")]
+impl AccessKitTreeState {
+    fn new() -> Self {
+        let mut node_classes = accesskit::NodeClassSet::new();
+        let mut focus = accesskit::NodeBuilder::new(accesskit::Role::Application);
+        focus.set_name("Coquerythmo");
+        focus.add_action(accesskit::Action::Focus);
+        let focus_node = focus.build(&mut node_classes);
+        Self {
+            node_classes,
+            next_node_id: 2,
+            focus_id: ACCESSKIT_INITIAL_FOCUS_ID,
+            focus_node,
+            live_node: None,
+        }
+    }
+
+    fn next_id(&mut self) -> accesskit::NodeId {
+        let id = accesskit::NodeId(self.next_node_id);
+        self.next_node_id = self.next_node_id.wrapping_add(1).max(2);
+        id
+    }
+
+    fn root_node(&mut self) -> accesskit::Node {
+        let mut root = accesskit::NodeBuilder::new(accesskit::Role::Window);
+        root.set_name("Coquerythmo");
+        root.push_child(self.focus_id);
+        if let Some((id, _)) = &self.live_node {
+            root.push_child(*id);
+        }
+        root.build(&mut self.node_classes)
+    }
+
+    fn full_tree(&mut self) -> accesskit::TreeUpdate {
+        let mut nodes = vec![
+            (ACCESSKIT_ROOT_ID, self.root_node()),
+            (self.focus_id, self.focus_node.clone()),
+        ];
+        if let Some(live_node) = self.live_node.clone() {
+            nodes.push(live_node);
+        }
+        let mut tree = accesskit::Tree::new(ACCESSKIT_ROOT_ID);
+        tree.app_name = Some("Coquerythmo".to_string());
+        tree.toolkit_name = Some("Coquerythmo custom UI".to_string());
+        accesskit::TreeUpdate {
+            nodes,
+            tree: Some(tree),
+            focus: self.focus_id,
+        }
+    }
+
+    fn apply_event(&mut self, event: AccessibilityEvent) -> accesskit::TreeUpdate {
+        match event {
+            AccessibilityEvent::Focus { label, role } => {
+                self.update_focus(label, accesskit_role(&role), None)
+            }
+            AccessibilityEvent::Selection { label } => {
+                self.update_focus(label, accesskit::Role::ListBoxOption, None)
+            }
+            AccessibilityEvent::ValueChanged { label, value } => {
+                self.update_focus(label, accesskit::Role::StaticText, Some(value))
+            }
+            event @ AccessibilityEvent::Error { .. } => {
+                self.update_live(format_event(event).text, true)
+            }
+            event @ (AccessibilityEvent::Activation { .. }
+            | AccessibilityEvent::Success { .. }
+            | AccessibilityEvent::Opened { .. }
+            | AccessibilityEvent::Closed { .. }
+            | AccessibilityEvent::Collapsed { .. }) => {
+                self.update_live(format_event(event).text, false)
+            }
+            AccessibilityEvent::CharacterTyped { .. }
+            | AccessibilityEvent::CharacterDeleted { .. } => accesskit::TreeUpdate {
+                nodes: Vec::new(),
+                tree: None,
+                focus: self.focus_id,
+            },
+        }
+    }
+
+    fn update_focus(
+        &mut self,
+        label: String,
+        role: accesskit::Role,
+        value: Option<String>,
+    ) -> accesskit::TreeUpdate {
+        let id = self.next_id();
+        let mut node = accesskit::NodeBuilder::new(role);
+        node.set_name(words_only(&label));
+        if let Some(value) = value {
+            node.set_value(words_only(&value));
+        }
+        node.add_action(accesskit::Action::Focus);
+        self.focus_id = id;
+        self.focus_node = node.build(&mut self.node_classes);
+        self.live_node = None;
+        accesskit::TreeUpdate {
+            nodes: vec![
+                (ACCESSKIT_ROOT_ID, self.root_node()),
+                (self.focus_id, self.focus_node.clone()),
+            ],
+            tree: None,
+            focus: self.focus_id,
+        }
+    }
+
+    fn update_live(&mut self, text: String, assertive: bool) -> accesskit::TreeUpdate {
+        let id = self.next_id();
+        let mut node = accesskit::NodeBuilder::new(if assertive {
+            accesskit::Role::Alert
+        } else {
+            accesskit::Role::StaticText
+        });
+        node.set_name(words_only(&text));
+        node.set_live(if assertive {
+            accesskit::Live::Assertive
+        } else {
+            accesskit::Live::Polite
+        });
+        let node = node.build(&mut self.node_classes);
+        self.live_node = Some((id, node.clone()));
+        accesskit::TreeUpdate {
+            nodes: vec![(ACCESSKIT_ROOT_ID, self.root_node()), (id, node)],
+            tree: None,
+            focus: self.focus_id,
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn accesskit_role(role: &str) -> accesskit::Role {
+    let role = role.to_ascii_lowercase();
+    if role.contains("checkbox") {
+        accesskit::Role::CheckBox
+    } else if role.contains("button") {
+        accesskit::Role::Button
+    } else if role.contains("text") || role.contains("field") {
+        accesskit::Role::TextInput
+    } else if role.contains("list") {
+        accesskit::Role::List
+    } else {
+        accesskit::Role::Group
+    }
+}
+
+#[cfg(target_os = "macos")]
+enum ActiveSpeech {
+    Mac(Child),
+}
+
+#[cfg(target_os = "macos")]
 fn speech_worker(receiver: Receiver<WorkerCommand>) {
     let mut active: Option<ActiveSpeech> = None;
     let mut queue = VecDeque::<Announcement>::new();
+    let mut last_announcement = None;
+    let mut resumable = false;
     loop {
         if active.as_mut().is_some_and(active_finished) {
             active = None;
@@ -404,7 +680,7 @@ fn speech_worker(receiver: Receiver<WorkerCommand>) {
                 }
             }
         }
-        match receiver.recv_timeout(Duration::from_millis(20)) {
+        match receiver.recv_timeout(Duration::from_millis(5)) {
             Ok(WorkerCommand::Speak(next)) => {
                 // Speech is latest-wins.  UI input can arrive much faster than
                 // a sentence can be spoken; retaining older announcements
@@ -413,11 +689,29 @@ fn speech_worker(receiver: Receiver<WorkerCommand>) {
                 // discard every pending item before accepting the new one.
                 stop_active(&mut active);
                 queue.clear();
+                last_announcement = Some(next.clone());
+                resumable = true;
                 queue.push_back(next);
             }
-            Ok(WorkerCommand::Stop) => {
+            Ok(WorkerCommand::Stop {
+                resumable: can_resume,
+            }) => {
+                if let Some(pending) = queue.back().cloned() {
+                    last_announcement = Some(pending);
+                }
                 queue.clear();
                 stop_active(&mut active);
+                resumable = can_resume && last_announcement.is_some();
+            }
+            Ok(WorkerCommand::Resume) => {
+                if resumable {
+                    stop_active(&mut active);
+                    queue.clear();
+                    if let Some(last) = last_announcement.clone() {
+                        queue.push_back(last);
+                    }
+                    resumable = false;
+                }
             }
             Ok(WorkerCommand::Shutdown) => {
                 stop_active(&mut active);
@@ -432,6 +726,7 @@ fn speech_worker(receiver: Receiver<WorkerCommand>) {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn pop_highest_priority(queue: &mut VecDeque<Announcement>) -> Option<Announcement> {
     let index = queue
         .iter()
@@ -441,39 +736,24 @@ fn pop_highest_priority(queue: &mut VecDeque<Announcement>) -> Option<Announceme
     queue.remove(index)
 }
 
+#[cfg(target_os = "macos")]
 fn active_finished(active: &mut ActiveSpeech) -> bool {
     match active {
-        #[cfg(target_os = "windows")]
-        ActiveSpeech::Windows(speech) => speech.finished(),
-        #[cfg(target_os = "macos")]
         ActiveSpeech::Mac(child) => child.try_wait().ok().flatten().is_some(),
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        ActiveSpeech::Unavailable => true,
     }
 }
 
+#[cfg(target_os = "macos")]
 fn stop_active(active: &mut Option<ActiveSpeech>) {
     let Some(active) = active.take() else {
         return;
     };
     match active {
-        #[cfg(target_os = "windows")]
-        ActiveSpeech::Windows(speech) => speech.stop(),
-        #[cfg(target_os = "macos")]
         ActiveSpeech::Mac(mut child) => {
             let _ = child.kill();
             let _ = child.wait();
         }
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        ActiveSpeech::Unavailable => {}
     }
-}
-
-#[cfg(target_os = "windows")]
-fn spawn_platform_speech(text: &str) -> std::io::Result<ActiveSpeech> {
-    let mut speech = WindowsSpeech::new()?;
-    speech.speak(text)?;
-    Ok(ActiveSpeech::Windows(speech))
 }
 
 #[cfg(target_os = "macos")]
@@ -485,85 +765,6 @@ fn spawn_platform_speech(text: &str) -> std::io::Result<ActiveSpeech> {
         .stderr(Stdio::null())
         .spawn()
         .map(ActiveSpeech::Mac)
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn spawn_platform_speech(_text: &str) -> std::io::Result<ActiveSpeech> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "speech is unavailable on this platform",
-    ))
-}
-
-#[cfg(target_os = "windows")]
-struct WindowsSpeech {
-    voice: ISpVoice,
-    started: Instant,
-}
-
-#[cfg(target_os = "windows")]
-impl WindowsSpeech {
-    fn new() -> std::io::Result<Self> {
-        let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-        if !initialized.is_ok() {
-            return Err(std::io::Error::other(format!(
-                "COM initialization failed: {initialized:?}"
-            )));
-        }
-        let voice = unsafe { CoCreateInstance(&SpVoice, None, CLSCTX_INPROC_SERVER) }
-            .map_err(|error| std::io::Error::other(format!("SAPI unavailable: {error:?}")));
-        match voice {
-            Ok(voice) => Ok(Self {
-                voice,
-                started: Instant::now(),
-            }),
-            Err(error) => {
-                unsafe { CoUninitialize() };
-                Err(error)
-            }
-        }
-    }
-
-    fn speak(&mut self, text: &str) -> std::io::Result<()> {
-        let text = HSTRING::from(text);
-        unsafe {
-            self.voice
-                .Speak(&text, (SPF_ASYNC.0 | SPF_PURGEBEFORESPEAK.0) as u32, None)
-                .map_err(|error| std::io::Error::other(format!("SAPI speak failed: {error:?}")))?;
-        }
-        self.started = Instant::now();
-        Ok(())
-    }
-
-    fn finished(&self) -> bool {
-        // SAPI reports NOT_STARTED briefly while an asynchronous utterance is
-        // being queued.  Do not drop the COM voice during that window or
-        // short action/line announcements can disappear completely.
-        if self.started.elapsed() < Duration::from_millis(100) {
-            return false;
-        }
-        let mut status = SPVOICESTATUS::default();
-        unsafe {
-            self.voice
-                .GetStatus(&mut status, std::ptr::null_mut())
-                .is_ok()
-                && status.dwRunningState != SPRS_IS_SPEAKING.0 as u32
-        }
-    }
-
-    fn stop(&self) {
-        let _ = unsafe {
-            self.voice
-                .Speak(PCWSTR::null(), SPF_PURGEBEFORESPEAK.0 as u32, None)
-        };
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl Drop for WindowsSpeech {
-    fn drop(&mut self) {
-        unsafe { CoUninitialize() };
-    }
 }
 
 /// WSOLA-style overlap/add time stretching followed by an exact sample trim.
@@ -798,6 +999,34 @@ mod tests {
         assert!(cache.get(&key(2)).is_some());
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn accesskit_events_pause_and_resume_with_the_latest_event() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let narration = NarrationService::new(true, Some(sender));
+        let first = AccessibilityEvent::Focus {
+            label: "first".into(),
+            role: "button".into(),
+        };
+        narration.announce_event(first.clone());
+        assert_eq!(receiver.try_recv().unwrap(), first);
+
+        narration.stop();
+        let latest = AccessibilityEvent::Focus {
+            label: "latest".into(),
+            role: "button".into(),
+        };
+        narration.announce_event(latest.clone());
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+
+        narration.resume();
+        assert_eq!(receiver.try_recv().unwrap(), latest);
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn priority_queue_prefers_errors() {
         let mut queue = VecDeque::from([

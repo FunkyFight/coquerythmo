@@ -132,6 +132,9 @@ pub enum EventResponse {
     Ignored,
     Consumed,
     Action(UiAction),
+    /// Multiple semantic actions are needed when an interaction both
+    /// performs a command and changes an accessibility container state.
+    Actions(Vec<UiAction>),
 }
 
 pub trait Widget {

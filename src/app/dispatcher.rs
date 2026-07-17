@@ -101,6 +101,27 @@ pub(crate) fn handle_file_picker_selected(
 }
 
 impl CommandDispatcher {
+    pub(crate) fn announce_shortcut(action: &UiAction, shortcut_label: &str, state: &State) {
+        state.announce_accessibility(crate::accessibility::event_for_keyboard_shortcut(
+            action,
+            shortcut_label,
+        ));
+    }
+
+    pub(crate) fn dispatch_shortcut(
+        action: UiAction,
+        shortcut_label: &str,
+        state: &mut State,
+        elwt: &EventLoopWindowTarget<AppEvent>,
+    ) -> bool {
+        // `dispatch` already announces semantically named actions. Only emit
+        // the automatic key-chord fallback for commands not present there.
+        if crate::accessibility::event_for_action(&action).is_none() {
+            Self::announce_shortcut(&action, shortcut_label, state);
+        }
+        Self::dispatch(action, state, elwt)
+    }
+
     pub(crate) fn dispatch(
         action: UiAction,
         state: &mut State,
@@ -126,6 +147,7 @@ impl CommandDispatcher {
                 let filters = open_dialog_filters("Video", &["mp4", "mov", "avi", "mkv", "webm"]);
                 open_file_picker(
                     state,
+                    elwt,
                     i18n::t("picker.video.title"),
                     FileExplorerMode::Open,
                     FilePickerIntent::AddVideo,
@@ -141,6 +163,7 @@ impl CommandDispatcher {
                 );
                 open_file_picker(
                     state,
+                    elwt,
                     i18n::t("picker.project_save.title"),
                     FileExplorerMode::Save,
                     FilePickerIntent::ExportProject,
@@ -156,6 +179,7 @@ impl CommandDispatcher {
                 );
                 open_file_picker(
                     state,
+                    elwt,
                     i18n::t("picker.import.title"),
                     FileExplorerMode::Open,
                     FilePickerIntent::ImportProject,
@@ -168,6 +192,7 @@ impl CommandDispatcher {
                 let filters = open_dialog_filters("Cappela DETX", &["detx"]);
                 open_file_picker(
                     state,
+                    elwt,
                     i18n::t("picker.import.cappela.title"),
                     FileExplorerMode::Open,
                     FilePickerIntent::ImportCappelaProject,
@@ -183,6 +208,7 @@ impl CommandDispatcher {
                 );
                 open_file_picker(
                     state,
+                    elwt,
                     i18n::t("picker.import.srt.title"),
                     FileExplorerMode::Open,
                     FilePickerIntent::ImportSrtProject,
@@ -204,6 +230,7 @@ impl CommandDispatcher {
                 );
                 open_file_picker(
                     state,
+                    elwt,
                     i18n::t("picker.import.srt.title"),
                     FileExplorerMode::Open,
                     FilePickerIntent::ImportSrtProject,
@@ -222,6 +249,7 @@ impl CommandDispatcher {
                     );
                     open_file_picker(
                         state,
+                        elwt,
                         i18n::t("picker.project_save.title"),
                         FileExplorerMode::Save,
                         FilePickerIntent::QuickSave,
@@ -275,8 +303,8 @@ impl CommandDispatcher {
                 let line_id = state.create_line(frame, y_slot);
                 state.start_editing_line(line_id);
             }
-            UiAction::CreateLineAtPlayhead => {
-                let line_id = state.create_line_at_playhead();
+            UiAction::CreateLineAtTrack { track } => {
+                let line_id = state.create_line_at_track(track);
                 state.start_editing_line(line_id);
             }
             UiAction::SelectLineAtPlayhead => {
@@ -316,6 +344,9 @@ impl CommandDispatcher {
             }
             UiAction::MoveSelectedLineTrack { direction } => {
                 state.move_selected_line_track(direction);
+            }
+            UiAction::NudgeSelectedLines { delta_frames } => {
+                state.nudge_selected_lines(delta_frames);
             }
             UiAction::MoveLines { moves } => {
                 state.move_lines(moves);
@@ -421,6 +452,7 @@ impl CommandDispatcher {
                 );
                 open_file_picker(
                     state,
+                    elwt,
                     i18n::t("picker.voice_actor_icon.title"),
                     FileExplorerMode::Open,
                     FilePickerIntent::VoiceActorIcon,
@@ -477,6 +509,7 @@ impl CommandDispatcher {
                 );
                 open_file_picker(
                     state,
+                    elwt,
                     i18n::t("picker.instrumental_audio.title"),
                     FileExplorerMode::Open,
                     FilePickerIntent::LanguageInstrumentalAudio { language_id: id },
@@ -501,6 +534,7 @@ impl CommandDispatcher {
                 );
                 open_file_picker(
                     state,
+                    elwt,
                     i18n::t("picker.delivery_export.title"),
                     FileExplorerMode::Save,
                     FilePickerIntent::ConfiguredExport { configuration },
@@ -577,6 +611,7 @@ impl CommandDispatcher {
                 let filters = save_dialog_filters("MP4 Video", &["mp4"]);
                 open_file_picker(
                     state,
+                    elwt,
                     i18n::t("picker.export_mp4.title"),
                     FileExplorerMode::Save,
                     FilePickerIntent::ExportMp4 {
@@ -685,6 +720,7 @@ impl CommandDispatcher {
                 );
                 open_file_picker(
                     state,
+                    elwt,
                     i18n::t("picker.instrumental_audio.title"),
                     FileExplorerMode::Open,
                     FilePickerIntent::ProjectInstrumentalAudio,
@@ -940,6 +976,7 @@ impl CommandDispatcher {
                     );
                     open_file_picker(
                         state,
+                        elwt,
                         i18n::t("picker.project_save.title"),
                         FileExplorerMode::Save,
                         FilePickerIntent::NewProjectSave,
@@ -977,6 +1014,7 @@ impl CommandDispatcher {
                     );
                     open_file_picker(
                         state,
+                        elwt,
                         i18n::t("picker.project_save.title"),
                         FileExplorerMode::Save,
                         FilePickerIntent::CloseProjectSave,
@@ -1008,6 +1046,7 @@ impl CommandDispatcher {
                     );
                     open_file_picker(
                         state,
+                        elwt,
                         i18n::t("picker.project_save.title"),
                         FileExplorerMode::Save,
                         FilePickerIntent::ExitApplicationSave,
@@ -1111,10 +1150,21 @@ pub(crate) fn dispatch(
     let response_changed_ui = !matches!(response, EventResponse::Ignored);
     let is_pointer_move = matches!(ui_event, UiEvent::MouseMove { .. });
 
-    if let EventResponse::Action(action) = response {
-        if CommandDispatcher::dispatch(action, state, elwt) {
-            elwt.exit();
+    match response {
+        EventResponse::Action(action) => {
+            if CommandDispatcher::dispatch(action, state, elwt) {
+                elwt.exit();
+            }
         }
+        EventResponse::Actions(actions) => {
+            for action in actions {
+                if CommandDispatcher::dispatch(action, state, elwt) {
+                    elwt.exit();
+                    break;
+                }
+            }
+        }
+        EventResponse::Ignored | EventResponse::Consumed => {}
     }
 
     if should_request_redraw(

@@ -256,8 +256,21 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
             command,
         );
     }
+    for (key, track) in [
+        (KeyCode::Numpad1, 0usize),
+        (KeyCode::Numpad2, 1usize),
+        (KeyCode::Numpad3, 2usize),
+        (KeyCode::Numpad4, 3usize),
+    ] {
+        router.bind(
+            InputContext::Workspace,
+            key,
+            ctrl,
+            RepeatPolicy::PressOnly,
+            UiAction::CreateLineAtTrack { track },
+        );
+    }
     for (key, command) in [
-        (KeyCode::Insert, UiAction::CreateLineAtPlayhead),
         (KeyCode::Enter, UiAction::SelectLineAtPlayhead),
         (
             KeyCode::Character('i'),
@@ -331,6 +344,20 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         ctrl,
         RepeatPolicy::PressAndRepeat,
         UiAction::NextFrame,
+    );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::ArrowLeft,
+        shift,
+        RepeatPolicy::PressAndRepeat,
+        UiAction::NudgeSelectedLines { delta_frames: -1 },
+    );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::ArrowRight,
+        shift,
+        RepeatPolicy::PressAndRepeat,
+        UiAction::NudgeSelectedLines { delta_frames: 1 },
     );
     router.bind(
         InputContext::Workspace,
@@ -834,6 +861,18 @@ mod tests {
             (KeyCode::ArrowLeft, ctrl, &workspace, UiAction::PrevFrame),
             (KeyCode::ArrowRight, ctrl, &workspace, UiAction::NextFrame),
             (
+                KeyCode::ArrowLeft,
+                shift,
+                &workspace,
+                UiAction::NudgeSelectedLines { delta_frames: -1 },
+            ),
+            (
+                KeyCode::ArrowRight,
+                shift,
+                &workspace,
+                UiAction::NudgeSelectedLines { delta_frames: 1 },
+            ),
+            (
                 KeyCode::ArrowUp,
                 shift,
                 &workspace,
@@ -852,10 +891,28 @@ mod tests {
                 UiAction::ToggleMute,
             ),
             (
-                KeyCode::Insert,
-                Modifiers::NONE,
+                KeyCode::Numpad1,
+                ctrl,
                 &workspace,
-                UiAction::CreateLineAtPlayhead,
+                UiAction::CreateLineAtTrack { track: 0 },
+            ),
+            (
+                KeyCode::Numpad2,
+                ctrl,
+                &workspace,
+                UiAction::CreateLineAtTrack { track: 1 },
+            ),
+            (
+                KeyCode::Numpad3,
+                ctrl,
+                &workspace,
+                UiAction::CreateLineAtTrack { track: 2 },
+            ),
+            (
+                KeyCode::Numpad4,
+                ctrl,
+                &workspace,
+                UiAction::CreateLineAtTrack { track: 3 },
             ),
             (
                 KeyCode::Enter,
@@ -963,6 +1020,37 @@ mod tests {
                 router.resolve(&released, &workspace),
                 Some(&UiAction::EndKeyboardPan)
             );
+        }
+    }
+
+    #[test]
+    fn every_registered_shortcut_has_an_automatic_announcement() {
+        let router = existing_shortcuts();
+        for binding in &router.bindings {
+            let stroke = KeyStroke {
+                key: binding.pattern.key,
+                physical_key: None,
+                location: winit::keyboard::KeyLocation::Standard,
+                modifiers: binding.pattern.modifiers,
+                pressed: binding.pattern.pressed,
+                repeat: false,
+                window: if binding.context == InputContext::SecondaryWindow {
+                    InputWindow::Secondary
+                } else {
+                    InputWindow::Main
+                },
+            };
+            let shortcut_label = stroke.accessibility_label();
+            assert!(!shortcut_label.trim().is_empty());
+            assert!(!shortcut_label.contains("shortcut."));
+            let event = crate::accessibility::event_for_keyboard_shortcut(
+                &binding.command,
+                &shortcut_label,
+            );
+            let crate::accessibility::AccessibilityEvent::Activation { label } = event else {
+                panic!("shortcut announcement must be an activation event");
+            };
+            assert!(!label.trim().is_empty());
         }
     }
 }

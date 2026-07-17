@@ -41,6 +41,14 @@ impl SavePromptModal {
         self.kind
     }
 
+    pub fn keyboard_focus_label(&self) -> String {
+        match self.focused {
+            0 => t("save_prompt.save").to_string(),
+            1 => t("save_prompt.discard").to_string(),
+            _ => t("save_prompt.cancel").to_string(),
+        }
+    }
+
     fn card_rect(sw: f32, sh: f32) -> Rect {
         Rect {
             x: (sw - CARD_W) / 2.0,
@@ -71,6 +79,14 @@ impl SavePromptModal {
                 SavePromptResult::Consumed
             }
             UiEvent::KeyInput { text } if text == "\u{b}" => {
+                self.focused = (self.focused + 2) % 3;
+                SavePromptResult::Consumed
+            }
+            UiEvent::CursorRight | UiEvent::CursorDown => {
+                self.focused = (self.focused + 1) % 3;
+                SavePromptResult::Consumed
+            }
+            UiEvent::CursorLeft | UiEvent::CursorUp => {
                 self.focused = (self.focused + 2) % 3;
                 SavePromptResult::Consumed
             }
@@ -223,5 +239,29 @@ impl SavePromptModal {
                 font_family_override: None,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrows_navigate_the_save_buttons() {
+        let mut modal = SavePromptModal::new(SavePromptKind::CloseProject);
+        assert!(matches!(
+            modal.handle_event(&UiEvent::CursorRight, 800.0, 600.0),
+            SavePromptResult::Consumed
+        ));
+        assert!(matches!(
+            modal.handle_event(
+                &UiEvent::KeyInput {
+                    text: "\r".to_string(),
+                },
+                800.0,
+                600.0,
+            ),
+            SavePromptResult::Save
+        ));
     }
 }

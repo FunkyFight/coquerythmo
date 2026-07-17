@@ -11,12 +11,13 @@ use crate::state::State;
 use crate::ui;
 use crate::ui::primitives::{UiAction, UiEvent};
 use crate::update;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Event, MouseButton, TouchPhase, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, KeyCode as WinitKeyCode, NamedKey, PhysicalKey};
 
 #[derive(Debug)]
 pub(crate) enum AppEvent {
@@ -24,6 +25,15 @@ pub(crate) enum AppEvent {
         version: String,
         result: Result<update::ReleaseInfo, String>,
     },
+    #[cfg(target_os = "windows")]
+    AccessKitAction(accesskit_winit::ActionRequestEvent),
+}
+
+#[cfg(target_os = "windows")]
+impl From<accesskit_winit::ActionRequestEvent> for AppEvent {
+    fn from(event: accesskit_winit::ActionRequestEvent) -> Self {
+        Self::AccessKitAction(event)
+    }
 }
 
 fn start_whats_new_fetch(version: String, proxy: EventLoopProxy<AppEvent>) {
@@ -106,7 +116,85 @@ fn is_space_key(key: &Key) -> bool {
     matches!(key, Key::Named(NamedKey::Space))
         || matches!(key, Key::Character(text) if text.as_str() == " ")
 }
-pub fn run() {
+
+fn is_control_key(key: PhysicalKey) -> bool {
+    matches!(
+        key,
+        PhysicalKey::Code(WinitKeyCode::ControlLeft | WinitKeyCode::ControlRight)
+    )
+}
+
+fn is_shift_key(key: PhysicalKey) -> bool {
+    matches!(
+        key,
+        PhysicalKey::Code(WinitKeyCode::ShiftLeft | WinitKeyCode::ShiftRight)
+    )
+}
+
+fn shortcut_label(
+    event: &winit::event::KeyEvent,
+    modifiers: Modifiers,
+    window: InputWindow,
+) -> String {
+    KeyStroke::from_winit(event, modifiers, window)
+        .map(|stroke| stroke.accessibility_label())
+        .unwrap_or_else(|| i18n::t("shortcut.prefix").to_string())
+}
+
+fn dispatch_key_action(
+    action: UiAction,
+    event: &winit::event::KeyEvent,
+    modifiers: Modifiers,
+    input_window: InputWindow,
+    state: &mut State,
+    elwt: &EventLoopWindowTarget<AppEvent>,
+) -> bool {
+    CommandDispatcher::dispatch_shortcut(
+        action,
+        &shortcut_label(event, modifiers, input_window),
+        state,
+        elwt,
+    )
+}
+
+fn dispatch_key_action_with_explicit_announcement(
+    action: UiAction,
+    event: &winit::event::KeyEvent,
+    modifiers: Modifiers,
+    input_window: InputWindow,
+    state: &mut State,
+    elwt: &EventLoopWindowTarget<AppEvent>,
+) -> bool {
+    announce_key_chord(event, modifiers, input_window, state);
+    CommandDispatcher::dispatch(action, state, elwt)
+}
+
+fn announce_key_action(
+    action: &UiAction,
+    event: &winit::event::KeyEvent,
+    modifiers: Modifiers,
+    input_window: InputWindow,
+    state: &State,
+) {
+    CommandDispatcher::announce_shortcut(
+        action,
+        &shortcut_label(event, modifiers, input_window),
+        state,
+    );
+}
+
+fn announce_key_chord(
+    event: &winit::event::KeyEvent,
+    modifiers: Modifiers,
+    input_window: InputWindow,
+    state: &State,
+) {
+    state.announce_accessibility(crate::accessibility::AccessibilityEvent::Activation {
+        label: shortcut_label(event, modifiers, input_window),
+    });
+}
+
+pub fn run(startup_path: Option<PathBuf>) {
     if bootstrap::initialize() {
         // Updater was launched, exit so it can replace our files
         return;
@@ -127,12 +215,29 @@ pub fn run() {
             .with_title(&cfg.window.title)
             .with_inner_size(LogicalSize::new(cfg.window.width, cfg.window.height))
             .with_window_icon(window_icon)
+            .with_visible(!cfg!(target_os = "windows"))
             .build(&event_loop)
             .expect("Failed to create window"),
     );
 
-    let mut state = pollster::block_on(State::new(window.clone()));
+    #[cfg(target_os = "windows")]
+    let windows_accessibility =
+        crate::accessibility::WindowsAccessibilityAdapter::new(&window, event_loop.create_proxy());
+    #[cfg(target_os = "windows")]
+    window.set_visible(true);
+
+    #[cfg(target_os = "windows")]
+    let (accessibility_sender, accessibility_receiver) = std::sync::mpsc::channel();
+    #[cfg(target_os = "windows")]
+    let accessibility_sender = Some(accessibility_sender);
+    #[cfg(not(target_os = "windows"))]
+    let accessibility_sender = None;
+
+    let mut state = pollster::block_on(State::new(window.clone(), accessibility_sender));
     state.update_window_title();
+    if let Some(path) = startup_path {
+        state.start_br_import(path);
+    }
     if config::should_show_whats_new(update::current_version()) {
         start_whats_new_fetch(update::current_version().to_string(), event_loop_proxy);
     }
@@ -151,37 +256,76 @@ pub fn run() {
                     handle_whats_new_result(version, result, &mut state);
                     state.request_redraw();
                 }
+                #[cfg(target_os = "windows")]
+                Event::UserEvent(AppEvent::AccessKitAction(event)) => {
+                    log::trace!("AccessKit action request: {:?}", event.request);
+                }
                 Event::WindowEvent { window_id, event } => {
+                #[cfg(target_os = "windows")]
+                if window_id == window.id() {
+                    windows_accessibility.process_event(&window, &event);
+                }
                 if state.is_secondary_window(window_id) {
                     match event {
                         WindowEvent::CloseRequested => state.close_secondary_display(),
                         WindowEvent::KeyboardInput { event, .. } => {
                             if event.state == ElementState::Pressed {
+                                if is_control_key(event.physical_key) {
+                                    state.stop_narration();
+                                    return;
+                                }
+                                if is_shift_key(event.physical_key) && !event.repeat {
+                                    state.resume_narration();
+                                    return;
+                                }
                                 let modifiers = Modifiers::NONE;
-                                let routed = KeyStroke::from_winit(
+                                let mut handled = false;
+                                if let Some(stroke) = KeyStroke::from_winit(
                                     &event,
                                     modifiers,
                                     InputWindow::Secondary,
-                                )
-                                .and_then(|stroke| {
-                                    shortcuts
+                                ) {
+                                    if let Some(action) = shortcuts
                                         .resolve(
                                             &stroke,
                                             &InputContextStack::new([InputContext::SecondaryWindow]),
                                         )
                                         .cloned()
-                                });
-                                if let Some(action) = routed {
-                                    if CommandDispatcher::dispatch(action, &mut state, elwt) {
-                                        elwt.exit();
+                                    {
+                                        if CommandDispatcher::dispatch_shortcut(
+                                            action,
+                                            &stroke.accessibility_label(),
+                                            &mut state,
+                                            elwt,
+                                        ) {
+                                            elwt.exit();
+                                        }
+                                        handled = true;
                                     }
                                     state.request_secondary_redraw();
-                                } else if is_space_key(&event.logical_key) {
-                                    state.toggle_play_pause();
+                                }
+                                if !handled && is_space_key(&event.logical_key) {
+                                    dispatch_key_action(
+                                        UiAction::TogglePlayPause,
+                                        &event,
+                                        modifiers,
+                                        InputWindow::Secondary,
+                                        &mut state,
+                                        elwt,
+                                    );
                                     state.request_redraw();
                                     state.request_secondary_redraw();
-                                } else if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
-                                    state.close_secondary_display();
+                                } else if !handled
+                                    && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+                                {
+                                    dispatch_key_action(
+                                        UiAction::CloseSecondaryDisplay,
+                                        &event,
+                                        modifiers,
+                                        InputWindow::Secondary,
+                                        &mut state,
+                                        elwt,
+                                    );
                                 }
                             }
                         }
@@ -230,6 +374,21 @@ pub fn run() {
                     state.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
+                    if event.state == ElementState::Pressed && is_control_key(event.physical_key) {
+                        // Ctrl is an always-available speech cut-off, including
+                        // while a modal, progress dialog or text field owns input.
+                        state.stop_narration();
+                        state.request_redraw();
+                        return;
+                    }
+                    if event.state == ElementState::Pressed
+                        && is_shift_key(event.physical_key)
+                        && !event.repeat
+                    {
+                        state.resume_narration();
+                        state.request_redraw();
+                        return;
+                    }
                     // Release-driven commands (notably continuous Q/D panning)
                     // must be routed even though text input only consumes presses.
                     if event.state == ElementState::Released {
@@ -249,6 +408,9 @@ pub fn run() {
                                     )
                                     .cloned()
                                 {
+                                    // Release bindings finish an already-announced
+                                    // shortcut (for example Q/D panning); do not
+                                    // speak the same key chord a second time.
                                     CommandDispatcher::dispatch(action, &mut state, elwt);
                                     state.request_redraw();
                                 }
@@ -271,15 +433,23 @@ pub fn run() {
                                 )
                                 .cloned()
                             {
-                                CommandDispatcher::dispatch(action, &mut state, elwt);
+                                CommandDispatcher::dispatch_shortcut(
+                                    action,
+                                    &stroke.accessibility_label(),
+                                    &mut state,
+                                    elwt,
+                                );
                                 state.request_redraw();
                                 return;
                             }
                         }
                         if state.ui_shell.ui.has_active_progress() {
                             if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
-                                CommandDispatcher::dispatch(
+                                dispatch_key_action(
                                     UiAction::CancelExport,
+                                    &event,
+                                    keyboard_modifiers,
+                                    InputWindow::Main,
                                     &mut state,
                                     elwt,
                                 );
@@ -312,6 +482,14 @@ pub fn run() {
                                 _ => None,
                             };
                             if let Some(text_navigation) = text_navigation {
+                                if shift_held {
+                                    announce_key_chord(
+                                        &event,
+                                        keyboard_modifiers,
+                                        InputWindow::Main,
+                                        &state,
+                                    );
+                                }
                                 dispatch(text_navigation, &mut state, elwt);
                                 return;
                             }
@@ -340,7 +518,14 @@ pub fn run() {
                             && !state.captures_modal_input()
                             && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("l"))
                         {
-                            CommandDispatcher::dispatch(UiAction::OpenLanguages, &mut state, elwt);
+                            dispatch_key_action(
+                                UiAction::OpenLanguages,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
                             state.request_redraw();
                             return;
                         }
@@ -370,7 +555,12 @@ pub fn run() {
                             InputWindow::Main,
                         ) {
                             if let Some(action) = shortcuts.resolve(&stroke, &context_stack).cloned() {
-                                if CommandDispatcher::dispatch(action, &mut state, elwt) {
+                                if CommandDispatcher::dispatch_shortcut(
+                                    action,
+                                    &stroke.accessibility_label(),
+                                    &mut state,
+                                    elwt,
+                                ) {
                                     elwt.exit();
                                 }
                                 state.request_redraw();
@@ -379,13 +569,27 @@ pub fn run() {
                         }
                         // F5: show studio warning if video is loaded
                         if matches!(event.logical_key, Key::Named(NamedKey::F5)) && state.video_path().is_some() {
-                            CommandDispatcher::dispatch(UiAction::ShowStudioWarning, &mut state, elwt);
+                            dispatch_key_action(
+                                UiAction::ShowStudioWarning,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
                             state.request_redraw();
                             return;
                         }
                         // ESCAPE: exit studio mode if active
                         if matches!(event.logical_key, Key::Named(NamedKey::Escape)) && state.is_studio_mode() {
-                            state.exit_studio_mode();
+                            dispatch_key_action(
+                                UiAction::ExitStudioMode,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
                             state.request_redraw();
                             return;
                         }
@@ -418,18 +622,36 @@ pub fn run() {
                         if keyboard_modifiers.alt
                             && matches!(event.logical_key, Key::Named(NamedKey::ArrowLeft))
                         {
+                            announce_key_chord(
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &state,
+                            );
                             dispatch(UiEvent::AltCursorLeft, &mut state, elwt);
                             return;
                         }
                         if keyboard_modifiers.alt
                             && matches!(event.logical_key, Key::Named(NamedKey::ArrowRight))
                         {
+                            announce_key_chord(
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &state,
+                            );
                             dispatch(UiEvent::AltCursorRight, &mut state, elwt);
                             return;
                         }
                         if shift_held
                             && matches!(event.logical_key, Key::Named(NamedKey::F10))
                         {
+                            announce_key_chord(
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &state,
+                            );
                             dispatch(UiEvent::OpenContextMenu, &mut state, elwt);
                             return;
                         }
@@ -470,35 +692,91 @@ pub fn run() {
                         if state.is_studio_mode() {
                             // In studio mode: only Space (play/pause) is allowed
                             if is_space_key(&event.logical_key) {
-                                state.toggle_play_pause();
+                                dispatch_key_action(
+                                    UiAction::TogglePlayPause,
+                                    &event,
+                                    keyboard_modifiers,
+                                    InputWindow::Main,
+                                    &mut state,
+                                    elwt,
+                                );
                                 state.request_redraw();
                             }
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("k")) {
-                            CommandDispatcher::dispatch(UiAction::SplitDialogue, &mut state, elwt);
+                            dispatch_key_action(
+                                UiAction::SplitDialogue,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
                             state.request_redraw();
                         } else if state.is_editing_text() {
                             if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "a") {
                                 // Ctrl+A â€” select all text
+                                announce_key_chord(
+                                    &event,
+                                    keyboard_modifiers,
+                                    InputWindow::Main,
+                                    &state,
+                                );
                                 dispatch(UiEvent::SelectAll, &mut state, elwt);
                             } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("c")) {
+                                announce_key_chord(
+                                    &event,
+                                    keyboard_modifiers,
+                                    InputWindow::Main,
+                                    &state,
+                                );
                                 dispatch(UiEvent::Copy, &mut state, elwt);
                             } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("x")) {
+                                announce_key_chord(
+                                    &event,
+                                    keyboard_modifiers,
+                                    InputWindow::Main,
+                                    &state,
+                                );
                                 dispatch(UiEvent::Cut, &mut state, elwt);
                             } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("z")) {
+                                announce_key_chord(
+                                    &event,
+                                    keyboard_modifiers,
+                                    InputWindow::Main,
+                                    &state,
+                                );
                                 dispatch(UiEvent::UndoTextEdit, &mut state, elwt);
                             } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v")) {
                                 // Ctrl+V â€” paste from clipboard
+                                announce_key_chord(
+                                    &event,
+                                    keyboard_modifiers,
+                                    InputWindow::Main,
+                                    &state,
+                                );
                                 if let Some(text) = platform::clipboard_paste() {
                                     dispatch(UiEvent::KeyInput { text }, &mut state, elwt);
                                 }
                             } else if matches!(event.logical_key, Key::Named(NamedKey::ArrowLeft)) {
                                 if shift_held {
+                                    announce_key_chord(
+                                        &event,
+                                        keyboard_modifiers,
+                                        InputWindow::Main,
+                                        &state,
+                                    );
                                     dispatch(UiEvent::ShiftCursorLeft, &mut state, elwt);
                                 } else {
                                     dispatch(UiEvent::CursorLeft, &mut state, elwt);
                                 }
                             } else if matches!(event.logical_key, Key::Named(NamedKey::ArrowRight)) {
                                 if shift_held {
+                                    announce_key_chord(
+                                        &event,
+                                        keyboard_modifiers,
+                                        InputWindow::Main,
+                                        &state,
+                                    );
                                     dispatch(UiEvent::ShiftCursorRight, &mut state, elwt);
                                 } else {
                                     dispatch(UiEvent::CursorRight, &mut state, elwt);
@@ -517,35 +795,104 @@ pub fn run() {
                                 }
                             }
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "s") {
-                            CommandDispatcher::dispatch(UiAction::QuickSave, &mut state, elwt);
+                            dispatch_key_action(
+                                UiAction::QuickSave,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
                             state.request_redraw();
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("a")) {
+                            announce_key_chord(
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &state,
+                            );
                             dispatch(UiEvent::SelectAll, &mut state, elwt);
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("c")) {
-                            CommandDispatcher::dispatch(UiAction::CopySelectedLine, &mut state, elwt);
+                            dispatch_key_action_with_explicit_announcement(
+                                UiAction::CopySelectedLine,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
                             state.request_redraw();
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("x")) {
-                            CommandDispatcher::dispatch(UiAction::CutSelectedLine, &mut state, elwt);
+                            dispatch_key_action_with_explicit_announcement(
+                                UiAction::CutSelectedLine,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
                             state.request_redraw();
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v")) {
-                            CommandDispatcher::dispatch(UiAction::PasteLine, &mut state, elwt);
+                            dispatch_key_action_with_explicit_announcement(
+                                UiAction::PasteLine,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
                             state.request_redraw();
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "z") {
                             if event.repeat || !event.state.is_pressed() { /* skip */ } else {
-                                state.undo();
+                                dispatch_key_action_with_explicit_announcement(
+                                    UiAction::Undo,
+                                    &event,
+                                    keyboard_modifiers,
+                                    InputWindow::Main,
+                                    &mut state,
+                                    elwt,
+                                );
                                 state.request_redraw();
                             }
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "n") {
-                            CommandDispatcher::dispatch(UiAction::NewProject, &mut state, elwt);
+                            dispatch_key_action(
+                                UiAction::NewProject,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
                             state.request_redraw();
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "Z") {
                             // CTRL+SHIFT+Z = redo (capital Z)
-                            state.redo();
+                            dispatch_key_action_with_explicit_announcement(
+                                UiAction::Redo,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
                             state.request_redraw();
                         } else if matches!(event.logical_key, Key::Named(NamedKey::Delete)) {
+                            announce_key_action(
+                                &UiAction::DeleteSelected,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &state,
+                            );
                             dispatch(UiEvent::Delete, &mut state, elwt);
                         } else if is_space_key(&event.logical_key) {
-                            state.toggle_play_pause();
+                            dispatch_key_action(
+                                UiAction::TogglePlayPause,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
                             state.request_redraw();
                         }
                     }
@@ -761,6 +1108,10 @@ pub fn run() {
             }
             Event::AboutToWait => {
                 let changed = state.tick_background();
+                #[cfg(target_os = "windows")]
+                while let Ok(event) = accessibility_receiver.try_recv() {
+                    windows_accessibility.announce(event);
+                }
                 if let Some(transition) = state.take_transition_after_save_ready() {
                     match transition {
                         crate::application::job_service::SaveContinuation::NewProject => {

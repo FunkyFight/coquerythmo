@@ -2,6 +2,9 @@
 
 use winit::window::WindowBuilder;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 #[cfg(target_os = "macos")]
 use winit::platform::macos::WindowBuilderExtMacOS;
 
@@ -13,6 +16,113 @@ pub(crate) fn window_builder() -> WindowBuilder {
     let builder = WindowBuilder::new();
     configure_platform_window(builder)
 }
+
+/// Register the portable project format for the current Windows user.
+///
+/// The association is deliberately stored under HKCU, so opening a project
+/// never requires elevation. Re-running the app also refreshes the executable
+/// path when the portable folder has been moved.
+#[cfg(target_os = "windows")]
+pub(crate) fn register_project_file_association() {
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    let command = format!("\"{}\" \"%1\"", executable.display());
+    let icon = format!("\"{}\",0", executable.display());
+    let executable_name = executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("coquerythmo.exe");
+    let application_key = format!(r"HKCU\Software\Classes\Applications\{executable_name}");
+    let entries = [
+        (
+            r"HKCU\Software\Classes\.coquerythmo".to_string(),
+            "Coquerythmo.Project".to_string(),
+        ),
+        (
+            r"HKCU\Software\Classes\Coquerythmo.Project".to_string(),
+            "Projet Coquerythmo".to_string(),
+        ),
+        (
+            r"HKCU\Software\Classes\Coquerythmo.Project\DefaultIcon".to_string(),
+            icon,
+        ),
+        (
+            r"HKCU\Software\Classes\Coquerythmo.Project\shell\open".to_string(),
+            "Ouvrir avec Coquerythmo".to_string(),
+        ),
+        (
+            r"HKCU\Software\Classes\Coquerythmo.Project\shell\open\command".to_string(),
+            command.clone(),
+        ),
+        (
+            r"HKCU\Software\Classes\Coquerythmo.Project\shell\open_with_coquerythmo".to_string(),
+            "Ouvrir avec Coquerythmo".to_string(),
+        ),
+        (
+            r"HKCU\Software\Classes\Coquerythmo.Project\shell\open_with_coquerythmo\command"
+                .to_string(),
+            command.clone(),
+        ),
+        (application_key.clone(), "Coquerythmo".to_string()),
+        (format!(r"{application_key}\shell\open\command"), command),
+    ];
+    for (key, value) in entries {
+        if !add_registry_value(&key, None, &value) {
+            return;
+        }
+    }
+
+    // These named values make Coquerythmo appear in Windows' "Open with"
+    // chooser even when another application is currently the default.
+    if !add_registry_value(
+        r"HKCU\Software\Classes\.coquerythmo\OpenWithProgids",
+        Some("Coquerythmo.Project"),
+        "",
+    ) || !add_registry_value(
+        &format!(r"{application_key}\SupportedTypes"),
+        Some(".coquerythmo"),
+        "",
+    ) {
+        return;
+    }
+
+    const SHCNE_ASSOCCHANGED: i32 = 0x0800_0000;
+    const SHCNF_IDLIST: u32 = 0;
+    unsafe {
+        windows_sys::Win32::UI::Shell::SHChangeNotify(
+            SHCNE_ASSOCCHANGED,
+            SHCNF_IDLIST,
+            std::ptr::null(),
+            std::ptr::null(),
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn add_registry_value(key: &str, name: Option<&str>, value: &str) -> bool {
+    let mut command = std::process::Command::new("reg.exe");
+    command.creation_flags(0x0800_0000).args(["ADD", key]);
+    if let Some(name) = name {
+        command.args(["/v", name]);
+    } else {
+        command.arg("/ve");
+    }
+    match command.args(["/t", "REG_SZ", "/d", value, "/f"]).status() {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            log::warn!("Could not register project file association ({status})");
+            false
+        }
+        Err(error) => {
+            log::warn!("Could not register project file association: {error}");
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn register_project_file_association() {}
 
 #[cfg(target_os = "macos")]
 fn configure_platform_window(builder: WindowBuilder) -> WindowBuilder {

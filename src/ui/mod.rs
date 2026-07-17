@@ -1042,19 +1042,30 @@ impl Ui {
             Some(dd) => dd.clone(),
             None => return EventResponse::Ignored,
         };
+        let label = match &dd {
+            primitives::ToolbarDropdown::Respirations => t("toolbar.respirations").to_string(),
+            primitives::ToolbarDropdown::Reactions => t("toolbar.reactions").to_string(),
+        };
         let items = Self::dropdown_items(&dd);
         let dropdown_rect = self.toolbar_dropdown_rect(&dd, items.len());
         if !dropdown_rect.contains(x, y) {
             self.active_dropdown = None;
-            return EventResponse::Consumed;
+            return EventResponse::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Collapsed { label },
+            ));
         }
         let item_h = 26.0;
         let idx = ((y - dropdown_rect.y) / item_h) as usize;
         if let Some((text, _)) = items.get(idx) {
             self.active_dropdown = None;
-            return EventResponse::Action(UiAction::AddQuickLine {
-                text: text.to_string(),
-            });
+            return EventResponse::Actions(vec![
+                UiAction::AddQuickLine {
+                    text: text.to_string(),
+                },
+                UiAction::Accessibility(crate::accessibility::AccessibilityEvent::Collapsed {
+                    label,
+                }),
+            ]);
         }
         EventResponse::Consumed
     }

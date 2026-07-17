@@ -127,6 +127,23 @@ impl LanguageModal {
         self.selected().map(|language| language.name.clone())
     }
 
+    pub fn keyboard_focus_label(&self) -> String {
+        match self.keyboard_focus {
+            0 => self
+                .selected()
+                .map(|language| language.name.clone())
+                .unwrap_or_else(|| t("languages.title").to_string()),
+            1 => t("languages.name").to_string(),
+            2 => t("languages.add").to_string(),
+            3 => t("languages.rename").to_string(),
+            4 => t("languages.select").to_string(),
+            5 => t("languages.instrumental").to_string(),
+            6 => t("languages.delete").to_string(),
+            7 => t("languages.clear_instrumental").to_string(),
+            _ => t("file_explorer.cancel").to_string(),
+        }
+    }
+
     fn sync_name_from_selection(&mut self) {
         self.name_input = self
             .languages

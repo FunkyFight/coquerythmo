@@ -9,5 +9,9 @@ pub(crate) fn initialize() -> bool {
     i18n::init(&config::get().lang);
     update::promote_pending_updater_at_startup();
     platform::show_untested_platform_warning();
-    update::check()
+    let updater_started = update::check();
+    if !updater_started {
+        platform::register_project_file_association();
+    }
+    updater_started
 }
