@@ -194,6 +194,7 @@ pub fn event_for_action(
         UiAction::ShowStudioWarning => "menu.export.studio_mode",
         UiAction::OpenRenameCharacterModal => "menu.tools.rename_character",
         UiAction::OpenProjectSettings => "project_settings.title",
+        UiAction::OpenSettings => "settings.title",
         UiAction::PickProjectInstrumentalAudio => "project_settings.browse",
         UiAction::SaveProjectSettings { .. } => "settings.save",
         UiAction::PrevFrame => "toolbar.prev_frame",

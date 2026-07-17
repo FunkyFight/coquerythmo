@@ -42,13 +42,21 @@ impl ProjectSettingsModal {
         self.instrumental_audio_path = path.into();
     }
 
-    pub fn keyboard_focus_label(&self) -> &'static str {
+    pub fn keyboard_focus_label(&self) -> String {
         match self.keyboard_focus {
-            0 => t("project_settings.browse"),
-            1 => t("project_settings.clear"),
-            2 => t("project_settings.highlight_read_word"),
-            3 => t("settings.save"),
-            _ => t("project_settings.close"),
+            0 => t("project_settings.browse").to_string(),
+            1 => t("project_settings.clear").to_string(),
+            2 => format!(
+                "{}, {}",
+                t("project_settings.highlight_read_word"),
+                if self.highlight_read_word {
+                    t("accessibility.checked")
+                } else {
+                    t("accessibility.unchecked")
+                }
+            ),
+            3 => t("settings.save").to_string(),
+            _ => t("project_settings.close").to_string(),
         }
     }
 
@@ -69,26 +77,27 @@ impl ProjectSettingsModal {
                 };
                 ProjectSettingsModalResult::Consumed
             }
-            UiEvent::KeyInput { text }
-                if text == "\r" || text == "\n" || text == " " => match self.keyboard_focus {
-                0 => ProjectSettingsModalResult::PickInstrumentalAudio,
-                1 => {
-                    self.instrumental_audio_path.clear();
-                    ProjectSettingsModalResult::Consumed
-                }
-                2 => {
-                    self.highlight_read_word = !self.highlight_read_word;
-                    ProjectSettingsModalResult::Consumed
-                }
-                3 => {
-                    let path = self.instrumental_audio_path.trim();
-                    ProjectSettingsModalResult::Save {
-                        instrumental_audio_path: (!path.is_empty()).then(|| path.to_string()),
-                        highlight_read_word: self.highlight_read_word,
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " " => {
+                match self.keyboard_focus {
+                    0 => ProjectSettingsModalResult::PickInstrumentalAudio,
+                    1 => {
+                        self.instrumental_audio_path.clear();
+                        ProjectSettingsModalResult::Consumed
                     }
+                    2 => {
+                        self.highlight_read_word = !self.highlight_read_word;
+                        ProjectSettingsModalResult::Consumed
+                    }
+                    3 => {
+                        let path = self.instrumental_audio_path.trim();
+                        ProjectSettingsModalResult::Save {
+                            instrumental_audio_path: (!path.is_empty()).then(|| path.to_string()),
+                            highlight_read_word: self.highlight_read_word,
+                        }
+                    }
+                    _ => ProjectSettingsModalResult::Close,
                 }
-                _ => ProjectSettingsModalResult::Close,
-            },
+            }
             UiEvent::CursorUp | UiEvent::CursorLeft => {
                 self.keyboard_focus = (self.keyboard_focus + 4) % 5;
                 ProjectSettingsModalResult::Consumed
@@ -125,6 +134,10 @@ impl ProjectSettingsModal {
                         instrumental_audio_path: (!path.is_empty()).then(|| path.to_string()),
                         highlight_read_word: self.highlight_read_word,
                     };
+                }
+
+                if close_rect(card).contains(*x, *y) {
+                    return ProjectSettingsModalResult::Close;
                 }
                 ProjectSettingsModalResult::Consumed
             }
@@ -283,6 +296,18 @@ impl ProjectSettingsModal {
             color_override: None,
             font_family_override: None,
         });
+
+        let close = close_rect(card);
+        push_button(overlay_quads, labels, close, t("project_settings.close"));
+
+        let focus_rect = match self.keyboard_focus {
+            0 => browse,
+            1 => clear,
+            2 => highlight,
+            3 => save,
+            _ => close,
+        };
+        focus_outline(overlay_quads, focus_rect);
     }
 }
 
@@ -331,6 +356,15 @@ fn save_rect(card: Rect) -> Rect {
     }
 }
 
+fn close_rect(card: Rect) -> Rect {
+    Rect {
+        x: card.x + card.width - 132.0,
+        y: card.y + PROJECT_SETTINGS_H - 48.0,
+        width: 110.0,
+        height: 34.0,
+    }
+}
+
 fn push_button<'a>(
     overlay_quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
@@ -373,6 +407,22 @@ fn push_quad(
         border_color,
         border_width,
         border_radius,
+        shadow_offset: [0.0; 2],
+        shadow_color: [0.0; 4],
+        shadow_blur: 0.0,
+        rotation: 0.0,
+        _padding: [0.0; 2],
+    });
+}
+
+fn focus_outline(overlay_quads: &mut Vec<QuadInstance>, rect: Rect) {
+    overlay_quads.push(QuadInstance {
+        rect: [rect.x, rect.y, rect.width, rect.height],
+        color: [0.0, 0.0, 0.0, 0.0],
+        color_bottom: [0.0, 0.0, 0.0, 0.0],
+        border_color: [0.38, 0.65, 1.0, 1.0],
+        border_width: 2.5,
+        border_radius: 8.0,
         shadow_offset: [0.0; 2],
         shadow_color: [0.0; 4],
         shadow_blur: 0.0,

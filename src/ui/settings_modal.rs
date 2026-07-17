@@ -58,6 +58,23 @@ impl SettingsModal {
         }
     }
 
+    pub fn keyboard_focus_label(&self) -> String {
+        match self.keyboard_focus {
+            0 => format!("{}, {}", t("settings.language"), language_label(&self.lang)),
+            1 => format!(
+                "{}, {}",
+                t("settings.rythmo_font"),
+                self.rythmo_font
+                    .as_deref()
+                    .unwrap_or_else(|| t("settings.default_font"))
+            ),
+            2 => t("settings.default_font").to_string(),
+            3 => format!("{} {:.2}", t("settings.scroll_speed"), self.scroll_speed),
+            4 => t("settings.save").to_string(),
+            _ => t("project_settings.close").to_string(),
+        }
+    }
+
     pub fn handle_event(
         &mut self,
         event: &UiEvent,
@@ -76,21 +93,22 @@ impl SettingsModal {
                 };
                 SettingsModalResult::Consumed
             }
-            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => match self.keyboard_focus
-            {
-                2 => {
-                    self.selected_font_index = None;
-                    self.rythmo_font = None;
-                    SettingsModalResult::Consumed
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " " => {
+                match self.keyboard_focus {
+                    2 => {
+                        self.selected_font_index = None;
+                        self.rythmo_font = None;
+                        SettingsModalResult::Consumed
+                    }
+                    4 => SettingsModalResult::Save {
+                        lang: self.lang.clone(),
+                        rythmo_font: self.rythmo_font.clone(),
+                        scroll_speed: self.scroll_speed,
+                    },
+                    5 => SettingsModalResult::Close,
+                    _ => SettingsModalResult::Consumed,
                 }
-                4 => SettingsModalResult::Save {
-                    lang: self.lang.clone(),
-                    rythmo_font: self.rythmo_font.clone(),
-                    scroll_speed: self.scroll_speed,
-                },
-                5 => SettingsModalResult::Close,
-                _ => SettingsModalResult::Consumed,
-            },
+            }
             UiEvent::CursorLeft | UiEvent::CursorUp if self.keyboard_focus == 0 => {
                 self.lang = match self.lang.as_str() {
                     "es-es" => "en-us",
@@ -294,6 +312,11 @@ impl SettingsModal {
                         rythmo_font,
                         scroll_speed,
                     };
+                }
+
+                let close_rect = close_rect(card);
+                if close_rect.contains(*x, *y) {
+                    return SettingsModalResult::Close;
                 }
 
                 SettingsModalResult::Consumed
@@ -864,5 +887,123 @@ impl SettingsModal {
             color_override: None,
             font_family_override: None,
         });
+
+        let close = close_rect(card);
+        overlay_quads.push(QuadInstance {
+            rect: [close.x, close.y, close.width, close.height],
+            color: [0.15, 0.15, 0.18, 1.0],
+            color_bottom: [0.11, 0.11, 0.14, 1.0],
+            border_color: [0.30, 0.30, 0.36, 0.7],
+            border_width: 1.0,
+            border_radius: 8.0,
+            shadow_offset: [0.0, 2.0],
+            shadow_color: [0.0, 0.0, 0.0, 0.3],
+            shadow_blur: 4.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+        labels.push(LabelInfo {
+            text: t("project_settings.close"),
+            bounds: close,
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(13.0),
+            color_override: None,
+            font_family_override: None,
+        });
+
+        if let Some(rect) = self.focus_rect(card) {
+            focus_outline(overlay_quads, rect);
+        }
     }
+
+    fn focus_rect(&self, card: Rect) -> Option<Rect> {
+        let list = Rect {
+            x: card.x + 20.0,
+            y: card.y + 126.0,
+            width: card.width - 40.0,
+            height: FONT_LIST_H,
+        };
+        let default_font = Rect {
+            x: list.x,
+            y: list.y + list.height + 6.0,
+            width: 180.0,
+            height: 26.0,
+        };
+        let speed_label_y = default_font.y + default_font.height + 32.0 + 36.0 + 8.0;
+        let speed_y = speed_label_y + 20.0;
+        let speed = Rect {
+            x: card.x + 12.0,
+            y: speed_y - 5.0,
+            width: 30.0 + 80.0 + 30.0 + 16.0,
+            height: 36.0,
+        };
+        let save = Rect {
+            x: card.x + (card.width - 140.0) / 2.0,
+            y: card.y + SETTINGS_H - 50.0,
+            width: 140.0,
+            height: 36.0,
+        };
+        Some(match self.keyboard_focus {
+            0 => language_rect(card, &self.lang),
+            1 => list,
+            2 => default_font,
+            3 => speed,
+            4 => save,
+            _ => close_rect(card),
+        })
+    }
+}
+
+fn language_label(lang: &str) -> &'static str {
+    if lang.starts_with("en") {
+        "English"
+    } else if lang.starts_with("es") {
+        "Español"
+    } else {
+        "Français"
+    }
+}
+
+fn language_rect(card: Rect, lang: &str) -> Rect {
+    let index = if lang.starts_with("en") {
+        1.0
+    } else if lang.starts_with("es") {
+        2.0
+    } else {
+        0.0
+    };
+    Rect {
+        x: card.x + 20.0 + index * 100.0,
+        y: card.y + 62.0,
+        width: 90.0,
+        height: 30.0,
+    }
+}
+
+fn close_rect(card: Rect) -> Rect {
+    Rect {
+        x: card.x + card.width - 120.0,
+        y: card.y + SETTINGS_H - 50.0,
+        width: 100.0,
+        height: 36.0,
+    }
+}
+
+fn focus_outline(quads: &mut Vec<QuadInstance>, rect: Rect) {
+    quads.push(QuadInstance {
+        rect: [rect.x, rect.y, rect.width, rect.height],
+        color: [0.0, 0.0, 0.0, 0.0],
+        color_bottom: [0.0, 0.0, 0.0, 0.0],
+        border_color: [0.38, 0.65, 1.0, 1.0],
+        border_width: 2.5,
+        border_radius: 8.0,
+        shadow_offset: [0.0; 2],
+        shadow_color: [0.0; 4],
+        shadow_blur: 0.0,
+        rotation: 0.0,
+        _padding: [0.0; 2],
+    });
 }

@@ -358,6 +358,10 @@ impl State {
     pub fn open_settings_modal(&mut self) {
         let fonts = self.render.ui_renderer.enumerate_font_families();
         self.ui_shell.ui.open_settings_modal(fonts);
+        self.narration.announce_event(AccessibilityEvent::Focus {
+            label: crate::i18n::t("settings.language").to_string(),
+            role: "control".to_string(),
+        });
     }
 
     pub fn open_project_settings_modal(&mut self) {
@@ -366,6 +370,10 @@ impl State {
             settings.instrumental_audio_path.clone(),
             settings.highlight_read_word,
         );
+        self.narration.announce_event(AccessibilityEvent::Focus {
+            label: crate::i18n::t("project_settings.browse").to_string(),
+            role: "control".to_string(),
+        });
     }
 
     pub fn open_automation(&mut self) {

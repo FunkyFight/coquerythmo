@@ -132,6 +132,7 @@ impl ModalHost {
         self.file_explorer
             .as_ref()
             .is_some_and(|modal| modal.is_editing_text())
+            || self.settings.is_some()
             || self.project_settings.is_some()
             || self.connect.is_some()
             || self.export.is_some()
@@ -292,12 +293,46 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self
+        let focus_navigation = matches!(
+            event,
+            UiEvent::FocusNext
+                | UiEvent::FocusPrevious
+                | UiEvent::CursorUp
+                | UiEvent::CursorDown
+                | UiEvent::CursorLeft
+                | UiEvent::CursorRight
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let activation = matches!(event, UiEvent::Activate)
+            || matches!(event, UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " ");
+        let result = self
             .settings
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
-        {
+            .handle_event(event, screen_w, screen_h);
+        if focus_navigation {
+            if let Some(modal) = self.settings.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label(),
+                        role: "control".to_string(),
+                    },
+                ));
+            }
+        }
+        let consumed = matches!(
+            &result,
+            &super::settings_modal::SettingsModalResult::Consumed
+        );
+        if activation && consumed {
+            if let Some(modal) = self.settings.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Activation {
+                        label: modal.keyboard_focus_label(),
+                    },
+                ));
+            }
+        }
+        match result {
             super::settings_modal::SettingsModalResult::Consumed => ModalOutcome::Consumed,
             super::settings_modal::SettingsModalResult::Close => {
                 self.settings = None;
