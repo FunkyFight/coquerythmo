@@ -6,6 +6,9 @@ pub struct TrackLayout {
     pub track_index: usize,
     pub top: f32,
     pub total_h: f32,
+    /// Stable vertical space assigned to the track. `total_h` can shrink to a
+    /// single row without moving any following track.
+    pub reserved_h: f32,
     pub body_h: f32,
     pub has_karaoke: bool,
 }
@@ -140,6 +143,70 @@ pub fn active_karaoke_tracks(project: &Project, current_frame: f64) -> Vec<bool>
     tracks
 }
 
+/// Returns the tracks that currently need the two-row karaoke layout.
+///
+/// An active normal line always uses the one-row layout. In an empty gap, the
+/// previous layout is kept when both the previous and next lines are karaoke.
+/// A new karaoke section enters two-row mode only when its count-in starts.
+pub fn karaoke_mode_tracks(
+    project: &Project,
+    current_frame: f64,
+    count_in_frames: i64,
+) -> Vec<bool> {
+    let mut tracks = vec![false; track_count()];
+
+    for (track_index, has_karaoke) in tracks.iter_mut().enumerate() {
+        let on_track = |line: &&crate::rythmo_line::RythmoLine| {
+            track_index_for_y_slot(line.y_slot) == track_index
+        };
+        let active = project
+            .lines()
+            .filter(on_track)
+            .filter(|line| {
+                current_frame >= line.start_frame as f64
+                    && current_frame <= line.end_frame() as f64
+            })
+            .max_by_key(|line| (line.start_frame, line.id));
+        if let Some(active) = active {
+            *has_karaoke = active.karaoke;
+            continue;
+        }
+
+        let previous = project
+            .lines()
+            .filter(on_track)
+            .filter(|line| (line.end_frame() as f64) < current_frame)
+            .max_by_key(|line| (line.end_frame(), line.start_frame, line.id));
+        let next = project
+            .lines()
+            .filter(on_track)
+            .filter(|line| line.start_frame as f64 > current_frame)
+            .min_by_key(|line| (line.start_frame, line.id));
+
+        let Some(next) = next.filter(|line| line.karaoke) else {
+            continue;
+        };
+        let continues_karaoke = previous.is_some_and(|line| line.karaoke);
+        let count_in_started = current_frame
+            >= next.start_frame.saturating_sub(count_in_frames.max(0)) as f64;
+        *has_karaoke = continues_karaoke || count_in_started;
+    }
+
+    tracks
+}
+
+/// Track flags used to choose a stable one-line height. Unlike
+/// `karaoke_mode_tracks`, these flags do not change during playback.
+pub fn karaoke_tracks(project: &Project) -> Vec<bool> {
+    let mut tracks = vec![false; track_count()];
+    for line in project.lines() {
+        if line.karaoke {
+            tracks[track_index_for_y_slot(line.y_slot)] = true;
+        }
+    }
+    tracks
+}
+
 pub fn karaoke_stack_gap(height: f32, scale: f32) -> f32 {
     (2.0 * scale.max(0.5)).min((height * 0.2).max(0.0))
 }
@@ -171,6 +238,7 @@ pub fn build_track_layouts(
                 track_index,
                 top,
                 total_h,
+                reserved_h: total_h,
                 body_h,
                 has_karaoke,
             };
@@ -184,30 +252,47 @@ pub fn build_track_layouts_at_frame(
     project: &Project,
     track_indices: &[usize],
     current_frame: f64,
+    count_in_frames: i64,
     normal_body_h: f32,
     slot_header_h: f32,
     badge_gap: f32,
     scale: f32,
 ) -> Vec<TrackLayout> {
     let mut top = 0.0;
+    let karaoke_mode_tracks = karaoke_mode_tracks(project, current_frame, count_in_frames);
+    let reserved_karaoke_tracks = karaoke_tracks(project);
     track_indices
         .iter()
         .map(|&track_index| {
-            let has_karaoke = track_has_active_karaoke(project, track_index, current_frame);
+            let has_karaoke = karaoke_mode_tracks
+                .get(track_index)
+                .copied()
+                .unwrap_or(false);
             let body_h = if has_karaoke {
                 karaoke_track_body_height(normal_body_h, scale)
             } else {
                 normal_body_h
             };
             let total_h = slot_header_h + badge_gap + body_h;
+            let reserved_body_h = if reserved_karaoke_tracks
+                .get(track_index)
+                .copied()
+                .unwrap_or(false)
+            {
+                karaoke_track_body_height(normal_body_h, scale)
+            } else {
+                normal_body_h
+            };
+            let reserved_h = slot_header_h + badge_gap + reserved_body_h;
             let layout = TrackLayout {
                 track_index,
                 top,
                 total_h,
+                reserved_h,
                 body_h,
                 has_karaoke,
             };
-            top += total_h;
+            top += reserved_h;
             layout
         })
         .collect()
@@ -216,7 +301,7 @@ pub fn build_track_layouts_at_frame(
 pub fn total_tracks_height(layouts: &[TrackLayout]) -> f32 {
     layouts
         .last()
-        .map(|layout| layout.top + layout.total_h)
+        .map(|layout| layout.top + layout.reserved_h)
         .unwrap_or(0.0)
 }
 
@@ -262,22 +347,49 @@ mod tests {
     }
 
     #[test]
-    fn track_height_only_doubles_while_karaoke_is_active() {
+    fn track_height_enters_karaoke_mode_for_first_count_in() {
         let mut project = Project::new();
-        let karaoke_id = project.add_line(24, 24, 0.5);
+        let karaoke_id = project.add_line(240, 24, 0.5);
+        project.add_line(0, 24, 0.75);
         project.get_line_mut(karaoke_id).unwrap().karaoke = true;
 
         let tracks = used_track_indices(&project);
-        let before = build_track_layouts_at_frame(&project, &tracks, 23.0, 40.0, 28.0, 2.0, 1.0);
-        let active = build_track_layouts_at_frame(&project, &tracks, 24.0, 40.0, 28.0, 2.0, 1.0);
-        let after = build_track_layouts_at_frame(&project, &tracks, 48.1, 40.0, 28.0, 2.0, 1.0);
+        let before =
+            build_track_layouts_at_frame(&project, &tracks, 167.9, 72, 40.0, 28.0, 2.0, 1.0);
+        let count_in =
+            build_track_layouts_at_frame(&project, &tracks, 168.0, 72, 40.0, 28.0, 2.0, 1.0);
+        let active =
+            build_track_layouts_at_frame(&project, &tracks, 240.0, 72, 40.0, 28.0, 2.0, 1.0);
+        let after =
+            build_track_layouts_at_frame(&project, &tracks, 264.1, 72, 40.0, 28.0, 2.0, 1.0);
 
         assert_eq!(track_for_index(&before, 2).unwrap().body_h, 40.0);
+        assert_eq!(
+            track_for_index(&count_in, 2).unwrap().body_h,
+            karaoke_track_body_height(40.0, 1.0)
+        );
         assert_eq!(
             track_for_index(&active, 2).unwrap().body_h,
             karaoke_track_body_height(40.0, 1.0)
         );
         assert_eq!(track_for_index(&after, 2).unwrap().body_h, 40.0);
+        let following_top = track_for_index(&before, 3).unwrap().top;
+        assert_eq!(track_for_index(&count_in, 3).unwrap().top, following_top);
+        assert_eq!(track_for_index(&active, 3).unwrap().top, following_top);
+        assert_eq!(track_for_index(&after, 3).unwrap().top, following_top);
+    }
+
+    #[test]
+    fn gap_layout_follows_the_next_line_type() {
+        let mut karaoke_next = Project::new();
+        let first_id = karaoke_next.add_line(0, 24, 0.5);
+        let next_id = karaoke_next.add_line(72, 24, 0.5);
+        karaoke_next.get_line_mut(first_id).unwrap().karaoke = true;
+        karaoke_next.get_line_mut(next_id).unwrap().karaoke = true;
+
+        assert!(karaoke_mode_tracks(&karaoke_next, 48.0, 72)[2]);
+        karaoke_next.get_line_mut(next_id).unwrap().karaoke = false;
+        assert!(!karaoke_mode_tracks(&karaoke_next, 48.0, 72)[2]);
     }
 
     #[test]

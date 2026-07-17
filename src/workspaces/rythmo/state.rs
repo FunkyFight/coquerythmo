@@ -270,7 +270,7 @@ impl RythmoState {
         })
     }
 
-    fn layout_signature(project: &Project, zone: &Rect, active_karaoke_tracks: &[bool]) -> u64 {
+    fn layout_signature(project: &Project, zone: &Rect, karaoke_mode_tracks: &[bool]) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
@@ -278,7 +278,7 @@ impl RythmoState {
         // usage. Re-scanning all lines here made every pointer move O(n).
         project.revision().hash(&mut hasher);
         zone.height.to_bits().hash(&mut hasher);
-        active_karaoke_tracks.hash(&mut hasher);
+        karaoke_mode_tracks.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -286,11 +286,15 @@ impl RythmoState {
         &self,
         project: &Project,
         current_frame: f64,
+        fps: f64,
         zone: &Rect,
     ) -> std::cell::Ref<'_, EditorLayoutCtx> {
-        let active_karaoke_tracks =
-            crate::rythmo_layout::active_karaoke_tracks(project, current_frame);
-        let signature = Self::layout_signature(project, zone, &active_karaoke_tracks);
+        let karaoke_mode_tracks = crate::rythmo_layout::karaoke_mode_tracks(
+            project,
+            current_frame,
+            karaoke_count_in_frames(fps),
+        );
+        let signature = Self::layout_signature(project, zone, &karaoke_mode_tracks);
         {
             let cached_sig = self.cached_layout_signature.borrow();
             let cached_ctx = self.cached_layout_ctx.borrow();
@@ -299,17 +303,8 @@ impl RythmoState {
             }
         }
 
-        let karaoke_track_count = active_karaoke_tracks.iter().filter(|&&k| k).count();
-        let normal_body_h = editor_normal_body_height_for_karaoke_tracks(karaoke_track_count, zone);
-        let track_layouts = build_track_layouts_from_karaoke_flags(
-            &rythmo_layout::all_track_indices(),
-            &active_karaoke_tracks,
-            normal_body_h,
-            slot_header_height(),
-            BADGE_GAP,
-            1.0,
-        );
-        let layout_ctx = EditorLayoutCtx::from_track_layouts(normal_body_h, track_layouts);
+        let layout_ctx =
+            EditorLayoutCtx::new_at_frame_with_fps(project, current_frame, fps, zone);
 
         *self.cached_layout_signature.borrow_mut() = signature;
         *self.cached_layout_ctx.borrow_mut() = Some(layout_ctx);

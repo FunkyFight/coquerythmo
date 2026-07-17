@@ -163,6 +163,7 @@ impl RythmoScene {
                 project,
                 &track_indices,
                 options.current_frame,
+                count_in_frames,
                 options.normal_body_height,
                 options.slot_header_height,
                 options.badge_gap,

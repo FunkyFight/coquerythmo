@@ -457,7 +457,7 @@ mod tests {
             height: 300.0,
         };
 
-        let normal_body_h = editor_normal_body_height_for_karaoke_tracks(0, &zone);
+        let normal_body_h = editor_normal_body_height_for_karaoke_tracks(1, &zone);
         let normal_rect = line_rect(&project, project.get_line(normal_id).unwrap(), 0.0, &zone);
         let karaoke_body = editor_track_body_rect_at_frame(&project, 0.5, 24.0, &zone);
         let karaoke_rect = karaoke_preview_line_rect(
@@ -469,7 +469,7 @@ mod tests {
         );
 
         assert!((normal_rect.height - normal_body_h).abs() < f32::EPSILON);
-        let active_normal_body_h = editor_normal_body_height_for_karaoke_tracks(1, &zone);
+        let active_normal_body_h = normal_body_h;
         assert!(
             (karaoke_body.height
                 - rythmo_layout::karaoke_track_body_height(active_normal_body_h, 1.0))
@@ -477,6 +477,88 @@ mod tests {
                 < 0.01
         );
         assert!((karaoke_rect.height - active_normal_body_h).abs() < 0.01);
+    }
+
+    #[test]
+    fn first_karaoke_line_enters_playback_mode_during_count_in() {
+        crate::config::init();
+        let mut project = Project::new();
+        let line_id = project.add_line(48, 24, 0.25);
+        project.get_line_mut(line_id).unwrap().karaoke = true;
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 300.0,
+        };
+        let line = project.get_line(line_id).unwrap();
+
+        let count_in = EditorLayoutCtx::new_at_frame(&project, 12.0, &zone);
+        let active = EditorLayoutCtx::new_at_frame(&project, 48.0, &zone);
+        let after = EditorLayoutCtx::new_at_frame(&project, 72.1, &zone);
+
+        assert!(karaoke_line_uses_playback_mode(&count_in, line, true));
+        assert!(karaoke_line_uses_playback_mode(&active, line, true));
+        assert!(!karaoke_line_uses_playback_mode(&after, line, true));
+    }
+
+    #[test]
+    fn karaoke_playback_mode_survives_only_gaps_before_karaoke_lines() {
+        crate::config::init();
+        let mut project = Project::new();
+        let first_id = project.add_line(0, 24, 0.25);
+        let next_id = project.add_line(96, 24, 0.25);
+        project.get_line_mut(first_id).unwrap().karaoke = true;
+        project.get_line_mut(next_id).unwrap().karaoke = true;
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 300.0,
+        };
+
+        let karaoke_gap = EditorLayoutCtx::new_at_frame(&project, 48.0, &zone);
+        assert!(karaoke_gap.track_for_y_slot(0.25).has_karaoke);
+
+        project.get_line_mut(next_id).unwrap().karaoke = false;
+        let normal_gap = EditorLayoutCtx::new_at_frame(&project, 48.0, &zone);
+        assert!(!normal_gap.track_for_y_slot(0.25).has_karaoke);
+    }
+
+    #[test]
+    fn karaoke_mode_changes_do_not_move_other_tracks() {
+        crate::config::init();
+        let mut project = Project::new();
+        let karaoke_id = project.add_line(240, 24, 0.0);
+        project.get_line_mut(karaoke_id).unwrap().karaoke = true;
+        project.add_line(0, 24, 0.5);
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 300.0,
+        };
+
+        let before = EditorLayoutCtx::new_at_frame(&project, 0.0, &zone);
+        let count_in = EditorLayoutCtx::new_at_frame(&project, 204.0, &zone);
+        let active = EditorLayoutCtx::new_at_frame(&project, 240.0, &zone);
+        let after = EditorLayoutCtx::new_at_frame(&project, 264.1, &zone);
+        let stable_top = before.track_for_y_slot(0.5).top;
+
+        assert_eq!(count_in.track_for_y_slot(0.5).top, stable_top);
+        assert_eq!(active.track_for_y_slot(0.5).top, stable_top);
+        assert_eq!(after.track_for_y_slot(0.5).top, stable_top);
+    }
+
+    #[test]
+    fn karaoke_and_scrolling_text_use_distinct_cache_entries() {
+        let line_id = 42;
+
+        assert_ne!(karaoke_text_cache_id(line_id), line_id);
+        assert_ne!(
+            karaoke_text_cache_id(line_id),
+            syllable_segment_cache_id(line_id, 0)
+        );
     }
 
     #[test]
@@ -715,7 +797,7 @@ mod tests {
         let ctx = EditorLayoutCtx::new_at_frame(&project, 0.0, &zone);
 
         assert!(
-            (ctx.normal_body_h - editor_normal_body_height_for_karaoke_tracks(0, &zone)).abs()
+            (ctx.normal_body_h - editor_normal_body_height_for_karaoke_tracks(1, &zone)).abs()
                 < 0.01
         );
         assert_rect_approx_eq(
@@ -991,13 +1073,14 @@ fn active_karaoke_skip_ranges(
     scene: &crate::rendering::rythmo::scene::RythmoScene,
     zone: &Rect,
     karaoke_preview: bool,
+    fps: f64,
     state: &RythmoState,
 ) -> Vec<(f32, f32)> {
     if !karaoke_preview {
         return Vec::new();
     }
 
-    let layout_ctx = state.get_or_create_layout_ctx(project, scene.current_frame, zone);
+    let layout_ctx = state.get_or_create_layout_ctx(project, scene.current_frame, fps, zone);
     scene
         .lines
         .iter()
@@ -1027,7 +1110,7 @@ pub fn render_rythmo_base(
     waveform_offset_frames: i64,
     waveform_is_instrumental: bool,
     karaoke_preview: bool,
-    _fps: f64,
+    fps: f64,
     state: &RythmoState,
     scene: &crate::rendering::rythmo::scene::RythmoScene,
 ) -> Vec<QuadInstance> {
@@ -1134,7 +1217,8 @@ pub fn render_rythmo_base(
     // Ticks removed from UI (kept in CPU/GPU export renderers)
 
     let playhead_x = zone.x + (zone.width - PLAYHEAD_WIDTH) / 2.0;
-    let skip_ranges = active_karaoke_skip_ranges(project, scene, zone, karaoke_preview, state);
+    let skip_ranges =
+        active_karaoke_skip_ranges(project, scene, zone, karaoke_preview, fps, state);
     push_playhead_segments(
         &mut quads,
         playhead_x,
@@ -1271,6 +1355,10 @@ fn push_natural_karaoke_text(
 
 fn syllable_segment_cache_id(line_id: u64, segment_index: usize) -> u64 {
     (1_u64 << 63) ^ line_id.wrapping_mul(1_000_003) ^ (segment_index as u64).wrapping_add(1)
+}
+
+fn karaoke_text_cache_id(line_id: u64) -> u64 {
+    (1_u64 << 62) ^ line_id
 }
 
 #[cfg(test)]
@@ -1713,6 +1801,14 @@ fn karaoke_preview_line_rect_with_state(
     }
 }
 
+fn karaoke_line_uses_playback_mode(
+    layout_ctx: &EditorLayoutCtx,
+    line: &crate::rythmo_line::RythmoLine,
+    karaoke_preview: bool,
+) -> bool {
+    karaoke_preview && line.karaoke && layout_ctx.track_for_y_slot(line.y_slot).has_karaoke
+}
+
 #[cfg(test)]
 fn karaoke_preview_line_rect(
     project: &Project,
@@ -1917,9 +2013,10 @@ fn push_karaoke_rythmo_text(
     dest_rect: Rect,
     progress_info: Option<KaraokeProgressRenderInfo>,
 ) {
+    let cache_id = karaoke_text_cache_id(line.id);
     push_natural_karaoke_text(
         stretched,
-        line.id,
+        cache_id,
         line.text.clone(),
         dest_rect,
         [1.0, 1.0, 1.0, 1.0],
@@ -1929,7 +2026,7 @@ fn push_karaoke_rythmo_text(
         return;
     };
     if let Some(colored) = StretchedText::natural_clipped(
-        line.id,
+        cache_id,
         line.text.clone(),
         dest_rect,
         progress_info.visual_progress,
@@ -1984,7 +2081,7 @@ fn push_editor_karaoke_texture_prewarm_texts(
             1.0,
         );
         stretched.push(StretchedText::natural_prewarm(
-            line.id,
+            karaoke_text_cache_id(line.id),
             line.text.clone(),
             row_rect,
             constants::KARAOKE_TEXT_FONT_SCALE,
@@ -2047,7 +2144,7 @@ fn push_studio_karaoke_texture_prewarm_texts(
             scale,
         );
         stretched.push(StretchedText::natural_prewarm(
-            line.id,
+            karaoke_text_cache_id(line.id),
             line.text.clone(),
             row_rect,
             constants::KARAOKE_TEXT_FONT_SCALE,
@@ -2202,7 +2299,7 @@ pub fn render_lines<'a>(
         if karaoke_preview { 2 } else { 8 },
     );
     let karaoke_count_in_frame_count = karaoke_count_in_frames(fps);
-    let layout_ctx = state.get_or_create_layout_ctx(project, current_frame, zone);
+    let layout_ctx = state.get_or_create_layout_ctx(project, current_frame, fps, zone);
 
     // Rend le highlight de la track survolée (s'il y en a une et qu'elle est valide)
     if let Some(track_idx) = state.hovered_track {
@@ -2236,6 +2333,7 @@ pub fn render_lines<'a>(
     struct LineRenderData {
         rect: Rect,
         badge_rect: Rect,
+        karaoke_playback: bool,
         karaoke_count_in: bool,
         karaoke_progress_info: Option<KaraokeProgressRenderInfo>,
     }
@@ -2246,13 +2344,13 @@ pub fn render_lines<'a>(
             continue;
         };
         let karaoke_active = line.karaoke_active(current_frame);
-        let karaoke_count_in = karaoke_preview
+        let karaoke_playback = karaoke_line_uses_playback_mode(&layout_ctx, line, karaoke_preview);
+        let karaoke_count_in = karaoke_playback
             && karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
         let karaoke_upcoming_stack =
-            karaoke_preview && karaoke_index.upcoming_stack_visible(line, current_frame);
+            karaoke_playback && karaoke_index.upcoming_stack_visible(line, current_frame);
 
-        if karaoke_preview
-            && line.karaoke
+        if karaoke_playback
             && !karaoke_active
             && !karaoke_count_in
             && !karaoke_upcoming_stack
@@ -2260,15 +2358,14 @@ pub fn render_lines<'a>(
             continue;
         }
 
-        let centered_karaoke_width = if karaoke_preview
-            && line.karaoke
+        let centered_karaoke_width = if karaoke_playback
             && (karaoke_active || karaoke_count_in || karaoke_upcoming_stack)
         {
             Some(state.karaoke_ui_text_width_for_render(line))
         } else {
             None
         };
-        let r = if karaoke_preview && line.karaoke {
+        let r = if karaoke_playback {
             karaoke_preview_line_rect_with_state(
                 &layout_ctx,
                 line,
@@ -2289,18 +2386,17 @@ pub fn render_lines<'a>(
             )
         };
 
-        let badge_rect = if karaoke_preview && line.karaoke {
+        let badge_rect = if karaoke_playback {
             badge_rect_for_karaoke_rect(line, &r)
         } else {
             layout_ctx.badge_rect_for_name(line, &line.character_name, r.x, zone)
         };
-        let show_badge =
-            !(karaoke_preview && line.karaoke) || karaoke_index.character_label_visible(line);
+        let show_badge = !karaoke_playback || karaoke_index.character_label_visible(line);
         let leading_visual = show_badge.then(|| {
             rythmo_layout::leading_visual_bounds(
                 badge_rect.x,
                 badge_rect.width,
-                if !line.karaoke {
+                if !karaoke_playback {
                     line.voice_actor_names.len()
                 } else {
                     0
@@ -2319,7 +2415,7 @@ pub fn render_lines<'a>(
             continue;
         }
 
-        let karaoke_progress_info = if karaoke_preview && line.karaoke {
+        let karaoke_progress_info = if karaoke_playback {
             karaoke_progress_render_info(line, current_frame, &karaoke_lang)
         } else {
             None
@@ -2330,6 +2426,7 @@ pub fn render_lines<'a>(
             LineRenderData {
                 rect: r,
                 badge_rect,
+                karaoke_playback,
                 karaoke_count_in,
                 karaoke_progress_info,
             },
@@ -2380,7 +2477,7 @@ pub fn render_lines<'a>(
             || matches!(state.selected, Some(Selection::Lines(ref ids)) if ids.contains(&line.id))
             || matches!(state.selected, Some(Selection::AllLines));
         let is_editing = state.editing_line == Some(line.id);
-        let karaoke_playback_line = karaoke_preview && line.karaoke;
+        let karaoke_playback_line = data.karaoke_playback;
         let read_highlight_end = if project.settings().highlight_read_word && !line.karaoke {
             let progress =
                 (current_frame - line.start_frame as f64) / line.duration_frames.max(1) as f64;
@@ -2432,7 +2529,7 @@ pub fn render_lines<'a>(
         if !line.text.is_empty() {
             if line.text == "↑" || line.text == "↓" {
                 render_breath_arrow(&data.rect, line.text == "↑", quads);
-            } else if line.karaoke && karaoke_preview {
+            } else if karaoke_playback_line {
                 push_karaoke_rythmo_text(stretched, line, data.rect, data.karaoke_progress_info);
             } else {
                 let drag_ratios = state
@@ -2531,13 +2628,13 @@ pub fn render_lines<'a>(
                 1.0,
                 quads,
             );
-        } else if karaoke_preview && line.karaoke {
+        } else if karaoke_playback_line {
             render_karaoke_dot(line, &data.rect, data.karaoke_progress_info, quads);
         }
 
         let is_syllable_drag_line =
             state.syllable_drag.as_ref().map(|d| d.line_id) == Some(line.id);
-        if !(karaoke_preview && line.karaoke) && (is_hovered || is_syllable_drag_line) {
+        if !karaoke_playback_line && (is_hovered || is_syllable_drag_line) {
             if let Some(ratios) =
                 syllable_ratios_for_line(line, state.syllable_drag.as_ref(), &karaoke_lang, state)
             {
@@ -4050,6 +4147,7 @@ fn studio_reference_height_from_track_flags(used_tracks: &[bool], karaoke_tracks
     let layouts = build_track_layouts_from_karaoke_flags(
         &track_indices,
         karaoke_tracks,
+        karaoke_tracks,
         32.0,
         slot_header_h,
         4.0,
@@ -4082,11 +4180,11 @@ pub fn render_studio_rythmo<'a>(
     let karaoke_max_gap_frames = karaoke_adjacent_max_gap_frames(fps);
     let karaoke_index = rythmo_state.cached_karaoke_ui_index(project, karaoke_max_gap_frames);
     // Studio mode: render with proportions scaled to the same height chosen above.
-    let active_karaoke_tracks = rythmo_layout::active_karaoke_tracks(project, current_frame);
+    let karaoke_tracks = rythmo_layout::karaoke_tracks(project);
     let scale = zone.height
         / studio_reference_height_from_track_flags(
             karaoke_index.used_tracks(),
-            &active_karaoke_tracks,
+            &karaoke_tracks,
         );
 
     // Readable sizes (increase text)

@@ -105,7 +105,7 @@ pub(crate) fn y_to_slot_at_frame(
     let layouts = editor_track_layouts_at_frame(project, current_frame, zone);
     let layout = layouts
         .iter()
-        .find(|layout| relative_y < layout.top + layout.total_h)
+        .find(|layout| relative_y < layout.top + layout.reserved_h)
         .or_else(|| layouts.last())
         .unwrap_or_else(|| {
             layouts
@@ -282,6 +282,7 @@ pub(crate) fn track_indices_from_usage(used_tracks: &[bool]) -> Vec<usize> {
 pub(crate) fn build_track_layouts_from_karaoke_flags(
     track_indices: &[usize],
     karaoke_tracks: &[bool],
+    reserved_karaoke_tracks: &[bool],
     normal_body_h: f32,
     slot_header_h: f32,
     badge_gap: f32,
@@ -298,14 +299,25 @@ pub(crate) fn build_track_layouts_from_karaoke_flags(
                 normal_body_h
             };
             let total_h = slot_header_h + badge_gap + body_h;
+            let reserved_body_h = if reserved_karaoke_tracks
+                .get(track_index)
+                .copied()
+                .unwrap_or(false)
+            {
+                rythmo_layout::karaoke_track_body_height(normal_body_h, scale)
+            } else {
+                normal_body_h
+            };
+            let reserved_h = slot_header_h + badge_gap + reserved_body_h;
             let layout = rythmo_layout::TrackLayout {
                 track_index,
                 top,
                 total_h,
+                reserved_h,
                 body_h,
                 has_karaoke,
             };
-            top += total_h;
+            top += reserved_h;
             layout
         })
         .collect()
@@ -342,12 +354,38 @@ impl EditorLayoutCtx {
     }
 
     pub(crate) fn new_at_frame(project: &Project, current_frame: f64, zone: &Rect) -> Self {
-        Self::from_karaoke_tracks(
-            &rythmo_layout::active_karaoke_tracks(project, current_frame),
-            zone,
-        )
+        Self::new_at_frame_with_fps(project, current_frame, 24.0, zone)
     }
 
+    pub(crate) fn new_at_frame_with_fps(
+        project: &Project,
+        current_frame: f64,
+        fps: f64,
+        zone: &Rect,
+    ) -> Self {
+        let karaoke_mode_tracks = rythmo_layout::karaoke_mode_tracks(
+            project,
+            current_frame,
+            karaoke_count_in_frames(fps),
+        );
+        let karaoke_track_count = rythmo_layout::karaoke_tracks(project)
+            .iter()
+            .filter(|has_karaoke| **has_karaoke)
+            .count();
+        let normal_body_h = editor_normal_body_height_for_karaoke_tracks(karaoke_track_count, zone);
+        let track_layouts = build_track_layouts_from_karaoke_flags(
+            &rythmo_layout::all_track_indices(),
+            &karaoke_mode_tracks,
+            &rythmo_layout::karaoke_tracks(project),
+            normal_body_h,
+            slot_header_height(),
+            BADGE_GAP,
+            1.0,
+        );
+        Self::from_track_layouts(normal_body_h, track_layouts)
+    }
+
+    #[cfg(test)]
     pub(crate) fn from_karaoke_tracks(karaoke_tracks: &[bool], zone: &Rect) -> Self {
         let karaoke_track_count = karaoke_tracks
             .iter()
@@ -356,6 +394,7 @@ impl EditorLayoutCtx {
         let normal_body_h = editor_normal_body_height_for_karaoke_tracks(karaoke_track_count, zone);
         let track_layouts = build_track_layouts_from_karaoke_flags(
             &rythmo_layout::all_track_indices(),
+            karaoke_tracks,
             karaoke_tracks,
             normal_body_h,
             slot_header_height(),

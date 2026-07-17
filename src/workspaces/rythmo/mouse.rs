@@ -8,7 +8,8 @@ fn hit_test_line_and_track(
     x: f32,
     y: f32,
 ) -> (Option<u64>, Option<usize>) {
-    let layout_ctx = state.get_or_create_layout_ctx(ctx.project, ctx.current_frame, ctx.zone);
+    let layout_ctx =
+        state.get_or_create_layout_ctx(ctx.project, ctx.current_frame, ctx.fps, ctx.zone);
 
     // A line can only contain the pointer if its timeline interval contains
     // the frame under the pointer. Querying that frame avoids scanning every
@@ -31,7 +32,7 @@ fn hit_test_line_and_track(
     let hovered_track = layout_ctx
         .track_layouts()
         .iter()
-        .find(|layout| relative_y >= layout.top && relative_y < layout.top + layout.total_h)
+        .find(|layout| relative_y >= layout.top && relative_y < layout.top + layout.reserved_h)
         .map(|layout| layout.track_index);
 
     (found, hovered_track)
