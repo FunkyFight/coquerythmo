@@ -26,6 +26,7 @@ pub struct VoiceActorModal {
     name_input: TextInputState,
     icon_input: TextInputState,
     selecting_field: Option<ActiveField>,
+    keyboard_focus: usize,
 }
 
 impl Default for VoiceActorModal {
@@ -51,6 +52,7 @@ impl VoiceActorModal {
             name_input: TextInputState::new(),
             icon_input: TextInputState::new(),
             selecting_field: None,
+            keyboard_focus: 0,
         };
         modal.name_input.activate("");
         modal
@@ -58,7 +60,40 @@ impl VoiceActorModal {
 
     pub fn set_icon_path(&mut self, path: impl Into<String>) {
         self.icon_path = path.into();
+        self.keyboard_focus = 1;
         self.activate_field(ActiveField::IconPath);
+    }
+
+    pub fn keyboard_focus_label(&self) -> String {
+        match self.keyboard_focus {
+            0 => format!("{} : {}", t("voice_actor_modal.name"), self.name),
+            1 => format!("{} : {}", t("voice_actor_modal.icon_path"), self.icon_path),
+            2 => t("voice_actor_modal.browse").to_string(),
+            3 => t("voice_actor_modal.cancel").to_string(),
+            _ => t("voice_actor_modal.create").to_string(),
+        }
+    }
+
+    pub fn keyboard_selection_label(&self) -> Option<String> {
+        self.copy_selection()
+    }
+
+    fn set_keyboard_focus(&mut self, focus: usize) {
+        self.keyboard_focus = focus % 5;
+        match self.keyboard_focus {
+            0 => self.activate_field(ActiveField::Name),
+            1 => self.activate_field(ActiveField::IconPath),
+            _ => self.deactivate_fields(),
+        }
+    }
+
+    fn activate_keyboard_focus(&mut self) -> VoiceActorModalResult {
+        match self.keyboard_focus {
+            2 => VoiceActorModalResult::PickIcon,
+            3 => VoiceActorModalResult::Close,
+            4 => self.create_result(),
+            _ => VoiceActorModalResult::Consumed,
+        }
     }
 
     fn card_rect(screen_w: f32, screen_h: f32) -> Rect {
@@ -308,6 +343,30 @@ impl VoiceActorModal {
         }
     }
 
+    fn select_word_active(&mut self, direction: i32) {
+        match self.active_field {
+            Some(ActiveField::Name) if direction < 0 => {
+                self.name_input.move_word_left_shift(&self.name)
+            }
+            Some(ActiveField::Name) => self.name_input.move_word_right_shift(&self.name),
+            Some(ActiveField::IconPath) if direction < 0 => {
+                self.icon_input.move_word_left_shift(&self.icon_path)
+            }
+            Some(ActiveField::IconPath) => self.icon_input.move_word_right_shift(&self.icon_path),
+            None => {}
+        }
+    }
+
+    fn move_boundary_active(&mut self, end: bool) {
+        match self.active_field {
+            Some(ActiveField::Name) if end => self.name_input.move_end(&self.name, false),
+            Some(ActiveField::Name) => self.name_input.move_home(false),
+            Some(ActiveField::IconPath) if end => self.icon_input.move_end(&self.icon_path, false),
+            Some(ActiveField::IconPath) => self.icon_input.move_home(false),
+            None => {}
+        }
+    }
+
     pub fn handle_event(
         &mut self,
         event: &UiEvent,
@@ -329,29 +388,51 @@ impl VoiceActorModal {
                 if text == "\x1b" {
                     return VoiceActorModalResult::Close;
                 }
-                if text == "\r" || text == "\n" {
-                    return self.create_result();
+                if text == "\t" {
+                    self.set_keyboard_focus(self.keyboard_focus + 1);
+                    return VoiceActorModalResult::Consumed;
                 }
-                self.handle_active_key(text);
+                if text == "\u{b}" {
+                    self.set_keyboard_focus(self.keyboard_focus + 4);
+                    return VoiceActorModalResult::Consumed;
+                }
+                if text == "\r" || text == "\n" || (text == " " && self.keyboard_focus >= 2) {
+                    return self.activate_keyboard_focus();
+                }
+                if self.keyboard_focus <= 1 {
+                    self.handle_active_key(text);
+                }
+                VoiceActorModalResult::Consumed
+            }
+            UiEvent::CursorUp => {
+                self.set_keyboard_focus(self.keyboard_focus + 4);
+                VoiceActorModalResult::Consumed
+            }
+            UiEvent::CursorDown => {
+                self.set_keyboard_focus(self.keyboard_focus + 1);
                 VoiceActorModalResult::Consumed
             }
             UiEvent::MousePress { x, y } => {
                 if let Some(field) = Self::field_for_point(card, *x, *y) {
+                    self.keyboard_focus = if field == ActiveField::Name { 0 } else { 1 };
                     self.start_mouse_selection(field, card, *x, false);
                     return VoiceActorModalResult::Consumed;
                 }
 
                 let (_, browse_rect) = Self::icon_rects(card);
                 if browse_rect.contains(*x, *y) {
+                    self.keyboard_focus = 2;
                     self.deactivate_fields();
                     return VoiceActorModalResult::PickIcon;
                 }
 
                 let (cancel, create) = Self::button_rects(card);
                 if cancel.contains(*x, *y) {
+                    self.keyboard_focus = 3;
                     return VoiceActorModalResult::Close;
                 }
                 if create.contains(*x, *y) {
+                    self.keyboard_focus = 4;
                     return self.create_result();
                 }
 
@@ -389,6 +470,22 @@ impl VoiceActorModal {
             }
             UiEvent::ShiftCursorRight => {
                 self.move_cursor_active(1, true);
+                VoiceActorModalResult::Consumed
+            }
+            UiEvent::SelectWordLeft => {
+                self.select_word_active(-1);
+                VoiceActorModalResult::Consumed
+            }
+            UiEvent::SelectWordRight => {
+                self.select_word_active(1);
+                VoiceActorModalResult::Consumed
+            }
+            UiEvent::Home => {
+                self.move_boundary_active(false);
+                VoiceActorModalResult::Consumed
+            }
+            UiEvent::End => {
+                self.move_boundary_active(true);
                 VoiceActorModalResult::Consumed
             }
             UiEvent::SelectAll => {
@@ -490,6 +587,7 @@ impl VoiceActorModal {
             browse_rect,
             t("voice_actor_modal.browse"),
             false,
+            self.keyboard_focus == 2,
         );
 
         let (cancel, create) = Self::button_rects(card);
@@ -499,6 +597,7 @@ impl VoiceActorModal {
             cancel,
             t("voice_actor_modal.cancel"),
             false,
+            self.keyboard_focus == 3,
         );
         render_button(
             overlay_quads,
@@ -506,6 +605,7 @@ impl VoiceActorModal {
             create,
             t("voice_actor_modal.create"),
             true,
+            self.keyboard_focus == 4,
         );
     }
 
@@ -636,6 +736,7 @@ fn render_button<'a>(
     rect: Rect,
     text: &'a str,
     primary: bool,
+    focused: bool,
 ) {
     overlay_quads.push(QuadInstance {
         rect: [rect.x, rect.y, rect.width, rect.height],
@@ -649,8 +750,12 @@ fn render_button<'a>(
         } else {
             [0.22, 0.22, 0.27, 1.0]
         },
-        border_color: [0.55, 0.55, 0.65, 0.55],
-        border_width: 1.0,
+        border_color: if focused {
+            [0.45, 0.62, 0.95, 1.0]
+        } else {
+            [0.55, 0.55, 0.65, 0.55]
+        },
+        border_width: if focused { 2.0 } else { 1.0 },
         border_radius: 8.0,
         shadow_offset: [0.0, 2.0],
         shadow_color: [0.0, 0.0, 0.0, 0.25],

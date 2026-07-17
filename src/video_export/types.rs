@@ -16,11 +16,26 @@ impl ExportPipeline {
         matches!(self, Self::Cuda)
     }
 
+    pub(super) fn uses_nvenc(self) -> bool {
+        matches!(self, Self::Cuda)
+    }
+
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Cuda => "ffmpeg CUDA scale/overlay",
             Self::Cpu => "ffmpeg CPU filters",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExportPipeline;
+
+    #[test]
+    fn cpu_pipeline_never_selects_nvenc() {
+        assert!(!ExportPipeline::Cpu.uses_nvenc());
+        assert!(ExportPipeline::Cuda.uses_nvenc());
     }
 }
 

@@ -14,7 +14,7 @@ pub(crate) fn handle_text_undo(ctx: &RythmoCtx, state: &mut RythmoState) -> Even
     if let Some(line_id) = state.editing_character {
         if let Some(line) = ctx.project.get_line(line_id) {
             if let Some(name) = state.char_input.undo(&line.character_name) {
-                state.autocomplete_index = Some(0);
+                state.autocomplete_index = None;
                 return EventResponse::Action(UiAction::UpdateCharacterName { line_id, name });
             }
         }

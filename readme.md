@@ -1,21 +1,50 @@
-# Raccourcis clavier
+# coquerythmo-releases
+Bande rythmo simple, épurée et optimisée. Tout ça, gratuitement.
+
+## Version 3.5.4
+
+Cette version améliore fortement l’accessibilité clavier et la lecture vocale.
+Sous Windows, les annonces sont transmises au système d’accessibilité via
+AccessKit. Les raccourcis nommés annoncent uniquement leur action, sans lire
+la combinaison de touches ; les listes
+annoncent leur premier élément puis leur état « réduite » à la fermeture, et
+les modales annoncent leur fermeture.
+
+Tous les toasts sont vocalisés sur le canal prioritaire. Les exportations et
+créations de proxy sont exposées à AccessKit comme des barres de progression ;
+l’opération en cours et son pourcentage sont annoncés toutes les minutes sur
+ce canal. Leur démarrage et leur annulation avec `Échap` sont aussi annoncés
+en priorité.
+
+Avec la lecture vocale active sous Windows, les sélecteurs de fichiers utilisent
+l’Explorateur Windows natif. Les projets `.coquerythmo` peuvent également être
+ouverts avec Coquerythmo depuis le menu « Ouvrir avec » de Windows.
+
+La liste complète des raccourcis est disponible dans
+[`RACCOURCIS_CLAVIER.md`](RACCOURCIS_CLAVIER.md).
+
+## Tutoriels
+[![Tutoriel français](https://img.youtube.com/vi/m_SpxXRjvmg/maxresdefault.jpg)](https://www.youtube.com/watch?v=m_SpxXRjvmg)
+[Tutoriel français](https://www.youtube.com/watch?v=m_SpxXRjvmg)
+
+[![V3.4.0 (Pro Tools)](https://img.youtube.com/vi/nKFU_zl7Duc/maxresdefault.jpg)](https://www.youtube.com/watch?v=nKFU_zl7Duc)
+[V3.4.0](https://www.youtube.com/watch?v=nKFU_zl7Duc)
+
+[![Tutoriel français BANDE RYTHMO ENSEMBLE](https://img.youtube.com/vi/rJi6mt2Jax4/maxresdefault.jpg)](https://www.youtube.com/watch?v=rJi6mt2Jax4)
+[Tutoriel français BANDE RYTHMO ENSEMBLE](https://www.youtube.com/watch?v=rJi6mt2Jax4)
+
+## Raccourcis clavier
 
 Les raccourcis sont interprétés selon le contexte actif. Un champ texte est
 prioritaire sur les raccourcis de l’espace de travail. Dans une modale, le
 focus reste enfermé dans la modale jusqu’à sa fermeture.
 
-Pour les personnes malvoyantes qui utilisent un logiciel de lecture d'écran : Un raccourci annonce uniquement le nom de son action lorsqu’il en possède un.
+Un raccourci annonce uniquement le nom de son action lorsqu’il en possède un.
 La combinaison de touches n’est jamais lue et aucun nom de touche ne sert de
-fallback. Sous Windows, les annonces sont transmises au système
-d’accessibilité via AccessKit. Toutes les annonces produites avec `Ctrl`, y
+fallback. Toutes les annonces produites par un raccourci utilisant `Ctrl`, y
 compris avec `Maj`, sont prioritaires.
-De plus, tous les toasts utilisent également le canal prioritaire. Pendant une
-exportation ou la création d’un proxy, la progression est exposée comme une
-barre de progression au système d’accessibilité. L’opération et son
-pourcentage sont annoncés toutes les minutes sur ce même canal. `Échap`
-annule l’opération en cours et l’annulation est annoncée en priorité.
 
-## Navigation commune
+### Navigation commune
 
 | Raccourci | Action | Contexte |
 |---|---|---|
@@ -29,7 +58,7 @@ annule l’opération en cours et l’annulation est annoncée en priorité.
 | `Page haut` / `Page bas` | Parcourir par page | Listes |
 | `Maj + F10` | Ouvrir le menu contextuel de l’élément focalisé | Contrôles et lignes |
 
-## Barre supérieure et projet
+### Barre supérieure et projet
 
 | Raccourci | Action |
 |---|---|
@@ -55,7 +84,7 @@ Dans les paramètres du projet, l’option « Définir la couleur du texte à la
 couleur de l’étiquette de personnage » applique la couleur de l’étiquette au
 texte des lignes défilantes non karaoké.
 
-## Outils et lecture
+### Outils et lecture
 
 | Raccourci | Action |
 |---|---|
@@ -76,13 +105,12 @@ texte des lignes défilantes non karaoké.
 | `Espace` | Lecture/pause |
 | `Ctrl + Tab` | Basculer entre l’audio original et l’audio instrumental |
 
-## Bande rythmo
+### Bande rythmo
 
 | Raccourci | Action |
 |---|---|
 | `Entrée` | Sélectionner successivement les lignes présentes au frame courant |
-| `Maj + clic-glissé` (zone vide) | Ajouter les lignes du rectangle à la sélection existante |
-| `↑` / `↓` (sélection active) | Déplacer la ou les lignes vers la piste précédente/suivante |
+| `↑` / `↓` (ligne sélectionnée) | Déplacer la ligne vers la piste précédente/suivante |
 | `Maj + ←` / `Maj + →` | Parcourir toutes les lignes ; sans sélection préalable, commencer par la ligne la plus proche de la tête de lecture, puis annoncer le personnage, le dialogue et la piste |
 | `Ctrl + Maj + ←` / `Ctrl + Maj + →` | Décaler la ou les lignes sélectionnées d'une frame vers la gauche/droite |
 | `Échap` | Annuler la sélection actuelle de lignes |
@@ -90,17 +118,16 @@ texte des lignes défilantes non karaoké.
 | `Q` / `D` (maintenir) | Déplacer continuellement la timeline à gauche/droite |
 | `T` | Modifier le texte de la ligne sélectionnée |
 | `P` | Modifier le personnage de la ligne sélectionnée |
-| `Suppr` | Supprimer la ou les lignes sélectionnées |
-| `Ctrl + C` | Copier la ou les lignes sélectionnées |
-| `Ctrl + X` | Couper la ou les lignes sélectionnées |
-| `Ctrl + V` | Coller la ou les lignes au curseur de lecture, sur la piste sous la souris |
+| `Suppr` | Supprimer la ligne sélectionnée |
+| `Ctrl + C` | Copier la ligne sélectionnée |
+| `Ctrl + X` | Couper la ligne sélectionnée |
+| `Ctrl + V` | Coller la ligne sur la piste sous le curseur de souris |
 
-Le collage multiple conserve les écarts temporels et les écarts de piste entre
-les lignes. Si la souris est hors de la bande rythmo, `Ctrl + V` utilise la piste
-clavier active. Pendant l’édition d’une ligne ou d’un personnage, les flèches
-déplacent le caret et ne modifient pas le volume.
+Si la souris est hors de la bande rythmo, `Ctrl + V` utilise la piste clavier
+active. Pendant l’édition d’une ligne ou d’un personnage, les flèches déplacent
+le caret et ne modifient pas le volume.
 
-## Export
+### Export
 
 | Raccourci | Action |
 |---|---|
@@ -118,16 +145,19 @@ Dans la création de proxy, `Tab` / `Maj + Tab` parcourent la résolution, la
 qualité et le bouton de création. Les flèches règlent la valeur focalisée,
 `Entrée` / `Espace` l’active et `Échap` ferme la modale.
 
-## Champs texte et modales
+### Champs texte et modales
 
 | Raccourci | Action |
 |---|---|
 | `Ctrl + A` | Tout sélectionner |
+| `Ctrl + Maj + ↑` | Sélectionner tout le texte du champ en édition |
 | `Ctrl + C` / `Ctrl + X` / `Ctrl + V` | Copier/couper/coller le texte |
 | `Ctrl + Z` | Annuler |
 | `Ctrl + Maj + Z` | Rétablir |
 | `←` / `→` | Déplacer le caret |
 | `Maj + ←` / `Maj + →` | Étendre la sélection |
+| `Ctrl + Maj + ←` / `Ctrl + Maj + →` | Étendre la sélection mot par mot |
+| `Début` / `Fin` | Aller au début/à la fin du champ |
 | `↑` / `↓` | Parcourir les suggestions ou les éléments de liste |
 | `Retour arrière` / `Suppr` | Supprimer le caractère précédent/suivant |
 
@@ -135,7 +165,7 @@ Dans l’Explorateur de fichiers, `Alt + ←`/`Alt + →` parcourent l’histori
 `Retour arrière` remonte au dossier parent et `Entrée` ouvre le fichier ou
 valide l’action principale.
 
-## Lecture vocale interne
+### Lecture vocale interne
 
 | Raccourci | Action |
 |---|---|
@@ -143,10 +173,9 @@ valide l’action principale.
 | `Ctrl` | Interrompre la lecture vocale en cours |
 | `Maj` | Reprendre la lecture vocale interrompue |
 
-Pour les personnes avec un lecteur d'écran : Chaque changement de focus, sélection, activation, valeur et résultat d’action
-est annoncé. Une ligne karaoké est identifiée après son numéro de piste. Pour
-`Q`/`D`, le timecode est annoncé une seule fois au
-relâchement de la touche, avec les heures, minutes, secondes et centièmes.
+Chaque changement de focus, sélection, activation, valeur et résultat d’action
+est annoncé. Une ligne karaoké est identifiée après son numéro de piste. Les
+raccourcis sans nom sémantique, ainsi que `Q` et `D`, restent silencieux.
 
 L’ouverture d’une liste annonce son premier élément disponible. Sa fermeture
 annonce que la liste est réduite. La fermeture d’une modale est également

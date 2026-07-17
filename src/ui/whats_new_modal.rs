@@ -37,6 +37,7 @@ pub struct WhatsNewModal {
     pub(crate) thumbnail: Option<ThumbnailImage>,
     video_url: Option<String>,
     scroll_offset: usize,
+    keyboard_focus: usize,
 }
 
 #[derive(Clone)]
@@ -79,7 +80,35 @@ impl WhatsNewModal {
             thumbnail: thumbnail.and_then(|bytes| ThumbnailImage::from_bytes(&bytes)),
             video_url,
             scroll_offset: 0,
+            keyboard_focus: 0,
         }
+    }
+
+    pub fn keyboard_focus_label(&self) -> String {
+        if self.video_url.is_some() && self.keyboard_focus == 0 {
+            t("whats_new.video").to_string()
+        } else {
+            t("whats_new.close").to_string()
+        }
+    }
+
+    pub fn accessibility_label(&self) -> String {
+        let notes = self
+            .lines
+            .iter()
+            .map(|line| line.text.trim())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(". ");
+        [
+            self.version_label.as_str(),
+            notes.as_str(),
+            t("whats_new.close_hint"),
+        ]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(". ")
     }
 
     fn card_rect(screen_w: f32, screen_h: f32) -> Rect {
@@ -160,8 +189,22 @@ impl WhatsNewModal {
     ) -> WhatsNewResult {
         let card = Self::card_rect(screen_w, screen_h);
         match event {
-            UiEvent::KeyInput { text } if text == "\x1b" || text == "\r" || text == "\n" => {
-                WhatsNewResult::Close
+            UiEvent::KeyInput { text } if text == "\x1b" => WhatsNewResult::Close,
+            UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}" => {
+                if self.video_url.is_some() {
+                    self.keyboard_focus = 1 - self.keyboard_focus;
+                }
+                WhatsNewResult::Consumed
+            }
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " " => {
+                if self.video_url.is_some() && self.keyboard_focus == 0 {
+                    if let Some(url) = &self.video_url {
+                        let _ = open::that(url);
+                    }
+                    WhatsNewResult::Consumed
+                } else {
+                    WhatsNewResult::Close
+                }
             }
             UiEvent::Scroll { delta, .. } => {
                 let max_offset = self.max_scroll_offset(card);

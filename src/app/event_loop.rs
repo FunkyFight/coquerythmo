@@ -131,30 +131,15 @@ fn is_shift_key(key: PhysicalKey) -> bool {
     )
 }
 
-fn shortcut_label(
-    event: &winit::event::KeyEvent,
-    modifiers: Modifiers,
-    window: InputWindow,
-) -> String {
-    KeyStroke::from_winit(event, modifiers, window)
-        .map(|stroke| stroke.accessibility_label())
-        .unwrap_or_else(|| i18n::t("shortcut.prefix").to_string())
-}
-
 fn dispatch_key_action(
     action: UiAction,
-    event: &winit::event::KeyEvent,
-    modifiers: Modifiers,
-    input_window: InputWindow,
+    _event: &winit::event::KeyEvent,
+    _modifiers: Modifiers,
+    _input_window: InputWindow,
     state: &mut State,
     elwt: &EventLoopWindowTarget<AppEvent>,
 ) -> bool {
-    CommandDispatcher::dispatch_shortcut(
-        action,
-        &shortcut_label(event, modifiers, input_window),
-        state,
-        elwt,
-    )
+    CommandDispatcher::dispatch_shortcut(action, state, elwt)
 }
 
 fn dispatch_key_action_with_explicit_announcement(
@@ -165,8 +150,7 @@ fn dispatch_key_action_with_explicit_announcement(
     state: &mut State,
     elwt: &EventLoopWindowTarget<AppEvent>,
 ) -> bool {
-    announce_key_chord(event, modifiers, input_window, state);
-    CommandDispatcher::dispatch(action, state, elwt)
+    dispatch_key_action(action, event, modifiers, input_window, state, elwt)
 }
 
 fn announce_key_action(
@@ -176,22 +160,22 @@ fn announce_key_action(
     input_window: InputWindow,
     state: &State,
 ) {
-    CommandDispatcher::announce_shortcut(
-        action,
-        &shortcut_label(event, modifiers, input_window),
-        state,
-    );
+    let _ = (event, modifiers, input_window);
+    CommandDispatcher::announce_shortcut(action, state);
 }
 
 fn announce_key_chord(
-    event: &winit::event::KeyEvent,
-    modifiers: Modifiers,
-    input_window: InputWindow,
-    state: &State,
+    _event: &winit::event::KeyEvent,
+    _modifiers: Modifiers,
+    _input_window: InputWindow,
+    _state: &State,
 ) {
-    state.announce_accessibility(crate::accessibility::AccessibilityEvent::Activation {
-        label: shortcut_label(event, modifiers, input_window),
-    });
+    // Low-level key chords have no semantic action name. Keep them silent
+    // instead of reading the physical keys as a fallback.
+}
+
+fn announce_named_text_command(command: crate::application::command::TextCommand, state: &State) {
+    CommandDispatcher::announce_shortcut(&UiAction::Text(command), state);
 }
 
 pub fn run(startup_path: Option<PathBuf>) {
@@ -271,7 +255,7 @@ pub fn run(startup_path: Option<PathBuf>) {
                         WindowEvent::KeyboardInput { event, .. } => {
                             if event.state == ElementState::Pressed {
                                 if is_control_key(event.physical_key) {
-                                    state.stop_narration();
+                                    state.narration.stop_for_control();
                                     return;
                                 }
                                 if is_shift_key(event.physical_key) && !event.repeat {
@@ -294,7 +278,6 @@ pub fn run(startup_path: Option<PathBuf>) {
                                     {
                                         if CommandDispatcher::dispatch_shortcut(
                                             action,
-                                            &stroke.accessibility_label(),
                                             &mut state,
                                             elwt,
                                         ) {
@@ -377,7 +360,7 @@ pub fn run(startup_path: Option<PathBuf>) {
                     if event.state == ElementState::Pressed && is_control_key(event.physical_key) {
                         // Ctrl is an always-available speech cut-off, including
                         // while a modal, progress dialog or text field owns input.
-                        state.stop_narration();
+                        state.narration.stop_for_control();
                         state.request_redraw();
                         return;
                     }
@@ -435,7 +418,6 @@ pub fn run(startup_path: Option<PathBuf>) {
                             {
                                 CommandDispatcher::dispatch_shortcut(
                                     action,
-                                    &stroke.accessibility_label(),
                                     &mut state,
                                     elwt,
                                 );
@@ -460,6 +442,39 @@ pub fn run(startup_path: Option<PathBuf>) {
                         if state.ui_shell.ui.loading_project.is_some() {
                             return;
                         }
+                        // Keep frame-by-frame line nudging independent from
+                        // focus routing. In particular, Ctrl is also used to
+                        // control narration, so these chords must reach the
+                        // workspace even when another shell control owns
+                        // keyboard focus.
+                        if ctrl_held
+                            && shift_held
+                            && !state.is_editing_text()
+                            && !state.captures_modal_input()
+                            && matches!(
+                                event.logical_key,
+                                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight)
+                            )
+                        {
+                            let delta_frames = if matches!(
+                                event.logical_key,
+                                Key::Named(NamedKey::ArrowLeft)
+                            ) {
+                                -1
+                            } else {
+                                1
+                            };
+                            dispatch_key_action(
+                                UiAction::NudgeSelectedLines { delta_frames },
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
+                            state.request_redraw();
+                            return;
+                        }
                         // A rythmo text editor owns every arrow key.  This
                         // guard is intentionally before the workspace
                         // shortcut table so Shift+Up/Down cannot leak into
@@ -467,22 +482,37 @@ pub fn run(startup_path: Option<PathBuf>) {
                         // being edited.
                         if state.is_rythmo_text_editing() {
                             let text_navigation = match &event.logical_key {
-                                Key::Named(NamedKey::ArrowLeft) => Some(if shift_held {
+                                Key::Named(NamedKey::ArrowLeft) => Some(if ctrl_held && shift_held {
+                                    UiEvent::SelectWordLeft
+                                } else if shift_held {
                                     UiEvent::ShiftCursorLeft
                                 } else {
                                     UiEvent::CursorLeft
                                 }),
-                                Key::Named(NamedKey::ArrowRight) => Some(if shift_held {
+                                Key::Named(NamedKey::ArrowRight) => Some(if ctrl_held && shift_held {
+                                    UiEvent::SelectWordRight
+                                } else if shift_held {
                                     UiEvent::ShiftCursorRight
                                 } else {
                                     UiEvent::CursorRight
                                 }),
-                                Key::Named(NamedKey::ArrowUp) => Some(UiEvent::CursorUp),
+                                Key::Named(NamedKey::ArrowUp) => Some(if ctrl_held && shift_held {
+                                    UiEvent::SelectAll
+                                } else {
+                                    UiEvent::CursorUp
+                                }),
                                 Key::Named(NamedKey::ArrowDown) => Some(UiEvent::CursorDown),
+                                Key::Named(NamedKey::Home) => Some(UiEvent::Home),
+                                Key::Named(NamedKey::End) => Some(UiEvent::End),
                                 _ => None,
                             };
                             if let Some(text_navigation) = text_navigation {
-                                if shift_held {
+                                if shift_held
+                                    || matches!(
+                                        event.logical_key,
+                                        Key::Named(NamedKey::Home | NamedKey::End)
+                                    )
+                                {
                                     announce_key_chord(
                                         &event,
                                         keyboard_modifiers,
@@ -494,12 +524,105 @@ pub fn run(startup_path: Option<PathBuf>) {
                                 return;
                             }
                         }
+                        // Shift+Left/Right traverses every line in timeline
+                        // order, even when accessibility focus is currently on
+                        // a toolbar/control and no line is selected yet.
+                        if shift_held
+                            && !ctrl_held
+                            && !state.is_editing_text()
+                            && !state.captures_modal_input()
+                            && matches!(
+                                event.logical_key,
+                                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight)
+                            )
+                        {
+                            let direction = if matches!(
+                                event.logical_key,
+                                Key::Named(NamedKey::ArrowLeft)
+                            ) {
+                                -1
+                            } else {
+                                1
+                            };
+                            dispatch_key_action(
+                                UiAction::NavigateLines { direction },
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
+                            state.request_redraw();
+                            return;
+                        }
+                        if matches!(event.logical_key, Key::Named(NamedKey::Escape))
+                            && !state.captures_modal_input()
+                            && !state.is_editing_text()
+                            && !state.is_studio_mode()
+                            && !state.side_panel_open()
+                            && state.has_selected_lines()
+                        {
+                            dispatch_key_action(
+                                UiAction::ClearLineSelection,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
+                            state.request_redraw();
+                            return;
+                        }
+                        // Modal controls do not depend on the shell focus tree:
+                        // they always receive Escape, arrows, Enter and Space.
+                        if state.captures_modal_input() {
+                            let modal_event = match &event.logical_key {
+                                Key::Named(NamedKey::Escape) => Some(UiEvent::KeyInput {
+                                    text: "\x1b".into(),
+                                }),
+                                Key::Named(NamedKey::ArrowLeft) => Some(
+                                    if ctrl_held && shift_held {
+                                        UiEvent::SelectWordLeft
+                                    } else if shift_held {
+                                        UiEvent::ShiftCursorLeft
+                                    } else {
+                                        UiEvent::CursorLeft
+                                    },
+                                ),
+                                Key::Named(NamedKey::ArrowRight) => Some(
+                                    if ctrl_held && shift_held {
+                                        UiEvent::SelectWordRight
+                                    } else if shift_held {
+                                        UiEvent::ShiftCursorRight
+                                    } else {
+                                        UiEvent::CursorRight
+                                    },
+                                ),
+                                Key::Named(NamedKey::ArrowUp) => Some(UiEvent::CursorUp),
+                                Key::Named(NamedKey::ArrowDown) => Some(UiEvent::CursorDown),
+                                Key::Named(NamedKey::Home) => Some(UiEvent::Home),
+                                Key::Named(NamedKey::End) => Some(UiEvent::End),
+                                Key::Named(NamedKey::Enter) => Some(UiEvent::KeyInput {
+                                    text: "\r".into(),
+                                }),
+                                key if is_space_key(key) => Some(UiEvent::KeyInput {
+                                    text: " ".into(),
+                                }),
+                                _ => None,
+                            };
+                            if let Some(modal_event) = modal_event {
+                                dispatch(modal_event, &mut state, elwt);
+                                state.request_redraw();
+                                return;
+                            }
+                        }
                         // Escape leaves the shell's keyboard-focus mode. Keep
                         // modal and text-editor Escape handling ahead of this
                         // so their own cancel/close behavior remains intact.
                         if matches!(event.logical_key, Key::Named(NamedKey::Escape))
                             && !state.captures_modal_input()
                             && !state.is_editing_text()
+                            && !state.side_panel_open()
                             && state.has_keyboard_focus()
                         {
                             dispatch(
@@ -529,6 +652,93 @@ pub fn run(startup_path: Option<PathBuf>) {
                             state.request_redraw();
                             return;
                         }
+                        if state.side_panel_open() && ctrl_held {
+                            if state.is_editing_text()
+                                && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v"))
+                            {
+                                announce_named_text_command(
+                                    crate::application::command::TextCommand::Paste,
+                                    &state,
+                                );
+                                if let Some(text) = platform::clipboard_paste() {
+                                    dispatch(UiEvent::KeyInput { text }, &mut state, elwt);
+                                }
+                                state.request_redraw();
+                                return;
+                            }
+                            let panel_event = match &event.logical_key {
+                                Key::Character(c) if c.eq_ignore_ascii_case("a") => {
+                                    Some(UiEvent::SelectAll)
+                                }
+                                Key::Character(c) if c.eq_ignore_ascii_case("c") => {
+                                    Some(UiEvent::Copy)
+                                }
+                                Key::Character(c) if c.eq_ignore_ascii_case("x") => {
+                                    Some(UiEvent::Cut)
+                                }
+                                Key::Character(c)
+                                    if c.eq_ignore_ascii_case("z")
+                                        && !shift_held
+                                        && state.is_editing_text() =>
+                                {
+                                    Some(UiEvent::UndoTextEdit)
+                                }
+                                _ => None,
+                            };
+                            if let Some(panel_event) = panel_event {
+                                let command = match &panel_event {
+                                    UiEvent::SelectAll => {
+                                        Some(crate::application::command::TextCommand::SelectAll)
+                                    }
+                                    UiEvent::Copy => {
+                                        Some(crate::application::command::TextCommand::Copy)
+                                    }
+                                    UiEvent::Cut => {
+                                        Some(crate::application::command::TextCommand::Cut)
+                                    }
+                                    UiEvent::UndoTextEdit => {
+                                        Some(crate::application::command::TextCommand::Undo)
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(command) = command {
+                                    announce_named_text_command(command, &state);
+                                }
+                                dispatch(panel_event, &mut state, elwt);
+                                state.request_redraw();
+                                return;
+                            }
+                        }
+                        if state.side_panel_open() && !ctrl_held {
+                            let panel_event = match &event.logical_key {
+                                Key::Named(NamedKey::Escape) => Some(UiEvent::KeyInput {
+                                    text: "\x1b".to_string(),
+                                }),
+                                Key::Named(NamedKey::Enter) => Some(UiEvent::Activate),
+                                key if is_space_key(key) => Some(UiEvent::KeyInput {
+                                    text: " ".to_string(),
+                                }),
+                                Key::Named(NamedKey::ArrowLeft) if !shift_held => {
+                                    Some(UiEvent::CursorLeft)
+                                }
+                                Key::Named(NamedKey::ArrowRight) if !shift_held => {
+                                    Some(UiEvent::CursorRight)
+                                }
+                                Key::Named(NamedKey::ArrowUp) => Some(UiEvent::CursorUp),
+                                Key::Named(NamedKey::ArrowDown) => Some(UiEvent::CursorDown),
+                                Key::Named(NamedKey::Home) => Some(UiEvent::Home),
+                                Key::Named(NamedKey::End) => Some(UiEvent::End),
+                                Key::Named(NamedKey::PageUp) => Some(UiEvent::PageUp),
+                                Key::Named(NamedKey::PageDown) => Some(UiEvent::PageDown),
+                                Key::Named(NamedKey::Delete) => Some(UiEvent::Delete),
+                                _ => None,
+                            };
+                            if let Some(panel_event) = panel_event {
+                                dispatch(panel_event, &mut state, elwt);
+                                state.request_redraw();
+                                return;
+                            }
+                        }
                         let mut contexts = Vec::new();
                         if state.captures_modal_input() {
                             contexts.push(InputContext::Modal);
@@ -557,7 +767,6 @@ pub fn run(startup_path: Option<PathBuf>) {
                             if let Some(action) = shortcuts.resolve(&stroke, &context_stack).cloned() {
                                 if CommandDispatcher::dispatch_shortcut(
                                     action,
-                                    &stroke.accessibility_label(),
                                     &mut state,
                                     elwt,
                                 ) {
@@ -666,15 +875,41 @@ pub fn run(startup_path: Option<PathBuf>) {
                             dispatch(navigation_event, &mut state, elwt);
                             return;
                         }
+                        if state.side_panel_open() && is_space_key(&event.logical_key) {
+                            dispatch(
+                                UiEvent::KeyInput {
+                                    text: " ".to_string(),
+                                },
+                                &mut state,
+                                elwt,
+                            );
+                            return;
+                        }
+                        if !state.captures_modal_input()
+                            && !state.is_editing_text()
+                            && is_space_key(&event.logical_key)
+                        {
+                            dispatch_key_action(
+                                UiAction::TogglePlayPause,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
+                            state.request_redraw();
+                            return;
+                        }
                         if !state.is_editing_text()
-                            && state.has_keyboard_focus()
-                            && (matches!(event.logical_key, Key::Named(NamedKey::Enter))
-                                || is_space_key(&event.logical_key))
+                            && (state.has_keyboard_focus() || state.side_panel_open())
+                            && matches!(event.logical_key, Key::Named(NamedKey::Enter))
                         {
                             dispatch(UiEvent::Activate, &mut state, elwt);
                             return;
                         }
-                        if !state.is_editing_text() && state.has_keyboard_focus() {
+                        if !state.is_editing_text()
+                            && (state.has_keyboard_focus() || state.side_panel_open())
+                        {
                             let focused_navigation = match &event.logical_key {
                                 Key::Named(NamedKey::ArrowLeft) => Some(UiEvent::CursorLeft),
                                 Key::Named(NamedKey::ArrowRight) => Some(UiEvent::CursorRight),
@@ -715,48 +950,35 @@ pub fn run(startup_path: Option<PathBuf>) {
                         } else if state.is_editing_text() {
                             if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "a") {
                                 // Ctrl+A â€” select all text
-                                announce_key_chord(
-                                    &event,
-                                    keyboard_modifiers,
-                                    InputWindow::Main,
-                                    &state,
-                                );
                                 dispatch(UiEvent::SelectAll, &mut state, elwt);
+                                CommandDispatcher::announce_shortcut(&UiAction::SelectAll, &state);
                             } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("c")) {
-                                announce_key_chord(
-                                    &event,
-                                    keyboard_modifiers,
-                                    InputWindow::Main,
-                                    &state,
-                                );
                                 dispatch(UiEvent::Copy, &mut state, elwt);
+                                announce_named_text_command(
+                                    crate::application::command::TextCommand::Copy,
+                                    &state,
+                                );
                             } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("x")) {
-                                announce_key_chord(
-                                    &event,
-                                    keyboard_modifiers,
-                                    InputWindow::Main,
-                                    &state,
-                                );
                                 dispatch(UiEvent::Cut, &mut state, elwt);
-                            } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("z")) {
-                                announce_key_chord(
-                                    &event,
-                                    keyboard_modifiers,
-                                    InputWindow::Main,
+                                announce_named_text_command(
+                                    crate::application::command::TextCommand::Cut,
                                     &state,
                                 );
+                            } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("z")) {
                                 dispatch(UiEvent::UndoTextEdit, &mut state, elwt);
+                                announce_named_text_command(
+                                    crate::application::command::TextCommand::Undo,
+                                    &state,
+                                );
                             } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v")) {
                                 // Ctrl+V â€” paste from clipboard
-                                announce_key_chord(
-                                    &event,
-                                    keyboard_modifiers,
-                                    InputWindow::Main,
-                                    &state,
-                                );
                                 if let Some(text) = platform::clipboard_paste() {
                                     dispatch(UiEvent::KeyInput { text }, &mut state, elwt);
                                 }
+                                announce_named_text_command(
+                                    crate::application::command::TextCommand::Paste,
+                                    &state,
+                                );
                             } else if matches!(event.logical_key, Key::Named(NamedKey::ArrowLeft)) {
                                 if shift_held {
                                     announce_key_chord(
@@ -805,13 +1027,8 @@ pub fn run(startup_path: Option<PathBuf>) {
                             );
                             state.request_redraw();
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("a")) {
-                            announce_key_chord(
-                                &event,
-                                keyboard_modifiers,
-                                InputWindow::Main,
-                                &state,
-                            );
                             dispatch(UiEvent::SelectAll, &mut state, elwt);
+                            CommandDispatcher::announce_shortcut(&UiAction::SelectAll, &state);
                         } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("c")) {
                             dispatch_key_action_with_explicit_announcement(
                                 UiAction::CopySelectedLine,

@@ -1,71 +1,62 @@
-# v3.5.0
+# v3.5.4
 
-## Accessibilité clavier et lecture vocale
+## Accessibilité Windows et navigation clavier
 
-Cette version améliore l’utilisation de Coquerythmo sans souris, avec un
-routage clavier commun, des contrôles focalisables et des annonces vocales
-sémantiques.
+Cette version renforce l’accessibilité de Coquerythmo avec une intégration
+AccessKit sous Windows, des annonces vocales plus systématiques et une
+navigation clavier étendue dans les listes, les modales et l’Explorateur de
+fichiers.
 
-### Navigation et modales
+### Lecture vocale et annonces
 
-- Ajout d’une navigation `Tab`/`Maj + Tab` avec focus visible et retour au
-  contrôle déclencheur après fermeture d’une modale.
-- Les contrôles, listes, menus déroulants, sélecteurs et modales acceptent
-  `Entrée`/`Espace`, les flèches, `Début`/`Fin`, `Page haut`/`Page bas` et
-  `Échap` selon leur rôle.
-- Le focus est enfermé dans la modale active et les contrôles désactivés sont
-  ignorés.
-- L’Explorateur de fichiers est utilisable au clavier, y compris la liste des
-  fichiers, l’historique, la recherche, les suggestions et la confirmation de
-  remplacement.
-- Les réglages du projet et tous les paramètres de l’export sont parcourables
-  et modifiables sans souris.
+- Utilisation de `accesskit_winit` sous Windows, compatible avec le système
+  d’accessibilité déjà en place.
+- Les raccourcis nommés annoncent uniquement leur action, sans préfixe
+  « raccourci », sans combinaison de touches et sans fallback sur la touche.
+- L’ouverture d’une liste annonce son premier élément disponible.
+- La fermeture d’une liste annonce qu’elle est « réduite ».
+- La fermeture d’une modale annonce qu’elle est « fermée ».
+- Le chargement, la réussite ou l’échec du chargement d’un projet sont
+  annoncés.
+- `Ctrl` interrompt la lecture vocale et `Maj` la reprend.
+- Les annonces d’actions utilisant `Ctrl` sont prioritaires : NVDA peut
+  interrompre la voix courante sans masquer l’action exécutée.
+- Tous les toasts sont vocalisés sur le canal prioritaire.
+- Les exportations et créations de proxy sont exposées au lecteur d’écran
+  comme des barres de progression. Leur opération et leur pourcentage sont
+  rappelés toutes les minutes sur le canal prioritaire.
+- Le démarrage et l’annulation d’un export ou d’un proxy sont annoncés en
+  priorité ; `Échap` permet d’annuler l’opération en cours.
+- Les réglages du projet et les paramètres annoncent correctement le focus,
+  les contrôles et les actions.
 
-### Raccourcis ajoutés et complétés
+### Explorateur de fichiers et projets
 
-- Import unifié : `Ctrl + Maj + I`.
-- Restauration : `Ctrl + Maj + R`.
-- Projets récents : `Ctrl + R`.
-- Fermeture du projet : `Ctrl + Suppr`.
-- Export : `Ctrl + M`.
-- Avertissement Studio : `Ctrl + Alt + S`.
-- Renommage d’un personnage : `Ctrl + Maj + P`.
-- Paramètres du projet : `Ctrl + O`.
-- Navigation image précédente/suivante : `Ctrl + ←` / `Ctrl + →`.
-- Outils et marqueurs du pavé numérique `1` à `9`.
-- Volume par pas de 5 % avec `Maj + ↑` / `Maj + ↓`, et muet avec
-  `Maj + Numpad -`.
-- Création, sélection, édition et déplacement de lignes avec `Insert`,
-  `Entrée`, `I`, `O`, `Q`, `D`, `T`, `P` et `↑`/`↓`.
-- Copie, coupe et collage d’une ligne avec `Ctrl + C`, `Ctrl + X` et
-  `Ctrl + V`. Le collage utilise la piste sous le curseur de souris, ou la
-  piste clavier active si le curseur est hors de la bande rythmo.
+- Avec la lecture vocale active sous Windows, les sélecteurs de fichiers
+  utilisent l’Explorateur Windows natif.
+- Sans lecture vocale, l’Explorateur de fichiers personnalisé reste utilisé.
+- Les actions de sauvegarde et de navigation dans l’Explorateur personnalisé
+  sont accessibles au clavier.
+- Les projets `.coquerythmo` peuvent être ouverts avec Coquerythmo depuis
+  Windows, notamment via « Ouvrir avec Coquerythmo ».
 
-### Export
+### Raccourcis de lignes
 
-- Les pages Vidéo, Sous-titres, Audio et Références sont navigables avec les
-  flèches.
-- `Tab`/`Maj + Tab` parcourent les pages, formats, réglages vidéo, langues,
-  options audio et boutons d’action.
-- Les valeurs numériques, formats et sélections de langues peuvent être
-  modifiés et activés au clavier.
-
-### Lecture vocale interne
-
-- `Ctrl + Maj + N` active ou désactive la lecture vocale interne.
-- Les annonces portent sur le focus, les sélections, les valeurs, les actions,
-  les réussites, les erreurs et l’ouverture/la fermeture des modales.
-- Les annonces rapides interrompent immédiatement la voix précédente afin de
-  décrire l’action la plus récente.
-- Les symboles décoratifs et caractères spéciaux ne sont pas lus comme des
-  mots ; la saisie n’est pas annoncée caractère par caractère.
-- Les champs sensibles n’exposent jamais leur valeur.
-- Le déplacement continu avec `Q`/`D` annonce le timecode une seule fois au
-  relâchement, en heures, minutes, secondes et centièmes.
-- La synthèse utilise le backend système disponible sur Windows et macOS. Sur
-  Linux, le raccourci reste désactivé et affiche un message localisé.
+- `Ctrl + Numpad 1` à `Ctrl + Numpad 4` insèrent une ligne sur la piste
+  correspondante. Le pavé numérique est requis.
+- Le raccourci `Insert` est retiré.
+- `Maj + Flèche gauche` et `Maj + Flèche droite` parcourent toutes les lignes,
+  en commençant sans sélection par la ligne la plus proche de la tête de
+  lecture, puis annoncent le personnage, le dialogue, le numéro de piste et
+  l’état karaoké si présent.
+- La bascule du karaoké annonce uniquement « activé » ou « désactivé ».
+- `Échap` annule la sélection actuelle de lignes et `Espace` contrôle la
+  lecture/pause.
+- `Ctrl + Maj + P` ouvre la création d’un proxy. Sa résolution, sa qualité et
+  son bouton de création sont entièrement navigables au focus avec `Tab`, les
+  flèches, `Entrée`, `Espace` et `Échap`.
 
 ### Documentation
 
-- `RACCOURCIS_CLAVIER.md` recense les raccourcis, les contextes et les parcours
-  clavier des modales.
+- Cette version complète les parcours clavier et les annonces vocales décrits
+  dans `RACCOURCIS_CLAVIER.md`.

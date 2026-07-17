@@ -82,6 +82,13 @@ pub enum UiAction {
     OpenLinesPanel,
     OpenRolesPanel,
     CloseSidePanel,
+    DeleteSidePanelLines {
+        line_ids: Vec<u64>,
+    },
+    CopySidePanelLines {
+        line_ids: Vec<u64>,
+        cut: bool,
+    },
     SetLinesRole {
         line_ids: Vec<u64>,
         name: String,
@@ -162,6 +169,10 @@ pub enum UiAction {
         y_slot: f32,
     },
     SelectLineAtPlayhead,
+    NavigateLines {
+        direction: i32,
+    },
+    ClearLineSelection,
     SetSelectedLineStartAtPlayhead,
     SetSelectedLineEndAtPlayhead,
     StartEditingSelectedLine,
@@ -299,6 +310,7 @@ pub enum UiAction {
     SaveProjectSettings {
         instrumental_audio_path: Option<String>,
         highlight_read_word: bool,
+        scrolling_text_uses_character_color: bool,
     },
     ToggleActiveAudio,
     OffsetActiveAudioBy(i64),

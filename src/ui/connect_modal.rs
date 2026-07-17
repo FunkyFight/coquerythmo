@@ -48,11 +48,15 @@ impl ConnectModal {
 
     pub fn field_label(&self, i: usize) -> &str {
         match i {
-            0 => "Mot de passe",
-            1 => "Pseudo",
-            2 => "Code du salon",
+            0 => t("connect.password"),
+            1 => t("connect.username"),
+            2 => t("connect.room_code"),
             _ => "",
         }
+    }
+
+    pub fn keyboard_focus_label(&self) -> String {
+        self.field_label(self.focused).to_string()
     }
 
     pub fn focus_next(&mut self) {

@@ -31,27 +31,37 @@ pub(crate) fn handle_key_input(
 
     if let Some(line_id) = state.editing_character {
         if let Some(line) = ctx.project.get_line(line_id) {
+            // Escape abandons the picker without committing its current color.
+            if text == "\x1b" {
+                state.stop_char_editing();
+                return EventResponse::Action(UiAction::StopEditing);
+            }
+
             // Enter with autocomplete → confirm suggestion (default to first)
             if text == "\r" || text == "\n" {
-                let suggestions = ctx.project.autocomplete(&line.character_name);
-                if !suggestions.is_empty() {
-                    let idx = state.autocomplete_index.unwrap_or(0);
-                    if let Some(suggestion) = suggestions.get(idx) {
-                        let name = suggestion.name.clone();
-                        let color = suggestion.color;
-                        state.stop_char_editing();
-                        return EventResponse::Action(UiAction::SetCharacter {
-                            line_id,
-                            name,
-                            color,
-                        });
-                    }
+                let selected = state
+                    .autocomplete_index
+                    .and_then(|index| ctx.project.known_characters().get(index));
+                let exact = ctx
+                    .project
+                    .known_characters()
+                    .iter()
+                    .find(|character| character.name == line.character_name);
+                if let Some(character) = selected.or(exact) {
+                    let name = character.name.clone();
+                    let color = character.color;
+                    state.stop_char_editing();
+                    return EventResponse::Action(UiAction::SetCharacter {
+                        line_id,
+                        name,
+                        color,
+                    });
                 }
             }
 
             match state.char_input.handle_key(text, &line.character_name) {
                 Some(TextInputAction::Changed(name)) => {
-                    state.autocomplete_index = Some(0); // default to first suggestion
+                    state.autocomplete_index = None;
                     let br =
                         badge_rect_for_name(ctx.project, line, &name, ctx.current_frame, ctx.zone);
                     let (picker_x, picker_y) = color_picker_origin_for_badge(&br, ctx.zone);

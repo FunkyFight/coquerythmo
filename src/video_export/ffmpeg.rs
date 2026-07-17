@@ -66,7 +66,6 @@ pub(super) fn run_baked_single_pass(
     filter: &str,
     pipeline: ExportPipeline,
     br_input_format: BrInputFormat,
-    use_nvenc: bool,
     fps: f64,
     source_fps: f64,
     br_scale: f32,
@@ -85,6 +84,10 @@ pub(super) fn run_baked_single_pass(
     let pass_start = Instant::now();
     progress::check_export_cancel(cancel)?;
     let use_cuda = pipeline.uses_cuda();
+    // CPU filter pipelines must stay fully software-encoded. `h264_nvenc`
+    // can be listed by FFmpeg even when the installed NVIDIA driver cannot
+    // actually initialize it (or when no NVIDIA GPU is available).
+    let use_nvenc = pipeline.uses_nvenc();
     let codec = if use_nvenc { "h264_nvenc" } else { "libx264" };
     let raw_size = format!("{}x{}", out_w, br_h_even);
     let fps_arg = fps.to_string();

@@ -79,6 +79,8 @@ pub struct State {
     last_autosave: Instant,
     line_clipboard: Option<Vec<RythmoLine>>,
     automation_last_run: Option<(u64, u64)>,
+    last_progress_percent: Option<u32>,
+    last_progress_announcement: Option<Instant>,
 }
 
 impl State {
@@ -108,6 +110,8 @@ impl State {
             last_autosave: Instant::now(),
             line_clipboard: None,
             automation_last_run: None,
+            last_progress_percent: None,
+            last_progress_announcement: None,
         }
     }
 
@@ -184,17 +188,127 @@ impl State {
         self.ui_shell.ui.rythmo_state.is_editing()
     }
 
+    pub fn side_panel_open(&self) -> bool {
+        self.ui_shell.ui.side_panel_open()
+    }
+
     pub fn captures_modal_input(&self) -> bool {
         self.ui_shell.ui.modal_host.captures_input()
+    }
+
+    pub fn is_proxy_modal_open(&self) -> bool {
+        self.ui_shell.ui.modal_host.proxy.is_some()
+    }
+
+    pub fn is_save_prompt_open(&self) -> bool {
+        self.ui_shell.ui.modal_host.save_prompt.is_some()
+    }
+
+    pub fn proxy_modal_focus_label(&self) -> Option<String> {
+        self.ui_shell
+            .ui
+            .modal_host
+            .proxy
+            .as_ref()
+            .map(|modal| modal.keyboard_focus_label())
+    }
+
+    pub fn settings_modal_focus_label(&self) -> Option<String> {
+        self.ui_shell
+            .ui
+            .modal_host
+            .settings
+            .as_ref()
+            .map(|modal| modal.keyboard_focus_label())
+    }
+
+    pub fn project_settings_modal_focus_label(&self) -> Option<String> {
+        self.ui_shell
+            .ui
+            .modal_host
+            .project_settings
+            .as_ref()
+            .map(|modal| modal.keyboard_focus_label())
+    }
+
+    pub fn export_modal_focus_label(&self) -> Option<String> {
+        self.ui_shell
+            .ui
+            .modal_host
+            .export
+            .as_ref()
+            .map(|modal| modal.keyboard_focus_label())
+    }
+
+    pub fn language_modal_focus_label(&self) -> Option<String> {
+        self.ui_shell
+            .ui
+            .modal_host
+            .languages
+            .as_ref()
+            .map(|modal| modal.keyboard_focus_label())
+    }
+
+    pub fn rename_character_modal_focus_label(&self) -> Option<String> {
+        self.ui_shell
+            .ui
+            .modal_host
+            .rename_character
+            .as_ref()
+            .map(|modal| modal.keyboard_focus_label())
+    }
+
+    pub fn studio_warning_modal_focus_label(&self) -> Option<String> {
+        self.ui_shell
+            .ui
+            .modal_host
+            .studio_warning
+            .as_ref()
+            .map(|_| crate::i18n::t("studio_warning.cancel").to_string())
+    }
+
+    pub fn toolbar_dropdown_first_accessibility_label(
+        &self,
+        dropdown: &crate::ui::primitives::ToolbarDropdown,
+    ) -> Option<String> {
+        if !self.ui_shell.ui.toolbar_dropdown_is_open(dropdown) {
+            return None;
+        }
+        Some(
+            crate::i18n::t(match dropdown {
+                crate::ui::primitives::ToolbarDropdown::Respirations => "resp.up",
+                crate::ui::primitives::ToolbarDropdown::Reactions => "react.x",
+            })
+            .to_string(),
+        )
+    }
+
+    fn announce_open_container(&self, title: &str, first_label: String) {
+        self.announce_accessibility(AccessibilityEvent::Activation {
+            label: format!("{title} : {first_label}"),
+        });
     }
 
     pub fn set_export_progress(&mut self, p: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>) {
         let is_none = p.is_none();
         self.ui_shell.ui.export_progress = p;
+        self.last_progress_percent = None;
+        self.last_progress_announcement = if is_none { None } else { Some(Instant::now()) };
         if is_none {
+            self.narration.publish_progress(String::new(), None);
             self.ui_shell.ui.export_render_backend = None;
             self.ui_shell.ui.progress_prefix = String::new();
             self.jobs.active_export_cancel = None;
+        }
+    }
+
+    fn active_progress_label(&self) -> String {
+        if self.jobs.pending_proxy_job.is_some() {
+            crate::i18n::t("progress.proxy").to_string()
+        } else if self.ui_shell.ui.progress_prefix.is_empty() {
+            crate::i18n::t("progress.exporting").to_string()
+        } else {
+            self.ui_shell.ui.progress_prefix.clone()
         }
     }
 
@@ -261,6 +375,9 @@ impl State {
         if let Some(cancel) = &self.jobs.active_export_cancel {
             cancel.store(true, Ordering::Relaxed);
             self.ui_shell.ui.progress_prefix = crate::i18n::t("progress.canceling").to_string();
+            self.announce_shortcut_accessibility(AccessibilityEvent::Activation {
+                label: crate::i18n::t("progress.canceling").to_string(),
+            });
         }
     }
 
@@ -276,10 +393,18 @@ impl State {
     }
 
     pub fn set_ctrl_held(&mut self, held: bool) {
+        let was_held = self.ui_shell.ui.rythmo_state.ctrl_held;
         self.ui_shell.ui.rythmo_state.ctrl_held = held;
         if !held {
             self.ui_shell.ui.rythmo_state.ghost_preview = None;
+            if was_held {
+                self.narration.flush_control_shortcut();
+            }
         }
+    }
+
+    pub fn is_ctrl_held(&self) -> bool {
+        self.ui_shell.ui.rythmo_state.ctrl_held
     }
 
     pub fn is_editing_text(&self) -> bool {
@@ -320,15 +445,44 @@ impl State {
 
     pub fn open_server_browser(&mut self) {
         self.ui_shell.ui.open_server_browser();
+        let first = self
+            .ui_shell
+            .ui
+            .modal_host
+            .server_browser
+            .as_ref()
+            .map(|modal| modal.keyboard_focus_label())
+            .unwrap_or_else(|| crate::i18n::t("server_browser.empty").to_string());
+        self.announce_open_container(crate::i18n::t("server_browser.title"), first);
         self.ping_servers();
     }
 
     pub fn open_connect_modal(&mut self, ip: &str, port: u16, join: bool) {
         self.ui_shell.ui.open_connect_modal(ip, port, join);
+        if let Some(first) = self
+            .ui_shell
+            .ui
+            .modal_host
+            .connect
+            .as_ref()
+            .map(|modal| modal.keyboard_focus_label())
+        {
+            self.announce_open_container(crate::i18n::t("menu.connect"), first);
+        }
     }
 
     pub fn open_add_server_modal(&mut self) {
         self.ui_shell.ui.open_add_server_modal();
+        if let Some(first) = self
+            .ui_shell
+            .ui
+            .modal_host
+            .add_server
+            .as_ref()
+            .map(|modal| modal.keyboard_focus_label())
+        {
+            self.announce_open_container(crate::i18n::t("server_browser.add_title"), first);
+        }
     }
 
     pub fn refresh_server_browser(&mut self) {
@@ -362,10 +516,9 @@ impl State {
     pub fn open_settings_modal(&mut self) {
         let fonts = self.render.ui_renderer.enumerate_font_families();
         self.ui_shell.ui.open_settings_modal(fonts);
-        self.narration.announce_event(AccessibilityEvent::Focus {
-            label: crate::i18n::t("settings.language").to_string(),
-            role: "control".to_string(),
-        });
+        if let Some(first_label) = self.settings_modal_focus_label() {
+            self.announce_open_container(crate::i18n::t("settings.title"), first_label);
+        }
     }
 
     pub fn open_project_settings_modal(&mut self) {
@@ -373,11 +526,11 @@ impl State {
         self.ui_shell.ui.open_project_settings_modal(
             settings.instrumental_audio_path.clone(),
             settings.highlight_read_word,
+            settings.scrolling_text_uses_character_color,
         );
-        self.narration.announce_event(AccessibilityEvent::Focus {
-            label: crate::i18n::t("project_settings.browse").to_string(),
-            role: "control".to_string(),
-        });
+        if let Some(first_label) = self.project_settings_modal_focus_label() {
+            self.announce_open_container(crate::i18n::t("project_settings.title"), first_label);
+        }
     }
 
     pub fn open_automation(&mut self) {
@@ -534,10 +687,12 @@ impl State {
         &mut self,
         instrumental_audio_path: Option<String>,
         highlight_read_word: bool,
+        scrolling_text_uses_character_color: bool,
     ) {
         let mut settings = self.project_session.project.settings().clone();
         settings.instrumental_audio_path = instrumental_audio_path;
         settings.highlight_read_word = highlight_read_word;
+        settings.scrolling_text_uses_character_color = scrolling_text_uses_character_color;
         EditExecutor::apply_domain_change(
             &mut self.project_session,
             EditOrigin::Local,
@@ -547,11 +702,18 @@ impl State {
     }
 
     pub fn show_toast(&mut self, message: impl Into<String>, duration_secs: f32) {
-        self.ui_shell.ui.toasts.push(message, duration_secs);
+        let message = message.into();
+        self.ui_shell.ui.toasts.push(message.clone(), duration_secs);
+        self.announce_shortcut_accessibility(AccessibilityEvent::Success { message });
     }
 
     pub fn show_proxy_error(&mut self, detail: impl Into<String>) {
-        self.ui_shell.ui.open_proxy_error_modal(detail);
+        let detail = detail.into();
+        self.ui_shell.ui.open_proxy_error_modal(detail.clone());
+        self.announce_open_container(
+            crate::i18n::t("proxy_error.title"),
+            format!("{detail}, {}", crate::i18n::t("proxy_error.close")),
+        );
     }
 
     pub fn open_whats_new_modal(
@@ -561,9 +723,19 @@ impl State {
         video_url: Option<String>,
         thumbnail: Option<Vec<u8>>,
     ) {
+        let version = version.into();
         self.ui_shell
             .ui
-            .open_whats_new_modal(version, body, video_url, thumbnail);
+            .open_whats_new_modal(version.clone(), body, video_url, thumbnail);
+        let content = self
+            .ui_shell
+            .ui
+            .modal_host
+            .whats_new
+            .as_ref()
+            .map(|modal| modal.accessibility_label())
+            .unwrap_or_else(|| crate::i18n::t("whats_new.close_hint").to_string());
+        self.announce_open_container(crate::i18n::t("whats_new.title"), content);
     }
 
     pub fn open_pricing_page(&mut self) {
@@ -576,10 +748,10 @@ impl State {
 
     pub fn open_save_prompt(&mut self, kind: crate::ui::save_prompt_modal::SavePromptKind) {
         self.ui_shell.ui.open_save_prompt(kind);
-        self.narration.announce_event(AccessibilityEvent::Focus {
-            label: crate::i18n::t("save_prompt.cancel").to_string(),
-            role: "button".to_string(),
-        });
+        self.announce_open_container(
+            crate::i18n::t("save_prompt.title"),
+            crate::i18n::t("save_prompt.cancel").to_string(),
+        );
     }
 
     pub fn toggle_karaoke_for_selection(&mut self) {
@@ -591,6 +763,11 @@ impl State {
             self.show_toast(crate::i18n::t("toast.karaoke_select_line"), 3.0);
             return;
         }
+
+        let announced_state = line_ids
+            .first()
+            .and_then(|line_id| self.project_session.project.get_line(*line_id))
+            .map(|line| !line.karaoke);
 
         let lang = crate::config::get().lang.clone();
         let commands: Vec<_> = line_ids
@@ -617,6 +794,17 @@ impl State {
             .collect();
         for command in commands {
             self.execute_and_broadcast(command);
+        }
+        if let Some(enabled) = announced_state {
+            self.narration
+                .announce_event(AccessibilityEvent::Activation {
+                    label: crate::i18n::t(if enabled {
+                        "accessibility.checked"
+                    } else {
+                        "accessibility.unchecked"
+                    })
+                    .to_string(),
+                });
         }
     }
 
@@ -647,6 +835,9 @@ impl State {
         self.ui_shell
             .ui
             .open_export_modal(video_width, video_height, languages, configuration);
+        if let Some(first_label) = self.export_modal_focus_label() {
+            self.announce_open_container(crate::i18n::t("export_modal.title"), first_label);
+        }
     }
 
     fn language_modal_items(&self) -> Vec<crate::ui::language_modal::LanguageListItem> {
@@ -665,18 +856,54 @@ impl State {
             .collect()
     }
 
-    pub fn open_languages_modal(&mut self) {
+    pub(crate) fn language_list_initial_accessibility_label(&self) -> Option<String> {
         let active = self.project_session.project.active_language_id();
         let languages = self.language_modal_items();
-        let first_label = languages
+        languages
             .iter()
             .find(|language| language.id == active)
             .or_else(|| languages.first())
-            .map(|language| language.name.clone());
+            .map(|language| language.name.clone())
+    }
+
+    pub fn open_languages_modal(&mut self) {
+        let active = self.project_session.project.active_language_id();
+        let languages = self.language_modal_items();
+        let first_label = self.language_list_initial_accessibility_label();
         self.ui_shell.ui.open_languages_modal(languages, active);
         if let Some(label) = first_label {
-            self.narration
-                .announce_event(AccessibilityEvent::Selection { label });
+            self.announce_open_container(crate::i18n::t("languages.title"), label);
+        }
+    }
+
+    pub(crate) fn recent_projects_first_accessibility_label(&self) -> Option<String> {
+        crate::config::recent_projects().first().map(|recent| {
+            if recent.video_path == recent.br_path {
+                return recent
+                    .br_path
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
+                    .unwrap_or_default();
+            }
+            let video = recent
+                .video_path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let project = recent
+                .br_path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().to_string())
+                .unwrap_or_default();
+            format!("{video} + {project}")
+        })
+    }
+
+    pub fn open_recent_projects(&mut self) {
+        let first_label = self.recent_projects_first_accessibility_label();
+        self.ui_shell.ui.open_recent_projects();
+        if let Some(label) = first_label {
+            self.announce_open_container(crate::i18n::t("menu.project.recent"), label);
         }
     }
 
@@ -797,7 +1024,17 @@ impl State {
     }
 
     pub fn open_file_explorer(&mut self, request: crate::ui::file_explorer::FileExplorerRequest) {
+        let title = request.title.clone();
+        let first = match request.mode {
+            crate::ui::file_explorer::FileExplorerMode::Open => {
+                crate::i18n::t("file_explorer.back").to_string()
+            }
+            crate::ui::file_explorer::FileExplorerMode::Save => {
+                crate::i18n::t("file_explorer.filename").to_string()
+            }
+        };
         self.ui_shell.ui.open_file_explorer(request);
+        self.announce_open_container(&title, first);
     }
 
     pub fn poll_file_explorer(&mut self) -> bool {
@@ -806,11 +1043,24 @@ impl State {
 
     pub fn open_voice_actor_modal(&mut self) {
         self.ui_shell.ui.open_voice_actor_modal();
+        if let Some(first) = self
+            .ui_shell
+            .ui
+            .modal_host
+            .voice_actor
+            .as_ref()
+            .map(|modal| modal.keyboard_focus_label())
+        {
+            self.announce_open_container(crate::i18n::t("voice_actor_modal.title"), first);
+        }
     }
 
     pub fn open_proxy_modal(&mut self) {
         let (video_width, video_height) = self.source_video_size().unwrap_or((1920, 1080));
         self.ui_shell.ui.open_proxy_modal(video_width, video_height);
+        if let Some(first_label) = self.proxy_modal_focus_label() {
+            self.announce_open_container(crate::i18n::t("menu.tools.create_proxy"), first_label);
+        }
     }
 
     pub fn close_settings_modal(&mut self) {
@@ -1214,6 +1464,13 @@ impl State {
         self.set_export_progress(Some(progress_for_ui));
         self.set_export_cancel(Some(cancel));
         self.watch_export_job(receiver);
+        self.announce_shortcut_accessibility(AccessibilityEvent::Opened {
+            label: format!(
+                "{} {}",
+                crate::i18n::t("progress.exporting"),
+                crate::i18n::t("progress.cancel_hint")
+            ),
+        });
     }
 
     /// Kick off a background parse of a bande rythmo file and show a loading
@@ -1502,15 +1759,22 @@ impl State {
             crate::i18n::t("accessibility.disabled")
         };
         self.show_toast(message, 3.0);
-        if enabled {
-            self.narration.announce_event(AccessibilityEvent::Success {
-                message: message.to_string(),
-            });
-        }
     }
 
     pub fn announce_accessibility(&self, event: AccessibilityEvent) {
-        self.narration.announce_event(event);
+        if self.is_ctrl_held() {
+            self.narration.defer_control_shortcut(event);
+        } else {
+            self.narration.announce_event(event);
+        }
+    }
+
+    pub fn announce_shortcut_accessibility(&self, event: AccessibilityEvent) {
+        if self.is_ctrl_held() {
+            self.narration.defer_control_shortcut(event);
+        } else {
+            self.narration.announce_shortcut_event(event);
+        }
     }
 
     pub fn stop_narration(&self) {
@@ -1721,7 +1985,7 @@ impl State {
                 self.collaboration.network.role = Some("admin".into());
                 self.set_network_status("Salon crÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©");
                 self.ui_shell.ui.set_network_room_code(Some(&code));
-                self.ui_shell.ui.toasts.push(
+                self.show_toast(
                     format!("{}{code}", crate::i18n::t("toast.room_created")),
                     5.0,
                 );
@@ -1738,7 +2002,7 @@ impl State {
                 self.collaboration.network.members = members;
                 self.set_network_status("ConnectÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© au salon");
                 self.ui_shell.ui.set_network_room_code(Some(&code));
-                self.ui_shell.ui.toasts.push(
+                self.show_toast(
                     format!("{}{code}", crate::i18n::t("toast.room_joined")),
                     5.0,
                 );
@@ -1942,12 +2206,29 @@ impl State {
 
     pub fn open_studio_warning(&mut self) {
         self.ui_shell.ui.open_studio_warning();
+        if let Some(first_label) = self.studio_warning_modal_focus_label() {
+            self.announce_open_container(crate::i18n::t("studio_warning.title"), first_label);
+        }
     }
 
     // -- Project / Lines (all via Command pattern) --
 
     pub fn open_toolbar_dropdown(&mut self, dropdown: crate::ui::primitives::ToolbarDropdown) {
-        self.ui_shell.ui.toggle_toolbar_dropdown(dropdown);
+        let (list_label, first_item) = match &dropdown {
+            crate::ui::primitives::ToolbarDropdown::Respirations => (
+                crate::i18n::t("toolbar.respirations").to_string(),
+                crate::i18n::t("resp.up").to_string(),
+            ),
+            crate::ui::primitives::ToolbarDropdown::Reactions => (
+                crate::i18n::t("toolbar.reactions").to_string(),
+                crate::i18n::t("react.x").to_string(),
+            ),
+        };
+        if self.ui_shell.ui.toggle_toolbar_dropdown(dropdown) {
+            self.announce_open_container(&list_label, first_item);
+        } else {
+            self.announce_accessibility(AccessibilityEvent::Collapsed { label: list_label });
+        }
     }
 
     pub fn open_rename_character_modal(&mut self) {
@@ -1958,25 +2239,47 @@ impl State {
             return;
         }
         self.ui_shell.ui.open_rename_character_modal(characters);
+        if let Some(first_label) = self.rename_character_modal_focus_label() {
+            self.announce_open_container(
+                crate::i18n::t("rename_character_modal.title"),
+                first_label,
+            );
+        }
     }
 
     pub fn open_lines_panel(&mut self) {
-        self.ui_shell
+        self.ui_shell.ui.open_side_panel_with_selection(
+            crate::ui::side_panel::SidePanelKind::Lines,
+            self.selected_line_ids(),
+        );
+        let first = self
+            .ui_shell
             .ui
-            .open_side_panel_with_selection(
-                crate::ui::side_panel::SidePanelKind::Lines,
-                self.selected_line_ids(),
-            );
+            .side_panel_first_accessibility_label(&self.project_session.project);
+        self.announce_open_container(crate::i18n::t("panel.lines.title"), first);
     }
 
     pub fn open_roles_panel(&mut self) {
         self.ui_shell
             .ui
             .open_side_panel(crate::ui::side_panel::SidePanelKind::Roles);
+        let first = self
+            .ui_shell
+            .ui
+            .side_panel_first_accessibility_label(&self.project_session.project);
+        self.announce_open_container(crate::i18n::t("panel.roles.title"), first);
     }
 
     pub fn close_side_panel(&mut self) {
+        let title = self
+            .ui_shell
+            .ui
+            .side_panel_accessibility_title()
+            .map(str::to_string);
         self.ui_shell.ui.close_side_panel();
+        if let Some(label) = title {
+            self.announce_accessibility(AccessibilityEvent::Closed { label });
+        }
     }
 
     pub fn set_lines_role(&mut self, line_ids: Vec<u64>, name: String, color: [f32; 4]) {
@@ -2159,6 +2462,68 @@ impl State {
             self.narration.announce_event(AccessibilityEvent::Success {
                 message: crate::i18n::t(key).to_string(),
             });
+        }
+    }
+
+    pub fn delete_lines_by_ids(&mut self, line_ids: Vec<u64>) {
+        self.delete_lines_by_ids_internal(line_ids, true);
+    }
+
+    fn delete_lines_by_ids_internal(&mut self, line_ids: Vec<u64>, announce: bool) {
+        let lines: Vec<_> = self
+            .project_session
+            .project
+            .lines()
+            .filter(|line| line_ids.contains(&line.id))
+            .filter_map(|line| {
+                self.project_session
+                    .project
+                    .line_index(line.id)
+                    .map(|index| (line.clone(), index))
+            })
+            .collect();
+        let deleted_lines = lines.len();
+        if deleted_lines == 0 {
+            return;
+        }
+        if deleted_lines == 1 {
+            let (snapshot, index) = lines.into_iter().next().unwrap();
+            self.execute_and_broadcast(Command::DeleteLine { snapshot, index });
+        } else {
+            self.execute_and_broadcast(Command::DeleteLines { lines });
+        }
+        if announce {
+            self.announce_accessibility(AccessibilityEvent::Success {
+                message: crate::i18n::t(if deleted_lines == 1 {
+                    "accessibility.line_deleted"
+                } else {
+                    "accessibility.lines_deleted"
+                })
+                .to_string(),
+            });
+        }
+    }
+
+    pub fn copy_lines_by_ids(&mut self, line_ids: Vec<u64>, cut: bool) {
+        let lines: Vec<RythmoLine> = self
+            .project_session
+            .project
+            .lines()
+            .filter(|line| line_ids.contains(&line.id))
+            .cloned()
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
+        let clipboard_text = lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.line_clipboard = Some(lines);
+        crate::platform::clipboard_set(&clipboard_text);
+        if cut {
+            self.delete_lines_by_ids_internal(line_ids, false);
         }
     }
 
@@ -2619,25 +2984,120 @@ impl State {
         Some(id)
     }
 
+    /// Select and jump to the previous or next line in timeline order.
+    /// Navigation wraps so every line remains reachable from the keyboard.
+    /// Without an existing selection, it starts on the line whose beginning
+    /// is closest to the current playhead.
+    pub fn navigate_lines(&mut self, direction: i32) -> Option<u64> {
+        use crate::workspaces::rythmo::view::Selection;
+
+        if direction == 0 {
+            return None;
+        }
+        let mut lines: Vec<_> = self
+            .project_session
+            .project
+            .lines()
+            .enumerate()
+            .map(|(order, line)| {
+                (
+                    line.start_frame,
+                    crate::rythmo_layout::track_index_for_y_slot(line.y_slot),
+                    order,
+                    line.id,
+                )
+            })
+            .collect();
+        lines.sort_by_key(|(start_frame, track, order, _)| (*start_frame, *track, *order));
+        if lines.is_empty() {
+            self.narration.announce_event(AccessibilityEvent::Error {
+                message: crate::i18n::t("accessibility.no_lines").to_string(),
+            });
+            return None;
+        }
+
+        let current = self
+            .selected_line_id()
+            .and_then(|id| lines.iter().position(|(_, _, _, line_id)| *line_id == id));
+        let playhead = self.current_frame();
+        let nearest = lines
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, (start_frame, track, order, _))| {
+                let opposite_direction = if direction < 0 {
+                    *start_frame > playhead
+                } else {
+                    *start_frame < playhead
+                };
+                (
+                    (*start_frame).abs_diff(playhead),
+                    opposite_direction,
+                    *track,
+                    *order,
+                )
+            })
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        let target_index = match (current, direction.signum()) {
+            (Some(index), -1) => index.checked_sub(1).unwrap_or(lines.len() - 1),
+            (Some(index), _) => (index + 1) % lines.len(),
+            (None, _) => nearest,
+        };
+        let (start_frame, track, _, id) = lines[target_index];
+        self.ui_shell.ui.rythmo_state.selected = Some(Selection::Line(id));
+        self.ui_shell.ui.rythmo_state.keyboard_track = track;
+        self.ui_shell.ui.rythmo_state.keyboard_cycle_frame = Some(start_frame);
+        self.seek_absolute(start_frame);
+        Some(id)
+    }
+
+    pub fn clear_line_selection(&mut self) -> bool {
+        if !self.has_selected_lines() {
+            return false;
+        }
+        self.ui_shell.ui.clear_selection();
+        true
+    }
+
     fn line_accessibility_label(&self, id: u64) -> String {
         self.project_session
             .project
             .get_line(id)
             .map(|line| {
-                let mut parts = Vec::new();
-                if !line.character_name.trim().is_empty() {
-                    parts.push(line.character_name.clone());
-                }
-                if !line.text.trim().is_empty() {
-                    parts.push(line.text.clone());
-                }
-                if parts.is_empty() {
+                let character = if line.character_name.trim().is_empty() {
+                    crate::i18n::t("accessibility.character").to_string()
+                } else {
+                    line.character_name.clone()
+                };
+                let dialogue = if line.text.trim().is_empty() {
                     crate::i18n::t("accessibility.line").to_string()
                 } else {
-                    parts.join(", ")
+                    line.text.clone()
+                };
+                let track = crate::rythmo_layout::track_index_for_y_slot(line.y_slot) + 1;
+                let label = format!(
+                    "{character}, {dialogue}, {} {track}",
+                    crate::i18n::t("accessibility.track")
+                );
+                if line.karaoke {
+                    format!("{label}, {}", crate::i18n::t("accessibility.karaoke_line"))
+                } else {
+                    label
                 }
             })
-            .unwrap_or_else(|| crate::i18n::t("accessibility.line").to_string())
+            .unwrap_or_else(|| {
+                format!(
+                    "{}, {}, {}",
+                    crate::i18n::t("accessibility.character"),
+                    crate::i18n::t("accessibility.line"),
+                    crate::i18n::t("accessibility.track")
+                )
+            })
+    }
+
+    pub fn selected_line_accessibility_label(&self) -> Option<String> {
+        self.selected_line_id()
+            .map(|id| self.line_accessibility_label(id))
     }
 
     pub fn announce_line(&self, id: u64) {
@@ -2772,7 +3232,6 @@ impl State {
             .min()
             .unwrap_or(0);
         let effective_delta = delta_frames.max(-minimum_start);
-        let primary_start = selected_lines[0].1 + effective_delta;
         if effective_delta != 0 {
             let moves: Vec<_> = selected_lines
                 .iter()
@@ -2785,12 +3244,14 @@ impl State {
                 self.move_lines(moves);
             }
         }
-        self.narration
-            .announce_event(AccessibilityEvent::ValueChanged {
-                label: crate::i18n::t("accessibility.line").to_string(),
-                value: self.timecode_for_frame(primary_start),
-            });
+        for (id, _, _) in &selected_lines {
+            self.announce_line(*id);
+        }
         effective_delta != 0
+    }
+
+    pub fn has_selected_lines(&self) -> bool {
+        !self.selected_line_ids().is_empty()
     }
 
     fn selected_line_ids(&self) -> Vec<u64> {
@@ -2888,6 +3349,9 @@ impl State {
         self.ui_shell.ui.rythmo_state.editing_character = Some(id);
         self.ui_shell.ui.rythmo_state.char_input.activate(&name);
         self.ui_shell.ui.rythmo_state.char_input.select_all(&name);
+        self.ui_shell.ui.rythmo_state.autocomplete_index = None;
+        self.ui_shell.ui.rythmo_state.autocomplete_hover = None;
+        self.ui_shell.ui.rythmo_state.autocomplete_scroll = 0;
         true
     }
 
@@ -3735,7 +4199,8 @@ impl State {
                         log::error!("{message} {}", source.display());
                         self.show_toast(message, 7.0);
                         self.narration.announce_event(AccessibilityEvent::Error {
-                            message: crate::i18n::t("accessibility.project_load_failed").to_string(),
+                            message: crate::i18n::t("accessibility.project_load_failed")
+                                .to_string(),
                         });
                         return true;
                     }
@@ -3899,15 +4364,41 @@ impl State {
             self.last_autosave = Instant::now();
         }
 
-        if let Some(progress) = &self.ui_shell.ui.export_progress {
+        if let Some(progress) = self.ui_shell.ui.export_progress.clone() {
             use std::sync::atomic::Ordering;
             let v = f32::from_bits(progress.load(Ordering::Relaxed));
+            if v <= 1.0 {
+                let percent = (v.clamp(0.0, 1.0) * 100.0) as u32;
+                if self.last_progress_percent != Some(percent) {
+                    self.last_progress_percent = Some(percent);
+                    self.narration
+                        .publish_progress(self.active_progress_label(), Some(percent));
+                    #[cfg(target_os = "windows")]
+                    // A screen reader receives the persistent AccessKit
+                    // progress node; an additional beep would be redundant.
+                    if !self.narration.is_enabled() {
+                        crate::accessibility::progress_tone(percent);
+                    }
+                }
+                let now = Instant::now();
+                if self
+                    .last_progress_announcement
+                    .as_ref()
+                    .is_some_and(|last| now.duration_since(*last) >= Duration::from_secs(60))
+                {
+                    self.last_progress_announcement = Some(now);
+                    self.announce_shortcut_accessibility(AccessibilityEvent::Activation {
+                        label: format!(
+                            "{} : {percent} {}",
+                            self.active_progress_label(),
+                            crate::i18n::t("progress.percent")
+                        ),
+                    });
+                }
+            }
             if v >= 1.5 {
                 // Sentinel: 2.0 means the worker thread has actually exited.
-                self.ui_shell.ui.export_progress = None;
-                self.ui_shell.ui.export_render_backend = None;
-                self.ui_shell.ui.progress_prefix = String::new();
-                self.jobs.active_export_cancel = None;
+                self.set_export_progress(None);
                 log::info!("Export completed");
                 changed = true;
             }

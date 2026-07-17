@@ -86,6 +86,8 @@ pub enum UiEvent {
     ShiftCursorRight,
     CursorUp,
     CursorDown,
+    SelectWordLeft,
+    SelectWordRight,
     FocusNext,
     FocusPrevious,
     Activate,

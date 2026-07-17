@@ -193,18 +193,15 @@ impl Dropdown {
     }
 
     fn with_closed_response(&self, response: EventResponse, label: String) -> EventResponse {
-        let closed = UiAction::Accessibility(crate::accessibility::AccessibilityEvent::Collapsed {
-            label,
-        });
+        let closed =
+            UiAction::Accessibility(crate::accessibility::AccessibilityEvent::Collapsed { label });
         match response {
             EventResponse::Action(action) => EventResponse::Actions(vec![action, closed]),
             EventResponse::Actions(mut actions) => {
                 actions.push(closed);
                 EventResponse::Actions(actions)
             }
-            EventResponse::Ignored | EventResponse::Consumed => {
-                EventResponse::Action(closed)
-            }
+            EventResponse::Ignored | EventResponse::Consumed => EventResponse::Action(closed),
         }
     }
 

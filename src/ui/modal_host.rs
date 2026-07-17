@@ -276,12 +276,28 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self
+        let focus_navigation = matches!(
+            event,
+            UiEvent::FocusNext | UiEvent::FocusPrevious | UiEvent::CursorUp | UiEvent::CursorDown
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let result = self
             .connect
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
+            .handle_event(event, screen_w, screen_h);
+        if focus_navigation
+            && matches!(&result, &super::connect_modal::ConnectModalResult::Consumed)
         {
+            if let Some(modal) = self.connect.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label(),
+                        role: "text field".to_string(),
+                    },
+                ));
+            }
+        }
+        match result {
             super::connect_modal::ConnectModalResult::Consumed => ModalOutcome::Consumed,
             super::connect_modal::ConnectModalResult::Close => {
                 self.connect = None;
@@ -295,13 +311,16 @@ impl ModalHost {
                 room_code,
             } => {
                 self.connect = None;
-                action_closed_modal(UiAction::NetworkConnect {
-                    ip,
-                    port,
-                    password,
-                    username,
-                    room_code,
-                }, crate::i18n::t("menu.connect"))
+                action_closed_modal(
+                    UiAction::NetworkConnect {
+                        ip,
+                        port,
+                        password,
+                        username,
+                        room_code,
+                    },
+                    crate::i18n::t("menu.connect"),
+                )
             }
         }
     }
@@ -431,12 +450,17 @@ impl ModalHost {
             super::project_settings_modal::ProjectSettingsModalResult::Save {
                 instrumental_audio_path,
                 highlight_read_word,
+                scrolling_text_uses_character_color,
             } => {
                 self.project_settings = None;
-                action_closed_modal(UiAction::SaveProjectSettings {
-                    instrumental_audio_path,
-                    highlight_read_word,
-                }, crate::i18n::t("project_settings.title"))
+                action_closed_modal(
+                    UiAction::SaveProjectSettings {
+                        instrumental_audio_path,
+                        highlight_read_word,
+                        scrolling_text_uses_character_color,
+                    },
+                    crate::i18n::t("project_settings.title"),
+                )
             }
         }
     }
@@ -617,12 +641,55 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self
+        let focus_navigation = matches!(
+            event,
+            UiEvent::FocusNext | UiEvent::FocusPrevious | UiEvent::CursorUp | UiEvent::CursorDown
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let selection_navigation = matches!(
+            event,
+            UiEvent::ShiftCursorLeft
+                | UiEvent::ShiftCursorRight
+                | UiEvent::SelectWordLeft
+                | UiEvent::SelectWordRight
+                | UiEvent::SelectAll
+        );
+        let pointer_navigation = matches!(
+            event,
+            UiEvent::MousePress { .. } | UiEvent::DoubleClick { .. }
+        );
+        let activation = matches!(event, UiEvent::Activate)
+            || matches!(event, UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " ");
+        let result = self
             .voice_actor
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
-        {
+            .handle_event(event, screen_w, screen_h);
+        let consumed = matches!(
+            &result,
+            &super::voice_actor_modal::VoiceActorModalResult::Consumed
+        );
+        if consumed && (focus_navigation || selection_navigation || pointer_navigation) {
+            if let Some(modal) = self.voice_actor.as_ref() {
+                let event = modal
+                    .keyboard_selection_label()
+                    .map(|label| crate::accessibility::AccessibilityEvent::Selection { label })
+                    .unwrap_or_else(|| crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label(),
+                        role: "control".to_string(),
+                    });
+                return ModalOutcome::Action(UiAction::Accessibility(event));
+            }
+        }
+        if consumed && activation {
+            if let Some(modal) = self.voice_actor.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Activation {
+                        label: modal.keyboard_focus_label(),
+                    },
+                ));
+            }
+        }
+        match result {
             super::voice_actor_modal::VoiceActorModalResult::Consumed => ModalOutcome::Consumed,
             super::voice_actor_modal::VoiceActorModalResult::Close => {
                 self.voice_actor = None;
@@ -650,12 +717,61 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self
+        let list_navigation = matches!(
+            event,
+            UiEvent::CursorUp | UiEvent::CursorDown | UiEvent::Home | UiEvent::End
+        );
+        let focus_navigation = matches!(event, UiEvent::FocusNext | UiEvent::FocusPrevious)
+            || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let selection_navigation = matches!(
+            event,
+            UiEvent::ShiftCursorLeft
+                | UiEvent::ShiftCursorRight
+                | UiEvent::SelectWordLeft
+                | UiEvent::SelectWordRight
+                | UiEvent::SelectAll
+        );
+        let pointer_navigation = matches!(
+            event,
+            UiEvent::MousePress { .. } | UiEvent::DoubleClick { .. }
+        );
+        let activation = matches!(event, UiEvent::Activate)
+            || matches!(event, UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " ");
+        let result = self
             .rename_character
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
+            .handle_event(event, screen_w, screen_h);
+        let consumed = matches!(
+            &result,
+            &super::rename_character_modal::RenameCharacterModalResult::Consumed
+        );
+        if consumed
+            && (list_navigation || focus_navigation || selection_navigation || pointer_navigation)
         {
+            if let Some(modal) = self.rename_character.as_ref() {
+                let event = modal
+                    .keyboard_selection_label()
+                    .map(|label| crate::accessibility::AccessibilityEvent::Selection { label })
+                    .unwrap_or_else(|| crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label(),
+                        role: "control".to_string(),
+                    });
+                return ModalOutcome::Action(UiAction::Accessibility(event));
+            }
+        }
+        if consumed && activation {
+            if let Some(modal) = self.rename_character.as_ref() {
+                let event = modal
+                    .accessibility_error_label()
+                    .map(|message| crate::accessibility::AccessibilityEvent::Error { message })
+                    .unwrap_or_else(|| crate::accessibility::AccessibilityEvent::Activation {
+                        label: modal.keyboard_focus_label(),
+                    });
+                return ModalOutcome::Action(UiAction::Accessibility(event));
+            }
+        }
+        match result {
             super::rename_character_modal::RenameCharacterModalResult::Consumed => {
                 ModalOutcome::Consumed
             }
@@ -685,12 +801,43 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self
+        let focus_navigation = matches!(
+            event,
+            UiEvent::FocusNext
+                | UiEvent::FocusPrevious
+                | UiEvent::CursorUp
+                | UiEvent::CursorDown
+                | UiEvent::CursorLeft
+                | UiEvent::CursorRight
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let activation = matches!(event, UiEvent::Activate)
+            || matches!(event, UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " ");
+        let result = self
             .proxy
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
-        {
+            .handle_event(event, screen_w, screen_h);
+        let consumed = matches!(&result, &super::proxy_modal::ProxyModalResult::Consumed);
+        if focus_navigation && consumed {
+            if let Some(modal) = self.proxy.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label(),
+                        role: "control".to_string(),
+                    },
+                ));
+            }
+        }
+        if activation && consumed {
+            if let Some(modal) = self.proxy.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Activation {
+                        label: modal.keyboard_focus_label(),
+                    },
+                ));
+            }
+        }
+        match result {
             super::proxy_modal::ProxyModalResult::Consumed => ModalOutcome::Consumed,
             super::proxy_modal::ProxyModalResult::Close => {
                 self.proxy = None;
@@ -712,12 +859,27 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self
+        let focus_navigation = matches!(event, UiEvent::FocusNext | UiEvent::FocusPrevious)
+            || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let result = self
             .proxy_error
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
+            .handle_event(event, screen_w, screen_h);
+        if focus_navigation
+            && matches!(
+                &result,
+                &super::proxy_error_modal::ProxyErrorResult::Consumed
+            )
         {
+            return ModalOutcome::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Focus {
+                    label: crate::i18n::t("proxy_error.close").to_string(),
+                    role: "button".to_string(),
+                },
+            ));
+        }
+        match result {
             super::proxy_error_modal::ProxyErrorResult::Consumed => ModalOutcome::Consumed,
             super::proxy_error_modal::ProxyErrorResult::Close => {
                 self.proxy_error = None;
@@ -732,12 +894,25 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self
+        let focus_navigation = matches!(event, UiEvent::FocusNext | UiEvent::FocusPrevious)
+            || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let result = self
             .whats_new
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
+            .handle_event(event, screen_w, screen_h);
+        if focus_navigation && matches!(&result, &super::whats_new_modal::WhatsNewResult::Consumed)
         {
+            if let Some(modal) = self.whats_new.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label(),
+                        role: "control".to_string(),
+                    },
+                ));
+            }
+        }
+        match result {
             super::whats_new_modal::WhatsNewResult::Consumed => ModalOutcome::Consumed,
             super::whats_new_modal::WhatsNewResult::Close => {
                 self.whats_new = None;
@@ -752,12 +927,39 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self
+        let list_navigation = matches!(
+            event,
+            UiEvent::CursorUp | UiEvent::CursorDown | UiEvent::Home | UiEvent::End
+        );
+        let focus_navigation = matches!(event, UiEvent::FocusNext | UiEvent::FocusPrevious)
+            || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let result = self
             .server_browser
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
+            .handle_event(event, screen_w, screen_h);
+        if matches!(&result, &super::server_browser::BrowserResult::Consumed)
+            && (list_navigation || focus_navigation)
         {
+            if let Some(modal) = self.server_browser.as_ref() {
+                let event = if list_navigation {
+                    modal
+                        .keyboard_selection_label()
+                        .map(|label| crate::accessibility::AccessibilityEvent::Selection { label })
+                        .unwrap_or_else(|| crate::accessibility::AccessibilityEvent::Focus {
+                            label: modal.keyboard_focus_label(),
+                            role: "list".to_string(),
+                        })
+                } else {
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label(),
+                        role: "control".to_string(),
+                    }
+                };
+                return ModalOutcome::Action(UiAction::Accessibility(event));
+            }
+        }
+        match result {
             super::server_browser::BrowserResult::Consumed => ModalOutcome::Consumed,
             super::server_browser::BrowserResult::Close => {
                 self.server_browser = None;
@@ -765,25 +967,29 @@ impl ModalHost {
             }
             super::server_browser::BrowserResult::CreateRoom { ip, port } => {
                 self.server_browser = None;
-                action_closed_modal(
+                ModalOutcome::Actions(vec![
+                    UiAction::Accessibility(crate::accessibility::AccessibilityEvent::Closed {
+                        label: crate::i18n::t("server_browser.title").to_string(),
+                    }),
                     UiAction::OpenConnectModal {
                         ip,
                         port,
                         join: false,
                     },
-                    crate::i18n::t("server_browser.title"),
-                )
+                ])
             }
             super::server_browser::BrowserResult::JoinRoom { ip, port } => {
                 self.server_browser = None;
-                action_closed_modal(
+                ModalOutcome::Actions(vec![
+                    UiAction::Accessibility(crate::accessibility::AccessibilityEvent::Closed {
+                        label: crate::i18n::t("server_browser.title").to_string(),
+                    }),
                     UiAction::OpenConnectModal {
                         ip,
                         port,
                         join: true,
                     },
-                    crate::i18n::t("server_browser.title"),
-                )
+                ])
             }
             super::server_browser::BrowserResult::AddServer => {
                 ModalOutcome::Action(UiAction::OpenAddServerModal)
@@ -803,12 +1009,27 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self
+        let focus_navigation = matches!(
+            event,
+            UiEvent::FocusNext | UiEvent::FocusPrevious | UiEvent::CursorUp | UiEvent::CursorDown
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let result = self
             .add_server
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
+            .handle_event(event, screen_w, screen_h);
+        if focus_navigation && matches!(&result, &super::server_browser::AddServerResult::Consumed)
         {
+            if let Some(modal) = self.add_server.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label(),
+                        role: modal.keyboard_focus_role().to_string(),
+                    },
+                ));
+            }
+        }
+        match result {
             super::server_browser::AddServerResult::Consumed => ModalOutcome::Consumed,
             super::server_browser::AddServerResult::Close => {
                 self.add_server = None;
@@ -859,31 +1080,37 @@ impl ModalHost {
             super::save_prompt_modal::SavePromptResult::Consumed => ModalOutcome::Consumed,
             super::save_prompt_modal::SavePromptResult::Save => {
                 self.save_prompt = None;
-                action_closed_modal(match kind {
-                    super::save_prompt_modal::SavePromptKind::NewProject => {
-                        UiAction::NewProjectSave
-                    }
-                    super::save_prompt_modal::SavePromptKind::CloseProject => {
-                        UiAction::CloseProjectSave
-                    }
-                    super::save_prompt_modal::SavePromptKind::ExitApplication => {
-                        UiAction::ExitApplicationSave
-                    }
-                }, crate::i18n::t("save_prompt.title"))
+                action_closed_modal(
+                    match kind {
+                        super::save_prompt_modal::SavePromptKind::NewProject => {
+                            UiAction::NewProjectSave
+                        }
+                        super::save_prompt_modal::SavePromptKind::CloseProject => {
+                            UiAction::CloseProjectSave
+                        }
+                        super::save_prompt_modal::SavePromptKind::ExitApplication => {
+                            UiAction::ExitApplicationSave
+                        }
+                    },
+                    crate::i18n::t("save_prompt.title"),
+                )
             }
             super::save_prompt_modal::SavePromptResult::Discard => {
                 self.save_prompt = None;
-                action_closed_modal(match kind {
-                    super::save_prompt_modal::SavePromptKind::NewProject => {
-                        UiAction::NewProjectDiscard
-                    }
-                    super::save_prompt_modal::SavePromptKind::CloseProject => {
-                        UiAction::CloseProjectDiscard
-                    }
-                    super::save_prompt_modal::SavePromptKind::ExitApplication => {
-                        UiAction::ExitApplicationDiscard
-                    }
-                }, crate::i18n::t("save_prompt.title"))
+                action_closed_modal(
+                    match kind {
+                        super::save_prompt_modal::SavePromptKind::NewProject => {
+                            UiAction::NewProjectDiscard
+                        }
+                        super::save_prompt_modal::SavePromptKind::CloseProject => {
+                            UiAction::CloseProjectDiscard
+                        }
+                        super::save_prompt_modal::SavePromptKind::ExitApplication => {
+                            UiAction::ExitApplicationDiscard
+                        }
+                    },
+                    crate::i18n::t("save_prompt.title"),
+                )
             }
             super::save_prompt_modal::SavePromptResult::Cancel => {
                 self.save_prompt = None;
@@ -898,12 +1125,29 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> ModalOutcome {
-        match self
+        let focus_navigation = matches!(event, UiEvent::FocusNext | UiEvent::FocusPrevious)
+            || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let result = self
             .studio_warning
             .as_mut()
             .unwrap()
-            .handle_event(event, screen_w, screen_h)
+            .handle_event(event, screen_w, screen_h);
+        if focus_navigation
+            && matches!(
+                &result,
+                &super::studio_warning_modal::StudioWarningResult::Consumed
+            )
         {
+            if let Some(modal) = self.studio_warning.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label(),
+                        role: "button".to_string(),
+                    },
+                ));
+            }
+        }
+        match result {
             super::studio_warning_modal::StudioWarningResult::Consumed => ModalOutcome::Consumed,
             super::studio_warning_modal::StudioWarningResult::Confirm => {
                 self.studio_warning = None;
@@ -1108,10 +1352,12 @@ impl ModalHost {
         &mut self,
         instrumental_audio_path: Option<String>,
         highlight_read_word: bool,
+        scrolling_text_uses_character_color: bool,
     ) {
         self.project_settings = Some(super::project_settings_modal::ProjectSettingsModal::new(
             instrumental_audio_path,
             highlight_read_word,
+            scrolling_text_uses_character_color,
         ));
     }
 

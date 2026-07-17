@@ -7,6 +7,7 @@ use crate::i18n::t;
 const CARD_W: f32 = 430.0;
 const CARD_H: f32 = 292.0;
 const PRESETS: [u32; 3] = [720, 1080, 1440];
+const FOCUS_COUNT: usize = 3;
 
 pub struct ProxyModal {
     source_width: u32,
@@ -78,6 +79,69 @@ impl ProxyModal {
         }
     }
 
+    fn move_focus(&mut self, direction: i32) {
+        self.keyboard_focus = if direction < 0 {
+            self.keyboard_focus
+                .checked_sub(1)
+                .unwrap_or(FOCUS_COUNT - 1)
+        } else {
+            (self.keyboard_focus + 1) % FOCUS_COUNT
+        };
+    }
+
+    fn adjust_resolution(&mut self, direction: i32) {
+        let current = PRESETS
+            .iter()
+            .position(|preset| *preset == self.selected_max_height)
+            .unwrap_or(1);
+        let index = if direction < 0 {
+            current.saturating_sub(1)
+        } else {
+            (current + 1).min(PRESETS.len() - 1)
+        };
+        self.selected_max_height = PRESETS[index];
+        self.update_target();
+    }
+
+    fn adjust_quality(&mut self, direction: i32) {
+        self.crf = if direction < 0 {
+            self.crf.saturating_sub(1).max(18)
+        } else {
+            (self.crf + 1).min(32)
+        };
+        self.update_texts();
+    }
+
+    fn activate_focused(&mut self) -> ProxyModalResult {
+        match self.keyboard_focus {
+            0 => {
+                self.adjust_resolution(1);
+                ProxyModalResult::Consumed
+            }
+            1 => {
+                self.adjust_quality(1);
+                ProxyModalResult::Consumed
+            }
+            2 => self.create_result(),
+            _ => ProxyModalResult::Consumed,
+        }
+    }
+
+    pub fn keyboard_focus_label(&self) -> String {
+        match self.keyboard_focus {
+            0 => format!(
+                "{} : {}p, {} : {}",
+                t("proxy_modal.resolution"),
+                self.selected_max_height,
+                t("proxy_modal.target"),
+                self.target_text
+            ),
+            1 => format!("{} : {}", t("proxy_modal.quality"), self.crf_text),
+            2 => t("proxy_modal.create").to_string(),
+            _ => t("proxy_modal.title").to_string(),
+        }
+    }
+
     pub fn handle_event(
         &mut self,
         event: &UiEvent,
@@ -101,51 +165,37 @@ impl ProxyModal {
                     return ProxyModalResult::Close;
                 }
                 if text == "\t" || text == "\u{b}" {
-                    self.keyboard_focus = if text == "\t" {
-                        (self.keyboard_focus + 1) % 4
-                    } else {
-                        (self.keyboard_focus + 3) % 4
-                    };
+                    self.move_focus(if text == "\t" { 1 } else { -1 });
                     return ProxyModalResult::Consumed;
                 }
-                if text == "\r" || text == "\n" {
-                    return match self.keyboard_focus {
-                        2 => self.create_result(),
-                        3 => ProxyModalResult::Close,
-                        _ => ProxyModalResult::Consumed,
-                    };
+                if text == "\r" || text == "\n" || text == " " {
+                    return self.activate_focused();
                 }
                 ProxyModalResult::Consumed
             }
-            UiEvent::CursorLeft | UiEvent::CursorUp if self.keyboard_focus == 0 => {
-                let index = PRESETS
-                    .iter()
-                    .position(|preset| *preset == self.selected_max_height)
-                    .unwrap_or(1)
-                    .saturating_sub(1);
-                self.selected_max_height = PRESETS[index];
-                self.update_target();
+            UiEvent::FocusNext => {
+                self.move_focus(1);
                 ProxyModalResult::Consumed
             }
-            UiEvent::CursorRight | UiEvent::CursorDown if self.keyboard_focus == 0 => {
-                let index = (PRESETS
-                    .iter()
-                    .position(|preset| *preset == self.selected_max_height)
-                    .unwrap_or(1)
-                    + 1)
-                .min(PRESETS.len() - 1);
-                self.selected_max_height = PRESETS[index];
-                self.update_target();
+            UiEvent::FocusPrevious => {
+                self.move_focus(-1);
                 ProxyModalResult::Consumed
             }
-            UiEvent::CursorLeft | UiEvent::CursorDown if self.keyboard_focus == 1 => {
-                self.crf = self.crf.saturating_sub(1).max(18);
-                self.update_texts();
+            UiEvent::Activate => self.activate_focused(),
+            UiEvent::CursorLeft | UiEvent::CursorUp => {
+                match self.keyboard_focus {
+                    0 => self.adjust_resolution(-1),
+                    1 => self.adjust_quality(-1),
+                    _ => self.move_focus(-1),
+                }
                 ProxyModalResult::Consumed
             }
-            UiEvent::CursorRight | UiEvent::CursorUp if self.keyboard_focus == 1 => {
-                self.crf = (self.crf + 1).min(32);
-                self.update_texts();
+            UiEvent::CursorRight | UiEvent::CursorDown => {
+                match self.keyboard_focus {
+                    0 => self.adjust_resolution(1),
+                    1 => self.adjust_quality(1),
+                    _ => self.move_focus(1),
+                }
                 ProxyModalResult::Consumed
             }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
@@ -160,6 +210,7 @@ impl ProxyModal {
                         height: preset_h,
                     };
                     if rect.contains(*x, *y) {
+                        self.keyboard_focus = 0;
                         self.selected_max_height = *preset;
                         self.update_target();
                         return ProxyModalResult::Consumed;
@@ -182,11 +233,13 @@ impl ProxyModal {
                     height: 30.0,
                 };
                 if minus_rect.contains(*x, *y) {
+                    self.keyboard_focus = 1;
                     self.crf = self.crf.saturating_sub(1).max(18);
                     self.update_texts();
                     return ProxyModalResult::Consumed;
                 }
                 if plus_rect.contains(*x, *y) {
+                    self.keyboard_focus = 1;
                     self.crf = (self.crf + 1).min(32);
                     self.update_texts();
                     return ProxyModalResult::Consumed;
@@ -199,6 +252,7 @@ impl ProxyModal {
                     height: 40.0,
                 };
                 if create_rect.contains(*x, *y) {
+                    self.keyboard_focus = 2;
                     return self.create_result();
                 }
 
@@ -322,6 +376,7 @@ impl ProxyModal {
                 label,
                 self.selected_max_height == *preset,
                 false,
+                self.keyboard_focus == 0 && self.selected_max_height == *preset,
             );
         }
 
@@ -381,6 +436,7 @@ impl ProxyModal {
             "-",
             false,
             false,
+            self.keyboard_focus == 1,
         );
         push_value_box(
             overlay_quads,
@@ -405,6 +461,7 @@ impl ProxyModal {
             "+",
             false,
             false,
+            self.keyboard_focus == 1,
         );
         push_label(
             labels,
@@ -432,6 +489,7 @@ impl ProxyModal {
             t("proxy_modal.create"),
             false,
             true,
+            self.keyboard_focus == 2,
         );
     }
 }
@@ -443,6 +501,7 @@ fn push_button<'a>(
     text: &'a str,
     selected: bool,
     primary: bool,
+    focused: bool,
 ) {
     let (color, color_bottom, border_color) = if primary {
         (
@@ -468,8 +527,12 @@ fn push_button<'a>(
         rect: [rect.x, rect.y, rect.width, rect.height],
         color,
         color_bottom,
-        border_color,
-        border_width: 1.0,
+        border_color: if focused {
+            [1.0, 0.84, 0.28, 1.0]
+        } else {
+            border_color
+        },
+        border_width: if focused { 2.5 } else { 1.0 },
         border_radius: 7.0,
         shadow_offset: [0.0, 2.0],
         shadow_color: [0.0, 0.0, 0.0, if primary { 0.3 } else { 0.0 }],

@@ -47,6 +47,7 @@ pub struct ServerBrowserModal {
     pub servers: Vec<ServerInfo>,
     pub selected: Option<usize>,
     pub scroll_offset: f32,
+    keyboard_focus: usize,
 }
 
 impl Default for ServerBrowserModal {
@@ -58,7 +59,7 @@ impl Default for ServerBrowserModal {
 impl ServerBrowserModal {
     pub fn new() -> Self {
         let saved = crate::config::saved_servers();
-        let servers = saved
+        let servers: Vec<ServerInfo> = saved
             .iter()
             .map(|s| ServerInfo {
                 ip: s.ip.clone(),
@@ -71,10 +72,84 @@ impl ServerBrowserModal {
                 players_text: String::new(),
             })
             .collect();
+        let selected = (!servers.is_empty()).then_some(0);
         Self {
             servers,
-            selected: None,
+            selected,
             scroll_offset: 0.0,
+            keyboard_focus: 0,
+        }
+    }
+
+    pub fn keyboard_focus_label(&self) -> String {
+        match self.keyboard_focus {
+            0 => self
+                .keyboard_selection_label()
+                .unwrap_or_else(|| t("server_browser.empty").to_string()),
+            1 => t("server_browser.create").to_string(),
+            2 => t("server_browser.join").to_string(),
+            3 => t("server_browser.refresh").to_string(),
+            4 => t("server_browser.add").to_string(),
+            5 => t("server_browser.remove").to_string(),
+            _ => t("server_browser.close").to_string(),
+        }
+    }
+
+    pub fn keyboard_selection_label(&self) -> Option<String> {
+        let server = self.selected.and_then(|index| self.servers.get(index))?;
+        let name = if server.name.trim().is_empty() {
+            format!("{}: {}", server.ip, server.port)
+        } else {
+            server.name.clone()
+        };
+        let status = match server.status {
+            ServerStatus::Online => t("server_browser.online"),
+            ServerStatus::Offline => t("server_browser.offline"),
+            ServerStatus::Pinging => t("server_browser.pinging"),
+        };
+        Some(format!("{name}, {status}, {}", server.players_text))
+    }
+
+    fn ensure_selected_visible(&mut self) {
+        let Some(index) = self.selected else {
+            return;
+        };
+        let top = index as f32 * SERVER_ITEM_H;
+        let bottom = top + SERVER_ITEM_H;
+        if top < self.scroll_offset {
+            self.scroll_offset = top;
+        } else if bottom > self.scroll_offset + LIST_H {
+            self.scroll_offset = bottom - LIST_H;
+        }
+    }
+
+    fn activate_keyboard_focus(&self) -> BrowserResult {
+        match self.keyboard_focus {
+            0 | 2 => self
+                .selected
+                .and_then(|index| self.servers.get(index))
+                .filter(|server| server.status == ServerStatus::Online)
+                .map(|server| BrowserResult::JoinRoom {
+                    ip: server.ip.clone(),
+                    port: server.port,
+                })
+                .unwrap_or(BrowserResult::Consumed),
+            1 => self
+                .selected
+                .and_then(|index| self.servers.get(index))
+                .filter(|server| server.status == ServerStatus::Online)
+                .map(|server| BrowserResult::CreateRoom {
+                    ip: server.ip.clone(),
+                    port: server.port,
+                })
+                .unwrap_or(BrowserResult::Consumed),
+            3 => BrowserResult::Refresh,
+            4 => BrowserResult::AddServer,
+            5 => self
+                .selected
+                .map(BrowserResult::RemoveServer)
+                .unwrap_or(BrowserResult::Consumed),
+            _ => BrowserResult::Close,
         }
     }
 
@@ -132,6 +207,41 @@ impl ServerBrowserModal {
 
         match event {
             UiEvent::KeyInput { text } if text == "\x1b" => BrowserResult::Close,
+            UiEvent::KeyInput { text } if text == "\t" => {
+                self.keyboard_focus = (self.keyboard_focus + 1) % 7;
+                BrowserResult::Consumed
+            }
+            UiEvent::KeyInput { text } if text == "\u{b}" => {
+                self.keyboard_focus = (self.keyboard_focus + 6) % 7;
+                BrowserResult::Consumed
+            }
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " " => {
+                self.activate_keyboard_focus()
+            }
+            UiEvent::CursorUp if self.keyboard_focus == 0 => {
+                let current = self.selected.unwrap_or(0);
+                self.selected = Some(current.saturating_sub(1));
+                self.ensure_selected_visible();
+                BrowserResult::Consumed
+            }
+            UiEvent::CursorDown if self.keyboard_focus == 0 => {
+                if !self.servers.is_empty() {
+                    let current = self.selected.unwrap_or(0);
+                    self.selected = Some((current + 1).min(self.servers.len() - 1));
+                    self.ensure_selected_visible();
+                }
+                BrowserResult::Consumed
+            }
+            UiEvent::Home if self.keyboard_focus == 0 => {
+                self.selected = (!self.servers.is_empty()).then_some(0);
+                self.ensure_selected_visible();
+                BrowserResult::Consumed
+            }
+            UiEvent::End if self.keyboard_focus == 0 => {
+                self.selected = (!self.servers.is_empty()).then_some(self.servers.len() - 1);
+                self.ensure_selected_visible();
+                BrowserResult::Consumed
+            }
 
             UiEvent::Scroll { x, y, delta, .. } if list.contains(*x, *y) => {
                 let max_scroll = (self.servers.len() as f32 * SERVER_ITEM_H - LIST_H).max(0.0);
@@ -146,6 +256,7 @@ impl ServerBrowserModal {
 
                 // Server list click
                 if list.contains(*x, *y) {
+                    self.keyboard_focus = 0;
                     let rel_y = *y - list.y + self.scroll_offset;
                     let idx = (rel_y / SERVER_ITEM_H) as usize;
                     if idx < self.servers.len() {
@@ -169,6 +280,7 @@ impl ServerBrowserModal {
                 })
                 .contains(*x, *y)
                 {
+                    self.keyboard_focus = 1;
                     if let Some(i) = self.selected {
                         let s = &self.servers[i];
                         if s.status == ServerStatus::Online {
@@ -188,6 +300,7 @@ impl ServerBrowserModal {
                 })
                 .contains(*x, *y)
                 {
+                    self.keyboard_focus = 2;
                     if let Some(i) = self.selected {
                         let s = &self.servers[i];
                         if s.status == ServerStatus::Online {
@@ -207,6 +320,7 @@ impl ServerBrowserModal {
                 })
                 .contains(*x, *y)
                 {
+                    self.keyboard_focus = 3;
                     return BrowserResult::Refresh;
                 }
 
@@ -220,6 +334,7 @@ impl ServerBrowserModal {
                 })
                 .contains(*x, *y)
                 {
+                    self.keyboard_focus = 4;
                     return BrowserResult::AddServer;
                 }
                 if (Rect {
@@ -230,6 +345,7 @@ impl ServerBrowserModal {
                 })
                 .contains(*x, *y)
                 {
+                    self.keyboard_focus = 5;
                     if let Some(i) = self.selected {
                         return BrowserResult::RemoveServer(i);
                     }
@@ -243,6 +359,7 @@ impl ServerBrowserModal {
                 })
                 .contains(*x, *y)
                 {
+                    self.keyboard_focus = 6;
                     return BrowserResult::Close;
                 }
 
@@ -313,8 +430,12 @@ impl ServerBrowserModal {
             rect: [list.x, list.y, list.width, list.height],
             color: [0.08, 0.08, 0.10, 1.0],
             color_bottom: [0.08, 0.08, 0.10, 1.0],
-            border_color: [0.30, 0.30, 0.36, 0.5],
-            border_width: 1.0,
+            border_color: if self.keyboard_focus == 0 {
+                [0.45, 0.62, 0.95, 1.0]
+            } else {
+                [0.30, 0.30, 0.36, 0.5]
+            },
+            border_width: if self.keyboard_focus == 0 { 2.0 } else { 1.0 },
             border_radius: 4.0,
             shadow_offset: [0.0; 2],
             shadow_color: [0.0; 4],
@@ -464,7 +585,10 @@ impl ServerBrowserModal {
                 } else {
                     [0.18, 0.18, 0.22, 1.0]
                 };
-                let border = if *disabled {
+                let focused = self.keyboard_focus == row_idx * 3 + i + 1;
+                let border = if focused {
+                    [0.45, 0.62, 0.95, 1.0]
+                } else if *disabled {
                     [0.20, 0.20, 0.24, 0.5]
                 } else {
                     [0.35, 0.35, 0.42, 0.6]
@@ -474,7 +598,7 @@ impl ServerBrowserModal {
                     color: bg,
                     color_bottom: bg,
                     border_color: border,
-                    border_width: 1.0,
+                    border_width: if focused { 2.0 } else { 1.0 },
                     border_radius: 4.0,
                     shadow_offset: [0.0; 2],
                     shadow_color: [0.0; 4],
@@ -510,7 +634,7 @@ pub struct AddServerModal {
     pub ip: String,
     pub port: String,
     pub input: text_input::TextInputState,
-    pub focused: usize, // 0=ip, 1=port
+    pub focused: usize, // 0=ip, 1=port, 2=add button
 }
 
 pub enum AddServerResult {
@@ -538,6 +662,33 @@ impl AddServerModal {
         }
     }
 
+    pub fn keyboard_focus_label(&self) -> String {
+        match self.focused {
+            0 => t("server_browser.ip").to_string(),
+            1 => format!("{} : {}", t("server_browser.port"), self.port),
+            _ => t("server_browser.add").to_string(),
+        }
+    }
+
+    pub fn keyboard_focus_role(&self) -> &'static str {
+        if self.focused == 2 {
+            "button"
+        } else {
+            "text field"
+        }
+    }
+
+    fn set_keyboard_focus(&mut self, focus: usize) {
+        self.focused = focus % 3;
+        if self.focused == 0 {
+            self.input.activate(&self.ip);
+        } else if self.focused == 1 {
+            self.input.activate(&self.port);
+        } else {
+            self.input.deactivate();
+        }
+    }
+
     fn card_rect(sw: f32, sh: f32) -> Rect {
         let w = 340.0;
         let h = 180.0;
@@ -557,13 +708,11 @@ impl AddServerModal {
                     return AddServerResult::Close;
                 }
                 if text == "\t" {
-                    self.focused = 1 - self.focused;
-                    let field = if self.focused == 0 {
-                        &self.ip
-                    } else {
-                        &self.port
-                    };
-                    self.input.activate(field);
+                    self.set_keyboard_focus(self.focused + 1);
+                    return AddServerResult::Consumed;
+                }
+                if text == "\u{b}" {
+                    self.set_keyboard_focus(self.focused + 2);
                     return AddServerResult::Consumed;
                 }
                 if text == "\r" || text == "\n" {
@@ -572,6 +721,9 @@ impl AddServerModal {
                     if !ip.is_empty() {
                         return AddServerResult::Add { ip, port };
                     }
+                    return AddServerResult::Consumed;
+                }
+                if self.focused >= 2 {
                     return AddServerResult::Consumed;
                 }
                 let field = if self.focused == 0 {
@@ -601,6 +753,15 @@ impl AddServerModal {
                     &self.port
                 };
                 self.input.move_right(f);
+                AddServerResult::Consumed
+            }
+            UiEvent::CursorUp | UiEvent::CursorDown => {
+                let step = if matches!(event, UiEvent::CursorUp) {
+                    2
+                } else {
+                    1
+                };
+                self.set_keyboard_focus(self.focused + step);
                 AddServerResult::Consumed
             }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
@@ -658,6 +819,7 @@ impl AddServerModal {
                     height: 28.0,
                 };
                 if btn.contains(*x, *y) {
+                    self.set_keyboard_focus(2);
                     let ip = self.ip.trim().to_string();
                     let port: u16 = self.port.trim().parse().unwrap_or(9050);
                     if !ip.is_empty() {

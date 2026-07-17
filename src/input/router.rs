@@ -222,6 +222,13 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         RepeatPolicy::PressAndRepeat,
         UiAction::TogglePlayPause,
     );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::Escape,
+        Modifiers::NONE,
+        RepeatPolicy::PressOnly,
+        UiAction::ClearLineSelection,
+    );
     for (key, command) in [
         (KeyCode::Numpad1, UiAction::AddMarker(MarkerKind::Boucle)),
         (KeyCode::Numpad2, UiAction::AddMarker(MarkerKind::Out)),
@@ -350,14 +357,14 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         KeyCode::ArrowLeft,
         shift,
         RepeatPolicy::PressAndRepeat,
-        UiAction::NudgeSelectedLines { delta_frames: -1 },
+        UiAction::NavigateLines { direction: -1 },
     );
     router.bind(
         InputContext::Workspace,
         KeyCode::ArrowRight,
         shift,
         RepeatPolicy::PressAndRepeat,
-        UiAction::NudgeSelectedLines { delta_frames: 1 },
+        UiAction::NavigateLines { direction: 1 },
     );
     router.bind(
         InputContext::Workspace,
@@ -484,7 +491,7 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         (
             KeyCode::Character('p'),
             ctrl_shift,
-            UiAction::OpenRenameCharacterModal,
+            UiAction::OpenProxyModal,
         ),
         (KeyCode::Character('o'), ctrl, UiAction::OpenProjectSettings),
     ] {
@@ -838,7 +845,7 @@ mod tests {
                 KeyCode::Character('p'),
                 ctrl_shift,
                 &global,
-                UiAction::OpenRenameCharacterModal,
+                UiAction::OpenProxyModal,
             ),
             (
                 KeyCode::Character('o'),
@@ -858,19 +865,31 @@ mod tests {
                 &accessibility,
                 UiAction::ToggleScreenReader,
             ),
+            (
+                KeyCode::ArrowLeft,
+                ctrl_shift,
+                &workspace,
+                UiAction::NudgeSelectedLines { delta_frames: -1 },
+            ),
+            (
+                KeyCode::ArrowRight,
+                ctrl_shift,
+                &workspace,
+                UiAction::NudgeSelectedLines { delta_frames: 1 },
+            ),
             (KeyCode::ArrowLeft, ctrl, &workspace, UiAction::PrevFrame),
             (KeyCode::ArrowRight, ctrl, &workspace, UiAction::NextFrame),
             (
                 KeyCode::ArrowLeft,
                 shift,
                 &workspace,
-                UiAction::NudgeSelectedLines { delta_frames: -1 },
+                UiAction::NavigateLines { direction: -1 },
             ),
             (
                 KeyCode::ArrowRight,
                 shift,
                 &workspace,
-                UiAction::NudgeSelectedLines { delta_frames: 1 },
+                UiAction::NavigateLines { direction: 1 },
             ),
             (
                 KeyCode::ArrowUp,
@@ -1024,7 +1043,7 @@ mod tests {
     }
 
     #[test]
-    fn every_registered_shortcut_has_an_automatic_announcement() {
+    fn named_shortcuts_never_announce_their_physical_keys() {
         let router = existing_shortcuts();
         for binding in &router.bindings {
             let stroke = KeyStroke {
@@ -1043,14 +1062,14 @@ mod tests {
             let shortcut_label = stroke.accessibility_label();
             assert!(!shortcut_label.trim().is_empty());
             assert!(!shortcut_label.contains("shortcut."));
-            let event = crate::accessibility::event_for_keyboard_shortcut(
-                &binding.command,
-                &shortcut_label,
-            );
-            let crate::accessibility::AccessibilityEvent::Activation { label } = event else {
-                panic!("shortcut announcement must be an activation event");
-            };
-            assert!(!label.trim().is_empty());
+            if let Some(event) = crate::accessibility::event_for_keyboard_shortcut(&binding.command)
+            {
+                let crate::accessibility::AccessibilityEvent::Activation { label } = event else {
+                    panic!("named shortcut announcement must be an activation event");
+                };
+                assert!(!label.trim().is_empty());
+                assert!(!label.contains(shortcut_label.as_str()));
+            }
         }
     }
 }

@@ -83,6 +83,7 @@ pub struct RythmoState {
     pub color_picker: crate::ui::color_picker::ColorPickerState,
     pub autocomplete_index: Option<usize>,
     pub autocomplete_hover: Option<usize>,
+    pub autocomplete_scroll: usize,
     pub dragging: Option<DragState>,
     pub ghost_preview: Option<GhostPreview>,
     pub ctrl_held: bool,
@@ -219,6 +220,7 @@ impl RythmoState {
             color_picker: crate::ui::color_picker::ColorPickerState::new(),
             autocomplete_index: None,
             autocomplete_hover: None,
+            autocomplete_scroll: 0,
             dragging: None,
             ghost_preview: None,
             ctrl_held: false,
@@ -303,8 +305,7 @@ impl RythmoState {
             }
         }
 
-        let layout_ctx =
-            EditorLayoutCtx::new_at_frame_with_fps(project, current_frame, fps, zone);
+        let layout_ctx = EditorLayoutCtx::new_at_frame_with_fps(project, current_frame, fps, zone);
 
         *self.cached_layout_signature.borrow_mut() = signature;
         *self.cached_layout_ctx.borrow_mut() = Some(layout_ctx);
@@ -551,5 +552,6 @@ impl RythmoState {
         self.color_picker.close();
         self.autocomplete_index = None;
         self.autocomplete_hover = None;
+        self.autocomplete_scroll = 0;
     }
 }

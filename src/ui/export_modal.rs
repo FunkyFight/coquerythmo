@@ -184,8 +184,8 @@ impl ExportModal {
         if count == 0 {
             return;
         }
-        self.keyboard_focus = (self.keyboard_focus as i32 + direction)
-            .rem_euclid(count as i32) as usize;
+        self.keyboard_focus =
+            (self.keyboard_focus as i32 + direction).rem_euclid(count as i32) as usize;
         self.ensure_language_visible();
     }
 
@@ -244,7 +244,11 @@ impl ExportModal {
                 .languages
                 .get(index)
                 .map(|language| {
-                    format!("{}, {}", language.name, t("export_modal.export_original_audio"))
+                    format!(
+                        "{}, {}",
+                        language.name,
+                        t("export_modal.export_original_audio")
+                    )
                 })
                 .unwrap_or_else(|| t("export_hub.languages").to_string()),
             ExportFocus::LanguageInstrumental(index) => self
@@ -303,14 +307,26 @@ impl ExportModal {
                 self.keyboard_focus_label(),
                 self.height_display
             )),
-            ExportFocus::VideoFps => Some(format!("{} {}", self.keyboard_focus_label(), self.fps_display)),
-            ExportFocus::VideoBrScale => Some(format!("{} {}", self.keyboard_focus_label(), self.scale_display)),
+            ExportFocus::VideoFps => Some(format!(
+                "{} {}",
+                self.keyboard_focus_label(),
+                self.fps_display
+            )),
+            ExportFocus::VideoBrScale => Some(format!(
+                "{} {}",
+                self.keyboard_focus_label(),
+                self.scale_display
+            )),
             ExportFocus::VideoKaraokeScale => Some(format!(
                 "{} {}",
                 self.keyboard_focus_label(),
                 self.karaoke_scale_display
             )),
-            ExportFocus::VideoPreroll => Some(format!("{} {}", self.keyboard_focus_label(), self.preroll_display)),
+            ExportFocus::VideoPreroll => Some(format!(
+                "{} {}",
+                self.keyboard_focus_label(),
+                self.preroll_display
+            )),
             ExportFocus::VideoCountdown => Some(format!(
                 "{}, {}",
                 self.keyboard_focus_label(),
@@ -336,7 +352,11 @@ impl ExportModal {
                     .get(&language.id)
                     .copied()
                     .unwrap_or_default();
-                format!("{}, {}", self.keyboard_focus_label(), state(selection.original))
+                format!(
+                    "{}, {}",
+                    self.keyboard_focus_label(),
+                    state(selection.original)
+                )
             }),
             ExportFocus::LanguageInstrumental(index) => self.languages.get(index).map(|language| {
                 let selection = self
@@ -345,7 +365,11 @@ impl ExportModal {
                     .get(&language.id)
                     .copied()
                     .unwrap_or_default();
-                format!("{}, {}", self.keyboard_focus_label(), state(selection.instrumental))
+                format!(
+                    "{}, {}",
+                    self.keyboard_focus_label(),
+                    state(selection.instrumental)
+                )
             }),
             ExportFocus::Page(_) | ExportFocus::Close | ExportFocus::Export => None,
         }
@@ -495,7 +519,9 @@ impl ExportModal {
             return;
         }
         match self.current_focus() {
-            ExportFocus::VideoToggle => self.configuration.video_enabled = !self.configuration.video_enabled,
+            ExportFocus::VideoToggle => {
+                self.configuration.video_enabled = !self.configuration.video_enabled
+            }
             ExportFocus::VideoAspect(index) => {
                 let next = (index as i32 + direction).rem_euclid(3) as usize;
                 self.configuration.video_aspect = match next {
@@ -515,9 +541,8 @@ impl ExportModal {
                 };
             }
             ExportFocus::VideoWidth => {
-                self.configuration.custom_width = (self.configuration.custom_width as i32
-                    + direction * 2)
-                    .clamp(16, 8192) as u32;
+                self.configuration.custom_width =
+                    (self.configuration.custom_width as i32 + direction * 2).clamp(16, 8192) as u32;
             }
             ExportFocus::VideoHeight => {
                 self.configuration.custom_height = (self.configuration.custom_height as i32
@@ -525,20 +550,22 @@ impl ExportModal {
                     .clamp(16, 8192) as u32;
             }
             ExportFocus::VideoFps => {
-                self.configuration.fps = (self.configuration.fps + direction as f64).clamp(1.0, 480.0);
+                self.configuration.fps =
+                    (self.configuration.fps + direction as f64).clamp(1.0, 480.0);
             }
             ExportFocus::VideoBrScale => {
-                self.configuration.br_scale = (self.configuration.br_scale + direction as f32 * 0.1)
-                    .clamp(0.5, 2.0);
+                self.configuration.br_scale =
+                    (self.configuration.br_scale + direction as f32 * 0.1).clamp(0.5, 2.0);
             }
             ExportFocus::VideoKaraokeScale => {
-                self.configuration.karaoke_text_scale =
-                    (self.configuration.karaoke_text_scale + direction as f32 * 0.1)
-                        .clamp(0.5, 2.0);
+                self.configuration.karaoke_text_scale = (self.configuration.karaoke_text_scale
+                    + direction as f32 * 0.1)
+                    .clamp(0.5, 2.0);
             }
             ExportFocus::VideoPreroll => {
-                self.configuration.pre_roll_seconds =
-                    (self.configuration.pre_roll_seconds + direction as f64 * 0.5).clamp(0.0, 120.0);
+                self.configuration.pre_roll_seconds = (self.configuration.pre_roll_seconds
+                    + direction as f64 * 0.5)
+                    .clamp(0.0, 120.0);
             }
             ExportFocus::VideoCountdown => {
                 self.configuration.countdown_enabled = !self.configuration.countdown_enabled;
@@ -591,7 +618,9 @@ impl ExportModal {
                 };
                 self.set_focus(first_content);
             }
-            ExportFocus::VideoToggle => self.configuration.video_enabled = !self.configuration.video_enabled,
+            ExportFocus::VideoToggle => {
+                self.configuration.video_enabled = !self.configuration.video_enabled
+            }
             ExportFocus::VideoAspect(index) => {
                 self.configuration.video_aspect = match index {
                     0 => VideoExportAspect::Source,
@@ -636,7 +665,9 @@ impl ExportModal {
                 });
             }
             ExportFocus::Export => {
-                if self.any_format_selected() && !self.configuration.selected_language_ids.is_empty() {
+                if self.any_format_selected()
+                    && !self.configuration.selected_language_ids.is_empty()
+                {
                     self.finish_numeric();
                     return Some(ExportModalResult::Export {
                         configuration: self.configuration.clone(),
@@ -895,7 +926,9 @@ impl ExportModal {
                 }
                 if Self::export_button(card).contains(*x, *y) {
                     self.set_focus(ExportFocus::Export);
-                    if self.any_format_selected() && !self.configuration.selected_language_ids.is_empty() {
+                    if self.any_format_selected()
+                        && !self.configuration.selected_language_ids.is_empty()
+                    {
                         self.finish_numeric();
                         return ExportModalResult::Export {
                             configuration: self.configuration.clone(),

@@ -44,8 +44,8 @@ pub const SLIDER_THUMB_PRESS: [f32; 4] = [0.65, 0.65, 0.70, 1.0];
 
 // -- Rythmo --
 pub const RYTHMO_TICK_COLOR: [f32; 4] = [0.40, 0.40, 0.45, 0.5];
-pub const RYTHMO_PLAYHEAD: [f32; 4] = [0.85, 0.15, 0.15, 1.0];
-pub const RYTHMO_PLAYHEAD_GLOW: [f32; 4] = [0.85, 0.15, 0.15, 0.3];
+pub const RYTHMO_PLAYHEAD: [f32; 4] = [1.0, 0.02, 0.05, 1.0];
+pub const RYTHMO_PLAYHEAD_GLOW: [f32; 4] = [1.0, 0.0, 0.03, 0.55];
 pub const RYTHMO_LINE_BORDER: [f32; 4] = [0.5, 0.5, 0.55, 0.3];
 pub const RYTHMO_LINE_BORDER_HOVER: [f32; 4] = [0.6, 0.6, 0.65, 0.5];
 pub const RYTHMO_LINE_BG_NORMAL: [f32; 4] = [0.08, 0.08, 0.10, 0.3];
@@ -99,7 +99,7 @@ pub const RYTHMO_RULER_HEIGHT: f32 = 14.0;
 pub const RYTHMO_PIXELS_PER_FRAME: f32 = 4.0;
 pub const RYTHMO_NUM_SLOTS: f32 = 4.0;
 pub const RYTHMO_HANDLE_WIDTH: f32 = 6.0;
-pub const RYTHMO_PLAYHEAD_WIDTH: f32 = 2.0;
+pub const RYTHMO_PLAYHEAD_WIDTH: f32 = 3.0;
 pub const RYTHMO_CURSOR_WIDTH: f32 = 1.5;
 
 // -- Badge --

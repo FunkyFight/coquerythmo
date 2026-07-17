@@ -2,11 +2,12 @@ use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent
 use crate::i18n::t;
 
 pub const PROJECT_SETTINGS_W: f32 = 520.0;
-pub const PROJECT_SETTINGS_H: f32 = 270.0;
+pub const PROJECT_SETTINGS_H: f32 = 300.0;
 
 pub struct ProjectSettingsModal {
     pub instrumental_audio_path: String,
     pub highlight_read_word: bool,
+    pub scrolling_text_uses_character_color: bool,
     keyboard_focus: usize,
 }
 
@@ -17,6 +18,7 @@ pub enum ProjectSettingsModalResult {
     Save {
         instrumental_audio_path: Option<String>,
         highlight_read_word: bool,
+        scrolling_text_uses_character_color: bool,
     },
 }
 
@@ -30,10 +32,15 @@ pub fn card_rect(screen_w: f32, screen_h: f32) -> Rect {
 }
 
 impl ProjectSettingsModal {
-    pub fn new(path: Option<String>, highlight_read_word: bool) -> Self {
+    pub fn new(
+        path: Option<String>,
+        highlight_read_word: bool,
+        scrolling_text_uses_character_color: bool,
+    ) -> Self {
         Self {
             instrumental_audio_path: path.unwrap_or_default(),
             highlight_read_word,
+            scrolling_text_uses_character_color,
             keyboard_focus: 0,
         }
     }
@@ -55,7 +62,16 @@ impl ProjectSettingsModal {
                     t("accessibility.unchecked")
                 }
             ),
-            3 => t("settings.save").to_string(),
+            3 => format!(
+                "{}, {}",
+                t("project_settings.scrolling_text_character_color"),
+                if self.scrolling_text_uses_character_color {
+                    t("accessibility.checked")
+                } else {
+                    t("accessibility.unchecked")
+                }
+            ),
+            4 => t("settings.save").to_string(),
             _ => t("project_settings.close").to_string(),
         }
     }
@@ -71,9 +87,9 @@ impl ProjectSettingsModal {
             UiEvent::KeyInput { text } if text == "\x1b" => ProjectSettingsModalResult::Close,
             UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}" => {
                 self.keyboard_focus = if text == "\t" {
-                    (self.keyboard_focus + 1) % 5
+                    (self.keyboard_focus + 1) % 6
                 } else {
-                    (self.keyboard_focus + 4) % 5
+                    (self.keyboard_focus + 5) % 6
                 };
                 ProjectSettingsModalResult::Consumed
             }
@@ -89,21 +105,28 @@ impl ProjectSettingsModal {
                         ProjectSettingsModalResult::Consumed
                     }
                     3 => {
+                        self.scrolling_text_uses_character_color =
+                            !self.scrolling_text_uses_character_color;
+                        ProjectSettingsModalResult::Consumed
+                    }
+                    4 => {
                         let path = self.instrumental_audio_path.trim();
                         ProjectSettingsModalResult::Save {
                             instrumental_audio_path: (!path.is_empty()).then(|| path.to_string()),
                             highlight_read_word: self.highlight_read_word,
+                            scrolling_text_uses_character_color: self
+                                .scrolling_text_uses_character_color,
                         }
                     }
                     _ => ProjectSettingsModalResult::Close,
                 }
             }
             UiEvent::CursorUp | UiEvent::CursorLeft => {
-                self.keyboard_focus = (self.keyboard_focus + 4) % 5;
+                self.keyboard_focus = (self.keyboard_focus + 5) % 6;
                 ProjectSettingsModalResult::Consumed
             }
             UiEvent::CursorDown | UiEvent::CursorRight => {
-                self.keyboard_focus = (self.keyboard_focus + 1) % 5;
+                self.keyboard_focus = (self.keyboard_focus + 1) % 6;
                 ProjectSettingsModalResult::Consumed
             }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
@@ -127,12 +150,20 @@ impl ProjectSettingsModal {
                     return ProjectSettingsModalResult::Consumed;
                 }
 
+                if scrolling_text_color_rect(card).contains(*x, *y) {
+                    self.scrolling_text_uses_character_color =
+                        !self.scrolling_text_uses_character_color;
+                    return ProjectSettingsModalResult::Consumed;
+                }
+
                 let save_rect = save_rect(card);
                 if save_rect.contains(*x, *y) {
                     let path = self.instrumental_audio_path.trim();
                     return ProjectSettingsModalResult::Save {
                         instrumental_audio_path: (!path.is_empty()).then(|| path.to_string()),
                         highlight_read_word: self.highlight_read_word,
+                        scrolling_text_uses_character_color: self
+                            .scrolling_text_uses_character_color,
                     };
                 }
 
@@ -276,6 +307,38 @@ impl ProjectSettingsModal {
             color_override: None,
             font_family_override: None,
         });
+        let character_color = scrolling_text_color_rect(card);
+        push_quad(
+            overlay_quads,
+            Rect {
+                width: 20.0,
+                height: 20.0,
+                ..character_color
+            },
+            if self.scrolling_text_uses_character_color {
+                [0.90, 0.72, 0.12, 1.0]
+            } else {
+                [0.08, 0.08, 0.10, 1.0]
+            },
+            [0.45, 0.45, 0.52, 0.8],
+            1.0,
+            4.0,
+        );
+        labels.push(LabelInfo {
+            text: t("project_settings.scrolling_text_character_color"),
+            bounds: Rect {
+                x: character_color.x + 30.0,
+                width: character_color.width - 30.0,
+                ..character_color
+            },
+            h_align: HAlign::Left,
+            v_align: VAlign::Center,
+            overflow: Overflow::Ellipsis,
+            padding: 0.0,
+            font_size_override: Some(12.0),
+            color_override: None,
+            font_family_override: None,
+        });
         let save = save_rect(card);
         push_quad(
             overlay_quads,
@@ -304,7 +367,8 @@ impl ProjectSettingsModal {
             0 => browse,
             1 => clear,
             2 => highlight,
-            3 => save,
+            3 => character_color,
+            4 => save,
             _ => close,
         };
         focus_outline(overlay_quads, focus_rect);
@@ -342,6 +406,15 @@ fn highlight_word_rect(card: Rect) -> Rect {
     Rect {
         x: card.x + 22.0,
         y: card.y + 170.0,
+        width: card.width - 44.0,
+        height: 20.0,
+    }
+}
+
+fn scrolling_text_color_rect(card: Rect) -> Rect {
+    Rect {
+        x: card.x + 22.0,
+        y: card.y + 202.0,
         width: card.width - 44.0,
         height: 20.0,
     }

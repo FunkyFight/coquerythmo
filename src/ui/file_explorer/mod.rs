@@ -490,16 +490,14 @@ impl FileExplorerModal {
             }
             UiEvent::FocusNext | UiEvent::FocusPrevious => {
                 self.overwrite_focus_replace = !self.overwrite_focus_replace;
-                FileExplorerResult::Accessibility(
-                    crate::accessibility::AccessibilityEvent::Focus {
-                        label: if self.overwrite_focus_replace {
-                            t("file_explorer.overwrite.confirm").to_string()
-                        } else {
-                            t("file_explorer.cancel").to_string()
-                        },
-                        role: "button".to_string(),
+                FileExplorerResult::Accessibility(crate::accessibility::AccessibilityEvent::Focus {
+                    label: if self.overwrite_focus_replace {
+                        t("file_explorer.overwrite.confirm").to_string()
+                    } else {
+                        t("file_explorer.cancel").to_string()
                     },
-                )
+                    role: "button".to_string(),
+                })
             }
             UiEvent::Activate => {
                 if self.overwrite_focus_replace {

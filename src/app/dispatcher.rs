@@ -54,7 +54,16 @@ pub(crate) fn handle_file_picker_selected(
             let path = path.to_string_lossy().into_owned();
             state.set_project_instrumental_audio_path(path.clone());
             let highlight_read_word = state.project_session.project.settings().highlight_read_word;
-            state.save_project_settings(Some(path), highlight_read_word);
+            let scrolling_text_uses_character_color = state
+                .project_session
+                .project
+                .settings()
+                .scrolling_text_uses_character_color;
+            state.save_project_settings(
+                Some(path),
+                highlight_read_word,
+                scrolling_text_uses_character_color,
+            );
             state.close_project_settings_modal();
         }
         FilePickerIntent::LanguageInstrumentalAudio { language_id } => {
@@ -101,25 +110,95 @@ pub(crate) fn handle_file_picker_selected(
 }
 
 impl CommandDispatcher {
-    pub(crate) fn announce_shortcut(action: &UiAction, shortcut_label: &str, state: &State) {
-        state.announce_accessibility(crate::accessibility::event_for_keyboard_shortcut(
-            action,
-            shortcut_label,
-        ));
+    pub(crate) fn announce_shortcut(action: &UiAction, state: &State) {
+        if let Some(event) = crate::accessibility::event_for_keyboard_shortcut(action) {
+            state.announce_shortcut_accessibility(event);
+        }
     }
 
     pub(crate) fn dispatch_shortcut(
         action: UiAction,
-        shortcut_label: &str,
         state: &mut State,
         elwt: &EventLoopWindowTarget<AppEvent>,
     ) -> bool {
-        // `dispatch` already announces semantically named actions. Only emit
-        // the automatic key-chord fallback for commands not present there.
-        if crate::accessibility::event_for_action(&action).is_none() {
-            Self::announce_shortcut(&action, shortcut_label, state);
+        // Pan is driven by holding Q/D. The key itself stays silent so
+        // continuous panning does not flood the speech output.
+        if matches!(&action, UiAction::BeginKeyboardPan { .. }) {
+            return Self::dispatch_inner(action, state, elwt, false);
         }
-        Self::dispatch(action, state, elwt)
+        let navigates_lines = matches!(&action, UiAction::NavigateLines { .. });
+        let container_title = match &action {
+            UiAction::OpenRecentProjects => Some(crate::i18n::t("menu.project.recent")),
+            UiAction::OpenLanguages => Some(crate::i18n::t("languages.title")),
+            UiAction::OpenDropdown(crate::ui::primitives::ToolbarDropdown::Respirations) => {
+                Some(crate::i18n::t("toolbar.respirations"))
+            }
+            UiAction::OpenDropdown(crate::ui::primitives::ToolbarDropdown::Reactions) => {
+                Some(crate::i18n::t("toolbar.reactions"))
+            }
+            UiAction::OpenProxyModal => Some(crate::i18n::t("menu.tools.create_proxy")),
+            UiAction::OpenSettings => Some(crate::i18n::t("settings.title")),
+            UiAction::OpenProjectSettings => Some(crate::i18n::t("project_settings.title")),
+            UiAction::OpenExportModal => Some(crate::i18n::t("export_modal.title")),
+            UiAction::OpenRenameCharacterModal => {
+                Some(crate::i18n::t("rename_character_modal.title"))
+            }
+            UiAction::ShowStudioWarning => Some(crate::i18n::t("studio_warning.title")),
+            UiAction::OpenLinesPanel => Some(crate::i18n::t("panel.lines.title")),
+            UiAction::OpenRolesPanel => Some(crate::i18n::t("panel.roles.title")),
+            _ => None,
+        };
+        let toggles_toolbar_list = matches!(&action, UiAction::OpenDropdown(_));
+        let save_prompt_was_open = state.is_save_prompt_open();
+        let should_exit = Self::dispatch_inner(action.clone(), state, elwt, false);
+        let opened_save_prompt = !save_prompt_was_open && state.is_save_prompt_open();
+        let container_first_label = match &action {
+            UiAction::OpenRecentProjects => state.recent_projects_first_accessibility_label(),
+            UiAction::OpenLanguages => state.language_modal_focus_label(),
+            UiAction::OpenDropdown(dropdown) => {
+                state.toolbar_dropdown_first_accessibility_label(dropdown)
+            }
+            UiAction::OpenProxyModal => state.proxy_modal_focus_label(),
+            UiAction::OpenSettings => state.settings_modal_focus_label(),
+            UiAction::OpenProjectSettings => state.project_settings_modal_focus_label(),
+            UiAction::OpenExportModal => state.export_modal_focus_label(),
+            UiAction::OpenRenameCharacterModal => state.rename_character_modal_focus_label(),
+            UiAction::ShowStudioWarning => state.studio_warning_modal_focus_label(),
+            UiAction::OpenLinesPanel | UiAction::OpenRolesPanel => Some(
+                state
+                    .ui_shell
+                    .ui
+                    .side_panel_first_accessibility_label(&state.project_session.project),
+            ),
+            _ => None,
+        };
+        if navigates_lines {
+            if let Some(label) = state.selected_line_accessibility_label() {
+                state.announce_shortcut_accessibility(
+                    crate::accessibility::AccessibilityEvent::Selection { label },
+                );
+            }
+        } else if opened_save_prompt {
+            // The save prompt announced its title and initial Cancel button.
+        } else if container_title.is_some() && container_first_label.is_some() {
+            // The opening function already emitted one atomic announcement:
+            // container name followed by its first focused item.
+        } else if toggles_toolbar_list {
+            // Closing the toolbar list already emitted its collapsed state.
+        } else if matches!(&action, UiAction::StartEditingSelectedCharacter)
+            && state.selected_line_accessibility_label().is_none()
+        {
+            state.announce_shortcut_accessibility(
+                crate::accessibility::AccessibilityEvent::Error {
+                    message: crate::i18n::t("accessibility.no_line_selected").to_string(),
+                },
+            );
+        } else {
+            // Announce after the action so a toast, selection change or modal
+            // opening cannot replace the shortcut before NVDA receives it.
+            Self::announce_shortcut(&action, state);
+        }
+        should_exit
     }
 
     pub(crate) fn dispatch(
@@ -127,11 +206,32 @@ impl CommandDispatcher {
         state: &mut State,
         elwt: &EventLoopWindowTarget<AppEvent>,
     ) -> bool {
-        if let Some(event) = crate::accessibility::event_for_action(&action) {
-            state.announce_accessibility(event);
+        Self::dispatch_inner(action, state, elwt, true)
+    }
+
+    fn dispatch_inner(
+        action: UiAction,
+        state: &mut State,
+        elwt: &EventLoopWindowTarget<AppEvent>,
+        announce_action: bool,
+    ) -> bool {
+        if announce_action {
+            if let Some(event) = crate::accessibility::event_for_action(&action) {
+                if state.is_ctrl_held() {
+                    state.announce_shortcut_accessibility(event);
+                } else {
+                    state.announce_accessibility(event);
+                }
+            }
         }
         match action {
-            UiAction::Accessibility(event) => state.announce_accessibility(event),
+            UiAction::Accessibility(event) => {
+                if state.is_ctrl_held() {
+                    state.announce_shortcut_accessibility(event);
+                } else {
+                    state.announce_accessibility(event);
+                }
+            }
             UiAction::CloseApp => {
                 if state.is_project_save_in_progress() {
                     state.show_toast(i18n::t("toast.close_blocked_saving"), 5.0);
@@ -310,6 +410,12 @@ impl CommandDispatcher {
             UiAction::SelectLineAtPlayhead => {
                 state.select_line_at_playhead();
             }
+            UiAction::NavigateLines { direction } => {
+                state.navigate_lines(direction);
+            }
+            UiAction::ClearLineSelection => {
+                state.clear_line_selection();
+            }
             UiAction::SetSelectedLineStartAtPlayhead => {
                 state.set_selected_line_start_at_playhead();
             }
@@ -386,6 +492,12 @@ impl CommandDispatcher {
             UiAction::OpenLinesPanel => state.open_lines_panel(),
             UiAction::OpenRolesPanel => state.open_roles_panel(),
             UiAction::CloseSidePanel => state.close_side_panel(),
+            UiAction::DeleteSidePanelLines { line_ids } => {
+                state.delete_lines_by_ids(line_ids);
+            }
+            UiAction::CopySidePanelLines { line_ids, cut } => {
+                state.copy_lines_by_ids(line_ids, cut);
+            }
             UiAction::SetLinesRole {
                 line_ids,
                 name,
@@ -598,6 +710,15 @@ impl CommandDispatcher {
                 state.set_export_progress(Some(progress_for_ui));
                 state.set_export_cancel(Some(cancel));
                 state.watch_proxy_job(source, rx);
+                state.announce_shortcut_accessibility(
+                    crate::accessibility::AccessibilityEvent::Opened {
+                        label: format!(
+                            "{} {}",
+                            i18n::t("progress.proxy"),
+                            i18n::t("progress.cancel_hint")
+                        ),
+                    },
+                );
             }
             UiAction::StartExport {
                 fps,
@@ -709,6 +830,15 @@ impl CommandDispatcher {
                     state.set_export_progress(Some(progress_for_ui));
                     state.set_export_cancel(Some(cancel));
                     state.watch_export_job(rx);
+                    state.announce_shortcut_accessibility(
+                        crate::accessibility::AccessibilityEvent::Opened {
+                            label: format!(
+                                "{} {}",
+                                i18n::t("progress.exporting"),
+                                i18n::t("progress.cancel_hint")
+                            ),
+                        },
+                    );
                 } else {
                     log::warn!("No video loaded — cannot export MP4");
                 }
@@ -799,7 +929,7 @@ impl CommandDispatcher {
                 state.rebuild_topbar_for_network();
             }
             UiAction::OpenRecentProjects => {
-                state.ui_shell.ui.open_recent_projects();
+                state.open_recent_projects();
             }
             UiAction::ToggleKaraokeForSelection => {
                 state.toggle_karaoke_for_selection();
@@ -947,8 +1077,13 @@ impl CommandDispatcher {
             UiAction::SaveProjectSettings {
                 instrumental_audio_path,
                 highlight_read_word,
+                scrolling_text_uses_character_color,
             } => {
-                state.save_project_settings(instrumental_audio_path, highlight_read_word);
+                state.save_project_settings(
+                    instrumental_audio_path,
+                    highlight_read_word,
+                    scrolling_text_uses_character_color,
+                );
             }
             UiAction::ToggleActiveAudio => {
                 state.toggle_active_audio();

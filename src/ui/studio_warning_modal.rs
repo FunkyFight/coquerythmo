@@ -27,6 +27,14 @@ impl StudioWarningModal {
         }
     }
 
+    pub fn keyboard_focus_label(&self) -> String {
+        if self.focused_confirm {
+            t("studio_warning.confirm").to_string()
+        } else {
+            t("studio_warning.cancel").to_string()
+        }
+    }
+
     fn card_rect(sw: f32, sh: f32) -> Rect {
         Rect {
             x: (sw - CARD_W) / 2.0,

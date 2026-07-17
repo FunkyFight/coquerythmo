@@ -29,8 +29,9 @@ use std::cell::{Ref, RefCell};
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 
-const PLAYHEAD_WIDTH: f32 = 2.0;
-const PLAYHEAD_COLOR: [f32; 4] = [0.85, 0.15, 0.15, 1.0];
+const PLAYHEAD_WIDTH: f32 = 3.0;
+const PLAYHEAD_COLOR: [f32; 4] = [1.0, 0.02, 0.05, 1.0];
+const PLAYHEAD_GLOW: [f32; 4] = [1.0, 0.0, 0.03, 0.55];
 
 const HANDLE_COLOR: [f32; 4] = [0.9, 0.9, 0.95, 0.8];
 const LINE_BORDER: [f32; 4] = [0.5, 0.5, 0.55, 0.3];
@@ -473,7 +474,7 @@ mod tests {
         assert!(
             (karaoke_body.height
                 - rythmo_layout::karaoke_track_body_height(active_normal_body_h, 1.0))
-                .abs()
+            .abs()
                 < 0.01
         );
         assert!((karaoke_rect.height - active_normal_body_h).abs() < 0.01);
@@ -1217,8 +1218,7 @@ pub fn render_rythmo_base(
     // Ticks removed from UI (kept in CPU/GPU export renderers)
 
     let playhead_x = zone.x + (zone.width - PLAYHEAD_WIDTH) / 2.0;
-    let skip_ranges =
-        active_karaoke_skip_ranges(project, scene, zone, karaoke_preview, fps, state);
+    let skip_ranges = active_karaoke_skip_ranges(project, scene, zone, karaoke_preview, fps, state);
     push_playhead_segments(
         &mut quads,
         playhead_x,
@@ -1226,8 +1226,8 @@ pub fn render_rythmo_base(
         zone.y,
         zone.height,
         PLAYHEAD_COLOR,
-        [0.85, 0.15, 0.15, 0.3],
-        4.0,
+        PLAYHEAD_GLOW,
+        7.0,
         &skip_ranges,
     );
 
@@ -1301,8 +1301,11 @@ fn push_plain_rythmo_text(
     line_id: u64,
     text: String,
     dest_rect: Rect,
+    tint: [f32; 4],
 ) {
-    stretched.push(StretchedText::new(line_id, text, dest_rect));
+    let mut stretched_text = StretchedText::new(line_id, text, dest_rect);
+    stretched_text.tint = tint;
+    stretched.push(stretched_text);
 }
 
 fn push_read_word_rythmo_text(
@@ -1312,14 +1315,15 @@ fn push_read_word_rythmo_text(
     dest_rect: Rect,
     segment_start: usize,
     highlight_end: Option<usize>,
+    base_tint: [f32; 4],
 ) {
     let char_count = text.chars().count();
     let Some(highlight_end) = highlight_end else {
-        push_plain_rythmo_text(stretched, line_id, text, dest_rect);
+        push_plain_rythmo_text(stretched, line_id, text, dest_rect, base_tint);
         return;
     };
     if char_count == 0 || highlight_end <= segment_start {
-        push_plain_rythmo_text(stretched, line_id, text, dest_rect);
+        push_plain_rythmo_text(stretched, line_id, text, dest_rect, base_tint);
         return;
     }
     if highlight_end >= segment_start + char_count {
@@ -1328,7 +1332,7 @@ fn push_read_word_rythmo_text(
         stretched.push(highlighted);
         return;
     }
-    push_plain_rythmo_text(stretched, line_id, text.clone(), dest_rect);
+    push_plain_rythmo_text(stretched, line_id, text.clone(), dest_rect, base_tint);
     let ratio = (highlight_end - segment_start) as f32 / char_count as f32;
     let mut overlay = StretchedText::new(line_id, text, dest_rect);
     overlay.draw_rect.width *= ratio;
@@ -2345,26 +2349,25 @@ pub fn render_lines<'a>(
         };
         let karaoke_active = line.karaoke_active(current_frame);
         let karaoke_playback = karaoke_line_uses_playback_mode(&layout_ctx, line, karaoke_preview);
+        // Playback never renders karaoke as an ordinary scrolling line.
+        if karaoke_preview && line.karaoke && !karaoke_playback {
+            continue;
+        }
         let karaoke_count_in = karaoke_playback
             && karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
         let karaoke_upcoming_stack =
             karaoke_playback && karaoke_index.upcoming_stack_visible(line, current_frame);
 
-        if karaoke_playback
-            && !karaoke_active
-            && !karaoke_count_in
-            && !karaoke_upcoming_stack
-        {
+        if karaoke_playback && !karaoke_active && !karaoke_count_in && !karaoke_upcoming_stack {
             continue;
         }
 
-        let centered_karaoke_width = if karaoke_playback
-            && (karaoke_active || karaoke_count_in || karaoke_upcoming_stack)
-        {
-            Some(state.karaoke_ui_text_width_for_render(line))
-        } else {
-            None
-        };
+        let centered_karaoke_width =
+            if karaoke_playback && (karaoke_active || karaoke_count_in || karaoke_upcoming_stack) {
+                Some(state.karaoke_ui_text_width_for_render(line))
+            } else {
+                None
+            };
         let r = if karaoke_playback {
             karaoke_preview_line_rect_with_state(
                 &layout_ctx,
@@ -2524,6 +2527,17 @@ pub fn render_lines<'a>(
             });
         }
 
+        let scrolling_text_tint = if project.settings().scrolling_text_uses_character_color {
+            [
+                line.character_color[0].clamp(0.0, 1.0),
+                line.character_color[1].clamp(0.0, 1.0),
+                line.character_color[2].clamp(0.0, 1.0),
+                1.0,
+            ]
+        } else {
+            [1.0; 4]
+        };
+
         // Stretched text or special rendering for breath arrows
         let mut cursor_segments = None;
         if !line.text.is_empty() {
@@ -2579,6 +2593,7 @@ pub fn render_lines<'a>(
                                 },
                                 prev_break,
                                 read_highlight_end,
+                                scrolling_text_tint,
                             );
                         }
                         seg_x += seg_w;
@@ -2598,6 +2613,7 @@ pub fn render_lines<'a>(
                         },
                         0,
                         read_highlight_end,
+                        scrolling_text_tint,
                     );
                 }
             }
@@ -3186,11 +3202,7 @@ pub fn render_autocomplete<'a>(
         Some(l) => l,
         None => return,
     };
-    if line.character_name.is_empty() {
-        return;
-    }
-
-    let suggestions = project.autocomplete(&line.character_name);
+    let suggestions = project.known_characters();
     if suggestions.is_empty() {
         return;
     }
@@ -3201,7 +3213,11 @@ pub fn render_autocomplete<'a>(
     let mut dropdown_y = r.y + r.height + 2.0;
     let item_h = 20.0;
     let dropdown_w = 140.0;
-    let dropdown_h = suggestions.len() as f32 * item_h;
+    const VISIBLE_ROWS: usize = 8;
+    let visible_rows = suggestions.len().min(VISIBLE_ROWS);
+    let max_scroll = suggestions.len().saturating_sub(visible_rows);
+    let scroll = state.autocomplete_scroll.min(max_scroll);
+    let dropdown_h = visible_rows as f32 * item_h;
 
     // Background
     quads.push(QuadInstance {
@@ -3218,13 +3234,17 @@ pub fn render_autocomplete<'a>(
         _padding: [0.0; 2],
     });
 
-    for (i, suggestion) in suggestions.iter().enumerate() {
+    for (i, suggestion) in suggestions
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_rows)
+    {
         let is_selected = state.autocomplete_index == Some(i);
         let is_hovered = state.autocomplete_hover == Some(i);
 
         // Highlight
         if is_selected || is_hovered {
-            let alpha = if is_selected { 0.15 } else { 0.08 };
             quads.push(QuadInstance {
                 rect: [
                     dropdown_x + 2.0,
@@ -3232,8 +3252,8 @@ pub fn render_autocomplete<'a>(
                     dropdown_w - 4.0,
                     item_h - 2.0,
                 ],
-                color: [1.0, 1.0, 1.0, alpha],
-                color_bottom: [1.0, 1.0, 1.0, alpha],
+                color: [0.18, 0.52, 1.0, if is_selected { 0.75 } else { 0.45 }],
+                color_bottom: [0.10, 0.38, 0.86, if is_selected { 0.75 } else { 0.45 }],
                 border_color: [0.0; 4],
                 border_width: 0.0,
                 border_radius: 2.0,
@@ -3277,6 +3297,31 @@ pub fn render_autocomplete<'a>(
             font_family_override: None,
         });
         dropdown_y += item_h;
+    }
+
+    if max_scroll > 0 {
+        let track_x = dropdown_x + dropdown_w - 5.0;
+        let thumb_h = (dropdown_h * visible_rows as f32 / suggestions.len() as f32).max(12.0);
+        let thumb_y =
+            r.y + r.height + 2.0 + (dropdown_h - thumb_h) * scroll as f32 / max_scroll as f32;
+        for (y, height, color) in [
+            (r.y + r.height + 2.0, dropdown_h, [0.04, 0.07, 0.12, 0.9]),
+            (thumb_y, thumb_h, [0.30, 0.62, 1.0, 0.95]),
+        ] {
+            quads.push(QuadInstance {
+                rect: [track_x, y, 3.0, height],
+                color,
+                color_bottom: color,
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 1.5,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
+        }
     }
 }
 
@@ -3462,14 +3507,19 @@ pub fn autocomplete_hit(
         if let Some(line) = project.lines().find(|l| l.id == line_id) {
             let br = badge_rect_for_line(project, line, current_frame, zone);
             let lr = line_rect(project, line, current_frame, zone);
-            let suggestions = project.autocomplete(&line.character_name);
+            let suggestions = project.known_characters();
             if !suggestions.is_empty() {
                 let dropdown_x = br.x;
                 let mut dropdown_y = lr.y + lr.height + 2.0;
                 let item_h = 20.0;
                 let dropdown_w = 140.0;
 
-                for suggestion in &suggestions {
+                const VISIBLE_ROWS: usize = 8;
+                let visible_rows = suggestions.len().min(VISIBLE_ROWS);
+                let scroll = state
+                    .autocomplete_scroll
+                    .min(suggestions.len().saturating_sub(visible_rows));
+                for suggestion in suggestions.iter().skip(scroll).take(visible_rows) {
                     let item_rect = Rect {
                         x: dropdown_x,
                         y: dropdown_y,
@@ -4112,7 +4162,7 @@ fn render_menu_scrollbar(quads: &mut Vec<QuadInstance>, rect: Rect, scroll: f32,
 fn autocomplete_hover_index(ctx: &RythmoCtx, state: &RythmoState, x: f32, y: f32) -> Option<usize> {
     let line_id = state.editing_character?;
     let line = ctx.project.get_line(line_id)?;
-    let suggestions = ctx.project.autocomplete(&line.character_name);
+    let suggestions = ctx.project.known_characters();
     if suggestions.is_empty() {
         return None;
     }
@@ -4124,8 +4174,18 @@ fn autocomplete_hover_index(ctx: &RythmoCtx, state: &RythmoState, x: f32, y: f32
     let item_h = 20.0;
     let dropdown_w = 140.0;
 
-    for (i, _) in suggestions.iter().enumerate() {
-        let iy = dropdown_y + i as f32 * item_h;
+    const VISIBLE_ROWS: usize = 8;
+    let visible_rows = suggestions.len().min(VISIBLE_ROWS);
+    let scroll = state
+        .autocomplete_scroll
+        .min(suggestions.len().saturating_sub(visible_rows));
+    for (i, _) in suggestions
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_rows)
+    {
+        let iy = dropdown_y + (i - scroll) as f32 * item_h;
         let item_rect = Rect {
             x: dropdown_x,
             y: iy,
@@ -4182,10 +4242,7 @@ pub fn render_studio_rythmo<'a>(
     // Studio mode: render with proportions scaled to the same height chosen above.
     let karaoke_tracks = rythmo_layout::karaoke_tracks(project);
     let scale = zone.height
-        / studio_reference_height_from_track_flags(
-            karaoke_index.used_tracks(),
-            &karaoke_tracks,
-        );
+        / studio_reference_height_from_track_flags(karaoke_index.used_tracks(), &karaoke_tracks);
 
     // Readable sizes (increase text)
     let ruler_h = 20.0 * scale;
@@ -4224,8 +4281,9 @@ pub fn render_studio_rythmo<'a>(
     let tick_long = 10.0 * scale;
     let tick_short = 5.0 * scale;
     let tick_w = 1.0 * scale;
-    let playhead_w = 2.0 * scale;
+    let playhead_w = PLAYHEAD_WIDTH * scale;
     let center_x = zone.x + zone.width / 2.0;
+    let playhead_x = center_x;
     let karaoke_count_in_frame_count = karaoke_count_in_frames(fps);
 
     // Ruler ticks (alternating long/short — export style)
@@ -4269,16 +4327,15 @@ pub fn render_studio_rythmo<'a>(
         common_scene.active_karaoke_skip_ranges(ruler_h, slot_header_h, badge_gap, scale);
 
     // Playhead, split around active karaoke lines.
-    let ph_c = [217.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0];
     push_playhead_segments(
         quads,
-        center_x - playhead_w / 2.0,
+        playhead_x - playhead_w / 2.0,
         playhead_w,
         zone.y,
         zone.height,
-        ph_c,
-        [0.0; 4],
-        0.0,
+        PLAYHEAD_COLOR,
+        PLAYHEAD_GLOW,
+        7.0 * scale,
         &studio_skip_ranges,
     );
 
@@ -4425,6 +4482,17 @@ pub fn render_studio_rythmo<'a>(
             None
         };
 
+        let scrolling_text_tint = if project.settings().scrolling_text_uses_character_color {
+            [
+                line.character_color[0].clamp(0.0, 1.0),
+                line.character_color[1].clamp(0.0, 1.0),
+                line.character_color[2].clamp(0.0, 1.0),
+                1.0,
+            ]
+        } else {
+            [1.0; 4]
+        };
+
         // Stretched text or breath arrows
         if !line.text.is_empty() && line.text != "\u{2191}" && line.text != "\u{2193}" {
             if line.karaoke {
@@ -4471,6 +4539,7 @@ pub fn render_studio_rythmo<'a>(
                                 },
                                 prev_break,
                                 read_highlight_end,
+                                scrolling_text_tint,
                             );
                         }
                         seg_x += seg_w;
@@ -4489,6 +4558,7 @@ pub fn render_studio_rythmo<'a>(
                         },
                         0,
                         read_highlight_end,
+                        scrolling_text_tint,
                     );
                 }
             }

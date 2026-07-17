@@ -23,7 +23,7 @@ use resvg::tiny_skia::{self, Pixmap};
 
 // Local constants not shared with the UI
 const BASE_TICK_WIDTH: f32 = 1.5;
-const BASE_PLAYHEAD_WIDTH: f32 = 2.0;
+const BASE_PLAYHEAD_WIDTH: f32 = 3.0;
 const MAX_RYTHMO_TEXT_CACHE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_RYTHMO_TEXT_CACHE_ENTRIES: usize = 512;
 
@@ -44,12 +44,12 @@ fn blit_playhead_segments(
     let mut y = 0.0;
     for (skip_start, skip_end) in ranges {
         if skip_start > y {
-            blit_rect(pixmap, x, y, width, skip_start - y, [217, 38, 38, 255]);
+            blit_rect(pixmap, x, y, width, skip_start - y, [255, 5, 13, 255]);
         }
         y = y.max(skip_end);
     }
     if y < height {
-        blit_rect(pixmap, x, y, width, height - y, [217, 38, 38, 255]);
+        blit_rect(pixmap, x, y, width, height - y, [255, 5, 13, 255]);
     }
 }
 
@@ -382,30 +382,6 @@ impl CpuRenderer {
         }
     }
 
-    /// Render vector rythmo text at final size and blit it without horizontal resampling.
-    fn blit_rythmo_text(
-        &mut self,
-        pixmap: &mut Pixmap,
-        text: &str,
-        x: f32,
-        y: f32,
-        dest_w: f32,
-        dest_h: f32,
-        font_size: f32,
-    ) {
-        self.blit_rythmo_text_tinted_clipped(
-            pixmap,
-            text,
-            x,
-            y,
-            dest_w,
-            dest_h,
-            font_size,
-            [255, 255, 255],
-            1.0,
-        );
-    }
-
     fn blit_read_word_text(
         &mut self,
         pixmap: &mut Pixmap,
@@ -417,19 +393,26 @@ impl CpuRenderer {
         font_size: f32,
         segment_start: usize,
         highlight_end: Option<usize>,
+        base_tint: [u8; 3],
     ) {
         let count = text.chars().count();
         let Some(highlight_end) = highlight_end else {
-            self.blit_rythmo_text(pixmap, text, x, y, dest_w, dest_h, font_size);
+            self.blit_rythmo_text_tinted_clipped(
+                pixmap, text, x, y, dest_w, dest_h, font_size, base_tint, 1.0,
+            );
             return;
         };
         if count == 0 || highlight_end <= segment_start {
-            self.blit_rythmo_text(pixmap, text, x, y, dest_w, dest_h, font_size);
+            self.blit_rythmo_text_tinted_clipped(
+                pixmap, text, x, y, dest_w, dest_h, font_size, base_tint, 1.0,
+            );
             return;
         }
         let end_ratio = ((highlight_end - segment_start) as f32 / count as f32).min(1.0);
         if end_ratio < 1.0 {
-            self.blit_rythmo_text(pixmap, text, x, y, dest_w, dest_h, font_size);
+            self.blit_rythmo_text_tinted_clipped(
+                pixmap, text, x, y, dest_w, dest_h, font_size, base_tint, 1.0,
+            );
         }
         self.blit_rythmo_text_tinted_clipped(
             pixmap,
@@ -774,6 +757,16 @@ impl CpuRenderer {
                 } else {
                     None
                 };
+                let scrolling_text_tint = if project.settings().scrolling_text_uses_character_color
+                {
+                    [
+                        color_channel(line.character_color[0]),
+                        color_channel(line.character_color[1]),
+                        color_channel(line.character_color[2]),
+                    ]
+                } else {
+                    [255; 3]
+                };
                 if line.karaoke {
                     let karaoke_font_size =
                         font_size * constants::KARAOKE_TEXT_FONT_SCALE * karaoke_text_scale;
@@ -839,6 +832,7 @@ impl CpuRenderer {
                                     font_size,
                                     prev_break,
                                     read_highlight_end,
+                                    scrolling_text_tint,
                                 );
                             }
                             seg_x += seg_w;
@@ -855,6 +849,7 @@ impl CpuRenderer {
                             font_size,
                             0,
                             read_highlight_end,
+                            scrolling_text_tint,
                         );
                     }
                 }

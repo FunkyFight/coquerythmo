@@ -14,7 +14,7 @@ use super::audio::{
     instrumental_output_path, mux_instrumental_audio, mux_source_audio, temp_video_path,
 };
 use super::capabilities::{
-    check_ffmpeg, experimental_cuda_rgba_enabled, has_cuda_filter_graph, has_nvenc, probe,
+    check_ffmpeg, experimental_cuda_rgba_enabled, has_cuda_filter_graph, probe,
     probe_cuda_rgba_br_graph,
 };
 use super::ffmpeg::{
@@ -173,12 +173,15 @@ pub(super) fn export_baked_mp4(
 
     let capability_start = Instant::now();
     let use_cuda_graph = has_cuda_filter_graph();
-    let use_nvenc = use_cuda_graph || has_nvenc();
     log::info!(
         "Export ffmpeg capability checks completed in {:.2}ms",
         ms(capability_start.elapsed())
     );
-    let codec = if use_nvenc { "h264_nvenc" } else { "libx264" };
+    let codec = if use_cuda_graph {
+        "h264_nvenc"
+    } else {
+        "libx264"
+    };
     log::info!(
         "Using {} encoding, CUDA filter graph={}",
         codec,
@@ -250,7 +253,6 @@ pub(super) fn export_baked_mp4(
             &cuda_filter,
             ExportPipeline::Cuda,
             cuda_br_input,
-            true,
             fps,
             source_fps,
             br_scale,
@@ -281,7 +283,6 @@ pub(super) fn export_baked_mp4(
                 &cpu_filter,
                 ExportPipeline::Cpu,
                 BrInputFormat::Nv12,
-                use_nvenc,
                 fps,
                 source_fps,
                 br_scale,
@@ -308,7 +309,6 @@ pub(super) fn export_baked_mp4(
             &cpu_filter,
             ExportPipeline::Cpu,
             BrInputFormat::Nv12,
-            use_nvenc,
             fps,
             source_fps,
             br_scale,

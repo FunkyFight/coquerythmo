@@ -100,6 +100,33 @@ pub fn handle_rythmo_event(
         _ => {}
     }
 
+    // The persistent character list owns wheel input while it is open.
+    if let UiEvent::Scroll { x, y, delta, .. } = event {
+        if let Some(line_id) = state.editing_character {
+            if let Some(line) = ctx.project.get_line(line_id) {
+                let characters = ctx.project.known_characters();
+                let visible_rows = characters.len().min(8);
+                let max_scroll = characters.len().saturating_sub(visible_rows);
+                let badge = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone);
+                let line_rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
+                let list = Rect {
+                    x: badge.x,
+                    y: line_rect.y + line_rect.height + 2.0,
+                    width: 140.0,
+                    height: visible_rows as f32 * 20.0,
+                };
+                if max_scroll > 0 && list.contains(*x, *y) {
+                    if *delta > 0.0 {
+                        state.autocomplete_scroll = state.autocomplete_scroll.saturating_sub(1);
+                    } else {
+                        state.autocomplete_scroll = (state.autocomplete_scroll + 1).min(max_scroll);
+                    }
+                    return EventResponse::Consumed;
+                }
+            }
+        }
+    }
+
     // Autocomplete click has highest priority (before color picker eats it)
     if let UiEvent::MousePress { x, y } = event {
         if let Some((name, color)) =
@@ -187,6 +214,8 @@ pub fn handle_rythmo_event(
         UiEvent::CursorRight => handle_cursor_move(&ctx, state, 1, false),
         UiEvent::ShiftCursorLeft => handle_cursor_move(&ctx, state, -1, true),
         UiEvent::ShiftCursorRight => handle_cursor_move(&ctx, state, 1, true),
+        UiEvent::SelectWordLeft => handle_word_selection(&ctx, state, -1),
+        UiEvent::SelectWordRight => handle_word_selection(&ctx, state, 1),
         UiEvent::CursorUp => {
             if state.editing_line.is_some() || state.editing_note.is_some() {
                 // A line/note editor is single-line: Up/Down have no
@@ -198,12 +227,16 @@ pub fn handle_rythmo_event(
             }
         }
         UiEvent::CursorDown => {
-            if state.editing_line.is_some() || state.editing_note.is_some() {
+            if state.editing_line.is_some() {
+                reread_editing_line(&ctx, state)
+            } else if state.editing_note.is_some() {
                 EventResponse::Consumed
             } else {
                 handle_autocomplete_nav(&ctx, state, 1)
             }
         }
+        UiEvent::Home => handle_cursor_boundary(&ctx, state, false, false),
+        UiEvent::End => handle_cursor_boundary(&ctx, state, true, false),
         UiEvent::SelectAll => handle_select_all(&ctx, state),
         UiEvent::Copy => handle_copy(&ctx, state),
         UiEvent::Cut => handle_cut(&ctx, state),

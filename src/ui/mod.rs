@@ -440,8 +440,12 @@ impl Ui {
                     | UiEvent::CursorRight
                     | UiEvent::ShiftCursorLeft
                     | UiEvent::ShiftCursorRight
+                    | UiEvent::SelectWordLeft
+                    | UiEvent::SelectWordRight
                     | UiEvent::CursorUp
                     | UiEvent::CursorDown
+                    | UiEvent::Home
+                    | UiEvent::End
             )
         {
             let response = rythmo::handle_rythmo_event(
@@ -483,6 +487,17 @@ impl Ui {
             }
         }
 
+        // An open side-panel table is a keyboard focus scope of its own.
+        // Route its semantic navigation before the shell-wide focus ring so
+        // Tab, arrows, Enter, Space and Escape reach every table cell.
+        if let Some(panel) = self.layout.properties {
+            if self.side_panel.captures_keyboard_event(event) {
+                if let Some(response) = self.side_panel.handle_event(event, panel, project) {
+                    return response;
+                }
+            }
+        }
+
         match event {
             UiEvent::FocusNext => {
                 if let Some(node) = self.focus.focus_next() {
@@ -518,7 +533,11 @@ impl Ui {
             }
             UiEvent::KeyInput { text } if text == "\x1b" && self.focus.current_id().is_some() => {
                 self.focus.clear();
-                return EventResponse::Consumed;
+                return EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Activation {
+                        label: t("accessibility.focus_exited").to_string(),
+                    },
+                ));
             }
             _ => {}
         }
@@ -884,16 +903,27 @@ impl Ui {
     ) {
         self.close_automation();
         self.props_visible = true;
-        self.side_panel
-            .open_with_selection(kind, selected_line_ids);
+        self.side_panel.open_with_selection(kind, selected_line_ids);
         self.rebuild_layout();
         self.tooltip = None;
+    }
+
+    pub fn side_panel_first_accessibility_label(&self, project: &Project) -> String {
+        self.side_panel.first_accessibility_label(project)
+    }
+
+    pub fn side_panel_accessibility_title(&self) -> Option<&'static str> {
+        self.side_panel.accessibility_title()
     }
 
     pub fn close_side_panel(&mut self) {
         self.props_visible = false;
         self.side_panel.close();
         self.rebuild_layout();
+    }
+
+    pub fn side_panel_open(&self) -> bool {
+        self.side_panel.is_open()
     }
 
     pub fn take_selected_automation_node(&mut self) -> Option<u64> {
@@ -990,12 +1020,18 @@ impl Ui {
         deadline
     }
 
-    pub fn toggle_toolbar_dropdown(&mut self, dd: primitives::ToolbarDropdown) {
+    pub fn toggle_toolbar_dropdown(&mut self, dd: primitives::ToolbarDropdown) -> bool {
         if self.active_dropdown == Some(dd.clone()) {
             self.active_dropdown = None;
+            false
         } else {
             self.active_dropdown = Some(dd);
+            true
         }
+    }
+
+    pub fn toolbar_dropdown_is_open(&self, dd: &primitives::ToolbarDropdown) -> bool {
+        self.active_dropdown.as_ref() == Some(dd)
     }
 
     pub fn open_recent_projects(&mut self) {
@@ -1275,9 +1311,13 @@ impl Ui {
         &mut self,
         instrumental_audio_path: Option<String>,
         highlight_read_word: bool,
+        scrolling_text_uses_character_color: bool,
     ) {
-        self.modal_host
-            .open_project_settings(instrumental_audio_path, highlight_read_word);
+        self.modal_host.open_project_settings(
+            instrumental_audio_path,
+            highlight_read_word,
+            scrolling_text_uses_character_color,
+        );
     }
 
     pub fn set_project_instrumental_audio_path(&mut self, path: impl Into<String>) {
@@ -1528,7 +1568,6 @@ impl Ui {
             waveform_offset_frames,
             waveform_is_instrumental,
         );
-
         self.automation_editor.render(
             &self.layout.video_preview,
             &project.settings().automation,

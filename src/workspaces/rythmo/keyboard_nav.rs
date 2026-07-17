@@ -8,13 +8,13 @@ pub(crate) fn handle_autocomplete_nav(
     dir: i32,
 ) -> EventResponse {
     if let Some(line_id) = state.editing_character {
-        if let Some(line) = ctx.project.get_line(line_id) {
-            let suggestions = ctx.project.autocomplete(&line.character_name);
-            if suggestions.is_empty() {
+        if ctx.project.get_line(line_id).is_some() {
+            let characters = ctx.project.known_characters();
+            if characters.is_empty() {
                 return EventResponse::Ignored;
             }
 
-            let count = suggestions.len();
+            let count = characters.len();
             let new_idx = match state.autocomplete_index {
                 Some(idx) => {
                     let next = idx as i32 + dir;
@@ -33,12 +33,26 @@ pub(crate) fn handle_autocomplete_nav(
                 }
             };
             state.autocomplete_index = new_idx;
+            if let Some(index) = new_idx {
+                const VISIBLE_ROWS: usize = 8;
+                if index < state.autocomplete_scroll {
+                    state.autocomplete_scroll = index;
+                } else if index >= state.autocomplete_scroll + VISIBLE_ROWS {
+                    state.autocomplete_scroll = index + 1 - VISIBLE_ROWS;
+                }
+            }
             return new_idx
-                .and_then(|index| suggestions.get(index))
-                .map(|suggestion| {
+                .and_then(|index| characters.get(index).map(|character| (index, character)))
+                .map(|(index, character)| {
                     EventResponse::Action(UiAction::Accessibility(
                         crate::accessibility::AccessibilityEvent::Selection {
-                            label: suggestion.name.clone(),
+                            label: format!(
+                                "{}. {} {} / {}",
+                                character.name,
+                                t("accessibility.choice"),
+                                index + 1,
+                                count
+                            ),
                         },
                     ))
                 })
@@ -48,23 +62,37 @@ pub(crate) fn handle_autocomplete_nav(
     EventResponse::Ignored
 }
 
+pub(crate) fn selection_response(
+    input: &crate::ui::text_input::TextInputState,
+    text: &str,
+) -> EventResponse {
+    input
+        .selected_text(text)
+        .map(|label| {
+            EventResponse::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Selection { label },
+            ))
+        })
+        .unwrap_or(EventResponse::Consumed)
+}
+
 pub(crate) fn handle_select_all(ctx: &RythmoCtx, state: &mut RythmoState) -> EventResponse {
     if let Some(line_id) = state.editing_character {
         if let Some(line) = ctx.project.get_line(line_id) {
             state.char_input.select_all(&line.character_name);
-            return EventResponse::Consumed;
+            return selection_response(&state.char_input, &line.character_name);
         }
     }
     if let Some(line_id) = state.editing_line {
         if let Some(line) = ctx.project.get_line(line_id) {
             state.line_input.select_all(&line.text);
-            return EventResponse::Consumed;
+            return selection_response(&state.line_input, &line.text);
         }
     }
     if let Some(line_id) = state.editing_note {
         if let Some(line) = ctx.project.get_line(line_id) {
             state.note_input.select_all(&line.note);
-            return EventResponse::Consumed;
+            return selection_response(&state.note_input, &line.note);
         }
     }
     if ctx.project.lines().next().is_some() {
@@ -127,7 +155,7 @@ pub(crate) fn handle_cut(ctx: &RythmoCtx, state: &mut RythmoState) -> EventRespo
                 if let Some(crate::ui::text_input::TextInputAction::Changed(name)) =
                     state.char_input.handle_key(delete, &line.character_name)
                 {
-                    state.autocomplete_index = Some(0);
+                    state.autocomplete_index = None;
                     return EventResponse::Action(UiAction::SetClipboardAndUpdateCharacterName {
                         clipboard: text,
                         line_id,
@@ -178,7 +206,11 @@ pub(crate) fn handle_cursor_move(
                     state.char_input.move_right(&line.character_name);
                 }
             }
-            return EventResponse::Consumed;
+            return if shift {
+                selection_response(&state.char_input, &line.character_name)
+            } else {
+                EventResponse::Consumed
+            };
         }
     }
     if let Some(line_id) = state.editing_line {
@@ -196,7 +228,11 @@ pub(crate) fn handle_cursor_move(
                     state.line_input.move_right(&line.text);
                 }
             }
-            return EventResponse::Consumed;
+            return if shift {
+                selection_response(&state.line_input, &line.text)
+            } else {
+                EventResponse::Consumed
+            };
         }
     }
     if let Some(line_id) = state.editing_note {
@@ -213,6 +249,124 @@ pub(crate) fn handle_cursor_move(
                 } else {
                     state.note_input.move_right(&line.note);
                 }
+            }
+            return if shift {
+                selection_response(&state.note_input, &line.note)
+            } else {
+                EventResponse::Consumed
+            };
+        }
+    }
+    EventResponse::Ignored
+}
+
+pub(crate) fn handle_word_selection(
+    ctx: &RythmoCtx,
+    state: &mut RythmoState,
+    dir: i32,
+) -> EventResponse {
+    if let Some(line_id) = state.editing_character {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if dir < 0 {
+                state.char_input.move_word_left_shift(&line.character_name);
+            } else {
+                state.char_input.move_word_right_shift(&line.character_name);
+            }
+            return selection_response(&state.char_input, &line.character_name);
+        }
+    }
+    if let Some(line_id) = state.editing_line {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if dir < 0 {
+                state.line_input.move_word_left_shift(&line.text);
+            } else {
+                state.line_input.move_word_right_shift(&line.text);
+            }
+            return selection_response(&state.line_input, &line.text);
+        }
+    }
+    if let Some(line_id) = state.editing_note {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if dir < 0 {
+                state.note_input.move_word_left_shift(&line.note);
+            } else {
+                state.note_input.move_word_right_shift(&line.note);
+            }
+            return selection_response(&state.note_input, &line.note);
+        }
+    }
+    EventResponse::Ignored
+}
+
+fn editing_line_label(ctx: &RythmoCtx<'_>, line_id: u64) -> Option<String> {
+    let line = ctx.project.get_line(line_id)?;
+    let mut parts = Vec::new();
+    if !line.character_name.trim().is_empty() {
+        parts.push(line.character_name.clone());
+    }
+    if !line.text.trim().is_empty() {
+        parts.push(line.text.clone());
+    }
+    Some(if parts.is_empty() {
+        crate::i18n::t("accessibility.line").to_string()
+    } else {
+        parts.join(", ")
+    })
+}
+
+pub(crate) fn reread_editing_line(ctx: &RythmoCtx<'_>, state: &RythmoState) -> EventResponse {
+    state
+        .editing_line
+        .and_then(|line_id| editing_line_label(ctx, line_id))
+        .map(|label| {
+            EventResponse::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Selection { label },
+            ))
+        })
+        .unwrap_or(EventResponse::Consumed)
+}
+
+pub(crate) fn handle_cursor_boundary(
+    ctx: &RythmoCtx<'_>,
+    state: &mut RythmoState,
+    end: bool,
+    shift: bool,
+) -> EventResponse {
+    if let Some(line_id) = state.editing_line {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if end {
+                state.line_input.move_end(&line.text, shift);
+            } else {
+                state.line_input.move_home(shift);
+            }
+            return EventResponse::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Activation {
+                    label: crate::i18n::t(if end {
+                        "accessibility.caret_dialogue_end"
+                    } else {
+                        "accessibility.caret_dialogue_start"
+                    })
+                    .to_string(),
+                },
+            ));
+        }
+    }
+    if let Some(line_id) = state.editing_character {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if end {
+                state.char_input.move_end(&line.character_name, shift);
+            } else {
+                state.char_input.move_home(shift);
+            }
+            return EventResponse::Consumed;
+        }
+    }
+    if let Some(line_id) = state.editing_note {
+        if let Some(line) = ctx.project.get_line(line_id) {
+            if end {
+                state.note_input.move_end(&line.note, shift);
+            } else {
+                state.note_input.move_home(shift);
             }
             return EventResponse::Consumed;
         }

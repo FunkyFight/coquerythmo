@@ -42,8 +42,13 @@ pub struct SidePanel {
     edit_buffer: String,
     input: TextInputState,
     context_menu: Option<(f32, f32)>,
+    context_menu_index: usize,
     role_picker: Option<(f32, f32)>,
     role_picker_scroll: usize,
+    role_picker_index: usize,
+    keyboard_row: usize,
+    keyboard_column: usize,
+    keyboard_close: bool,
     color_role: Option<String>,
     color_picker: ColorPickerState,
     dragging_scrollbar: bool,
@@ -62,8 +67,13 @@ impl Default for SidePanel {
             edit_buffer: String::new(),
             input: TextInputState::new(),
             context_menu: None,
+            context_menu_index: 0,
             role_picker: None,
             role_picker_scroll: 0,
+            role_picker_index: 0,
+            keyboard_row: 0,
+            keyboard_column: 0,
+            keyboard_close: false,
             color_role: None,
             color_picker: ColorPickerState::new(),
             dragging_scrollbar: false,
@@ -79,8 +89,13 @@ impl SidePanel {
         self.selected.clear();
         self.cancel_edit();
         self.context_menu = None;
+        self.context_menu_index = 0;
         self.role_picker = None;
         self.role_picker_scroll = 0;
+        self.role_picker_index = 0;
+        self.keyboard_row = 0;
+        self.keyboard_column = 0;
+        self.keyboard_close = false;
         self.color_picker.close();
         self.color_role = None;
         self.dragging_scrollbar = false;
@@ -104,6 +119,56 @@ impl SidePanel {
 
     pub fn is_editing_text(&self) -> bool {
         self.editing.is_some() && self.input.active
+    }
+
+    pub fn captures_keyboard_event(&self, event: &UiEvent) -> bool {
+        self.kind.is_some()
+            && matches!(
+                event,
+                UiEvent::KeyInput { .. }
+                    | UiEvent::FocusNext
+                    | UiEvent::FocusPrevious
+                    | UiEvent::Activate
+                    | UiEvent::CursorLeft
+                    | UiEvent::CursorRight
+                    | UiEvent::ShiftCursorLeft
+                    | UiEvent::ShiftCursorRight
+                    | UiEvent::CursorUp
+                    | UiEvent::CursorDown
+                    | UiEvent::SelectWordLeft
+                    | UiEvent::SelectWordRight
+                    | UiEvent::Home
+                    | UiEvent::End
+                    | UiEvent::PageUp
+                    | UiEvent::PageDown
+                    | UiEvent::OpenContextMenu
+                    | UiEvent::Delete
+                    | UiEvent::SelectAll
+                    | UiEvent::Copy
+                    | UiEvent::Cut
+                    | UiEvent::UndoTextEdit
+            )
+    }
+
+    pub fn first_accessibility_label(&self, project: &Project) -> String {
+        match self.kind {
+            Some(SidePanelKind::Lines) => self
+                .line_cell_label(project, 0, 0)
+                .unwrap_or_else(|| t("panel.empty.lines").to_string()),
+            Some(SidePanelKind::Roles) => roles(project)
+                .first()
+                .map(|(name, _)| format!("{} : {name}", t("panel.name")))
+                .unwrap_or_else(|| t("panel.empty.roles").to_string()),
+            None => String::new(),
+        }
+    }
+
+    pub fn accessibility_title(&self) -> Option<&'static str> {
+        match self.kind {
+            Some(SidePanelKind::Lines) => Some(t("panel.lines.title")),
+            Some(SidePanelKind::Roles) => Some(t("panel.roles.title")),
+            None => None,
+        }
     }
 
     pub fn next_cursor_blink_deadline(&self) -> Option<std::time::Instant> {
@@ -130,6 +195,632 @@ impl SidePanel {
         self.color_picker.render(bg, textures, fg);
     }
 
+    fn line_cell_label(&self, project: &Project, index: usize, column: usize) -> Option<String> {
+        let total = project.lines().count();
+        let line = project.lines().nth(index)?;
+        let character = if line.character_name.trim().is_empty() {
+            t("accessibility.character")
+        } else {
+            line.character_name.trim()
+        };
+        let dialogue = if line.text.trim().is_empty() {
+            t("accessibility.line")
+        } else {
+            line.text.trim()
+        };
+        let track = crate::rythmo_layout::track_index_for_y_slot(line.y_slot) + 1;
+        let cell = if column == 0 {
+            t("panel.role")
+        } else {
+            t("panel.text")
+        };
+        let mut label = format!(
+            "{} {} {} {total}, {} : {character}, {} : {dialogue}, {} {track}",
+            t("accessibility.line"),
+            index + 1,
+            t("accessibility.of"),
+            t("accessibility.character"),
+            t("accessibility.dialogue"),
+            t("accessibility.track")
+        );
+        if line.karaoke {
+            label.push_str(", ");
+            label.push_str(t("accessibility.karaoke_line"));
+        }
+        label.push_str(&format!(", {} : {cell}", t("accessibility.column")));
+        Some(label)
+    }
+
+    fn current_focus_event(&self, project: &Project) -> crate::accessibility::AccessibilityEvent {
+        if self.keyboard_close {
+            return crate::accessibility::AccessibilityEvent::Focus {
+                label: t("panel.close").to_string(),
+                role: "button".to_string(),
+            };
+        }
+        match self.kind {
+            Some(SidePanelKind::Lines) => crate::accessibility::AccessibilityEvent::Focus {
+                label: self
+                    .line_cell_label(project, self.keyboard_row, self.keyboard_column)
+                    .unwrap_or_else(|| t("panel.empty.lines").to_string()),
+                role: "table cell".to_string(),
+            },
+            Some(SidePanelKind::Roles) => {
+                let label = roles(project)
+                    .get(self.keyboard_row)
+                    .map(|(name, _)| format!("{} : {name}", t("panel.name")))
+                    .unwrap_or_else(|| t("panel.empty.roles").to_string());
+                crate::accessibility::AccessibilityEvent::Focus {
+                    label,
+                    role: "table cell".to_string(),
+                }
+            }
+            None => crate::accessibility::AccessibilityEvent::Focus {
+                label: String::new(),
+                role: "table".to_string(),
+            },
+        }
+    }
+
+    fn focus_response(&self, project: &Project) -> EventResponse {
+        EventResponse::Action(UiAction::Accessibility(self.current_focus_event(project)))
+    }
+
+    fn ensure_keyboard_row_visible(&mut self, panel: Rect, item_count: usize) {
+        if item_count == 0 {
+            self.keyboard_row = 0;
+            self.scroll = 0;
+            return;
+        }
+        self.keyboard_row = self.keyboard_row.min(item_count - 1);
+        let visible = visible_rows(panel);
+        if self.keyboard_row < self.scroll {
+            self.scroll = self.keyboard_row;
+        } else if self.keyboard_row >= self.scroll + visible {
+            self.scroll = self.keyboard_row + 1 - visible;
+        }
+    }
+
+    fn move_table_focus(&mut self, forward: bool, panel: Rect, project: &Project) -> EventResponse {
+        let (item_count, columns) = match self.kind {
+            Some(SidePanelKind::Lines) => (project.lines().count(), 2),
+            Some(SidePanelKind::Roles) => (roles(project).len(), 1),
+            None => return EventResponse::Ignored,
+        };
+        let cell_count = item_count * columns;
+        let current = if self.keyboard_close || cell_count == 0 {
+            cell_count
+        } else {
+            self.keyboard_row * columns + self.keyboard_column.min(columns - 1)
+        };
+        let total = cell_count + 1;
+        let next = if forward {
+            (current + 1) % total
+        } else {
+            (current + total - 1) % total
+        };
+        self.keyboard_close = next == cell_count;
+        if !self.keyboard_close {
+            self.keyboard_row = next / columns;
+            self.keyboard_column = next % columns;
+            self.ensure_keyboard_row_visible(panel, item_count);
+        }
+        self.focus_response(project)
+    }
+
+    fn selected_text_event(&self) -> Option<EventResponse> {
+        self.input
+            .selected_text(&self.edit_buffer)
+            .filter(|selection| !selection.is_empty())
+            .map(|label| {
+                EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Selection { label },
+                ))
+            })
+    }
+
+    fn handle_editing_keyboard(
+        &mut self,
+        event: &UiEvent,
+        project: &Project,
+    ) -> Option<EventResponse> {
+        if self.editing.is_none() {
+            return None;
+        }
+        match event {
+            UiEvent::KeyInput { text } if text == "\x1b" => {
+                self.cancel_edit();
+                Some(EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Closed {
+                        label: t("panel.editing").to_string(),
+                    },
+                )))
+            }
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => {
+                Some(self.finish_edit(project))
+            }
+            UiEvent::KeyInput { text } => {
+                if let Some(action) = self.input.handle_key(text, &self.edit_buffer) {
+                    if let TextInputAction::Changed(value) = action {
+                        self.edit_buffer = value;
+                    }
+                }
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::CursorLeft => {
+                self.input.move_left();
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::CursorRight => {
+                self.input.move_right(&self.edit_buffer);
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::ShiftCursorLeft => {
+                self.input.move_left_shift();
+                Some(
+                    self.selected_text_event()
+                        .unwrap_or(EventResponse::Consumed),
+                )
+            }
+            UiEvent::ShiftCursorRight => {
+                self.input.move_right_shift(&self.edit_buffer);
+                Some(
+                    self.selected_text_event()
+                        .unwrap_or(EventResponse::Consumed),
+                )
+            }
+            UiEvent::SelectWordLeft => {
+                self.input.move_word_left_shift(&self.edit_buffer);
+                Some(
+                    self.selected_text_event()
+                        .unwrap_or(EventResponse::Consumed),
+                )
+            }
+            UiEvent::SelectWordRight => {
+                self.input.move_word_right_shift(&self.edit_buffer);
+                Some(
+                    self.selected_text_event()
+                        .unwrap_or(EventResponse::Consumed),
+                )
+            }
+            UiEvent::SelectAll => {
+                self.input.select_range(0, self.edit_buffer.chars().count());
+                let label = self
+                    .input
+                    .selected_text(&self.edit_buffer)
+                    .filter(|selection| !selection.is_empty())
+                    .map(|selection| format!("{} : {selection}", t("accessibility.select_all")));
+                Some(
+                    label
+                        .map(|label| {
+                            EventResponse::Action(UiAction::Accessibility(
+                                crate::accessibility::AccessibilityEvent::Selection { label },
+                            ))
+                        })
+                        .unwrap_or(EventResponse::Consumed),
+                )
+            }
+            UiEvent::Home => {
+                self.input.move_home(false);
+                Some(EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Activation {
+                        label: t("accessibility.caret_dialogue_start").to_string(),
+                    },
+                )))
+            }
+            UiEvent::End => {
+                self.input.move_end(&self.edit_buffer, false);
+                Some(EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Activation {
+                        label: t("accessibility.caret_dialogue_end").to_string(),
+                    },
+                )))
+            }
+            UiEvent::Copy => self
+                .input
+                .selected_text(&self.edit_buffer)
+                .map(|text| EventResponse::Action(UiAction::SetClipboard(text)))
+                .or(Some(EventResponse::Consumed)),
+            UiEvent::Cut => {
+                let clipboard = self.input.selected_text(&self.edit_buffer);
+                if clipboard.is_some() {
+                    if let Some(TextInputAction::Changed(value)) =
+                        self.input.handle_key("\x08", &self.edit_buffer)
+                    {
+                        self.edit_buffer = value;
+                    }
+                }
+                Some(
+                    clipboard
+                        .map(|text| EventResponse::Action(UiAction::SetClipboard(text)))
+                        .unwrap_or(EventResponse::Consumed),
+                )
+            }
+            UiEvent::UndoTextEdit => {
+                if let Some(value) = self.input.undo(&self.edit_buffer) {
+                    self.edit_buffer = value;
+                }
+                Some(EventResponse::Consumed)
+            }
+            _ => Some(EventResponse::Consumed),
+        }
+    }
+
+    fn handle_role_picker_keyboard(
+        &mut self,
+        event: &UiEvent,
+        project: &Project,
+    ) -> Option<EventResponse> {
+        self.role_picker?;
+        let all_roles = roles(project);
+        if !all_roles.is_empty() {
+            self.role_picker_index = self.role_picker_index.min(all_roles.len() - 1);
+        }
+        if keyboard_activation(event) {
+            let Some((name, color)) = all_roles.get(self.role_picker_index) else {
+                return Some(EventResponse::Consumed);
+            };
+            self.role_picker = None;
+            self.role_picker_scroll = 0;
+            self.role_picker_index = 0;
+            return Some(EventResponse::Actions(vec![
+                UiAction::SetLinesRole {
+                    line_ids: self.selected.iter().copied().collect(),
+                    name: (*name).to_string(),
+                    color: *color,
+                },
+                UiAction::Accessibility(crate::accessibility::AccessibilityEvent::Activation {
+                    label: (*name).to_string(),
+                }),
+            ]));
+        }
+        let selection = |index: usize| {
+            EventResponse::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Selection {
+                    label: all_roles
+                        .get(index)
+                        .map(|(name, _)| (*name).to_string())
+                        .unwrap_or_else(|| t("panel.empty.roles").to_string()),
+                },
+            ))
+        };
+        match event {
+            UiEvent::CursorUp | UiEvent::FocusPrevious => {
+                self.role_picker_index = self.role_picker_index.saturating_sub(1);
+                self.role_picker_scroll = self.role_picker_scroll.min(self.role_picker_index);
+                Some(selection(self.role_picker_index))
+            }
+            UiEvent::CursorDown | UiEvent::FocusNext => {
+                if !all_roles.is_empty() {
+                    self.role_picker_index = (self.role_picker_index + 1).min(all_roles.len() - 1);
+                    if self.role_picker_index >= self.role_picker_scroll + ROLE_PICKER_MAX_ROWS {
+                        self.role_picker_scroll = self.role_picker_index + 1 - ROLE_PICKER_MAX_ROWS;
+                    }
+                }
+                Some(selection(self.role_picker_index))
+            }
+            UiEvent::Home => {
+                self.role_picker_index = 0;
+                self.role_picker_scroll = 0;
+                Some(selection(0))
+            }
+            UiEvent::End => {
+                self.role_picker_index = all_roles.len().saturating_sub(1);
+                self.role_picker_scroll = all_roles.len().saturating_sub(ROLE_PICKER_MAX_ROWS);
+                Some(selection(self.role_picker_index))
+            }
+            UiEvent::KeyInput { text } if text == "\x1b" => {
+                self.role_picker = None;
+                self.role_picker_scroll = 0;
+                self.role_picker_index = 0;
+                Some(EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Collapsed {
+                        label: t("panel.choose_role").to_string(),
+                    },
+                )))
+            }
+            _ => Some(EventResponse::Consumed),
+        }
+    }
+
+    fn handle_context_menu_keyboard(
+        &mut self,
+        event: &UiEvent,
+        _panel: Rect,
+        project: &Project,
+    ) -> Option<EventResponse> {
+        let (mx, my) = self.context_menu?;
+        let item_count = if self.selected.len() == 1 { 2 } else { 1 };
+        self.context_menu_index = self.context_menu_index.min(item_count - 1);
+        let label = |index: usize| {
+            if item_count == 2 && index == 0 {
+                t("panel.go_to").to_string()
+            } else {
+                t("panel.change_role").to_string()
+            }
+        };
+        if keyboard_activation(event) {
+            if item_count == 2 && self.context_menu_index == 0 {
+                self.context_menu = None;
+                let action = self
+                    .selected
+                    .iter()
+                    .next()
+                    .and_then(|id| project.get_line(*id))
+                    .map(|line| UiAction::SeekAbsolute(line.start_frame));
+                return Some(
+                    action
+                        .map(EventResponse::Action)
+                        .unwrap_or(EventResponse::Consumed),
+                );
+            }
+            self.context_menu = None;
+            self.role_picker = Some((mx, my));
+            self.role_picker_index = 0;
+            self.role_picker_scroll = 0;
+            let first = roles(project)
+                .first()
+                .map(|(name, _)| *name)
+                .unwrap_or_else(|| t("panel.empty.roles"));
+            return Some(EventResponse::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Activation {
+                    label: format!("{} : {first}", t("panel.choose_role")),
+                },
+            )));
+        }
+        match event {
+            UiEvent::CursorUp | UiEvent::FocusPrevious => {
+                self.context_menu_index = self.context_menu_index.saturating_sub(1);
+                Some(EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Selection {
+                        label: label(self.context_menu_index),
+                    },
+                )))
+            }
+            UiEvent::CursorDown | UiEvent::FocusNext => {
+                self.context_menu_index = (self.context_menu_index + 1).min(item_count - 1);
+                Some(EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Selection {
+                        label: label(self.context_menu_index),
+                    },
+                )))
+            }
+            UiEvent::KeyInput { text } if text == "\x1b" => {
+                self.context_menu = None;
+                Some(EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Collapsed {
+                        label: t("panel.actions").to_string(),
+                    },
+                )))
+            }
+            _ => Some(EventResponse::Consumed),
+        }
+    }
+
+    fn handle_keyboard_event(
+        &mut self,
+        event: &UiEvent,
+        panel: Rect,
+        project: &Project,
+    ) -> EventResponse {
+        if let Some(response) = self.handle_role_picker_keyboard(event, project) {
+            return response;
+        }
+        if let Some(response) = self.handle_context_menu_keyboard(event, panel, project) {
+            return response;
+        }
+        if let Some(response) = self.handle_editing_keyboard(event, project) {
+            return response;
+        }
+
+        let Some(kind) = self.kind else {
+            return EventResponse::Ignored;
+        };
+        let item_count = match kind {
+            SidePanelKind::Lines => project.lines().count(),
+            SidePanelKind::Roles => roles(project).len(),
+        };
+        match event {
+            UiEvent::FocusNext => self.move_table_focus(true, panel, project),
+            UiEvent::FocusPrevious => self.move_table_focus(false, panel, project),
+            UiEvent::CursorUp | UiEvent::CursorDown | UiEvent::PageUp | UiEvent::PageDown => {
+                if self.keyboard_close {
+                    self.keyboard_close = false;
+                    self.keyboard_row = if matches!(event, UiEvent::CursorUp | UiEvent::PageUp) {
+                        item_count.saturating_sub(1)
+                    } else {
+                        0
+                    };
+                } else if item_count > 0 {
+                    let step = if matches!(event, UiEvent::PageUp | UiEvent::PageDown) {
+                        visible_rows(panel)
+                    } else {
+                        1
+                    };
+                    if matches!(event, UiEvent::CursorUp | UiEvent::PageUp) {
+                        self.keyboard_row = self.keyboard_row.saturating_sub(step);
+                    } else {
+                        self.keyboard_row = (self.keyboard_row + step).min(item_count - 1);
+                    }
+                }
+                self.ensure_keyboard_row_visible(panel, item_count);
+                self.focus_response(project)
+            }
+            UiEvent::CursorLeft | UiEvent::CursorRight => {
+                if kind == SidePanelKind::Lines && !self.keyboard_close {
+                    self.keyboard_column = if matches!(event, UiEvent::CursorLeft) {
+                        0
+                    } else {
+                        1
+                    };
+                }
+                self.focus_response(project)
+            }
+            UiEvent::Home | UiEvent::End => {
+                self.keyboard_close = false;
+                self.keyboard_row = if matches!(event, UiEvent::Home) {
+                    0
+                } else {
+                    item_count.saturating_sub(1)
+                };
+                self.ensure_keyboard_row_visible(panel, item_count);
+                self.focus_response(project)
+            }
+            UiEvent::Activate => self.activate_keyboard_focus(panel, project),
+            UiEvent::KeyInput { text } if text == " " => {
+                if kind == SidePanelKind::Lines && !self.keyboard_close {
+                    let Some(line) = project.lines().nth(self.keyboard_row) else {
+                        return EventResponse::Consumed;
+                    };
+                    if !self.selected.remove(&line.id) {
+                        self.selected.insert(line.id);
+                    }
+                    self.selection_anchor = Some(self.keyboard_row);
+                    return EventResponse::Action(UiAction::Accessibility(
+                        crate::accessibility::AccessibilityEvent::Selection {
+                            label: self
+                                .line_cell_label(project, self.keyboard_row, self.keyboard_column)
+                                .unwrap_or_else(|| t("panel.empty.lines").to_string()),
+                        },
+                    ));
+                }
+                self.activate_keyboard_focus(panel, project)
+            }
+            UiEvent::OpenContextMenu if kind == SidePanelKind::Lines && !self.keyboard_close => {
+                let Some(line) = project.lines().nth(self.keyboard_row) else {
+                    return EventResponse::Consumed;
+                };
+                if !self.selected.contains(&line.id) {
+                    self.selected.clear();
+                    self.selected.insert(line.id);
+                }
+                self.context_menu = Some((panel.x + 12.0, panel.y + HEADER_H + COLUMNS_H + 8.0));
+                self.context_menu_index = 0;
+                EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Activation {
+                        label: format!("{} : {}", t("panel.actions"), t("panel.go_to")),
+                    },
+                ))
+            }
+            UiEvent::SelectAll if kind == SidePanelKind::Lines => {
+                self.selected = project.lines().map(|line| line.id).collect();
+                self.selection_anchor = (!self.selected.is_empty()).then_some(0);
+                EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Selection {
+                        label: format!(
+                            "{} : {}",
+                            t("accessibility.select_all"),
+                            self.selected.len()
+                        ),
+                    },
+                ))
+            }
+            UiEvent::Delete if kind == SidePanelKind::Lines => {
+                let mut line_ids: Vec<u64> = self.selected.iter().copied().collect();
+                if line_ids.is_empty() && !self.keyboard_close {
+                    if let Some(line) = project.lines().nth(self.keyboard_row) {
+                        line_ids.push(line.id);
+                    }
+                }
+                if line_ids.is_empty() {
+                    EventResponse::Consumed
+                } else {
+                    self.selected.clear();
+                    EventResponse::Action(UiAction::DeleteSidePanelLines { line_ids })
+                }
+            }
+            UiEvent::Copy | UiEvent::Cut if kind == SidePanelKind::Lines => {
+                let mut line_ids: Vec<u64> = self.selected.iter().copied().collect();
+                if line_ids.is_empty() && !self.keyboard_close {
+                    if let Some(line) = project.lines().nth(self.keyboard_row) {
+                        line_ids.push(line.id);
+                    }
+                }
+                if line_ids.is_empty() {
+                    EventResponse::Consumed
+                } else {
+                    if matches!(event, UiEvent::Cut) {
+                        self.selected.clear();
+                    }
+                    EventResponse::Action(UiAction::CopySidePanelLines {
+                        line_ids,
+                        cut: matches!(event, UiEvent::Cut),
+                    })
+                }
+            }
+            UiEvent::KeyInput { text } if text == "\x1b" => {
+                EventResponse::Action(UiAction::CloseSidePanel)
+            }
+            _ => EventResponse::Consumed,
+        }
+    }
+
+    fn activate_keyboard_focus(&mut self, panel: Rect, project: &Project) -> EventResponse {
+        if self.keyboard_close {
+            if self.kind.is_none() {
+                return EventResponse::Ignored;
+            }
+            return EventResponse::Action(UiAction::CloseSidePanel);
+        }
+        match self.kind {
+            Some(SidePanelKind::Lines) => {
+                let Some(line) = project.lines().nth(self.keyboard_row) else {
+                    return EventResponse::Consumed;
+                };
+                if !self.selected.contains(&line.id) {
+                    self.selected.clear();
+                    self.selected.insert(line.id);
+                    self.selection_anchor = Some(self.keyboard_row);
+                }
+                if self.keyboard_column == 0 {
+                    self.cancel_edit();
+                    let picker_h = ROLE_PICKER_HEADER_H
+                        + roles(project).len().min(ROLE_PICKER_MAX_ROWS) as f32 * ROLE_PICKER_ROW_H;
+                    self.role_picker = Some((
+                        panel.x + 8.0,
+                        (panel.y + HEADER_H + COLUMNS_H + ROW_H)
+                            .min(panel.y + panel.height - picker_h - 4.0),
+                    ));
+                    self.role_picker_scroll = 0;
+                    self.role_picker_index = 0;
+                    let first = roles(project)
+                        .first()
+                        .map(|(name, _)| *name)
+                        .unwrap_or_else(|| t("panel.empty.roles"));
+                    EventResponse::Action(UiAction::Accessibility(
+                        crate::accessibility::AccessibilityEvent::Activation {
+                            label: format!("{} : {first}", t("panel.choose_role")),
+                        },
+                    ))
+                } else {
+                    let value = line.text.clone();
+                    self.start_edit(EditField::LineText(line.id), &value);
+                    EventResponse::Action(UiAction::Accessibility(
+                        crate::accessibility::AccessibilityEvent::Focus {
+                            label: format!("{} : {value}", t("panel.text")),
+                            role: "text field".to_string(),
+                        },
+                    ))
+                }
+            }
+            Some(SidePanelKind::Roles) => {
+                let all_roles = roles(project);
+                let Some((name, _)) = all_roles.get(self.keyboard_row) else {
+                    return EventResponse::Consumed;
+                };
+                let value = (*name).to_string();
+                self.start_edit(EditField::RoleName, &value);
+                EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: format!("{} : {value}", t("panel.name")),
+                        role: "text field".to_string(),
+                    },
+                ))
+            }
+            None => EventResponse::Ignored,
+        }
+    }
+
     pub fn handle_event(
         &mut self,
         event: &UiEvent,
@@ -137,6 +828,10 @@ impl SidePanel {
         project: &Project,
     ) -> Option<EventResponse> {
         let kind = self.kind?;
+
+        if self.captures_keyboard_event(event) {
+            return Some(self.handle_keyboard_event(event, panel, project));
+        }
 
         if self.color_picker.active {
             let before = self.color_picker.current_color();
@@ -346,6 +1041,10 @@ impl SidePanel {
                     return Some(EventResponse::Consumed);
                 };
                 let id = line.id;
+                let role_w = (panel.width * 0.38).max(105.0);
+                self.keyboard_close = false;
+                self.keyboard_row = index;
+                self.keyboard_column = if x < panel.x + role_w { 0 } else { 1 };
                 if modifier == 4 {
                     if !self.selected.contains(&id) {
                         self.selected.clear();
@@ -356,6 +1055,12 @@ impl SidePanel {
                         x.min(panel.x + panel.width - 195.0),
                         y.min(panel.y + panel.height - menu_h - 4.0),
                     ));
+                    self.context_menu_index = 0;
+                    return Some(EventResponse::Action(UiAction::Accessibility(
+                        crate::accessibility::AccessibilityEvent::Activation {
+                            label: format!("{} : {}", t("panel.actions"), t("panel.go_to")),
+                        },
+                    )));
                 } else if modifier == 1 {
                     if !self.selected.remove(&id) {
                         self.selected.insert(id);
@@ -372,7 +1077,6 @@ impl SidePanel {
                         self.selected.insert(line.id);
                     }
                 } else if modifier == 3 {
-                    let role_w = (panel.width * 0.38).max(105.0);
                     if x < panel.x + role_w {
                         self.cancel_edit();
                         self.selected.clear();
@@ -384,14 +1088,38 @@ impl SidePanel {
                                 .min(panel.y + panel.height - picker_h - 4.0),
                         ));
                         self.role_picker_scroll = 0;
+                        self.role_picker_index = 0;
+                        let first = roles(project)
+                            .first()
+                            .map(|(name, _)| *name)
+                            .unwrap_or_else(|| t("panel.empty.roles"));
+                        return Some(EventResponse::Action(UiAction::Accessibility(
+                            crate::accessibility::AccessibilityEvent::Activation {
+                                label: format!("{} : {first}", t("panel.choose_role")),
+                            },
+                        )));
                     } else {
-                        self.start_edit(EditField::LineText(id), &line.text);
+                        let value = line.text.clone();
+                        self.start_edit(EditField::LineText(id), &value);
+                        return Some(EventResponse::Action(UiAction::Accessibility(
+                            crate::accessibility::AccessibilityEvent::Focus {
+                                label: format!("{} : {value}", t("panel.text")),
+                                role: "text field".to_string(),
+                            },
+                        )));
                     }
                 } else {
                     self.selected.clear();
                     self.selected.insert(id);
                     self.selection_anchor = Some(index);
                 }
+                return Some(EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Selection {
+                        label: self
+                            .line_cell_label(project, index, self.keyboard_column)
+                            .unwrap_or_else(|| t("panel.empty.lines").to_string()),
+                    },
+                )));
             }
             SidePanelKind::Roles => {
                 let Some((name, color)) = roles(project).get(index).copied() else {
@@ -523,7 +1251,17 @@ impl SidePanel {
             1.5,
         );
         let close = close_rect(panel);
-        solid(quads, close, [0.13, 0.135, 0.16, 1.0], [0.0; 4], 6.0);
+        solid(
+            quads,
+            close,
+            [0.13, 0.135, 0.16, 1.0],
+            if self.keyboard_close {
+                [0.38, 0.58, 0.96, 1.0]
+            } else {
+                [0.0; 4]
+            },
+            6.0,
+        );
         labels.push(label("×", close, HAlign::Center, 19.0, [205, 208, 220]));
 
         let cols = columns_rect(panel);
@@ -584,6 +1322,24 @@ impl SidePanel {
                             [0.0; 4],
                             0.0,
                         );
+                    }
+                    if !self.keyboard_close && self.scroll + row == self.keyboard_row {
+                        let focus_rect = if self.keyboard_column == 0 {
+                            Rect {
+                                x: rr.x + 2.0,
+                                y: rr.y + 2.0,
+                                width: role_w - 4.0,
+                                height: rr.height - 4.0,
+                            }
+                        } else {
+                            Rect {
+                                x: rr.x + role_w + 2.0,
+                                y: rr.y + 2.0,
+                                width: rr.width - role_w - 4.0,
+                                height: rr.height - 4.0,
+                            }
+                        };
+                        solid(quads, focus_rect, [0.0; 4], [0.38, 0.58, 0.96, 1.0], 4.0);
                     }
                     solid(
                         quads,
@@ -685,6 +1441,20 @@ impl SidePanel {
                     .enumerate()
                 {
                     let rr = row_rect(panel, row);
+                    if !self.keyboard_close && self.scroll + row == self.keyboard_row {
+                        solid(
+                            quads,
+                            Rect {
+                                x: rr.x + 2.0,
+                                y: rr.y + 2.0,
+                                width: rr.width - 4.0,
+                                height: rr.height - 4.0,
+                            },
+                            [0.0; 4],
+                            [0.38, 0.58, 0.96, 1.0],
+                            4.0,
+                        );
+                    }
                     solid(
                         quads,
                         Rect {
@@ -867,6 +1637,15 @@ impl SidePanel {
                     width: r.width,
                     height: ROLE_PICKER_ROW_H,
                 };
+                if scroll + i == self.role_picker_index {
+                    solid(
+                        quads,
+                        rr,
+                        [0.16, 0.19, 0.30, 1.0],
+                        [0.38, 0.58, 0.96, 1.0],
+                        3.0,
+                    );
+                }
                 solid(
                     quads,
                     Rect {
@@ -937,6 +1716,11 @@ fn pointer_down_position(event: &UiEvent) -> Option<(f32, f32)> {
         | UiEvent::ContextMenu { x, y } => Some((*x, *y)),
         _ => None,
     }
+}
+
+fn keyboard_activation(event: &UiEvent) -> bool {
+    matches!(event, UiEvent::Activate)
+        || matches!(event, UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " ")
 }
 
 fn roles(project: &Project) -> Vec<(&str, [f32; 4])> {

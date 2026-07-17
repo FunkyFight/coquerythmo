@@ -315,6 +315,49 @@ impl TextInputState {
         }
     }
 
+    /// Move one word left while extending the selection.
+    pub fn move_word_left_shift(&mut self, text: &str) {
+        if !self.active {
+            return;
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let mut target = self.cursor_pos.min(chars.len());
+        while target > 0 && is_word_separator(chars[target - 1]) {
+            target -= 1;
+        }
+        while target > 0 && !is_word_separator(chars[target - 1]) {
+            target -= 1;
+        }
+        self.extend_selection_to(target);
+    }
+
+    /// Move one word right while extending the selection.
+    pub fn move_word_right_shift(&mut self, text: &str) {
+        if !self.active {
+            return;
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let mut target = self.cursor_pos.min(chars.len());
+        while target < chars.len() && !is_word_separator(chars[target]) {
+            target += 1;
+        }
+        while target < chars.len() && is_word_separator(chars[target]) {
+            target += 1;
+        }
+        self.extend_selection_to(target);
+    }
+
+    fn extend_selection_to(&mut self, target: usize) {
+        let anchor = self.selection.map(|(a, _)| a).unwrap_or(self.cursor_pos);
+        self.cursor_pos = target;
+        self.selection = if anchor == target {
+            None
+        } else {
+            Some((anchor, target))
+        };
+        self.cursor_blink = Instant::now();
+    }
+
     pub fn move_home(&mut self, shift: bool) {
         if !self.active {
             return;

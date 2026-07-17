@@ -163,8 +163,7 @@ pub fn karaoke_mode_tracks(
             .lines()
             .filter(on_track)
             .filter(|line| {
-                current_frame >= line.start_frame as f64
-                    && current_frame <= line.end_frame() as f64
+                current_frame >= line.start_frame as f64 && current_frame <= line.end_frame() as f64
             })
             .max_by_key(|line| (line.start_frame, line.id));
         if let Some(active) = active {
@@ -187,8 +186,8 @@ pub fn karaoke_mode_tracks(
             continue;
         };
         let continues_karaoke = previous.is_some_and(|line| line.karaoke);
-        let count_in_started = current_frame
-            >= next.start_frame.saturating_sub(count_in_frames.max(0)) as f64;
+        let count_in_started =
+            current_frame >= next.start_frame.saturating_sub(count_in_frames.max(0)) as f64;
         *has_karaoke = continues_karaoke || count_in_started;
     }
 

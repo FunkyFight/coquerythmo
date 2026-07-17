@@ -185,6 +185,8 @@ pub struct ProjectSettings {
     pub instrumental_audio_offset_frames: i64,
     #[serde(default, skip_serializing_if = "is_false")]
     pub highlight_read_word: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub scrolling_text_uses_character_color: bool,
     #[serde(default, skip_serializing_if = "is_default_export_configuration")]
     pub export_configuration: ExportConfiguration,
     #[serde(default, skip_serializing_if = "is_default_automation_graph")]
@@ -418,10 +420,12 @@ impl Project {
     pub fn project_for_language(&self, id: LanguageId) -> Option<Project> {
         let global_export_configuration = self.settings.export_configuration.clone();
         let highlight_read_word = self.settings.highlight_read_word;
+        let scrolling_text_uses_character_color = self.settings.scrolling_text_uses_character_color;
         if id == self.active_language.id {
             let mut band = self.current_band_snapshot();
             band.settings.export_configuration = global_export_configuration;
             band.settings.highlight_read_word = highlight_read_word;
+            band.settings.scrolling_text_uses_character_color = scrolling_text_uses_character_color;
             return Some(Self::from_detached_band(self.active_language.clone(), band));
         }
 
@@ -429,6 +433,7 @@ impl Project {
         let mut band = stored.band.clone();
         band.settings.export_configuration = global_export_configuration;
         band.settings.highlight_read_word = highlight_read_word;
+        band.settings.scrolling_text_uses_character_color = scrolling_text_uses_character_color;
         Some(Self::from_detached_band(stored.language.clone(), band))
     }
 
@@ -581,6 +586,7 @@ impl Project {
         let previous_revision = self.revision;
         let global_export_configuration = self.settings.export_configuration.clone();
         let highlight_read_word = self.settings.highlight_read_word;
+        let scrolling_text_uses_character_color = self.settings.scrolling_text_uses_character_color;
         let outgoing = StoredLanguageSnapshot {
             language: self.active_language.clone(),
             band: self.current_band_snapshot(),
@@ -590,6 +596,8 @@ impl Project {
 
         incoming.band.settings.export_configuration = global_export_configuration;
         incoming.band.settings.highlight_read_word = highlight_read_word;
+        incoming.band.settings.scrolling_text_uses_character_color =
+            scrolling_text_uses_character_color;
         self.active_language = incoming.language;
         self.restore_band_snapshot(incoming.band, previous_revision);
         true
@@ -627,8 +635,13 @@ impl Project {
         };
         let previous_revision = self.revision;
         let highlight_read_word = self.settings.highlight_read_word;
+        let scrolling_text_uses_character_color = self.settings.scrolling_text_uses_character_color;
         replacement.band.settings.export_configuration = global_export_configuration;
         replacement.band.settings.highlight_read_word = highlight_read_word;
+        replacement
+            .band
+            .settings
+            .scrolling_text_uses_character_color = scrolling_text_uses_character_color;
         self.active_language = replacement.language;
         self.restore_band_snapshot(replacement.band, previous_revision);
         true
@@ -692,6 +705,8 @@ impl Project {
         let previous_revision = self.revision;
         let global_export_configuration = active.project.settings.export_configuration.clone();
         let highlight_read_word = active.project.settings.highlight_read_word;
+        let scrolling_text_uses_character_color =
+            active.project.settings.scrolling_text_uses_character_color;
 
         self.language_order.clear();
         self.language_snapshots.clear();
@@ -700,6 +715,8 @@ impl Project {
         let mut active_band = active.project.current_band_snapshot();
         active_band.settings.export_configuration = global_export_configuration.clone();
         active_band.settings.highlight_read_word = highlight_read_word;
+        active_band.settings.scrolling_text_uses_character_color =
+            scrolling_text_uses_character_color;
         self.restore_band_snapshot(active_band, previous_revision);
 
         for snapshot in unique {
@@ -707,6 +724,7 @@ impl Project {
             let mut band = snapshot.project.current_band_snapshot();
             band.settings.export_configuration = global_export_configuration.clone();
             band.settings.highlight_read_word = highlight_read_word;
+            band.settings.scrolling_text_uses_character_color = scrolling_text_uses_character_color;
             self.language_snapshots.insert(
                 id,
                 StoredLanguageSnapshot {
@@ -1095,10 +1113,13 @@ impl Project {
         if self.settings != settings {
             let export_configuration = settings.export_configuration.clone();
             let highlight_read_word = settings.highlight_read_word;
+            let scrolling_text_uses_character_color = settings.scrolling_text_uses_character_color;
             self.settings = settings;
             for snapshot in self.language_snapshots.values_mut() {
                 snapshot.band.settings.export_configuration = export_configuration.clone();
                 snapshot.band.settings.highlight_read_word = highlight_read_word;
+                snapshot.band.settings.scrolling_text_uses_character_color =
+                    scrolling_text_uses_character_color;
             }
             self.bump_revision();
         }
@@ -1754,6 +1775,7 @@ mod tests {
         settings.export_configuration.countdown_enabled = true;
         settings.export_configuration.video_aspect = VideoExportAspect::Portrait9x16;
         settings.highlight_read_word = true;
+        settings.scrolling_text_uses_character_color = true;
         project.set_settings(settings);
 
         assert!(project.select_language(french_id));
@@ -1763,6 +1785,7 @@ mod tests {
         );
         assert!(project.settings().export_configuration.countdown_enabled);
         assert!(project.settings().highlight_read_word);
+        assert!(project.settings().scrolling_text_uses_character_color);
         assert_eq!(
             project.settings().export_configuration.video_aspect,
             VideoExportAspect::Portrait9x16
@@ -1775,6 +1798,13 @@ mod tests {
                 .export_configuration
                 .pre_roll_seconds,
             2.5
+        );
+        assert!(
+            project
+                .project_for_language(english_id)
+                .unwrap()
+                .settings()
+                .scrolling_text_uses_character_color
         );
     }
 

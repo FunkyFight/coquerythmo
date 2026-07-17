@@ -28,6 +28,10 @@ pub enum AccessibilityEvent {
         label: String,
         value: String,
     },
+    Progress {
+        label: String,
+        percent: Option<u32>,
+    },
     Activation {
         label: String,
     },
@@ -181,7 +185,7 @@ pub trait SpeechBackend: Send + 'static {
 pub fn event_for_action(
     action: &crate::application::command::UiAction,
 ) -> Option<AccessibilityEvent> {
-    use crate::application::command::{ToolMode, ToolbarDropdown, UiAction};
+    use crate::application::command::{TextCommand, ToolMode, ToolbarDropdown, UiAction};
     use crate::rythmo_line::MarkerKind;
     let key = match action {
         UiAction::ImportSubtitles => "menu.project.import",
@@ -191,17 +195,41 @@ pub fn event_for_action(
         UiAction::ExportProject | UiAction::OpenExportModal => "menu.export.mp4",
         UiAction::ShowStudioWarning => "menu.export.studio_mode",
         UiAction::OpenRenameCharacterModal => "menu.tools.rename_character",
+        UiAction::OpenProxyModal => "menu.tools.create_proxy",
         UiAction::OpenProjectSettings => "project_settings.title",
         UiAction::OpenSettings => "settings.title",
+        UiAction::OpenLanguages => "languages.title",
+        UiAction::OpenLinesPanel => "menu.panels.lines",
+        UiAction::OpenRolesPanel => "menu.panels.roles",
         UiAction::PickProjectInstrumentalAudio => "project_settings.browse",
         UiAction::SaveProjectSettings { .. } => "settings.save",
+        UiAction::Undo | UiAction::Text(TextCommand::Undo) => "accessibility.undo",
+        UiAction::Redo => "accessibility.redo",
+        UiAction::SelectAll | UiAction::Text(TextCommand::SelectAll) => "accessibility.select_all",
+        UiAction::Text(TextCommand::Copy) => "accessibility.copy",
+        UiAction::Text(TextCommand::Cut) => "accessibility.cut",
+        UiAction::CopySidePanelLines { cut: false, .. } => "accessibility.copy",
+        UiAction::CopySidePanelLines { cut: true, .. } => "accessibility.cut",
+        UiAction::Text(TextCommand::Paste) => "accessibility.paste",
+        UiAction::CopySelectedLine => "accessibility.copy",
+        UiAction::CutSelectedLine => "accessibility.cut",
+        UiAction::PasteLine => "accessibility.paste",
+        UiAction::QuickSave => "accessibility.save",
+        UiAction::NewProject => "accessibility.new_project",
+        UiAction::SplitDialogue => "accessibility.split_dialogue",
         UiAction::PrevFrame => "toolbar.prev_frame",
         UiAction::NextFrame => "toolbar.next_frame",
+        UiAction::NudgeSelectedLines { delta_frames } if *delta_frames < 0 => {
+            "accessibility.line_shift_left"
+        }
+        UiAction::NudgeSelectedLines { .. } => "accessibility.line_shift_right",
         UiAction::ToggleMute => "toolbar.mute",
         UiAction::SetSelectedLineStartAtPlayhead => "accessibility.line_start_set",
         UiAction::SetSelectedLineEndAtPlayhead => "accessibility.line_end_set",
+        UiAction::CreateLineAtTrack { .. } => "accessibility.line_created",
         UiAction::StartEditingSelectedLine => "accessibility.edit_line",
         UiAction::StartEditingSelectedCharacter => "accessibility.edit_character",
+        UiAction::ClearLineSelection => "accessibility.selection_cleared",
         UiAction::AddMarker(MarkerKind::Boucle) => "toolbar.boucle",
         UiAction::AddMarker(MarkerKind::Out) => "toolbar.out",
         UiAction::AddMarker(MarkerKind::SceneChange) => "toolbar.scene",
@@ -210,7 +238,6 @@ pub fn event_for_action(
         UiAction::OpenDropdown(ToolbarDropdown::Respirations) => "toolbar.respirations",
         UiAction::OpenDropdown(ToolbarDropdown::Reactions) => "toolbar.reactions",
         UiAction::AddNote => "toolbar.note",
-        UiAction::ToggleKaraokeForSelection => "toolbar.karaoke",
         UiAction::SetToolMode(ToolMode::Select) => "toolbar.select_mode",
         UiAction::SetToolMode(ToolMode::Draw) => "toolbar.draw_mode",
         _ => return None,
@@ -220,16 +247,32 @@ pub fn event_for_action(
     })
 }
 
-/// Return an announcement for every routed keyboard command. Commands with a
-/// semantic action name keep that name; every other command falls back to the
-/// localized key chord so adding a new shortcut can never make it silent.
+/// Return the semantic name of a routed keyboard command when one exists.
+/// Physical key names are deliberately never used as a fallback.
 pub fn event_for_keyboard_shortcut(
     action: &crate::application::command::UiAction,
-    shortcut_label: &str,
-) -> AccessibilityEvent {
-    event_for_action(action).unwrap_or_else(|| AccessibilityEvent::Activation {
-        label: shortcut_label.to_string(),
-    })
+) -> Option<AccessibilityEvent> {
+    event_for_action(action)
+}
+
+/// Emit the short progress tone used for export and proxy percentages.
+/// Higher progress produces a lower pitch so the operation audibly descends
+/// towards completion.
+#[cfg(target_os = "windows")]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn Beep(dw_freq: u32, dw_duration: u32) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+pub fn progress_tone(percent: u32) {
+    let percent = percent.min(100);
+    let frequency = 300 + (100 - percent) * 9;
+    // Keep the tone short: progress updates are throttled to one per percent
+    // by State, so this never blocks the UI for long at a time.
+    unsafe {
+        let _ = Beep(frequency, 35);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -246,6 +289,7 @@ pub struct NarrationService {
     accessibility_sender: Option<Sender<AccessibilityEvent>>,
     paused: AtomicBool,
     last_event: Mutex<Option<AccessibilityEvent>>,
+    pending_control_shortcut: Mutex<Option<AccessibilityEvent>>,
     #[cfg(target_os = "macos")]
     sender: Sender<WorkerCommand>,
     #[cfg(target_os = "macos")]
@@ -271,6 +315,7 @@ impl NarrationService {
             accessibility_sender,
             paused: AtomicBool::new(false),
             last_event: Mutex::new(None),
+            pending_control_shortcut: Mutex::new(None),
             #[cfg(target_os = "macos")]
             sender,
             #[cfg(target_os = "macos")]
@@ -333,10 +378,89 @@ impl NarrationService {
         self.announce(format_event(event));
     }
 
+    /// Announce a keyboard shortcut even when Ctrl has paused normal speech.
+    /// This does not clear the paused state: it only lets the current chord
+    /// reach the platform accessibility service.
+    pub fn announce_shortcut_event(&self, event: AccessibilityEvent) {
+        if matches!(
+            event,
+            AccessibilityEvent::CharacterTyped { .. } | AccessibilityEvent::CharacterDeleted { .. }
+        ) || !self.enabled
+        {
+            return;
+        }
+        if let Ok(mut last_event) = self.last_event.lock() {
+            *last_event = Some(event.clone());
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(sender) = &self.accessibility_sender {
+            let _ = sender.send(event);
+            return;
+        }
+        self.announce(format_event(event));
+    }
+
+    /// Hold the semantic action until Ctrl is physically released. NVDA uses
+    /// a held Ctrl key as an unconditional speech-cancel command, including
+    /// for assertive AccessKit events sent during the chord.
+    pub fn defer_control_shortcut(&self, event: AccessibilityEvent) {
+        if matches!(
+            event,
+            AccessibilityEvent::CharacterTyped { .. } | AccessibilityEvent::CharacterDeleted { .. }
+        ) || !self.enabled
+        {
+            return;
+        }
+        if let Ok(mut pending) = self.pending_control_shortcut.lock() {
+            let command_is_pending = matches!(
+                pending.as_ref(),
+                Some(AccessibilityEvent::Activation { .. })
+            );
+            let is_named_command = matches!(&event, AccessibilityEvent::Activation { .. });
+            let is_error = matches!(&event, AccessibilityEvent::Error { .. });
+            if !command_is_pending || is_named_command || is_error {
+                *pending = Some(event);
+            }
+        }
+    }
+
+    /// Send the latest named Ctrl action through the priority channel once
+    /// Ctrl is released. A real Ctrl shortcut must not leave narration paused:
+    /// only pressing Ctrl on its own keeps speech stopped until Shift.
+    pub fn flush_control_shortcut(&self) {
+        let event = self
+            .pending_control_shortcut
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.take());
+        if let Some(event) = event {
+            self.paused.store(false, Ordering::Release);
+            self.announce_shortcut_event(event);
+        }
+    }
+
+    /// Publish a persistent progress-bar node through AccessKit without
+    /// speaking every percentage update. Minute announcements are emitted
+    /// separately through the priority channel.
+    pub fn publish_progress(&self, label: String, percent: Option<u32>) {
+        #[cfg(target_os = "windows")]
+        if let Some(sender) = &self.accessibility_sender {
+            let _ = sender.send(AccessibilityEvent::Progress { label, percent });
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (label, percent);
+    }
+
     pub fn stop(&self) {
         self.paused.store(true, Ordering::Release);
         #[cfg(target_os = "macos")]
         let _ = self.sender.send(WorkerCommand::Stop { resumable: true });
+    }
+
+    /// Ctrl silently stops the current speech. A following Ctrl shortcut is
+    /// announced only once its semantic action is known.
+    pub fn stop_for_control(&self) {
+        self.stop();
     }
 
     pub fn resume(&self) {
@@ -397,13 +521,16 @@ fn format_event(event: AccessibilityEvent) -> Announcement {
             AnnouncementPriority::Navigation,
             true,
         ),
-        Event::Selection { label } => (
-            format!("{} : {label}", crate::i18n::t("accessibility.selected")),
-            AnnouncementPriority::Navigation,
-            true,
-        ),
+        Event::Selection { label } => (label, AnnouncementPriority::Navigation, true),
         Event::ValueChanged { label, value } => (
             format!("{label} : {value}"),
+            AnnouncementPriority::Action,
+            true,
+        ),
+        Event::Progress { label, percent } => (
+            percent.map_or(label.clone(), |percent| {
+                format!("{label} : {percent} {}", crate::i18n::t("progress.percent"))
+            }),
             AnnouncementPriority::Action,
             true,
         ),
@@ -509,6 +636,7 @@ struct AccessKitTreeState {
     focus_id: accesskit::NodeId,
     focus_node: accesskit::Node,
     live_node: Option<(accesskit::NodeId, accesskit::Node)>,
+    progress_node: Option<(accesskit::NodeId, accesskit::Node)>,
 }
 
 #[cfg(target_os = "windows")]
@@ -525,6 +653,7 @@ impl AccessKitTreeState {
             focus_id: ACCESSKIT_INITIAL_FOCUS_ID,
             focus_node,
             live_node: None,
+            progress_node: None,
         }
     }
 
@@ -541,6 +670,9 @@ impl AccessKitTreeState {
         if let Some((id, _)) = &self.live_node {
             root.push_child(*id);
         }
+        if let Some((id, _)) = &self.progress_node {
+            root.push_child(*id);
+        }
         root.build(&mut self.node_classes)
     }
 
@@ -551,6 +683,9 @@ impl AccessKitTreeState {
         ];
         if let Some(live_node) = self.live_node.clone() {
             nodes.push(live_node);
+        }
+        if let Some(progress_node) = self.progress_node.clone() {
+            nodes.push(progress_node);
         }
         let mut tree = accesskit::Tree::new(ACCESSKIT_ROOT_ID);
         tree.app_name = Some("Coquerythmo".to_string());
@@ -568,19 +703,25 @@ impl AccessKitTreeState {
                 self.update_focus(label, accesskit_role(&role), None)
             }
             AccessibilityEvent::Selection { label } => {
-                self.update_focus(label, accesskit::Role::ListBoxOption, None)
+                // A transient spoken selection must not be exposed as an
+                // unselected list option: NVDA would append "non sélectionné"
+                // to the useful label. The actual function/content is enough.
+                self.update_focus(label, accesskit::Role::StaticText, None)
             }
             AccessibilityEvent::ValueChanged { label, value } => {
                 self.update_focus(label, accesskit::Role::StaticText, Some(value))
             }
+            AccessibilityEvent::Progress { label, percent } => self.update_progress(label, percent),
             event @ AccessibilityEvent::Error { .. } => {
                 self.update_live(format_event(event).text, true)
             }
-            event @ (AccessibilityEvent::Activation { .. }
-            | AccessibilityEvent::Success { .. }
-            | AccessibilityEvent::Opened { .. }
-            | AccessibilityEvent::Closed { .. }
-            | AccessibilityEvent::Collapsed { .. }) => {
+            event @ AccessibilityEvent::Activation { .. } => {
+                self.update_live(format_event(event).text, true)
+            }
+            event @ (AccessibilityEvent::Success { .. } | AccessibilityEvent::Opened { .. }) => {
+                self.update_live(format_event(event).text, true)
+            }
+            event @ (AccessibilityEvent::Closed { .. } | AccessibilityEvent::Collapsed { .. }) => {
                 self.update_live(format_event(event).text, false)
             }
             AccessibilityEvent::CharacterTyped { .. }
@@ -639,6 +780,36 @@ impl AccessKitTreeState {
             focus: self.focus_id,
         }
     }
+
+    fn update_progress(&mut self, label: String, percent: Option<u32>) -> accesskit::TreeUpdate {
+        let Some(percent) = percent else {
+            self.progress_node = None;
+            return accesskit::TreeUpdate {
+                nodes: vec![(ACCESSKIT_ROOT_ID, self.root_node())],
+                tree: None,
+                focus: self.focus_id,
+            };
+        };
+        let id = match self.progress_node.as_ref() {
+            Some((id, _)) => *id,
+            None => self.next_id(),
+        };
+        let percent = percent.min(100);
+        let mut node = accesskit::NodeBuilder::new(accesskit::Role::ProgressIndicator);
+        node.set_name(words_only(&label));
+        node.set_value(format!("{percent} {}", crate::i18n::t("progress.percent")));
+        node.set_numeric_value(percent as f64);
+        node.set_min_numeric_value(0.0);
+        node.set_max_numeric_value(100.0);
+        node.set_numeric_value_step(1.0);
+        let node = node.build(&mut self.node_classes);
+        self.progress_node = Some((id, node.clone()));
+        accesskit::TreeUpdate {
+            nodes: vec![(ACCESSKIT_ROOT_ID, self.root_node()), (id, node)],
+            tree: None,
+            focus: self.focus_id,
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -648,6 +819,12 @@ fn accesskit_role(role: &str) -> accesskit::Role {
         accesskit::Role::CheckBox
     } else if role.contains("button") {
         accesskit::Role::Button
+    } else if role.contains("cell") {
+        accesskit::Role::Cell
+    } else if role.contains("row") {
+        accesskit::Role::Row
+    } else if role.contains("table") {
+        accesskit::Role::Table
     } else if role.contains("text") || role.contains("field") {
         accesskit::Role::TextInput
     } else if role.contains("list") {

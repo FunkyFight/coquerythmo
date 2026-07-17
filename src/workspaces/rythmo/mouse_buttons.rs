@@ -14,7 +14,17 @@ pub(crate) fn handle_mouse_release(state: &mut RythmoState, ctx: &RythmoCtx) -> 
         return EventResponse::Consumed;
     }
 
-    if state.dragging.take().is_some() {
+    if let Some(drag) = state.dragging.take() {
+        if let DragState {
+            target: DragTarget::Line(line_id),
+            handle: DragHandle::Selection,
+            ..
+        } = drag
+        {
+            if let Some(line) = ctx.project.get_line(line_id) {
+                return selection_response(&state.line_input, &line.text);
+            }
+        }
         EventResponse::Consumed
     } else {
         EventResponse::Ignored
@@ -81,7 +91,7 @@ pub(crate) fn handle_shift_mouse_press(
                 );
                 state.line_input.update_selection(char_pos);
 
-                return EventResponse::Consumed;
+                return selection_response(&state.line_input, &line.text);
             }
         }
     }
@@ -148,6 +158,9 @@ pub(crate) fn handle_double_click(
             state.editing_character = Some(line.id);
             state.char_input.activate(&line.character_name);
             state.char_input.select_all(&line.character_name);
+            state.autocomplete_index = None;
+            state.autocomplete_hover = None;
+            state.autocomplete_scroll = 0;
             let (picker_x, picker_y) = color_picker_origin_for_badge(&br, ctx.zone);
             state
                 .color_picker
@@ -157,7 +170,11 @@ pub(crate) fn handle_double_click(
             return if let Some(old_id) = finalize_line_id.filter(|&id| id != line.id) {
                 EventResponse::Action(UiAction::FinalizeCharacter { line_id: old_id })
             } else {
-                EventResponse::Consumed
+                EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Activation {
+                        label: t("accessibility.edit_character").to_string(),
+                    },
+                ))
             };
         }
     }
@@ -188,7 +205,7 @@ pub(crate) fn handle_double_click(
                     ratio,
                 );
                 state.line_input.select_word_at(&line.text, char_pos);
-                return EventResponse::Consumed;
+                return selection_response(&state.line_input, &line.text);
             }
             state.editing_line = Some(line.id);
             state.line_input.activate(&line.text);

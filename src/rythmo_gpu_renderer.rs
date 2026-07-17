@@ -563,7 +563,7 @@ struct IconBatch {
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const BASE_TICK_WIDTH: f32 = 1.5;
-const BASE_PLAYHEAD_WIDTH: f32 = 2.0;
+const BASE_PLAYHEAD_WIDTH: f32 = 3.0;
 
 const INITIAL_QUAD_CAP: usize = 512;
 const INITIAL_ICON_CAP: usize = 256;
@@ -1545,31 +1545,6 @@ impl GpuRenderer {
         hash
     }
 
-    fn push_rythmo_text_icons(
-        &mut self,
-        text: &str,
-        font_size: f32,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        all_icons: &mut Vec<IconInstance>,
-        icon_batches: &mut Vec<IconBatch>,
-    ) {
-        self.push_rythmo_text_icons_tinted_clipped(
-            text,
-            font_size,
-            x,
-            y,
-            w,
-            h,
-            [1.0, 1.0, 1.0, 1.0],
-            1.0,
-            all_icons,
-            icon_batches,
-        );
-    }
-
     fn push_read_word_text_icons(
         &mut self,
         text: &str,
@@ -1580,21 +1555,55 @@ impl GpuRenderer {
         h: f32,
         segment_start: usize,
         highlight_end: Option<usize>,
+        base_tint: [f32; 4],
         all_icons: &mut Vec<IconInstance>,
         icon_batches: &mut Vec<IconBatch>,
     ) {
         let count = text.chars().count();
         let Some(highlight_end) = highlight_end else {
-            self.push_rythmo_text_icons(text, font_size, x, y, w, h, all_icons, icon_batches);
+            self.push_rythmo_text_icons_tinted_clipped(
+                text,
+                font_size,
+                x,
+                y,
+                w,
+                h,
+                base_tint,
+                1.0,
+                all_icons,
+                icon_batches,
+            );
             return;
         };
         if count == 0 || highlight_end <= segment_start {
-            self.push_rythmo_text_icons(text, font_size, x, y, w, h, all_icons, icon_batches);
+            self.push_rythmo_text_icons_tinted_clipped(
+                text,
+                font_size,
+                x,
+                y,
+                w,
+                h,
+                base_tint,
+                1.0,
+                all_icons,
+                icon_batches,
+            );
             return;
         }
         let end_ratio = ((highlight_end - segment_start) as f32 / count as f32).min(1.0);
         if end_ratio < 1.0 {
-            self.push_rythmo_text_icons(text, font_size, x, y, w, h, all_icons, icon_batches);
+            self.push_rythmo_text_icons_tinted_clipped(
+                text,
+                font_size,
+                x,
+                y,
+                w,
+                h,
+                base_tint,
+                1.0,
+                all_icons,
+                icon_batches,
+            );
         }
         self.push_rythmo_text_icons_tinted_clipped(
             text,
@@ -2264,6 +2273,17 @@ impl GpuRenderer {
                     } else {
                         None
                     };
+                let scrolling_text_tint =
+                    if scene.project.settings().scrolling_text_uses_character_color {
+                        [
+                            line.character_color[0].clamp(0.0, 1.0),
+                            line.character_color[1].clamp(0.0, 1.0),
+                            line.character_color[2].clamp(0.0, 1.0),
+                            1.0,
+                        ]
+                    } else {
+                        [1.0; 4]
+                    };
                 if line.karaoke {
                     let karaoke_font_size =
                         font_size * constants::KARAOKE_TEXT_FONT_SCALE * karaoke_text_scale;
@@ -2332,6 +2352,7 @@ impl GpuRenderer {
                                     body_h,
                                     prev_break,
                                     read_highlight_end,
+                                    scrolling_text_tint,
                                     &mut all_icons,
                                     &mut icon_batches,
                                 );
@@ -2349,6 +2370,7 @@ impl GpuRenderer {
                             body_h,
                             0,
                             read_highlight_end,
+                            scrolling_text_tint,
                             &mut all_icons,
                             &mut icon_batches,
                         );
@@ -2494,9 +2516,9 @@ impl GpuRenderer {
                         0.0,
                         2.0 * s,
                         h,
-                        217.0 / 255.0,
-                        38.0 / 255.0,
-                        38.0 / 255.0,
+                        1.0,
+                        0.02,
+                        0.05,
                         230.0 / 255.0,
                     ));
                     let cy = h / 2.0;
@@ -2508,9 +2530,9 @@ impl GpuRenderer {
                         diag_len,
                         2.5 * s,
                         std::f32::consts::FRAC_PI_4,
-                        217.0 / 255.0,
-                        38.0 / 255.0,
-                        38.0 / 255.0,
+                        1.0,
+                        0.02,
+                        0.05,
                         230.0 / 255.0,
                     ));
                     quads.push(rotated_line(

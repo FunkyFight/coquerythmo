@@ -46,7 +46,40 @@ impl RenameCharacterModal {
             keyboard_focus: 0,
         };
         modal.name_input.activate("");
+        if !modal.characters.is_empty() {
+            modal.select_character(0);
+        }
         modal
+    }
+
+    pub fn keyboard_focus_label(&self) -> String {
+        match self.keyboard_focus {
+            0 => self
+                .selected_character()
+                .unwrap_or_else(|| t("rename_character_modal.character"))
+                .to_string(),
+            1 => format!(
+                "{} : {}",
+                t("rename_character_modal.new_name"),
+                self.new_name
+            ),
+            2 => t("rename_character_modal.cancel").to_string(),
+            _ => t("rename_character_modal.rename").to_string(),
+        }
+    }
+
+    pub fn keyboard_selection_label(&self) -> Option<String> {
+        if self.keyboard_focus == 0 {
+            return self.selected_character().map(str::to_string);
+        }
+        if self.keyboard_focus == 1 {
+            return self.name_input.selected_text(&self.new_name);
+        }
+        None
+    }
+
+    pub fn accessibility_error_label(&self) -> Option<String> {
+        self.error_key.map(|key| t(key).to_string())
     }
 
     pub fn next_cursor_blink_deadline(&self) -> Option<std::time::Instant> {
@@ -255,7 +288,7 @@ impl RenameCharacterModal {
                     self.keyboard_focus = (self.keyboard_focus + 3) % 4;
                     return RenameCharacterModalResult::Consumed;
                 }
-                if text == "\r" || text == "\n" {
+                if text == "\r" || text == "\n" || (text == " " && self.keyboard_focus != 1) {
                     return match self.keyboard_focus {
                         0 => {
                             if let Some(index) = self.selected_index {
@@ -348,6 +381,30 @@ impl RenameCharacterModal {
             }
             UiEvent::ShiftCursorRight => {
                 self.move_cursor(1, true);
+                RenameCharacterModalResult::Consumed
+            }
+            UiEvent::SelectWordLeft if self.keyboard_focus == 1 => {
+                self.name_input.move_word_left_shift(&self.new_name);
+                RenameCharacterModalResult::Consumed
+            }
+            UiEvent::SelectWordRight if self.keyboard_focus == 1 => {
+                self.name_input.move_word_right_shift(&self.new_name);
+                RenameCharacterModalResult::Consumed
+            }
+            UiEvent::Home if self.keyboard_focus == 0 => {
+                self.select_character(0);
+                RenameCharacterModalResult::Consumed
+            }
+            UiEvent::End if self.keyboard_focus == 0 => {
+                self.select_character(self.characters.len().saturating_sub(1));
+                RenameCharacterModalResult::Consumed
+            }
+            UiEvent::Home if self.keyboard_focus == 1 => {
+                self.name_input.move_home(false);
+                RenameCharacterModalResult::Consumed
+            }
+            UiEvent::End if self.keyboard_focus == 1 => {
+                self.name_input.move_end(&self.new_name, false);
                 RenameCharacterModalResult::Consumed
             }
             UiEvent::SelectAll => {
@@ -448,13 +505,13 @@ impl RenameCharacterModal {
                 height: 20.0,
             },
         ));
-        overlay_quads.push(input_quad(name, self.name_input.active));
+        overlay_quads.push(input_quad(name, self.keyboard_focus == 1));
         render_text_selection_and_cursor(
             overlay_quads,
             name,
             &self.new_name,
             &self.name_input,
-            self.name_input.active,
+            self.keyboard_focus == 1,
         );
         labels.push(LabelInfo {
             text: &self.new_name,
@@ -495,6 +552,7 @@ impl RenameCharacterModal {
             t("rename_character_modal.cancel"),
             false,
             true,
+            self.keyboard_focus == 2,
         );
         render_button(
             overlay_quads,
@@ -503,6 +561,7 @@ impl RenameCharacterModal {
             t("rename_character_modal.rename"),
             true,
             self.can_confirm(),
+            self.keyboard_focus == 3,
         );
     }
 
@@ -515,8 +574,12 @@ impl RenameCharacterModal {
         overlay_quads.push(quad(
             list,
             [0.08, 0.08, 0.10, 1.0],
-            [0.08, 0.08, 0.10, 1.0],
-            1.0,
+            if self.keyboard_focus == 0 {
+                [0.45, 0.62, 0.95, 0.9]
+            } else {
+                [0.08, 0.08, 0.10, 1.0]
+            },
+            if self.keyboard_focus == 0 { 2.0 } else { 1.0 },
             6.0,
         ));
 
@@ -680,6 +743,7 @@ fn render_button<'a>(
     text: &'a str,
     primary: bool,
     enabled: bool,
+    focused: bool,
 ) {
     let (color, bottom) = if !enabled {
         ([0.18, 0.18, 0.22, 1.0], [0.15, 0.15, 0.18, 1.0])
@@ -692,8 +756,12 @@ fn render_button<'a>(
         rect: [rect.x, rect.y, rect.width, rect.height],
         color,
         color_bottom: bottom,
-        border_color: [0.55, 0.55, 0.65, if enabled { 0.55 } else { 0.25 }],
-        border_width: 1.0,
+        border_color: if focused {
+            [0.45, 0.62, 0.95, 1.0]
+        } else {
+            [0.55, 0.55, 0.65, if enabled { 0.55 } else { 0.25 }]
+        },
+        border_width: if focused { 2.0 } else { 1.0 },
         border_radius: 8.0,
         shadow_offset: [0.0, 2.0],
         shadow_color: [0.0, 0.0, 0.0, 0.25],
