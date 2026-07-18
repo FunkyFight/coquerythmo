@@ -421,7 +421,9 @@
 "export_hub.grid_pdf" = "Cuadrícula de cruces PDF"
 "export_hub.grid_pdf_hint" = "Presencia de personajes por bucle."
 "export_hub.languages" = "Idiomas a exportar"
-"export_hub.audio_short_hint" = "O = original · I = instru"
+"export_hub.audio_short_hint" = "O = original · I = instru · O+ / I+ = con anunciador"
+"export_hub.audio_original_announcer" = "Audio original + anunciador"
+"export_hub.audio_instrumental_announcer" = "Audio instrumental + anunciador"
 "export_hub.close" = "Cerrar"
 
 # Settings

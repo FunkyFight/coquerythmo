@@ -136,20 +136,62 @@ fn temporary_path(path: &Path) -> PathBuf {
 }
 
 fn replace_file(temp: &Path, destination: &Path) -> Result<(), String> {
-    let backup = destination.with_extension("mp4.before_countdown");
-    let _ = std::fs::remove_file(&backup);
+    // Keep the original only while swapping the completed countdown render in.
+    // The old `movie.mp4.before_countdown` name looked like a second MP4 export
+    // in Explorer when cleanup was delayed or failed.
+    let backup = backup_path(destination);
+    let legacy_backup = destination.with_extension("mp4.before_countdown");
+    let _ = remove_file_with_retry(&legacy_backup);
+    let _ = remove_file_with_retry(&backup);
     std::fs::rename(destination, &backup).map_err(|error| format!("pre-roll backup: {error}"))?;
     match std::fs::rename(temp, destination) {
         Ok(()) => {
-            let _ = std::fs::remove_file(backup);
+            if let Err(error) = remove_file_with_retry(&backup) {
+                // The export itself is complete.  Do not turn it into a failed
+                // delivery merely because Windows still has the backup open;
+                // the hidden, timestamped name prevents it from being mistaken
+                // for another user-facing export.
+                log::warn!(
+                    "Could not remove temporary pre-roll backup {}: {error}",
+                    backup.display()
+                );
+            }
             Ok(())
         }
         Err(error) => {
             let _ = std::fs::rename(&backup, destination);
-            let _ = std::fs::remove_file(temp);
+            let _ = remove_file_with_retry(temp);
             Err(format!("pre-roll replace: {error}"))
         }
     }
+}
+
+fn backup_path(destination: &Path) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let stem = destination
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("export");
+    parent.join(format!(".{stem}.before_countdown.{stamp}.mp4"))
+}
+
+fn remove_file_with_retry(path: &Path) -> std::io::Result<()> {
+    let mut last_error = None;
+    for _ in 0..5 {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+    Err(last_error.expect("a removal attempt always records an error"))
 }
 
 #[cfg(test)]
@@ -169,5 +211,41 @@ mod tests {
             path.extension().and_then(|value| value.to_str()),
             Some("mp4")
         );
+    }
+
+    #[test]
+    fn backup_name_is_hidden_and_not_an_export_filename() {
+        let path = backup_path(Path::new("C:/exports/movie_instrumental.mp4"));
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with(".movie_instrumental.before_countdown."));
+        assert_eq!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("mp4")
+        );
+        assert!(!name.contains(".mp4.before_countdown"));
+    }
+
+    #[test]
+    fn replace_file_leaves_only_the_countdown_export() {
+        let directory = std::env::temp_dir().join(format!(
+            "coquerythmo-preroll-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let destination = directory.join("movie_instrumental.mp4");
+        let temp = directory.join("countdown.mp4");
+        let legacy_backup = destination.with_extension("mp4.before_countdown");
+        std::fs::write(&destination, b"without-countdown").unwrap();
+        std::fs::write(&temp, b"with-countdown").unwrap();
+        std::fs::write(&legacy_backup, b"stale-without-countdown").unwrap();
+
+        replace_file(&temp, &destination).unwrap();
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"with-countdown");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

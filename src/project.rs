@@ -82,6 +82,10 @@ pub struct AudioSelection {
     pub original: bool,
     #[serde(default)]
     pub instrumental: bool,
+    #[serde(default)]
+    pub original_with_announcer: bool,
+    #[serde(default)]
+    pub instrumental_with_announcer: bool,
 }
 
 impl Default for AudioSelection {
@@ -89,6 +93,8 @@ impl Default for AudioSelection {
         Self {
             original: true,
             instrumental: false,
+            original_with_announcer: false,
+            instrumental_with_announcer: false,
         }
     }
 }

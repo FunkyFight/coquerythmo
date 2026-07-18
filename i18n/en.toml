@@ -421,7 +421,9 @@
 "export_hub.grid_pdf" = "Crossing grid PDF"
 "export_hub.grid_pdf_hint" = "Character presence by loop."
 "export_hub.languages" = "Languages to export"
-"export_hub.audio_short_hint" = "O = original · I = instru"
+"export_hub.audio_short_hint" = "O = original · I = instrumental · O+ / I+ = with announcer"
+"export_hub.audio_original_announcer" = "Original audio + announcer"
+"export_hub.audio_instrumental_announcer" = "Instrumental audio + announcer"
 "export_hub.close" = "Close"
 
 # Settings

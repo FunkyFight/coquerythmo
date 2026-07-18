@@ -7,6 +7,9 @@ const CARD_H: f32 = 700.0;
 const NAV_W: f32 = 170.0;
 const LANGUAGE_W: f32 = 300.0;
 const ROW_H: f32 = 52.0;
+const AUDIO_TOGGLE_W: f32 = 42.0;
+const AUDIO_TOGGLE_GAP: f32 = 4.0;
+const AUDIO_TOGGLE_PADDING: f32 = 8.0;
 
 #[derive(Clone, Debug)]
 pub struct ExportLanguageOption {
@@ -47,6 +50,8 @@ enum ExportFocus {
     Language(usize),
     LanguageOriginal(usize),
     LanguageInstrumental(usize),
+    LanguageOriginalAnnouncer(usize),
+    LanguageInstrumentalAnnouncer(usize),
     Close,
     Export,
 }
@@ -159,6 +164,14 @@ impl ExportModal {
             if language.has_instrumental {
                 order.push(ExportFocus::LanguageInstrumental(index));
             }
+            if cfg!(target_os = "windows") {
+                order.push(ExportFocus::LanguageOriginalAnnouncer(index));
+                if cfg!(target_os = "windows") {
+                    if language.has_instrumental {
+                        order.push(ExportFocus::LanguageInstrumentalAnnouncer(index));
+                    }
+                }
+            }
         }
         order.extend([ExportFocus::Close, ExportFocus::Export]);
         order
@@ -206,7 +219,9 @@ impl ExportModal {
         let index = match self.current_focus() {
             ExportFocus::Language(index)
             | ExportFocus::LanguageOriginal(index)
-            | ExportFocus::LanguageInstrumental(index) => index,
+            | ExportFocus::LanguageInstrumental(index)
+            | ExportFocus::LanguageOriginalAnnouncer(index)
+            | ExportFocus::LanguageInstrumentalAnnouncer(index) => index,
             _ => return,
         };
         let viewport = Self::language_list_viewport(Self::card(1280.0, 720.0));
@@ -259,6 +274,28 @@ impl ExportModal {
                         "{}, {}",
                         language.name,
                         t("export_modal.export_instrumental_audio")
+                    )
+                })
+                .unwrap_or_else(|| t("export_hub.languages").to_string()),
+            ExportFocus::LanguageOriginalAnnouncer(index) => self
+                .languages
+                .get(index)
+                .map(|language| {
+                    format!(
+                        "{}, {}",
+                        language.name,
+                        t("export_hub.audio_original_announcer")
+                    )
+                })
+                .unwrap_or_else(|| t("export_hub.languages").to_string()),
+            ExportFocus::LanguageInstrumentalAnnouncer(index) => self
+                .languages
+                .get(index)
+                .map(|language| {
+                    format!(
+                        "{}, {}",
+                        language.name,
+                        t("export_hub.audio_instrumental_announcer")
                     )
                 })
                 .unwrap_or_else(|| t("export_hub.languages").to_string()),
@@ -371,6 +408,36 @@ impl ExportModal {
                     state(selection.instrumental)
                 )
             }),
+            ExportFocus::LanguageOriginalAnnouncer(index) => {
+                self.languages.get(index).map(|language| {
+                    let selection = self
+                        .configuration
+                        .audio_by_language
+                        .get(&language.id)
+                        .copied()
+                        .unwrap_or_default();
+                    format!(
+                        "{}, {}",
+                        self.keyboard_focus_label(),
+                        state(selection.original_with_announcer)
+                    )
+                })
+            }
+            ExportFocus::LanguageInstrumentalAnnouncer(index) => {
+                self.languages.get(index).map(|language| {
+                    let selection = self
+                        .configuration
+                        .audio_by_language
+                        .get(&language.id)
+                        .copied()
+                        .unwrap_or_default();
+                    format!(
+                        "{}, {}",
+                        self.keyboard_focus_label(),
+                        state(selection.instrumental_with_announcer)
+                    )
+                })
+            }
             ExportFocus::Page(_) | ExportFocus::Close | ExportFocus::Export => None,
         }
     }
@@ -500,16 +567,50 @@ impl ExportModal {
     }
 
     fn toggle_language_audio(&mut self, id: u64, instrumental: bool, available: bool) {
+        if instrumental && !available {
+            return;
+        }
+        let newly_selected = if self.selected(id) {
+            false
+        } else {
+            self.configuration.selected_language_ids.push(id);
+            true
+        };
         let selection = self.configuration.audio_by_language.entry(id).or_default();
-        if instrumental {
-            if !available {
-                return;
+        if newly_selected {
+            if instrumental {
+                selection.instrumental = true;
+            } else {
+                selection.original = true;
             }
+            return;
+        }
+        if instrumental {
             if selection.original || !selection.instrumental {
                 selection.instrumental = !selection.instrumental;
             }
         } else if selection.instrumental || !selection.original {
             selection.original = !selection.original;
+        }
+    }
+
+    fn toggle_language_announcer(&mut self, id: u64, instrumental: bool, available: bool) {
+        if !available {
+            return;
+        }
+        let newly_selected = if self.selected(id) {
+            false
+        } else {
+            self.configuration.selected_language_ids.push(id);
+            true
+        };
+        let selection = self.configuration.audio_by_language.entry(id).or_default();
+        if instrumental {
+            selection.instrumental_with_announcer =
+                newly_selected || !selection.instrumental_with_announcer;
+        } else {
+            selection.original_with_announcer =
+                newly_selected || !selection.original_with_announcer;
         }
     }
 
@@ -578,6 +679,8 @@ impl ExportModal {
             | ExportFocus::Language(_)
             | ExportFocus::LanguageOriginal(_)
             | ExportFocus::LanguageInstrumental(_)
+            | ExportFocus::LanguageOriginalAnnouncer(_)
+            | ExportFocus::LanguageInstrumentalAnnouncer(_)
             | ExportFocus::Page(_)
             | ExportFocus::Close
             | ExportFocus::Export => {
@@ -656,6 +759,16 @@ impl ExportModal {
             ExportFocus::LanguageInstrumental(index) => {
                 if let Some(language) = self.languages.get(index).cloned() {
                     self.toggle_language_audio(language.id, true, language.has_instrumental);
+                }
+            }
+            ExportFocus::LanguageOriginalAnnouncer(index) => {
+                if let Some(language) = self.languages.get(index).cloned() {
+                    self.toggle_language_announcer(language.id, false, true);
+                }
+            }
+            ExportFocus::LanguageInstrumentalAnnouncer(index) => {
+                if let Some(language) = self.languages.get(index).cloned() {
+                    self.toggle_language_announcer(language.id, true, language.has_instrumental);
                 }
             }
             ExportFocus::Close => {
@@ -953,19 +1066,28 @@ impl ExportModal {
                     if let Some(language) = self.languages.get(row_index).cloned() {
                         let row_y =
                             language_viewport.y + row_index as f32 * ROW_H - self.language_scroll;
-                        let instrumental = Rect {
-                            x: language_viewport.x + language_viewport.width - 35.0,
-                            y: row_y + 15.0,
-                            width: 27.0,
-                            height: 24.0,
+                        let row = Rect {
+                            x: language_viewport.x,
+                            y: row_y + 3.0,
+                            width: language_viewport.width,
+                            height: ROW_H - 6.0,
                         };
-                        let original = Rect {
-                            x: instrumental.x - 31.0,
-                            y: instrumental.y,
-                            width: 27.0,
-                            height: 24.0,
-                        };
-                        if instrumental.contains(*x, *y) {
+                        let original = audio_toggle_rect(row, 0);
+                        let instrumental = audio_toggle_rect(row, 1);
+                        let original_announcer = audio_toggle_rect(row, 2);
+                        let instrumental_announcer = audio_toggle_rect(row, 3);
+                        if cfg!(target_os = "windows") && instrumental_announcer.contains(*x, *y) {
+                            self.set_focus(ExportFocus::LanguageInstrumentalAnnouncer(row_index));
+                            self.toggle_language_announcer(
+                                language.id,
+                                true,
+                                language.has_instrumental,
+                            );
+                        } else if cfg!(target_os = "windows") && original_announcer.contains(*x, *y)
+                        {
+                            self.set_focus(ExportFocus::LanguageOriginalAnnouncer(row_index));
+                            self.toggle_language_announcer(language.id, false, true);
+                        } else if instrumental.contains(*x, *y) {
                             self.set_focus(ExportFocus::LanguageInstrumental(row_index));
                             self.toggle_language_audio(
                                 language.id,
@@ -1354,7 +1476,9 @@ impl ExportModal {
             ExportFocus::Format(index) => format_card(content, index),
             ExportFocus::Language(index)
             | ExportFocus::LanguageOriginal(index)
-            | ExportFocus::LanguageInstrumental(index) => {
+            | ExportFocus::LanguageInstrumental(index)
+            | ExportFocus::LanguageOriginalAnnouncer(index)
+            | ExportFocus::LanguageInstrumentalAnnouncer(index) => {
                 let viewport = Self::language_list_viewport(card);
                 let y = viewport.y + index as f32 * ROW_H - self.language_scroll;
                 let row = Rect {
@@ -1365,16 +1489,16 @@ impl ExportModal {
                 };
                 match self.current_focus() {
                     ExportFocus::LanguageOriginal(_) => Rect {
-                        x: row.x + row.width - 66.0,
-                        y: row.y + 8.0,
-                        width: 27.0,
-                        height: 28.0,
+                        ..audio_toggle_rect(row, 0)
                     },
                     ExportFocus::LanguageInstrumental(_) => Rect {
-                        x: row.x + row.width - 35.0,
-                        y: row.y + 8.0,
-                        width: 27.0,
-                        height: 28.0,
+                        ..audio_toggle_rect(row, 1)
+                    },
+                    ExportFocus::LanguageOriginalAnnouncer(_) => Rect {
+                        ..audio_toggle_rect(row, 2)
+                    },
+                    ExportFocus::LanguageInstrumentalAnnouncer(_) => Rect {
+                        ..audio_toggle_rect(row, 3)
                     },
                     _ => row,
                 }
@@ -1692,7 +1816,7 @@ impl ExportModal {
                 Rect {
                     x: row.x + 34.0,
                     y: row.y,
-                    width: row.width - 108.0,
+                    width: row.width - 34.0 - audio_toggle_total_width() - AUDIO_TOGGLE_PADDING,
                     height: row.height,
                 },
                 13.0,
@@ -1708,12 +1832,7 @@ impl ExportModal {
             mini_toggle(
                 quads,
                 labels,
-                Rect {
-                    x: row.x + row.width - 66.0,
-                    y: row.y + 11.0,
-                    width: 27.0,
-                    height: 24.0,
-                },
+                audio_toggle_rect(row, 0),
                 "O",
                 selection.original,
                 true,
@@ -1721,16 +1840,29 @@ impl ExportModal {
             mini_toggle(
                 quads,
                 labels,
-                Rect {
-                    x: row.x + row.width - 35.0,
-                    y: row.y + 11.0,
-                    width: 27.0,
-                    height: 24.0,
-                },
+                audio_toggle_rect(row, 1),
                 "I",
                 selection.instrumental,
                 language.has_instrumental,
             );
+            if cfg!(target_os = "windows") {
+                mini_toggle(
+                    quads,
+                    labels,
+                    audio_toggle_rect(row, 2),
+                    "O+",
+                    selection.original_with_announcer,
+                    true,
+                );
+                mini_toggle(
+                    quads,
+                    labels,
+                    audio_toggle_rect(row, 3),
+                    "I+",
+                    selection.instrumental_with_announcer,
+                    language.has_instrumental,
+                );
+            }
         }
         let max = self.max_language_scroll(viewport);
         if max > 0.0 {
@@ -1761,6 +1893,20 @@ pub fn resolve_video_dimensions(
 ) -> (u32, u32) {
     crate::configured_export::resolve_video_dimensions(configuration, source_width, source_height)
 }
+fn audio_toggle_total_width() -> f32 {
+    AUDIO_TOGGLE_W * 4.0 + AUDIO_TOGGLE_GAP * 3.0
+}
+
+fn audio_toggle_rect(row: Rect, index: usize) -> Rect {
+    Rect {
+        x: row.x + row.width - AUDIO_TOGGLE_PADDING - audio_toggle_total_width()
+            + index as f32 * (AUDIO_TOGGLE_W + AUDIO_TOGGLE_GAP),
+        y: row.y + 11.0,
+        width: AUDIO_TOGGLE_W,
+        height: 24.0,
+    }
+}
+
 fn option_rect(content: Rect, index: usize) -> Rect {
     Rect {
         x: content.x + 16.0,
@@ -2149,5 +2295,39 @@ mod tests {
             ..ExportConfiguration::default()
         };
         assert_eq!(resolve_video_dimensions(&config, 2048, 858), (2578, 1080));
+    }
+
+    #[test]
+    fn choosing_an_audio_variant_selects_its_language() {
+        let mut modal = ExportModal::new(
+            1920,
+            1080,
+            vec![
+                ExportLanguageOption {
+                    id: 1,
+                    name: "Français".into(),
+                    has_instrumental: true,
+                },
+                ExportLanguageOption {
+                    id: 2,
+                    name: "English".into(),
+                    has_instrumental: true,
+                },
+            ],
+            ExportConfiguration {
+                selected_language_ids: vec![1],
+                ..ExportConfiguration::default()
+            },
+        );
+
+        modal.toggle_language_audio(2, true, true);
+        modal.toggle_language_announcer(2, false, true);
+        modal.toggle_language_announcer(2, true, true);
+
+        assert!(modal.selected(2));
+        let english = modal.configuration.audio_by_language[&2];
+        assert!(english.instrumental);
+        assert!(english.original_with_announcer);
+        assert!(english.instrumental_with_announcer);
     }
 }

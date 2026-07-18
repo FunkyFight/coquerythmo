@@ -3,6 +3,7 @@ use crate::i18n::t;
 
 pub const PROJECT_SETTINGS_W: f32 = 520.0;
 pub const PROJECT_SETTINGS_H: f32 = 300.0;
+const CONTROL_COUNT: usize = 6;
 
 pub struct ProjectSettingsModal {
     pub instrumental_audio_path: String,
@@ -87,9 +88,9 @@ impl ProjectSettingsModal {
             UiEvent::KeyInput { text } if text == "\x1b" => ProjectSettingsModalResult::Close,
             UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}" => {
                 self.keyboard_focus = if text == "\t" {
-                    (self.keyboard_focus + 1) % 6
+                    (self.keyboard_focus + 1) % CONTROL_COUNT
                 } else {
-                    (self.keyboard_focus + 5) % 6
+                    (self.keyboard_focus + CONTROL_COUNT - 1) % CONTROL_COUNT
                 };
                 ProjectSettingsModalResult::Consumed
             }
@@ -122,11 +123,11 @@ impl ProjectSettingsModal {
                 }
             }
             UiEvent::CursorUp | UiEvent::CursorLeft => {
-                self.keyboard_focus = (self.keyboard_focus + 5) % 6;
+                self.keyboard_focus = (self.keyboard_focus + CONTROL_COUNT - 1) % CONTROL_COUNT;
                 ProjectSettingsModalResult::Consumed
             }
             UiEvent::CursorDown | UiEvent::CursorRight => {
-                self.keyboard_focus = (self.keyboard_focus + 1) % 6;
+                self.keyboard_focus = (self.keyboard_focus + 1) % CONTROL_COUNT;
                 ProjectSettingsModalResult::Consumed
             }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
@@ -222,7 +223,6 @@ impl ProjectSettingsModal {
             color_override: None,
             font_family_override: None,
         });
-
         labels.push(LabelInfo {
             text: t("project_settings.instrumental_version"),
             bounds: Rect {

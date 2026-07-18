@@ -65,6 +65,8 @@ pub struct VideoPlayer {
     audio_stream: Option<cpal::Stream>,
     audio_clock: Option<Arc<AudioOutputState>>,
     audio_thread: Option<JoinHandle<()>>,
+    // Positive offsets require silence before the audio begins.
+    pending_audio_start_at: Option<f64>,
     pub waveform: Arc<RwLock<Vec<f32>>>,
     pub instrumental_waveform: Arc<RwLock<Vec<f32>>>,
     waveform_revision: Arc<AtomicU64>,
@@ -184,6 +186,7 @@ impl VideoPlayer {
             audio_stream: None,
             audio_clock: None,
             audio_thread: None,
+            pending_audio_start_at: None,
             waveform: Arc::new(RwLock::new(Vec::new())),
             instrumental_waveform: Arc::new(RwLock::new(Vec::new())),
             waveform_revision: Arc::new(AtomicU64::new(0)),
@@ -335,7 +338,9 @@ impl VideoPlayer {
                 .map(|clock| clock.audible_frame())
                 .unwrap_or(0);
 
-            if let Some(stream) = &self.audio_stream {
+            if self.audio_should_wait_at(self.current_frame as f64 / self.fps.max(1.0)) {
+                self.defer_audio_start();
+            } else if let Some(stream) = &self.audio_stream {
                 if let Err(e) = stream.play() {
                     log::error!("Audio stream play failed: {e}");
                 }
@@ -487,6 +492,7 @@ impl VideoPlayer {
         let Some(target_playback_frame) = self.playback_frame_at(now) else {
             return;
         };
+        self.start_pending_audio_if_due(target_playback_frame, now);
         let target_render_frame = self.clamp_render_frame(target_playback_frame);
         let target_frame = target_render_frame.floor() as i64;
 
@@ -635,9 +641,18 @@ impl VideoPlayer {
         self.frame_recycler = Some(free_tx);
         self.decoder_handle = Some(vid_handle);
 
-        // Audio decoder
-        let audio_timestamp = self.audio_timestamp_for_video_timestamp(timestamp);
-        if self.setup_audio_from(&audio_path, audio_timestamp).is_ok() {
+        // A positive offset is leading silence, so defer the audio stream
+        // rather than playing it immediately from timestamp zero.
+        if self.audio_should_wait_at(timestamp) {
+            self.pending_audio_start_at =
+                Some(self.active_audio_offset_frames() as f64 / self.fps.max(1.0));
+        } else if self
+            .setup_audio_from(
+                &audio_path,
+                self.audio_timestamp_for_video_timestamp(timestamp),
+            )
+            .is_ok()
+        {
             self.set_volume(self.volume);
             if !self.playing {
                 if let Some(stream) = &self.audio_stream {
@@ -662,6 +677,58 @@ impl VideoPlayer {
         (timestamp - offset_secs).max(0.0)
     }
 
+    fn audio_should_wait_at(&self, video_timestamp: f64) -> bool {
+        self.active_audio_offset_frames() > 0
+            && video_timestamp < self.active_audio_offset_frames() as f64 / self.fps.max(1.0)
+    }
+
+    fn defer_audio_start(&mut self) {
+        let start_at = self.active_audio_offset_frames() as f64 / self.fps.max(1.0);
+        self.pending_audio_start_at = (start_at > 0.0).then_some(start_at);
+        if let Some(clock) = &self.audio_clock {
+            clock.freeze();
+        }
+        if let Some(stream) = &self.audio_stream {
+            let _ = stream.pause();
+        }
+        self.audio_stream = None;
+        self.audio_clock = None;
+        self.audio_thread.take();
+    }
+
+    fn start_pending_audio_if_due(&mut self, video_frame: f64, now: Instant) {
+        let Some(start_at) = self.pending_audio_start_at else {
+            return;
+        };
+        let video_timestamp = video_frame / self.fps.max(1.0);
+        if video_timestamp < start_at {
+            return;
+        }
+        self.pending_audio_start_at = None;
+        let Some(audio_path) = self.active_audio_path() else {
+            return;
+        };
+        if self
+            .setup_audio_from(
+                &audio_path,
+                self.audio_timestamp_for_video_timestamp(video_timestamp),
+            )
+            .is_ok()
+        {
+            self.set_volume(self.volume);
+            self.playback_start_time = Some(now);
+            self.playback_start_frame = video_frame.floor() as i64;
+            self.playback_start_audio_frame = self
+                .audio_clock
+                .as_ref()
+                .map(|clock| clock.audible_frame())
+                .unwrap_or(0);
+            if let Some(stream) = &self.audio_stream {
+                let _ = stream.play();
+            }
+        }
+    }
+
     fn reload_audio_at_current_frame(&mut self) {
         let Some(audio_path) = self.active_audio_path() else {
             return;
@@ -676,9 +743,16 @@ impl VideoPlayer {
         self.audio_stream = None;
         self.audio_clock = None;
         self.audio_thread.take();
+        self.pending_audio_start_at = None;
 
-        let timestamp =
-            self.audio_timestamp_for_video_timestamp(self.current_frame as f64 / self.fps);
+        let video_timestamp = self.current_frame as f64 / self.fps.max(1.0);
+        if was_playing && self.audio_should_wait_at(video_timestamp) {
+            self.pending_audio_start_at =
+                Some(self.active_audio_offset_frames() as f64 / self.fps.max(1.0));
+            return;
+        }
+
+        let timestamp = self.audio_timestamp_for_video_timestamp(video_timestamp);
         if self.setup_audio_from(&audio_path, timestamp).is_ok() {
             self.set_volume(self.volume);
             if was_playing {
@@ -909,6 +983,7 @@ impl VideoPlayer {
     fn stop_decoders(&mut self) {
         // Signal threads to kill their ffmpeg processes and exit
         self.kill_signal.store(true, Ordering::Relaxed);
+        self.pending_audio_start_at = None;
 
         if let Some(stream) = &self.audio_stream {
             let _ = stream.pause();
@@ -1403,7 +1478,7 @@ fn decode_waveform_peaks(path: &Path, fps: f64, total_frames: usize) -> Result<V
 mod tests {
     use std::sync::{mpsc, Arc};
 
-    use super::{AudioOutputState, VideoPlayer};
+    use super::{AudioOutputState, AudioTrack, VideoPlayer};
 
     #[test]
     fn interactive_seek_pauses_active_playback() {
@@ -1429,5 +1504,16 @@ mod tests {
         assert_eq!(player.current_frame(), 90);
         assert!(player.receiver.is_none());
         assert!(player.audio_clock.is_none());
+    }
+
+    #[test]
+    fn positive_instrumental_offset_waits_before_starting_audio() {
+        let mut player = VideoPlayer::new();
+        player.fps = 24.0;
+        player.active_audio_track = AudioTrack::Instrumental;
+        player.instrumental_audio_offset_frames = 24;
+
+        assert!(player.audio_should_wait_at(0.5));
+        assert!(!player.audio_should_wait_at(1.0));
     }
 }

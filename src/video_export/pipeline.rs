@@ -10,6 +10,7 @@ use std::time::Instant;
 use crate::project::Project;
 use crate::rythmo_cpu_renderer;
 
+use super::announcer;
 use super::audio::{
     instrumental_output_path, mux_instrumental_audio, mux_source_audio, temp_video_path,
 };
@@ -45,6 +46,7 @@ pub fn export_mp4(
     instrumental_audio: Option<&Path>,
     source_audio_offset_frames: i64,
     instrumental_audio_offset_frames: i64,
+    karaoke_announcer_enabled: bool,
     double_export_instrumental: bool,
     pre_roll_seconds: f64,
     render_backend_status: Option<Arc<AtomicU32>>,
@@ -80,6 +82,7 @@ pub fn export_mp4(
         instrumental_audio,
         source_audio_offset_frames,
         instrumental_audio_offset_frames,
+        karaoke_announcer_enabled,
         double_export_instrumental,
         pre_roll_seconds,
         render_backend_status.as_deref(),
@@ -115,6 +118,7 @@ pub(super) fn export_baked_mp4(
     instrumental_audio: Option<&Path>,
     source_audio_offset_frames: i64,
     instrumental_audio_offset_frames: i64,
+    karaoke_announcer_enabled: bool,
     double_export_instrumental: bool,
     pre_roll_seconds: f64,
     render_backend_status: Option<&AtomicU32>,
@@ -143,7 +147,9 @@ pub(super) fn export_baked_mp4(
     let total_duration_secs = info.duration_secs + pre_roll_seconds;
     let total_frames = (total_duration_secs * fps).ceil() as u64;
     let timeline_start_source_frame = -pre_roll_seconds * source_fps;
-    let pre_roll_audio_frames = (pre_roll_seconds * fps).round() as i64;
+    // Audio offsets are stored in source-video frames. Keep the pre-roll in
+    // that same timebase before handing both values to the audio muxer.
+    let pre_roll_audio_frames = (pre_roll_seconds * source_fps).round() as i64;
 
     if total_frames == 0 {
         return Err("Video has no duration".into());
@@ -239,8 +245,18 @@ pub(super) fn export_baked_mp4(
     };
     let cpu_filter =
         cpu_fit_and_stack_filter(out_w, vid_h, fps, info.duration_secs, pre_roll_seconds);
-    let needs_audio_mux =
-        instrumental_audio.is_some() || source_audio_offset_frames != 0 || pre_roll_seconds > 0.0;
+    let needs_audio_mux = instrumental_audio.is_some()
+        || source_audio_offset_frames != 0
+        || instrumental_audio_offset_frames != 0
+        || pre_roll_seconds > 0.0
+        || karaoke_announcer_enabled;
+    let announcer_audio = if karaoke_announcer_enabled {
+        // Project line positions are stored in source-video frames. The BR may
+        // be rendered at another FPS, so cue timing must follow source_fps.
+        announcer::synthesize(project, source_fps, pre_roll_seconds, output)?
+    } else {
+        None
+    };
     let temp_video = needs_audio_mux.then(|| temp_video_path(output));
     let video_output = temp_video.as_deref().unwrap_or(output);
     let include_source_audio = !needs_audio_mux;
@@ -344,7 +360,8 @@ pub(super) fn export_baked_mp4(
                     output,
                     total_duration_secs,
                     source_audio_offset_frames + pre_roll_audio_frames,
-                    fps,
+                    source_fps,
+                    announcer_audio.as_deref(),
                     cancel,
                 ) {
                     let _ = std::fs::remove_file(temp);
@@ -360,7 +377,8 @@ pub(super) fn export_baked_mp4(
                 &instrumental_output,
                 total_duration_secs,
                 instrumental_audio_offset_frames + pre_roll_audio_frames,
-                fps,
+                source_fps,
+                announcer_audio.as_deref(),
                 cancel,
                 progress_cb,
             ) {
@@ -378,7 +396,8 @@ pub(super) fn export_baked_mp4(
                 output,
                 total_duration_secs,
                 source_audio_offset_frames + pre_roll_audio_frames,
-                fps,
+                source_fps,
+                announcer_audio.as_deref(),
                 cancel,
             ) {
                 let _ = std::fs::remove_file(temp);
@@ -386,6 +405,9 @@ pub(super) fn export_baked_mp4(
             }
         }
         let _ = std::fs::remove_file(temp);
+    }
+    if let Some(announcer) = announcer_audio {
+        let _ = std::fs::remove_file(announcer);
     }
 
     emit_progress(progress_cb, 1.0);

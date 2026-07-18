@@ -457,7 +457,9 @@
 "export_hub.grid_pdf" = "Grille de croisées PDF"
 "export_hub.grid_pdf_hint" = "Présence des personnages par boucle."
 "export_hub.languages" = "Langues à exporter"
-"export_hub.audio_short_hint" = "O = original · I = instru"
+"export_hub.audio_short_hint" = "O = original · I = instru · O+ / I+ = avec annonceur"
+"export_hub.audio_original_announcer" = "Audio original + annonceur"
+"export_hub.audio_instrumental_announcer" = "Audio instru + annonceur"
 "export_hub.close" = "Fermer"
 
 # Settings

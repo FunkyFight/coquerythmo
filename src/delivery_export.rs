@@ -1414,6 +1414,7 @@ pub struct AudioExportOptions<'a> {
     /// Optional delivery duration. When set, FFmpeg pads or trims the adjusted
     /// audio to exactly this number of project frames.
     pub duration_frames: Option<i64>,
+    pub announcer_audio: Option<&'a Path>,
 }
 
 impl<'a> AudioExportOptions<'a> {
@@ -1424,6 +1425,7 @@ impl<'a> AudioExportOptions<'a> {
             language_name,
             stem_name: track.label(),
             duration_frames: None,
+            announcer_audio: None,
         }
     }
 }
@@ -1475,8 +1477,25 @@ pub fn export_audio(
         .arg("-nostdin")
         .arg("-hide_banner")
         .arg("-i")
-        .arg(input)
-        .args(["-map", "0:a:0", "-vn", "-af", &filter, "-map_metadata", "0"]);
+        .arg(input);
+    if let Some(announcer) = options.announcer_audio {
+        let duration = options
+            .duration_frames
+            .map(|frames| frames as f64 / fps)
+            .unwrap_or(86_400.0);
+        let mix = format!("[0:a]{filter}[base];[1:a]apad=whole_dur={duration},atrim=duration={duration}[cue];[base][cue]amix=inputs=2:normalize=0[mix]");
+        command.arg("-i").arg(announcer).args([
+            "-filter_complex",
+            &mix,
+            "-map",
+            "[mix]",
+            "-vn",
+            "-map_metadata",
+            "0",
+        ]);
+    } else {
+        command.args(["-map", "0:a:0", "-vn", "-af", &filter, "-map_metadata", "0"]);
+    }
 
     let title = if options.stem_name.trim().is_empty() {
         options.track.label()
@@ -1645,6 +1664,7 @@ pub fn export_bwf_stems(
             language_name: stem.language_name,
             stem_name: stem.stem_name,
             duration_frames: stem.duration_frames,
+            announcer_audio: None,
         };
         export_audio(project, fps, stem.input, stem.output, &options, cancel)?;
     }

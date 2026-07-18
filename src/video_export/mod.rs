@@ -3,6 +3,7 @@
 //! The implementation is split into capability probing, pipeline orchestration,
 //! frame production, audio muxing, FFmpeg invocation and progress reporting.
 
+pub(crate) mod announcer;
 mod audio;
 mod capabilities;
 mod ffmpeg;

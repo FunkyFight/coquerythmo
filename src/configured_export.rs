@@ -140,7 +140,7 @@ pub fn run(context: ConfiguredExportContext<'_>) -> Result<Vec<PathBuf>, String>
             );
             for track in &tracks {
                 let output = parent.join(format!("{prefix}_{}.mp4", track.label()));
-                let instrumental = match track {
+                let instrumental = match track.kind {
                     AudioTrackKind::Original => None,
                     AudioTrackKind::Instrumental => {
                         Some(instrumental_path.as_deref().ok_or_else(|| {
@@ -163,6 +163,7 @@ pub fn run(context: ConfiguredExportContext<'_>) -> Result<Vec<PathBuf>, String>
                     instrumental,
                     project.settings().source_audio_offset_frames,
                     project.settings().instrumental_audio_offset_frames,
+                    track.with_announcer,
                     false,
                     context.configuration.pre_roll_seconds,
                     context.render_backend_status.clone(),
@@ -223,7 +224,7 @@ pub fn run(context: ConfiguredExportContext<'_>) -> Result<Vec<PathBuf>, String>
         }
 
         for track in &tracks {
-            let input = match track {
+            let input = match track.kind {
                 AudioTrackKind::Original => context
                     .source_video
                     .ok_or_else(|| "Original audio export requires a source video".to_string())?,
@@ -258,13 +259,24 @@ pub fn run(context: ConfiguredExportContext<'_>) -> Result<Vec<PathBuf>, String>
                     suffix,
                     format.extension()
                 ));
+                let announcer_audio = if track.with_announcer {
+                    crate::video_export::announcer::synthesize(
+                        &project,
+                        context.source_fps,
+                        0.0,
+                        &output,
+                    )?
+                } else {
+                    None
+                };
                 let options = AudioExportOptions {
                     format,
-                    track: *track,
+                    track: track.kind,
                     language_name: &language.name,
                     stem_name: track.label(),
                     duration_frames: (context.source_total_frames > 0)
                         .then_some(context.source_total_frames),
+                    announcer_audio: announcer_audio.as_deref(),
                 };
                 delivery_export::export_audio(
                     &project,
@@ -282,6 +294,9 @@ pub fn run(context: ConfiguredExportContext<'_>) -> Result<Vec<PathBuf>, String>
                         track.label()
                     )
                 })?;
+                if let Some(announcer) = announcer_audio {
+                    let _ = std::fs::remove_file(announcer);
+                }
                 outputs.push(output);
                 finish_task(&context.progress, &mut completed, task_count);
             }
@@ -328,22 +343,57 @@ pub fn run(context: ConfiguredExportContext<'_>) -> Result<Vec<PathBuf>, String>
     Ok(outputs)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SelectedAudioTrack {
+    kind: AudioTrackKind,
+    with_announcer: bool,
+}
+
+impl SelectedAudioTrack {
+    fn label(self) -> &'static str {
+        match (self.kind, self.with_announcer) {
+            (AudioTrackKind::Original, false) => "original",
+            (AudioTrackKind::Instrumental, false) => "instrumental",
+            (AudioTrackKind::Original, true) => "original_announcer",
+            (AudioTrackKind::Instrumental, true) => "instrumental_announcer",
+        }
+    }
+}
+
 fn selected_audio_tracks(
     configuration: &ExportConfiguration,
     language_id: u64,
     has_instrumental: bool,
-) -> Vec<AudioTrackKind> {
+) -> Vec<SelectedAudioTrack> {
     let selection = configuration
         .audio_by_language
         .get(&language_id)
         .copied()
         .unwrap_or_else(AudioSelection::default);
-    let mut tracks = Vec::with_capacity(2);
+    let mut tracks = Vec::with_capacity(4);
     if selection.original {
-        tracks.push(AudioTrackKind::Original);
+        tracks.push(SelectedAudioTrack {
+            kind: AudioTrackKind::Original,
+            with_announcer: false,
+        });
     }
     if selection.instrumental && has_instrumental {
-        tracks.push(AudioTrackKind::Instrumental);
+        tracks.push(SelectedAudioTrack {
+            kind: AudioTrackKind::Instrumental,
+            with_announcer: false,
+        });
+    }
+    if cfg!(target_os = "windows") && selection.original_with_announcer {
+        tracks.push(SelectedAudioTrack {
+            kind: AudioTrackKind::Original,
+            with_announcer: true,
+        });
+    }
+    if cfg!(target_os = "windows") && selection.instrumental_with_announcer && has_instrumental {
+        tracks.push(SelectedAudioTrack {
+            kind: AudioTrackKind::Instrumental,
+            with_announcer: true,
+        });
     }
     tracks
 }
@@ -505,5 +555,33 @@ mod tests {
     fn filenames_are_windows_safe() {
         assert_eq!(safe_filename(" Français / Canada:* "), "Français_Canada");
         assert_eq!(safe_filename("***"), "export");
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn selected_tracks_keep_each_base_audio_and_announcer_variant() {
+        let mut configuration = ExportConfiguration::default();
+        configuration.audio_by_language.insert(
+            42,
+            AudioSelection {
+                original: true,
+                instrumental: true,
+                original_with_announcer: true,
+                instrumental_with_announcer: true,
+            },
+        );
+        let labels = selected_audio_tracks(&configuration, 42, true)
+            .into_iter()
+            .map(SelectedAudioTrack::label)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            vec![
+                "original",
+                "instrumental",
+                "original_announcer",
+                "instrumental_announcer",
+            ]
+        );
     }
 }

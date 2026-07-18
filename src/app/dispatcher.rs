@@ -814,6 +814,7 @@ impl CommandDispatcher {
                             instrumental_audio_path.as_deref(),
                             source_audio_offset_frames,
                             instrumental_audio_offset_frames,
+                            false,
                             double_export_instrumental,
                             0.0,
                             Some(render_backend_status.clone()),

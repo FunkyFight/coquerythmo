@@ -47,30 +47,41 @@ pub(super) fn mux_source_audio(
     duration_secs: f64,
     offset_frames: i64,
     fps: f64,
+    announcer_audio: Option<&Path>,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     progress::check_export_cancel(cancel)?;
     let duration_arg = duration_secs.to_string();
     let audio_filter = audio_offset_filter(duration_secs, offset_frames, fps);
 
-    let mut child = media_binary::command("ffmpeg")
+    let mut command = media_binary::command("ffmpeg");
+    command
         .arg("-i")
         .arg(video_only)
         .arg("-i")
-        .arg(source_video)
-        .args([
+        .arg(source_video);
+    if let Some(announcer) = announcer_audio {
+        command.arg("-i").arg(announcer);
+        let cue_filter = format!("[1:a]{}[base];[2:a]apad=whole_dur={duration_arg},atrim=duration={duration_arg}[cue];[base][cue]amix=inputs=2:normalize=0[aout]", audio_filter);
+        command.args([
+            "-filter_complex",
+            &cue_filter,
             "-map",
             "0:v:0",
             "-map",
-            "1:a?",
+            "[aout]",
+        ]);
+    } else {
+        command.args(["-map", "0:v:0", "-map", "1:a?", "-af", &audio_filter]);
+    }
+    let mut child = command
+        .args([
             "-c:v",
             "copy",
             "-c:a",
             "aac",
             "-b:a",
             "192k",
-            "-af",
-            &audio_filter,
             "-t",
             &duration_arg,
             "-movflags",
@@ -136,6 +147,7 @@ pub(super) fn mux_instrumental_audio(
     duration_secs: f64,
     offset_frames: i64,
     fps: f64,
+    announcer_audio: Option<&Path>,
     cancel: &AtomicBool,
     progress_cb: &ProgressCallback,
 ) -> Result<(), String> {
@@ -145,24 +157,34 @@ pub(super) fn mux_instrumental_audio(
     progress::emit_progress(progress_cb, 0.99);
     progress::check_export_cancel(cancel)?;
 
-    let mut child = media_binary::command("ffmpeg")
+    let mut command = media_binary::command("ffmpeg");
+    command
         .arg("-i")
         .arg(normal_video)
         .arg("-i")
-        .arg(instrumental_audio)
-        .args([
+        .arg(instrumental_audio);
+    if let Some(announcer) = announcer_audio {
+        command.arg("-i").arg(announcer);
+        let cue_filter = format!("[1:a]{}[base];[2:a]apad=whole_dur={duration_arg},atrim=duration={duration_arg}[cue];[base][cue]amix=inputs=2:normalize=0[aout]", audio_filter);
+        command.args([
+            "-filter_complex",
+            &cue_filter,
             "-map",
             "0:v:0",
             "-map",
-            "1:a:0",
+            "[aout]",
+        ]);
+    } else {
+        command.args(["-map", "0:v:0", "-map", "1:a:0", "-af", &audio_filter]);
+    }
+    let mut child = command
+        .args([
             "-c:v",
             "copy",
             "-c:a",
             "aac",
             "-b:a",
             "192k",
-            "-af",
-            &audio_filter,
             "-t",
             &duration_arg,
             "-movflags",
@@ -283,6 +305,14 @@ mod tests {
         assert_eq!(
             instrumental_output_path(Path::new("movie")),
             PathBuf::from("movie_instrumental.mp4")
+        );
+    }
+
+    #[test]
+    fn audio_offset_uses_the_source_frame_rate() {
+        assert_eq!(
+            audio_offset_filter(10.0, 24, 24.0),
+            "adelay=1000:all=1,apad=whole_dur=10,atrim=duration=10,asetpts=PTS-STARTPTS"
         );
     }
 }
