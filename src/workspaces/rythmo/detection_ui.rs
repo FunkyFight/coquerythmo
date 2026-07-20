@@ -22,6 +22,7 @@ const SYNC_DOT_SIZE: f32 = 6.0;
 pub struct DetectionHover {
     pub track: u8,
     pub media_tick: MediaTick,
+    pub screen_x: f32,
     pub track_rect: Rect,
 }
 
@@ -44,7 +45,7 @@ impl RythmoState {
         let Some(hover) = self.detection_hover else {
             return false;
         };
-        let button = detection_button_rect(&hover, 0.0, &hover.track_rect);
+        let button = detection_button_rect(&hover);
         self.detection_menu = Some(DetectionMenu {
             track: hover.track,
             media_tick: hover.media_tick,
@@ -53,6 +54,13 @@ impl RythmoState {
             hover_index: None,
         });
         true
+    }
+}
+
+fn selected_address(state: &RythmoState) -> Option<DetectionAddress> {
+    match state.selected.as_ref() {
+        Some(Selection::Detection(address)) => Some(*address),
+        _ => None,
     }
 }
 
@@ -65,39 +73,25 @@ fn pointer_tick(x: f32, current_frame: f64, zone: &Rect) -> MediaTick {
     MediaTick::from_frame_position(frame).clamp(MediaTick::ZERO, MediaTick(i64::MAX))
 }
 
-fn track_rect(ctx: &RythmoCtx<'_>, track: usize) -> Rect {
+fn track_body_rect(ctx: &RythmoCtx<'_>, track: usize) -> Rect {
     editor_track_body_rect_at_frame(
         ctx.project,
-        ctx.current_frame.floor() as i64,
-        track,
+        rythmo_layout::y_slot_for_track_index(track),
+        ctx.current_frame,
         ctx.zone,
     )
 }
 
 fn track_under_pointer(ctx: &RythmoCtx<'_>, y: f32) -> Option<(u8, Rect)> {
-    (0..crate::rythmo_layout::track_count()).find_map(|track| {
-        let rect = track_rect(ctx, track);
+    (0..rythmo_layout::track_count()).find_map(|track| {
+        let rect = track_body_rect(ctx, track);
         (y >= rect.y && y <= rect.y + rect.height).then_some((track as u8, rect))
     })
 }
 
-fn detection_button_rect(hover: &DetectionHover, current_frame: f64, zone: &Rect) -> Rect {
-    let x = if current_frame == 0.0 && zone.width == hover.track_rect.width {
-        hover.track_rect.x + hover.track_rect.width / 2.0
-    } else {
-        tick_x(hover.media_tick, current_frame, zone)
-    };
+fn detection_button_rect(hover: &DetectionHover) -> Rect {
     Rect {
-        x: x - DETECTION_BUTTON_SIZE / 2.0,
-        y: hover.track_rect.y + hover.track_rect.height - DETECTION_BUTTON_SIZE - 2.0,
-        width: DETECTION_BUTTON_SIZE,
-        height: DETECTION_BUTTON_SIZE,
-    }
-}
-
-fn actual_detection_button_rect(hover: &DetectionHover, current_frame: f64, zone: &Rect) -> Rect {
-    Rect {
-        x: tick_x(hover.media_tick, current_frame, zone) - DETECTION_BUTTON_SIZE / 2.0,
+        x: hover.screen_x - DETECTION_BUTTON_SIZE / 2.0,
         y: hover.track_rect.y + hover.track_rect.height - DETECTION_BUTTON_SIZE - 2.0,
         width: DETECTION_BUTTON_SIZE,
         height: DETECTION_BUTTON_SIZE,
@@ -114,11 +108,8 @@ fn source_icon_rect(tick: MediaTick, track_rect: Rect, current_frame: f64, zone:
 }
 
 fn sync_anchor_x(line_rect: Rect, character_index: usize, character_count: usize) -> f32 {
-    if character_count == 0 {
-        return line_rect.x;
-    }
     line_rect.x
-        + line_rect.width * ((character_index as f32 + 0.5) / character_count as f32)
+        + line_rect.width * ((character_index as f32 + 0.5) / character_count.max(1) as f32)
 }
 
 fn sync_dot_rect(x: f32, line_rect: Rect) -> Rect {
@@ -153,20 +144,15 @@ fn menu_item_rect(menu: &DetectionMenu, zone: &Rect, index: usize) -> Rect {
     }
 }
 
-fn hit_existing_detection(
-    ctx: &RythmoCtx<'_>,
-    x: f32,
-    y: f32,
-) -> Option<DetectionAddress> {
-    for track in 0..crate::rythmo_layout::track_count() {
+fn hit_existing_detection(ctx: &RythmoCtx<'_>, x: f32, y: f32) -> Option<DetectionAddress> {
+    for track in 0..rythmo_layout::track_count() {
         let line_id = track_storage_line_id(track as u8);
         let Some(data) = ctx.project.detections().line(line_id) else {
             continue;
         };
-        let rect = track_rect(ctx, track);
+        let rect = track_body_rect(ctx, track);
         for cue in data.source_detections() {
-            let hit = source_icon_rect(cue.media_tick, rect, ctx.current_frame, ctx.zone);
-            if hit.contains(x, y) {
+            if source_icon_rect(cue.media_tick, rect, ctx.current_frame, ctx.zone).contains(x, y) {
                 return Some(DetectionAddress {
                     line_id,
                     detection_id: cue.id,
@@ -181,14 +167,14 @@ fn hit_existing_detection(
         };
         let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
         for cue in data.text_sync_cues() {
-            let hit = sync_dot_rect(tick_x(cue.media_tick, ctx.current_frame, ctx.zone), rect);
-            let expanded = Rect {
-                x: hit.x - 5.0,
-                y: hit.y - 5.0,
-                width: hit.width + 10.0,
-                height: hit.height + 10.0,
+            let dot = sync_dot_rect(tick_x(cue.media_tick, ctx.current_frame, ctx.zone), rect);
+            let hit = Rect {
+                x: dot.x - 5.0,
+                y: dot.y - 5.0,
+                width: dot.width + 10.0,
+                height: dot.height + 10.0,
             };
-            if expanded.contains(x, y) {
+            if hit.contains(x, y) {
                 return Some(DetectionAddress {
                     line_id: line.id,
                     detection_id: cue.id,
@@ -200,14 +186,10 @@ fn hit_existing_detection(
 }
 
 fn existing_sync_at(project: &Project, line_id: u64, character_index: usize) -> bool {
-    project
-        .detections()
-        .line(line_id)
-        .is_some_and(|data| {
-            data.text_sync_cues().any(|cue| {
-                cue.target.grapheme_index() == Some(character_index as u32)
-            })
-        })
+    project.detections().line(line_id).is_some_and(|data| {
+        data.text_sync_cues()
+            .any(|cue| cue.target.grapheme_index() == Some(character_index as u32))
+    })
 }
 
 fn hit_sync_placeholder(
@@ -230,13 +212,13 @@ fn hit_sync_placeholder(
             }
             let anchor_x = sync_anchor_x(rect, character_index, character_count);
             let dot = sync_dot_rect(anchor_x, rect);
-            let expanded = Rect {
+            let hit = Rect {
                 x: dot.x - 4.0,
                 y: dot.y - 4.0,
                 width: dot.width + 8.0,
                 height: dot.height + 8.0,
             };
-            if expanded.contains(x, y) {
+            if hit.contains(x, y) {
                 let ratio = (character_index as f64 + 0.5) / character_count as f64;
                 let frame = line.start_frame as f64 + line.duration_frames as f64 * ratio;
                 return Some((
@@ -251,7 +233,7 @@ fn hit_sync_placeholder(
 }
 
 fn navigate_detection(project: &Project, state: &mut RythmoState, direction: i32) -> bool {
-    let Some(Selection::Detection(address)) = state.selected else {
+    let Some(address) = selected_address(state) else {
         return false;
     };
     let Some(data) = project.detections().line(address.line_id) else {
@@ -304,34 +286,28 @@ pub(crate) fn handle_detection_event(
             }
 
             if let Some(mut menu) = state.detection_menu {
-                let hover = DetectionKind::ALL
+                menu.hover_index = DetectionKind::ALL
                     .iter()
                     .enumerate()
                     .find(|(index, _)| menu_item_rect(&menu, ctx.zone, *index).contains(*x, *y))
                     .map(|(index, _)| index);
-                if hover != menu.hover_index {
-                    menu.hover_index = hover;
-                    state.detection_menu = Some(menu);
-                }
+                state.detection_menu = Some(menu);
                 return Some(EventResponse::Consumed);
             }
 
-            if let Some(hover) = state.detection_hover {
-                if actual_detection_button_rect(&hover, ctx.current_frame, ctx.zone)
-                    .contains(*x, *y)
-                {
-                    return Some(EventResponse::Consumed);
-                }
+            if state
+                .detection_hover
+                .is_some_and(|hover| detection_button_rect(&hover).contains(*x, *y))
+            {
+                return Some(EventResponse::Consumed);
             }
 
-            let next = track_under_pointer(ctx, *y).map(|(track, rect)| DetectionHover {
+            state.detection_hover = track_under_pointer(ctx, *y).map(|(track, rect)| DetectionHover {
                 track,
                 media_tick: pointer_tick(*x, ctx.current_frame, ctx.zone),
+                screen_x: *x,
                 track_rect: rect,
             });
-            if next != state.detection_hover {
-                state.detection_hover = next;
-            }
         }
         UiEvent::MousePress { x, y } => {
             if let Some(menu) = state.detection_menu {
@@ -369,36 +345,23 @@ pub(crate) fn handle_detection_event(
                 }));
             }
 
-            if let Some(hover) = state.detection_hover {
-                if actual_detection_button_rect(&hover, ctx.current_frame, ctx.zone)
-                    .contains(*x, *y)
-                {
-                    state.open_detection_palette_from_hover();
-                    return Some(EventResponse::Consumed);
-                }
+            if state
+                .detection_hover
+                .is_some_and(|hover| detection_button_rect(&hover).contains(*x, *y))
+            {
+                state.open_detection_palette_from_hover();
+                return Some(EventResponse::Consumed);
             }
         }
         UiEvent::MouseRelease { .. } if state.detection_drag.is_some() => {
             state.detection_drag = None;
             return Some(EventResponse::Consumed);
         }
-        // Plain Space is consumed by the normal playback shortcut before it
-        // reaches the workspace. The remaining space KeyInput is Ctrl+Space.
-        UiEvent::KeyInput { text } if text == " " => {
-            if matches!(
-                state.selected,
-                Some(Selection::Detection(address)) if address.track().is_some()
-            ) {
-                return Some(EventResponse::Action(UiAction::NudgeSelectedDetection {
-                    delta_ticks: 0,
-                }));
-            }
-        }
         UiEvent::KeyInput { text } if text == "\x1b" => {
             if state.detection_menu.take().is_some() {
                 return Some(EventResponse::Consumed);
             }
-            if let Some(Selection::Detection(address)) = state.selected {
+            if let Some(address) = selected_address(state) {
                 state.selected = if address.track().is_some() {
                     None
                 } else {
@@ -419,7 +382,7 @@ pub(crate) fn handle_detection_event(
             }
         }
         UiEvent::Delete => {
-            if let Some(Selection::Detection(address)) = state.selected {
+            if let Some(address) = selected_address(state) {
                 return Some(EventResponse::Action(UiAction::DeleteDetection { address }));
             }
         }
@@ -471,8 +434,8 @@ fn push_line(
     });
 }
 
-/// Vector rendering mirrors the SVGs in `src/icons/detection`. There are no
-/// fallback letters or yellow text badges.
+/// The geometry is identical to the SVG assets loaded from
+/// `src/icons/detection`; no textual fallback is drawn.
 fn render_detection_asset(
     quads: &mut Vec<QuadInstance>,
     kind: DetectionKind,
@@ -513,15 +476,7 @@ fn render_detection_asset(
         }
         DetectionKind::Breath => {
             for offset in [-0.52_f32, 0.0, 0.52] {
-                push_line(
-                    quads,
-                    cx - s,
-                    cy + s * offset,
-                    cx + s,
-                    cy + s * (offset - 0.28),
-                    t * 0.72,
-                    color,
-                );
+                push_line(quads, cx - s, cy + s * offset, cx + s, cy + s * (offset - 0.28), t * 0.72, color);
             }
         }
         DetectionKind::Reaction => {
@@ -555,15 +510,16 @@ pub(crate) fn render_detection_overlay<'a>(
     quads: &mut Vec<QuadInstance>,
     _labels: &mut Vec<LabelInfo<'a>>,
 ) {
-    for track in 0..crate::rythmo_layout::track_count() {
+    let selected_address = selected_address(state);
+    for track in 0..rythmo_layout::track_count() {
         let line_id = track_storage_line_id(track as u8);
         let Some(data) = project.detections().line(line_id) else {
             continue;
         };
         let rect = editor_track_body_rect_at_frame(
             project,
-            current_frame.floor() as i64,
-            track,
+            rythmo_layout::y_slot_for_track_index(track),
+            current_frame,
             zone,
         );
         for cue in data.source_detections() {
@@ -575,8 +531,7 @@ pub(crate) fn render_detection_overlay<'a>(
                 line_id,
                 detection_id: cue.id,
             };
-            let selected =
-                matches!(state.selected, Some(Selection::Detection(current)) if current == address);
+            let selected = selected_address == Some(address);
             let hit = source_icon_rect(cue.media_tick, rect, current_frame, zone);
             if selected {
                 push_quad(
@@ -604,16 +559,15 @@ pub(crate) fn render_detection_overlay<'a>(
                     [0.72, 0.74, 0.80, 0.42]
                 },
             );
-            let icon = Rect {
-                x: hit.x + (hit.width - DETECTION_ICON_SIZE) / 2.0,
-                y: hit.y + (hit.height - DETECTION_ICON_SIZE) / 2.0,
-                width: DETECTION_ICON_SIZE,
-                height: DETECTION_ICON_SIZE,
-            };
             render_detection_asset(
                 quads,
                 cue.kind,
-                icon,
+                Rect {
+                    x: hit.x + (hit.width - DETECTION_ICON_SIZE) / 2.0,
+                    y: hit.y + (hit.height - DETECTION_ICON_SIZE) / 2.0,
+                    width: DETECTION_ICON_SIZE,
+                    height: DETECTION_ICON_SIZE,
+                },
                 if selected {
                     [0.78, 0.88, 1.0, 1.0]
                 } else {
@@ -623,7 +577,6 @@ pub(crate) fn render_detection_overlay<'a>(
         }
     }
 
-    // Letter anchors and active synchronization points.
     for line in project.lines() {
         let character_count = line.text.chars().count();
         if character_count == 0 || line.duration_frames <= 0 {
@@ -634,9 +587,8 @@ pub(crate) fn render_detection_overlay<'a>(
         for character_index in 0..character_count {
             let anchor_x = sync_anchor_x(rect, character_index, character_count);
             let existing = data.and_then(|data| {
-                data.text_sync_cues().find(|cue| {
-                    cue.target.grapheme_index() == Some(character_index as u32)
-                })
+                data.text_sync_cues()
+                    .find(|cue| cue.target.grapheme_index() == Some(character_index as u32))
             });
             if let Some(cue) = existing {
                 let cue_x = tick_x(cue.media_tick, current_frame, zone);
@@ -644,10 +596,7 @@ pub(crate) fn render_detection_overlay<'a>(
                     line_id: line.id,
                     detection_id: cue.id,
                 };
-                let selected = matches!(
-                    state.selected,
-                    Some(Selection::Detection(current)) if current == address
-                );
+                let selected = selected_address == Some(address);
                 if (cue_x - anchor_x).abs() > 1.5 {
                     push_line(
                         quads,
@@ -673,13 +622,14 @@ pub(crate) fn render_detection_overlay<'a>(
                     },
                 );
                 let dot = sync_dot_rect(cue_x, rect);
+                let extra = if selected { 1.5 } else { 0.0 };
                 push_quad(
                     quads,
                     Rect {
-                        x: dot.x - if selected { 1.5 } else { 0.0 },
-                        y: dot.y - if selected { 1.5 } else { 0.0 },
-                        width: dot.width + if selected { 3.0 } else { 0.0 },
-                        height: dot.height + if selected { 3.0 } else { 0.0 },
+                        x: dot.x - extra,
+                        y: dot.y - extra,
+                        width: dot.width + extra * 2.0,
+                        height: dot.height + extra * 2.0,
                     },
                     if selected {
                         [0.72, 0.88, 1.0, 1.0]
@@ -689,8 +639,12 @@ pub(crate) fn render_detection_overlay<'a>(
                     8.0,
                 );
             } else {
-                let dot = sync_dot_rect(anchor_x, rect);
-                push_quad(quads, dot, [0.70, 0.72, 0.78, 0.28], 6.0);
+                push_quad(
+                    quads,
+                    sync_dot_rect(anchor_x, rect),
+                    [0.70, 0.72, 0.78, 0.28],
+                    6.0,
+                );
             }
         }
     }
@@ -712,7 +666,10 @@ pub(crate) fn render_detection_overlay<'a>(
             );
             y += 6.0;
         }
-        let button = actual_detection_button_rect(&hover, current_frame, zone);
+        let button = detection_button_rect(&DetectionHover {
+            screen_x: x,
+            ..hover
+        });
         push_quad(quads, button, [0.10, 0.11, 0.14, 0.94], 4.0);
         push_line(
             quads,
