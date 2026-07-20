@@ -69,10 +69,7 @@ impl DetectionEditService {
     }
 
     /// Merge a stream of drag or keyboard-step changes into one undoable move.
-    pub fn coalesce_move(
-        previous: &mut DetectionChange,
-        next: &DetectionChange,
-    ) -> bool {
+    pub fn coalesce_move(previous: &mut DetectionChange, next: &DetectionChange) -> bool {
         let (
             DetectionChange::Move {
                 address: previous_address,
@@ -95,10 +92,7 @@ impl DetectionEditService {
         true
     }
 
-    pub fn remove_line(
-        document: &mut DetectionDocument,
-        line_id: u64,
-    ) -> Option<DetectionChange> {
+    pub fn remove_line(document: &mut DetectionDocument, line_id: u64) -> Option<DetectionChange> {
         let data = document.line(line_id)?.clone();
         if data.is_empty() {
             return None;
@@ -154,14 +148,21 @@ mod tests {
             TextAnchor::Grapheme { index: 1 },
         )
         .unwrap();
-        let mut first = DetectionEditService::move_to(&mut document, address, MediaTick(11)).unwrap();
+        let mut first =
+            DetectionEditService::move_to(&mut document, address, MediaTick(11)).unwrap();
         let second = DetectionEditService::move_to(&mut document, address, MediaTick(12)).unwrap();
 
         assert!(DetectionEditService::coalesce_move(&mut first, &second));
         assert!(DetectionEditService::undo(&mut document, &first));
-        assert_eq!(document.detection(address).unwrap().media_tick, MediaTick(10));
+        assert_eq!(
+            document.detection(address).unwrap().media_tick,
+            MediaTick(10)
+        );
         assert!(DetectionEditService::redo(&mut document, &first));
-        assert_eq!(document.detection(address).unwrap().media_tick, MediaTick(12));
+        assert_eq!(
+            document.detection(address).unwrap().media_tick,
+            MediaTick(12)
+        );
     }
 
     #[test]

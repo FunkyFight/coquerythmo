@@ -125,6 +125,9 @@ pub enum Command {
         old_note: String,
         new_note: String,
     },
+    Detection {
+        change: crate::detection::DetectionChange,
+    },
     AddDrawingStroke {
         stroke: DrawingStroke,
     },
@@ -286,6 +289,9 @@ impl Command {
                 if let Some(l) = project.get_line_mut(*line_id) {
                     l.note = new_note.clone();
                 }
+            }
+            Command::Detection { change } => {
+                project.apply_detection_change(change, true);
             }
             Command::AddDrawingStroke { stroke } => {
                 if project.drawing().get(stroke.id).is_none() {
@@ -465,6 +471,9 @@ impl Command {
                 if let Some(l) = project.get_line_mut(*line_id) {
                     l.note = old_note.clone();
                 }
+            }
+            Command::Detection { change } => {
+                project.apply_detection_change(change, false);
             }
         }
     }

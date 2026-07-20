@@ -163,14 +163,12 @@ pub fn karaoke_mode_tracks(
     // one pass; long bands therefore pay O(lines + tracks), not O(lines * tracks).
     for line in project.lines() {
         let track_index = track_index_for_y_slot(line.y_slot);
-        let is_active = current_frame >= line.start_frame as f64
-            && current_frame <= line.end_frame() as f64;
+        let is_active =
+            current_frame >= line.start_frame as f64 && current_frame <= line.end_frame() as f64;
 
         if is_active {
             let should_replace = active[track_index]
-                .map(|current| {
-                    (line.start_frame, line.id) > (current.start_frame, current.id)
-                })
+                .map(|current| (line.start_frame, line.id) > (current.start_frame, current.id))
                 .unwrap_or(true);
             if should_replace {
                 active[track_index] = Some(line);
@@ -193,9 +191,7 @@ pub fn karaoke_mode_tracks(
 
         if line.start_frame as f64 > current_frame {
             let should_replace = next[track_index]
-                .map(|current| {
-                    (line.start_frame, line.id) < (current.start_frame, current.id)
-                })
+                .map(|current| (line.start_frame, line.id) < (current.start_frame, current.id))
                 .unwrap_or(true);
             if should_replace {
                 next[track_index] = Some(line);

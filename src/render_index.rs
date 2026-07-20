@@ -127,22 +127,8 @@ impl ProjectRenderIndex {
         }
 
         let middle = range_start + (range_end - range_start) / 2;
-        self.collect_visible_line_ids(
-            node * 2,
-            range_start,
-            middle,
-            query_end,
-            first_frame,
-            ids,
-        );
-        self.collect_visible_line_ids(
-            node * 2 + 1,
-            middle,
-            range_end,
-            query_end,
-            first_frame,
-            ids,
-        );
+        self.collect_visible_line_ids(node * 2, range_start, middle, query_end, first_frame, ids);
+        self.collect_visible_line_ids(node * 2 + 1, middle, range_end, query_end, first_frame, ids);
     }
 
     pub fn visible_marker_indices(&self, first_frame: i64, last_frame: i64) -> Vec<usize> {
