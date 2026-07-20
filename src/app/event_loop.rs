@@ -761,7 +761,7 @@ pub fn run(startup_path: Option<PathBuf>) {
                         }
                         if !ctrl_held
                             && !shift_held
-                            && !keyboard_modifiers.alt
+                            && keyboard_modifiers.alt
                             && !event.repeat
                             && !state.captures_modal_input()
                             && !state.is_editing_text()
