@@ -1,4 +1,4 @@
-name: Agent language inspection
+name: Agent language implementation
 
 on:
   push:
@@ -9,27 +9,34 @@ permissions:
   contents: write
 
 jobs:
-  inspect:
+  implement:
+    if: ${{ !contains(github.event.head_commit.message, '[agent implementation]') && !contains(github.event.head_commit.message, '[agent validation]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - name: Capture source trace
-        if: ${{ !contains(github.event.head_commit.message, '[agent inspection]') }}
+      - name: Apply source changes and validate
+        shell: bash
         run: |
-          {
-            printf '%s\n' '--- working tree ---'
-            git status --short
-            printf '%s\n' '--- configuration language callers ---'
-            grep -RIn -E 'config::get\(\)\.lang|config::get\(\)\.lang\.clone' src tests 2>/dev/null || true
-            printf '%s\n' '--- syllable API callers ---'
-            grep -RIn -E 'syllable_breaks|syllable_count|timing_ratios|visual_progress_from_timing|read_highlight_end_from_timing|split_dialogue_at_syllable|visible_syllable_segments|syllable_ratios_for_line' src tests 2>/dev/null || true
-            printf '%s\n' '--- language modal and state callers ---'
-            grep -RIn -E 'LanguageListItem|LanguageModalResult|open_languages_modal|refresh_languages_modal|create_language|rename_language|select_language|ProjectLanguage' src tests 2>/dev/null || true
-          } > .agent-language-inspection.txt
+          set +e
+          : > .agent-language-validation.txt
+          python3 scripts/agent_language_patch.py >> .agent-language-validation.txt 2>&1
+          patch_status=$?
+          echo "PATCH_STATUS=$patch_status" >> .agent-language-validation.txt
+          if [ "$patch_status" -eq 0 ]; then
+            cargo fmt --all >> .agent-language-validation.txt 2>&1
+            fmt_status=$?
+            echo "FMT_STATUS=$fmt_status" >> .agent-language-validation.txt
+            cargo test --lib syllable_language -- --nocapture >> .agent-language-validation.txt 2>&1
+            focused_status=$?
+            echo "FOCUSED_TEST_STATUS=$focused_status" >> .agent-language-validation.txt
+            cargo test --lib >> .agent-language-validation.txt 2>&1
+            test_status=$?
+            echo "LIB_TEST_STATUS=$test_status" >> .agent-language-validation.txt
+          fi
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add .agent-language-inspection.txt
-          git commit -m '[agent inspection] Capture language flow'
+          git add -A
+          git commit -m '[agent implementation] Add per-language syllabification'
           git push
