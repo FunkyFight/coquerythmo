@@ -14,6 +14,7 @@ pub mod config;
 pub mod configured_export;
 pub mod constants;
 pub mod delivery_export;
+pub mod detection;
 pub mod export;
 pub mod graphics;
 pub mod i18n;
