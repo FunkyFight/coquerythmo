@@ -529,11 +529,7 @@ impl Project {
         self.settings.export_configuration = global_export_configuration.clone();
 
         let mut band = self.current_band_snapshot();
-        let syllable_language = SyllableLanguage::from_code(&language.code);
-        if band.settings.syllable_language != syllable_language {
-            band.settings.syllable_language = syllable_language;
-            Self::clear_band_syllable_ratios(&mut band.line_map);
-        }
+        band.settings.syllable_language = SyllableLanguage::from_code(&language.code);
         band.settings.instrumental_audio_path = None;
         band.settings.instrumental_audio_offset_frames = 0;
         band.settings.export_configuration = global_export_configuration;
@@ -631,7 +627,6 @@ impl Project {
                 return false;
             }
             self.settings.syllable_language = language;
-            Self::clear_band_syllable_ratios(&mut self.line_map);
             self.bump_revision();
             return true;
         }
@@ -643,16 +638,9 @@ impl Project {
             return false;
         }
         snapshot.band.settings.syllable_language = language;
-        Self::clear_band_syllable_ratios(&mut snapshot.band.line_map);
         snapshot.band.revision = snapshot.band.revision.wrapping_add(1);
         self.bump_revision();
         true
-    }
-
-    fn clear_band_syllable_ratios(lines: &mut HashMap<u64, RythmoLine>) {
-        for line in lines.values_mut() {
-            line.syllable_ratios.clear();
-        }
     }
 
     pub fn set_language_instrumental_audio_path(
@@ -1874,7 +1862,7 @@ mod tests {
     }
 
     #[test]
-    fn syllable_language_is_scoped_to_each_language_band() {
+    fn creating_language_preserves_manual_syllable_timings() {
         let mut project = Project::new_with_language("Français", "fr-fr");
         let french_id = project.active_language_id();
         let line_id = project.add_line_full(0, 48, 0.5, "tambourine".into(), "A".into(), [1.0; 4]);
@@ -1882,11 +1870,10 @@ mod tests {
 
         let english_id = project.create_language("English", "en");
         assert_eq!(project.syllable_language(), SyllableLanguage::English);
-        assert!(project
-            .get_line(line_id)
-            .unwrap()
-            .syllable_ratios
-            .is_empty());
+        assert_eq!(
+            project.get_line(line_id).unwrap().syllable_ratios,
+            vec![0.25, 0.75]
+        );
 
         assert!(project.select_language(french_id));
         assert_eq!(project.syllable_language(), SyllableLanguage::French);
@@ -1901,22 +1888,26 @@ mod tests {
     }
 
     #[test]
-    fn changing_syllable_language_resets_only_the_target_band() {
+    fn changing_syllable_language_preserves_manual_timings_in_every_band() {
         let mut project = Project::new_with_language("Français", "fr-fr");
         let french_id = project.active_language_id();
         let line_id = project.add_line_full(0, 48, 0.5, "Bonjour".into(), "A".into(), [1.0; 4]);
         project.get_line_mut(line_id).unwrap().syllable_ratios = vec![0.4, 0.6];
+
         let english_id = project.create_language("English", "en");
         project.get_line_mut(line_id).unwrap().syllable_ratios = vec![0.2, 0.3, 0.5];
-
         assert!(project.set_language_syllable_language(english_id, SyllableLanguage::French));
-        assert!(project
-            .get_line(line_id)
-            .unwrap()
-            .syllable_ratios
-            .is_empty());
+        assert_eq!(
+            project.get_line(line_id).unwrap().syllable_ratios,
+            vec![0.2, 0.3, 0.5]
+        );
 
         assert!(project.select_language(french_id));
+        assert_eq!(
+            project.get_line(line_id).unwrap().syllable_ratios,
+            vec![0.4, 0.6]
+        );
+        assert!(project.set_language_syllable_language(french_id, SyllableLanguage::English));
         assert_eq!(
             project.get_line(line_id).unwrap().syllable_ratios,
             vec![0.4, 0.6]
