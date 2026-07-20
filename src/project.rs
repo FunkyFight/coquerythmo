@@ -181,43 +181,6 @@ impl Default for ExportConfiguration {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SyllableLanguage {
-    #[default]
-    French,
-    English,
-}
-
-impl SyllableLanguage {
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::French => "fr-fr",
-            Self::English => "en-us",
-        }
-    }
-
-    pub fn from_code(code: &str) -> Self {
-        let normalized = code.trim().to_lowercase();
-        if normalized == "en"
-            || normalized.starts_with("en-")
-            || normalized.contains("english")
-            || normalized.contains("anglais")
-        {
-            Self::English
-        } else {
-            Self::French
-        }
-    }
-
-    pub fn toggled(self) -> Self {
-        match self {
-            Self::French => Self::English,
-            Self::English => Self::French,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProjectSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -230,16 +193,10 @@ pub struct ProjectSettings {
     pub highlight_read_word: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub scrolling_text_uses_character_color: bool,
-    #[serde(default, skip_serializing_if = "is_default_syllable_language")]
-    pub syllable_language: SyllableLanguage,
     #[serde(default, skip_serializing_if = "is_default_export_configuration")]
     pub export_configuration: ExportConfiguration,
     #[serde(default, skip_serializing_if = "is_default_automation_graph")]
     pub automation: crate::automation::AutomationGraph,
-}
-
-fn is_default_syllable_language(language: &SyllableLanguage) -> bool {
-    *language == SyllableLanguage::default()
 }
 
 fn is_default_export_configuration(configuration: &ExportConfiguration) -> bool {
