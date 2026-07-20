@@ -19,184 +19,126 @@ struct SvgEntry {
     flip_h: bool,
 }
 
+impl SvgEntry {
+    const fn new(name: &'static str, data: &'static [u8]) -> Self {
+        Self {
+            name,
+            data,
+            flip_h: false,
+        }
+    }
+
+    const fn flipped(name: &'static str, data: &'static [u8]) -> Self {
+        Self {
+            name,
+            data,
+            flip_h: true,
+        }
+    }
+}
+
 impl IconAtlas {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         let svgs = vec![
-            SvgEntry {
-                name: "pause",
-                data: include_bytes!("../icons/pause.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "resume",
-                data: include_bytes!("../icons/resume.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "select-mode",
-                data: include_bytes!("../icons/select-mode.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "draw-mode",
-                data: include_bytes!("../icons/draw-mode.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "eraser",
-                data: include_bytes!("../icons/eraser.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "prev_frame",
-                data: include_bytes!("../icons/goto.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "next_frame",
-                data: include_bytes!("../icons/goto.svg"),
-                flip_h: true,
-            },
-            SvgEntry {
-                name: "boucle",
-                data: include_bytes!("../icons/boucle.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "out",
-                data: include_bytes!("../icons/out.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "scene",
-                data: include_bytes!("../icons/changement_scene.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "respirations",
-                data: include_bytes!("../icons/respirations.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "reactions",
-                data: include_bytes!("../icons/reactions.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "liaison_left",
-                data: include_bytes!("../icons/liason.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "liaison_right",
-                data: include_bytes!("../icons/liason.svg"),
-                flip_h: true,
-            },
-            SvgEntry {
-                name: "settings",
-                data: include_bytes!("../icons/settings.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "project",
-                data: include_bytes!("../icons/project.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "stretcher",
-                data: include_bytes!("../icons/stretcher.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "br-edit",
-                data: include_bytes!("../icons/br-edit.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "note",
-                data: include_bytes!("../icons/note.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "karaoke",
-                data: include_bytes!("../icons/karaoke.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "sound",
-                data: include_bytes!("../icons/sound.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "mute",
-                data: include_bytes!("../icons/mute-svgrepo-com (1).svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "select-mode",
-                data: include_bytes!("../icons/select-mode.svg"),
-                flip_h: false,
-            },
-            SvgEntry {
-                name: "draw-mode",
-                data: include_bytes!("../icons/draw-mode.svg"),
-                flip_h: false,
-            },
+            SvgEntry::new("pause", include_bytes!("../icons/pause.svg")),
+            SvgEntry::new("resume", include_bytes!("../icons/resume.svg")),
+            SvgEntry::new("select-mode", include_bytes!("../icons/select-mode.svg")),
+            SvgEntry::new("draw-mode", include_bytes!("../icons/draw-mode.svg")),
+            SvgEntry::new("eraser", include_bytes!("../icons/eraser.svg")),
+            SvgEntry::new("prev_frame", include_bytes!("../icons/goto.svg")),
+            SvgEntry::flipped("next_frame", include_bytes!("../icons/goto.svg")),
+            SvgEntry::new("boucle", include_bytes!("../icons/boucle.svg")),
+            SvgEntry::new("out", include_bytes!("../icons/out.svg")),
+            SvgEntry::new("scene", include_bytes!("../icons/changement_scene.svg")),
+            SvgEntry::new("respirations", include_bytes!("../icons/respirations.svg")),
+            SvgEntry::new("reactions", include_bytes!("../icons/reactions.svg")),
+            SvgEntry::new("liaison_left", include_bytes!("../icons/liason.svg")),
+            SvgEntry::flipped("liaison_right", include_bytes!("../icons/liason.svg")),
+            SvgEntry::new("settings", include_bytes!("../icons/settings.svg")),
+            SvgEntry::new("project", include_bytes!("../icons/project.svg")),
+            SvgEntry::new("stretcher", include_bytes!("../icons/stretcher.svg")),
+            SvgEntry::new("br-edit", include_bytes!("../icons/br-edit.svg")),
+            SvgEntry::new("note", include_bytes!("../icons/note.svg")),
+            SvgEntry::new("karaoke", include_bytes!("../icons/karaoke.svg")),
+            SvgEntry::new("sound", include_bytes!("../icons/sound.svg")),
+            SvgEntry::new("mute", include_bytes!("../icons/mute-svgrepo-com (1).svg")),
+            SvgEntry::new(
+                "detection/labial",
+                include_bytes!("../icons/detection/labial.svg"),
+            ),
+            SvgEntry::new(
+                "detection/semi_labial",
+                include_bytes!("../icons/detection/semi_labial.svg"),
+            ),
+            SvgEntry::new(
+                "detection/mouth_open",
+                include_bytes!("../icons/detection/mouth_open.svg"),
+            ),
+            SvgEntry::new(
+                "detection/mouth_closed",
+                include_bytes!("../icons/detection/mouth_closed.svg"),
+            ),
+            SvgEntry::new(
+                "detection/teeth_visible",
+                include_bytes!("../icons/detection/teeth_visible.svg"),
+            ),
+            SvgEntry::new(
+                "detection/breath",
+                include_bytes!("../icons/detection/breath.svg"),
+            ),
+            SvgEntry::new(
+                "detection/reaction",
+                include_bytes!("../icons/detection/reaction.svg"),
+            ),
         ];
 
         let count = svgs.len() as u32;
         let atlas_width = count * ICON_SIZE;
         let atlas_height = ICON_SIZE;
-
         let mut atlas_data = vec![0u8; (atlas_width * atlas_height * 4) as usize];
         let mut icon_positions = HashMap::new();
 
-        for (i, entry) in svgs.iter().enumerate() {
+        for (index, entry) in svgs.iter().enumerate() {
             let tree = resvg::usvg::Tree::from_data(entry.data, &resvg::usvg::Options::default())
                 .expect("Failed to parse SVG");
-
             let mut pixmap = resvg::tiny_skia::Pixmap::new(ICON_SIZE, ICON_SIZE).unwrap();
-
             let svg_size = tree.size();
-            let sx = ICON_SIZE as f32 / svg_size.width();
-            let sy = ICON_SIZE as f32 / svg_size.height();
-
             resvg::render(
                 &tree,
-                resvg::tiny_skia::Transform::from_scale(sx, sy),
+                resvg::tiny_skia::Transform::from_scale(
+                    ICON_SIZE as f32 / svg_size.width(),
+                    ICON_SIZE as f32 / svg_size.height(),
+                ),
                 &mut pixmap.as_mut(),
             );
 
-            // Recolor to white
             let pixels = pixmap.data_mut();
             for chunk in pixels.chunks_exact_mut(4) {
-                let a = chunk[3] as f32 / 255.0;
-                chunk[0] = (255.0 * a) as u8;
-                chunk[1] = (255.0 * a) as u8;
-                chunk[2] = (255.0 * a) as u8;
+                let alpha = chunk[3] as f32 / 255.0;
+                chunk[0] = (255.0 * alpha) as u8;
+                chunk[1] = (255.0 * alpha) as u8;
+                chunk[2] = (255.0 * alpha) as u8;
             }
-
-            // Flip horizontal if needed
             if entry.flip_h {
                 for y in 0..ICON_SIZE {
                     for x in 0..ICON_SIZE / 2 {
                         let left = ((y * ICON_SIZE + x) * 4) as usize;
                         let right = ((y * ICON_SIZE + (ICON_SIZE - 1 - x)) * 4) as usize;
-                        for c in 0..4 {
-                            pixels.swap(left + c, right + c);
+                        for channel in 0..4 {
+                            pixels.swap(left + channel, right + channel);
                         }
                     }
                 }
             }
 
-            let x_offset = i as u32 * ICON_SIZE;
+            let x_offset = index as u32 * ICON_SIZE;
             icon_positions.insert(entry.name.to_string(), (x_offset, 0));
-
             for y in 0..ICON_SIZE {
                 for x in 0..ICON_SIZE {
-                    let src = ((y * ICON_SIZE + x) * 4) as usize;
-                    let dst = ((y * atlas_width + x_offset + x) * 4) as usize;
-                    atlas_data[dst..dst + 4].copy_from_slice(&pixels[src..src + 4]);
+                    let source = ((y * ICON_SIZE + x) * 4) as usize;
+                    let destination = ((y * atlas_width + x_offset + x) * 4) as usize;
+                    atlas_data[destination..destination + 4]
+                        .copy_from_slice(&pixels[source..source + 4]);
                 }
             }
         }
@@ -215,7 +157,6 @@ impl IconAtlas {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -242,7 +183,6 @@ impl IconAtlas {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Icon BGL"),
             entries: &[
@@ -264,7 +204,6 @@ impl IconAtlas {
                 },
             ],
         });
-
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Icon BG"),
             layout: &bind_group_layout,
