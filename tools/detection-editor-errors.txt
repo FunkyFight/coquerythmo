@@ -1,300 +1,300 @@
-   Compiling hyper v1.9.0
-   Compiling tokio-native-tls v0.3.1
-   Compiling zvariant v5.10.0
-   Compiling async-lock v3.4.2
-   Compiling wayland-protocols v0.31.2
-   Compiling ordered-float v5.3.0
-   Compiling sync_wrapper v1.0.2
-   Compiling async-trait v0.1.89
-   Compiling renderdoc-sys v1.1.0
-   Compiling serde_json v1.0.149
-   Compiling profiling v1.0.17
-   Compiling glow v0.17.0
-   Compiling bitflags v1.3.2
-   Compiling cpufeatures v0.2.17
-   Compiling tower-layer v0.3.3
-   Compiling unicode-script v0.5.8
-   Compiling ipnet v2.12.0
-   Compiling hyper-util v0.1.20
-   Compiling tower v0.5.3
-   Compiling sha1 v0.10.6
-   Compiling png v0.17.16
-   Compiling zbus_names v4.3.1
-   Compiling async-signal v0.2.13
-   Compiling calloop v0.12.4
-   Compiling rand_core v0.9.5
-   Compiling http-body-util v0.1.3
-   Compiling wgpu-core v29.0.1
-   Compiling ttf-parser v0.24.1
-   Compiling aho-corasick v1.1.4
-   Compiling alsa-sys v0.3.1
-   Compiling iri-string v0.7.12
-   Compiling quick-error v2.0.1
-   Compiling byteorder v1.5.0
-   Compiling regex-syntax v0.8.10
-   Compiling utf-8 v0.7.6
-   Compiling unicode-bidi v0.3.18
-   Compiling color_quant v1.1.0
-   Compiling weezl v0.1.12
-   Compiling ryu v1.0.23
-   Compiling cursor-icon v1.2.0
-   Compiling smithay-client-toolkit v0.18.1
-   Compiling xkeysym v0.2.1
-   Compiling byteorder-lite v0.1.0
-   Compiling untrusted v0.9.0
-   Compiling litrs v1.0.0
-   Compiling data-encoding v2.10.0
-   Compiling xcursor v0.3.10
-   Compiling wayland-cursor v0.31.14
-   Compiling document-features v0.2.12
-   Compiling tungstenite v0.21.0
-   Compiling wayland-csd-frame v0.3.0
-   Compiling serde_urlencoded v0.7.1
-   Compiling regex-automata v0.4.14
-   Compiling tower-http v0.6.8
-   Compiling hyper-tls v0.6.0
-   Compiling rand_chacha v0.9.0
-   Compiling calloop-wayland-source v0.2.0
-   Compiling wgpu-core-deps-windows-linux-android v29.0.0
-   Compiling async-process v2.5.0
-   Compiling zbus_macros v5.14.0
-   Compiling tiny-skia v0.11.4
-   Compiling wayland-protocols-wlr v0.2.0
-   Compiling skrifa v0.40.0
-   Compiling owned_ttf_parser v0.25.1
-   Compiling async-executor v1.14.0
-   Compiling async-broadcast v0.7.2
-   Compiling kurbo v0.11.3
-   Compiling wgpu v29.0.1
-   Compiling ahash v0.8.12
-   Compiling toml v0.5.11
-   Compiling ordered-stream v0.2.0
-   Compiling uuid v1.23.0
-   Compiling async-stream-impl v0.3.6
-   Compiling async-recursion v1.1.1
-   Compiling serde_repr v0.1.20
-   Compiling x11-dl v2.21.0
-   Compiling encoding_rs v0.8.35
-   Compiling unicode-properties v0.1.4
-   Compiling cfg_aliases v0.1.1
-   Compiling mime v0.3.17
-   Compiling siphasher v1.0.2
-   Compiling unicode-bidi-mirroring v0.3.0
-   Compiling rustls v0.23.37
-   Compiling yazi v0.2.1
-   Compiling unicode-ccc v0.3.0
-   Compiling utf8parse v0.2.2
-   Compiling ab_glyph_rasterizer v0.1.10
-   Compiling zeno v0.3.3
-   Compiling hex v0.4.3
-   Compiling zbus v5.14.0
-   Compiling swash v0.2.7
-   Compiling ab_glyph v0.2.32
-   Compiling anstyle-parse v1.0.0
-   Compiling rustybuzz v0.18.0
-   Compiling reqwest v0.12.28
-   Compiling svgtypes v0.15.3
-   Compiling winit v0.29.15
-   Compiling async-stream v0.3.6
-   Compiling winres v0.1.12
-   Compiling regex v1.12.3
-   Compiling rand v0.9.2
-   Compiling rustls-webpki v0.103.10
-   Compiling tokio-tungstenite v0.21.0
-   Compiling fontdb v0.22.0
-   Compiling async-fs v2.2.0
-   Compiling harfrust v0.5.2
-   Compiling async-net v2.0.0
-   Compiling fontdb v0.23.0
-   Compiling wayland-protocols v0.32.12
-   Compiling euclid v0.22.14
-   Compiling gethostname v1.1.0
-   Compiling serde_spanned v0.6.9
-   Compiling toml_datetime v0.6.11
-   Compiling is-docker v0.2.0
-   Compiling simplecss v0.2.2
-   Compiling instant v0.1.13
-   Compiling linebender_resource_handle v0.1.1
-   Compiling cpal v0.15.3
-   Compiling sys-locale v0.3.2
-   Compiling rustc-hash v2.1.2
-   Compiling toml_write v0.1.2
-   Compiling x11rb-protocol v0.13.2
-   Compiling xmlwriter v0.1.0
-   Compiling anstyle v1.0.14
-   Compiling is_terminal_polyfill v1.70.2
-   Compiling rangemap v1.7.1
-   Compiling zune-core v0.5.1
-   Compiling as-raw-xcb-connection v1.0.1
-   Compiling anstyle-query v1.1.5
-   Compiling svg_fmt v0.4.5
-   Compiling smol_str v0.3.6
-   Compiling unicode-linebreak v0.1.5
-   Compiling option-ext v0.2.0
-   Compiling pxfm v0.1.29
-   Compiling base64 v0.21.7
-   Compiling unicode-segmentation v1.13.2
-   Compiling unicode-vo v0.1.0
-   Compiling rfd v0.15.4
-   Compiling adler32 v1.2.0
-   Compiling static_assertions v1.1.0
-   Compiling data-url v0.3.2
-   Compiling imagesize v0.13.0
-   Compiling pico-args v0.5.0
-   Compiling colorchoice v1.0.5
-   Compiling self_cell v1.2.2
-   Compiling subtle v2.6.1
-   Compiling zune-core v0.4.12
-   Compiling zune-jpeg v0.4.21
-   Compiling cosmic-text v0.18.2
-   Compiling anstream v1.0.0
-   Compiling usvg v0.44.0
-   Compiling x11rb v0.13.2
-   Compiling rust_engineio v0.6.0
-   Compiling moxcms v0.8.1
-   Compiling dirs-sys v0.5.0
-   Compiling etagere v0.2.15
-   Compiling zune-jpeg v0.5.15
-   Compiling ashpd v0.11.1
-   Compiling toml_edit v0.22.27
-   Compiling backoff v0.4.0
-   Compiling is-wsl v0.4.0
-   Compiling alsa v0.9.1
-   Compiling env_filter v1.0.1
-   Compiling sctk-adwaita v0.8.3
-   Compiling coquerythmo v3.6.0 (/home/runner/work/coquerythmo/coquerythmo)
-   Compiling image-webp v0.2.4
-   Compiling image-webp v0.1.3
-   Compiling xkbcommon-dl v0.4.2
-   Compiling gif v0.13.3
-   Compiling gif v0.14.2
-   Compiling wayland-protocols-plasma v0.2.0
-   Compiling png v0.18.1
-   Compiling webpki-roots v1.0.6
-   Compiling ureq-proto v0.6.0
-   Compiling rgb v0.8.53
-   Compiling urlencoding v2.1.3
-   Compiling jiff v0.2.23
-   Compiling lru v0.16.3
-   Compiling utf8-zero v0.8.1
-   Compiling pollster v0.4.0
-   Compiling smol_str v0.2.2
-   Compiling dasp_sample v0.11.0
-   Compiling env_logger v0.11.10
-   Compiling ureq v3.3.0
-   Compiling glyphon v0.10.0 (https://github.com/RuairidhWilliamson/glyphon?rev=45a4a34#45a4a341)
-   Compiling resvg v0.44.0
-   Compiling image v0.25.10
-   Compiling open v5.3.6
-   Compiling rust_socketio v0.6.0
-   Compiling toml v0.8.23
-   Compiling dirs v6.0.0
-   Compiling quick-xml v0.37.5
-   Compiling hypher v0.1.7
-   Compiling pollster v0.3.0
-error[E0004]: non-exhaustive patterns: `&command::Command::Detection { .. }` not covered
-   --> src/application/delta_codec.rs:14:16
-    |
- 14 |     Some(match command {
-    |                ^^^^^^^ pattern `&command::Command::Detection { .. }` not covered
-    |
-note: `command::Command` defined here
-   --> src/command.rs:25:10
-    |
- 25 | pub enum Command {
-    |          ^^^^^^^
-...
-128 |     Detection {
-    |     --------- not covered
-    = note: the matched value is of type `&command::Command`
-help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
-    |
-174 ~         }),
-175 ~         &command::Command::Detection { .. } => todo!(),
-    |
+test delivery_export::tests::audio_export_honors_pre_cancel_without_starting_ffmpeg ... ok
+test delivery_export::tests::audio_filter_applies_positive_and_negative_offsets ... ok
+test delivery_export::tests::authored_loop_numbering_does_not_gain_a_synthetic_zero_marker ... ok
+test delivery_export::tests::csv_is_rfc_4180_quoted_and_assigns_loops ... ok
+test delivery_export::tests::detx_contains_roles_tracks_markers_and_xml_escaping ... ok
+test delivery_export::tests::detx_roundtrips_through_existing_importer ... ok
+test delivery_export::tests::invalid_fps_is_rejected_for_all_document_exports ... ok
+test delivery_export::tests::json_uses_project_data_and_requested_fps ... ok
+test delivery_export::tests::pdf_reports_are_valid_minimal_documents ... ok
+test delivery_export::tests::presence_spans_stop_at_next_loop_or_out ... ok
+test delivery_export::tests::srt_is_chronological_and_uses_millisecond_timecodes ... ok
+test audio_transfer::tests::chunked_roundtrip_is_atomic_and_integrity_checked ... ok
+test delivery_export::tests::unicode_pdf_text_uses_shaped_masks_and_preserves_actual_text ... FAILED
+test detection::tests::audition_window_is_two_seconds_on_each_side ... ok
+test detection::tests::changes_apply_and_unapply_without_touching_other_lines ... ok
+test detection::tests::media_ticks_round_to_tenths_of_a_frame ... ok
+test detection::tests::moving_a_detection_keeps_navigation_sorted ... ok
+test detection::tests::serde_roundtrip_preserves_line_ownership ... ok
+test detection::tests::simultaneous_tracks_do_not_share_detections ... ok
+test export::tests::legacy_json_roundtrip_does_not_add_multilingual_or_export_fields ... ok
+test export::tests::legacy_lines_without_ids_receive_distinct_json_safe_ids ... ok
+test export::tests::multilingual_project_roundtrip_preserves_active_band_audio_and_export_config ... ok
+test export::tests::persisted_line_ids_are_restored_and_duplicates_are_rejected ... ok
+test export::tests::subtitle_import_replaces_only_active_language_and_preserves_audio ... ok
+test export::tests::test_apply_clears_existing ... ok
+test export::tests::test_apply_preserves_karaoke_syllable_ratios ... ok
+test export::tests::test_clamp_to_total_frames ... ok
+test export::tests::test_fps_conversion ... ok
+test export::tests::test_hex_color_to_rgba ... ok
+test export::tests::test_import_ass_respects_format_role_color_and_text_commas ... ok
+test export::tests::test_import_cappela_basic ... ok
+test export::tests::test_import_cappela_markers ... ok
+test export::tests::test_import_cappela_voice_off ... ok
+test export::tests::test_import_srt_basic ... ok
+test export::tests::test_roundtrip_json ... ok
+test export::tests::test_srt_time_to_frames ... ok
+test export::tests::test_timecode_to_frames ... ok
+test export::tests::test_unknown_marker_skipped ... ok
+test graphics::tests::present_mode_uses_strict_vsync ... ok
+test i18n::tests::every_language_contains_all_shortcut_names ... ok
+test i18n::tests::every_language_contains_the_portable_project_and_export_keys ... ok
+test input::router::tests::accessibility_shortcuts_table_is_complete ... ok
+test input::router::tests::continuous_pan_starts_once_and_stops_on_key_up ... ok
+test input::router::tests::existing_shortcuts_characterization_table ... ok
+test input::router::tests::first_active_context_wins ... ok
+test input::router::tests::named_shortcuts_never_announce_their_physical_keys ... ok
+test input::router::tests::press_only_binding_does_not_repeat ... ok
+test input::router::tests::same_stroke_can_have_a_different_fake_context_command ... ok
+test integrity::tests::incremental_updates_match_one_shot_digest_across_block_boundaries ... ok
+test integrity::tests::sha1_matches_standard_test_vectors ... ok
+test media_recording::tests::pcm_byte_encoding_and_checksum_are_deterministic ... ok
+test media_recording::tests::temporary_file_is_a_distinct_flac_in_the_same_directory ... ok
+test media_recording::tests::waveform_preserves_channel_alignment_across_chunks ... ok
+test media_recording::tests::waveform_sanitizes_non_finite_and_out_of_range_samples ... ok
+test media_recording::tests::waveform_uses_loudest_channel_and_exact_frame_buckets ... ok
+test packet::tests::test_command_payload_roundtrip ... ok
+test packet::tests::test_packet_serde ... ok
+test packet::tests::test_project_data_roundtrip ... ok
+test project::tests::changing_syllable_language_preserves_manual_timings_in_every_band ... ok
+test project::tests::changing_the_only_line_character_color_updates_the_character_catalog ... ok
+test project::tests::creating_language_preserves_manual_syllable_timings ... ok
+test project::tests::export_configuration_empty_json_uses_operational_defaults ... ok
+test project::tests::export_configuration_is_shared_across_language_switches ... ok
+test project::tests::language_bands_are_independent_and_crud_keeps_one_language ... ok
+test project::tests::language_creation_duplicates_band_selects_it_and_resets_instrumental ... ok
+test project::tests::removing_last_line_for_character_prunes_catalog ... ok
+test project::tests::test_add_line ... ok
+test project::tests::test_add_line_full ... ok
+test project::tests::test_autocomplete ... ok
+test project::tests::test_get_line_mut ... ok
+test project::tests::test_insert_line_at ... ok
+test project::tests::test_remove_line ... ok
+test project::tests::test_remove_nonexistent ... ok
+test project::tests::test_retain_lines ... ok
+test project::tests::test_revision_changes_on_mutations ... ok
+test project::tests::test_set_character ... ok
+test project::tests::test_snap_y ... ok
+test project::tests::test_snapshot ... ok
+test project::tests::test_voice_actor_names_for_character ... ok
+test project_archive::tests::bundle_round_trip_embeds_and_extracts_every_current_asset ... ok
+test project_archive::tests::bundle_round_trip_preserves_a_valid_transaction_journal ... ok
+test project_archive::tests::bundle_round_trip_preserves_recording_state_log_and_flac_assets ... ok
+test project_archive::tests::destination_cannot_overwrite_an_asset_being_embedded ... ok
+test project_archive::tests::every_successful_save_gets_a_new_huuid ... ok
+test project_archive::tests::extracted_assets_are_removed_when_loaded_project_is_dropped ... ok
+test project_archive::tests::failed_save_does_not_replace_an_existing_bundle ... ok
+test project_archive::tests::legacy_json_fixture_remains_readable ... ok
+test project_archive::tests::multilingual_helper_round_trips_all_instrumentals ... ok
+test project_archive::tests::payload_corruption_is_detected ... ok
+test project_archive::tests::recording_load_rejects_a_valid_container_with_wrong_flac_sha1 ... ok
+test project_archive::tests::recording_save_rejects_a_flac_that_does_not_match_its_sha1 ... ok
+test project_archive::tests::recording_save_rejects_state_not_reconstructed_by_its_log_cursor ... ok
+test project_archive::tests::save_bundle_discovers_and_reinjects_project_language_instrumentals ... ok
+test project_archive::tests::traversal_in_manifest_is_rejected_before_extraction ... ok
+test project_metadata::tests::common_prefix_lookup_finds_divergence_and_append_truncates_redo ... ok
+test project_metadata::tests::huuid_contains_utc_timestamp_and_rfc4122_v4_uuid ... ok
+test project_metadata::tests::huuid_rejects_non_v4_or_out_of_range_timestamp ... ok
+test project_metadata::tests::journal_detects_payload_tampering_before_replay ... ok
+test project_metadata::tests::journal_roundtrip_validates_and_replays_at_its_cursor ... ok
+test project_metadata::tests::replacing_a_coalesced_tip_rehashes_without_growing_the_journal ... ok
+test project_metadata::tests::rewriting_checkpoint_rehashes_the_complete_chain ... ok
+test project_metadata::tests::sha1_matches_standard_test_vector ... ok
+test project_metadata::tests::transaction_checkpoint_rejects_duplicate_or_missing_ids ... ok
+test recording::tests::arm_is_exclusive_and_solo_plus_mute_define_audibility ... ok
+test recording::tests::capture_target_proposal_is_non_mutating_until_completion ... ok
+test recording::tests::capture_transfer_descriptors_round_trip_through_json ... ok
+test recording::tests::capture_waits_three_seconds_then_finalizes_on_escape ... ok
+test recording::tests::corrupted_transaction_is_rejected_before_replay ... ok
+test recording::tests::corrupted_transaction_is_rejected_during_deserialization ... ok
+test recording::tests::countdown_can_cancel_without_starting_microphone ... ok
+test recording::tests::deserialization_rejects_non_portable_audio_asset_names ... ok
+test recording::tests::invalid_batch_is_atomic ... ok
+test recording::tests::log_verifies_then_replays_only_after_cursor ... ok
+test recording::tests::received_transaction_applies_only_on_the_exact_chain_tip ... ok
+test recording::tests::received_transaction_rejects_tampering_and_out_of_order_delivery ... ok
+test recording::tests::recorder_start_failure_enters_acknowledgeable_error_state ... ok
+test recording::tests::rejected_cut_does_not_consume_an_id_or_mutate_the_log ... ok
+test recording::tests::select_move_cut_and_delete_are_transactional ... ok
+test recording::tests::validly_hashed_but_inapplicable_received_operation_is_atomic ... ok
+test recording_mix::tests::audible_assets_require_a_flac_path ... ok
+test recording_mix::tests::filter_places_clips_at_their_timeline_offsets ... ok
+test recording_mix::tests::muted_tracks_are_not_part_of_the_mix_spec ... ok
+test recording_mix::tests::project_frames_become_exact_trim_and_placement_times ... ok
+test recording_mix::tests::solo_and_mute_rules_are_preserved_in_the_mix ... ok
+test render_index::tests::render_index_excludes_lines_outside_window ... ok
+test render_index::tests::render_index_includes_line_started_before_window ... ok
+test delivery_export::tests::unicode_report_pdfs_keep_japanese_and_arabic_content ... FAILED
+test render_index::tests::render_index_tracks_max_duration ... ok
+test render_index::tests::render_index_visible_markers_respects_bounds_and_order ... ok
+test rendering::rythmo::scene::tests::karaoke_count_in_is_centered_without_other_preview_state ... ok
+test rendering::rythmo::scene::tests::karaoke_preview_states_are_centered ... ok
+test rendering::rythmo::scene::tests::scene_build_is_deterministic_and_revision_indexed ... ok
+test rendering::rythmo::scene::tests::scene_carries_project_syllable_language_for_cpu_and_gpu_renderers ... ok
+test rythmo_cpu_renderer::tests::br_height_doubles_only_tracks_with_karaoke ... ok
+test rythmo_cpu_renderer::tests::cpu_export_count_in_dot_moves_from_left_onto_text ... ok
+test rythmo_cpu_renderer::tests::cpu_export_karaoke_island_after_normal_line_continues_alternating_rows ... ok
+test rythmo_cpu_renderer::tests::cpu_render_handles_marker_and_breath_lines ... ok
+test rythmo_drawing::tests::composite_rgba_over_blends_drawing_pixels ... ok
+test rythmo_drawing::tests::screen_rotation_does_not_skew_under_anisotropic_projection ... ok
+test rythmo_gpu_renderer::tests::gpu_export_karaoke_island_after_normal_line_continues_alternating_rows ... ok
+test rythmo_layout::tests::enlarged_export_badge_text_fits_without_vertical_stretching ... ok
+test rythmo_layout::tests::gap_layout_follows_the_next_line_type ... ok
+test rythmo_layout::tests::leading_badge_keeps_an_incoming_line_visible_before_its_body ... ok
+test rythmo_layout::tests::line_and_badge_are_culled_once_both_are_outside ... ok
+test rythmo_layout::tests::only_tracks_with_karaoke_get_double_body_height ... ok
+test rythmo_layout::tests::track_height_enters_karaoke_mode_for_first_count_in ... ok
+test rythmo_layout::tests::voice_actor_icon_envelope_enters_before_badge ... ok
+test state::clipboard_tests::pasted_lines_are_rebased_to_the_playhead_and_keep_their_spacing ... ok
+test syllable::tests::read_highlight_keeps_past_words_and_completes_the_current_word ... ok
+test syllable::tests::test_contraction_jadore ... ok
+test syllable::tests::test_default_ratios ... ok
+test syllable::tests::test_empty ... ok
+test syllable::tests::test_english_tambourine ... ok
+test syllable::tests::test_french_fallback_adore ... ok
+test syllable::tests::test_french_fallback_spaghettis ... ok
+test syllable::tests::test_full_sentence ... ok
+test syllable::tests::test_proportional_ratios ... ok
+test syllable::tests::test_split_dialogue_adds_hyphens_inside_word ... ok
+test syllable::tests::test_split_dialogue_sentence_boundary_has_no_hyphens ... ok
+test syllable::tests::test_visual_progress_uses_timing_ratios ... ok
+test syllable::tests::test_word_boundaries ... ok
+test syllable::tests::visual_ratios_follow_shaped_character_positions ... ok
+test ui::automation::tests::automation_render_payload_is_clipped_to_the_video_zone ... ok
+test ui::automation::tests::dropping_a_line_cable_on_empty_canvas_offers_a_connected_reroute ... ok
+test ui::automation::tests::empty_canvas_drag_pans_nodes ... ok
+test ui::automation::tests::entry_checkbox_toggles_execution ... ok
+test ui::automation::tests::execution_pins_do_not_render_redundant_execution_labels ... ok
+test ui::automation::tests::line_output_connects_only_to_the_line_input ... ok
+test ui::automation::tests::right_click_menu_creates_a_node_at_the_canvas_position ... ok
+test ui::automation::tests::selected_node_is_deleted_by_delete_event ... ok
+test ui::automation::tests::selected_node_is_deleted_by_windows_del_character ... ok
+test ui::automation::tests::set_track_node_fits_within_two_grid_cells ... ok
+test ui::dropdown::tests::escaping_an_open_list_announces_that_it_collapsed ... ok
+test ui::dropdown::tests::opening_a_list_announces_its_first_enabled_item ... ok
+test ui::export_modal::tests::choosing_an_audio_variant_selects_its_language ... ok
+test ui::export_modal::tests::dimensions_follow_aspect_and_quality ... ok
+test ui::export_modal::tests::source_aspect_is_preserved ... ok
+test ui::file_explorer::keyboard_tests::keyboard_can_open_a_selected_file ... ok
+test ui::file_explorer::keyboard_tests::overwrite_scope_starts_on_cancel_then_reaches_replace ... ok
+test ui::file_explorer::keyboard_tests::tab_order_skips_unavailable_history_and_entries ... ok
+test ui::focus::tests::nested_scope_traps_then_restores_focus ... ok
+test ui::focus::tests::traversal_wraps_and_skips_disabled_nodes ... ok
+test ui::language_modal::tests::instrumental_details_start_below_last_language_action ... ok
+test ui::language_modal::tests::syllable_language_control_has_keyboard_and_pointer_parity ... ok
+test ui::language_modal::tests::tab_and_shift_tab_reach_the_syllable_control_deterministically ... ok
+test ui::layout::tests::side_panel_shifts_every_workspace_zone_to_the_right ... ok
+test ui::layout::tests::tab_bar_reduces_content_without_changing_minimum_split_contract ... ok
+test ui::recording_workspace::tests::actor_scene_exposes_track_state_but_disables_mutating_controls ... ok
+test ui::recording_workspace::tests::capture_layout_keeps_the_normal_rythmo_inside_the_window ... ok
+test ui::recording_workspace::tests::choice_controls_have_stable_accessible_ids ... ok
+test ui::save_prompt_modal::tests::arrows_navigate_the_save_buttons ... ok
+test ui::side_panel::tests::close_resets_panel_state ... ok
+test ui::side_panel::tests::double_click_starts_a_real_text_edit ... ok
+test ui::side_panel::tests::double_clicking_a_role_cell_opens_the_existing_roles ... ok
+test ui::side_panel::tests::opening_a_menu_keeps_table_labels_in_the_overlay_layer ... ok
+test ui::side_panel::tests::opening_a_panel_replaces_the_previous_one ... ok
+test ui::side_panel::tests::role_picker_owns_wheel_input_and_scrolls_independently ... ok
+test ui::side_panel::tests::scrollbar_thumb_tracks_the_scroll_position ... ok
+test ui::side_panel::tests::single_line_context_menu_can_seek_to_the_line ... ok
+test ui::side_panel::tests::wheel_direction_matches_the_list_direction ... ok
+test ui::tab_button::tests::modified_pointer_click_activates_like_an_ordinary_click ... ok
+test ui::tab_button::tests::tab_exposes_role_and_selected_state ... ok
+test ui::text_input::tests::centered_cursor_uses_centered_text_start ... ok
+test ui::text_input::tests::cursor_pos_from_x_matches_cursor_geometry ... ok
+test ui::text_input::tests::cursor_x_uses_variable_character_widths ... ok
+test update::tests::accepts_common_youtube_url_shapes ... ok
+test update::tests::extracts_youtube_attachment_and_removes_the_marker ... ok
+test update::tests::promotes_the_default_pending_updater_and_removes_the_backup ... ok
+test video::tests::interactive_seek_pauses_active_playback ... ok
+test video::tests::positive_instrumental_offset_waits_before_starting_audio ... ok
+test video::tests::seek_invalidates_audio_stream_while_paused ... ok
+test video_export::announcer::tests::announces_only_character_changes_on_the_same_track ... ok
+test video_export::announcer::tests::combines_simultaneous_track_changes_into_one_phrase ... ok
+test video_export::announcer::tests::cue_start_makes_speech_end_one_second_before_the_line ... ok
+test video_export::announcer::tests::cue_timing_uses_source_video_frames ... ok
+test video_export::announcer::tests::mix_filter_separates_delay_filters_from_the_mixer ... ok
+test video_export::audio::tests::audio_offset_uses_the_source_frame_rate ... ok
+test video_export::audio::tests::instrumental_output_path_adds_suffix_before_extension ... ok
+test video_export::audio::tests::instrumental_output_path_defaults_to_mp4_extension ... ok
+test video_export::ffmpeg::timeline_tests::cpu_filter_prepends_black_video_but_keeps_br_for_full_timeline ... ok
+test video_export::ffmpeg::timeline_tests::cuda_filter_delays_source_by_preroll_duration ... ok
+test video_export::pipeline::tests::one_hundred_percent_uses_new_export_bases ... ok
+test video_export::preroll::tests::backup_name_is_hidden_and_not_an_export_filename ... ok
+test video_export::preroll::tests::replace_file_leaves_only_the_countdown_export ... ok
+test video_export::preroll::tests::temporary_name_is_a_hidden_mp4_next_to_output ... ok
+test video_export::progress::tests::contextual_export_errors_still_report_cancellation ... ok
+test video_export::types::tests::cpu_pipeline_never_selects_nvenc ... ok
+test workspaces::rythmo::view::detection_ui::tests::palette_contains_every_detection_kind ... ok
+test workspaces::rythmo::view::detection_ui::tests::pointer_time_rounds_to_a_tenth_frame ... ok
+test workspaces::rythmo::view::selection::tests::group_vertical_delta_preserves_spacing_at_track_boundaries ... ok
+test workspaces::rythmo::view::selection::tests::marquee_selects_multiple_lines ... ok
+test workspaces::rythmo::view::tests::active_karaoke_candidate_beats_future_preview ... ok
+test workspaces::rythmo::view::tests::adjacent_karaoke_preview_ignores_distant_lines ... ok
+test workspaces::rythmo::view::tests::character_badge_collision_uses_the_other_line_body ... ok
+test workspaces::rythmo::view::tests::ctrl_syllable_drag_keeps_previous_boundaries_fixed ... ok
+test workspaces::rythmo::view::tests::editor_layout_ctx_matches_wrapper_rects ... ok
+test workspaces::rythmo::view::tests::editor_only_karaoke_tracks_get_double_body_height ... ok
+test workspaces::rythmo::view::tests::explicitly_saved_syllable_timings_enable_segmented_rendering ... ok
+test workspaces::rythmo::view::tests::first_karaoke_line_enters_playback_mode_during_count_in ... ok
+test workspaces::rythmo::view::tests::first_karaoke_line_scrolls_before_island_starts ... ok
+test workspaces::rythmo::view::tests::fractional_frame_geometry_shifts_by_subframe_amounts ... ok
+test workspaces::rythmo::view::tests::karaoke_and_scrolling_text_use_distinct_cache_entries ... ok
+test workspaces::rythmo::view::tests::karaoke_character_label_only_on_first_or_character_change ... ok
+test workspaces::rythmo::view::tests::karaoke_count_in_dot_moves_from_left_onto_text ... ok
+test workspaces::rythmo::view::tests::karaoke_count_in_rect_is_centered_immediately ... ok
+test workspaces::rythmo::view::tests::karaoke_island_after_normal_line_continues_alternating_rows ... ok
+test workspaces::rythmo::view::tests::karaoke_island_lines_alternate_stack_rows ... ok
+test workspaces::rythmo::view::tests::karaoke_mode_changes_do_not_move_other_tracks ... ok
+test workspaces::rythmo::view::tests::karaoke_playback_mode_survives_only_gaps_before_karaoke_lines ... ok
+test workspaces::rythmo::view::tests::karaoke_stack_rows_stay_inside_track_body ... ok
+test workspaces::rythmo::view::tests::karaoke_ui_index_normal_line_cuts_island ... ok
+test workspaces::rythmo::view::tests::karaoke_ui_index_uses_chronological_order_not_insertion_order ... ok
+test workspaces::rythmo::view::tests::karaoke_ui_index_uses_quantized_track_for_drifted_slots ... ok
+test workspaces::rythmo::view::tests::nearest_future_karaoke_candidate_wins ... ok
+test workspaces::rythmo::view::tests::new_karaoke_line_render_width_uses_measured_width ... ok
+test workspaces::rythmo::view::tests::next_karaoke_line_stays_visible_inside_started_island ... ok
+test workspaces::rythmo::view::tests::normal_line_splits_karaoke_islands ... ok
+test workspaces::rythmo::view::tests::pointer_hover_finds_line_through_render_index ... FAILED
+test workspaces::rythmo::view::tests::read_only_controller_never_arms_or_emits_authoring_actions ... ok
+test workspaces::rythmo::view::tests::redistribute_group_preserves_proportions_above_minimum ... ok
+test workspaces::rythmo::view::tests::reducing_left_group_expands_right_group_proportionally ... ok
+test workspaces::rythmo::view::tests::same_character_collision_takes_priority_over_transparency ... ok
+test workspaces::rythmo::view::tests::scrolling_does_not_change_line_texture_width ... ok
+test workspaces::rythmo::view::tests::syllable_drag_does_not_block_at_old_five_percent_minimum ... ok
+test workspaces::rythmo::view::tests::untouched_line_keeps_a_single_text_run ... ok
+test workspaces::rythmo::view::tests::waveform_offset_keeps_visible_audio_peaks_rendered ... ok
+test workspaces::rythmo::view::tests::y_to_slot_uses_variable_track_offsets ... ok
+test render_index::tests::render_index_prunes_old_short_lines_around_a_long_interval ... ok
 
-error[E0004]: non-exhaustive patterns: `&command::Command::Detection { .. }` not covered
-    --> src/project_metadata.rs:811:11
-     |
- 811 |     match command {
-     |           ^^^^^^^ pattern `&command::Command::Detection { .. }` not covered
-     |
-note: `command::Command` defined here
-    --> src/command.rs:25:10
-     |
-  25 | pub enum Command {
-     |          ^^^^^^^
-...
- 128 |     Detection {
-     |     --------- not covered
-     = note: the matched value is of type `&command::Command`
-help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
-     |
-1114 ~         },
-1115 +         &command::Command::Detection { .. } => todo!()
-     |
+failures:
 
-error[E0004]: non-exhaustive patterns: `&workspaces::rythmo::view::state::Selection::Detection(_)` not covered
-    --> src/state.rs:2896:19
-     |
-2896 |             match sel {
-     |                   ^^^ pattern `&workspaces::rythmo::view::state::Selection::Detection(_)` not covered
-     |
-note: `workspaces::rythmo::view::state::Selection` defined here
-    --> src/workspaces/rythmo/state.rs:7:10
-     |
-   7 | pub enum Selection {
-     |          ^^^^^^^^^
-...
-  11 |     Detection(crate::detection::DetectionAddress),
-     |     --------- not covered
-     = note: the matched value is of type `&workspaces::rythmo::view::state::Selection`
-help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
-     |
-2956 ~                 },
-2957 +                 &workspaces::rythmo::view::state::Selection::Detection(_) => todo!()
-     |
+---- delivery_export::tests::unicode_pdf_text_uses_shaped_masks_and_preserves_actual_text stdout ----
 
-error[E0004]: non-exhaustive patterns: `Some(&workspaces::rythmo::view::state::Selection::Detection(_))` not covered
-    --> src/state.rs:3764:15
-     |
-3764 |         match self.ui_shell.ui.rythmo_state.selected.as_ref() {
-     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ pattern `Some(&workspaces::rythmo::view::state::Selection::Detection(_))` not covered
-     |
-note: `std::option::Option<&workspaces::rythmo::view::state::Selection>` defined here
-    --> /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/option.rs:597:0
-    ::: /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/option.rs:605:4
-     |
-     = note: not covered
-     = note: the matched value is of type `std::option::Option<&workspaces::rythmo::view::state::Selection>`
-help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
-     |
-3784 ~             Some(Selection::Marker(_) | Selection::Strokes(_)) | None => Vec::new(),
-3785 ~             Some(&workspaces::rythmo::view::state::Selection::Detection(_)) => todo!(),
-     |
+thread 'delivery_export::tests::unicode_pdf_text_uses_shaped_masks_and_preserves_actual_text' (8279) panicked at src/delivery_export.rs:1897:9:
+assertion `left == right` failed
+  left: 0
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
-error[E0004]: non-exhaustive patterns: `&workspaces::rythmo::view::state::Selection::Detection(_)` not covered
-  --> src/workspaces/rythmo/selection.rs:20:11
-   |
-20 |     match selection {
-   |           ^^^^^^^^^ pattern `&workspaces::rythmo::view::state::Selection::Detection(_)` not covered
-   |
-note: `workspaces::rythmo::view::state::Selection` defined here
-  --> src/workspaces/rythmo/state.rs:7:10
-   |
- 7 | pub enum Selection {
-   |          ^^^^^^^^^
-...
-11 |     Detection(crate::detection::DetectionAddress),
-   |     --------- not covered
-   = note: the matched value is of type `&workspaces::rythmo::view::state::Selection`
-help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
-   |
-31 ~         Selection::Line(_) | Selection::Marker(_) | Selection::Strokes(_) => Vec::new(),
-32 ~         &workspaces::rythmo::view::state::Selection::Detection(_) => todo!(),
-   |
+---- delivery_export::tests::unicode_report_pdfs_keep_japanese_and_arabic_content stdout ----
 
-For more information about this error, try `rustc --explain E0004`.
-error: could not compile `coquerythmo` (lib) due to 5 previous errors
-warning: build failed, waiting for other jobs to finish...
-error: could not compile `coquerythmo` (lib test) due to 5 previous errors
+thread 'delivery_export::tests::unicode_report_pdfs_keep_japanese_and_arabic_content' (8280) panicked at src/delivery_export.rs:1953:13:
+assertion failed: text.contains("/ImageMask true")
+
+---- workspaces::rythmo::view::tests::pointer_hover_finds_line_through_render_index stdout ----
+
+thread 'workspaces::rythmo::view::tests::pointer_hover_finds_line_through_render_index' (8531) panicked at src/workspaces/rythmo/view.rs:984:9:
+assertion `left == right` failed
+  left: None
+ right: Some(8923701874734381)
+
+
+failures:
+    delivery_export::tests::unicode_pdf_text_uses_shaped_masks_and_preserves_actual_text
+    delivery_export::tests::unicode_report_pdfs_keep_japanese_and_arabic_content
+    workspaces::rythmo::view::tests::pointer_hover_finds_line_through_render_index
+
+test result: FAILED. 316 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.02s
+
+error: test failed, to rerun pass `--lib`
