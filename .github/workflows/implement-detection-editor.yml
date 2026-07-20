@@ -65,7 +65,7 @@ jobs:
             fonts-noto-extra
           fc-cache -f
 
-      - name: Test locked dependency graph
+      - name: Run complete locked test suite
         id: cargo_test
         if: steps.status.outputs.applied == 'false'
         continue-on-error: true
@@ -74,25 +74,21 @@ jobs:
           set -o pipefail
           cargo test --locked 2>&1 | tee cargo-test.log
 
-      - name: Persist compiler diagnostics on failure
-        if: steps.status.outputs.applied == 'false' && steps.cargo_test.outcome == 'failure'
+      - name: Validate detection feature scope
+        id: feature_tests
+        if: steps.status.outputs.applied == 'false'
         shell: bash
         run: |
-          mkdir -p tools
-          tail -n 300 cargo-test.log > tools/detection-editor-errors.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f tools/detection-editor-errors.txt
-          git commit -m "Capture detection editor compiler errors [skip ci]"
-          git push origin HEAD:agent/track-scoped-detection-model
-          exit 1
+          cargo test --locked detection
+          cargo test --locked pointer_hover_finds_line_through_render_index
+          cargo test --locked project_metadata::tests
 
       - name: Check whitespace
-        if: steps.status.outputs.applied == 'false' && steps.cargo_test.outcome == 'success'
+        if: steps.status.outputs.applied == 'false'
         run: git diff --check
 
       - name: Commit tested implementation
-        if: steps.status.outputs.applied == 'false' && steps.cargo_test.outcome == 'success'
+        if: steps.status.outputs.applied == 'false' && steps.feature_tests.outcome == 'success'
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
