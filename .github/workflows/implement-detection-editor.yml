@@ -40,7 +40,9 @@ jobs:
 
       - name: Apply integration patch
         if: steps.status.outputs.applied == 'false'
-        run: python tools/implement_detection_editor.py
+        run: |
+          python tools/implement_detection_editor.py
+          python tools/fix_detection_editor_compile.py
 
       - name: Format Rust
         if: steps.status.outputs.applied == 'false'
