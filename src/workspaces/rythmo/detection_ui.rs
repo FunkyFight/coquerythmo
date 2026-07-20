@@ -291,18 +291,18 @@ fn base_character_ratios(
         .map(|index| index as f32 / character_count.max(1) as f32)
         .collect::<Vec<_>>();
 
+    let breaks = state.get_syllable_breaks(line, lang);
+    if breaks.is_empty() {
+        return (positions, Vec::new());
+    }
     let effective_drag = effective_drag_for_line(line.id, drag, state);
-    let segments = if let Some(drag) = effective_drag {
-        let breaks = state.get_syllable_breaks(line, lang);
-        if !breaks.is_empty() && drag.ratios.len() == breaks.len() + 1 {
-            Some((breaks, drag.ratios.clone()))
-        } else {
-            visible_syllable_segments(line, None, lang, false, state)
-        }
+    let ratios = if let Some(drag) = effective_drag
+        .filter(|drag| drag.ratios.len() == breaks.len() + 1)
+    {
+        drag.ratios.clone()
+    } else if let Some(ratios) = syllable_ratios_for_line(line, None, lang, state) {
+        ratios
     } else {
-        visible_syllable_segments(line, None, lang, false, state)
-    };
-    let Some((breaks, ratios)) = segments else {
         return (positions, Vec::new());
     };
 
