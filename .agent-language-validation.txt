@@ -1,7 +1,6 @@
 Traceback (most recent call last):
-  File "/home/runner/work/coquerythmo/coquerythmo/scripts/agent_fix_modal_script.py", line 8, in <module>
-    raise RuntimeError(f"expected one reverse-tab escape, found {text.count(old)}")
-RuntimeError: expected one reverse-tab escape, found 0
-SCRIPT_FIX_STATUS=1
-MODAL_STATUS=1
-CALLERS_STATUS=1
+  File "/home/runner/work/coquerythmo/coquerythmo/scripts/agent_finish_language_renderers.py", line 119, in <module>
+    impl_start = text.index("impl RythmoGpuRenderer", helper_start)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: substring not found
+RENDERER_STATUS=1

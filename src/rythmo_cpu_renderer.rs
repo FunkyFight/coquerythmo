@@ -751,7 +751,7 @@ impl CpuRenderer {
                     crate::syllable::read_highlight_end_from_timing(
                         &line.text,
                         &line.syllable_ratios,
-                        &crate::config::get().lang,
+                        scene.syllable_language.code(),
                         progress as f32,
                     )
                 } else {
@@ -785,7 +785,7 @@ impl CpuRenderer {
                         let visual_progress = crate::syllable::visual_progress_from_timing(
                             &line.text,
                             &line.syllable_ratios,
-                            &crate::config::get().lang,
+                            scene.syllable_language.code(),
                             progress,
                         );
                         self.blit_rythmo_text_natural_tinted_clipped(
@@ -805,7 +805,7 @@ impl CpuRenderer {
                         );
                     }
                 } else {
-                    let lang = &crate::config::get().lang;
+                    let lang = scene.syllable_language.code();
                     let breaks = crate::syllable::syllable_breaks(&line.text, lang);
                     let ratios =
                         crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
@@ -986,7 +986,16 @@ impl CpuRenderer {
                     s,
                 );
             } else {
-                blit_karaoke_dot(&mut pixmap, line, current_frame as f64, x1, line_y, lw, s);
+                blit_karaoke_dot(
+                    &mut pixmap,
+                    line,
+                    scene.syllable_language.code(),
+                    current_frame as f64,
+                    x1,
+                    line_y,
+                    lw,
+                    s,
+                );
             }
 
             // Note text (discrete, at the bottom of the line)
@@ -1066,6 +1075,7 @@ fn color_channel(value: f32) -> u8 {
 fn blit_karaoke_dot(
     pixmap: &mut Pixmap,
     line: &crate::rythmo_line::RythmoLine,
+    lang: &str,
     current_frame: f64,
     x: f32,
     y: f32,
@@ -1078,7 +1088,7 @@ fn blit_karaoke_dot(
     let ratios = crate::syllable::timing_ratios(
         &line.text,
         &line.syllable_ratios,
-        &crate::config::get().lang,
+        lang,
     );
     let local_progress = crate::syllable::active_syllable_local_progress(&ratios, progress)
         .unwrap_or(progress)
@@ -1086,7 +1096,7 @@ fn blit_karaoke_dot(
     let visual_progress = crate::syllable::visual_progress_from_timing(
         &line.text,
         &line.syllable_ratios,
-        &crate::config::get().lang,
+        lang,
         progress,
     );
     let bounce = (local_progress * std::f32::consts::PI).sin().max(0.0);
