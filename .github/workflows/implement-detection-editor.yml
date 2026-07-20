@@ -46,6 +46,12 @@ jobs:
         if: steps.status.outputs.applied == 'false'
         run: cargo fmt --all
 
+      - name: Install Linux build dependencies
+        if: steps.status.outputs.applied == 'false'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev pkg-config
+
       - name: Test locked dependency graph
         id: cargo_test
         if: steps.status.outputs.applied == 'false'
