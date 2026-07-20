@@ -499,6 +499,26 @@ impl CommandDispatcher {
             UiAction::MoveLines { moves } => {
                 state.move_lines(moves);
             }
+            UiAction::AddDetection {
+                line_id,
+                kind,
+                media_tick,
+                target,
+            } => {
+                state.add_detection(line_id, kind, media_tick, target);
+            }
+            UiAction::MoveDetection {
+                address,
+                media_tick,
+            } => {
+                state.move_detection(address, media_tick);
+            }
+            UiAction::DeleteDetection { address } => {
+                state.delete_detection(address);
+            }
+            UiAction::NudgeSelectedDetection { delta_ticks } => {
+                state.nudge_selected_detection(delta_ticks);
+            }
             UiAction::UpdateLineText { id, text } => {
                 state.update_line_text(id, text);
             }
@@ -926,7 +946,11 @@ impl CommandDispatcher {
                 }
             }
             UiAction::DeleteSelected => {
-                state.delete_selected();
+                if state.has_selected_detection() {
+                    state.delete_selected_detection();
+                } else {
+                    state.delete_selected();
+                }
             }
             UiAction::SelectAll => {
                 dispatch(UiEvent::SelectAll, state, elwt);

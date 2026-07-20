@@ -194,6 +194,10 @@ pub fn handle_rythmo_event(
         }
     }
 
+    if let Some(response) = handle_detection_event(&ctx, event, state) {
+        return response;
+    }
+
     match event {
         UiEvent::MousePress { x, y } => {
             if let Some(resp) = syllable_mouse_press(&ctx, state, *x, *y, false) {
@@ -278,6 +282,12 @@ fn handle_read_only_event(
     state.audio_offset_mode = false;
     state.audio_offset_drag = None;
     state.context_menu = None;
+    state.detection_hover = None;
+    state.detection_menu = None;
+    state.detection_drag = None;
+    if matches!(state.selected, Some(Selection::Detection(_))) {
+        state.selected = None;
+    }
     if state.is_editing() {
         state.stop_line_editing();
         state.stop_note_editing();

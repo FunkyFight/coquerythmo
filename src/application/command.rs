@@ -223,6 +223,22 @@ pub enum UiAction {
     MoveLines {
         moves: Vec<(u64, i64, f32)>,
     },
+    AddDetection {
+        line_id: u64,
+        kind: crate::detection::DetectionKind,
+        media_tick: crate::detection::MediaTick,
+        target: crate::detection::TextAnchor,
+    },
+    MoveDetection {
+        address: crate::detection::DetectionAddress,
+        media_tick: crate::detection::MediaTick,
+    },
+    DeleteDetection {
+        address: crate::detection::DetectionAddress,
+    },
+    NudgeSelectedDetection {
+        delta_ticks: i64,
+    },
     UpdateLineText {
         id: u64,
         text: String,
@@ -445,6 +461,10 @@ impl UiAction {
                 | Self::MoveSelectedLineTrack { .. }
                 | Self::NudgeSelectedLines { .. }
                 | Self::MoveLines { .. }
+                | Self::AddDetection { .. }
+                | Self::MoveDetection { .. }
+                | Self::DeleteDetection { .. }
+                | Self::NudgeSelectedDetection { .. }
                 | Self::UpdateLineText { .. }
                 | Self::SetCharacter { .. }
                 | Self::SetCharacterColor { .. }

@@ -63,15 +63,11 @@ impl MediaTick {
     }
 }
 
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct DetectionCueId(pub u64);
 
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SyncPointId(pub u64);
 
@@ -115,6 +111,70 @@ pub enum DetectionKind {
 }
 
 impl DetectionKind {
+    pub const ALL: [Self; 17] = [
+        Self::Labial,
+        Self::SemiLabial,
+        Self::MouthOpen,
+        Self::MouthClosed,
+        Self::TeethVisible,
+        Self::Breath,
+        Self::Reaction,
+        Self::SentenceStart,
+        Self::SentenceEnd,
+        Self::OverlapStart,
+        Self::OverlapEnd,
+        Self::SpeakerChange,
+        Self::OffScreen,
+        Self::VoiceOver,
+        Self::Telephone,
+        Self::Thought,
+        Self::Crowd,
+    ];
+
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Labial => "Labiale",
+            Self::SemiLabial => "Semi-labiale",
+            Self::MouthOpen => "Bouche ouverte",
+            Self::MouthClosed => "Bouche fermée",
+            Self::TeethVisible => "Dents visibles",
+            Self::Breath => "Respiration",
+            Self::Reaction => "Réaction",
+            Self::SentenceStart => "Début de phrase",
+            Self::SentenceEnd => "Fin de phrase",
+            Self::OverlapStart => "Début de chevauchement",
+            Self::OverlapEnd => "Fin de chevauchement",
+            Self::SpeakerChange => "Changement d'interlocuteur",
+            Self::OffScreen => "Hors champ",
+            Self::VoiceOver => "Voix off",
+            Self::Telephone => "Téléphone",
+            Self::Thought => "Pensée",
+            Self::Crowd => "Foule",
+        }
+    }
+
+    pub const fn short_label(self) -> &'static str {
+        match self {
+            Self::Labial => "L",
+            Self::SemiLabial => "SL",
+            Self::MouthOpen => "BO",
+            Self::MouthClosed => "BF",
+            Self::TeethVisible => "DV",
+            Self::Breath => "R",
+            Self::Reaction => "!",
+            Self::SentenceStart => "DÉB",
+            Self::SentenceEnd => "FIN",
+            Self::OverlapStart => "CH+",
+            Self::OverlapEnd => "CH-",
+            Self::SpeakerChange => "INT",
+            Self::OffScreen => "HC",
+            Self::VoiceOver => "OFF",
+            Self::Telephone => "TEL",
+            Self::Thought => "PEN",
+            Self::Crowd => "FOU",
+        }
+    }
+
     pub const fn family(self) -> DetectionFamily {
         match self {
             Self::Labial
@@ -128,11 +188,9 @@ impl DetectionKind {
             | Self::OverlapStart
             | Self::OverlapEnd
             | Self::SpeakerChange => DetectionFamily::Dialogue,
-            Self::OffScreen
-            | Self::VoiceOver
-            | Self::Telephone
-            | Self::Thought
-            | Self::Crowd => DetectionFamily::Voice,
+            Self::OffScreen | Self::VoiceOver | Self::Telephone | Self::Thought | Self::Crowd => {
+                DetectionFamily::Voice
+            }
         }
     }
 }
@@ -147,9 +205,14 @@ impl DetectionKind {
 pub enum TextAnchor {
     BeforeText,
     AfterText,
-    Grapheme { index: u32 },
+    Grapheme {
+        index: u32,
+    },
     /// End-exclusive range.
-    GraphemeRange { start: u32, end: u32 },
+    GraphemeRange {
+        start: u32,
+        end: u32,
+    },
 }
 
 impl TextAnchor {
@@ -288,8 +351,7 @@ impl LineDetectionData {
     }
 
     fn sort_detections(&mut self) {
-        self.detections
-            .sort_by_key(|cue| (cue.media_tick, cue.id));
+        self.detections.sort_by_key(|cue| (cue.media_tick, cue.id));
     }
 }
 
@@ -375,11 +437,7 @@ impl DetectionDocument {
         Some(cue)
     }
 
-    pub fn move_detection(
-        &mut self,
-        address: DetectionAddress,
-        media_tick: MediaTick,
-    ) -> bool {
+    pub fn move_detection(&mut self, address: DetectionAddress, media_tick: MediaTick) -> bool {
         self.lines
             .get_mut(&address.line_id)
             .is_some_and(|line| line.move_detection(address.detection_id, media_tick))
@@ -392,10 +450,15 @@ impl DetectionDocument {
     ) -> Option<(MediaTick, MediaTick)> {
         let center = self.detection(address)?.media_tick;
         let radius = MediaTick::from_seconds(2.0, fps);
-        Some((
-            center.saturating_sub(radius),
-            center.saturating_add(radius),
-        ))
+        Some((center.saturating_sub(radius), center.saturating_add(radius)))
+    }
+
+    pub fn scaled_time(&self, ratio: f64) -> Self {
+        let mut scaled = Self::default();
+        for (line_id, line) in &self.lines {
+            scaled.lines.insert(*line_id, line.scaled_time(ratio));
+        }
+        scaled
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -531,7 +594,10 @@ mod tests {
         assert!(document.move_detection(second, MediaTick(10)));
         let line = document.line(10).unwrap();
         assert_eq!(line.detections()[0].id, second.detection_id);
-        assert_eq!(line.detection_after(MediaTick(10)).unwrap().id, first.detection_id);
+        assert_eq!(
+            line.detection_after(MediaTick(10)).unwrap().id,
+            first.detection_id
+        );
     }
 
     #[test]

@@ -457,6 +457,7 @@ impl EditExecutor {
         session.project.set_voice_actors(data.voice_actors);
         let mut settings = session.project.settings().clone();
         settings.automation = automation;
+        settings.detections = data.detections;
         session.project.set_settings(settings);
         session.project.bump_revision();
     }

@@ -2954,6 +2954,10 @@ impl State {
                         self.erase_drawing_strokes(ids.clone());
                     }
                 }
+                Selection::Detection(_) => {
+                    // Routed through the semantic detection action before this
+                    // legacy selection deletion path is reached.
+                }
             }
             self.ui_shell.ui.clear_selection();
         }
@@ -3781,7 +3785,9 @@ impl State {
                 .lines()
                 .map(|line| line.id)
                 .collect(),
-            Some(Selection::Marker(_) | Selection::Strokes(_)) | None => Vec::new(),
+            Some(Selection::Marker(_) | Selection::Strokes(_) | Selection::Detection(_)) | None => {
+                Vec::new()
+            }
         }
     }
 

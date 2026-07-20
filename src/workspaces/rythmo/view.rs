@@ -70,6 +70,9 @@ fn karaoke_row_candidate_wins(candidate: (bool, i64, u64), current: (bool, i64, 
     }
 }
 
+#[path = "detection_ui.rs"]
+mod detection_ui;
+pub(crate) use detection_ui::*;
 #[path = "state.rs"]
 mod state;
 pub use state::*;
@@ -2891,6 +2894,10 @@ pub fn render_lines<'a>(
             [0.25, 0.45, 0.95, 0.45],
             CURSOR_COLOR,
         );
+    }
+
+    if !karaoke_preview {
+        render_detection_overlay(zone, project, current_frame, state, quads, labels);
     }
 
     push_editor_karaoke_texture_prewarm_texts(
