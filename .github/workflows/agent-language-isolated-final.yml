@@ -1,0 +1,80 @@
+name: Isolated per-language syllabification validation
+
+on:
+  push:
+    branches:
+      - agent/language-syllabification-final
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: ${{ !contains(github.event.head_commit.message, '[agent final validation]') && !contains(github.event.head_commit.message, '[agent cleanup]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libasound2-dev libudev-dev
+
+      - name: Normalize generated source and English catalog
+        shell: bash
+        run: |
+          python3 scripts/agent_fix_language_test_literals.py
+          git fetch origin main --depth=1
+          git checkout origin/main -- i18n/en.toml
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('i18n/en.toml')
+          data = path.read_bytes()
+          old = b'"languages.clear_instrumental" = "Remove instrumental"'
+          newline = b'\r\n' if b'\r\n' in data else b'\n'
+          new = newline.join([
+              old,
+              b'"languages.syllables" = "Syllable language"',
+              b'"languages.syllables.french" = "French"',
+              b'"languages.syllables.english" = "English"',
+          ])
+          if data.count(old) != 1:
+              raise SystemExit(f'expected one English language anchor, found {data.count(old)}')
+          path.write_bytes(data.replace(old, new, 1))
+          PY
+
+      - name: Validate source
+        shell: bash
+        run: |
+          set +e
+          report=.agent-language-isolated-validation.txt
+          : > "$report"
+
+          run_check() {
+            name="$1"
+            shift
+            log="/tmp/${name}.log"
+            "$@" >"$log" 2>&1
+            status=$?
+            echo "${name}_STATUS=$status" >> "$report"
+            if [ "$status" -ne 0 ]; then
+              echo "--- ${name} failure ---" >> "$report"
+              tail -n 180 "$log" >> "$report"
+            fi
+            return 0
+          }
+
+          run_check FMT cargo fmt --all
+          run_check CHECK cargo check --lib
+          run_check DOMAIN_TEST cargo test --lib syllable_language -- --nocapture
+          run_check MODAL_TEST cargo test --lib language_modal -- --nocapture
+          run_check LIB_TEST cargo test --lib
+          run_check DIFF_CHECK git diff --check
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m '[agent final validation] Validate per-language syllabification'
+          git push
