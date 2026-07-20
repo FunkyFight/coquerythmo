@@ -1,7 +1,7 @@
-SCRIPT_FIX_STATUS=0
-MODAL_STATUS=0
 Traceback (most recent call last):
-  File "/home/runner/work/coquerythmo/coquerythmo/scripts/agent_apply_language_callers.py", line 108, in <module>
-    raise RuntimeError(
-RuntimeError: CPU locale references: expected 2 before/2 in helper, got 3/2
+  File "/home/runner/work/coquerythmo/coquerythmo/scripts/agent_fix_modal_script.py", line 8, in <module>
+    raise RuntimeError(f"expected one reverse-tab escape, found {text.count(old)}")
+RuntimeError: expected one reverse-tab escape, found 0
+SCRIPT_FIX_STATUS=1
+MODAL_STATUS=1
 CALLERS_STATUS=1
