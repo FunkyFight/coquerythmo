@@ -1,11 +1,6 @@
 name: Apply and validate requested fixes
 
 on:
-  push:
-    branches:
-      - agent/fix-karaoke-dev-recording
-    paths:
-      - tools/apply_agent_fixes.py
   pull_request:
     branches:
       - main
@@ -39,7 +34,7 @@ jobs:
         run: git diff --check
 
       - name: Run tests
-        run: cargo test --all-targets
+        run: RUSTFLAGS="-Awarnings" cargo test --all-targets --quiet
 
       - name: Commit validated changes
         run: |
