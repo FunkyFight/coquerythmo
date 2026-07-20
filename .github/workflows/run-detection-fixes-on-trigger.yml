@@ -1,0 +1,69 @@
+name: Run detection fixes on trigger
+
+on:
+  push:
+    branches:
+      - agent/track-scoped-detection-model
+    paths:
+      - .github/detection-fix-trigger
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/track-scoped-detection-model
+          fetch-depth: 0
+
+      - name: Apply focused detection fixes
+        shell: bash
+        run: |
+          python3 -c "import base64,gzip,pathlib,re; s=pathlib.Path('.github/workflows/apply-detection-fixes-once.yml').read_text(); b=re.search(r\"echo '([^']+)' \\| base64\",s).group(1); pathlib.Path('/tmp/apply_detection_fixes.py').write_bytes(gzip.decompress(base64.b64decode(b)))"
+          python3 /tmp/apply_detection_fixes.py
+
+      - name: Format, test, and commit
+        shell: bash
+        run: |
+          set +e
+          cargo fmt > /tmp/fmt.log 2>&1
+          fmt_status=$?
+          cargo fmt --check >> /tmp/fmt.log 2>&1
+          fmt_check_status=$?
+          cargo test --locked > /tmp/test.log 2>&1
+          test_status=$?
+          git diff --check > /tmp/diff-check.log 2>&1
+          diff_status=$?
+          set -e
+
+          rm -f .github/workflows/apply-detection-fixes-once.yml
+          rm -f .github/workflows/run-detection-fixes-on-trigger.yml
+          rm -f .github/detection-fix-trigger
+          if [ "$fmt_status" -ne 0 ] || [ "$fmt_check_status" -ne 0 ] || [ "$test_status" -ne 0 ] || [ "$diff_status" -ne 0 ]; then
+            {
+              echo "fmt_status=$fmt_status"
+              echo "fmt_check_status=$fmt_check_status"
+              echo "test_status=$test_status"
+              echo "diff_status=$diff_status"
+              echo
+              echo "== fmt =="
+              tail -n 120 /tmp/fmt.log
+              echo
+              echo "== cargo test =="
+              tail -n 240 /tmp/test.log
+              echo
+              echo "== git diff --check =="
+              cat /tmp/diff-check.log
+            } > .github/detection-fix-status.txt
+          else
+            rm -f .github/detection-fix-status.txt
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/workspaces/rythmo/detection_ui.rs src/workspaces/rythmo/view.rs src/ui/mod.rs .github
+          git commit -m "Fix synchronization point and detection rendering"
+          git push origin HEAD:agent/track-scoped-detection-model
