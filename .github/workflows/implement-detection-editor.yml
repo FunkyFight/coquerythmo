@@ -1,0 +1,64 @@
+name: Implement detection editor
+
+on:
+  push:
+    branches:
+      - agent/track-scoped-detection-model
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+
+permissions:
+  contents: write
+
+concurrency:
+  group: detection-editor-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  implement-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/track-scoped-detection-model
+          fetch-depth: 0
+
+      - name: Check whether implementation is already applied
+        id: status
+        shell: bash
+        run: |
+          if test -f src/state_detection.rs; then
+            echo "applied=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply integration patch
+        if: steps.status.outputs.applied == 'false'
+        run: python tools/implement_detection_editor.py
+
+      - name: Format Rust
+        if: steps.status.outputs.applied == 'false'
+        run: cargo fmt --all
+
+      - name: Test locked dependency graph
+        if: steps.status.outputs.applied == 'false'
+        run: cargo test --locked
+
+      - name: Check whitespace
+        if: steps.status.outputs.applied == 'false'
+        run: git diff --check
+
+      - name: Commit tested implementation
+        if: steps.status.outputs.applied == 'false'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src
+          git commit -m "Wire detection placement into editor [detection-ui]"
+          git push origin HEAD:agent/track-scoped-detection-model
