@@ -21,8 +21,15 @@ jobs:
         run: |
           set +e
           : > .agent-language-validation.txt
-          python3 scripts/agent_language_patch.py >> .agent-language-validation.txt 2>&1
-          patch_status=$?
+          python3 scripts/repair_agent_language_patch.py >> .agent-language-validation.txt 2>&1
+          repair_status=$?
+          echo "REPAIR_STATUS=$repair_status" >> .agent-language-validation.txt
+          if [ "$repair_status" -eq 0 ]; then
+            python3 scripts/agent_language_patch.py >> .agent-language-validation.txt 2>&1
+            patch_status=$?
+          else
+            patch_status=1
+          fi
           echo "PATCH_STATUS=$patch_status" >> .agent-language-validation.txt
           if [ "$patch_status" -eq 0 ]; then
             cargo fmt --all >> .agent-language-validation.txt 2>&1
