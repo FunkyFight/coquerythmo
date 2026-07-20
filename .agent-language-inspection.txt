@@ -1,5 +1,196 @@
 --- working tree ---
-?? .agent-language-inspection.txt
+ M .agent-language-inspection.txt
 --- configuration language callers ---
+src/state.rs:1069:        let lang = crate::config::get().lang.clone();
+src/state.rs:3256:        let lang = crate::config::get().lang.clone();
+src/rythmo_cpu_renderer.rs:754:                        &crate::config::get().lang,
+src/rythmo_cpu_renderer.rs:788:                            &crate::config::get().lang,
+src/rythmo_cpu_renderer.rs:808:                    let lang = &crate::config::get().lang;
+src/rythmo_cpu_renderer.rs:1081:        &crate::config::get().lang,
+src/rythmo_cpu_renderer.rs:1089:        &crate::config::get().lang,
+src/rythmo_gpu_renderer.rs:144:        &crate::config::get().lang,
+src/rythmo_gpu_renderer.rs:152:        &crate::config::get().lang,
+src/rythmo_gpu_renderer.rs:2270:                            &crate::config::get().lang,
+src/rythmo_gpu_renderer.rs:2306:                            &crate::config::get().lang,
+src/rythmo_gpu_renderer.rs:2328:                    let lang = &crate::config::get().lang;
+src/workspaces/rythmo/view.rs:2320:    let karaoke_lang = crate::config::get().lang.clone();
+src/workspaces/rythmo/mouse.rs:111:                            let lang = crate::config::get().lang.clone();
+src/workspaces/rythmo/mouse_buttons.rs:83:                let lang = crate::config::get().lang.clone();
+src/workspaces/rythmo/mouse_buttons.rs:198:                let lang = crate::config::get().lang.clone();
+src/workspaces/rythmo/syllable.rs:32:    let lang = crate::config::get().lang.clone();
+src/workspaces/rythmo/press.rs:83:                let lang = crate::config::get().lang.clone();
+src/ui/mod.rs:1924:                    let lang = crate::config::get().lang.clone();
+src/app/bootstrap.rs:9:    i18n::init(&config::get().lang);
 --- syllable API callers ---
+src/state.rs:1078:                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, &lang)
+src/state.rs:3259:                crate::syllable::split_dialogue_at_syllable_cursor(
+src/state.rs:3267:                crate::syllable::split_dialogue_at_syllable_progress(
+src/rythmo_cpu_renderer.rs:751:                    crate::syllable::read_highlight_end_from_timing(
+src/rythmo_cpu_renderer.rs:785:                        let visual_progress = crate::syllable::visual_progress_from_timing(
+src/rythmo_cpu_renderer.rs:809:                    let breaks = crate::syllable::syllable_breaks(&line.text, lang);
+src/rythmo_cpu_renderer.rs:811:                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
+src/rythmo_cpu_renderer.rs:1078:    let ratios = crate::syllable::timing_ratios(
+src/rythmo_cpu_renderer.rs:1086:    let visual_progress = crate::syllable::visual_progress_from_timing(
+src/syllable.rs:9:pub fn syllable_breaks(text: &str, lang: &str) -> Vec<usize> {
+src/syllable.rs:107:                for inner_break in english_syllable_breaks(syl) {
+src/syllable.rs:119:        clean_breaks.extend(french_syllable_breaks(&clean));
+src/syllable.rs:121:        clean_breaks.extend(english_syllable_breaks(&clean));
+src/syllable.rs:158:fn english_syllable_breaks(word: &str) -> Vec<usize> {
+src/syllable.rs:294:fn french_syllable_breaks(word: &str) -> Vec<usize> {
+src/syllable.rs:397:pub fn syllable_count(text: &str, lang: &str) -> usize {
+src/syllable.rs:401:    syllable_breaks(text, lang).len() + 1
+src/syllable.rs:429:pub fn read_highlight_end_from_timing(
+src/syllable.rs:438:    let visual_progress = visual_progress_from_timing(text, saved_ratios, lang, progress);
+src/syllable.rs:517:pub fn timing_ratios(text: &str, saved_ratios: &[f32], lang: &str) -> Vec<f32> {
+src/syllable.rs:522:    let breaks = syllable_breaks(text, lang);
+src/syllable.rs:559:pub fn visual_progress_from_timing(
+src/syllable.rs:570:    let breaks = syllable_breaks(text, lang);
+src/syllable.rs:575:    let timing = timing_ratios(text, saved_ratios, lang);
+src/syllable.rs:612:pub fn split_dialogue_at_syllable_progress(
+src/syllable.rs:618:    let breaks = syllable_breaks(text, lang);
+src/syllable.rs:619:    let ratios = timing_ratios(text, saved_ratios, lang);
+src/syllable.rs:624:pub fn split_dialogue_at_syllable_cursor(
+src/syllable.rs:630:    let breaks = syllable_breaks(text, lang);
+src/syllable.rs:671:    let ratios = timing_ratios(text, saved_ratios, lang);
+src/syllable.rs:721:    if syllable_count(text, lang) == ratios.len() {
+src/syllable.rs:753:        assert!(syllable_breaks("", "fr-fr").is_empty());
+src/syllable.rs:758:        let breaks = french_syllable_breaks("adore");
+src/syllable.rs:770:        let breaks = french_syllable_breaks("spaghettis");
+src/syllable.rs:780:        let breaks = syllable_breaks("J'adore", "fr-fr");
+src/syllable.rs:796:        let breaks = syllable_breaks("J'adore les spaghettis", "fr-fr");
+src/syllable.rs:802:        let breaks = syllable_breaks("un deux trois", "fr-fr");
+src/syllable.rs:812:        let breaks = syllable_breaks("tambourine", "en-us");
+src/syllable.rs:853:    fn test_visual_progress_uses_timing_ratios() {
+src/syllable.rs:854:        let progress = visual_progress_from_timing("adore", &[0.8, 0.1, 0.1], "fr-fr", 0.4);
+src/syllable.rs:871:        let split = split_dialogue_at_syllable_progress("tambourine", &[], "en-us", 0.31)
+src/syllable.rs:883:        let split = split_dialogue_at_syllable_cursor(text, &[], "fr-fr", cursor_pos)
+src/rythmo_gpu_renderer.rs:141:    let ratios = crate::syllable::timing_ratios(
+src/rythmo_gpu_renderer.rs:149:    let visual_progress = crate::syllable::visual_progress_from_timing(
+src/rythmo_gpu_renderer.rs:2267:                        crate::syllable::read_highlight_end_from_timing(
+src/rythmo_gpu_renderer.rs:2303:                        let visual_progress = crate::syllable::visual_progress_from_timing(
+src/rythmo_gpu_renderer.rs:2329:                    let breaks = crate::syllable::syllable_breaks(&line.text, lang);
+src/rythmo_gpu_renderer.rs:2331:                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
+src/workspaces/rythmo/view.rs:220:            visible_syllable_segments(line, None, "en-us", false, &state).is_none(),
+src/workspaces/rythmo/view.rs:235:        let (_, ratios) = visible_syllable_segments(line, None, "en-us", false, &state)
+src/workspaces/rythmo/view.rs:1347:    let ratios = crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
+src/workspaces/rythmo/view.rs:1351:    let visual_progress = crate::syllable::visual_progress_from_timing(
+src/workspaces/rythmo/view.rs:1905:fn visible_syllable_segments(
+src/workspaces/rythmo/view.rs:1916:    let breaks = state.get_syllable_breaks(line, lang);
+src/workspaces/rythmo/view.rs:1934:    syllable_count: usize,
+src/workspaces/rythmo/view.rs:1937:    (line.syllable_ratios.len() == syllable_count
+src/workspaces/rythmo/view.rs:1942:    .then(|| crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang))
+src/workspaces/rythmo/view.rs:1997:    let (breaks, ratios) = visible_syllable_segments(line, drag, lang, karaoke_preview, state)?;
+src/workspaces/rythmo/view.rs:2008:    let (breaks, ratios) = visible_syllable_segments(line, drag, lang, karaoke_preview, state)?;
+src/workspaces/rythmo/view.rs:2154:fn syllable_ratios_for_line(
+src/workspaces/rythmo/view.rs:2160:    let breaks = state.get_syllable_breaks(line, lang);
+src/workspaces/rythmo/view.rs:2511:            crate::syllable::read_highlight_end_from_timing(
+src/workspaces/rythmo/view.rs:2577:                if let Some((breaks, ratios)) = visible_syllable_segments(
+src/workspaces/rythmo/view.rs:2679:                syllable_ratios_for_line(line, state.syllable_drag.as_ref(), &karaoke_lang, state)
+src/workspaces/rythmo/state.rs:110:    syllable_breaks_cache: RefCell<HashMap<u64, (Vec<usize>, u64)>>, // line_id -> (breaks, text_hash)
+src/workspaces/rythmo/state.rs:247:            syllable_breaks_cache: RefCell::new(HashMap::new()),
+src/workspaces/rythmo/state.rs:316:    pub(super) fn get_syllable_breaks(
+src/workspaces/rythmo/state.rs:329:        let mut cache = self.syllable_breaks_cache.borrow_mut();
+src/workspaces/rythmo/state.rs:336:        let breaks = crate::syllable::syllable_breaks(&line.text, lang);
+src/workspaces/rythmo/syllable.rs:33:    let ratios = syllable_ratios_for_line(line, state.syllable_drag.as_ref(), &lang, state)?;
 --- language modal and state callers ---
+src/project_metadata.rs:695:                && !project.select_language(entry.language_id)
+src/state.rs:1140:    fn language_modal_items(&self) -> Vec<crate::ui::language_modal::LanguageListItem> {
+src/state.rs:1145:            .map(|language| crate::ui::language_modal::LanguageListItem {
+src/state.rs:1166:    pub fn open_languages_modal(&mut self) {
+src/state.rs:1170:        self.ui_shell.ui.open_languages_modal(languages, active);
+src/state.rs:1207:    fn refresh_languages_modal(&mut self) {
+src/state.rs:1210:        self.ui_shell.ui.refresh_languages_modal(languages, active);
+src/state.rs:1213:    pub fn create_language(&mut self, name: String) {
+src/state.rs:1217:            .create_language_named(name.clone());
+src/state.rs:1223:        self.refresh_languages_modal();
+src/state.rs:1236:    pub fn rename_language(&mut self, id: u64, name: String) {
+src/state.rs:1240:            .rename_language(id, name.clone())
+src/state.rs:1243:            self.refresh_languages_modal();
+src/state.rs:1251:    pub fn select_language(&mut self, id: u64) {
+src/state.rs:1255:        if self.project_session.project.select_language(id) {
+src/state.rs:1261:            self.refresh_languages_modal();
+src/state.rs:1288:            self.refresh_languages_modal();
+src/state.rs:1306:            self.refresh_languages_modal();
+src/project.rs:215:pub struct ProjectLanguage {
+src/project.rs:223:    pub language: ProjectLanguage,
+src/project.rs:251:    language: ProjectLanguage,
+src/project.rs:278:    active_language: ProjectLanguage,
+src/project.rs:295:        let language = ProjectLanguage {
+src/project.rs:381:    pub fn active_language(&self) -> &ProjectLanguage {
+src/project.rs:393:    pub fn languages(&self) -> Vec<ProjectLanguage> {
+src/project.rs:400:    pub fn language(&self, id: LanguageId) -> Option<ProjectLanguage> {
+src/project.rs:449:    pub fn create_language(
+src/project.rs:463:        let language = ProjectLanguage { id, name, code };
+src/project.rs:484:        let _ = self.select_language(id);
+src/project.rs:490:    pub fn create_language_named(&mut self, name: impl Into<String>) -> LanguageId {
+src/project.rs:492:        self.create_language(name.clone(), name)
+src/project.rs:534:    pub fn rename_language(&mut self, id: LanguageId, name: impl Into<String>) -> bool {
+src/project.rs:584:    pub fn select_language(&mut self, id: LanguageId) -> bool {
+src/project.rs:781:    fn from_detached_band(language: ProjectLanguage, band: BandSnapshot) -> Self {
+src/project.rs:1738:        let english_id = project.create_language_named("English");
+src/project.rs:1761:        let english_id = project.create_language_named("English");
+src/project.rs:1763:        assert!(project.rename_language(english_id, "English (US)"));
+src/project.rs:1765:        assert!(project.select_language(french_id));
+src/project.rs:1778:        let english_id = project.create_language_named("English");
+src/project.rs:1787:        assert!(project.select_language(french_id));
+src/ui/language_modal.rs:15:pub struct LanguageListItem {
+src/ui/language_modal.rs:21:pub enum LanguageModalResult {
+src/ui/language_modal.rs:33:    languages: Vec<LanguageListItem>,
+src/ui/language_modal.rs:44:    pub fn new(languages: Vec<LanguageListItem>, active_language_id: u64) -> Self {
+src/ui/language_modal.rs:67:    pub fn refresh(&mut self, languages: Vec<LanguageListItem>, active_language_id: u64) {
+src/ui/language_modal.rs:120:    fn selected(&self) -> Option<&LanguageListItem> {
+src/ui/language_modal.rs:220:    ) -> LanguageModalResult {
+src/ui/language_modal.rs:228:                    return LanguageModalResult::Close;
+src/ui/language_modal.rs:238:                    return LanguageModalResult::Consumed;
+src/ui/language_modal.rs:243:                        0 | 1 => LanguageModalResult::Consumed,
+src/ui/language_modal.rs:244:                        2 if !trimmed.is_empty() => LanguageModalResult::Create { name: trimmed },
+src/ui/language_modal.rs:246:                            LanguageModalResult::Rename {
+src/ui/language_modal.rs:251:                        4 if self.selected().is_some() => LanguageModalResult::Select {
+src/ui/language_modal.rs:254:                        5 if self.selected().is_some() => LanguageModalResult::PickInstrumental {
+src/ui/language_modal.rs:258:                            LanguageModalResult::Delete {
+src/ui/language_modal.rs:267:                            LanguageModalResult::ClearInstrumental {
+src/ui/language_modal.rs:271:                        8 => LanguageModalResult::Close,
+src/ui/language_modal.rs:272:                        _ => LanguageModalResult::Consumed,
+src/ui/language_modal.rs:278:                LanguageModalResult::Consumed
+src/ui/language_modal.rs:290:                LanguageModalResult::Consumed
+src/ui/language_modal.rs:302:                LanguageModalResult::Consumed
+src/ui/language_modal.rs:307:                LanguageModalResult::Consumed
+src/ui/language_modal.rs:311:                    return LanguageModalResult::Close;
+src/ui/language_modal.rs:322:                    return LanguageModalResult::Consumed;
+src/ui/language_modal.rs:328:                    return LanguageModalResult::Consumed;
+src/ui/language_modal.rs:336:                        return LanguageModalResult::Create { name: trimmed };
+src/ui/language_modal.rs:340:                        return LanguageModalResult::Rename {
+src/ui/language_modal.rs:347:                        return LanguageModalResult::Select {
+src/ui/language_modal.rs:353:                        return LanguageModalResult::PickInstrumental {
+src/ui/language_modal.rs:359:                        return LanguageModalResult::Delete {
+src/ui/language_modal.rs:369:                    return LanguageModalResult::ClearInstrumental {
+src/ui/language_modal.rs:373:                LanguageModalResult::Consumed
+src/ui/language_modal.rs:375:            _ => LanguageModalResult::Consumed,
+src/ui/modal_host.rs:11:use super::language_modal::{LanguageListItem, LanguageModal};
+src/ui/modal_host.rs:533:        use super::language_modal::LanguageModalResult;
+src/ui/modal_host.rs:540:            && matches!(result, LanguageModalResult::Consumed)
+src/ui/modal_host.rs:557:        if focus_navigation && matches!(result, LanguageModalResult::Consumed) {
+src/ui/modal_host.rs:572:            LanguageModalResult::Consumed => ModalOutcome::Consumed,
+src/ui/modal_host.rs:573:            LanguageModalResult::Close => {
+src/ui/modal_host.rs:577:            LanguageModalResult::Create { name } => {
+src/ui/modal_host.rs:580:            LanguageModalResult::Rename { id, name } => {
+src/ui/modal_host.rs:583:            LanguageModalResult::Delete { id } => {
+src/ui/modal_host.rs:586:            LanguageModalResult::Select { id } => {
+src/ui/modal_host.rs:589:            LanguageModalResult::PickInstrumental { id } => {
+src/ui/modal_host.rs:592:            LanguageModalResult::ClearInstrumental { id } => {
+src/ui/modal_host.rs:1201:    pub fn open_languages(&mut self, languages: Vec<LanguageListItem>, active_language_id: u64) {
+src/ui/modal_host.rs:1205:    pub fn refresh_languages(&mut self, languages: Vec<LanguageListItem>, active_language_id: u64) {
+src/ui/mod.rs:1599:    pub fn open_languages_modal(
+src/ui/mod.rs:1601:        languages: Vec<language_modal::LanguageListItem>,
+src/ui/mod.rs:1608:    pub fn refresh_languages_modal(
+src/ui/mod.rs:1610:        languages: Vec<language_modal::LanguageListItem>,
+src/export.rs:6:    Character, LanguageId, LanguageSnapshot, Project, ProjectLanguage, ProjectSettings,
+src/export.rs:278:                language: ProjectLanguage {
+src/export.rs:1277:        let english_id = project.create_language("English", "en");
+src/export.rs:1418:        project.create_language_named("English");
+src/export.rs:1464:        let english_id = project.create_language("English", "en");
+src/project_archive.rs:2041:        let english_id = project.create_language("English", "en-GB");
+src/app/dispatcher.rs:654:            UiAction::OpenLanguages => state.open_languages_modal(),
+src/app/dispatcher.rs:655:            UiAction::CreateLanguage { name } => state.create_language(name),
+src/app/dispatcher.rs:656:            UiAction::RenameLanguage { id, name } => state.rename_language(id, name),
+src/app/dispatcher.rs:658:            UiAction::SelectLanguage { id } => state.select_language(id),
