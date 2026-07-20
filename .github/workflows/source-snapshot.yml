@@ -1,0 +1,31 @@
+name: Source snapshot
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/track-scoped-detection-model
+      - name: Prepare source snapshot
+        run: |
+          find . -path './target' -prune -o -path './.git' -prune -o -type f -print | sort > repo-files.txt
+          tar --exclude=.git --exclude=target -czf coquerythmo-source.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coquerythmo-source
+          path: |
+            repo-files.txt
+            coquerythmo-source.tar.gz
+          retention-days: 1
