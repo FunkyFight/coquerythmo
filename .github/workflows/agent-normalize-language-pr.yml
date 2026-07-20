@@ -1,0 +1,51 @@
+name: Normalize final language PR source
+
+on:
+  push:
+    branches:
+      - agent/language-syllabification-pr
+
+permissions:
+  contents: write
+
+jobs:
+  normalize:
+    if: ${{ !contains(github.event.head_commit.message, '[agent normalized]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Normalize source
+        shell: bash
+        run: |
+          set -e
+          sed -i 's/\r$//' i18n/en.toml
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/project.rs')
+          text = path.read_text(encoding='utf-8')
+          old = '''        self.language_order.push(self.active_language.id);
+        let mut settings = ProjectSettings::default();
+        settings
+            .export_configuration'''
+          new = '''        self.language_order.push(self.active_language.id);
+        let mut settings = ProjectSettings {
+            syllable_language: SyllableLanguage::from_code(&self.active_language.code),
+            ..ProjectSettings::default()
+        };
+        settings
+            .export_configuration'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one reset settings block, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          cargo fmt --all
+          git diff --check
+          rm -f .agent-normalize-language-pr-trigger
+          rm -f .github/workflows/agent-normalize-language-pr.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m '[agent normalized] Normalize per-language syllabification'
+          git push
