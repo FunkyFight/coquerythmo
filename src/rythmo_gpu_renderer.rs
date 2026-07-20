@@ -2264,7 +2264,7 @@ impl GpuRenderer {
                         crate::syllable::read_highlight_end_from_timing(
                             &line.text,
                             &line.syllable_ratios,
-                            scene.syllable_language.code(),
+                            scene.project.syllable_language_code(),
                             progress as f32,
                         )
                     } else {
@@ -2300,7 +2300,7 @@ impl GpuRenderer {
                         let visual_progress = crate::syllable::visual_progress_from_timing(
                             &line.text,
                             &line.syllable_ratios,
-                            scene.syllable_language.code(),
+                            scene.project.syllable_language_code(),
                             progress,
                         );
                         self.push_rythmo_text_icons_natural_tinted_clipped(
@@ -2322,7 +2322,7 @@ impl GpuRenderer {
                         );
                     }
                 } else {
-                    let lang = scene.syllable_language.code();
+                    let lang = scene.project.syllable_language_code();
                     let breaks = crate::syllable::syllable_breaks(&line.text, lang);
                     let ratios =
                         crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
@@ -2465,7 +2465,7 @@ impl GpuRenderer {
                 push_karaoke_dot(
                     &mut quads,
                     line,
-                    scene.syllable_language.code(),
+                    scene.project.syllable_language_code(),
                     current_frame,
                     x1,
                     line_y,
