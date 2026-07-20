@@ -13,23 +13,26 @@ mod router_base;
 pub mod router {
     pub use super::router_base::*;
 
-    use crate::application::command::UiAction;
     use super::binding::RepeatPolicy;
     use super::context::InputContext;
     use super::key::{KeyCode, Modifiers};
+    use crate::application::command::UiAction;
 
     pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         let mut router = super::router_base::existing_shortcuts();
-        router.bind(
-            InputContext::Workspace,
-            KeyCode::Space,
-            Modifiers {
-                ctrl: true,
-                ..Modifiers::NONE
-            },
-            RepeatPolicy::PressOnly,
-            UiAction::NudgeSelectedDetection { delta_ticks: 0 },
-        );
+        let chord = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        for context in [InputContext::Workspace, InputContext::Global] {
+            router.bind(
+                context,
+                KeyCode::Space,
+                chord,
+                RepeatPolicy::PressOnly,
+                UiAction::NudgeSelectedDetection { delta_ticks: 0 },
+            );
+        }
         router
     }
 }
