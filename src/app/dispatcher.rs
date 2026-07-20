@@ -656,6 +656,9 @@ impl CommandDispatcher {
             UiAction::RenameLanguage { id, name } => state.rename_language(id, name),
             UiAction::DeleteLanguage { id } => state.delete_language(id),
             UiAction::SelectLanguage { id } => state.select_language(id),
+            UiAction::SetLanguageSyllableLanguage { id, language } => {
+                state.set_language_syllable_language(id, language)
+            }
             UiAction::PickLanguageInstrumentalAudio { id } => {
                 let filters = open_dialog_filters(
                     "Audio",

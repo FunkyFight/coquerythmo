@@ -1,0 +1,7 @@
+CORE_STATUS=0
+  File "/home/runner/work/coquerythmo/coquerythmo/scripts/agent_apply_language_modal.py", line 305
+    '''    fn item(language: crate::project::SyllableLanguage) -> LanguageListItem {
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+SyntaxError: (unicode error) 'unicodeescape' codec can't decode bytes in position 1893-1894: truncated \uXXXX escape
+MODAL_STATUS=1
+CALLERS_STATUS=1
