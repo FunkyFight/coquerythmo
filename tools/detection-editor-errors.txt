@@ -1,3 +1,4 @@
+test delivery_export::tests::ass_keeps_role_names_colors_and_escapes_override_text ... ok
 test delivery_export::tests::audio_export_honors_pre_cancel_without_starting_ffmpeg ... ok
 test delivery_export::tests::audio_filter_applies_positive_and_negative_offsets ... ok
 test delivery_export::tests::authored_loop_numbering_does_not_gain_a_synthetic_zero_marker ... ok
@@ -77,41 +78,42 @@ test project::tests::test_set_character ... ok
 test project::tests::test_snap_y ... ok
 test project::tests::test_snapshot ... ok
 test project::tests::test_voice_actor_names_for_character ... ok
-test project_archive::tests::bundle_round_trip_embeds_and_extracts_every_current_asset ... ok
+test delivery_export::tests::unicode_report_pdfs_keep_japanese_and_arabic_content ... FAILED
 test project_archive::tests::bundle_round_trip_preserves_a_valid_transaction_journal ... ok
-test project_archive::tests::bundle_round_trip_preserves_recording_state_log_and_flac_assets ... ok
+test project_archive::tests::bundle_round_trip_embeds_and_extracts_every_current_asset ... ok
 test project_archive::tests::destination_cannot_overwrite_an_asset_being_embedded ... ok
+test project_archive::tests::bundle_round_trip_preserves_recording_state_log_and_flac_assets ... ok
 test project_archive::tests::every_successful_save_gets_a_new_huuid ... ok
-test project_archive::tests::extracted_assets_are_removed_when_loaded_project_is_dropped ... ok
 test project_archive::tests::failed_save_does_not_replace_an_existing_bundle ... ok
 test project_archive::tests::legacy_json_fixture_remains_readable ... ok
-test project_archive::tests::multilingual_helper_round_trips_all_instrumentals ... ok
+test project_archive::tests::extracted_assets_are_removed_when_loaded_project_is_dropped ... ok
 test project_archive::tests::payload_corruption_is_detected ... ok
-test project_archive::tests::recording_load_rejects_a_valid_container_with_wrong_flac_sha1 ... ok
+test project_archive::tests::multilingual_helper_round_trips_all_instrumentals ... ok
 test project_archive::tests::recording_save_rejects_a_flac_that_does_not_match_its_sha1 ... ok
 test project_archive::tests::recording_save_rejects_state_not_reconstructed_by_its_log_cursor ... ok
-test project_archive::tests::save_bundle_discovers_and_reinjects_project_language_instrumentals ... ok
+test project_archive::tests::recording_load_rejects_a_valid_container_with_wrong_flac_sha1 ... ok
 test project_archive::tests::traversal_in_manifest_is_rejected_before_extraction ... ok
 test project_metadata::tests::common_prefix_lookup_finds_divergence_and_append_truncates_redo ... ok
 test project_metadata::tests::huuid_contains_utc_timestamp_and_rfc4122_v4_uuid ... ok
 test project_metadata::tests::huuid_rejects_non_v4_or_out_of_range_timestamp ... ok
+test project_archive::tests::save_bundle_discovers_and_reinjects_project_language_instrumentals ... ok
 test project_metadata::tests::journal_detects_payload_tampering_before_replay ... ok
-test project_metadata::tests::journal_roundtrip_validates_and_replays_at_its_cursor ... ok
 test project_metadata::tests::replacing_a_coalesced_tip_rehashes_without_growing_the_journal ... ok
 test project_metadata::tests::rewriting_checkpoint_rehashes_the_complete_chain ... ok
+test project_metadata::tests::journal_roundtrip_validates_and_replays_at_its_cursor ... ok
 test project_metadata::tests::sha1_matches_standard_test_vector ... ok
 test project_metadata::tests::transaction_checkpoint_rejects_duplicate_or_missing_ids ... ok
 test recording::tests::arm_is_exclusive_and_solo_plus_mute_define_audibility ... ok
 test recording::tests::capture_target_proposal_is_non_mutating_until_completion ... ok
-test recording::tests::capture_transfer_descriptors_round_trip_through_json ... ok
 test recording::tests::capture_waits_three_seconds_then_finalizes_on_escape ... ok
+test recording::tests::capture_transfer_descriptors_round_trip_through_json ... ok
 test recording::tests::corrupted_transaction_is_rejected_before_replay ... ok
 test recording::tests::corrupted_transaction_is_rejected_during_deserialization ... ok
 test recording::tests::countdown_can_cancel_without_starting_microphone ... ok
 test recording::tests::deserialization_rejects_non_portable_audio_asset_names ... ok
 test recording::tests::invalid_batch_is_atomic ... ok
-test recording::tests::log_verifies_then_replays_only_after_cursor ... ok
 test recording::tests::received_transaction_applies_only_on_the_exact_chain_tip ... ok
+test recording::tests::log_verifies_then_replays_only_after_cursor ... ok
 test recording::tests::received_transaction_rejects_tampering_and_out_of_order_delivery ... ok
 test recording::tests::recorder_start_failure_enters_acknowledgeable_error_state ... ok
 test recording::tests::rejected_cut_does_not_consume_an_id_or_mutate_the_log ... ok
@@ -124,7 +126,6 @@ test recording_mix::tests::project_frames_become_exact_trim_and_placement_times 
 test recording_mix::tests::solo_and_mute_rules_are_preserved_in_the_mix ... ok
 test render_index::tests::render_index_excludes_lines_outside_window ... ok
 test render_index::tests::render_index_includes_line_started_before_window ... ok
-test delivery_export::tests::unicode_report_pdfs_keep_japanese_and_arabic_content ... FAILED
 test render_index::tests::render_index_tracks_max_duration ... ok
 test render_index::tests::render_index_visible_markers_respects_bounds_and_order ... ok
 test rendering::rythmo::scene::tests::karaoke_count_in_is_centered_without_other_preview_state ... ok
@@ -175,7 +176,7 @@ test ui::dropdown::tests::opening_a_list_announces_its_first_enabled_item ... ok
 test ui::export_modal::tests::choosing_an_audio_variant_selects_its_language ... ok
 test ui::export_modal::tests::dimensions_follow_aspect_and_quality ... ok
 test ui::export_modal::tests::source_aspect_is_preserved ... ok
-test ui::file_explorer::keyboard_tests::keyboard_can_open_a_selected_file ... ok
+test ui::file_explorer::keyboard_tests::keyboard_can_open_a_selected_file ... FAILED
 test ui::file_explorer::keyboard_tests::overwrite_scope_starts_on_cancel_then_reaches_replace ... ok
 test ui::file_explorer::keyboard_tests::tab_order_skips_unavailable_history_and_entries ... ok
 test ui::focus::tests::nested_scope_traps_then_restores_focus ... ok
@@ -242,7 +243,7 @@ test workspaces::rythmo::view::tests::fractional_frame_geometry_shifts_by_subfra
 test workspaces::rythmo::view::tests::karaoke_and_scrolling_text_use_distinct_cache_entries ... ok
 test workspaces::rythmo::view::tests::karaoke_character_label_only_on_first_or_character_change ... ok
 test workspaces::rythmo::view::tests::karaoke_count_in_dot_moves_from_left_onto_text ... ok
-test workspaces::rythmo::view::tests::karaoke_count_in_rect_is_centered_immediately ... ok
+test render_index::tests::render_index_prunes_old_short_lines_around_a_long_interval ... ok
 test workspaces::rythmo::view::tests::karaoke_island_after_normal_line_continues_alternating_rows ... ok
 test workspaces::rythmo::view::tests::karaoke_island_lines_alternate_stack_rows ... ok
 test workspaces::rythmo::view::tests::karaoke_mode_changes_do_not_move_other_tracks ... ok
@@ -252,10 +253,10 @@ test workspaces::rythmo::view::tests::karaoke_ui_index_normal_line_cuts_island .
 test workspaces::rythmo::view::tests::karaoke_ui_index_uses_chronological_order_not_insertion_order ... ok
 test workspaces::rythmo::view::tests::karaoke_ui_index_uses_quantized_track_for_drifted_slots ... ok
 test workspaces::rythmo::view::tests::nearest_future_karaoke_candidate_wins ... ok
-test workspaces::rythmo::view::tests::new_karaoke_line_render_width_uses_measured_width ... ok
+test workspaces::rythmo::view::tests::karaoke_count_in_rect_is_centered_immediately ... ok
 test workspaces::rythmo::view::tests::next_karaoke_line_stays_visible_inside_started_island ... ok
 test workspaces::rythmo::view::tests::normal_line_splits_karaoke_islands ... ok
-test workspaces::rythmo::view::tests::pointer_hover_finds_line_through_render_index ... FAILED
+test workspaces::rythmo::view::tests::pointer_hover_finds_line_through_render_index ... ok
 test workspaces::rythmo::view::tests::read_only_controller_never_arms_or_emits_authoring_actions ... ok
 test workspaces::rythmo::view::tests::redistribute_group_preserves_proportions_above_minimum ... ok
 test workspaces::rythmo::view::tests::reducing_left_group_expands_right_group_proportionally ... ok
@@ -265,13 +266,13 @@ test workspaces::rythmo::view::tests::syllable_drag_does_not_block_at_old_five_p
 test workspaces::rythmo::view::tests::untouched_line_keeps_a_single_text_run ... ok
 test workspaces::rythmo::view::tests::waveform_offset_keeps_visible_audio_peaks_rendered ... ok
 test workspaces::rythmo::view::tests::y_to_slot_uses_variable_track_offsets ... ok
-test render_index::tests::render_index_prunes_old_short_lines_around_a_long_interval ... ok
+test workspaces::rythmo::view::tests::new_karaoke_line_render_width_uses_measured_width ... ok
 
 failures:
 
 ---- delivery_export::tests::unicode_pdf_text_uses_shaped_masks_and_preserves_actual_text stdout ----
 
-thread 'delivery_export::tests::unicode_pdf_text_uses_shaped_masks_and_preserves_actual_text' (8279) panicked at src/delivery_export.rs:1897:9:
+thread 'delivery_export::tests::unicode_pdf_text_uses_shaped_masks_and_preserves_actual_text' (8385) panicked at src/delivery_export.rs:1897:9:
 assertion `left == right` failed
   left: 0
  right: 2
@@ -279,22 +280,21 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 ---- delivery_export::tests::unicode_report_pdfs_keep_japanese_and_arabic_content stdout ----
 
-thread 'delivery_export::tests::unicode_report_pdfs_keep_japanese_and_arabic_content' (8280) panicked at src/delivery_export.rs:1953:13:
+thread 'delivery_export::tests::unicode_report_pdfs_keep_japanese_and_arabic_content' (8386) panicked at src/delivery_export.rs:1953:13:
 assertion failed: text.contains("/ImageMask true")
 
----- workspaces::rythmo::view::tests::pointer_hover_finds_line_through_render_index stdout ----
+---- ui::file_explorer::keyboard_tests::keyboard_can_open_a_selected_file stdout ----
 
-thread 'workspaces::rythmo::view::tests::pointer_hover_finds_line_through_render_index' (8531) panicked at src/workspaces/rythmo/view.rs:984:9:
-assertion `left == right` failed
-  left: None
- right: Some(8923701874734381)
+thread 'ui::file_explorer::keyboard_tests::keyboard_can_open_a_selected_file' (8551) panicked at src/ui/file_explorer/mod.rs:2580:9:
+assertion failed: matches!(result, FileExplorerResult::Selected { path: selected, .. } if
+    selected == path)
 
 
 failures:
     delivery_export::tests::unicode_pdf_text_uses_shaped_masks_and_preserves_actual_text
     delivery_export::tests::unicode_report_pdfs_keep_japanese_and_arabic_content
-    workspaces::rythmo::view::tests::pointer_hover_finds_line_through_render_index
+    ui::file_explorer::keyboard_tests::keyboard_can_open_a_selected_file
 
-test result: FAILED. 316 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.02s
+test result: FAILED. 316 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.16s
 
 error: test failed, to rerun pass `--lib`
