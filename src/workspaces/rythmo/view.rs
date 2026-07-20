@@ -2346,8 +2346,9 @@ pub fn render_lines<'a>(
         }
         let karaoke_count_in = karaoke_playback
             && karaoke_count_in_visible(line, current_frame, karaoke_count_in_frame_count);
-        let karaoke_upcoming_stack =
-            karaoke_playback && karaoke_index.upcoming_stack_visible(line, current_frame);
+        let karaoke_upcoming_stack = karaoke_playback
+            && karaoke_count_in
+            && karaoke_index.upcoming_stack_visible(line, current_frame);
 
         if karaoke_playback && !karaoke_active && !karaoke_count_in && !karaoke_upcoming_stack {
             continue;
@@ -2426,6 +2427,38 @@ pub fn render_lines<'a>(
             },
         ));
     }
+
+    let mut latest_karaoke_by_row: HashMap<(usize, usize), (i64, u64)> = HashMap::new();
+    for (line_id, data) in &line_data {
+        if !data.karaoke_playback {
+            continue;
+        }
+        let Some(line) = project.get_line(*line_id) else {
+            continue;
+        };
+        let key = (
+            rythmo_layout::track_index_for_y_slot(line.y_slot),
+            karaoke_index.stack_row(line),
+        );
+        let candidate = (line.start_frame, line.id);
+        latest_karaoke_by_row
+            .entry(key)
+            .and_modify(|current| *current = (*current).max(candidate))
+            .or_insert(candidate);
+    }
+    line_data.retain(|(line_id, data)| {
+        if !data.karaoke_playback {
+            return true;
+        }
+        let Some(line) = project.get_line(*line_id) else {
+            return false;
+        };
+        let key = (
+            rythmo_layout::track_index_for_y_slot(line.y_slot),
+            karaoke_index.stack_row(line),
+        );
+        latest_karaoke_by_row.get(&key).copied() == Some((line.start_frame, line.id))
+    });
 
     // Keep a stable vertical draw order, then compare every badge with the
     // actual body of the other visible lines.
