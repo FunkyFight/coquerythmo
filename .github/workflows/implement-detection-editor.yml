@@ -47,8 +47,25 @@ jobs:
         run: cargo fmt --all
 
       - name: Test locked dependency graph
+        id: cargo_test
         if: steps.status.outputs.applied == 'false'
-        run: cargo test --locked
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked 2>&1 | tee cargo-test.log
+
+      - name: Upload compiler diagnostics
+        if: steps.status.outputs.applied == 'false' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: detection-editor-cargo-log
+          path: cargo-test.log
+          if-no-files-found: error
+
+      - name: Stop on test failure
+        if: steps.status.outputs.applied == 'false' && steps.cargo_test.outcome == 'failure'
+        run: exit 1
 
       - name: Check whitespace
         if: steps.status.outputs.applied == 'false'
