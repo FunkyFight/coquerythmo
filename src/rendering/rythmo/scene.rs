@@ -7,7 +7,6 @@ use crate::rythmo_layout::{
     build_track_layouts, build_track_layouts_at_frame, used_track_indices, TrackLayout,
 };
 use crate::rythmo_line::{MarkerKind, RythmoLine};
-use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameWindow {
@@ -74,51 +73,6 @@ impl SceneLine {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct KaraokeRowCandidate {
-    pub id: u64,
-    pub track_index: usize,
-    pub stack_row: usize,
-    pub start_frame: i64,
-    pub active: bool,
-}
-
-/// Pick the single karaoke line that owns each visual row.
-///
-/// An active line always beats a future preview. When several active lines
-/// overlap, the most recently started one wins. Before playback, the nearest
-/// upcoming line wins instead of a farther preview.
-pub fn karaoke_row_winners(
-    candidates: impl IntoIterator<Item = KaraokeRowCandidate>,
-) -> HashSet<u64> {
-    let mut winners: HashMap<(usize, usize), KaraokeRowCandidate> = HashMap::new();
-    for candidate in candidates {
-        let key = (candidate.track_index, candidate.stack_row);
-        winners
-            .entry(key)
-            .and_modify(|current| {
-                let candidate_wins = match (candidate.active, current.active) {
-                    (true, false) => true,
-                    (false, true) => false,
-                    (true, true) => {
-                        (candidate.start_frame, candidate.id) > (current.start_frame, current.id)
-                    }
-                    (false, false) => {
-                        (candidate.start_frame, candidate.id) < (current.start_frame, current.id)
-                    }
-                };
-                if candidate_wins {
-                    *current = candidate;
-                }
-            })
-            .or_insert(candidate);
-    }
-    winners
-        .into_values()
-        .map(|candidate| candidate.id)
-        .collect()
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneMarker {
     pub kind: MarkerKind,
@@ -149,7 +103,7 @@ impl RythmoScene {
         let source_fps = valid_fps(options.source_fps);
         let max_gap_frames = karaoke_adjacent_max_gap_frames(source_fps);
         let count_in_frames = karaoke_count_in_frames(source_fps);
-        let mut lines: Vec<SceneLine> = line_ids
+        let lines = line_ids
             .into_iter()
             .filter_map(|id| project.get_line(id))
             .map(|line| {
@@ -185,20 +139,6 @@ impl RythmoScene {
                 }
             })
             .collect();
-        let karaoke_winners = karaoke_row_winners(lines.iter().filter_map(|scene_line| {
-            scene_line
-                .karaoke_should_be_visible()
-                .then_some(KaraokeRowCandidate {
-                    id: scene_line.line.id,
-                    track_index: scene_line.track_index,
-                    stack_row: scene_line.karaoke_stack_row,
-                    start_frame: scene_line.line.start_frame,
-                    active: scene_line.karaoke_active,
-                })
-        }));
-        lines.retain(|scene_line| {
-            !scene_line.karaoke_should_be_visible() || karaoke_winners.contains(&scene_line.line.id)
-        });
 
         let markers = render_index
             .visible_marker_indices(options.frame_window.first, options.frame_window.last)
@@ -458,60 +398,6 @@ mod tests {
         );
         assert_eq!(first.markers.len(), 1);
         assert_eq!(first.lines[1].karaoke_progress, Some(1.0 / 6.0));
-    }
-
-    #[test]
-    fn active_short_karaoke_line_wins_over_a_farther_preview_on_the_same_row() {
-        let mut project = Project::new();
-        let first = project.add_line_full(0, 12, 0.5, "one".into(), "A".into(), [1.0; 4]);
-        let second = project.add_line_full(12, 12, 0.5, "two".into(), "A".into(), [1.0; 4]);
-        let third = project.add_line_full(24, 12, 0.5, "three".into(), "A".into(), [1.0; 4]);
-        for id in [first, second, third] {
-            project.get_line_mut(id).unwrap().karaoke = true;
-        }
-        let mut index = ProjectRenderIndex::new();
-        index.refresh(&project);
-
-        let scene = RythmoScene::build(
-            &project,
-            &index,
-            SceneOptions {
-                frame_window: FrameWindow {
-                    first: -48,
-                    last: 72,
-                },
-                current_frame: 6.0,
-                source_fps: 24.0,
-                ..SceneOptions::default()
-            },
-        );
-        let visible: HashSet<u64> = scene.lines.iter().map(|line| line.line.id).collect();
-
-        assert!(visible.contains(&first));
-        assert!(visible.contains(&second));
-        assert!(!visible.contains(&third));
-    }
-
-    #[test]
-    fn nearest_future_karaoke_preview_wins_when_no_line_is_active() {
-        let winners = karaoke_row_winners([
-            KaraokeRowCandidate {
-                id: 1,
-                track_index: 0,
-                stack_row: 0,
-                start_frame: 12,
-                active: false,
-            },
-            KaraokeRowCandidate {
-                id: 2,
-                track_index: 0,
-                stack_row: 0,
-                start_frame: 36,
-                active: false,
-            },
-        ]);
-
-        assert_eq!(winners, HashSet::from([1]));
     }
 
     #[test]

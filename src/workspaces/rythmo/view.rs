@@ -61,6 +61,15 @@ fn character_badge_collision_style(
     (false, alpha)
 }
 
+fn karaoke_row_candidate_wins(candidate: (bool, i64, u64), current: (bool, i64, u64)) -> bool {
+    match (candidate.0, current.0) {
+        (true, false) => true,
+        (false, true) => false,
+        (true, true) => (candidate.1, candidate.2) > (current.1, current.2),
+        (false, false) => (candidate.1, candidate.2) < (current.1, current.2),
+    }
+}
+
 #[path = "state.rs"]
 mod state;
 pub use state::*;
@@ -105,6 +114,18 @@ pub(crate) use keyboard_nav::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_karaoke_candidate_beats_future_preview() {
+        assert!(karaoke_row_candidate_wins((true, 0, 1), (false, 24, 2)));
+        assert!(!karaoke_row_candidate_wins((false, 24, 2), (true, 0, 1)));
+    }
+
+    #[test]
+    fn nearest_future_karaoke_candidate_wins() {
+        assert!(karaoke_row_candidate_wins((false, 12, 1), (false, 24, 2)));
+        assert!(!karaoke_row_candidate_wins((false, 24, 2), (false, 12, 1)));
+    }
 
     fn assert_rect_approx_eq(left: Rect, right: Rect) {
         assert!((left.x - right.x).abs() < 0.01, "x: {left:?} != {right:?}");
@@ -2331,6 +2352,8 @@ pub fn render_lines<'a>(
         karaoke_playback: bool,
         karaoke_count_in: bool,
         karaoke_progress_info: Option<KaraokeProgressRenderInfo>,
+        karaoke_row_key: Option<(usize, usize)>,
+        karaoke_priority: (bool, i64, u64),
     }
 
     let mut line_data: Vec<(u64, LineRenderData)> = Vec::with_capacity(visible_line_ids.len());
@@ -2354,6 +2377,11 @@ pub fn render_lines<'a>(
             continue;
         }
 
+        let karaoke_stack_row = if karaoke_playback {
+            karaoke_index.stack_row(line)
+        } else {
+            0
+        };
         let centered_karaoke_width =
             if karaoke_playback && (karaoke_active || karaoke_count_in || karaoke_upcoming_stack) {
                 Some(state.karaoke_ui_text_width_for_render(line))
@@ -2368,7 +2396,7 @@ pub fn render_lines<'a>(
                 zone,
                 karaoke_count_in,
                 karaoke_upcoming_stack,
-                karaoke_index.stack_row(line),
+                karaoke_stack_row,
                 centered_karaoke_width,
             )
         } else {
@@ -2424,27 +2452,36 @@ pub fn render_lines<'a>(
                 karaoke_playback,
                 karaoke_count_in,
                 karaoke_progress_info,
+                karaoke_row_key: karaoke_playback.then_some((
+                    rythmo_layout::track_index_for_y_slot(line.y_slot),
+                    karaoke_stack_row,
+                )),
+                karaoke_priority: (karaoke_active, line.start_frame, line.id),
             },
         ));
     }
 
-    let karaoke_row_winners = crate::rendering::rythmo::scene::karaoke_row_winners(
-        line_data.iter().filter_map(|(line_id, data)| {
-            if !data.karaoke_playback {
-                return None;
-            }
-            let line = project.get_line(*line_id)?;
-            Some(crate::rendering::rythmo::scene::KaraokeRowCandidate {
-                id: line.id,
-                track_index: rythmo_layout::track_index_for_y_slot(line.y_slot),
-                stack_row: karaoke_index.stack_row(line),
-                start_frame: line.start_frame,
-                active: line.karaoke_active(current_frame),
+    let mut karaoke_winner_by_row: HashMap<(usize, usize), (bool, i64, u64)> = HashMap::new();
+    for (_, data) in &line_data {
+        let Some(key) = data.karaoke_row_key else {
+            continue;
+        };
+        let candidate = data.karaoke_priority;
+        karaoke_winner_by_row
+            .entry(key)
+            .and_modify(|current| {
+                if karaoke_row_candidate_wins(candidate, *current) {
+                    *current = candidate;
+                }
             })
-        }),
-    );
-    line_data
-        .retain(|(line_id, data)| !data.karaoke_playback || karaoke_row_winners.contains(line_id));
+            .or_insert(candidate);
+    }
+    line_data.retain(|(_, data)| {
+        let Some(key) = data.karaoke_row_key else {
+            return true;
+        };
+        karaoke_winner_by_row.get(&key).copied() == Some(data.karaoke_priority)
+    });
 
     // Keep a stable vertical draw order, then compare every badge with the
     // actual body of the other visible lines.
