@@ -17,14 +17,30 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Normalize generated source and English catalog
+      - name: Normalize and capture outcome
         shell: bash
         run: |
-          set -e
-          python3 scripts/agent_fix_language_test_literals.py
-          git fetch origin main --depth=1
-          git checkout origin/main -- i18n/en.toml
-          python3 - <<'PY'
+          set +e
+          report=.agent-normalization-report.txt
+          : > "$report"
+
+          python3 scripts/agent_fix_language_test_literals.py > /tmp/literals.log 2>&1
+          literal_status=$?
+          echo "LITERAL_STATUS=$literal_status" >> "$report"
+          if [ "$literal_status" -ne 0 ]; then
+            cat /tmp/literals.log >> "$report"
+          fi
+
+          git fetch origin main --depth=1 > /tmp/fetch.log 2>&1
+          fetch_status=$?
+          echo "FETCH_STATUS=$fetch_status" >> "$report"
+          if [ "$fetch_status" -ne 0 ]; then
+            cat /tmp/fetch.log >> "$report"
+          fi
+
+          if [ "$fetch_status" -eq 0 ]; then
+            git checkout origin/main -- i18n/en.toml
+            python3 - <<'PY' > /tmp/english.log 2>&1
           from pathlib import Path
           path = Path('i18n/en.toml')
           data = path.read_bytes()
@@ -40,8 +56,28 @@ jobs:
               raise SystemExit(f'expected one English language anchor, found {data.count(old)}')
           path.write_bytes(data.replace(old, new, 1))
           PY
-          cargo fmt --all
-          git diff --check
+            english_status=$?
+          else
+            english_status=1
+          fi
+          echo "ENGLISH_STATUS=$english_status" >> "$report"
+          if [ "$english_status" -ne 0 ] && [ -f /tmp/english.log ]; then
+            cat /tmp/english.log >> "$report"
+          fi
+
+          cargo fmt --all > /tmp/fmt.log 2>&1
+          fmt_status=$?
+          echo "FMT_STATUS=$fmt_status" >> "$report"
+          if [ "$fmt_status" -ne 0 ]; then
+            tail -n 120 /tmp/fmt.log >> "$report"
+          fi
+
+          git diff --check > /tmp/diff.log 2>&1
+          diff_status=$?
+          echo "DIFF_STATUS=$diff_status" >> "$report"
+          if [ "$diff_status" -ne 0 ]; then
+            cat /tmp/diff.log >> "$report"
+          fi
 
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
