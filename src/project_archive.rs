@@ -15,7 +15,10 @@
 //! need to be held in memory.
 
 use crate::export::ProjectData;
+use crate::integrity::Sha1;
 use crate::project::Project;
+use crate::project_metadata::{Huuid, TransactionJournal};
+use crate::recording::{AudioAssetId, RecordingProject, TransactionLog};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -59,6 +62,29 @@ pub struct InstrumentalAssetInput<'a> {
     pub path: &'a Path,
 }
 
+/// One FLAC file referenced by a durable recording project.
+#[derive(Clone, Copy, Debug)]
+pub struct RecordingAssetInput<'a> {
+    pub asset_id: AudioAssetId,
+    pub path: &'a Path,
+}
+
+/// Recording state to persist alongside a rythmo project.
+#[derive(Clone, Copy, Debug)]
+pub struct RecordingBundleInput<'a> {
+    pub project: &'a RecordingProject,
+    pub transaction_log: &'a TransactionLog,
+    pub assets: &'a [RecordingAssetInput<'a>],
+}
+
+/// Recording state restored from a portable bundle. Extracted FLAC paths stay
+/// valid for the lifetime of the parent [`LoadedProject`].
+pub struct LoadedRecordingProject {
+    pub project: RecordingProject,
+    pub transaction_log: TransactionLog,
+    pub audio_asset_paths: BTreeMap<AudioAssetId, PathBuf>,
+}
+
 /// A loaded project plus the filesystem paths required by media decoders.
 ///
 /// Bundle assets are extracted into a private temporary directory. Keep this
@@ -67,10 +93,13 @@ pub struct InstrumentalAssetInput<'a> {
 pub struct LoadedProject {
     pub kind: ProjectFileKind,
     pub project_data: ProjectData,
+    pub huuid: Option<Huuid>,
+    pub transaction_journal: Option<TransactionJournal>,
     pub source_video_path: Option<PathBuf>,
     pub proxy_video_path: Option<PathBuf>,
     pub font_asset_path: Option<PathBuf>,
     pub instrumental_audio_paths: BTreeMap<String, PathBuf>,
+    pub recording: Option<LoadedRecordingProject>,
     extraction: Option<ExtractionGuard>,
 }
 
@@ -102,6 +131,14 @@ pub enum ProjectArchiveError {
     DestinationIsAsset(PathBuf),
     DuplicateLanguage(String),
     AssetChangedDuringSave(PathBuf),
+    InvalidTransactionJournal(String),
+    InvalidRecordingProject(String),
+    InvalidRecordingTransactionLog(String),
+    MissingRecordingAsset(AudioAssetId),
+    DuplicateRecordingAsset(AudioAssetId),
+    UndeclaredRecordingAsset(AudioAssetId),
+    InvalidRecordingChecksum(AudioAssetId),
+    RecordingChecksumMismatch(AudioAssetId),
 }
 
 impl fmt::Display for ProjectArchiveError {
@@ -145,6 +182,30 @@ impl fmt::Display for ProjectArchiveError {
                     path.display()
                 )
             }
+            Self::InvalidTransactionJournal(reason) => {
+                write!(f, "invalid transaction journal: {reason}")
+            }
+            Self::InvalidRecordingProject(reason) => {
+                write!(f, "invalid recording project: {reason}")
+            }
+            Self::InvalidRecordingTransactionLog(reason) => {
+                write!(f, "invalid recording transaction log: {reason}")
+            }
+            Self::MissingRecordingAsset(id) => {
+                write!(f, "recording asset {id} has no FLAC input")
+            }
+            Self::DuplicateRecordingAsset(id) => {
+                write!(f, "recording asset {id} is declared more than once")
+            }
+            Self::UndeclaredRecordingAsset(id) => {
+                write!(f, "FLAC input targets undeclared recording asset {id}")
+            }
+            Self::InvalidRecordingChecksum(id) => {
+                write!(f, "recording asset {id} does not contain a SHA-1 checksum")
+            }
+            Self::RecordingChecksumMismatch(id) => {
+                write!(f, "recording asset {id} does not match its SHA-1 checksum")
+            }
         }
     }
 }
@@ -175,8 +236,25 @@ impl From<serde_json::Error> for ProjectArchiveError {
 struct BundleManifest {
     format: String,
     format_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    huuid: Option<Huuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transactions: Option<TransactionJournal>,
     project: ProjectData,
     assets: BundleAssets,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recording: Option<BundleRecordingManifest>,
+}
+
+/// Metadata created only after a complete bundle has been installed at its
+/// destination path.
+#[derive(Clone)]
+pub struct SavedProjectMetadata {
+    pub huuid: Huuid,
+    /// Exact portable journal stored in the bundle. Asset-path sanitization can
+    /// change checkpoint hashes, so callers should adopt this snapshot after a
+    /// successful save when they synchronize journal prefixes with peers.
+    pub transaction_journal: Option<TransactionJournal>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -196,10 +274,25 @@ struct InstrumentalAssetManifest {
     entry: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct BundleRecordingManifest {
+    project: RecordingProject,
+    transaction_log: TransactionLog,
+    #[serde(default)]
+    assets: Vec<RecordingAssetManifest>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RecordingAssetManifest {
+    asset_id: AudioAssetId,
+    entry: String,
+}
+
 struct FileEntryToWrite {
     name: String,
     path: PathBuf,
     len: u64,
+    expected_recording_sha1: Option<(AudioAssetId, [u8; 20])>,
 }
 
 struct ExtractionGuard {
@@ -229,6 +322,53 @@ pub fn save_bundle(
     proxy_video: Option<&Path>,
     font_asset: Option<&Path>,
 ) -> Result<(), ProjectArchiveError> {
+    save_bundle_with_metadata(
+        project,
+        fps,
+        bundle_path,
+        source_video,
+        proxy_video,
+        font_asset,
+        None,
+    )
+    .map(|_| ())
+}
+
+/// Save a complete bundle and return the HUUID assigned to this successful
+/// save. The journal is snapshotted into the manifest when supplied.
+pub fn save_bundle_with_metadata(
+    project: &Project,
+    fps: f64,
+    bundle_path: &Path,
+    source_video: &Path,
+    proxy_video: Option<&Path>,
+    font_asset: Option<&Path>,
+    transaction_journal: Option<&TransactionJournal>,
+) -> Result<SavedProjectMetadata, ProjectArchiveError> {
+    save_bundle_with_recording_data(
+        project,
+        fps,
+        bundle_path,
+        source_video,
+        proxy_video,
+        font_asset,
+        transaction_journal,
+        None,
+    )
+}
+
+/// Save all current project metadata, optionally including the recording
+/// timeline, its transaction log, and every referenced FLAC file.
+pub fn save_bundle_with_recording_data(
+    project: &Project,
+    fps: f64,
+    bundle_path: &Path,
+    source_video: &Path,
+    proxy_video: Option<&Path>,
+    font_asset: Option<&Path>,
+    transaction_journal: Option<&TransactionJournal>,
+    recording: Option<RecordingBundleInput<'_>>,
+) -> Result<SavedProjectMetadata, ProjectArchiveError> {
     let instrumental_paths: Vec<(String, PathBuf)> = project
         .language_snapshots()
         .into_iter()
@@ -247,7 +387,7 @@ pub fn save_bundle(
         .map(|(language_id, path)| InstrumentalAssetInput { language_id, path })
         .collect();
 
-    save_bundle_with_instrumentals(
+    save_bundle_with_instrumentals_and_recording_data(
         project,
         fps,
         bundle_path,
@@ -255,6 +395,8 @@ pub fn save_bundle(
         &instrumentals,
         proxy_video,
         font_asset,
+        transaction_journal,
+        recording,
     )
 }
 
@@ -268,6 +410,63 @@ pub fn save_bundle_with_instrumentals(
     proxy_video: Option<&Path>,
     font_asset: Option<&Path>,
 ) -> Result<(), ProjectArchiveError> {
+    save_bundle_with_instrumentals_and_metadata(
+        project,
+        fps,
+        bundle_path,
+        source_video,
+        instrumentals,
+        proxy_video,
+        font_asset,
+        None,
+    )
+    .map(|_| ())
+}
+
+pub fn save_bundle_with_instrumentals_and_metadata(
+    project: &Project,
+    fps: f64,
+    bundle_path: &Path,
+    source_video: &Path,
+    instrumentals: &[InstrumentalAssetInput<'_>],
+    proxy_video: Option<&Path>,
+    font_asset: Option<&Path>,
+    transaction_journal: Option<&TransactionJournal>,
+) -> Result<SavedProjectMetadata, ProjectArchiveError> {
+    save_bundle_with_instrumentals_and_recording_data(
+        project,
+        fps,
+        bundle_path,
+        source_video,
+        instrumentals,
+        proxy_video,
+        font_asset,
+        transaction_journal,
+        None,
+    )
+}
+
+pub fn save_bundle_with_instrumentals_and_recording_data(
+    project: &Project,
+    fps: f64,
+    bundle_path: &Path,
+    source_video: &Path,
+    instrumentals: &[InstrumentalAssetInput<'_>],
+    proxy_video: Option<&Path>,
+    font_asset: Option<&Path>,
+    transaction_journal: Option<&TransactionJournal>,
+    recording: Option<RecordingBundleInput<'_>>,
+) -> Result<SavedProjectMetadata, ProjectArchiveError> {
+    if let Some(journal) = transaction_journal {
+        journal
+            .validate_integrity()
+            .map_err(|error| ProjectArchiveError::InvalidTransactionJournal(error.to_string()))?;
+        if journal.checkpoint().source_fps != fps {
+            return Err(ProjectArchiveError::InvalidTransactionJournal(
+                "checkpoint FPS does not match the saved project FPS".into(),
+            ));
+        }
+    }
     ensure_destination_is_not_asset(bundle_path, source_video)?;
     if let Some(path) = proxy_video {
         ensure_destination_is_not_asset(bundle_path, path)?;
@@ -312,13 +511,33 @@ pub fn save_bundle_with_instrumentals(
         });
     }
 
+    let prepared_recording = recording
+        .map(|recording| prepare_recording_bundle(recording, bundle_path, fps))
+        .transpose()?;
+    let (recording_manifest, recording_entries) = match prepared_recording {
+        Some((manifest, entries)) => (Some(manifest), entries),
+        None => (None, Vec::new()),
+    };
+
     let mut project_data = ProjectData::from_project(project, fps);
     // Never leave a machine-specific path in a portable manifest.
     rewrite_project_instrumental_paths_for_bundle(&mut project_data, &instrumental_manifest);
+    let mut stored_journal = transaction_journal.cloned();
+    if let Some(journal) = &mut stored_journal {
+        journal
+            .rewrite_checkpoint(|checkpoint| {
+                rewrite_project_instrumental_paths_for_bundle(checkpoint, &instrumental_manifest)
+            })
+            .map_err(|error| ProjectArchiveError::InvalidTransactionJournal(error.to_string()))?;
+    }
 
+    let huuid = Huuid::generate();
+    let saved_transaction_journal = stored_journal.clone();
     let manifest = BundleManifest {
         format: FORMAT_NAME.to_string(),
         format_version: FORMAT_VERSION,
+        huuid: Some(huuid.clone()),
+        transactions: stored_journal,
         project: project_data,
         assets: BundleAssets {
             source_video: source_entry,
@@ -326,6 +545,7 @@ pub fn save_bundle_with_instrumentals(
             font: font.as_ref().map(|entry| entry.name.clone()),
             instrumentals: instrumental_manifest,
         },
+        recording: recording_manifest,
     };
     let manifest_bytes = serde_json::to_vec(&manifest)?;
     if manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
@@ -336,7 +556,7 @@ pub fn save_bundle_with_instrumentals(
         });
     }
 
-    let mut entries = Vec::with_capacity(1 + instrumentals.len() + 3);
+    let mut entries = Vec::with_capacity(1 + instrumentals.len() + recording_entries.len() + 3);
     entries.push(source);
     if let Some(proxy) = proxy {
         entries.push(proxy);
@@ -345,6 +565,7 @@ pub fn save_bundle_with_instrumentals(
         entries.push(font);
     }
     entries.extend(instrumental_entries);
+    entries.extend(recording_entries);
 
     let entry_count = u32::try_from(entries.len() + 1)
         .map_err(|_| ProjectArchiveError::TooManyEntries(u32::MAX))?;
@@ -379,7 +600,10 @@ pub fn save_bundle_with_instrumentals(
         let _ = fs::remove_file(&temporary_path);
         return Err(ProjectArchiveError::Io(error));
     }
-    Ok(())
+    Ok(SavedProjectMetadata {
+        huuid,
+        transaction_journal: saved_transaction_journal,
+    })
 }
 
 /// Load either a `.coquerythmo` bundle or a legacy `ProjectData` JSON file.
@@ -403,6 +627,9 @@ pub fn load_project_file(path: &Path) -> Result<LoadedProject, ProjectArchiveErr
 fn load_legacy_json(file: File) -> Result<LoadedProject, ProjectArchiveError> {
     let reader = BufReader::new(file);
     let project_data: ProjectData = serde_json::from_reader(reader)?;
+    project_data
+        .validate_line_ids()
+        .map_err(ProjectArchiveError::InvalidFormat)?;
     let mut instrumental_audio_paths = BTreeMap::new();
     if let Some(path) = project_data
         .settings
@@ -430,10 +657,13 @@ fn load_legacy_json(file: File) -> Result<LoadedProject, ProjectArchiveError> {
     Ok(LoadedProject {
         kind: ProjectFileKind::LegacyJson,
         project_data,
+        huuid: None,
+        transaction_journal: None,
         source_video_path: None,
         proxy_video_path: None,
         font_asset_path: None,
         instrumental_audio_paths,
+        recording: None,
         extraction: None,
     })
 }
@@ -476,9 +706,31 @@ fn load_bundle(file: File) -> Result<LoadedProject, ProjectArchiveError> {
     let manifest_bytes = read_entry_to_vec(&mut reader, &first_header)?;
     let mut manifest: BundleManifest = serde_json::from_slice(&manifest_bytes)?;
     validate_manifest(&manifest, version, entry_count)?;
+    manifest
+        .project
+        .validate_line_ids()
+        .map_err(ProjectArchiveError::InvalidFormat)?;
+    if let Some(journal) = &manifest.transactions {
+        journal
+            .validate_integrity()
+            .map_err(|error| ProjectArchiveError::InvalidTransactionJournal(error.to_string()))?;
+        if journal.checkpoint().source_fps != manifest.project.source_fps {
+            return Err(ProjectArchiveError::InvalidTransactionJournal(
+                "checkpoint FPS does not match the project manifest".into(),
+            ));
+        }
+    }
+    if let Some(recording) = &manifest.recording {
+        if recording.project.timeline_fps() != manifest.project.source_fps {
+            return Err(ProjectArchiveError::InvalidRecordingProject(
+                "timeline FPS does not match the project manifest".into(),
+            ));
+        }
+        validate_recording_archive_state(&recording.project, &recording.transaction_log)?;
+    }
 
     let extraction = create_extraction_guard()?;
-    let expected_names = manifest_asset_names(&manifest.assets)?;
+    let expected_names = manifest_asset_names(&manifest.assets, manifest.recording.as_ref())?;
     let mut remaining = expected_names;
     let mut extracted_paths = HashMap::new();
     let mut seen_entries = HashSet::new();
@@ -556,13 +808,46 @@ fn load_bundle(file: File) -> Result<LoadedProject, ProjectArchiveError> {
     }
     reinject_project_instrumental_paths(&mut manifest.project, &instrumental_audio_paths);
 
+    let recording = manifest
+        .recording
+        .take()
+        .map(|recording| {
+            let mut audio_asset_paths = BTreeMap::new();
+            for asset_manifest in &recording.assets {
+                let path = extracted_paths
+                    .get(&asset_manifest.entry)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ProjectArchiveError::MissingEntry(asset_manifest.entry.clone())
+                    })?;
+                let expected_checksum = &recording
+                    .project
+                    .asset(asset_manifest.asset_id)
+                    .ok_or(ProjectArchiveError::UndeclaredRecordingAsset(
+                        asset_manifest.asset_id,
+                    ))?
+                    .checksum;
+                verify_recording_file_checksum(asset_manifest.asset_id, &path, expected_checksum)?;
+                audio_asset_paths.insert(asset_manifest.asset_id, path);
+            }
+            Ok::<_, ProjectArchiveError>(LoadedRecordingProject {
+                project: recording.project,
+                transaction_log: recording.transaction_log,
+                audio_asset_paths,
+            })
+        })
+        .transpose()?;
+
     Ok(LoadedProject {
         kind: ProjectFileKind::Bundle,
         project_data: manifest.project,
+        huuid: manifest.huuid,
+        transaction_journal: manifest.transactions,
         source_video_path: Some(source_video_path),
         proxy_video_path,
         font_asset_path,
         instrumental_audio_paths,
+        recording,
         extraction: Some(extraction),
     })
 }
@@ -632,7 +917,7 @@ fn validate_manifest(
             "header and manifest versions differ".into(),
         ));
     }
-    let names = manifest_asset_names(&manifest.assets)?;
+    let names = manifest_asset_names(&manifest.assets, manifest.recording.as_ref())?;
     let expected_count = u32::try_from(names.len() + 1)
         .map_err(|_| ProjectArchiveError::TooManyEntries(u32::MAX))?;
     if expected_count != entry_count {
@@ -643,7 +928,10 @@ fn validate_manifest(
     Ok(())
 }
 
-fn manifest_asset_names(assets: &BundleAssets) -> Result<HashSet<String>, ProjectArchiveError> {
+fn manifest_asset_names(
+    assets: &BundleAssets,
+    recording: Option<&BundleRecordingManifest>,
+) -> Result<HashSet<String>, ProjectArchiveError> {
     let mut names = HashSet::new();
     insert_manifest_name(&mut names, &assets.source_video)?;
     if let Some(name) = &assets.proxy_video {
@@ -667,6 +955,24 @@ fn manifest_asset_names(assets: &BundleAssets) -> Result<HashSet<String>, Projec
             ));
         }
         insert_manifest_name(&mut names, &instrumental.entry)?;
+    }
+    if let Some(recording) = recording {
+        let mut asset_ids = HashSet::new();
+        for asset in &recording.assets {
+            if !asset_ids.insert(asset.asset_id) {
+                return Err(ProjectArchiveError::DuplicateRecordingAsset(asset.asset_id));
+            }
+            let project_asset = recording.project.asset(asset.asset_id).ok_or(
+                ProjectArchiveError::UndeclaredRecordingAsset(asset.asset_id),
+            )?;
+            parse_recording_sha1(asset.asset_id, &project_asset.checksum)?;
+            insert_manifest_name(&mut names, &asset.entry)?;
+        }
+        for asset in recording.project.assets() {
+            if !asset_ids.contains(&asset.id) {
+                return Err(ProjectArchiveError::MissingRecordingAsset(asset.id));
+            }
+        }
     }
     Ok(names)
 }
@@ -797,6 +1103,7 @@ fn write_file_entry<W: Write>(
     let mut file = File::open(&entry.path)?;
     let mut remaining = entry.len;
     let mut crc = Crc32::new();
+    let mut sha1 = entry.expected_recording_sha1.map(|_| Sha1::new());
     let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
     while remaining > 0 {
         let wanted = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
@@ -808,6 +1115,9 @@ fn write_file_entry<W: Write>(
         }
         writer.write_all(&buffer[..read])?;
         crc.update(&buffer[..read]);
+        if let Some(sha1) = &mut sha1 {
+            sha1.update(&buffer[..read]);
+        }
         remaining -= read as u64;
     }
     let mut extra = [0_u8; 1];
@@ -815,6 +1125,13 @@ fn write_file_entry<W: Write>(
         return Err(ProjectArchiveError::AssetChangedDuringSave(
             entry.path.clone(),
         ));
+    }
+    if let (Some((asset_id, expected)), Some(actual)) =
+        (entry.expected_recording_sha1, sha1.map(Sha1::finalize))
+    {
+        if actual != expected {
+            return Err(ProjectArchiveError::RecordingChecksumMismatch(asset_id));
+        }
     }
     write_u32(writer, crc.finish())?;
     Ok(())
@@ -850,7 +1167,132 @@ fn file_entry(name: String, path: &Path) -> Result<FileEntryToWrite, ProjectArch
         name,
         path: path.to_path_buf(),
         len: metadata.len(),
+        expected_recording_sha1: None,
     })
+}
+
+fn prepare_recording_bundle(
+    recording: RecordingBundleInput<'_>,
+    bundle_path: &Path,
+    project_fps: f64,
+) -> Result<(BundleRecordingManifest, Vec<FileEntryToWrite>), ProjectArchiveError> {
+    if recording.project.timeline_fps() != project_fps {
+        return Err(ProjectArchiveError::InvalidRecordingProject(
+            "timeline FPS does not match the saved project FPS".into(),
+        ));
+    }
+    validate_recording_archive_state(recording.project, recording.transaction_log)?;
+
+    let mut seen_assets = HashSet::new();
+    let mut manifest_assets = Vec::with_capacity(recording.assets.len());
+    let mut file_entries = Vec::with_capacity(recording.assets.len());
+    for input in recording.assets {
+        if !seen_assets.insert(input.asset_id) {
+            return Err(ProjectArchiveError::DuplicateRecordingAsset(input.asset_id));
+        }
+        let asset = recording.project.asset(input.asset_id).ok_or(
+            ProjectArchiveError::UndeclaredRecordingAsset(input.asset_id),
+        )?;
+        if !input
+            .path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("flac"))
+        {
+            return Err(ProjectArchiveError::InvalidAsset(input.path.to_path_buf()));
+        }
+        ensure_destination_is_not_asset(bundle_path, input.path)?;
+        let expected_sha1 = parse_recording_sha1(input.asset_id, &asset.checksum)?;
+        let entry_name = format!(
+            "audio/recordings/{:016x}-{}",
+            input.asset_id.get(),
+            asset.file_name
+        );
+        validate_entry_name(&entry_name)?;
+        let mut entry = file_entry(entry_name.clone(), input.path)?;
+        entry.expected_recording_sha1 = Some((input.asset_id, expected_sha1));
+        file_entries.push(entry);
+        manifest_assets.push(RecordingAssetManifest {
+            asset_id: input.asset_id,
+            entry: entry_name,
+        });
+    }
+
+    for asset in recording.project.assets() {
+        if !seen_assets.contains(&asset.id) {
+            return Err(ProjectArchiveError::MissingRecordingAsset(asset.id));
+        }
+    }
+
+    Ok((
+        BundleRecordingManifest {
+            project: recording.project.clone(),
+            transaction_log: recording.transaction_log.clone(),
+            assets: manifest_assets,
+        },
+        file_entries,
+    ))
+}
+
+fn validate_recording_archive_state(
+    project: &RecordingProject,
+    transaction_log: &TransactionLog,
+) -> Result<(), ProjectArchiveError> {
+    project
+        .validate()
+        .map_err(|error| ProjectArchiveError::InvalidRecordingProject(error.to_string()))?;
+    transaction_log
+        .verify_integrity()
+        .map_err(|error| ProjectArchiveError::InvalidRecordingTransactionLog(error.to_string()))?;
+    let base = RecordingProject::new(project.timeline_fps())
+        .map_err(|error| ProjectArchiveError::InvalidRecordingProject(error.to_string()))?;
+    let rebuilt = transaction_log
+        .rebuild_from_base(&base)
+        .map_err(|error| ProjectArchiveError::InvalidRecordingTransactionLog(error.to_string()))?;
+    if &rebuilt != project {
+        return Err(ProjectArchiveError::InvalidRecordingTransactionLog(
+            "the transaction cursor does not reconstruct the stored recording project".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_recording_sha1(
+    asset_id: AudioAssetId,
+    checksum: &str,
+) -> Result<[u8; 20], ProjectArchiveError> {
+    if checksum.len() != 40 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ProjectArchiveError::InvalidRecordingChecksum(asset_id));
+    }
+    let mut digest = [0_u8; 20];
+    for (index, output) in digest.iter_mut().enumerate() {
+        *output = u8::from_str_radix(&checksum[index * 2..index * 2 + 2], 16)
+            .map_err(|_| ProjectArchiveError::InvalidRecordingChecksum(asset_id))?;
+    }
+    Ok(digest)
+}
+
+fn verify_recording_file_checksum(
+    asset_id: AudioAssetId,
+    path: &Path,
+    checksum: &str,
+) -> Result<(), ProjectArchiveError> {
+    let expected = parse_recording_sha1(asset_id, checksum)?;
+    let file = File::open(path)?;
+    let mut reader = BufReader::with_capacity(COPY_BUFFER_BYTES, file);
+    let mut digest = Sha1::new();
+    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    if digest.finalize() != expected {
+        return Err(ProjectArchiveError::RecordingChecksumMismatch(asset_id));
+    }
+    Ok(())
 }
 
 fn ensure_destination_is_not_asset(
@@ -1099,7 +1541,14 @@ fn crc32_table() -> &'static [u32; 256] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::Command;
+    use crate::integrity::{digest_to_hex, sha1_bytes};
     use crate::project::ProjectSettings;
+    use crate::project_metadata::TransactionJournal;
+    use crate::recording::{
+        AudioAsset, AudioAssetId, AudioClip, AudioClipId, AudioTrack, AudioTrackId,
+        RecordingOperation, WaveformData,
+    };
 
     struct TestDir(PathBuf);
 
@@ -1155,6 +1604,7 @@ mod tests {
         fs::write(&font, b"font-bytes").unwrap();
 
         let project = sample_project(Some(&instrumental));
+        let line_id = project.lines().next().unwrap().id;
         let active_language_id = project.active_language_id().to_string();
         save_bundle(&project, 24.0, &bundle, &source, Some(&proxy), Some(&font)).unwrap();
 
@@ -1162,7 +1612,10 @@ mod tests {
         assert_eq!(loaded.kind, ProjectFileKind::Bundle);
         assert_eq!(loaded.project_data.source_fps, 24.0);
         assert_eq!(loaded.project_data.lines.len(), 1);
+        assert_eq!(loaded.project_data.lines[0].id, Some(line_id));
         assert_eq!(loaded.project_data.lines[0].text, "Bonjour");
+        assert!(loaded.huuid.is_some());
+        assert!(loaded.recording.is_none());
         assert_eq!(
             fs::read(loaded.source_video_path.as_ref().unwrap()).unwrap(),
             b"source-video-bytes"
@@ -1198,6 +1651,334 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains(dir.0.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn every_successful_save_gets_a_new_huuid() {
+        let dir = TestDir::new();
+        let source = dir.path("source.mp4");
+        let bundle = dir.path("identity.coquerythmo");
+        fs::write(&source, b"video").unwrap();
+        let project = sample_project(None);
+
+        let first =
+            save_bundle_with_metadata(&project, 24.0, &bundle, &source, None, None, None).unwrap();
+        let first_loaded = load_project_file(&bundle).unwrap();
+        assert_eq!(first_loaded.huuid.as_ref(), Some(&first.huuid));
+        drop(first_loaded);
+
+        let second =
+            save_bundle_with_metadata(&project, 24.0, &bundle, &source, None, None, None).unwrap();
+        assert_ne!(first.huuid, second.huuid);
+        let second_loaded = load_project_file(&bundle).unwrap();
+        assert_eq!(second_loaded.huuid.as_ref(), Some(&second.huuid));
+    }
+
+    #[test]
+    fn bundle_round_trip_preserves_a_valid_transaction_journal() {
+        let dir = TestDir::new();
+        let source = dir.path("source.mp4");
+        let bundle = dir.path("journal.coquerythmo");
+        fs::write(&source, b"video").unwrap();
+        let mut project = sample_project(None);
+        let line_id = project.lines().next().unwrap().id;
+        let language_id = project.active_language_id();
+        let mut journal = TransactionJournal::from_project(&project, 24.0).unwrap();
+        let command = Command::UpdateLineText {
+            line_id,
+            old_text: "Bonjour".into(),
+            new_text: "Bonsoir".into(),
+        };
+        journal.append(language_id, command.clone()).unwrap();
+        command.apply(&mut project);
+
+        let saved =
+            save_bundle_with_metadata(&project, 24.0, &bundle, &source, None, None, Some(&journal))
+                .unwrap();
+        let loaded = load_project_file(&bundle).unwrap();
+        assert_eq!(loaded.huuid.as_ref(), Some(&saved.huuid));
+        let restored_journal = loaded.transaction_journal.as_ref().unwrap();
+        assert_eq!(
+            saved
+                .transaction_journal
+                .as_ref()
+                .unwrap()
+                .checkpoint_hash(),
+            restored_journal.checkpoint_hash()
+        );
+        restored_journal.validate_integrity().unwrap();
+        assert_eq!(
+            restored_journal
+                .replay(24.0)
+                .unwrap()
+                .get_line(line_id)
+                .unwrap()
+                .text,
+            "Bonsoir"
+        );
+    }
+
+    #[test]
+    fn bundle_round_trip_preserves_recording_state_log_and_flac_assets() {
+        let dir = TestDir::new();
+        let source = dir.path("source.mp4");
+        let flac = dir.path("take-2.flac");
+        let bundle = dir.path("recording.coquerythmo");
+        let flac_bytes = b"fLaC\0portable-test-audio";
+        fs::write(&source, b"video").unwrap();
+        fs::write(&flac, flac_bytes).unwrap();
+
+        let track_id = AudioTrackId::new(1);
+        let asset_id = AudioAssetId::new(2);
+        let clip_id = AudioClipId::new(3);
+        let mut recording_project = RecordingProject::new(24.0).unwrap();
+        let mut transaction_log = TransactionLog::default();
+        transaction_log
+            .append_and_apply(
+                &mut recording_project,
+                RecordingOperation::AddTrack {
+                    track: AudioTrack::new(track_id, "Alice"),
+                },
+            )
+            .unwrap();
+        transaction_log
+            .append_and_apply(
+                &mut recording_project,
+                RecordingOperation::AddAsset {
+                    asset: AudioAsset {
+                        id: asset_id,
+                        file_name: "take-2.flac".into(),
+                        sample_rate: 48_000,
+                        channels: 1,
+                        sample_count: 96_000,
+                        checksum: digest_to_hex(sha1_bytes(flac_bytes)),
+                        waveform: WaveformData {
+                            samples_per_peak: 48_000,
+                            peaks: vec![0.5, 0.25],
+                        },
+                    },
+                },
+            )
+            .unwrap();
+        transaction_log
+            .append_and_apply(
+                &mut recording_project,
+                RecordingOperation::AddClip {
+                    clip: AudioClip {
+                        id: clip_id,
+                        asset_id,
+                        track_id,
+                        start_frame: 12,
+                        source_start_frame: 0,
+                        duration_frames: 24,
+                    },
+                },
+            )
+            .unwrap();
+
+        let asset_inputs = [RecordingAssetInput {
+            asset_id,
+            path: &flac,
+        }];
+        save_bundle_with_recording_data(
+            &sample_project(None),
+            24.0,
+            &bundle,
+            &source,
+            None,
+            None,
+            None,
+            Some(RecordingBundleInput {
+                project: &recording_project,
+                transaction_log: &transaction_log,
+                assets: &asset_inputs,
+            }),
+        )
+        .unwrap();
+
+        let loaded = load_project_file(&bundle).unwrap();
+        let recording = loaded.recording.as_ref().unwrap();
+        assert_eq!(recording.project, recording_project);
+        assert_eq!(recording.transaction_log, transaction_log);
+        recording.transaction_log.verify_integrity().unwrap();
+        assert_eq!(
+            recording.project.asset(asset_id).unwrap().file_name,
+            "take-2.flac"
+        );
+        assert_eq!(
+            fs::read(&recording.audio_asset_paths[&asset_id]).unwrap(),
+            flac_bytes
+        );
+        assert!(recording.audio_asset_paths[&asset_id].starts_with(
+            loaded
+                .extraction_root()
+                .expect("recording FLAC must be extracted")
+        ));
+    }
+
+    #[test]
+    fn recording_save_rejects_a_flac_that_does_not_match_its_sha1() {
+        let dir = TestDir::new();
+        let source = dir.path("source.mp4");
+        let flac = dir.path("take.flac");
+        let bundle = dir.path("recording.coquerythmo");
+        fs::write(&source, b"video").unwrap();
+        fs::write(&flac, b"changed-audio").unwrap();
+        fs::write(&bundle, b"previous-project").unwrap();
+
+        let asset_id = AudioAssetId::new(1);
+        let mut recording_project = RecordingProject::new(24.0).unwrap();
+        let mut transaction_log = TransactionLog::default();
+        transaction_log
+            .append_and_apply(
+                &mut recording_project,
+                RecordingOperation::AddAsset {
+                    asset: AudioAsset {
+                        id: asset_id,
+                        file_name: "take.flac".into(),
+                        sample_rate: 48_000,
+                        channels: 1,
+                        sample_count: 48_000,
+                        checksum: digest_to_hex(sha1_bytes(b"different-audio")),
+                        waveform: WaveformData::default(),
+                    },
+                },
+            )
+            .unwrap();
+        let assets = [RecordingAssetInput {
+            asset_id,
+            path: &flac,
+        }];
+        let error = match save_bundle_with_recording_data(
+            &sample_project(None),
+            24.0,
+            &bundle,
+            &source,
+            None,
+            None,
+            None,
+            Some(RecordingBundleInput {
+                project: &recording_project,
+                transaction_log: &transaction_log,
+                assets: &assets,
+            }),
+        ) {
+            Ok(_) => panic!("mismatched recording checksum unexpectedly saved"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            ProjectArchiveError::RecordingChecksumMismatch(id) if id == asset_id
+        ));
+        assert_eq!(fs::read(&bundle).unwrap(), b"previous-project");
+    }
+
+    #[test]
+    fn recording_load_rejects_a_valid_container_with_wrong_flac_sha1() {
+        let dir = TestDir::new();
+        let bundle = dir.path("recording-checksum.coquerythmo");
+        let expected_audio = b"fLaC-expected";
+        let stored_audio = b"fLaC-different";
+        let asset_id = AudioAssetId::new(1);
+        let mut recording_project = RecordingProject::new(24.0).unwrap();
+        let mut transaction_log = TransactionLog::default();
+        transaction_log
+            .append_and_apply(
+                &mut recording_project,
+                RecordingOperation::AddAsset {
+                    asset: AudioAsset {
+                        id: asset_id,
+                        file_name: "take.flac".into(),
+                        sample_rate: 48_000,
+                        channels: 1,
+                        sample_count: 48_000,
+                        checksum: digest_to_hex(sha1_bytes(expected_audio)),
+                        waveform: WaveformData::default(),
+                    },
+                },
+            )
+            .unwrap();
+        let source_entry = "media/source.mp4";
+        let recording_entry = "audio/recordings/0000000000000001-take.flac";
+        let manifest = BundleManifest {
+            format: FORMAT_NAME.into(),
+            format_version: FORMAT_VERSION,
+            huuid: None,
+            transactions: None,
+            project: ProjectData::from_project(&sample_project(None), 24.0),
+            assets: BundleAssets {
+                source_video: source_entry.into(),
+                proxy_video: None,
+                font: None,
+                instrumentals: Vec::new(),
+            },
+            recording: Some(BundleRecordingManifest {
+                project: recording_project,
+                transaction_log,
+                assets: vec![RecordingAssetManifest {
+                    asset_id,
+                    entry: recording_entry.into(),
+                }],
+            }),
+        };
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        let mut writer = BufWriter::new(File::create(&bundle).unwrap());
+        writer.write_all(MAGIC).unwrap();
+        write_u32(&mut writer, FORMAT_VERSION).unwrap();
+        write_u32(&mut writer, 3).unwrap();
+        write_bytes_entry(&mut writer, MANIFEST_ENTRY, &manifest_bytes).unwrap();
+        write_bytes_entry(&mut writer, source_entry, b"video").unwrap();
+        write_bytes_entry(&mut writer, recording_entry, stored_audio).unwrap();
+        writer.write_all(FOOTER_MAGIC).unwrap();
+        writer.flush().unwrap();
+
+        let error = match load_project_file(&bundle) {
+            Ok(_) => panic!("mismatched recording checksum unexpectedly loaded"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            ProjectArchiveError::RecordingChecksumMismatch(id) if id == asset_id
+        ));
+    }
+
+    #[test]
+    fn recording_save_rejects_state_not_reconstructed_by_its_log_cursor() {
+        let dir = TestDir::new();
+        let source = dir.path("source.mp4");
+        let bundle = dir.path("ambiguous-recording.coquerythmo");
+        fs::write(&source, b"video").unwrap();
+        let mut recording_project = RecordingProject::new(24.0).unwrap();
+        recording_project
+            .apply(&RecordingOperation::AddTrack {
+                track: AudioTrack::new(AudioTrackId::new(1), "Unlogged"),
+            })
+            .unwrap();
+        let transaction_log = TransactionLog::default();
+
+        let error = match save_bundle_with_recording_data(
+            &sample_project(None),
+            24.0,
+            &bundle,
+            &source,
+            None,
+            None,
+            None,
+            Some(RecordingBundleInput {
+                project: &recording_project,
+                transaction_log: &transaction_log,
+                assets: &[],
+            }),
+        ) {
+            Ok(_) => panic!("recording state without transactions unexpectedly saved"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            ProjectArchiveError::InvalidRecordingTransactionLog(_)
+        ));
+        assert!(!bundle.exists());
     }
 
     #[test]
@@ -1306,6 +2087,9 @@ mod tests {
 
         let loaded = load_project_file(&json_path).unwrap();
         assert!(loaded.is_legacy_json());
+        assert!(loaded.huuid.is_none());
+        assert!(loaded.transaction_journal.is_none());
+        assert!(loaded.recording.is_none());
         assert!(loaded.source_video_path.is_none());
         assert!(loaded.extraction_root().is_none());
         assert_eq!(loaded.project_data.source_fps, 24.0);
@@ -1339,6 +2123,8 @@ mod tests {
         let manifest = BundleManifest {
             format: FORMAT_NAME.into(),
             format_version: FORMAT_VERSION,
+            huuid: None,
+            transactions: None,
             project: ProjectData::from_project(&sample_project(None), 24.0),
             assets: BundleAssets {
                 source_video: "../escape.mp4".into(),
@@ -1346,6 +2132,7 @@ mod tests {
                 font: None,
                 instrumentals: Vec::new(),
             },
+            recording: None,
         };
         let bytes = serde_json::to_vec(&manifest).unwrap();
         let mut writer = BufWriter::new(File::create(&bundle).unwrap());

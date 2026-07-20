@@ -7,15 +7,19 @@
 use super::layout::Layout;
 use super::primitives::{EventResponse, LabelInfo, QuadInstance, Rect, UiAction, UiEvent, Widget};
 use super::theme::{SLIDER_W, TOOLBAR_BTN_SIZE, TOOLBAR_HEIGHT, TOPBAR_HEIGHT};
-use super::{dropdown::Dropdown, icon_button::IconButton, slider::Slider, text_button::TextButton};
+use super::{
+    dropdown::Dropdown, icon_button::IconButton, slider::Slider, tab_button::TabButton,
+    text_button::TextButton,
+};
 use crate::application::command::ToolMode;
+use crate::application::workspace_service::WorkspaceId;
 use crate::i18n::t;
 
 use std::collections::HashMap;
 
 /// Read-only state required to construct the context toolbar.
 pub(crate) struct ToolbarBuildContext<'a> {
-    pub(crate) layout: &'a Layout,
+    pub(crate) toolbar: Rect,
     pub(crate) icon_uvs: &'a HashMap<String, [f32; 4]>,
     pub(crate) playing: bool,
     pub(crate) volume: f32,
@@ -26,6 +30,7 @@ pub(crate) struct ToolbarBuildContext<'a> {
     pub(crate) erasing: bool,
     pub(crate) brush_color_presets: &'a [[f32; 4]; 8],
     pub(crate) ctrl_held: bool,
+    pub(crate) editable: bool,
 }
 
 fn icon_uv(icon_uvs: &HashMap<String, [f32; 4]>, name: &str) -> [f32; 4] {
@@ -38,6 +43,7 @@ pub(crate) fn build_topbar(
     screen_w: f32,
     settings_uv: [f32; 4],
     project_uv: [f32; 4],
+    active_workspace: WorkspaceId,
 ) -> Vec<Box<dyn Widget>> {
     // Build project menu with "Récent" submenu
     let recents = crate::config::recent_projects();
@@ -124,6 +130,12 @@ pub(crate) fn build_topbar(
         );
     }
 
+    // Recording has its own contextual commands. Until those commands are
+    // introduced, only the shared Project menu is exposed here.
+    if active_workspace == WorkspaceId::Recording {
+        return vec![Box::new(project_menu)];
+    }
+
     let export_menu = Dropdown::new(
         Rect {
             x: 88.0,
@@ -131,13 +143,9 @@ pub(crate) fn build_topbar(
             width: 80.0,
             height: 28.0,
         },
-        vec![
-            t("menu.export.mp4").into(),
-            format!("{} (Alpha)", t("menu.export.studio_mode")),
-        ],
+        vec![t("menu.export.mp4").into()],
         |index, _label| match index {
             0 => EventResponse::Action(UiAction::OpenExportModal),
-            1 => EventResponse::Action(UiAction::ShowStudioWarning),
             _ => EventResponse::Consumed,
         },
     )
@@ -320,10 +328,41 @@ pub(crate) fn build_topbar(
     topbar_widgets
 }
 
+pub(crate) fn build_workspace_tabs(
+    layout: &Layout,
+    active_workspace: WorkspaceId,
+) -> Vec<Box<dyn Widget>> {
+    let tab_width = 164.0;
+    let gap = 4.0;
+    let y = layout.tabs.y + 2.0;
+    let height = (layout.tabs.height - 4.0).max(1.0);
+    [
+        (WorkspaceId::Rythmo, t("workspace_tabs.rythmo")),
+        (WorkspaceId::Recording, t("workspace_tabs.recording")),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (workspace, label))| {
+        let tab = TabButton::new(
+            Rect {
+                x: layout.tabs.x + 8.0 + index as f32 * (tab_width + gap),
+                y,
+                width: tab_width,
+                height,
+            },
+            label,
+            active_workspace == workspace,
+            move || EventResponse::Action(UiAction::ActivateWorkspace(workspace)),
+        );
+        Box::new(tab) as Box<dyn Widget>
+    })
+    .collect()
+}
+
 pub(crate) fn build_toolbar(ctx: ToolbarBuildContext<'_>) -> Vec<Box<dyn Widget>> {
     use crate::rythmo_line::MarkerKind;
 
-    let tb = &ctx.layout.toolbar;
+    let tb = &ctx.toolbar;
     let s = TOOLBAR_BTN_SIZE;
     let y1 = tb.y + (TOOLBAR_BTN_SIZE - s) / 2.0;
     let gap = 4.0;
@@ -385,64 +424,66 @@ pub(crate) fn build_toolbar(ctx: ToolbarBuildContext<'_>) -> Vec<Box<dyn Widget>
         "toolbar.next_frame"
     );
 
-    x += gap * 2.0;
-    btn!(
-        "boucle",
-        || EventResponse::Action(UiAction::AddMarker(MarkerKind::Boucle)),
-        "toolbar.boucle"
-    );
-    btn!(
-        "out",
-        || EventResponse::Action(UiAction::AddMarker(MarkerKind::Out)),
-        "toolbar.out"
-    );
-    btn!(
-        "scene",
-        || EventResponse::Action(UiAction::AddMarker(MarkerKind::SceneChange)),
-        "toolbar.scene"
-    );
+    if ctx.editable {
+        x += gap * 2.0;
+        btn!(
+            "boucle",
+            || EventResponse::Action(UiAction::AddMarker(MarkerKind::Boucle)),
+            "toolbar.boucle"
+        );
+        btn!(
+            "out",
+            || EventResponse::Action(UiAction::AddMarker(MarkerKind::Out)),
+            "toolbar.out"
+        );
+        btn!(
+            "scene",
+            || EventResponse::Action(UiAction::AddMarker(MarkerKind::SceneChange)),
+            "toolbar.scene"
+        );
 
-    x += gap * 2.0;
-    btn!(
-        "respirations",
-        || EventResponse::Action(UiAction::OpenDropdown(
-            super::primitives::ToolbarDropdown::Respirations
-        )),
-        "toolbar.respirations"
-    );
-    btn!(
-        "reactions",
-        || EventResponse::Action(UiAction::OpenDropdown(
-            super::primitives::ToolbarDropdown::Reactions
-        )),
-        "toolbar.reactions"
-    );
+        x += gap * 2.0;
+        btn!(
+            "respirations",
+            || EventResponse::Action(UiAction::OpenDropdown(
+                super::primitives::ToolbarDropdown::Respirations
+            )),
+            "toolbar.respirations"
+        );
+        btn!(
+            "reactions",
+            || EventResponse::Action(UiAction::OpenDropdown(
+                super::primitives::ToolbarDropdown::Reactions
+            )),
+            "toolbar.reactions"
+        );
 
-    x += gap * 2.0;
-    btn!(
-        "note",
-        || EventResponse::Action(UiAction::AddNote),
-        "toolbar.note"
-    );
+        x += gap * 2.0;
+        btn!(
+            "note",
+            || EventResponse::Action(UiAction::AddNote),
+            "toolbar.note"
+        );
 
-    x += gap * 2.0;
-    btn!(
-        "liaison_left",
-        || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonLeft)),
-        "toolbar.liaison_left"
-    );
-    btn!(
-        "liaison_right",
-        || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonRight)),
-        "toolbar.liaison_right"
-    );
+        x += gap * 2.0;
+        btn!(
+            "liaison_left",
+            || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonLeft)),
+            "toolbar.liaison_left"
+        );
+        btn!(
+            "liaison_right",
+            || EventResponse::Action(UiAction::AddMarker(MarkerKind::LiaisonRight)),
+            "toolbar.liaison_right"
+        );
 
-    x += gap * 2.0;
-    btn!(
-        "karaoke",
-        || EventResponse::Action(UiAction::ToggleKaraokeForSelection),
-        "toolbar.karaoke"
-    );
+        x += gap * 2.0;
+        btn!(
+            "karaoke",
+            || EventResponse::Action(UiAction::ToggleKaraokeForSelection),
+            "toolbar.karaoke"
+        );
+    }
     let _ = x;
 
     let slider_w = SLIDER_W;
@@ -480,6 +521,10 @@ pub(crate) fn build_toolbar(ctx: ToolbarBuildContext<'_>) -> Vec<Box<dyn Widget>
         |val| EventResponse::Action(UiAction::SetVolume(val)),
     );
     widgets.push(Box::new(volume));
+
+    if !ctx.editable {
+        return widgets;
+    }
 
     let y2 = tb.y + TOOLBAR_BTN_SIZE + 6.0;
     x = tb.x + 8.0;
@@ -651,10 +696,13 @@ fn scroll_delta_to_frames_impl(delta: f32, multiplier: f32) -> i32 {
     (delta * multiplier) as i32
 }
 
-pub(crate) fn progress_bar_rect(layout: &Layout) -> Rect {
-    let tb = &layout.toolbar;
+pub(crate) fn progress_bar_rect(tb: &Rect, editable: bool) -> Rect {
     let gap = 4.0;
-    let buttons_end = tb.x + 8.0 + 13.0 * (TOOLBAR_BTN_SIZE + gap) + 4.0 * gap * 2.0 + gap;
+    let buttons_end = if editable {
+        tb.x + 8.0 + 13.0 * (TOOLBAR_BTN_SIZE + gap) + 4.0 * gap * 2.0 + gap
+    } else {
+        tb.x + 8.0 + 3.0 * (TOOLBAR_BTN_SIZE + gap) + gap
+    };
     let slider_start = tb.x + tb.width - SLIDER_W - 8.0;
     let mute_start = slider_start - TOOLBAR_BTN_SIZE - gap;
     let left = buttons_end + 8.0;
@@ -669,8 +717,8 @@ pub(crate) fn progress_bar_rect(layout: &Layout) -> Rect {
     }
 }
 
-pub(crate) fn progress_bar_hit_rect(layout: &Layout) -> Rect {
-    let rect = progress_bar_rect(layout);
+pub(crate) fn progress_bar_hit_rect(toolbar: &Rect, editable: bool) -> Rect {
+    let rect = progress_bar_rect(toolbar, editable);
     Rect {
         x: rect.x,
         y: rect.y - 8.0,

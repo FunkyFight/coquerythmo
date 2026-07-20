@@ -12,6 +12,7 @@ impl FocusId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessibleRole {
     Button,
+    Tab,
     MenuButton,
     MenuItem,
     TextField,
@@ -29,6 +30,7 @@ pub struct AccessibleNode {
     pub role: AccessibleRole,
     pub label: String,
     pub value: Option<String>,
+    pub selected: Option<bool>,
     pub enabled: bool,
 }
 
@@ -43,8 +45,14 @@ impl AccessibleNode {
             role,
             label: label.into(),
             value: None,
+            selected: None,
             enabled: true,
         }
+    }
+
+    pub fn with_selected(mut self, selected: Option<bool>) -> Self {
+        self.selected = selected;
+        self
     }
 }
 
@@ -183,6 +191,7 @@ mod tests {
             role: AccessibleRole::Button,
             label: id.into(),
             value: None,
+            selected: None,
             enabled,
         }
     }

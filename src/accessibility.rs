@@ -193,7 +193,6 @@ pub fn event_for_action(
         UiAction::OpenRecentProjects => "menu.project.recent",
         UiAction::CloseProject => "menu.project.close",
         UiAction::ExportProject | UiAction::OpenExportModal => "menu.export.mp4",
-        UiAction::ShowStudioWarning => "menu.export.studio_mode",
         UiAction::OpenRenameCharacterModal => "menu.tools.rename_character",
         UiAction::OpenProxyModal => "menu.tools.create_proxy",
         UiAction::OpenProjectSettings => "project_settings.title",
@@ -255,9 +254,9 @@ pub fn event_for_keyboard_shortcut(
     event_for_action(action)
 }
 
-/// Emit the short progress tone used for export and proxy percentages.
-/// Higher progress produces a lower pitch so the operation audibly descends
-/// towards completion.
+// Emit the short progress tone used for export and proxy percentages.
+// Higher progress produces a lower pitch so the operation audibly descends
+// towards completion.
 #[cfg(target_os = "windows")]
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -817,6 +816,8 @@ fn accesskit_role(role: &str) -> accesskit::Role {
     let role = role.to_ascii_lowercase();
     if role.contains("checkbox") {
         accesskit::Role::CheckBox
+    } else if role.contains("tab") {
+        accesskit::Role::Tab
     } else if role.contains("button") {
         accesskit::Role::Button
     } else if role.contains("cell") {

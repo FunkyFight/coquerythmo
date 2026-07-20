@@ -554,4 +554,32 @@ impl RythmoState {
         self.autocomplete_hover = None;
         self.autocomplete_scroll = 0;
     }
+
+    /// Cancel every transient authoring gesture before changing workspace or
+    /// entering a read-only view. Project data is deliberately untouched.
+    pub fn cancel_active_interaction(&mut self) {
+        self.stop_line_editing();
+        self.stop_note_editing();
+        self.stop_char_editing();
+        self.hovered_line = None;
+        self.hovered_track = None;
+        self.selected = None;
+        self.dragging = None;
+        self.ghost_preview = None;
+        self.panning = false;
+        self.audio_offset_mode = false;
+        self.audio_offset_drag = None;
+        self.pending_cursor_click = None;
+        self.pan_accum = 0.0;
+        self.keyboard_pan_direction = 0;
+        self.keyboard_pan_last_tick = None;
+        self.keyboard_pan_accum_px = 0.0;
+        self.syllable_drag = None;
+        self.context_menu = None;
+        if self.active_stroke.take().is_some() {
+            self.drawing_dirty = true;
+        }
+        self.selection_drag = None;
+        self.transform_handle = None;
+    }
 }

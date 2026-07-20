@@ -26,10 +26,12 @@ pub enum Packet {
     },
     CreateRoom {
         username: String,
+        project_huuid: String,
     },
     JoinRoom {
         code: String,
         username: String,
+        project_huuid: String,
     },
     LeaveRoom,
     Command {

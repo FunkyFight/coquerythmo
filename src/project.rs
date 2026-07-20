@@ -252,7 +252,7 @@ struct StoredLanguageSnapshot {
     band: BandSnapshot,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Character {
     pub name: String,
     pub color: [f32; 4],

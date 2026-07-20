@@ -28,6 +28,7 @@ pub mod primitives;
 pub mod project_settings_modal;
 pub mod proxy_error_modal;
 pub mod proxy_modal;
+pub mod recording_workspace;
 pub mod rename_character_modal;
 pub mod renderer;
 pub mod save_prompt_modal;
@@ -36,7 +37,7 @@ pub mod settings_modal;
 pub mod shell;
 pub mod side_panel;
 pub mod slider;
-pub mod studio_warning_modal;
+pub mod tab_button;
 pub mod text_button;
 pub mod text_input;
 pub mod theme;
@@ -46,8 +47,8 @@ pub mod voice_actor_modal;
 pub mod whats_new_modal;
 
 use layout::{
-    Layout, PROPS_DEFAULT_W, PROPS_DRAG_ZONE, PROPS_MAX_W, PROPS_MIN_W, RYTHMO_MIN_H, TOOLBAR_H,
-    TOPBAR_H, VIDEO_MIN_H,
+    Layout, PROPS_DEFAULT_W, PROPS_DRAG_ZONE, PROPS_MAX_W, PROPS_MIN_W, RYTHMO_MIN_H, TABBAR_H,
+    TOOLBAR_H, TOPBAR_H, VIDEO_MIN_H,
 };
 use primitives::{
     EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction,
@@ -56,8 +57,11 @@ use primitives::{
 use renderer::StretchedText;
 use tooltip::TooltipState;
 
+use crate::application::workspace_service::WorkspaceId;
 use crate::i18n::t;
+use crate::network::NetworkMember;
 use crate::project::Project;
+use crate::recording::{CaptureState, RecordingProject};
 use crate::render_index::ProjectRenderIndex;
 use crate::rendering::rythmo::scene::{FrameWindow, RythmoScene, SceneOptions};
 
@@ -65,6 +69,10 @@ use self::actor_icon_cache::ActorIconCache;
 use self::focus::{AccessibleNode, FocusId, FocusManager};
 use self::icons::IconAtlas;
 use self::modal_host::ModalHost;
+use self::recording_workspace::{
+    RecordingControl, RecordingLayout, RecordingPage, RecordingRole, RecordingScene,
+    RecordingWorkspaceUi,
+};
 use self::renderer::UiRenderer;
 use crate::workspaces::rythmo::view as rythmo;
 
@@ -72,6 +80,7 @@ use theme::*;
 
 pub struct Ui {
     topbar_widgets: Vec<Box<dyn Widget>>,
+    tab_widgets: Vec<Box<dyn Widget>>,
     toolbar_widgets: Vec<Box<dyn Widget>>,
     layout: Layout,
     screen_w: f32,
@@ -120,6 +129,11 @@ pub struct Ui {
     automation_editor: automation::AutomationEditor,
     side_panel: side_panel::SidePanel,
     focus: FocusManager,
+    active_workspace: WorkspaceId,
+    recording_ui: RecordingWorkspaceUi,
+    recording_layout: RecordingLayout,
+    recording_scene: RecordingScene,
+    recording_capture_active: bool,
 }
 
 struct WhatsNewThumbnailTexture {
@@ -173,7 +187,15 @@ impl Ui {
         let settings_uv = icon_uvs.get("settings").copied().unwrap_or([0.0; 4]);
         let project_uv = icon_uvs.get("project").copied().unwrap_or([0.0; 4]);
         let mut ui = Self {
-            topbar_widgets: shell::build_topbar(false, false, sw, settings_uv, project_uv),
+            topbar_widgets: shell::build_topbar(
+                false,
+                false,
+                sw,
+                settings_uv,
+                project_uv,
+                WorkspaceId::Rythmo,
+            ),
+            tab_widgets: vec![],
             toolbar_widgets: vec![],
             layout,
             screen_w: sw,
@@ -210,6 +232,16 @@ impl Ui {
             automation_editor: automation::AutomationEditor::default(),
             side_panel: side_panel::SidePanel::default(),
             focus: FocusManager::default(),
+            active_workspace: WorkspaceId::Rythmo,
+            recording_ui: RecordingWorkspaceUi::default(),
+            recording_layout: RecordingLayout::choice(Rect {
+                x: 0.0,
+                y: TOPBAR_H + TABBAR_H,
+                width: sw,
+                height: (sh - TOPBAR_H - TABBAR_H).max(0.0),
+            }),
+            recording_scene: RecordingScene::default(),
+            recording_capture_active: false,
             active_mode: Some(ToolMode::Select),
             brush_color: [1.0, 1.0, 1.0, 1.0],
             brush_radius_index: 0,
@@ -230,6 +262,7 @@ impl Ui {
             ],
             brush_color_preset_index: 0,
         };
+        ui.tab_widgets = shell::build_workspace_tabs(&ui.layout, ui.active_workspace);
         ui.toolbar_widgets = shell::build_toolbar(ui.toolbar_build_context());
         ui.refresh_root_focus_nodes();
         ui
@@ -237,29 +270,65 @@ impl Ui {
 
     fn refresh_root_focus_nodes(&mut self) {
         let mut nodes = Vec::new();
-        for (index, widget) in self.topbar_widgets.iter().enumerate() {
-            let label = widget
-                .accessible_label()
-                .map(str::to_string)
-                .or_else(|| widget.labels().first().map(|label| label.text.to_string()))
-                .unwrap_or_else(|| format!("Contrôle {}", index + 1));
-            nodes.push(AccessibleNode::focusable(
-                format!("topbar.{index}"),
-                widget.accessible_role(),
-                label,
-            ));
+        if !self.recording_capture_active {
+            for (index, widget) in self.topbar_widgets.iter().enumerate() {
+                let label = widget
+                    .accessible_label()
+                    .map(str::to_string)
+                    .or_else(|| widget.labels().first().map(|label| label.text.to_string()))
+                    .unwrap_or_else(|| format!("Contrôle {}", index + 1));
+                nodes.push(
+                    AccessibleNode::focusable(
+                        format!("topbar.{index}"),
+                        widget.accessible_role(),
+                        label,
+                    )
+                    .with_selected(widget.accessible_selected()),
+                );
+            }
+            for (index, widget) in self.tab_widgets.iter().enumerate() {
+                let label = widget
+                    .accessible_label()
+                    .map(str::to_string)
+                    .or_else(|| widget.labels().first().map(|label| label.text.to_string()))
+                    .unwrap_or_else(|| t("accessibility.control").to_string());
+                nodes.push(
+                    AccessibleNode::focusable(
+                        format!("tabs.{index}"),
+                        widget.accessible_role(),
+                        label,
+                    )
+                    .with_selected(widget.accessible_selected()),
+                );
+            }
+            for (index, widget) in self.toolbar_widgets.iter().enumerate() {
+                let label = widget
+                    .accessible_label()
+                    .map(str::to_string)
+                    .or_else(|| widget.labels().first().map(|label| label.text.to_string()))
+                    .unwrap_or_else(|| format!("Outil {}", index + 1));
+                nodes.push(
+                    AccessibleNode::focusable(
+                        format!("toolbar.{index}"),
+                        widget.accessible_role(),
+                        label,
+                    )
+                    .with_selected(widget.accessible_selected()),
+                );
+            }
         }
-        for (index, widget) in self.toolbar_widgets.iter().enumerate() {
-            let label = widget
-                .accessible_label()
-                .map(str::to_string)
-                .or_else(|| widget.labels().first().map(|label| label.text.to_string()))
-                .unwrap_or_else(|| format!("Outil {}", index + 1));
-            nodes.push(AccessibleNode::focusable(
-                format!("toolbar.{index}"),
-                widget.accessible_role(),
-                label,
-            ));
+        if self.active_workspace == WorkspaceId::Recording {
+            nodes.extend(self.recording_scene.controls.iter().map(|control| {
+                let mut node = AccessibleNode::focusable(
+                    control.control.stable_id(),
+                    control.role,
+                    control.label.clone(),
+                )
+                .with_selected(Some(control.selected));
+                node.value = control.value.clone();
+                node.enabled = control.enabled;
+                node
+            }));
         }
         self.focus.replace_root(nodes);
     }
@@ -270,6 +339,7 @@ impl Ui {
         let index = index.parse::<usize>().ok()?;
         match group {
             "topbar" => self.topbar_widgets.get_mut(index),
+            "tabs" => self.tab_widgets.get_mut(index),
             "toolbar" => self.toolbar_widgets.get_mut(index),
             _ => None,
         }
@@ -281,6 +351,7 @@ impl Ui {
         let index = index.parse::<usize>().ok()?;
         match group {
             "topbar" => self.topbar_widgets.get(index).map(|widget| widget.as_ref()),
+            "tabs" => self.tab_widgets.get(index).map(|widget| widget.as_ref()),
             "toolbar" => self
                 .toolbar_widgets
                 .get(index)
@@ -291,6 +362,12 @@ impl Ui {
 
     pub fn has_keyboard_focus(&self) -> bool {
         self.focus.current_id().is_some()
+    }
+
+    pub fn focused_workspace_tab(&self) -> bool {
+        self.focus
+            .current_id()
+            .is_some_and(|id| id.0.starts_with("tabs."))
     }
 
     pub fn is_sensitive_text_context(&self) -> bool {
@@ -308,6 +385,15 @@ impl Ui {
             return;
         }
         if let Some((index, _)) = self
+            .tab_widgets
+            .iter()
+            .enumerate()
+            .find(|(_, widget)| widget.bounds().contains(x, y))
+        {
+            self.focus.focus(&FocusId::new(format!("tabs.{index}")));
+            return;
+        }
+        if let Some((index, _)) = self
             .toolbar_widgets
             .iter()
             .enumerate()
@@ -315,6 +401,17 @@ impl Ui {
         {
             self.focus.focus(&FocusId::new(format!("toolbar.{index}")));
             return;
+        }
+        if self.active_workspace == WorkspaceId::Recording {
+            if let Some(control) = self
+                .recording_scene
+                .controls
+                .iter()
+                .find(|control| control.bounds.contains(x, y))
+            {
+                self.focus.focus(&FocusId::new(control.control.stable_id()));
+                return;
+            }
         }
         self.focus.clear();
     }
@@ -327,7 +424,14 @@ impl Ui {
             self.props_width,
             self.video_split,
         );
-        self.toolbar_widgets = shell::build_toolbar(self.toolbar_build_context());
+        self.tab_widgets = shell::build_workspace_tabs(&self.layout, self.active_workspace);
+        self.toolbar_widgets = if self.active_workspace == WorkspaceId::Recording
+            && (self.recording_ui.page == RecordingPage::Choice || self.recording_capture_active)
+        {
+            Vec::new()
+        } else {
+            shell::build_toolbar(self.toolbar_build_context())
+        };
         self.refresh_root_focus_nodes();
     }
 
@@ -339,6 +443,7 @@ impl Ui {
             self.screen_w,
             self.uv("settings"),
             self.uv("project"),
+            self.active_workspace,
         );
         self.refresh_root_focus_nodes();
     }
@@ -350,13 +455,43 @@ impl Ui {
     }
 
     pub fn rebuild_toolbar(&mut self) {
-        self.toolbar_widgets = shell::build_toolbar(self.toolbar_build_context());
+        self.toolbar_widgets = if self.active_workspace == WorkspaceId::Recording
+            && (self.recording_ui.page == RecordingPage::Choice || self.recording_capture_active)
+        {
+            Vec::new()
+        } else {
+            shell::build_toolbar(self.toolbar_build_context())
+        };
         self.refresh_root_focus_nodes();
+    }
+
+    pub fn active_workspace(&self) -> WorkspaceId {
+        self.active_workspace
+    }
+
+    pub fn set_active_workspace(&mut self, workspace: WorkspaceId) {
+        self.active_workspace = workspace;
+        self.active_dropdown = None;
+        self.tooltip = None;
+        self.automation_editor.close();
+        self.side_panel.close();
+        self.props_visible = false;
+        self.brush_picking = false;
+        self.rythmo_state.cancel_active_interaction();
+        self.topbar_widgets = shell::build_topbar(
+            self.network_in_room,
+            self.has_video,
+            self.screen_w,
+            self.uv("settings"),
+            self.uv("project"),
+            self.active_workspace,
+        );
+        self.rebuild_layout();
     }
 
     fn toolbar_build_context(&self) -> shell::ToolbarBuildContext<'_> {
         shell::ToolbarBuildContext {
-            layout: &self.layout,
+            toolbar: self.active_toolbar_rect(),
             icon_uvs: &self.icon_uvs,
             playing: self.playing,
             volume: self.volume,
@@ -367,7 +502,158 @@ impl Ui {
             erasing: self.erasing,
             brush_color_presets: &self.brush_color_presets,
             ctrl_held: self.rythmo_state.ctrl_held,
+            editable: self.active_workspace == WorkspaceId::Rythmo,
         }
+    }
+
+    fn workspace_content_rect(&self) -> Rect {
+        Rect {
+            x: 0.0,
+            y: TOPBAR_H + TABBAR_H,
+            width: self.screen_w,
+            height: (self.screen_h - TOPBAR_H - TABBAR_H).max(0.0),
+        }
+    }
+
+    fn active_toolbar_rect(&self) -> Rect {
+        if self.active_workspace == WorkspaceId::Recording {
+            self.recording_layout.toolbar.unwrap_or(self.layout.toolbar)
+        } else {
+            self.layout.toolbar
+        }
+    }
+
+    fn active_rythmo_rect(&self) -> Rect {
+        if self.active_workspace == WorkspaceId::Recording {
+            self.recording_layout.rythmo
+        } else {
+            self.layout.rythmo
+        }
+    }
+
+    pub fn video_preview_rect(&self) -> Rect {
+        if self.active_workspace == WorkspaceId::Recording
+            && self.recording_ui.page == RecordingPage::Timeline
+        {
+            self.recording_layout.video
+        } else {
+            self.layout.video_preview
+        }
+    }
+
+    pub fn sync_recording_scene(
+        &mut self,
+        project: &RecordingProject,
+        capture: Option<&CaptureState>,
+        participants: &[NetworkMember],
+        control_owner_id: Option<&str>,
+        current_frame: i64,
+    ) {
+        let capture_active = capture.is_some_and(|state| {
+            matches!(
+                state,
+                CaptureState::Countdown { .. }
+                    | CaptureState::Capturing { .. }
+                    | CaptureState::Finalizing { .. }
+            )
+        });
+        let next_layout = if capture_active {
+            RecordingLayout::capturing(self.screen_w, self.screen_h)
+        } else if self.recording_ui.page == RecordingPage::Choice {
+            RecordingLayout::choice(self.workspace_content_rect())
+        } else {
+            RecordingLayout::timeline(
+                self.workspace_content_rect(),
+                self.recording_ui.role.is_online(),
+            )
+        };
+        let chrome_changed =
+            self.recording_capture_active != capture_active || self.recording_layout != next_layout;
+        self.recording_capture_active = capture_active;
+        self.recording_layout = next_layout;
+        self.recording_scene = self.recording_ui.scene(
+            self.recording_layout,
+            project,
+            capture,
+            participants,
+            control_owner_id,
+            current_frame,
+        );
+        if chrome_changed {
+            self.rebuild_toolbar();
+        } else {
+            self.refresh_root_focus_nodes();
+        }
+    }
+
+    pub fn recording_enter_solo(&mut self) {
+        self.recording_ui.enter_solo();
+    }
+
+    pub fn recording_enter_online(&mut self, role: RecordingRole) {
+        self.recording_ui.enter_online(role);
+    }
+
+    pub fn reset_recording_workspace(&mut self) {
+        self.recording_ui.return_to_choice();
+        self.recording_capture_active = false;
+        self.recording_scene = RecordingScene::default();
+        self.rebuild_layout();
+    }
+
+    pub fn recording_role(&self) -> RecordingRole {
+        self.recording_ui.role
+    }
+
+    pub fn recording_can_edit_timeline(&self) -> bool {
+        self.recording_ui.role.can_edit_timeline()
+    }
+
+    pub fn recording_set_tool(&mut self, tool: crate::recording::RecordingTool) {
+        self.recording_ui.editor.tool = tool;
+    }
+
+    pub fn recording_select_clip(
+        &mut self,
+        project: &RecordingProject,
+        clip_id: crate::recording::AudioClipId,
+        additive: bool,
+    ) -> Result<(), crate::recording::RecordingError> {
+        self.recording_ui.select_clip(project, clip_id, additive)
+    }
+
+    pub fn recording_select_asset(&mut self, asset_id: crate::recording::AudioAssetId) {
+        self.recording_ui.selected_asset = Some(asset_id);
+    }
+
+    pub fn recording_editor_mut(&mut self) -> &mut crate::recording::RecordingEditor {
+        &mut self.recording_ui.editor
+    }
+
+    fn recording_control_action(control: &RecordingControl, additive: bool) -> Option<UiAction> {
+        Some(match control {
+            RecordingControl::ChooseSolo => UiAction::RecordingChooseSolo,
+            RecordingControl::ChooseOnline => UiAction::RecordingChooseOnline,
+            RecordingControl::Tool(tool) => UiAction::RecordingSetTool(*tool),
+            RecordingControl::TrackMute(track_id) => UiAction::RecordingToggleTrackMute(*track_id),
+            RecordingControl::TrackSolo(track_id) => UiAction::RecordingToggleTrackSolo(*track_id),
+            RecordingControl::TrackArm(track_id) => UiAction::RecordingArmTrack(*track_id),
+            RecordingControl::StartCapture => UiAction::RecordingStartCapture,
+            RecordingControl::Clip(clip_id) => UiAction::RecordingSelectClip {
+                clip_id: *clip_id,
+                additive,
+            },
+            RecordingControl::Asset(asset_id) => UiAction::RecordingSelectAsset(*asset_id),
+            RecordingControl::Participant(_) => return None,
+        })
+    }
+
+    fn focused_recording_control(&self) -> Option<&recording_workspace::RecordingControlInfo> {
+        let id = self.focus.current_id()?.0.as_str();
+        self.recording_scene
+            .controls
+            .iter()
+            .find(|control| control.control.stable_id() == id)
     }
 
     pub fn handle_event(
@@ -382,7 +668,11 @@ impl Ui {
             self.cursor_pos = (*x, *y);
         }
 
-        if let UiEvent::MousePress { x, y } = event {
+        if let UiEvent::MousePress { x, y }
+        | UiEvent::DoubleClick { x, y }
+        | UiEvent::CtrlClick { x, y }
+        | UiEvent::ShiftMousePress { x, y } = event
+        {
             self.focus_widget_at(*x, *y);
         }
 
@@ -422,6 +712,13 @@ impl Ui {
             return EventResponse::Consumed;
         }
 
+        if self.active_workspace == WorkspaceId::Recording && self.recording_capture_active {
+            if matches!(event, UiEvent::KeyInput { text } if text == "\x1b") {
+                return EventResponse::Action(UiAction::RecordingStopCapture);
+            }
+            return EventResponse::Consumed;
+        }
+
         if let Some(outcome) = self
             .modal_host
             .handle_event(event, self.screen_w, self.screen_h)
@@ -433,7 +730,8 @@ impl Ui {
         // widget sees it. In particular, the volume slider also interprets
         // Up/Down as value changes; letting it inspect these events while a
         // line is being edited makes the caret appear to change the volume.
-        if self.rythmo_state.is_editing()
+        if self.active_workspace == WorkspaceId::Rythmo
+            && self.rythmo_state.is_editing()
             && matches!(
                 event,
                 UiEvent::CursorLeft
@@ -466,6 +764,7 @@ impl Ui {
                     _ => 0.012,
                 },
                 self.erasing,
+                rythmo::RythmoInteractionMode::Editable,
             );
             return if response == EventResponse::Ignored {
                 EventResponse::Consumed
@@ -501,9 +800,14 @@ impl Ui {
         match event {
             UiEvent::FocusNext => {
                 if let Some(node) = self.focus.focus_next() {
+                    let label = if node.selected == Some(true) {
+                        format!("{}, {}", node.label, t("accessibility.selected"))
+                    } else {
+                        node.label.clone()
+                    };
                     return EventResponse::Action(UiAction::Accessibility(
                         crate::accessibility::AccessibilityEvent::Focus {
-                            label: node.label.clone(),
+                            label,
                             role: format!("{:?}", node.role),
                         },
                     ));
@@ -512,9 +816,14 @@ impl Ui {
             }
             UiEvent::FocusPrevious => {
                 if let Some(node) = self.focus.focus_previous() {
+                    let label = if node.selected == Some(true) {
+                        format!("{}, {}", node.label, t("accessibility.selected"))
+                    } else {
+                        node.label.clone()
+                    };
                     return EventResponse::Action(UiAction::Accessibility(
                         crate::accessibility::AccessibilityEvent::Focus {
-                            label: node.label.clone(),
+                            label,
                             role: format!("{:?}", node.role),
                         },
                     ));
@@ -530,6 +839,25 @@ impl Ui {
                         response
                     };
                 }
+                if let Some(control) = self.focused_recording_control() {
+                    if !control.enabled {
+                        return EventResponse::Consumed;
+                    }
+                    if let Some(action) = Self::recording_control_action(&control.control, false) {
+                        return EventResponse::Action(action);
+                    }
+                    return EventResponse::Consumed;
+                }
+            }
+            UiEvent::CursorLeft | UiEvent::CursorRight if self.focused_workspace_tab() => {
+                let index = usize::from(matches!(event, UiEvent::CursorRight));
+                self.focus.focus(&FocusId::new(format!("tabs.{index}")));
+                let workspace = if index == 0 {
+                    WorkspaceId::Rythmo
+                } else {
+                    WorkspaceId::Recording
+                };
+                return EventResponse::Action(UiAction::ActivateWorkspace(workspace));
             }
             UiEvent::KeyInput { text } if text == "\x1b" && self.focus.current_id().is_some() => {
                 self.focus.clear();
@@ -554,6 +882,15 @@ impl Ui {
             if let Some(response) = self.side_panel.handle_event(event, panel, project) {
                 return response;
             }
+        }
+
+        if self.active_workspace == WorkspaceId::Recording
+            && matches!(
+                event,
+                UiEvent::OpenContextMenu | UiEvent::ContextMenu { .. }
+            )
+        {
+            return EventResponse::Consumed;
         }
 
         if matches!(event, UiEvent::OpenContextMenu) {
@@ -631,17 +968,20 @@ impl Ui {
             }
         }
 
-        if let Some(response) = self.automation_editor.handle_event(
-            event,
-            &self.layout.video_preview,
-            &project.settings().automation,
-            project,
-        ) {
-            return response;
+        if self.active_workspace == WorkspaceId::Rythmo {
+            if let Some(response) = self.automation_editor.handle_event(
+                event,
+                &self.layout.video_preview,
+                &project.settings().automation,
+                project,
+            ) {
+                return response;
+            }
         }
         for widget in self
             .topbar_widgets
             .iter_mut()
+            .chain(self.tab_widgets.iter_mut())
             .chain(self.toolbar_widgets.iter_mut())
         {
             if !widget.captures_all() {
@@ -650,6 +990,36 @@ impl Ui {
                     self.update_tooltip();
                     return response;
                 }
+            }
+        }
+
+        if self.active_workspace == WorkspaceId::Recording {
+            let pointer = match event {
+                UiEvent::MousePress { x, y }
+                | UiEvent::DoubleClick { x, y }
+                | UiEvent::ShiftMousePress { x, y } => Some((*x, *y, false)),
+                UiEvent::CtrlClick { x, y } => Some((*x, *y, true)),
+                _ => None,
+            };
+            if let Some((x, y, additive)) = pointer {
+                if let Some(control) = self
+                    .recording_scene
+                    .controls
+                    .iter()
+                    .find(|control| control.bounds.contains(x, y))
+                {
+                    if !control.enabled {
+                        return EventResponse::Consumed;
+                    }
+                    if let Some(action) = Self::recording_control_action(&control.control, additive)
+                    {
+                        return EventResponse::Action(action);
+                    }
+                    return EventResponse::Consumed;
+                }
+            }
+            if self.recording_ui.page == RecordingPage::Choice {
+                return EventResponse::Ignored;
             }
         }
 
@@ -663,7 +1033,7 @@ impl Ui {
         // For SetToolMode, CycleBrushSize, ToggleEraser, OpenBrushColorPicker, we handle in State.
 
         // Handle brush color picker sync
-        if self.brush_picking {
+        if self.active_workspace == WorkspaceId::Rythmo && self.brush_picking {
             // Handle color picker events when picking brush color
             if self.rythmo_state.color_picker.handle_event(event) {
                 if !self.rythmo_state.color_picker.active {
@@ -680,8 +1050,14 @@ impl Ui {
         }
 
         // Rythmo zone events (lines, scroll, ctrl+click, etc.)
-        if self.total_frames > 0 {
-            let hit = shell::progress_bar_hit_rect(&self.layout);
+        if self.total_frames > 0
+            && (self.active_workspace == WorkspaceId::Rythmo
+                || self.recording_layout.toolbar.is_some())
+        {
+            let hit = shell::progress_bar_hit_rect(
+                &self.active_toolbar_rect(),
+                self.active_workspace == WorkspaceId::Rythmo,
+            );
             match event {
                 UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y }
                     if hit.contains(*x, *y) =>
@@ -713,7 +1089,7 @@ impl Ui {
         };
         let rythmo_response = rythmo::handle_rythmo_event(
             event,
-            &self.layout.rythmo,
+            &self.active_rythmo_rect(),
             project,
             render_index,
             render_frame,
@@ -724,6 +1100,11 @@ impl Ui {
             self.brush_color,
             brush_radius_frac,
             self.erasing,
+            if self.active_workspace == WorkspaceId::Rythmo {
+                rythmo::RythmoInteractionMode::Editable
+            } else {
+                rythmo::RythmoInteractionMode::ReadOnly
+            },
         );
         if rythmo_response != EventResponse::Ignored {
             return rythmo_response;
@@ -738,7 +1119,7 @@ impl Ui {
             ctrl,
         } = event
         {
-            if self.layout.rythmo.contains(*x, *y) {
+            if self.active_rythmo_rect().contains(*x, *y) {
                 if *ctrl && *fast {
                     // CTRL+SHIFT+scroll: jump between boucle markers
                     let direction: i32 = if *delta > 0.0 { 1 } else { -1 };
@@ -796,7 +1177,8 @@ impl Ui {
     }
 
     fn handle_split_drag(&mut self, event: &UiEvent) -> Option<EventResponse> {
-        let content_h = self.screen_h - TOPBAR_H;
+        let content_top = TOPBAR_H + TABBAR_H;
+        let content_h = self.screen_h - content_top;
         let free_h = (content_h - TOOLBAR_H).max(0.0);
         match event {
             UiEvent::MousePress { x, y } => {
@@ -813,7 +1195,7 @@ impl Ui {
             UiEvent::MouseMove { y, .. } => {
                 if let Some(handle) = self.dragging_split {
                     let requested = match handle {
-                        shell::SplitHandle::Video => (*y) - TOPBAR_H,
+                        shell::SplitHandle::Video => (*y) - content_top,
                         shell::SplitHandle::Rythmo => free_h - (self.screen_h - *y),
                     };
                     let min_video = VIDEO_MIN_H.min(free_h);
@@ -935,6 +1317,7 @@ impl Ui {
         for widget in self
             .topbar_widgets
             .iter()
+            .chain(self.tab_widgets.iter())
             .chain(self.toolbar_widgets.iter())
         {
             if widget.bounds().contains(cx, cy) {
@@ -1275,10 +1658,6 @@ impl Ui {
         self.modal_host.open_save_prompt(kind);
     }
 
-    pub fn open_studio_warning(&mut self) {
-        self.modal_host.open_studio_warning();
-    }
-
     pub fn open_pricing_page(&mut self) {
         self.modal_host.open_pricing_page();
     }
@@ -1369,6 +1748,7 @@ impl Ui {
             self.screen_w,
             self.uv("settings"),
             self.uv("project"),
+            self.active_workspace,
         );
         self.rebuild_layout();
     }
@@ -1393,6 +1773,13 @@ impl Ui {
         waveform_offset_frames: i64,
         waveform_is_instrumental: bool,
     ) {
+        let rythmo_zone = self.active_rythmo_rect();
+        let show_rythmo = self.active_workspace == WorkspaceId::Rythmo
+            || (self.recording_ui.page == RecordingPage::Timeline
+                && rythmo_zone.width > 0.0
+                && rythmo_zone.height > 0.0);
+        let recording_scene =
+            (self.active_workspace == WorkspaceId::Recording).then(|| self.recording_scene.clone());
         self.ensure_whats_new_thumbnail_texture(device, queue, renderer);
         // Update frame info for progress bar
         self.current_frame = current_frame;
@@ -1422,7 +1809,17 @@ impl Ui {
         );
 
         // Update drawing overlay texture if needed
-        self.update_drawing_overlay(device, queue, renderer, project, render_frame, fps);
+        if show_rythmo {
+            self.update_drawing_overlay(
+                device,
+                queue,
+                renderer,
+                project,
+                render_frame,
+                fps,
+                rythmo_zone,
+            );
+        }
 
         let mut color_picker_bg_quads: Vec<QuadInstance> = Vec::new();
         let mut base_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
@@ -1567,15 +1964,19 @@ impl Ui {
             waveform,
             waveform_offset_frames,
             waveform_is_instrumental,
+            rythmo_zone,
+            recording_scene.as_ref(),
         );
-        self.automation_editor.render(
-            &self.layout.video_preview,
-            &project.settings().automation,
-            project,
-            self.cursor_pos,
-            &mut quads,
-            &mut labels,
-        );
+        if self.active_workspace == WorkspaceId::Rythmo {
+            self.automation_editor.render(
+                &self.layout.video_preview,
+                &project.settings().automation,
+                project,
+                self.cursor_pos,
+                &mut quads,
+                &mut labels,
+            );
+        }
 
         // Rythmo lines
         let mut stretched_texts: Vec<StretchedText> = Vec::new();
@@ -1583,22 +1984,26 @@ impl Ui {
         let mut note_icons: Vec<IconInstance> = Vec::new();
         let mut actor_icon_draws: Vec<rythmo::VoiceActorIconDraw> = Vec::new();
         let note_uv = self.uv("note");
-        let cursor_info = rythmo::render_lines(
-            &self.layout.rythmo,
-            project,
-            render_index,
-            render_frame,
-            self.playing,
-            fps,
-            &self.rythmo_state,
-            &mut quads,
-            &mut syllable_quads,
-            &mut labels,
-            &mut stretched_texts,
-            &mut note_icons,
-            &mut actor_icon_draws,
-            note_uv,
-        );
+        let cursor_info = show_rythmo
+            .then(|| {
+                rythmo::render_lines(
+                    &rythmo_zone,
+                    project,
+                    render_index,
+                    render_frame,
+                    self.playing,
+                    fps,
+                    &self.rythmo_state,
+                    &mut quads,
+                    &mut syllable_quads,
+                    &mut labels,
+                    &mut stretched_texts,
+                    &mut note_icons,
+                    &mut actor_icon_draws,
+                    note_uv,
+                )
+            })
+            .flatten();
         icons.extend(note_icons);
         for draw in actor_icon_draws {
             if let Some(actor) = project.find_voice_actor(&draw.actor_name) {
@@ -1616,22 +2021,24 @@ impl Ui {
         }
 
         // Drawing overlay
-        if let Some(cache) = &self.drawing_overlay_cache {
-            let zone = &self.layout.rythmo;
-            base_textured.push((
-                IconInstance {
-                    rect: [zone.x, zone.y, zone.width, zone.height],
-                    uv_rect: [0.0, 0.0, 1.0, 1.0],
-                    tint: [1.0, 1.0, 1.0, 1.0],
-                },
-                &cache.bind_group,
-            ));
+        if show_rythmo {
+            if let Some(cache) = &self.drawing_overlay_cache {
+                let zone = &rythmo_zone;
+                base_textured.push((
+                    IconInstance {
+                        rect: [zone.x, zone.y, zone.width, zone.height],
+                        uv_rect: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0, 1.0],
+                    },
+                    &cache.bind_group,
+                ));
+            }
         }
 
         // Selection overlay (marquee + selected-strokes bbox & handles).
         // Drawn into overlay_quads so it composites above the drawing overlay.
-        {
-            let zone = &self.layout.rythmo;
+        if show_rythmo {
+            let zone = &rythmo_zone;
             rythmo::render_selection_overlay(
                 zone,
                 render_frame,
@@ -1642,8 +2049,11 @@ impl Ui {
         }
 
         // Eraser cursor ring (visible like the pencil preview)
-        if self.erasing && self.active_mode == Some(ToolMode::Draw) {
-            let zone = &self.layout.rythmo;
+        if self.active_workspace == WorkspaceId::Rythmo
+            && self.erasing
+            && self.active_mode == Some(ToolMode::Draw)
+        {
+            let zone = &rythmo_zone;
             let (cx, cy) = self.cursor_pos;
             if zone.contains(cx, cy) {
                 let brush_radius_frac = match self.brush_radius_index {
@@ -1671,17 +2081,19 @@ impl Ui {
 
         // Markers
         let mut liaison_icons: Vec<IconInstance> = Vec::new();
-        rythmo::render_markers(
-            &self.layout.rythmo,
-            project,
-            render_index,
-            render_frame,
-            &mut quads,
-            &mut labels,
-            &mut liaison_icons,
-            self.uv("liaison_left"),
-            self.uv("liaison_right"),
-        );
+        if show_rythmo {
+            rythmo::render_markers(
+                &rythmo_zone,
+                project,
+                render_index,
+                render_frame,
+                &mut quads,
+                &mut labels,
+                &mut liaison_icons,
+                self.uv("liaison_left"),
+                self.uv("liaison_right"),
+            );
+        }
         icons.extend(liaison_icons);
 
         // Prepare stretched text textures
@@ -1760,20 +2172,26 @@ impl Ui {
         }
 
         // Non-capturing widgets
-        for widget in self
-            .topbar_widgets
-            .iter()
-            .chain(self.toolbar_widgets.iter())
-        {
-            if !widget.captures_all() {
-                quads.extend(widget.render_quads());
-                icons.extend(widget.render_icons());
-                labels.extend(widget.labels());
+        if !self.recording_capture_active {
+            for widget in self
+                .topbar_widgets
+                .iter()
+                .chain(self.tab_widgets.iter())
+                .chain(self.toolbar_widgets.iter())
+            {
+                if !widget.captures_all() {
+                    quads.extend(widget.render_quads());
+                    icons.extend(widget.render_icons());
+                    labels.extend(widget.labels());
+                }
             }
         }
 
-        if let Some(widget) = self.focused_widget() {
-            let bounds = widget.bounds();
+        let focused_bounds = self.focused_widget().map(Widget::bounds).or_else(|| {
+            self.focused_recording_control()
+                .map(|control| control.bounds)
+        });
+        if let Some(bounds) = focused_bounds {
             overlay_quads.push(QuadInstance {
                 rect: [
                     bounds.x - 2.0,
@@ -1796,64 +2214,79 @@ impl Ui {
 
         // Capturing widgets → overlay (on top of video)
         // Autocomplete dropdown (on top of all lines)
-        rythmo::render_autocomplete(
-            &self.layout.rythmo,
-            project,
-            render_frame,
-            &self.rythmo_state,
-            &mut overlay_quads,
-            &mut overlay_labels,
-        );
+        if self.active_workspace == WorkspaceId::Rythmo {
+            rythmo::render_autocomplete(
+                &rythmo_zone,
+                project,
+                render_frame,
+                &self.rythmo_state,
+                &mut overlay_quads,
+                &mut overlay_labels,
+            );
+        }
 
         // Panels are true overlays: drawing them here keeps line textures,
         // actor icons and the drawing layer from ever bleeding into the panel.
-        if let Some(panel) = self.layout.properties {
-            self.side_panel
-                .render(panel, project, &mut overlay_quads, &mut overlay_labels);
-        }
-
-        self.side_panel
-            .render_menus(project, &mut modal_quads, &mut modal_labels);
-
-        // Capturing dropdowns belong above persistent overlays such as the
-        // side panel, with their text in the same semantic layer.
-        for widget in self
-            .topbar_widgets
-            .iter()
-            .chain(self.toolbar_widgets.iter())
-        {
-            if widget.captures_all() {
-                modal_quads.extend(widget.render_quads());
-                icons.extend(widget.render_icons());
-                modal_labels.extend(widget.labels());
+        if self.active_workspace == WorkspaceId::Rythmo {
+            if let Some(panel) = self.layout.properties {
+                self.side_panel
+                    .render(panel, project, &mut overlay_quads, &mut overlay_labels);
             }
         }
 
-        self.rythmo_state.color_picker.render(
-            &mut color_picker_bg_quads,
-            &mut extra_textured,
-            &mut color_picker_fg_quads,
-        );
-        self.side_panel.render_color_picker(
-            &mut color_picker_bg_quads,
-            &mut extra_textured,
-            &mut color_picker_fg_quads,
-        );
+        if self.active_workspace == WorkspaceId::Rythmo {
+            self.side_panel
+                .render_menus(project, &mut modal_quads, &mut modal_labels);
+        }
+
+        // Capturing dropdowns belong above persistent overlays such as the
+        // side panel, with their text in the same semantic layer.
+        if !self.recording_capture_active {
+            for widget in self
+                .topbar_widgets
+                .iter()
+                .chain(self.tab_widgets.iter())
+                .chain(self.toolbar_widgets.iter())
+            {
+                if widget.captures_all() {
+                    modal_quads.extend(widget.render_quads());
+                    icons.extend(widget.render_icons());
+                    modal_labels.extend(widget.labels());
+                }
+            }
+        }
+
+        if self.active_workspace == WorkspaceId::Rythmo {
+            self.rythmo_state.color_picker.render(
+                &mut color_picker_bg_quads,
+                &mut extra_textured,
+                &mut color_picker_fg_quads,
+            );
+            self.side_panel.render_color_picker(
+                &mut color_picker_bg_quads,
+                &mut extra_textured,
+                &mut color_picker_fg_quads,
+            );
+        }
 
         // Color picker quads → overlay
         overlay_quads.extend(color_picker_bg_quads);
 
         // Toolbar dropdown → overlay
-        self.render_toolbar_dropdown(&mut overlay_quads, &mut overlay_labels);
+        if self.active_workspace == WorkspaceId::Rythmo {
+            self.render_toolbar_dropdown(&mut overlay_quads, &mut overlay_labels);
+        }
 
-        rythmo::render_context_menu(
-            project,
-            self.screen_w,
-            self.screen_h,
-            &self.rythmo_state,
-            &mut overlay_quads,
-            &mut overlay_labels,
-        );
+        if self.active_workspace == WorkspaceId::Rythmo {
+            rythmo::render_context_menu(
+                project,
+                self.screen_w,
+                self.screen_h,
+                &self.rythmo_state,
+                &mut overlay_quads,
+                &mut overlay_labels,
+            );
+        }
 
         // Tooltip → overlay
         if let Some(tooltip) = &self.tooltip {
@@ -2316,6 +2749,147 @@ impl Ui {
         });
     }
 
+    fn append_recording_scene<'a>(
+        quads: &mut Vec<QuadInstance>,
+        labels: &mut Vec<LabelInfo<'a>>,
+        scene: &'a RecordingScene,
+    ) {
+        quads.extend(scene.quads.iter().copied());
+        labels.extend(scene.labels.iter().map(|label| LabelInfo {
+            text: &label.text,
+            bounds: label.bounds,
+            h_align: label.h_align,
+            v_align: label.v_align,
+            overflow: label.overflow,
+            padding: 0.0,
+            font_size_override: Some(label.font_size),
+            color_override: Some(label.color),
+            font_family_override: None,
+        }));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_rythmo_base(
+        &self,
+        quads: &mut Vec<QuadInstance>,
+        zone: &Rect,
+        project: &Project,
+        render_index: &ProjectRenderIndex,
+        render_frame: f64,
+        fps: f64,
+        waveform: &[f32],
+        waveform_offset_frames: i64,
+        waveform_is_instrumental: bool,
+    ) {
+        quads.push(QuadInstance {
+            rect: [zone.x, zone.y, zone.width, zone.height],
+            color: [0.02, 0.02, 0.03, 1.0],
+            color_bottom: [0.02, 0.02, 0.03, 1.0],
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+        let ppf = crate::constants::PIXELS_PER_FRAME * crate::config::scroll_speed();
+        let visible_frames = (zone.width / ppf.max(0.001)) as i64 + 4;
+        let scene_center = render_frame.clamp(i64::MIN as f64, i64::MAX as f64) as i64;
+        let scene = RythmoScene::build(
+            project,
+            render_index,
+            SceneOptions {
+                frame_window: FrameWindow {
+                    first: scene_center.saturating_sub(visible_frames / 2 + 2),
+                    last: scene_center.saturating_add(visible_frames / 2 + 2),
+                },
+                current_frame: render_frame,
+                source_fps: fps,
+                ..SceneOptions::default()
+            },
+        );
+        quads.extend(rythmo::render_rythmo_base(
+            zone,
+            project,
+            render_frame,
+            waveform,
+            waveform_offset_frames,
+            waveform_is_instrumental,
+            self.playing,
+            fps,
+            &self.rythmo_state,
+            &scene,
+        ));
+    }
+
+    fn push_toolbar_zone(&self, quads: &mut Vec<QuadInstance>, toolbar: Rect, editable: bool) {
+        quads.push(QuadInstance {
+            rect: [toolbar.x, toolbar.y, toolbar.width, toolbar.height],
+            color: TOOLBAR_BG,
+            color_bottom: TOOLBAR_BG,
+            border_color: TOOLBAR_BORDER,
+            border_width: 0.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+        if self.total_frames <= 0 {
+            return;
+        }
+        let pb = shell::progress_bar_rect(&toolbar, editable);
+        let progress = (self.current_frame as f32 / self.total_frames as f32).clamp(0.0, 1.0);
+        quads.push(QuadInstance {
+            rect: [pb.x, pb.y, pb.width, pb.height],
+            color: [0.10, 0.10, 0.13, 1.0],
+            color_bottom: [0.10, 0.10, 0.13, 1.0],
+            border_color: [0.25, 0.25, 0.30, 0.5],
+            border_width: 0.5,
+            border_radius: 3.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+        let fill_w = (pb.width - 2.0) * progress;
+        if fill_w > 1.0 {
+            quads.push(QuadInstance {
+                rect: [pb.x + 1.0, pb.y + 1.0, fill_w, pb.height - 2.0],
+                color: [0.35, 0.45, 0.85, 0.9],
+                color_bottom: [0.25, 0.35, 0.70, 0.9],
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 2.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
+        }
+        let knob_r = 5.0;
+        let knob_x = pb.x + fill_w + 1.0;
+        let knob_y = pb.y + pb.height / 2.0 - knob_r;
+        quads.push(QuadInstance {
+            rect: [knob_x - knob_r, knob_y, knob_r * 2.0, knob_r * 2.0],
+            color: [0.85, 0.85, 0.92, 1.0],
+            color_bottom: [0.70, 0.70, 0.78, 1.0],
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            border_radius: knob_r,
+            shadow_offset: [0.0, 1.0],
+            shadow_color: [0.0, 0.0, 0.0, 0.3],
+            shadow_blur: 3.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+    }
+
     fn render_zones<'a>(
         &'a self,
         quads: &mut Vec<QuadInstance>,
@@ -2327,8 +2901,28 @@ impl Ui {
         waveform: &[f32],
         waveform_offset_frames: i64,
         waveform_is_instrumental: bool,
+        rythmo_zone: Rect,
+        recording_scene: Option<&'a RecordingScene>,
     ) {
         let l = &self.layout;
+
+        if self.active_workspace == WorkspaceId::Recording && self.recording_capture_active {
+            if let Some(scene) = recording_scene {
+                Self::append_recording_scene(quads, labels, scene);
+            }
+            self.push_rythmo_base(
+                quads,
+                &rythmo_zone,
+                project,
+                render_index,
+                render_frame,
+                fps,
+                waveform,
+                waveform_offset_frames,
+                waveform_is_instrumental,
+            );
+            return;
+        }
 
         // Topbar
         quads.push(QuadInstance {
@@ -2341,6 +2935,22 @@ impl Ui {
             shadow_offset: [0.0, 1.0],
             shadow_color: [0.0, 0.0, 0.0, 0.3],
             shadow_blur: 4.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+
+        // Workspace tabs are part of the shared shell and always span the
+        // complete window, independently of optional side panels.
+        quads.push(QuadInstance {
+            rect: [l.tabs.x, l.tabs.y, l.tabs.width, l.tabs.height],
+            color: [0.09, 0.09, 0.11, 1.0],
+            color_bottom: [0.09, 0.09, 0.11, 1.0],
+            border_color: [0.18, 0.18, 0.22, 0.8],
+            border_width: 0.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0, 1.0],
+            shadow_color: [0.0, 0.0, 0.0, 0.25],
+            shadow_blur: 2.0,
             rotation: 0.0,
             _padding: [0.0; 2],
         });
@@ -2448,6 +3058,29 @@ impl Ui {
             }
         }
 
+        if self.active_workspace == WorkspaceId::Recording {
+            if let Some(scene) = recording_scene {
+                Self::append_recording_scene(quads, labels, scene);
+            }
+            if let Some(toolbar) = self.recording_layout.toolbar {
+                self.push_toolbar_zone(quads, toolbar, false);
+            }
+            if self.recording_ui.page == RecordingPage::Timeline {
+                self.push_rythmo_base(
+                    quads,
+                    &rythmo_zone,
+                    project,
+                    render_index,
+                    render_frame,
+                    fps,
+                    waveform,
+                    waveform_offset_frames,
+                    waveform_is_instrumental,
+                );
+            }
+            return;
+        }
+
         // Video preview
         quads.push(QuadInstance {
             rect: [
@@ -2468,117 +3101,19 @@ impl Ui {
             _padding: [0.0; 2],
         });
 
-        // Toolbar
-        quads.push(QuadInstance {
-            rect: [l.toolbar.x, l.toolbar.y, l.toolbar.width, l.toolbar.height],
-            color: TOOLBAR_BG,
-            color_bottom: TOOLBAR_BG,
-            border_color: TOOLBAR_BORDER,
-            border_width: 0.0,
-            border_radius: 0.0,
-            shadow_offset: [0.0; 2],
-            shadow_color: [0.0; 4],
-            shadow_blur: 0.0,
-            rotation: 0.0,
-            _padding: [0.0; 2],
-        });
+        self.push_toolbar_zone(quads, l.toolbar, true);
 
-        // Progress bar (in toolbar)
-        if self.total_frames > 0 {
-            let pb = shell::progress_bar_rect(&self.layout);
-            let progress = (self.current_frame as f32 / self.total_frames as f32).clamp(0.0, 1.0);
-            // Track
-            quads.push(QuadInstance {
-                rect: [pb.x, pb.y, pb.width, pb.height],
-                color: [0.10, 0.10, 0.13, 1.0],
-                color_bottom: [0.10, 0.10, 0.13, 1.0],
-                border_color: [0.25, 0.25, 0.30, 0.5],
-                border_width: 0.5,
-                border_radius: 3.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-            // Fill
-            let fill_w = (pb.width - 2.0) * progress;
-            if fill_w > 1.0 {
-                quads.push(QuadInstance {
-                    rect: [pb.x + 1.0, pb.y + 1.0, fill_w, pb.height - 2.0],
-                    color: [0.35, 0.45, 0.85, 0.9],
-                    color_bottom: [0.25, 0.35, 0.70, 0.9],
-                    border_color: [0.0; 4],
-                    border_width: 0.0,
-                    border_radius: 2.0,
-                    shadow_offset: [0.0; 2],
-                    shadow_color: [0.0; 4],
-                    shadow_blur: 0.0,
-                    rotation: 0.0,
-                    _padding: [0.0; 2],
-                });
-            }
-            // Knob
-            let knob_r = 5.0;
-            let knob_x = pb.x + fill_w + 1.0;
-            let knob_y = pb.y + pb.height / 2.0 - knob_r;
-            quads.push(QuadInstance {
-                rect: [knob_x - knob_r, knob_y, knob_r * 2.0, knob_r * 2.0],
-                color: [0.85, 0.85, 0.92, 1.0],
-                color_bottom: [0.70, 0.70, 0.78, 1.0],
-                border_color: [0.0; 4],
-                border_width: 0.0,
-                border_radius: knob_r,
-                shadow_offset: [0.0, 1.0],
-                shadow_color: [0.0, 0.0, 0.0, 0.3],
-                shadow_blur: 3.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-        }
-
-        // Bande rythmo — fond noir + perforations + playhead
-        quads.push(QuadInstance {
-            rect: [l.rythmo.x, l.rythmo.y, l.rythmo.width, l.rythmo.height],
-            color: [0.02, 0.02, 0.03, 1.0],
-            color_bottom: [0.02, 0.02, 0.03, 1.0],
-            border_color: [0.0; 4],
-            border_width: 0.0,
-            border_radius: 0.0,
-            shadow_offset: [0.0; 2],
-            shadow_color: [0.0; 4],
-            shadow_blur: 0.0,
-            rotation: 0.0,
-            _padding: [0.0; 2],
-        });
-        let ppf = crate::constants::PIXELS_PER_FRAME * crate::config::scroll_speed();
-        let visible_frames = (l.rythmo.width / ppf.max(0.001)) as i64 + 4;
-        let scene_center = render_frame.clamp(i64::MIN as f64, i64::MAX as f64) as i64;
-        let scene = RythmoScene::build(
-            project,
-            render_index,
-            SceneOptions {
-                frame_window: FrameWindow {
-                    first: scene_center.saturating_sub(visible_frames / 2 + 2),
-                    last: scene_center.saturating_add(visible_frames / 2 + 2),
-                },
-                current_frame: render_frame,
-                source_fps: fps,
-                ..SceneOptions::default()
-            },
-        );
-        quads.extend(rythmo::render_rythmo_base(
+        self.push_rythmo_base(
+            quads,
             &l.rythmo,
             project,
+            render_index,
             render_frame,
+            fps,
             waveform,
             waveform_offset_frames,
             waveform_is_instrumental,
-            self.playing,
-            fps,
-            &self.rythmo_state,
-            &scene,
-        ));
+        );
 
         // Resize handles between video/toolbar and toolbar/rythmo.
         let (hover_video, hover_rythmo) = (
@@ -2622,131 +3157,6 @@ impl Ui {
         }
     }
 
-    /// Studio Mode render: black BG + video + export-style rythmo band only.
-    pub fn render_studio(
-        &mut self,
-        renderer: &mut UiRenderer,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        screen_width: u32,
-        screen_height: u32,
-        ui_scale: f32,
-        video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
-        project: &Project,
-        render_index: &ProjectRenderIndex,
-        render_frame: f64,
-        fps: f64,
-    ) {
-        let mut quads: Vec<QuadInstance> = Vec::new();
-        let mut labels: Vec<LabelInfo> = Vec::new();
-        let mut stretched_texts: Vec<StretchedText> = Vec::new();
-        let mut actor_icon_draws: Vec<rythmo::VoiceActorIconDraw> = Vec::new();
-        self.actor_icon_cache.sync(
-            project,
-            device,
-            queue,
-            renderer.texture_bind_group_layout(),
-            renderer.texture_sampler(),
-        );
-
-        // Compute studio rythmo zone: full width, bottom portion
-        let rythmo_h = rythmo::studio_br_height(project, self.screen_w);
-        let rythmo_zone = Rect {
-            x: 0.0,
-            y: self.screen_h - rythmo_h,
-            width: self.screen_w,
-            height: rythmo_h,
-        };
-
-        // Black background for rythmo zone
-        let bg = [0.02, 0.02, 0.03, 1.0];
-        quads.push(QuadInstance {
-            rect: [
-                rythmo_zone.x,
-                rythmo_zone.y,
-                rythmo_zone.width,
-                rythmo_zone.height,
-            ],
-            color: bg,
-            color_bottom: bg,
-            border_color: [0.0; 4],
-            border_width: 0.0,
-            border_radius: 0.0,
-            shadow_offset: [0.0; 2],
-            shadow_color: [0.0; 4],
-            shadow_blur: 0.0,
-            rotation: 0.0,
-            _padding: [0.0; 2],
-        });
-
-        // Export-style rythmo: ticks, playhead, lines, markers — NO waveform
-        rythmo::render_studio_rythmo(
-            &rythmo_zone,
-            project,
-            render_index,
-            render_frame,
-            fps,
-            &self.rythmo_state,
-            &mut quads,
-            &mut labels,
-            &mut stretched_texts,
-            &mut actor_icon_draws,
-        );
-
-        // Prepare stretched text textures
-        let stretched_quads = renderer.prepare_stretched_texts(
-            device,
-            queue,
-            ui_scale,
-            &stretched_texts,
-            self.playing,
-        );
-        let mut base_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
-        for draw in actor_icon_draws {
-            if let Some(actor) = project.find_voice_actor(&draw.actor_name) {
-                if let Some(bind_group) = self.actor_icon_cache.bind_group_for(actor) {
-                    base_textured.push((
-                        IconInstance {
-                            rect: [draw.rect.x, draw.rect.y, draw.rect.width, draw.rect.height],
-                            uv_rect: [0.0, 0.0, 1.0, 1.0],
-                            tint: [1.0, 1.0, 1.0, 1.0],
-                        },
-                        bind_group,
-                    ));
-                }
-            }
-        }
-
-        // Render through existing UiRenderer
-        renderer.render(
-            device,
-            queue,
-            encoder,
-            view,
-            screen_width,
-            screen_height,
-            ui_scale,
-            &quads, // base layer
-            &[],    // no overlay quads
-            &[],    // no icons (markers use quads)
-            &labels,
-            &[], // no overlay labels
-            video_quad,
-            &stretched_quads,
-            &[], // post_stretched_quads
-            &base_textured,
-            &[], // extra_textured
-            &[], // post_texture_quads
-            &[], // modal_textured
-            &[], // modal_quads
-            &[], // modal_labels
-            &[], // modal_overlay_quads
-            &[], // modal_overlay_labels
-        );
-    }
-
     fn update_drawing_overlay(
         &mut self,
         device: &wgpu::Device,
@@ -2755,10 +3165,11 @@ impl Ui {
         project: &Project,
         current_frame: f64,
         _fps: f64,
+        zone: Rect,
     ) {
         use crate::rythmo_drawing::{rasterize_window, visible_frame_window, DrawingStroke};
 
-        let zone = &self.layout.rythmo;
+        let zone = &zone;
         let zw = zone.width.max(1.0) as u32;
         let zh = zone.height.max(1.0) as u32;
         let cf = current_frame;

@@ -6,7 +6,7 @@
 
 pub use crate::application::command::{ToolbarDropdown, UiAction};
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -160,6 +160,9 @@ pub trait Widget {
     }
     fn accessible_role(&self) -> super::focus::AccessibleRole {
         super::focus::AccessibleRole::Button
+    }
+    fn accessible_selected(&self) -> Option<bool> {
+        None
     }
     /// Open a specific submenu from a semantic shortcut.
     fn open_submenu(&mut self, _trigger_index: usize) -> bool {

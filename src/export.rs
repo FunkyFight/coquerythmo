@@ -27,7 +27,7 @@ pub trait ProjectImporter {
 
 // -- Serializable data structures --
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProjectData {
     #[serde(default = "default_fps")]
     pub source_fps: f64,
@@ -48,7 +48,7 @@ pub struct ProjectData {
     pub active_language_id: Option<LanguageId>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LanguageProjectData {
     pub id: LanguageId,
     pub name: String,
@@ -61,8 +61,10 @@ fn default_fps() -> f64 {
     24.0
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LineData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
     pub start_frame: i64,
     pub duration_frames: i64,
     pub y_slot: f32,
@@ -79,19 +81,19 @@ pub struct LineData {
     pub note: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MarkerData {
     pub kind: String,
     pub frame: i64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CharacterData {
     pub name: String,
     pub color: [f32; 4],
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VoiceActorData {
     pub name: String,
     #[serde(default)]
@@ -100,13 +102,13 @@ pub struct VoiceActorData {
     pub icon_png_base64: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct DrawingData {
     #[serde(default)]
     pub strokes: Vec<StrokeData>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct StrokeData {
     pub id: u64,
     pub points: Vec<(f64, f32)>,
@@ -139,6 +141,7 @@ impl ProjectData {
             lines: project
                 .lines()
                 .map(|l| LineData {
+                    id: Some(l.id),
                     start_frame: l.start_frame,
                     duration_frames: l.duration_frames,
                     y_slot: l.y_slot,
@@ -238,6 +241,10 @@ impl ProjectData {
     }
 
     pub fn apply_to_project(&self, project: &mut Project, target_fps: f64) {
+        if let Err(error) = self.validate_line_ids() {
+            log::error!("Rejected project data with invalid line identifiers: {error}");
+            return;
+        }
         if self.languages.is_empty() {
             if self.apply_single_to_project(project, target_fps) {
                 project.retain_active_language_only();
@@ -293,9 +300,66 @@ impl ProjectData {
         }
     }
 
+    /// Reject duplicate persisted line identifiers before mutating a project.
+    /// Legacy files are allowed to omit identifiers; fresh identifiers are
+    /// generated for those lines while loading.
+    pub fn validate_line_ids(&self) -> Result<(), String> {
+        fn validate_band(lines: &[LineData], label: &str) -> Result<(), String> {
+            let mut seen = std::collections::HashSet::new();
+            for line in lines {
+                let Some(id) = line.id else {
+                    continue;
+                };
+                if id > crate::constants::JS_MAX_SAFE_INTEGER {
+                    return Err(format!(
+                        "line id {id} in {label} exceeds the JSON-safe range"
+                    ));
+                }
+                if !seen.insert(id) {
+                    return Err(format!("duplicate line id {id} in {label}"));
+                }
+            }
+            Ok(())
+        }
+
+        validate_band(&self.lines, "active project")?;
+        for language in &self.languages {
+            validate_band(
+                &language.project.lines,
+                &format!("language {}", language.id),
+            )?;
+            language.project.validate_line_ids()?;
+        }
+        Ok(())
+    }
+
+    /// Return whether every line has a stable persisted identifier. Transaction
+    /// checkpoints require this stronger guarantee than legacy project files.
+    pub fn has_stable_line_ids(&self) -> bool {
+        self.lines.iter().all(|line| line.id.is_some())
+            && self
+                .languages
+                .iter()
+                .all(|language| language.project.has_stable_line_ids())
+    }
+
+    pub fn try_apply_to_project(
+        &self,
+        project: &mut Project,
+        target_fps: f64,
+    ) -> Result<(), String> {
+        self.validate_line_ids()?;
+        self.apply_to_project(project, target_fps);
+        Ok(())
+    }
+
     /// Replace only the currently selected language band. Other languages and
     /// every per-language audio/configuration remain untouched.
     pub fn apply_to_active_language(&self, project: &mut Project, target_fps: f64) -> bool {
+        if let Err(error) = self.validate_line_ids() {
+            log::error!("Rejected project data with invalid line identifiers: {error}");
+            return false;
+        }
         let settings = project.settings().clone();
         if !self.apply_single_to_project(project, target_fps) {
             return false;
@@ -370,25 +434,26 @@ impl ProjectData {
                 );
                 continue;
             }
-            let line_id = project.add_line_full_with_voice_actors(
-                adjusted_start,
-                adjusted_duration,
-                l.y_slot,
-                l.text.clone(),
-                l.character_name.clone(),
-                l.character_color,
-                l.voice_actor_names.clone(),
-            );
-            // Apply note after creation
-            if !l.note.is_empty() {
-                if let Some(line) = project.get_line_mut(line_id) {
-                    line.note = l.note.clone();
-                }
-            }
-            if let Some(line) = project.get_line_mut(line_id) {
-                line.karaoke = l.karaoke;
-                line.syllable_ratios = l.syllable_ratios.clone();
-            }
+            let (id, voice_actor_names) = match l.id {
+                Some(id) => (id, l.voice_actor_names.clone()),
+                None => (
+                    project.generate_line_id(),
+                    Project::normalized_voice_actor_names(l.voice_actor_names.clone()),
+                ),
+            };
+            project.insert_line(crate::rythmo_line::RythmoLine {
+                id,
+                start_frame: adjusted_start,
+                duration_frames: adjusted_duration,
+                y_slot: l.y_slot,
+                text: l.text.clone(),
+                character_name: l.character_name.clone(),
+                character_color: l.character_color,
+                voice_actor_names,
+                syllable_ratios: l.syllable_ratios.clone(),
+                karaoke: l.karaoke,
+                note: l.note.clone(),
+            });
         }
 
         for m in &self.markers {
@@ -529,6 +594,7 @@ fn push_srt_block(block_lines: &[&str], fps: f64, lines: &mut Vec<LineData>) -> 
     }
 
     lines.push(LineData {
+        id: None,
         start_frame,
         duration_frames: (end_frame - start_frame).max(1),
         y_slot: Y_SLOTS[1],
@@ -733,6 +799,7 @@ pub fn import_ass(path: &Path, fps: f64) -> Result<ProjectData, String> {
             .to_string();
         let character_color = styles.get(style).copied().unwrap_or([1.0; 4]);
         lines.push(LineData {
+            id: None,
             start_frame,
             duration_frames: (end_frame - start_frame).max(1),
             y_slot: Y_SLOTS[1],
@@ -1011,6 +1078,7 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
                             };
 
                             lines.push(LineData {
+                                id: None,
                                 start_frame,
                                 duration_frames: duration,
                                 y_slot,
@@ -1096,7 +1164,7 @@ mod tests {
     #[test]
     fn test_roundtrip_json() {
         let mut project = Project::new();
-        project.add_line_full(
+        let line_id = project.add_line_full(
             0,
             48,
             0.5,
@@ -1115,8 +1183,54 @@ mod tests {
 
         assert_eq!(restored.lines.len(), 1);
         assert_eq!(restored.lines[0].text, "hello");
+        assert_eq!(restored.lines[0].id, Some(line_id));
         assert_eq!(restored.markers.len(), 1);
         assert_eq!(restored.source_fps, 24.0);
+    }
+
+    #[test]
+    fn persisted_line_ids_are_restored_and_duplicates_are_rejected() {
+        let mut source = Project::new();
+        let line_id = source.add_line_full(0, 24, 0.5, "Stable".into(), "Alice".into(), [1.0; 4]);
+        let data = ProjectData::from_project(&source, 24.0);
+        let mut restored = Project::new();
+        data.try_apply_to_project(&mut restored, 24.0).unwrap();
+        assert_eq!(restored.lines().next().unwrap().id, line_id);
+
+        let mut duplicate = data;
+        let duplicate_line = duplicate.languages[0].project.lines[0].clone();
+        duplicate.languages[0].project.lines.push(duplicate_line);
+        let mut untouched = Project::new();
+        let sentinel = untouched.add_line(0, 12, 0.25);
+        assert!(duplicate
+            .try_apply_to_project(&mut untouched, 24.0)
+            .is_err());
+        assert!(untouched.get_line(sentinel).is_some());
+        assert_eq!(untouched.line_count(), 1);
+    }
+
+    #[test]
+    fn legacy_lines_without_ids_receive_distinct_json_safe_ids() {
+        let mut source = Project::new();
+        source.add_line_full(0, 24, 0.25, "One".into(), "Alice".into(), [1.0; 4]);
+        source.add_line_full(24, 24, 0.75, "Two".into(), "Bob".into(), [1.0; 4]);
+        let mut legacy = ProjectData::from_project(&source, 24.0);
+        for line in &mut legacy.lines {
+            line.id = None;
+        }
+        for language in &mut legacy.languages {
+            for line in &mut language.project.lines {
+                line.id = None;
+            }
+        }
+
+        let mut restored = Project::new();
+        legacy.try_apply_to_project(&mut restored, 24.0).unwrap();
+        let ids: std::collections::HashSet<u64> = restored.lines().map(|line| line.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids
+            .iter()
+            .all(|id| *id <= crate::constants::JS_MAX_SAFE_INTEGER));
     }
 
     #[test]
@@ -1217,6 +1331,7 @@ mod tests {
         let data = ProjectData {
             source_fps: 24.0,
             lines: vec![LineData {
+                id: None,
                 start_frame: 24,
                 duration_frames: 48,
                 y_slot: 0.5,
@@ -1253,6 +1368,7 @@ mod tests {
             source_fps: 24.0,
             lines: vec![
                 LineData {
+                    id: None,
                     start_frame: 90,
                     duration_frames: 20,
                     y_slot: 0.5,
@@ -1265,6 +1381,7 @@ mod tests {
                     note: String::new(),
                 },
                 LineData {
+                    id: None,
                     start_frame: 100,
                     duration_frames: 10,
                     y_slot: 0.5,
@@ -1305,6 +1422,7 @@ mod tests {
         let data = ProjectData {
             source_fps: 24.0,
             lines: vec![LineData {
+                id: None,
                 start_frame: 0,
                 duration_frames: 10,
                 y_slot: 0.25,
@@ -1349,6 +1467,7 @@ mod tests {
         let imported = ProjectData {
             source_fps: 24.0,
             lines: vec![LineData {
+                id: None,
                 start_frame: 48,
                 duration_frames: 24,
                 y_slot: 0.5,
@@ -1396,6 +1515,7 @@ mod tests {
             source_fps: 24.0,
             lines: vec![
                 LineData {
+                    id: None,
                     start_frame: 0,
                     duration_frames: 24,
                     y_slot: 0.25,
@@ -1408,6 +1528,7 @@ mod tests {
                     note: String::new(),
                 },
                 LineData {
+                    id: None,
                     start_frame: 24,
                     duration_frames: 24,
                     y_slot: 0.5,

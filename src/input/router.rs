@@ -76,7 +76,7 @@ impl<C> ShortcutRouter<C> {
     }
 }
 
-/// Initial bindings for the existing global and studio shortcuts.
+/// Initial bindings for the existing global and workspace shortcuts.
 ///
 /// The event loop supplies the active context stack; this table only declares
 /// the semantic command and its repeat policy.
@@ -89,11 +89,6 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
     let ctrl_shift = Modifiers {
         ctrl: true,
         shift: true,
-        ..Modifiers::NONE
-    };
-    let ctrl_alt = Modifiers {
-        ctrl: true,
-        alt: true,
         ..Modifiers::NONE
     };
     let shift = Modifiers {
@@ -187,34 +182,6 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         UiAction::Text(TextCommand::SelectRight),
     );
 
-    router.bind(
-        InputContext::VideoLoaded,
-        KeyCode::F5,
-        Modifiers::NONE,
-        RepeatPolicy::PressAndRepeat,
-        UiAction::ShowStudioWarning,
-    );
-    router.bind(
-        InputContext::VideoLoaded,
-        KeyCode::Character('s'),
-        ctrl_alt,
-        RepeatPolicy::PressOnly,
-        UiAction::ShowStudioWarning,
-    );
-    router.bind(
-        InputContext::Studio,
-        KeyCode::Escape,
-        Modifiers::NONE,
-        RepeatPolicy::PressAndRepeat,
-        UiAction::ExitStudioMode,
-    );
-    router.bind(
-        InputContext::Studio,
-        KeyCode::Space,
-        Modifiers::NONE,
-        RepeatPolicy::PressAndRepeat,
-        UiAction::TogglePlayPause,
-    );
     router.bind(
         InputContext::Workspace,
         KeyCode::Space,
@@ -351,6 +318,20 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         ctrl,
         RepeatPolicy::PressAndRepeat,
         UiAction::NextFrame,
+    );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::ArrowLeft,
+        ctrl_shift,
+        RepeatPolicy::PressAndRepeat,
+        UiAction::NudgeSelectedLines { delta_frames: -1 },
+    );
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::ArrowRight,
+        ctrl_shift,
+        RepeatPolicy::PressAndRepeat,
+        UiAction::NudgeSelectedLines { delta_frames: 1 },
     );
     router.bind(
         InputContext::Workspace,
@@ -639,7 +620,7 @@ mod tests {
             KeyCode::F5,
             Modifiers::NONE,
             RepeatPolicy::PressOnly,
-            "studio-warning",
+            "one-shot",
         );
         let contexts = InputContextStack::new([InputContext::Global]);
         assert!(router
@@ -652,7 +633,7 @@ mod tests {
         let router = existing_shortcuts();
         let global = InputContextStack::new([InputContext::Global]);
         let workspace = InputContextStack::new([InputContext::Workspace, InputContext::Global]);
-        let studio = InputContextStack::new([InputContext::Studio]);
+        let recording = InputContextStack::new([InputContext::Recording, InputContext::Global]);
 
         let ctrl = Modifiers {
             ctrl: true,
@@ -669,17 +650,12 @@ mod tests {
 
         assert_eq!(resolve(KeyCode::F5, Modifiers::NONE, &global, false), None);
         assert_eq!(
-            resolve(
-                KeyCode::F5,
-                Modifiers::NONE,
-                &InputContextStack::new([InputContext::VideoLoaded]),
-                false
-            ),
-            Some(&UiAction::ShowStudioWarning)
+            resolve(KeyCode::F5, Modifiers::NONE, &recording, false),
+            None
         );
         assert_eq!(
-            resolve(KeyCode::Escape, Modifiers::NONE, &studio, false),
-            Some(&UiAction::ExitStudioMode)
+            resolve(KeyCode::Space, Modifiers::NONE, &recording, false),
+            None
         );
         assert_eq!(
             resolve(KeyCode::Space, Modifiers::NONE, &workspace, false),
@@ -795,7 +771,6 @@ mod tests {
         let global = InputContextStack::new([InputContext::Global]);
         let workspace = InputContextStack::new([InputContext::Workspace, InputContext::Global]);
         let accessibility = InputContextStack::new([InputContext::Accessibility]);
-        let video_loaded = InputContextStack::new([InputContext::VideoLoaded]);
         let ctrl = Modifiers {
             ctrl: true,
             ..Modifiers::NONE
@@ -807,11 +782,6 @@ mod tests {
         let ctrl_shift = Modifiers {
             ctrl: true,
             shift: true,
-            ..Modifiers::NONE
-        };
-        let ctrl_alt = Modifiers {
-            ctrl: true,
-            alt: true,
             ..Modifiers::NONE
         };
 
@@ -852,12 +822,6 @@ mod tests {
                 ctrl,
                 &global,
                 UiAction::OpenProjectSettings,
-            ),
-            (
-                KeyCode::Character('s'),
-                ctrl_alt,
-                &video_loaded,
-                UiAction::ShowStudioWarning,
             ),
             (
                 KeyCode::Character('n'),

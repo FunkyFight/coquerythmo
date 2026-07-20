@@ -8,8 +8,9 @@ use crate::project::{Character, LineCharacterNameChange, Project};
 use crate::rythmo_drawing::DrawingStroke;
 use crate::rythmo_line::{RythmoLine, RythmoMarker};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LineMove {
     pub line_id: u64,
     pub old_start: i64,
@@ -19,7 +20,8 @@ pub struct LineMove {
 }
 
 /// Each command stores before/after state for reversibility.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
     CreateLine {
         snapshot: RythmoLine,

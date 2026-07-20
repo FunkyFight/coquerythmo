@@ -267,18 +267,6 @@ pub(crate) fn collect_track_usage(project: &Project) -> (Vec<bool>, Vec<bool>) {
     (used_tracks, karaoke_tracks)
 }
 
-pub(crate) fn track_indices_from_usage(used_tracks: &[bool]) -> Vec<usize> {
-    let mut tracks: Vec<usize> = used_tracks
-        .iter()
-        .enumerate()
-        .filter_map(|(track_index, used)| used.then_some(track_index))
-        .collect();
-    if tracks.is_empty() {
-        tracks.push(0);
-    }
-    tracks
-}
-
 pub(crate) fn build_track_layouts_from_karaoke_flags(
     track_indices: &[usize],
     karaoke_tracks: &[bool],

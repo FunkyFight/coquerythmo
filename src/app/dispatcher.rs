@@ -143,7 +143,6 @@ impl CommandDispatcher {
             UiAction::OpenRenameCharacterModal => {
                 Some(crate::i18n::t("rename_character_modal.title"))
             }
-            UiAction::ShowStudioWarning => Some(crate::i18n::t("studio_warning.title")),
             UiAction::OpenLinesPanel => Some(crate::i18n::t("panel.lines.title")),
             UiAction::OpenRolesPanel => Some(crate::i18n::t("panel.roles.title")),
             _ => None,
@@ -163,7 +162,6 @@ impl CommandDispatcher {
             UiAction::OpenProjectSettings => state.project_settings_modal_focus_label(),
             UiAction::OpenExportModal => state.export_modal_focus_label(),
             UiAction::OpenRenameCharacterModal => state.rename_character_modal_focus_label(),
-            UiAction::ShowStudioWarning => state.studio_warning_modal_focus_label(),
             UiAction::OpenLinesPanel | UiAction::OpenRolesPanel => Some(
                 state
                     .ui_shell
@@ -215,6 +213,14 @@ impl CommandDispatcher {
         elwt: &EventLoopWindowTarget<AppEvent>,
         announce_action: bool,
     ) -> bool {
+        if state.active_workspace() == crate::application::workspace_service::WorkspaceId::Recording
+            && action.mutates_rythmo_project()
+        {
+            state.announce_accessibility(crate::accessibility::AccessibilityEvent::Error {
+                message: crate::i18n::t("accessibility.rythmo_read_only").to_string(),
+            });
+            return false;
+        }
         if announce_action {
             if let Some(event) = crate::accessibility::event_for_action(&action) {
                 if state.is_ctrl_held() {
@@ -232,6 +238,23 @@ impl CommandDispatcher {
                     state.announce_accessibility(event);
                 }
             }
+            UiAction::ActivateWorkspace(workspace) => state.activate_workspace(workspace),
+            UiAction::RecordingChooseSolo => state.recording_choose_solo(),
+            UiAction::RecordingChooseOnline => state.recording_choose_online(),
+            UiAction::RecordingSetTool(tool) => state.recording_set_tool(tool),
+            UiAction::RecordingToggleTrackMute(track_id) => {
+                state.recording_toggle_track_mute(track_id)
+            }
+            UiAction::RecordingToggleTrackSolo(track_id) => {
+                state.recording_toggle_track_solo(track_id)
+            }
+            UiAction::RecordingArmTrack(track_id) => state.recording_arm_track(track_id),
+            UiAction::RecordingSelectClip { clip_id, additive } => {
+                state.recording_select_clip(clip_id, additive)
+            }
+            UiAction::RecordingSelectAsset(asset_id) => state.recording_select_asset(asset_id),
+            UiAction::RecordingStartCapture => state.recording_start_capture(),
+            UiAction::RecordingStopCapture => state.recording_stop_capture(),
             UiAction::CloseApp => {
                 if state.is_project_save_in_progress() {
                     state.show_toast(i18n::t("toast.close_blocked_saving"), 5.0);
@@ -242,7 +265,6 @@ impl CommandDispatcher {
             UiAction::CloseSecondaryDisplay => state.close_secondary_display(),
             UiAction::Undo => state.undo(),
             UiAction::Redo => state.redo(),
-            UiAction::ExitStudioMode => state.exit_studio_mode(),
             UiAction::AddVideo => {
                 let filters = open_dialog_filters("Video", &["mp4", "mov", "avi", "mkv", "webm"]);
                 open_file_picker(
@@ -968,6 +990,22 @@ impl CommandDispatcher {
                 username,
                 room_code,
             } => {
+                let Some(project_huuid) = state
+                    .project_session
+                    .huuid
+                    .as_ref()
+                    .filter(|_| {
+                        state.project_session.project_path.is_some() && !state.project_session.dirty
+                    })
+                    .map(ToString::to_string)
+                else {
+                    let message = i18n::t("toast.network_requires_saved_project");
+                    state.show_toast(message, 6.0);
+                    state.announce_accessibility(crate::accessibility::AccessibilityEvent::Error {
+                        message: message.to_string(),
+                    });
+                    return false;
+                };
                 // Save last used connection settings
                 {
                     let mut cfg = config::get().clone();
@@ -978,9 +1016,16 @@ impl CommandDispatcher {
                     cfg.save();
                 }
                 let first_packet = if let Some(code) = room_code {
-                    packet::Packet::JoinRoom { code, username }
+                    packet::Packet::JoinRoom {
+                        code,
+                        username,
+                        project_huuid,
+                    }
                 } else {
-                    packet::Packet::CreateRoom { username }
+                    packet::Packet::CreateRoom {
+                        username,
+                        project_huuid,
+                    }
                 };
                 state.begin_network_connect();
                 state
@@ -1193,12 +1238,6 @@ impl CommandDispatcher {
                 }
             }
             UiAction::ExitApplicationDiscard => return true,
-            UiAction::EnterStudioMode => {
-                state.enter_studio_mode();
-            }
-            UiAction::ShowStudioWarning => {
-                state.open_studio_warning();
-            }
             UiAction::ToggleScreenReader => {
                 state.toggle_screen_reader();
             }

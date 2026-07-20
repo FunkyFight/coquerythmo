@@ -5,10 +5,9 @@ pub enum InputContext {
     Accessibility,
     MainWindow,
     SecondaryWindow,
-    VideoLoaded,
     Modal,
     TextEditing,
-    Studio,
+    Recording,
     Workspace,
     Global,
 }

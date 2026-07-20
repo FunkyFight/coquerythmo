@@ -38,9 +38,10 @@ impl EditExecutor {
     /// new project is started. This intentionally clears document history and
     /// dirty state as one operation.
     pub fn reset(session: &mut ProjectSession) {
-        session.project = ProjectSession::project_for_ui_language();
+        session.reset_documents(24.0);
         session.render_index = crate::render_index::ProjectRenderIndex::new();
         session.project_path = None;
+        session.huuid = None;
         session.dirty = false;
         session.history.clear();
         session.loaded_project = None;
@@ -76,6 +77,7 @@ impl EditExecutor {
     /// Apply imported project data through the same origin policy as edits.
     pub fn apply_import(session: &mut ProjectSession, data: ImportProjectData, fps: f64) {
         data.apply_to_project(&mut session.project, fps);
+        session.replace_transaction_checkpoint(fps);
         Self::mark_dirty(session, EditOrigin::Import);
     }
 
@@ -89,6 +91,7 @@ impl EditExecutor {
         if !data.apply_to_active_language(&mut session.project, fps) {
             return false;
         }
+        session.replace_transaction_checkpoint(fps);
         Self::mark_dirty(session, EditOrigin::Import);
         true
     }
@@ -103,7 +106,12 @@ impl EditExecutor {
         let should_mark_dirty = matches!(origin, EditOrigin::Local | EditOrigin::Import);
 
         if should_record {
-            session.history.push(command);
+            let language_id = session.project.active_language_id();
+            session.history.push(command.clone());
+            session
+                .transaction_journal
+                .append(language_id, command)
+                .expect("an in-memory command must be journal-serializable");
         }
         if should_mark_dirty {
             session.dirty = true;
@@ -138,6 +146,17 @@ impl EditExecutor {
     {
         command.apply(&mut session.project);
         session.history.update_last(update_last);
+        if matches!(origin, EditOrigin::Local | EditOrigin::Import) {
+            let coalesced = session
+                .history
+                .last()
+                .cloned()
+                .expect("coalescing requires an existing history command");
+            session
+                .transaction_journal
+                .replace_last(coalesced)
+                .expect("coalescing must replace the active journal tail");
+        }
         Self::mark_dirty(session, origin)
     }
 
@@ -173,6 +192,9 @@ impl EditExecutor {
     pub fn undo(session: &mut ProjectSession) -> bool {
         let had_command = session.history.last().is_some();
         session.history.undo(&mut session.project);
+        if had_command {
+            let _ = session.transaction_journal.undo_cursor();
+        }
         had_command
     }
 
@@ -180,6 +202,9 @@ impl EditExecutor {
     pub fn redo(session: &mut ProjectSession) -> bool {
         let had_command = session.history.can_redo();
         session.history.redo(&mut session.project);
+        if had_command {
+            let _ = session.transaction_journal.redo_cursor();
+        }
         had_command
     }
 
@@ -466,6 +491,7 @@ mod tests {
         );
         assert!(session.dirty);
         assert!(session.history.last().is_some());
+        assert_eq!(session.transaction_journal.cursor(), 1);
     }
 
     #[test]
@@ -489,6 +515,7 @@ mod tests {
         assert_eq!(remote, EditEffects::default());
         assert!(!session.dirty);
         assert!(session.history.last().is_none());
+        assert_eq!(session.transaction_journal.cursor(), 0);
 
         let sync = EditExecutor::record_applied(
             &mut session,
@@ -536,7 +563,9 @@ mod tests {
 
         assert!(EditExecutor::undo(&mut session));
         assert!(session.project.get_line(line_id).is_none());
+        assert_eq!(session.transaction_journal.cursor(), 0);
         assert!(EditExecutor::redo(&mut session));
+        assert_eq!(session.transaction_journal.cursor(), 1);
         assert_eq!(session.project.get_line(line_id).unwrap().text, "hello");
     }
 

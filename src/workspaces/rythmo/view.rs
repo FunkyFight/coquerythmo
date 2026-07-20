@@ -953,11 +953,76 @@ mod tests {
             [1.0, 1.0, 1.0, 1.0],
             0.012,
             false,
+            RythmoInteractionMode::Editable,
         );
 
         assert_eq!(response, EventResponse::Consumed);
         assert_eq!(state.hovered_line, Some(line_id));
         assert_eq!(state.hovered_track, Some(0));
+    }
+
+    #[test]
+    fn read_only_controller_never_arms_or_emits_authoring_actions() {
+        crate::config::init();
+        let mut project = Project::new();
+        let line_id = project.add_line(40, 20, 0.0);
+        let mut render_index = ProjectRenderIndex::new();
+        render_index.refresh(&project);
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 240.0,
+        };
+        let current_frame = 50.0;
+        let line_rect = EditorLayoutCtx::new(&project, &zone).line_rect_with_karaoke_width(
+            project.get_line(line_id).unwrap(),
+            current_frame,
+            &zone,
+            false,
+            None,
+        );
+        let mut state = RythmoState::new();
+
+        let press = handle_rythmo_event(
+            &UiEvent::MousePress {
+                x: line_rect.x + line_rect.width / 2.0,
+                y: line_rect.y + line_rect.height / 2.0,
+            },
+            &zone,
+            &project,
+            &render_index,
+            current_frame,
+            false,
+            24.0,
+            &mut state,
+            ToolMode::Select,
+            [1.0, 1.0, 1.0, 1.0],
+            0.012,
+            false,
+            RythmoInteractionMode::ReadOnly,
+        );
+        assert_eq!(press, EventResponse::Consumed);
+        assert_eq!(state.selected, Some(Selection::Line(line_id)));
+        assert!(state.dragging.is_none());
+
+        let delete = handle_rythmo_event(
+            &UiEvent::Delete,
+            &zone,
+            &project,
+            &render_index,
+            current_frame,
+            false,
+            24.0,
+            &mut state,
+            ToolMode::Select,
+            [1.0, 1.0, 1.0, 1.0],
+            0.012,
+            false,
+            RythmoInteractionMode::ReadOnly,
+        );
+        assert_eq!(delete, EventResponse::Consumed);
+        assert!(state.dragging.is_none());
     }
 
     #[test]
@@ -1488,7 +1553,6 @@ struct KaraokeLineUiState {
 struct KaraokeUiIndex {
     signature: u64,
     by_line_id: HashMap<u64, KaraokeLineUiState>,
-    used_tracks: Vec<bool>,
     karaoke_timeline: Vec<(i64, u64)>,
 }
 
@@ -1504,22 +1568,17 @@ impl KaraokeUiIndex {
 
     fn new_with_signature(project: &Project, max_gap_frames: i64, signature: u64) -> Self {
         let track_count = rythmo_layout::track_count();
-        let mut used_tracks = vec![false; track_count];
         let mut karaoke_timeline = Vec::new();
         let mut lines_by_track: Vec<Vec<&crate::rythmo_line::RythmoLine>> =
             (0..track_count).map(|_| Vec::new()).collect();
         for line in project.lines() {
             let track_index = rythmo_layout::track_index_for_y_slot(line.y_slot);
-            used_tracks[track_index] = true;
             if line.karaoke {
                 karaoke_timeline.push((line.start_frame, line.id));
             }
             if let Some(track_lines) = lines_by_track.get_mut(track_index) {
                 track_lines.push(line);
             }
-        }
-        if !used_tracks.iter().any(|used| *used) && !used_tracks.is_empty() {
-            used_tracks[0] = true;
         }
         karaoke_timeline.sort_unstable_by_key(|&(start_frame, line_id)| (start_frame, line_id));
 
@@ -1571,7 +1630,6 @@ impl KaraokeUiIndex {
         Self {
             signature,
             by_line_id,
-            used_tracks,
             karaoke_timeline,
         }
     }
@@ -1580,10 +1638,6 @@ impl KaraokeUiIndex {
         self.karaoke_timeline
             .partition_point(|(start_frame, _)| *start_frame < frame)
             .min(self.karaoke_timeline.len().saturating_sub(1))
-    }
-
-    fn used_tracks(&self) -> &[bool] {
-        &self.used_tracks
     }
 
     fn line_state(&self, line: &crate::rythmo_line::RythmoLine) -> KaraokeLineUiState {
@@ -2083,69 +2137,6 @@ fn push_editor_karaoke_texture_prewarm_texts(
             },
             index.stack_row(line),
             1.0,
-        );
-        stretched.push(StretchedText::natural_prewarm(
-            karaoke_text_cache_id(line.id),
-            line.text.clone(),
-            row_rect,
-            constants::KARAOKE_TEXT_FONT_SCALE,
-        ));
-        pushed += 1;
-        if pushed >= KARAOKE_TEXTURE_PREWARM_PUSHES_PER_FRAME {
-            break;
-        }
-    }
-}
-
-fn push_studio_karaoke_texture_prewarm_texts(
-    stretched: &mut Vec<StretchedText>,
-    state: &RythmoState,
-    project: &Project,
-    index: &KaraokeUiIndex,
-    track_layouts: &[rythmo_layout::TrackLayout],
-    current_frame: i64,
-    fps: f64,
-    zone: &Rect,
-    ruler_h: f32,
-    slot_header_h: f32,
-    badge_gap: f32,
-    scale: f32,
-) {
-    let lookahead_frames =
-        (fps.max(1.0) * KARAOKE_TEXTURE_PREWARM_LOOKAHEAD_SECONDS).round() as i64;
-    let start = index.timeline_cursor_at(current_frame - lookahead_frames / 10);
-    let end_frame = current_frame + lookahead_frames;
-    let mut pushed = 0;
-
-    for &(start_frame, line_id) in index
-        .karaoke_timeline
-        .iter()
-        .skip(start)
-        .take(KARAOKE_TEXTURE_PREWARM_CANDIDATES_PER_FRAME)
-    {
-        if start_frame > end_frame {
-            break;
-        }
-        let Some(line) = project.get_line(line_id) else {
-            continue;
-        };
-        if line.text.is_empty() || line.text == "↑" || line.text == "↓" {
-            continue;
-        }
-        let Some(track) = rythmo_layout::track_for_y_slot(track_layouts, line.y_slot) else {
-            continue;
-        };
-
-        let body_y = zone.y + ruler_h + track.top + slot_header_h + badge_gap;
-        let row_rect = karaoke_stack_rect(
-            Rect {
-                x: zone.x,
-                y: body_y,
-                width: state.karaoke_ui_text_width_for_render(line),
-                height: track.body_h,
-            },
-            index.stack_row(line),
-            scale,
         );
         stretched.push(StretchedText::natural_prewarm(
             karaoke_text_cache_id(line.id),
@@ -4197,589 +4188,4 @@ fn autocomplete_hover_index(ctx: &RythmoCtx, state: &RythmoState, x: f32, y: f32
         }
     }
     None
-}
-
-// -- Studio Mode (export-style rythmo rendering) --
-
-fn studio_reference_height_from_track_flags(used_tracks: &[bool], karaoke_tracks: &[bool]) -> f32 {
-    let slot_header_h = 22.0_f32.max(ACTOR_ICON_SIZE);
-    let track_indices = track_indices_from_usage(used_tracks);
-    let layouts = build_track_layouts_from_karaoke_flags(
-        &track_indices,
-        karaoke_tracks,
-        karaoke_tracks,
-        32.0,
-        slot_header_h,
-        4.0,
-        1.0,
-    );
-    let content_h = 20.0 + rythmo_layout::total_tracks_height(&layouts);
-    content_h.max(300.0)
-}
-
-/// Compute the fixed rythmo band height for studio preview.
-pub fn studio_br_height(_project: &Project, _width: f32) -> f32 {
-    // Studio preview lives inside the UI, so keep the panel stable and scale the BR inside it.
-    300.0
-}
-
-/// Export-style rythmo: ticks, playhead, lines with badges, markers. No waveform, no handles.
-pub fn render_studio_rythmo<'a>(
-    zone: &Rect,
-    project: &'a Project,
-    render_index: &ProjectRenderIndex,
-    current_frame: f64,
-    fps: f64,
-    rythmo_state: &RythmoState,
-    quads: &mut Vec<QuadInstance>,
-    labels: &mut Vec<LabelInfo<'a>>,
-    stretched: &mut Vec<StretchedText>,
-    actor_icons: &mut Vec<VoiceActorIconDraw>,
-) {
-    rythmo_state.prune_karaoke_text_width_cache(project);
-    let karaoke_max_gap_frames = karaoke_adjacent_max_gap_frames(fps);
-    let karaoke_index = rythmo_state.cached_karaoke_ui_index(project, karaoke_max_gap_frames);
-    // Studio mode: render with proportions scaled to the same height chosen above.
-    let karaoke_tracks = rythmo_layout::karaoke_tracks(project);
-    let scale = zone.height
-        / studio_reference_height_from_track_flags(karaoke_index.used_tracks(), &karaoke_tracks);
-
-    // Readable sizes (increase text)
-    let ruler_h = 20.0 * scale;
-    let normal_slot_h = 32.0 * scale;
-    let badge_h = 22.0 * scale;
-    let badge_gap = 4.0 * scale;
-    let actor_icon_size = ACTOR_ICON_SIZE * scale;
-    let slot_header_h = badge_h.max(actor_icon_size);
-    let badge_char_w = 8.0 * scale;
-    let badge_font_size = 16.0 * scale; // increased from 13.0
-    let badge_padding = 4.0 * scale;
-    let badge_min_w = 14.0 * scale;
-
-    // PPF: same as editor mode (not dependent on zone width)
-    let ppf = constants::PIXELS_PER_FRAME * crate::config::scroll_speed();
-    let margin_frames = interactive_render_margin_frames(fps, render_index);
-    let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames);
-    let common_scene = crate::rendering::rythmo::scene::RythmoScene::build(
-        project,
-        render_index,
-        crate::rendering::rythmo::scene::SceneOptions {
-            frame_window: crate::rendering::rythmo::scene::FrameWindow {
-                first: first_frame,
-                last: last_frame,
-            },
-            current_frame,
-            source_fps: fps,
-            normal_body_height: normal_slot_h,
-            slot_header_height: slot_header_h,
-            badge_gap,
-            scale,
-            dynamic_track_layout: true,
-        },
-    );
-    let track_layouts = &common_scene.tracks;
-    let tick_long = 10.0 * scale;
-    let tick_short = 5.0 * scale;
-    let tick_w = 1.0 * scale;
-    let playhead_w = PLAYHEAD_WIDTH * scale;
-    let center_x = zone.x + zone.width / 2.0;
-    let playhead_x = center_x;
-    let karaoke_count_in_frame_count = karaoke_count_in_frames(fps);
-
-    // Ruler ticks (alternating long/short — export style)
-    let visible_frames = (zone.width / ppf) as i64 + 4;
-    let half_visible_frames = visible_frames as f64 / 2.0;
-    let first_tick_frame = f64_floor_to_i64(current_frame - half_visible_frames);
-    let first_tick =
-        first_tick_frame.div_euclid(constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
-    let mut tf = first_tick;
-    loop {
-        let x = center_x + (tf as f64 - current_frame) as f32 * ppf;
-        if x > zone.x + zone.width {
-            break;
-        }
-        if x >= zone.x {
-            let tick_idx = tf.div_euclid(constants::TICK_GAP_FRAMES);
-            let th = if tick_idx % 2 == 0 {
-                tick_long
-            } else {
-                tick_short
-            };
-            let c = [100.0 / 255.0, 100.0 / 255.0, 115.0 / 255.0, 128.0 / 255.0];
-            quads.push(QuadInstance {
-                rect: [x, zone.y, tick_w, th],
-                color: c,
-                color_bottom: c,
-                border_color: [0.0; 4],
-                border_width: 0.0,
-                border_radius: 0.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-        }
-        tf += constants::TICK_GAP_FRAMES;
-    }
-
-    let studio_skip_ranges =
-        common_scene.active_karaoke_skip_ranges(ruler_h, slot_header_h, badge_gap, scale);
-
-    // Playhead, split around active karaoke lines.
-    push_playhead_segments(
-        quads,
-        playhead_x - playhead_w / 2.0,
-        playhead_w,
-        zone.y,
-        zone.height,
-        PLAYHEAD_COLOR,
-        PLAYHEAD_GLOW,
-        7.0 * scale,
-        &studio_skip_ranges,
-    );
-
-    // Lines (export style: no handles, no borders, no hover effects)
-    let karaoke_lang = crate::config::get().lang.clone();
-    for scene_line in &common_scene.lines {
-        let Some(line) = project.get_line(scene_line.line.id) else {
-            continue;
-        };
-        let karaoke_count_in = scene_line.karaoke_count_in_progress.is_some();
-        if line.karaoke && !scene_line.karaoke_should_be_visible() {
-            continue;
-        }
-
-        let (x1, lw) = if scene_line.karaoke_should_be_centered() {
-            let width = rythmo_state.karaoke_ui_text_width_for_render(line);
-            (center_x - width / 2.0, width)
-        } else {
-            line.visual_x_width(current_frame, center_x, ppf, zone.width, scale)
-        };
-        let badge_w = (line.character_name.chars().count().max(1) as f32 * badge_char_w
-            + badge_padding * 2.0)
-            .max(badge_min_w);
-        let badge_x = if line.karaoke {
-            x1 - badge_w - constants::KARAOKE_NEXT_PREVIEW_GAP * 0.5 * scale
-        } else {
-            x1
-        };
-        let show_badge = !line.karaoke || scene_line.character_label_visible;
-        let leading_visual = show_badge.then(|| {
-            rythmo_layout::leading_visual_bounds(
-                badge_x,
-                badge_w,
-                line.voice_actor_names.len(),
-                actor_icon_size,
-                ACTOR_ICON_GAP * scale,
-            )
-        });
-        if !rythmo_layout::line_or_badge_intersects_viewport(
-            x1,
-            lw,
-            leading_visual,
-            zone.x,
-            zone.x + zone.width,
-        ) {
-            continue;
-        }
-
-        let Some(track) = rythmo_layout::track_for_y_slot(track_layouts, line.y_slot) else {
-            continue;
-        };
-        let y_base = zone.y + ruler_h + track.top;
-        let body_y = y_base + slot_header_h + badge_gap;
-        let mut line_y = body_y;
-        let mut body_h = normal_slot_h;
-        if line.karaoke {
-            let stacked_rect = karaoke_stack_rect(
-                Rect {
-                    x: x1,
-                    y: body_y,
-                    width: lw,
-                    height: track.body_h,
-                },
-                scene_line.karaoke_stack_row,
-                scale,
-            );
-            line_y = stacked_rect.y;
-            body_h = stacked_rect.height;
-        }
-        let [cr, cg, cb, _] = line.character_color;
-        let badge_y = if line.karaoke {
-            line_y + (body_h - badge_h) * 0.5
-        } else {
-            y_base + ((slot_header_h - badge_h) * 0.5).max(0.0)
-        };
-        if show_badge {
-            let bc = [cr, cg, cb, 1.0];
-            quads.push(QuadInstance {
-                rect: [badge_x, badge_y, badge_w, badge_h],
-                color: bc,
-                color_bottom: bc,
-                border_color: [0.0; 4],
-                border_width: 0.0,
-                border_radius: 0.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-
-            // Badge text
-            if !line.character_name.is_empty() {
-                let luminance = 0.299 * cr + 0.587 * cg + 0.114 * cb;
-                let text_color = if luminance > 0.55 {
-                    Some([0, 0, 0])
-                } else {
-                    Some([224, 224, 230])
-                };
-                labels.push(LabelInfo {
-                    text: &line.character_name,
-                    bounds: Rect {
-                        x: badge_x,
-                        y: badge_y,
-                        width: badge_w,
-                        height: badge_h,
-                    },
-                    h_align: HAlign::Center,
-                    v_align: VAlign::Center,
-                    overflow: Overflow::Clip,
-                    padding: badge_padding,
-                    font_size_override: Some(badge_font_size),
-                    color_override: text_color,
-                    font_family_override: None,
-                });
-            }
-
-            render_voice_actor_icons_for_line(
-                line,
-                project,
-                zone,
-                Rect {
-                    x: badge_x,
-                    y: badge_y,
-                    width: badge_w,
-                    height: badge_h,
-                },
-                actor_icon_size,
-                quads,
-                labels,
-                actor_icons,
-            );
-        }
-
-        let body_rect = Rect {
-            x: x1,
-            y: line_y,
-            width: lw,
-            height: body_h,
-        };
-        let karaoke_progress_info = if line.karaoke {
-            karaoke_progress_render_info(line, current_frame, &karaoke_lang)
-        } else {
-            None
-        };
-
-        let scrolling_text_tint = if project.settings().scrolling_text_uses_character_color {
-            [
-                line.character_color[0].clamp(0.0, 1.0),
-                line.character_color[1].clamp(0.0, 1.0),
-                line.character_color[2].clamp(0.0, 1.0),
-                1.0,
-            ]
-        } else {
-            [1.0; 4]
-        };
-
-        // Stretched text or breath arrows
-        if !line.text.is_empty() && line.text != "\u{2191}" && line.text != "\u{2193}" {
-            if line.karaoke {
-                push_karaoke_rythmo_text(stretched, line, body_rect, karaoke_progress_info);
-            } else {
-                let progress =
-                    (current_frame - line.start_frame as f64) / line.duration_frames.max(1) as f64;
-                let read_highlight_end = project
-                    .settings()
-                    .highlight_read_word
-                    .then(|| {
-                        crate::syllable::read_highlight_end_from_timing(
-                            &line.text,
-                            &line.syllable_ratios,
-                            &karaoke_lang,
-                            progress as f32,
-                        )
-                    })
-                    .flatten();
-                let breaks = crate::syllable::syllable_breaks(&line.text, &karaoke_lang);
-                let ratios = valid_saved_syllable_ratios(line, breaks.len() + 1, &karaoke_lang);
-                if let Some(ratios) = ratios {
-                    let chars: Vec<char> = line.text.chars().collect();
-                    let mut seg_x = x1;
-                    let mut prev_break = 0usize;
-                    for (i, &ratio) in ratios.iter().enumerate() {
-                        let seg_w = ratio * lw;
-                        let end_break = if i < breaks.len() {
-                            breaks[i]
-                        } else {
-                            chars.len()
-                        };
-                        let segment: String = chars[prev_break..end_break].iter().collect();
-                        if !segment.is_empty() && seg_w > 1.0 {
-                            push_read_word_rythmo_text(
-                                stretched,
-                                syllable_segment_cache_id(line.id, i),
-                                segment,
-                                Rect {
-                                    x: seg_x,
-                                    y: line_y,
-                                    width: seg_w,
-                                    height: body_h,
-                                },
-                                prev_break,
-                                read_highlight_end,
-                                scrolling_text_tint,
-                            );
-                        }
-                        seg_x += seg_w;
-                        prev_break = end_break;
-                    }
-                } else {
-                    push_read_word_rythmo_text(
-                        stretched,
-                        line.id,
-                        line.text.clone(),
-                        Rect {
-                            x: x1,
-                            y: line_y,
-                            width: lw,
-                            height: body_h,
-                        },
-                        0,
-                        read_highlight_end,
-                        scrolling_text_tint,
-                    );
-                }
-            }
-        }
-
-        // Breath arrows
-        if line.text == "\u{2191}" || line.text == "\u{2193}" {
-            let up = line.text == "\u{2191}";
-            let r = Rect {
-                x: x1,
-                y: line_y,
-                width: lw,
-                height: body_h,
-            };
-            render_breath_arrow(&r, up, quads);
-        }
-
-        if karaoke_count_in {
-            render_karaoke_count_in_dot_scaled(
-                line,
-                current_frame,
-                &body_rect,
-                karaoke_count_in_frame_count,
-                scale,
-                quads,
-            );
-        } else {
-            render_karaoke_dot_scaled(line, &body_rect, karaoke_progress_info, scale, quads);
-        }
-
-        // Note text in studio mode
-        if !line.note.is_empty() {
-            let note_label_h = 10.0 * scale;
-            let note_y = line_y + body_h - note_label_h - 1.0;
-            labels.push(LabelInfo {
-                text: &line.note,
-                bounds: Rect {
-                    x: x1 + 4.0 * scale,
-                    y: note_y,
-                    width: lw - 8.0 * scale,
-                    height: note_label_h,
-                },
-                h_align: HAlign::Left,
-                v_align: VAlign::Center,
-                overflow: Overflow::Ellipsis,
-                padding: 0.0,
-                font_size_override: Some(8.0 * scale),
-                color_override: Some([160, 160, 170]),
-                font_family_override: None,
-            });
-        }
-    }
-
-    push_studio_karaoke_texture_prewarm_texts(
-        stretched,
-        rythmo_state,
-        project,
-        &karaoke_index,
-        &track_layouts,
-        visual_frame_to_i64(current_frame),
-        fps,
-        zone,
-        ruler_h,
-        slot_header_h,
-        badge_gap,
-        scale,
-    );
-
-    // Markers (export-style: use center_x + frame offset with studio ppf)
-    let marker_margin_frames = f64_ceil_to_i64(20.0 / ppf.max(0.001) as f64).saturating_add(1);
-    let (first_marker_frame, last_marker_frame) =
-        render_window(zone, current_frame, marker_margin_frames);
-    for marker in &common_scene.markers {
-        if marker.frame < first_marker_frame || marker.frame > last_marker_frame {
-            continue;
-        }
-        let marker_x = center_x + (marker.frame as f64 - current_frame) as f32 * ppf;
-        if marker_x < zone.x - 20.0 || marker_x > zone.x + zone.width + 20.0 {
-            continue;
-        }
-
-        match &marker.kind {
-            MarkerKind::Boucle => {
-                let red = [0.85, 0.15, 0.15, 0.9];
-                // Red vertical bar
-                quads.push(QuadInstance {
-                    rect: [marker_x - 1.0, zone.y, 2.0, zone.height],
-                    color: red,
-                    color_bottom: red,
-                    border_color: [0.0; 4],
-                    border_width: 0.0,
-                    border_radius: 0.0,
-                    shadow_offset: [0.0; 2],
-                    shadow_color: [0.0; 4],
-                    shadow_blur: 0.0,
-                    rotation: 0.0,
-                    _padding: [0.0; 2],
-                });
-                // Big "X" — two smooth rotated bars
-                let cy = zone.y + zone.height / 2.0;
-                let arm_len = 20.0;
-                let thickness = 2.5;
-                let pi4 = std::f32::consts::FRAC_PI_4;
-                // "\" bar
-                quads.push(QuadInstance {
-                    rect: [
-                        marker_x - arm_len / 2.0,
-                        cy - thickness / 2.0,
-                        arm_len,
-                        thickness,
-                    ],
-                    color: red,
-                    color_bottom: red,
-                    border_color: [0.0; 4],
-                    border_width: 0.0,
-                    border_radius: 0.0,
-                    shadow_offset: [0.0; 2],
-                    shadow_color: [0.0; 4],
-                    shadow_blur: 0.0,
-                    rotation: pi4,
-                    _padding: [0.0; 2],
-                });
-                // "/" bar
-                quads.push(QuadInstance {
-                    rect: [
-                        marker_x - arm_len / 2.0,
-                        cy - thickness / 2.0,
-                        arm_len,
-                        thickness,
-                    ],
-                    color: red,
-                    color_bottom: red,
-                    border_color: [0.0; 4],
-                    border_width: 0.0,
-                    border_radius: 0.0,
-                    shadow_offset: [0.0; 2],
-                    shadow_color: [0.0; 4],
-                    shadow_blur: 0.0,
-                    rotation: -pi4,
-                    _padding: [0.0; 2],
-                });
-            }
-            MarkerKind::Out => {
-                let col = [0.85, 0.45, 0.45, 0.7];
-                // Light red vertical bar
-                quads.push(QuadInstance {
-                    rect: [marker_x - 1.0, zone.y, 2.0, zone.height],
-                    color: col,
-                    color_bottom: col,
-                    border_color: [0.0; 4],
-                    border_width: 0.0,
-                    border_radius: 0.0,
-                    shadow_offset: [0.0; 2],
-                    shadow_color: [0.0; 4],
-                    shadow_blur: 0.0,
-                    rotation: 0.0,
-                    _padding: [0.0; 2],
-                });
-                // Two parallel oblique bars crossing the vertical bar
-                let cy = zone.y + zone.height / 2.0;
-                let bar_len = zone.height * 0.25;
-                let thickness = 2.0;
-                let angle = 0.5;
-                for offset in &[-5.0_f32, 5.0] {
-                    quads.push(QuadInstance {
-                        rect: [
-                            marker_x + offset - bar_len / 2.0,
-                            cy - thickness / 2.0,
-                            bar_len,
-                            thickness,
-                        ],
-                        color: col,
-                        color_bottom: col,
-                        border_color: [0.0; 4],
-                        border_width: 0.0,
-                        border_radius: 0.0,
-                        shadow_offset: [0.0; 2],
-                        shadow_color: [0.0; 4],
-                        shadow_blur: 0.0,
-                        rotation: angle,
-                        _padding: [0.0; 2],
-                    });
-                }
-                // "out" text
-                labels.push(LabelInfo {
-                    text: "out",
-                    bounds: Rect {
-                        x: marker_x + 12.0,
-                        y: cy - 8.0,
-                        width: 30.0,
-                        height: 16.0,
-                    },
-                    h_align: HAlign::Center,
-                    v_align: VAlign::Center,
-                    overflow: Overflow::Clip,
-                    padding: 0.0,
-                    font_size_override: Some(10.0),
-                    color_override: Some([220, 120, 120]),
-                    font_family_override: None,
-                });
-            }
-            MarkerKind::SceneChange => {
-                // White bar
-                quads.push(QuadInstance {
-                    rect: [marker_x - 1.0, zone.y, 2.0, zone.height],
-                    color: [0.9, 0.9, 0.95, 0.8],
-                    color_bottom: [0.9, 0.9, 0.95, 0.8],
-                    border_color: [0.0; 4],
-                    border_width: 0.0,
-                    border_radius: 0.0,
-                    shadow_offset: [0.0; 2],
-                    shadow_color: [0.0; 4],
-                    shadow_blur: 0.0,
-                    rotation: 0.0,
-                    _padding: [0.0; 2],
-                });
-            }
-            _ => {} // LiaisonLeft/Right not rendered in studio mode
-        }
-    }
-
-    // Selection overlay (marquee rect + selected-strokes bbox & handles)
-    render_selection_overlay(zone, current_frame, project, rythmo_state, quads);
 }

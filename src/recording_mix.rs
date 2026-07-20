@@ -1,0 +1,502 @@
+//! Offline preview mix for the recording workspace.
+//!
+//! Timeline edits produce a small immutable mix specification. The adapter
+//! renders it to FLAC with FFmpeg, after which the existing `VideoPlayer`
+//! audio path can play and seek it with the video clock. Keeping filter graph
+//! construction pure makes mute/solo/placement behavior testable without
+//! spawning media processes.
+
+use std::collections::BTreeMap;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread;
+use std::time::Duration;
+
+use crate::recording::{AudioAssetId, AudioClipId, AudioTrackId, RecordingProject};
+
+static MIX_TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MixClip {
+    pub clip_id: AudioClipId,
+    pub track_id: AudioTrackId,
+    pub path: PathBuf,
+    pub source_start_seconds: f64,
+    pub duration_seconds: f64,
+    pub timeline_start_seconds: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordingMixSpec {
+    pub source: Option<PathBuf>,
+    pub clips: Vec<MixClip>,
+    pub sample_rate: u32,
+}
+
+impl RecordingMixSpec {
+    pub fn from_project(
+        project: &RecordingProject,
+        asset_paths: &BTreeMap<AudioAssetId, PathBuf>,
+        source: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        project.validate().map_err(|error| error.to_string())?;
+        let fps = project.timeline_fps();
+        if !fps.is_finite() || fps <= 0.0 {
+            return Err("invalid recording timeline FPS".into());
+        }
+        let mut clips = Vec::new();
+        for clip in project.clips() {
+            if !project
+                .is_track_audible(clip.track_id)
+                .map_err(|error| error.to_string())?
+            {
+                continue;
+            }
+            let path = asset_paths
+                .get(&clip.asset_id)
+                .cloned()
+                .ok_or_else(|| format!("missing FLAC path for asset {}", clip.asset_id))?;
+            if !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("flac"))
+            {
+                return Err(format!(
+                    "audio asset {} does not resolve to a FLAC file",
+                    clip.asset_id
+                ));
+            }
+            clips.push(MixClip {
+                clip_id: clip.id,
+                track_id: clip.track_id,
+                path,
+                source_start_seconds: clip.source_start_frame as f64 / fps,
+                duration_seconds: clip.duration_frames as f64 / fps,
+                timeline_start_seconds: clip.start_frame as f64 / fps,
+            });
+        }
+        clips.sort_by(|left, right| {
+            left.timeline_start_seconds
+                .total_cmp(&right.timeline_start_seconds)
+                .then_with(|| left.clip_id.cmp(&right.clip_id))
+        });
+        Ok(Self {
+            source,
+            clips,
+            sample_rate: 48_000,
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.source.is_none() && self.clips.is_empty()
+    }
+
+    pub fn ffmpeg_filter(&self) -> Result<String, String> {
+        if self.is_empty() {
+            return Err("recording mix has no audible input".into());
+        }
+        if self.sample_rate == 0 {
+            return Err("recording mix sample rate must be positive".into());
+        }
+        let mut filters = Vec::new();
+        let mut labels = Vec::new();
+        let mut input_index = 0usize;
+        if self.source.is_some() {
+            filters.push(format!(
+                "[{input_index}:a]aresample={},asetpts=PTS-STARTPTS[source]",
+                self.sample_rate
+            ));
+            labels.push("[source]".to_string());
+            input_index += 1;
+        }
+        for (clip_index, clip) in self.clips.iter().enumerate() {
+            if !clip.source_start_seconds.is_finite()
+                || !clip.duration_seconds.is_finite()
+                || !clip.timeline_start_seconds.is_finite()
+                || clip.source_start_seconds < 0.0
+                || clip.duration_seconds <= 0.0
+                || clip.timeline_start_seconds < 0.0
+            {
+                return Err(format!("invalid timing for clip {}", clip.clip_id));
+            }
+            let label = format!("clip{clip_index}");
+            let delay_samples =
+                (clip.timeline_start_seconds * f64::from(self.sample_rate)).round() as u64;
+            filters.push(format!(
+                "[{input_index}:a]aresample={},atrim=start={:.9}:duration={:.9},asetpts=PTS-STARTPTS,adelay={delay_samples}S:all=1[{label}]",
+                self.sample_rate, clip.source_start_seconds, clip.duration_seconds
+            ));
+            labels.push(format!("[{label}]"));
+            input_index += 1;
+        }
+        filters.push(format!(
+            "{}amix=inputs={}:duration=longest:dropout_transition=0:normalize=0[mix]",
+            labels.concat(),
+            labels.len()
+        ));
+        Ok(filters.join(";"))
+    }
+
+    pub fn ffmpeg_args(&self, output: &Path) -> Result<Vec<String>, String> {
+        let mut args = vec![
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-nostdin".into(),
+            "-n".into(),
+        ];
+        if let Some(source) = &self.source {
+            args.push("-i".into());
+            args.push(source.to_string_lossy().into_owned());
+        }
+        for clip in &self.clips {
+            args.push("-i".into());
+            args.push(clip.path.to_string_lossy().into_owned());
+        }
+        args.extend([
+            "-filter_complex".into(),
+            self.ffmpeg_filter()?,
+            "-map".into(),
+            "[mix]".into(),
+            "-c:a".into(),
+            "flac".into(),
+            "-ar".into(),
+            self.sample_rate.to_string(),
+            output.to_string_lossy().into_owned(),
+        ]);
+        Ok(args)
+    }
+}
+
+/// Render through a sibling temporary file so readers never observe a partial
+/// preview. The worker polls cancellation while FFmpeg is running.
+pub fn render_recording_mix(
+    spec: &RecordingMixSpec,
+    output: &Path,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("recording mix cancelled".into());
+    }
+    if !output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("flac"))
+    {
+        return Err("recording mix output must use the .flac extension".into());
+    }
+    let parent = output
+        .parent()
+        .ok_or_else(|| "recording mix output has no parent directory".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("cannot create recording mix directory: {error}"))?;
+    let name = output
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let nonce = MIX_TEMP_NONCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = parent.join(format!(".{name}.{}-{nonce}.tmp.flac", std::process::id()));
+    let args = spec.ffmpeg_args(&temporary)?;
+    let mut child = crate::media_binary::command("ffmpeg")
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("cannot start FFmpeg recording mix: {error}"))?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        let _ = child.kill();
+        let _ = child.wait();
+        "FFmpeg recording mix has no error stream".to_string()
+    })?;
+    let stderr_reader = match thread::Builder::new()
+        .name("recording-mix-stderr".into())
+        .spawn(move || {
+            let mut stderr = stderr;
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).map(|_| bytes)
+        }) {
+        Ok(reader) => reader,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&temporary);
+            return Err(format!("cannot monitor FFmpeg recording mix: {error}"));
+        }
+    };
+
+    let status = loop {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stderr_reader.join();
+            let _ = std::fs::remove_file(&temporary);
+            return Err("recording mix cancelled".into());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stderr_reader.join();
+                let _ = std::fs::remove_file(&temporary);
+                return Err(format!("cannot poll FFmpeg recording mix: {error}"));
+            }
+        }
+    };
+    let stderr = stderr_reader
+        .join()
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    if !status.success() {
+        let _ = std::fs::remove_file(&temporary);
+        let detail = String::from_utf8_lossy(&stderr);
+        return Err(format!("FFmpeg recording mix failed: {}", detail.trim()));
+    }
+    if cancel.load(Ordering::Relaxed) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err("recording mix cancelled".into());
+    }
+    if output.exists() {
+        if let Err(error) = std::fs::remove_file(output) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(format!("cannot replace previous recording mix: {error}"));
+        }
+    }
+    if let Err(error) = std::fs::rename(&temporary, output) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!("cannot install recording mix: {error}"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recording::{AudioAsset, AudioClip, AudioTrack, RecordingOperation, WaveformData};
+
+    #[test]
+    fn filter_places_clips_at_their_timeline_offsets() {
+        let spec = RecordingMixSpec {
+            source: Some(PathBuf::from("source.mp4")),
+            clips: vec![MixClip {
+                clip_id: AudioClipId::new(3),
+                track_id: AudioTrackId::new(1),
+                path: PathBuf::from("voice.flac"),
+                source_start_seconds: 0.5,
+                duration_seconds: 2.0,
+                timeline_start_seconds: 1.25,
+            }],
+            sample_rate: 48_000,
+        };
+        let filter = spec.ffmpeg_filter().unwrap();
+        assert!(filter.contains("atrim=start=0.500000000:duration=2.000000000"));
+        assert!(filter.contains("adelay=60000S:all=1"));
+        assert!(filter.contains("amix=inputs=2"));
+    }
+
+    fn add_voice_clip(
+        project: &mut RecordingProject,
+        track_id: AudioTrackId,
+        asset_id: AudioAssetId,
+        clip_id: AudioClipId,
+        name: &str,
+        start_frame: i64,
+        source_start_frame: i64,
+        duration_frames: i64,
+    ) {
+        project
+            .apply(&RecordingOperation::Batch {
+                operations: vec![
+                    RecordingOperation::AddTrack {
+                        track: AudioTrack::new(track_id, name),
+                    },
+                    RecordingOperation::AddAsset {
+                        asset: AudioAsset {
+                            id: asset_id,
+                            file_name: format!("voice-{}.flac", asset_id.get()),
+                            sample_rate: 48_000,
+                            channels: 1,
+                            sample_count: 96_000,
+                            checksum: format!("{:040x}", asset_id.get()),
+                            waveform: WaveformData::default(),
+                        },
+                    },
+                    RecordingOperation::AddClip {
+                        clip: AudioClip {
+                            id: clip_id,
+                            asset_id,
+                            track_id,
+                            start_frame,
+                            source_start_frame,
+                            duration_frames,
+                        },
+                    },
+                ],
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn project_frames_become_exact_trim_and_placement_times() {
+        let mut project = RecordingProject::new(24.0).unwrap();
+        let track_id = AudioTrackId::new(1);
+        let asset_id = AudioAssetId::new(2);
+        let clip_id = AudioClipId::new(3);
+        add_voice_clip(
+            &mut project,
+            track_id,
+            asset_id,
+            clip_id,
+            "Voice",
+            30,
+            12,
+            24,
+        );
+        let paths = BTreeMap::from([(asset_id, PathBuf::from("voice-2.flac"))]);
+        let spec = RecordingMixSpec::from_project(&project, &paths, None).unwrap();
+        assert_eq!(spec.clips.len(), 1);
+        assert_eq!(spec.clips[0].source_start_seconds, 0.5);
+        assert_eq!(spec.clips[0].duration_seconds, 1.0);
+        assert_eq!(spec.clips[0].timeline_start_seconds, 1.25);
+        assert!(spec.ffmpeg_filter().unwrap().contains("adelay=60000S"));
+    }
+
+    #[test]
+    fn solo_and_mute_rules_are_preserved_in_the_mix() {
+        let mut project = RecordingProject::new(24.0).unwrap();
+        let one = AudioTrackId::new(1);
+        let two = AudioTrackId::new(4);
+        add_voice_clip(
+            &mut project,
+            one,
+            AudioAssetId::new(2),
+            AudioClipId::new(3),
+            "One",
+            0,
+            0,
+            24,
+        );
+        add_voice_clip(
+            &mut project,
+            two,
+            AudioAssetId::new(5),
+            AudioClipId::new(6),
+            "Two",
+            0,
+            0,
+            24,
+        );
+        project
+            .apply(&RecordingOperation::SetTrackSolo {
+                track_id: two,
+                solo: true,
+            })
+            .unwrap();
+        let paths = BTreeMap::from([
+            (AudioAssetId::new(2), PathBuf::from("voice-2.flac")),
+            (AudioAssetId::new(5), PathBuf::from("voice-5.flac")),
+        ]);
+        let spec = RecordingMixSpec::from_project(&project, &paths, None).unwrap();
+        assert_eq!(
+            spec.clips
+                .iter()
+                .map(|clip| clip.track_id)
+                .collect::<Vec<_>>(),
+            vec![two]
+        );
+
+        project
+            .apply(&RecordingOperation::SetTrackMuted {
+                track_id: two,
+                muted: true,
+            })
+            .unwrap();
+        let spec =
+            RecordingMixSpec::from_project(&project, &paths, Some(PathBuf::from("source.mp4")))
+                .unwrap();
+        assert!(spec.clips.is_empty());
+    }
+
+    #[test]
+    fn audible_assets_require_a_flac_path() {
+        let mut project = RecordingProject::new(24.0).unwrap();
+        add_voice_clip(
+            &mut project,
+            AudioTrackId::new(1),
+            AudioAssetId::new(2),
+            AudioClipId::new(3),
+            "Voice",
+            0,
+            0,
+            24,
+        );
+        assert!(
+            RecordingMixSpec::from_project(&project, &BTreeMap::new(), None)
+                .unwrap_err()
+                .contains("missing FLAC path")
+        );
+        let wrong_path = BTreeMap::from([(AudioAssetId::new(2), PathBuf::from("voice.wav"))]);
+        assert!(RecordingMixSpec::from_project(&project, &wrong_path, None)
+            .unwrap_err()
+            .contains("does not resolve to a FLAC"));
+    }
+
+    #[test]
+    fn muted_tracks_are_not_part_of_the_mix_spec() {
+        let mut project = RecordingProject::new(24.0).unwrap();
+        let track_id = AudioTrackId::new(1);
+        let asset_id = AudioAssetId::new(2);
+        let clip_id = AudioClipId::new(3);
+        project
+            .apply(&RecordingOperation::Batch {
+                operations: vec![
+                    RecordingOperation::AddTrack {
+                        track: AudioTrack::new(track_id, "Voice"),
+                    },
+                    RecordingOperation::AddAsset {
+                        asset: AudioAsset {
+                            id: asset_id,
+                            file_name: "voice.flac".into(),
+                            sample_rate: 48_000,
+                            channels: 1,
+                            sample_count: 48_000,
+                            checksum: "0".repeat(40),
+                            waveform: WaveformData::default(),
+                        },
+                    },
+                    RecordingOperation::AddClip {
+                        clip: AudioClip {
+                            id: clip_id,
+                            asset_id,
+                            track_id,
+                            start_frame: 0,
+                            source_start_frame: 0,
+                            duration_frames: 24,
+                        },
+                    },
+                    RecordingOperation::SetTrackMuted {
+                        track_id,
+                        muted: true,
+                    },
+                ],
+            })
+            .unwrap();
+        let paths = BTreeMap::from([(asset_id, PathBuf::from("voice.flac"))]);
+        let spec =
+            RecordingMixSpec::from_project(&project, &paths, Some(PathBuf::from("source.mp4")))
+                .unwrap();
+        assert!(spec.clips.is_empty());
+        assert_eq!(
+            spec.ffmpeg_filter()
+                .unwrap()
+                .matches("amix=inputs=1")
+                .count(),
+            1
+        );
+    }
+}

@@ -1,17 +1,14 @@
-//! Main/secondary window and studio-mode state.
+//! Main and secondary window ownership.
 
 use std::sync::Arc;
 
-use winit::window::{Fullscreen, Window};
+use winit::window::Window;
 
 use crate::graphics::WindowSurface;
 
 pub struct WindowManager {
     pub main_window: Arc<Window>,
     pub secondary_display: Option<WindowSurface>,
-    pub studio_mode: bool,
-    pub fullscreen_before_studio: Option<Fullscreen>,
-    pub show_studio_warning: bool,
 }
 
 impl WindowManager {
@@ -19,9 +16,6 @@ impl WindowManager {
         Self {
             main_window,
             secondary_display: None,
-            studio_mode: false,
-            fullscreen_before_studio: None,
-            show_studio_warning: false,
         }
     }
 }

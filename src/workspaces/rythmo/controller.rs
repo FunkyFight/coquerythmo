@@ -6,6 +6,12 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RythmoInteractionMode {
+    Editable,
+    ReadOnly,
+}
+
 pub(crate) struct RythmoCtx<'a> {
     pub(crate) zone: &'a Rect,
     pub(crate) project: &'a Project,
@@ -29,6 +35,7 @@ pub fn handle_rythmo_event(
     brush_color: [f32; 4],
     brush_radius_frac: f32,
     erasing: bool,
+    interaction_mode: RythmoInteractionMode,
 ) -> EventResponse {
     let mut ctx = RythmoCtx {
         zone,
@@ -39,6 +46,10 @@ pub fn handle_rythmo_event(
         fps,
         active_mode,
     };
+
+    if interaction_mode == RythmoInteractionMode::ReadOnly {
+        return handle_read_only_event(&mut ctx, event, state);
+    }
 
     // Drawing mode handling - early return to block line editing.
     if active_mode == ToolMode::Draw {
@@ -247,6 +258,69 @@ pub fn handle_rythmo_event(
             } else {
                 EventResponse::Ignored
             }
+        }
+        _ => EventResponse::Ignored,
+    }
+}
+
+fn handle_read_only_event(
+    ctx: &mut RythmoCtx<'_>,
+    event: &UiEvent,
+    state: &mut RythmoState,
+) -> EventResponse {
+    // Defensive cleanup prevents a gesture started in the authoring workspace
+    // from completing after a keyboard-driven workspace transition.
+    state.dragging = None;
+    state.selection_drag = None;
+    state.transform_handle = None;
+    state.syllable_drag = None;
+    state.active_stroke = None;
+    state.audio_offset_mode = false;
+    state.audio_offset_drag = None;
+    state.context_menu = None;
+    if state.is_editing() {
+        state.stop_line_editing();
+        state.stop_note_editing();
+        state.stop_char_editing();
+    }
+
+    match event {
+        UiEvent::MiddlePress { x, y } if ctx.zone.contains(*x, *y) => {
+            state.panning = true;
+            state.pan_last_x = *x;
+            state.pan_accum = 0.0;
+            EventResponse::Consumed
+        }
+        UiEvent::MiddleRelease { .. } if state.panning => {
+            state.panning = false;
+            EventResponse::Consumed
+        }
+        UiEvent::MouseMove { x, .. } if state.panning => {
+            let dx = *x - state.pan_last_x;
+            state.pan_last_x = *x;
+            state.pan_accum -= dx;
+            let frames = (state.pan_accum / ppf()).round() as i32;
+            if frames != 0 {
+                state.pan_accum -= frames as f32 * ppf();
+                EventResponse::Action(UiAction::SeekRelative(frames))
+            } else {
+                EventResponse::Consumed
+            }
+        }
+        UiEvent::MouseMove { x, y } => handle_mouse_move(ctx, state, *x, *y),
+        UiEvent::MousePress { x, y }
+        | UiEvent::DoubleClick { x, y }
+        | UiEvent::CtrlClick { x, y }
+        | UiEvent::ShiftMousePress { x, y }
+            if ctx.zone.contains(*x, *y) =>
+        {
+            // Selection is view state only. No drag handle is armed.
+            let _ = handle_mouse_move(ctx, state, *x, *y);
+            state.selected = state.hovered_line.map(Selection::Line);
+            EventResponse::Consumed
+        }
+        UiEvent::Delete | UiEvent::Cut | UiEvent::KeyInput { .. } | UiEvent::UndoTextEdit => {
+            EventResponse::Consumed
         }
         _ => EventResponse::Ignored,
     }

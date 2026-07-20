@@ -1,6 +1,7 @@
 use super::primitives::Rect;
 
 pub const TOPBAR_H: f32 = 32.0;
+pub const TABBAR_H: f32 = 36.0;
 pub const TOOLBAR_H: f32 = 76.0;
 pub const PROPS_MIN_W: f32 = 200.0;
 pub const PROPS_MAX_W: f32 = 500.0;
@@ -16,6 +17,7 @@ pub const RYTHMO_MIN_H: f32 = 120.0;
 
 pub struct Layout {
     pub topbar: Rect,
+    pub tabs: Rect,
     pub video_preview: Rect,
     pub toolbar: Rect,
     pub rythmo: Rect,
@@ -36,7 +38,8 @@ impl Layout {
             0.0
         };
         let main_w = screen_w - props_w;
-        let content_h = screen_h - TOPBAR_H;
+        let content_top = TOPBAR_H + TABBAR_H;
+        let content_h = screen_h - content_top;
 
         let free_h = (content_h - TOOLBAR_H).max(0.0);
         let min_split = (VIDEO_MIN_H / free_h.max(1.0)).clamp(0.0, 1.0);
@@ -55,25 +58,32 @@ impl Layout {
             height: TOPBAR_H,
         };
 
+        let tabs = Rect {
+            x: 0.0,
+            y: TOPBAR_H,
+            width: screen_w,
+            height: TABBAR_H,
+        };
+
         // Optional panels live on the left. The whole workspace starts after
         // them, while the topbar always spans the complete window.
         let video_preview = Rect {
             x: props_w,
-            y: TOPBAR_H,
+            y: content_top,
             width: main_w,
             height: video_h,
         };
 
         let toolbar = Rect {
             x: props_w,
-            y: TOPBAR_H + video_h,
+            y: content_top + video_h,
             width: main_w,
             height: TOOLBAR_H,
         };
 
         let rythmo = Rect {
             x: props_w,
-            y: TOPBAR_H + video_h + TOOLBAR_H,
+            y: content_top + video_h + TOOLBAR_H,
             width: main_w,
             height: rythmo_h,
         };
@@ -81,7 +91,7 @@ impl Layout {
         let properties = if props_visible {
             Some(Rect {
                 x: 0.0,
-                y: TOPBAR_H,
+                y: content_top,
                 width: props_w,
                 height: content_h,
             })
@@ -91,6 +101,7 @@ impl Layout {
 
         Self {
             topbar,
+            tabs,
             video_preview,
             toolbar,
             rythmo,
@@ -133,5 +144,23 @@ mod tests {
         assert_eq!(layout.rythmo.x, 320.0);
         assert_eq!(layout.rythmo.width, 880.0);
         assert_eq!(layout.topbar.width, 1200.0);
+        assert_eq!(layout.tabs.y, TOPBAR_H);
+        assert_eq!(layout.tabs.height, TABBAR_H);
+        assert_eq!(layout.properties.unwrap().y, TOPBAR_H + TABBAR_H);
+        assert_eq!(layout.video_preview.y, TOPBAR_H + TABBAR_H);
+    }
+
+    #[test]
+    fn tab_bar_reduces_content_without_changing_minimum_split_contract() {
+        let layout = Layout::compute(1000.0, 600.0, false, 320.0, 0.5);
+
+        assert_eq!(layout.tabs.width, 1000.0);
+        assert!(layout.video_preview.height >= VIDEO_MIN_H);
+        assert!(layout.rythmo.height >= RYTHMO_MIN_H);
+        assert_eq!(
+            layout.rythmo.y + layout.rythmo.height,
+            600.0,
+            "workspace content must still fill the window"
+        );
     }
 }

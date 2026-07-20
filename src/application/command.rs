@@ -3,11 +3,24 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiAction {
     Accessibility(crate::accessibility::AccessibilityEvent),
+    ActivateWorkspace(crate::application::workspace_service::WorkspaceId),
+    RecordingChooseSolo,
+    RecordingChooseOnline,
+    RecordingSetTool(crate::recording::RecordingTool),
+    RecordingToggleTrackMute(crate::recording::AudioTrackId),
+    RecordingToggleTrackSolo(crate::recording::AudioTrackId),
+    RecordingArmTrack(crate::recording::AudioTrackId),
+    RecordingSelectClip {
+        clip_id: crate::recording::AudioClipId,
+        additive: bool,
+    },
+    RecordingSelectAsset(crate::recording::AudioAssetId),
+    RecordingStartCapture,
+    RecordingStopCapture,
     CloseApp,
     CloseSecondaryDisplay,
     Undo,
     Redo,
-    ExitStudioMode,
     AddVideo,
     ImportProject,
     ImportCappelaProject,
@@ -324,9 +337,6 @@ pub enum UiAction {
     ExitApplication,
     ExitApplicationSave,
     ExitApplicationDiscard,
-    // Studio mode
-    EnterStudioMode,
-    ShowStudioWarning,
     ToggleScreenReader,
     CreateLineAtTrack {
         track: usize,
@@ -383,6 +393,112 @@ pub enum UiAction {
         key: String,
     },
     Text(TextCommand),
+}
+
+impl UiAction {
+    /// Document mutations that belong to bande-rythmo authoring.
+    ///
+    /// Recording keeps receiving remote/sync changes, but local UI commands
+    /// matching this list are rejected by the application dispatcher as a
+    /// second line of defence behind the read-only input controller.
+    pub fn mutates_rythmo_project(&self) -> bool {
+        if matches!(self, Self::CopySidePanelLines { cut: true, .. }) {
+            return true;
+        }
+        matches!(
+            self,
+            Self::Undo
+                | Self::Redo
+                | Self::CreateLanguage { .. }
+                | Self::RenameLanguage { .. }
+                | Self::DeleteLanguage { .. }
+                | Self::SelectLanguage { .. }
+                | Self::PickLanguageInstrumentalAudio { .. }
+                | Self::ClearLanguageInstrumentalAudio { .. }
+                | Self::PickProjectInstrumentalAudio
+                | Self::SaveProjectSettings { .. }
+                | Self::DeleteSidePanelLines { .. }
+                | Self::SetLinesRole { .. }
+                | Self::SetRoleColor { .. }
+                | Self::AutomationAddNode { .. }
+                | Self::AutomationAddConnectedNode { .. }
+                | Self::AutomationMoveNode { .. }
+                | Self::AutomationDeleteNode { .. }
+                | Self::AutomationConnect { .. }
+                | Self::AutomationDisconnect { .. }
+                | Self::AutomationAddRole { .. }
+                | Self::AutomationRemoveRole { .. }
+                | Self::AutomationSetTrack { .. }
+                | Self::AutomationSetNodeEnabled { .. }
+                | Self::RenameCharacter { .. }
+                | Self::OffsetActiveAudioBy(_)
+                | Self::CreateLine { .. }
+                | Self::SetSelectedLineStartAtPlayhead
+                | Self::SetSelectedLineEndAtPlayhead
+                | Self::ResizeLine { .. }
+                | Self::MoveLine { .. }
+                | Self::MoveSelectedLineTrack { .. }
+                | Self::NudgeSelectedLines { .. }
+                | Self::MoveLines { .. }
+                | Self::UpdateLineText { .. }
+                | Self::SetCharacter { .. }
+                | Self::SetCharacterColor { .. }
+                | Self::UpdateCharacterName { .. }
+                | Self::FinalizeCharacter { .. }
+                | Self::CreateVoiceActor { .. }
+                | Self::AssignVoiceActorLine { .. }
+                | Self::AssignVoiceActorCharacter { .. }
+                | Self::UnassignVoiceActorLine { .. }
+                | Self::UnassignVoiceActorCharacter { .. }
+                | Self::DeleteSelected
+                | Self::MoveMarker { .. }
+                | Self::AddMarker(_)
+                | Self::AddQuickLine { .. }
+                | Self::ToggleKaraokeForSelection
+                | Self::SetSyllableRatios { .. }
+                | Self::SplitDialogue
+                | Self::CreateLineAtTrack { .. }
+                | Self::AddNote
+                | Self::UpdateLineNote { .. }
+                | Self::SetClipboardAndUpdateLineText { .. }
+                | Self::SetClipboardAndUpdateCharacterName { .. }
+                | Self::SetClipboardAndUpdateLineNote { .. }
+                | Self::CutSelectedLine
+                | Self::PasteLine
+                | Self::AddDrawingStroke(_)
+                | Self::EraseDrawingStrokes(_)
+                | Self::TransformStrokes { .. }
+                | Self::Text(
+                    TextCommand::Cut | TextCommand::Paste | TextCommand::Undo | TextCommand::Delete
+                )
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::workspace_service::WorkspaceId;
+
+    #[test]
+    fn classifies_authoring_actions_for_recording_guard() {
+        assert!(UiAction::MoveLine {
+            id: 1,
+            start_frame: 25,
+            y_slot: 2.0,
+        }
+        .mutates_rythmo_project());
+        assert!(UiAction::Text(TextCommand::Delete).mutates_rythmo_project());
+        assert!(UiAction::CopySidePanelLines {
+            line_ids: vec![1],
+            cut: true,
+        }
+        .mutates_rythmo_project());
+
+        assert!(!UiAction::SeekRelative(1).mutates_rythmo_project());
+        assert!(!UiAction::CopySelectedLine.mutates_rythmo_project());
+        assert!(!UiAction::ActivateWorkspace(WorkspaceId::Recording).mutates_rythmo_project());
+    }
 }
 
 /// Editing-only commands routed by the input layer before they become

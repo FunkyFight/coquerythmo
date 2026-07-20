@@ -20,7 +20,6 @@ use super::rename_character_modal::RenameCharacterModal;
 use super::save_prompt_modal::SavePromptModal;
 use super::server_browser::{AddServerModal, ServerBrowserModal};
 use super::settings_modal::SettingsModal;
-use super::studio_warning_modal::StudioWarningModal;
 use super::voice_actor_modal::VoiceActorModal;
 use super::whats_new_modal::WhatsNewModal;
 
@@ -94,7 +93,6 @@ pub struct ModalHost {
     pub server_browser: Option<ServerBrowserModal>,
     pub add_server: Option<AddServerModal>,
     pub save_prompt: Option<SavePromptModal>,
-    pub studio_warning: Option<StudioWarningModal>,
     pub voice_actor: Option<VoiceActorModal>,
     pub whats_new: Option<WhatsNewModal>,
     pub pricing_page: Option<PricingPage>,
@@ -117,7 +115,6 @@ impl ModalHost {
             server_browser: None,
             add_server: None,
             save_prompt: None,
-            studio_warning: None,
             voice_actor: None,
             whats_new: None,
             pricing_page: None,
@@ -139,7 +136,6 @@ impl ModalHost {
             || self.server_browser.is_some()
             || self.add_server.is_some()
             || self.save_prompt.is_some()
-            || self.studio_warning.is_some()
             || self.voice_actor.is_some()
             || self.whats_new.is_some()
             || self.pricing_page.is_some()
@@ -236,9 +232,6 @@ impl ModalHost {
         }
         if self.project_settings.is_some() {
             return Some(self.handle_project_settings_event(event, screen_w, screen_h));
-        }
-        if self.studio_warning.is_some() {
-            return Some(self.handle_studio_warning_event(event, screen_w, screen_h));
         }
         if self.save_prompt.is_some() {
             return Some(self.handle_save_prompt_event(event, screen_w, screen_h));
@@ -1119,50 +1112,6 @@ impl ModalHost {
         }
     }
 
-    fn handle_studio_warning_event(
-        &mut self,
-        event: &UiEvent,
-        screen_w: f32,
-        screen_h: f32,
-    ) -> ModalOutcome {
-        let focus_navigation = matches!(event, UiEvent::FocusNext | UiEvent::FocusPrevious)
-            || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
-        let result = self
-            .studio_warning
-            .as_mut()
-            .unwrap()
-            .handle_event(event, screen_w, screen_h);
-        if focus_navigation
-            && matches!(
-                &result,
-                &super::studio_warning_modal::StudioWarningResult::Consumed
-            )
-        {
-            if let Some(modal) = self.studio_warning.as_ref() {
-                return ModalOutcome::Action(UiAction::Accessibility(
-                    crate::accessibility::AccessibilityEvent::Focus {
-                        label: modal.keyboard_focus_label(),
-                        role: "button".to_string(),
-                    },
-                ));
-            }
-        }
-        match result {
-            super::studio_warning_modal::StudioWarningResult::Consumed => ModalOutcome::Consumed,
-            super::studio_warning_modal::StudioWarningResult::Confirm => {
-                self.studio_warning = None;
-                action_closed_modal(
-                    UiAction::EnterStudioMode,
-                    crate::i18n::t("studio_warning.title"),
-                )
-            }
-            super::studio_warning_modal::StudioWarningResult::Cancel => {
-                self.studio_warning = None;
-                closed_modal(crate::i18n::t("studio_warning.title"))
-            }
-        }
-    }
-
     fn handle_pricing_event(
         &mut self,
         event: &UiEvent,
@@ -1312,10 +1261,6 @@ impl ModalHost {
         self.save_prompt = Some(super::save_prompt_modal::SavePromptModal::new(kind));
     }
 
-    pub fn open_studio_warning(&mut self) {
-        self.studio_warning = Some(super::studio_warning_modal::StudioWarningModal::new());
-    }
-
     pub fn open_pricing_page(&mut self) {
         self.pricing_page = Some(super::pricing_page::PricingPage::new());
     }
@@ -1435,9 +1380,6 @@ impl ModalHost {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
         if let Some(modal) = &self.save_prompt {
-            modal.render(modal_quads, modal_labels, screen_w, screen_h);
-        }
-        if let Some(modal) = &self.studio_warning {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
     }

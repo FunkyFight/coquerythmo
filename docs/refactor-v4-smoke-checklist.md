@@ -24,14 +24,13 @@ attendu est « identique à la version de référence ».
 - [ ] Dessiner, effacer et transformer un ou plusieurs traits.
 - [ ] Ouvrir, utiliser, fermer et annuler chaque modale existante.
 - [ ] Se connecter à un salon, recevoir une commande distante et demander une synchronisation.
-- [ ] Entrer en mode studio, naviguer entre boucles et en sortir.
+- [ ] Basculer entre Bande rythmo et Enregistrement ; vérifier que la vue reste identique et en lecture seule dans Enregistrement.
 - [ ] Ouvrir l'écran secondaire, vérifier lecture/pause, Échap, redimensionnement et fermeture.
 
 ## Raccourcis à vérifier dans chaque contexte
 
-- [ ] F5 avec et sans vidéo, puis en mode studio.
-- [ ] Échap dans une modale, en édition de texte, en mode studio et sur l'écran secondaire.
-- [ ] Espace dans l'éditeur, le mode studio et l'écran secondaire.
+- [ ] Échap dans une modale, en édition de texte, dans chaque espace et sur l'écran secondaire.
+- [ ] Espace dans chaque espace et sur l'écran secondaire.
 - [ ] Tab, Suppr et les flèches.
 - [ ] Ctrl+K, Ctrl+S, Ctrl+N.
 - [ ] Ctrl+A/C/X/V/Z et Ctrl+Maj+Z en édition de texte et dans l'éditeur.
@@ -40,5 +39,5 @@ attendu est « identique à la version de référence ».
 ## Compatibilité
 
 - [ ] Les textes UI, valeurs par défaut, chemins initiaux et filtres de fichiers sont inchangés.
-- [ ] Aucun onglet, sélecteur d'espace de travail ou fonctionnalité d'enregistrement n'est visible.
+- [ ] Les onglets d'espace sont visibles, navigables au clavier et annoncent correctement leur sélection.
 - [ ] Rejouer la checklist sur Windows ; exécuter les variantes de plateformes déjà supportées lorsque disponibles.

@@ -1,6 +1,7 @@
 use super::bootstrap;
 use super::dispatcher::{dispatch, CommandDispatcher};
 use crate::application::edit_service::EditExecutor;
+use crate::application::workspace_service::WorkspaceId;
 use crate::config;
 use crate::i18n;
 use crate::input::context::{InputContext, InputContextStack};
@@ -8,7 +9,6 @@ use crate::input::key::{InputWindow, KeyStroke, Modifiers};
 use crate::input::router::existing_shortcuts;
 use crate::platform;
 use crate::state::State;
-use crate::ui;
 use crate::ui::primitives::{UiAction, UiEvent};
 use crate::update;
 use std::path::PathBuf;
@@ -100,6 +100,8 @@ pub(crate) fn new_project_reset_and_pick_video(
 ) {
     state.clear_video_for_new_project();
     EditExecutor::reset(&mut state.project_session);
+    state.recording_runtime = crate::recording_runtime::RecordingRuntime::new();
+    state.ui_shell.ui.reset_recording_workspace();
     crate::vector_text::clear_project_font();
     state.render.ui_renderer.clear_text_cache();
     CommandDispatcher::dispatch(UiAction::AddVideo, state, elwt);
@@ -108,6 +110,8 @@ pub(crate) fn new_project_reset_and_pick_video(
 pub(crate) fn close_project_reset(state: &mut State) {
     state.clear_video_for_new_project();
     EditExecutor::reset(&mut state.project_session);
+    state.recording_runtime = crate::recording_runtime::RecordingRuntime::new();
+    state.ui_shell.ui.reset_recording_workspace();
     crate::vector_text::clear_project_font();
     state.render.ui_renderer.clear_text_cache();
 }
@@ -377,7 +381,7 @@ pub fn run(startup_path: Option<PathBuf>) {
                     if event.state == ElementState::Released {
                         if !state.is_editing_text()
                             && !state.captures_modal_input()
-                            && !state.is_studio_mode()
+                            && state.active_workspace() == WorkspaceId::Rythmo
                         {
                             if let Some(stroke) = KeyStroke::from_winit(
                                 &event,
@@ -558,7 +562,7 @@ pub fn run(startup_path: Option<PathBuf>) {
                         if matches!(event.logical_key, Key::Named(NamedKey::Escape))
                             && !state.captures_modal_input()
                             && !state.is_editing_text()
-                            && !state.is_studio_mode()
+                            && state.active_workspace() == WorkspaceId::Rythmo
                             && !state.side_panel_open()
                             && state.has_selected_lines()
                         {
@@ -748,15 +752,11 @@ pub fn run(startup_path: Option<PathBuf>) {
                             contexts.push(InputContext::MainWindow);
                             contexts.push(InputContext::Global);
                         } else if !state.is_editing_text() {
-                            if state.video_path().is_some() {
-                                contexts.push(InputContext::VideoLoaded);
+                            match state.active_workspace() {
+                                WorkspaceId::Rythmo => contexts.push(InputContext::Workspace),
+                                WorkspaceId::Recording => contexts.push(InputContext::Recording),
                             }
-                            if state.is_studio_mode() {
-                                contexts.push(InputContext::Studio);
-                            } else {
-                                contexts.push(InputContext::Workspace);
-                                contexts.push(InputContext::Global);
-                            }
+                            contexts.push(InputContext::Global);
                         }
                         let context_stack = InputContextStack::new(contexts);
                         if let Some(stroke) = KeyStroke::from_winit(
@@ -776,33 +776,6 @@ pub fn run(startup_path: Option<PathBuf>) {
                                 return;
                             }
                         }
-                        // F5: show studio warning if video is loaded
-                        if matches!(event.logical_key, Key::Named(NamedKey::F5)) && state.video_path().is_some() {
-                            dispatch_key_action(
-                                UiAction::ShowStudioWarning,
-                                &event,
-                                keyboard_modifiers,
-                                InputWindow::Main,
-                                &mut state,
-                                elwt,
-                            );
-                            state.request_redraw();
-                            return;
-                        }
-                        // ESCAPE: exit studio mode if active
-                        if matches!(event.logical_key, Key::Named(NamedKey::Escape)) && state.is_studio_mode() {
-                            dispatch_key_action(
-                                UiAction::ExitStudioMode,
-                                &event,
-                                keyboard_modifiers,
-                                InputWindow::Main,
-                                &mut state,
-                                elwt,
-                            );
-                            state.request_redraw();
-                            return;
-                        }
-
                         let key_text = match &event.logical_key {
                             Key::Named(NamedKey::Escape) => Some("\x1b"),
                             Key::Named(NamedKey::Backspace) => Some("\x08"),
@@ -875,6 +848,10 @@ pub fn run(startup_path: Option<PathBuf>) {
                             dispatch(navigation_event, &mut state, elwt);
                             return;
                         }
+                        if state.focused_workspace_tab() && is_space_key(&event.logical_key) {
+                            dispatch(UiEvent::Activate, &mut state, elwt);
+                            return;
+                        }
                         if state.side_panel_open() && is_space_key(&event.logical_key) {
                             dispatch(
                                 UiEvent::KeyInput {
@@ -924,20 +901,7 @@ pub fn run(startup_path: Option<PathBuf>) {
                             }
                         }
 
-                        if state.is_studio_mode() {
-                            // In studio mode: only Space (play/pause) is allowed
-                            if is_space_key(&event.logical_key) {
-                                dispatch_key_action(
-                                    UiAction::TogglePlayPause,
-                                    &event,
-                                    keyboard_modifiers,
-                                    InputWindow::Main,
-                                    &mut state,
-                                    elwt,
-                                );
-                                state.request_redraw();
-                            }
-                        } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("k")) {
+                        if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("k")) {
                             dispatch_key_action(
                                 UiAction::SplitDialogue,
                                 &event,
@@ -1119,30 +1083,12 @@ pub fn run(startup_path: Option<PathBuf>) {
                         winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                         winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 40.0,
                     };
-                    if state.is_studio_mode() {
-                        // In studio mode: scroll navigates between boucles
-                        // Positive delta (scroll up) = forward (+1), negative delta (scroll down) = backward (-1)
-                        let direction = if scroll_delta > 0.0 { 1 } else { -1 };
-                        if ctrl_held {
-                            // CTRL+SHIFT+scroll: jump to next/prev boucle
-                            CommandDispatcher::dispatch(UiAction::SeekToNextBoucle { direction }, &mut state, elwt);
-                        } else {
-                            // Regular scroll: seek by frames
-                            let frame_delta = ui::shell::scroll_delta_to_frames(scroll_delta, 10.0);
-                            if frame_delta != 0 {
-                                CommandDispatcher::dispatch(UiAction::SeekRelative(frame_delta), &mut state, elwt);
-                            }
-                        }
-                        state.request_redraw();
-                    } else {
-                        dispatch(UiEvent::Scroll {
-                            x: cursor_pos.0, y: cursor_pos.1, delta: scroll_delta, fast: shift_held, ctrl: ctrl_held,
-                        }, &mut state, elwt);
-                    }
+                    dispatch(UiEvent::Scroll {
+                        x: cursor_pos.0, y: cursor_pos.1, delta: scroll_delta, fast: shift_held, ctrl: ctrl_held,
+                    }, &mut state, elwt);
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     cursor_pos = state.window_to_ui_position(position.x as f32, position.y as f32);
-                    // Always dispatch mouse move (needed for panning in studio mode)
                     dispatch(UiEvent::MouseMove {
                         x: cursor_pos.0, y: cursor_pos.1,
                     }, &mut state, elwt);
@@ -1182,47 +1128,44 @@ pub fn run(startup_path: Option<PathBuf>) {
                     // Windows tablets can expose the pen as a touch stream
                     // instead of a mouse stream. Feed that stream through the
                     // same pointer events used by the drawing tool.
-                    if !state.is_studio_mode() {
-                        cursor_pos = state.window_to_ui_position(
-                            touch.location.x as f32,
-                            touch.location.y as f32,
-                        );
-                        match touch.phase {
-                            TouchPhase::Started => dispatch(
-                                UiEvent::MousePress {
-                                    x: cursor_pos.0,
-                                    y: cursor_pos.1,
-                                },
-                                &mut state,
-                                elwt,
-                            ),
-                            TouchPhase::Moved => dispatch(
-                                UiEvent::MouseMove {
-                                    x: cursor_pos.0,
-                                    y: cursor_pos.1,
-                                },
-                                &mut state,
-                                elwt,
-                            ),
-                            TouchPhase::Ended | TouchPhase::Cancelled => dispatch(
-                                UiEvent::MouseRelease {
-                                    x: cursor_pos.0,
-                                    y: cursor_pos.1,
-                                },
-                                &mut state,
-                                elwt,
-                            ),
-                        }
-                        state.request_redraw();
+                    cursor_pos = state.window_to_ui_position(
+                        touch.location.x as f32,
+                        touch.location.y as f32,
+                    );
+                    match touch.phase {
+                        TouchPhase::Started => dispatch(
+                            UiEvent::MousePress {
+                                x: cursor_pos.0,
+                                y: cursor_pos.1,
+                            },
+                            &mut state,
+                            elwt,
+                        ),
+                        TouchPhase::Moved => dispatch(
+                            UiEvent::MouseMove {
+                                x: cursor_pos.0,
+                                y: cursor_pos.1,
+                            },
+                            &mut state,
+                            elwt,
+                        ),
+                        TouchPhase::Ended | TouchPhase::Cancelled => dispatch(
+                            UiEvent::MouseRelease {
+                                x: cursor_pos.0,
+                                y: cursor_pos.1,
+                            },
+                            &mut state,
+                            elwt,
+                        ),
                     }
+                    state.request_redraw();
                 }
                 WindowEvent::MouseInput {
                     state: ref button_state,
                     button: MouseButton::Left,
                     ..
                 } => {
-                    if !state.is_studio_mode() {
-                        match button_state {
+                    match button_state {
                             ElementState::Pressed => {
                                 let now = Instant::now();
                                 let is_double = last_click_time
@@ -1255,7 +1198,6 @@ pub fn run(startup_path: Option<PathBuf>) {
                                 // Broadcast coalesced command on drag end
                                 state.broadcast_finalize();
                             }
-                        }
                     }
                 }
                 WindowEvent::MouseInput {
@@ -1263,12 +1205,8 @@ pub fn run(startup_path: Option<PathBuf>) {
                     button: MouseButton::Middle,
                     ..
                 } => {
-                    // Allow middle click panning in both editor and studio modes
                     match button_state {
                         ElementState::Pressed => {
-                            if state.is_studio_mode() {
-                                state.begin_timeline_pan(cursor_pos.0);
-                            }
                             dispatch(UiEvent::MiddlePress {
                                 x: cursor_pos.0, y: cursor_pos.1,
                             }, &mut state, elwt);
@@ -1285,7 +1223,7 @@ pub fn run(startup_path: Option<PathBuf>) {
                     button: MouseButton::Right,
                     ..
                 } => {
-                    if !state.is_studio_mode() && matches!(button_state, ElementState::Pressed) {
+                    if matches!(button_state, ElementState::Pressed) {
                         dispatch(UiEvent::ContextMenu {
                             x: cursor_pos.0,
                             y: cursor_pos.1,
