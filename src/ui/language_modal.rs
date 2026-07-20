@@ -24,16 +24,29 @@ pub struct LanguageListItem {
 pub enum LanguageModalResult {
     Consumed,
     Close,
-    Create { name: String },
-    Rename { id: u64, name: String },
-    Delete { id: u64 },
-    Select { id: u64 },
+    Create {
+        name: String,
+    },
+    Rename {
+        id: u64,
+        name: String,
+    },
+    Delete {
+        id: u64,
+    },
+    Select {
+        id: u64,
+    },
     SetSyllableLanguage {
         id: u64,
         language: crate::project::SyllableLanguage,
     },
-    PickInstrumental { id: u64 },
-    ClearInstrumental { id: u64 },
+    PickInstrumental {
+        id: u64,
+    },
+    ClearInstrumental {
+        id: u64,
+    },
 }
 
 pub struct LanguageModal {
@@ -805,9 +818,7 @@ impl LanguageModal {
     }
 }
 
-pub(super) fn syllable_language_label(
-    language: crate::project::SyllableLanguage,
-) -> &'static str {
+pub(super) fn syllable_language_label(language: crate::project::SyllableLanguage) -> &'static str {
     match language {
         crate::project::SyllableLanguage::French => t("languages.syllables.french"),
         crate::project::SyllableLanguage::English => t("languages.syllables.english"),
@@ -880,27 +891,17 @@ mod tests {
 
     #[test]
     fn syllable_language_control_has_keyboard_and_pointer_parity() {
-        let mut modal = LanguageModal::new(
-            vec![item(crate::project::SyllableLanguage::French)],
-            1,
-        );
+        let mut modal = LanguageModal::new(vec![item(crate::project::SyllableLanguage::French)], 1);
         modal.keyboard_focus = 7;
         assert_eq!(
-            modal.handle_event(
-                &UiEvent::KeyInput { text: "".into() },
-                1280.0,
-                720.0,
-            ),
+            modal.handle_event(&UiEvent::KeyInput { text: "\r".into() }, 1280.0, 720.0,),
             LanguageModalResult::SetSyllableLanguage {
                 id: 1,
                 language: crate::project::SyllableLanguage::English,
             }
         );
 
-        modal.refresh(
-            vec![item(crate::project::SyllableLanguage::English)],
-            1,
-        );
+        modal.refresh(vec![item(crate::project::SyllableLanguage::English)], 1);
         let details = LanguageModal::details_rect(LanguageModal::card(1280.0, 720.0));
         let french = LanguageModal::syllable_option_rect(details, 0);
         assert_eq!(
@@ -922,26 +923,23 @@ mod tests {
 
     #[test]
     fn tab_and_shift_tab_reach_the_syllable_control_deterministically() {
-        let mut modal = LanguageModal::new(
-            vec![item(crate::project::SyllableLanguage::French)],
-            1,
-        );
+        let mut modal = LanguageModal::new(vec![item(crate::project::SyllableLanguage::French)], 1);
         modal.handle_event(
-            &UiEvent::KeyInput { text: "\u{b}".into() },
+            &UiEvent::KeyInput {
+                text: "\u{b}".into(),
+            },
             1280.0,
             720.0,
         );
         assert_eq!(modal.keyboard_focus, CONTROL_COUNT - 1);
         for _ in 0..8 {
-            modal.handle_event(
-                &UiEvent::KeyInput { text: "	".into() },
-                1280.0,
-                720.0,
-            );
+            modal.handle_event(&UiEvent::KeyInput { text: "\t".into() }, 1280.0, 720.0);
         }
         assert_eq!(modal.keyboard_focus, 7);
         assert_eq!(modal.keyboard_focus_role(), "radio group");
-        assert!(modal.keyboard_focus_label().contains(t("languages.syllables")));
+        assert!(modal
+            .keyboard_focus_label()
+            .contains(t("languages.syllables")));
     }
 
     #[test]

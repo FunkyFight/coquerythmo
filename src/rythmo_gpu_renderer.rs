@@ -139,11 +139,7 @@ fn push_karaoke_dot(
     let Some(progress) = line.karaoke_progress(current_frame) else {
         return;
     };
-    let ratios = crate::syllable::timing_ratios(
-        &line.text,
-        &line.syllable_ratios,
-        lang,
-    );
+    let ratios = crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
     let local_progress = crate::syllable::active_syllable_local_progress(&ratios, progress)
         .unwrap_or(progress)
         .clamp(0.0, 1.0);

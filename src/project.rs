@@ -1877,19 +1877,16 @@ mod tests {
     fn syllable_language_is_scoped_to_each_language_band() {
         let mut project = Project::new_with_language("Français", "fr-fr");
         let french_id = project.active_language_id();
-        let line_id = project.add_line_full(
-            0,
-            48,
-            0.5,
-            "tambourine".into(),
-            "A".into(),
-            [1.0; 4],
-        );
+        let line_id = project.add_line_full(0, 48, 0.5, "tambourine".into(), "A".into(), [1.0; 4]);
         project.get_line_mut(line_id).unwrap().syllable_ratios = vec![0.25, 0.75];
 
         let english_id = project.create_language("English", "en");
         assert_eq!(project.syllable_language(), SyllableLanguage::English);
-        assert!(project.get_line(line_id).unwrap().syllable_ratios.is_empty());
+        assert!(project
+            .get_line(line_id)
+            .unwrap()
+            .syllable_ratios
+            .is_empty());
 
         assert!(project.select_language(french_id));
         assert_eq!(project.syllable_language(), SyllableLanguage::French);
@@ -1907,23 +1904,17 @@ mod tests {
     fn changing_syllable_language_resets_only_the_target_band() {
         let mut project = Project::new_with_language("Français", "fr-fr");
         let french_id = project.active_language_id();
-        let line_id = project.add_line_full(
-            0,
-            48,
-            0.5,
-            "Bonjour".into(),
-            "A".into(),
-            [1.0; 4],
-        );
+        let line_id = project.add_line_full(0, 48, 0.5, "Bonjour".into(), "A".into(), [1.0; 4]);
         project.get_line_mut(line_id).unwrap().syllable_ratios = vec![0.4, 0.6];
         let english_id = project.create_language("English", "en");
         project.get_line_mut(line_id).unwrap().syllable_ratios = vec![0.2, 0.3, 0.5];
 
-        assert!(project.set_language_syllable_language(
-            english_id,
-            SyllableLanguage::French
-        ));
-        assert!(project.get_line(line_id).unwrap().syllable_ratios.is_empty());
+        assert!(project.set_language_syllable_language(english_id, SyllableLanguage::French));
+        assert!(project
+            .get_line(line_id)
+            .unwrap()
+            .syllable_ratios
+            .is_empty());
 
         assert!(project.select_language(french_id));
         assert_eq!(
