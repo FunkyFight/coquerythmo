@@ -194,6 +194,24 @@ pub fn handle_rythmo_event(
         }
     }
 
+    // Once a syllable handle owns the pointer, detection hover must not consume
+    // its move or release events. This keeps shifted handles interactive.
+    if state.syllable_drag.is_some() {
+        match event {
+            UiEvent::MouseMove { x, .. } => {
+                if let Some(response) = syllable_mouse_move(state, *x) {
+                    return response;
+                }
+            }
+            UiEvent::MouseRelease { .. } => {
+                if let Some(response) = syllable_mouse_release(state) {
+                    return response;
+                }
+            }
+            _ => {}
+        }
+    }
+
     if let Some(response) = handle_detection_event(&ctx, event, state) {
         return response;
     }
@@ -230,12 +248,9 @@ pub fn handle_rythmo_event(
         UiEvent::ShiftCursorLeft => handle_cursor_move(&ctx, state, -1, true),
         UiEvent::ShiftCursorRight => handle_cursor_move(&ctx, state, 1, true),
         UiEvent::SelectWordLeft => handle_word_selection(&ctx, state, -1),
-        UiEvent::SelectWordRight => handle_word_selection(&ctx, state, 1),
+        UiEvent::SelectWordRight => handle_word_selection(&ctx, state, 1, true),
         UiEvent::CursorUp => {
             if state.editing_line.is_some() || state.editing_note.is_some() {
-                // A line/note editor is single-line: Up/Down have no
-                // vertical target, but must still be consumed so they never
-                // fall through to the workspace volume shortcuts.
                 EventResponse::Consumed
             } else {
                 handle_autocomplete_nav(&ctx, state, -1)
