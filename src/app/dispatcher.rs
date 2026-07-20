@@ -213,6 +213,26 @@ impl CommandDispatcher {
         elwt: &EventLoopWindowTarget<AppEvent>,
         announce_action: bool,
     ) -> bool {
+        if !config::dev_mode()
+            && matches!(
+                &action,
+                UiAction::ActivateWorkspace(
+                    crate::application::workspace_service::WorkspaceId::Recording
+                ) | UiAction::RecordingChooseSolo
+                    | UiAction::RecordingChooseOnline
+                    | UiAction::RecordingSetTool(_)
+                    | UiAction::RecordingToggleTrackMute(_)
+                    | UiAction::RecordingToggleTrackSolo(_)
+                    | UiAction::RecordingArmTrack(_)
+                    | UiAction::RecordingSelectClip { .. }
+                    | UiAction::RecordingSelectAsset(_)
+                    | UiAction::RecordingStartCapture
+                    | UiAction::RecordingStopCapture
+            )
+        {
+            return false;
+        }
+
         if state.active_workspace() == crate::application::workspace_service::WorkspaceId::Recording
             && action.mutates_rythmo_project()
         {

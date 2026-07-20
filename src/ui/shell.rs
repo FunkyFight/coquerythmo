@@ -332,6 +332,10 @@ pub(crate) fn build_workspace_tabs(
     layout: &Layout,
     active_workspace: WorkspaceId,
 ) -> Vec<Box<dyn Widget>> {
+    if !crate::config::dev_mode() {
+        return Vec::new();
+    }
+
     let tab_width = 164.0;
     let gap = 4.0;
     let y = layout.tabs.y + 2.0;
