@@ -17,7 +17,7 @@ permissions:
 
 concurrency:
   group: detection-editor-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   implement-and-test:
@@ -37,6 +37,9 @@ jobs:
           else
             echo "applied=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.status.outputs.applied == 'false'
 
       - name: Apply integration patch
         if: steps.status.outputs.applied == 'false'
