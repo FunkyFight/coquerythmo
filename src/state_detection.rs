@@ -21,11 +21,15 @@ use std::time::Duration;
 static AUDITION_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 impl State {
+    fn selected_detection_address(&self) -> Option<DetectionAddress> {
+        match self.ui_shell.ui.rythmo_state().selected.as_ref() {
+            Some(Selection::Detection(address)) => Some(*address),
+            _ => None,
+        }
+    }
+
     pub fn has_selected_detection(&self) -> bool {
-        matches!(
-            self.ui_shell.ui.rythmo_state().selected,
-            Some(Selection::Detection(_))
-        )
+        self.selected_detection_address().is_some()
     }
 
     pub fn rythmo_detection_hovered(&self) -> bool {
@@ -40,7 +44,7 @@ impl State {
     }
 
     pub fn focus_detection_parent_line(&mut self) {
-        let Some(Selection::Detection(address)) = self.ui_shell.ui.rythmo_state().selected else {
+        let Some(address) = self.selected_detection_address() else {
             return;
         };
         self.ui_shell.ui.rythmo_state.selected = if address.track().is_some() {
@@ -83,11 +87,12 @@ impl State {
             media_tick,
             target,
         };
-        let change = DetectionChange::Add {
-            address,
-            cue: cue.clone(),
-        };
-        self.execute_detection_command(Command::Detection { change });
+        self.execute_detection_command(Command::Detection {
+            change: DetectionChange::Add {
+                address,
+                cue: cue.clone(),
+            },
+        });
         self.ui_shell.ui.rythmo_state.selected = Some(Selection::Detection(address));
         self.announce_detection_visual(kind, "ajouté");
     }
@@ -105,12 +110,13 @@ impl State {
         if cue.media_tick == media_tick {
             return;
         }
-        let change = DetectionChange::Move {
-            address,
-            old_tick: cue.media_tick,
-            new_tick: media_tick,
+        let command = Command::Detection {
+            change: DetectionChange::Move {
+                address,
+                old_tick: cue.media_tick,
+                new_tick: media_tick,
+            },
         };
-        let command = Command::Detection { change };
         let can_coalesce = matches!(
             self.project_session.history.last(),
             Some(Command::Detection {
@@ -151,12 +157,10 @@ impl State {
             return;
         };
         let kind = cue.kind;
-        let change = DetectionChange::Remove { address, cue };
-        self.execute_detection_command(Command::Detection { change });
-        if matches!(
-            self.ui_shell.ui.rythmo_state().selected,
-            Some(Selection::Detection(selected)) if selected == address
-        ) {
+        self.execute_detection_command(Command::Detection {
+            change: DetectionChange::Remove { address, cue },
+        });
+        if self.selected_detection_address() == Some(address) {
             self.ui_shell.ui.rythmo_state.selected = None;
         }
         self.ui_shell.ui.rythmo_state.detection_drag = None;
@@ -164,13 +168,13 @@ impl State {
     }
 
     pub fn delete_selected_detection(&mut self) {
-        if let Some(Selection::Detection(address)) = self.ui_shell.ui.rythmo_state().selected {
+        if let Some(address) = self.selected_detection_address() {
             self.delete_detection(address);
         }
     }
 
     pub fn nudge_selected_detection(&mut self, delta_ticks: i64) {
-        let Some(Selection::Detection(address)) = self.ui_shell.ui.rythmo_state().selected else {
+        let Some(address) = self.selected_detection_address() else {
             return;
         };
         if delta_ticks == 0 {
@@ -193,12 +197,11 @@ impl State {
         self.announce_detection_visual(cue.kind, "déplacé");
     }
 
-    /// Ctrl+Space audition: decode exactly the available two seconds before and
-    /// after the selected sign, mix a short beep at the sign, and play the
-    /// preview through the default output device. This is independent from the
-    /// main player, so it stops precisely at the end of the four-second window.
+    /// Ctrl+Space decodes the available two seconds before and after the
+    /// selected source sign, mixes a short beep exactly at the sign and plays
+    /// the bounded preview through the default output device.
     pub fn audition_selected_detection(&mut self) {
-        let Some(Selection::Detection(address)) = self.ui_shell.ui.rythmo_state().selected else {
+        let Some(address) = self.selected_detection_address() else {
             return;
         };
         let fps = self.fps().max(1.0);
@@ -288,7 +291,7 @@ impl State {
         self.broadcast_detection_sync();
     }
 
-    fn broadcast_detection_sync(&self) {
+    fn broadcast_detection_sync(&mut self) {
         if !self.collaboration.network.is_in_room() {
             return;
         }
@@ -298,8 +301,8 @@ impl State {
             .send_raw("sync", serde_json::json!({ "project": data }));
     }
 
-    /// Screen readers are told only what visual object changed. Sign type,
-    /// track, timecode and surrounding dialogue remain deliberately silent.
+    /// AccessKit receives only the visual object and operation. Sign type,
+    /// track, timecode and dialogue content are intentionally omitted.
     fn announce_detection_visual(&self, kind: DetectionKind, verb: &str) {
         let object = if kind.is_sync_point() {
             "Point de synchronisation"
@@ -372,16 +375,19 @@ fn play_detection_preview(
 
     let target_frames = (duration_seconds * sample_rate as f64).ceil() as usize;
     let target_samples = target_frames.saturating_mul(channels);
-    let silence_samples = (leading_silence_seconds * sample_rate as f64).round() as usize * channels;
+    let silence_samples =
+        (leading_silence_seconds * sample_rate as f64).round() as usize * channels;
     let mut samples = vec![0.0_f32; target_samples];
-    let copy_len = decoded.len().min(samples.len().saturating_sub(silence_samples));
+    let copy_len = decoded
+        .len()
+        .min(samples.len().saturating_sub(silence_samples));
     if copy_len > 0 {
-        samples[silence_samples..silence_samples + copy_len].copy_from_slice(&decoded[..copy_len]);
+        samples[silence_samples..silence_samples + copy_len]
+            .copy_from_slice(&decoded[..copy_len]);
     }
     for sample in &mut samples {
         *sample *= volume;
     }
-
     mix_detection_beep(
         &mut samples,
         channels,
@@ -392,9 +398,15 @@ fn play_detection_preview(
 
     let shared = Arc::new(Mutex::new((samples, 0usize)));
     let stream = match supported.sample_format() {
-        cpal::SampleFormat::F32 => build_preview_stream::<f32>(&device, &config, shared, generation),
-        cpal::SampleFormat::I16 => build_preview_stream::<i16>(&device, &config, shared, generation),
-        cpal::SampleFormat::U16 => build_preview_stream::<u16>(&device, &config, shared, generation),
+        cpal::SampleFormat::F32 => {
+            build_preview_stream::<f32>(&device, &config, shared, generation)
+        }
+        cpal::SampleFormat::I16 => {
+            build_preview_stream::<i16>(&device, &config, shared, generation)
+        }
+        cpal::SampleFormat::U16 => {
+            build_preview_stream::<u16>(&device, &config, shared, generation)
+        }
         format => return Err(format!("format audio non pris en charge: {format:?}")),
     }?;
     stream
@@ -428,7 +440,9 @@ fn mix_detection_beep(
         let value = phase.sin() * amplitude * envelope;
         let output_frame = start_frame + frame;
         for channel in 0..channels {
-            let index = output_frame.saturating_mul(channels).saturating_add(channel);
+            let index = output_frame
+                .saturating_mul(channels)
+                .saturating_add(channel);
             if let Some(sample) = samples.get_mut(index) {
                 *sample = (*sample + value).clamp(-1.0, 1.0);
             }
@@ -464,7 +478,7 @@ where
                         0.0
                     };
                     *output_sample = T::from_sample(value);
-                    *cursor = cursor.saturating_add(1);
+                    *cursor = (*cursor).saturating_add(1);
                 }
             },
             move |error| log::warn!("Detection preview stream error: {error}"),
