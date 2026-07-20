@@ -1,0 +1,90 @@
+name: Finalize language syllabification PR
+
+on:
+  push:
+    branches:
+      - agent/language-syllabification-pr
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: ${{ !contains(github.event.head_commit.message, '[agent finalized]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libasound2-dev libudev-dev
+
+      - name: Preserve syllable language on project reset
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/project.rs')
+          text = path.read_text(encoding='utf-8')
+          old = '''        self.language_order.push(self.active_language.id);
+        let mut settings = ProjectSettings::default();
+        settings
+            .export_configuration'''
+          new = '''        self.language_order.push(self.active_language.id);
+        let mut settings = ProjectSettings {
+            syllable_language: SyllableLanguage::from_code(&self.active_language.code),
+            ..ProjectSettings::default()
+        };
+        settings
+            .export_configuration'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one reset settings block, found {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          anchor = '''    #[test]
+    fn export_configuration_is_shared_across_language_switches() {
+'''
+          tests = '''    #[test]
+    fn reset_keeps_the_active_languages_syllable_language() {
+        let mut project = Project::new_with_language("English", "en");
+        assert_eq!(project.syllable_language(), SyllableLanguage::English);
+
+        project.reset();
+
+        assert_eq!(project.syllable_language(), SyllableLanguage::English);
+    }
+
+    #[test]
+    fn legacy_project_settings_default_to_french_syllabification() {
+        let settings: ProjectSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.syllable_language, SyllableLanguage::French);
+    }
+
+'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f'expected one project test anchor, found {text.count(anchor)}')
+          path.write_text(text.replace(anchor, tests + anchor, 1), encoding='utf-8')
+          PY
+
+      - name: Validate
+        run: |
+          cargo fmt --all
+          cargo check --lib
+          cargo test --lib syllable_language -- --nocapture
+          cargo test --lib language_modal -- --nocapture
+          cargo test --lib
+          git diff --check
+
+      - name: Commit source and self-clean
+        run: |
+          rm -f .agent-finalize-language-pr-trigger
+          rm -f .github/workflows/agent-finalize-language-pr.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m '[agent finalized] Add per-language syllabification'
+          git push
