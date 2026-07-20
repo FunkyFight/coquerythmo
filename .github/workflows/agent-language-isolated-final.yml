@@ -17,18 +17,62 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Normalize and capture outcome
+      - name: Normalize domain and catalogs
         shell: bash
         run: |
           set +e
           report=.agent-normalization-report.txt
           : > "$report"
 
-          python3 scripts/agent_fix_language_test_literals.py > /tmp/literals.log 2>&1
-          literal_status=$?
-          echo "LITERAL_STATUS=$literal_status" >> "$report"
-          if [ "$literal_status" -ne 0 ]; then
-            cat /tmp/literals.log >> "$report"
+          python3 - <<'PY' > /tmp/domain.log 2>&1
+          from pathlib import Path
+          path = Path('src/project.rs')
+          text = path.read_text(encoding='utf-8')
+
+          old_reset = '''        self.language_order.push(self.active_language.id);
+        let mut settings = ProjectSettings::default();
+        settings
+            .export_configuration'''
+          new_reset = '''        self.language_order.push(self.active_language.id);
+        let mut settings = ProjectSettings {
+            syllable_language: SyllableLanguage::from_code(&self.active_language.code),
+            ..ProjectSettings::default()
+        };
+        settings
+            .export_configuration'''
+          if text.count(old_reset) != 1:
+              raise SystemExit(f'expected one reset settings block, found {text.count(old_reset)}')
+          text = text.replace(old_reset, new_reset, 1)
+
+          anchor = '''    #[test]
+    fn export_configuration_is_shared_across_language_switches() {
+'''
+          tests = '''    #[test]
+    fn reset_keeps_the_active_languages_syllable_language() {
+        let mut project = Project::new_with_language("English", "en");
+        assert_eq!(project.syllable_language(), SyllableLanguage::English);
+
+        project.reset();
+
+        assert_eq!(project.syllable_language(), SyllableLanguage::English);
+    }
+
+    #[test]
+    fn legacy_project_settings_default_to_french_syllabification() {
+        let settings: ProjectSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.syllable_language, SyllableLanguage::French);
+    }
+
+'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f'expected one test anchor, found {text.count(anchor)}')
+          text = text.replace(anchor, tests + anchor, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+          domain_status=$?
+          echo "DOMAIN_STATUS=$domain_status" >> "$report"
+          if [ "$domain_status" -ne 0 ]; then
+            cat /tmp/domain.log >> "$report"
           fi
 
           git fetch origin main --depth=1 > /tmp/fetch.log 2>&1
@@ -44,16 +88,18 @@ jobs:
           from pathlib import Path
           path = Path('i18n/en.toml')
           data = path.read_bytes()
-          old = b'"languages.clear_instrumental" = "Remove instrumental"'
-          newline = b'\r\n' if b'\r\n' in data else b'\n'
-          new = newline.join([
-              old,
+          old = b'"languages.clear_instrumental" = "Remove instrumental"\r\n'
+          if data.count(old) != 1:
+              old = b'"languages.clear_instrumental" = "Remove instrumental"\n'
+          if data.count(old) != 1:
+              raise SystemExit(f'expected one English language anchor, found {data.count(old)}')
+          new = b'\n'.join([
+              b'"languages.clear_instrumental" = "Remove instrumental"',
               b'"languages.syllables" = "Syllable language"',
               b'"languages.syllables.french" = "French"',
               b'"languages.syllables.english" = "English"',
+              b'',
           ])
-          if data.count(old) != 1:
-              raise SystemExit(f'expected one English language anchor, found {data.count(old)}')
           path.write_bytes(data.replace(old, new, 1))
           PY
             english_status=$?
@@ -82,5 +128,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
-          git commit -m '[agent normalization] Normalize per-language syllabification source'
+          git commit -m '[agent normalization] Normalize domain and catalogs'
           git push
