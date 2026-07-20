@@ -1,0 +1,474 @@
+//! State-level integration for track detections and text synchronization.
+
+use crate::accessibility::AccessibilityEvent;
+use crate::application::edit_service::{EditExecutor, EditOrigin};
+use crate::command::Command;
+use crate::detection::{
+    DetectionAddress, DetectionChange, DetectionCue, DetectionCueId, DetectionKind,
+    LineDetectionData, MediaTick, TextAnchor,
+};
+use crate::packet::ProjectData;
+use crate::state::State;
+use crate::workspaces::rythmo::view::Selection;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, Sample, SizedSample};
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+static AUDITION_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+impl State {
+    pub fn has_selected_detection(&self) -> bool {
+        matches!(
+            self.ui_shell.ui.rythmo_state().selected,
+            Some(Selection::Detection(_))
+        )
+    }
+
+    pub fn rythmo_detection_hovered(&self) -> bool {
+        self.ui_shell.ui.rythmo_state().detection_hover.is_some()
+    }
+
+    pub fn open_detection_palette_from_hover(&mut self) -> bool {
+        self.ui_shell
+            .ui
+            .rythmo_state
+            .open_detection_palette_from_hover()
+    }
+
+    pub fn focus_detection_parent_line(&mut self) {
+        let Some(Selection::Detection(address)) = self.ui_shell.ui.rythmo_state().selected else {
+            return;
+        };
+        self.ui_shell.ui.rythmo_state.selected = if address.track().is_some() {
+            None
+        } else if self.project_session.project.get_line(address.line_id).is_some() {
+            Some(Selection::Line(address.line_id))
+        } else {
+            None
+        };
+        self.ui_shell.ui.rythmo_state.detection_drag = None;
+    }
+
+    pub fn add_detection(
+        &mut self,
+        line_id: u64,
+        kind: DetectionKind,
+        media_tick: MediaTick,
+        target: TextAnchor,
+    ) {
+        if target.validate().is_err() {
+            return;
+        }
+        let detection_id = self
+            .project_session
+            .project
+            .detections()
+            .line(line_id)
+            .map(LineDetectionData::next_detection_id)
+            .unwrap_or(Some(DetectionCueId(1)));
+        let Some(detection_id) = detection_id else {
+            return;
+        };
+        let address = DetectionAddress {
+            line_id,
+            detection_id,
+        };
+        let cue = DetectionCue {
+            id: detection_id,
+            kind,
+            media_tick,
+            target,
+        };
+        let change = DetectionChange::Add {
+            address,
+            cue: cue.clone(),
+        };
+        self.execute_detection_command(Command::Detection { change });
+        self.ui_shell.ui.rythmo_state.selected = Some(Selection::Detection(address));
+        self.announce_detection_visual(kind, "ajouté");
+    }
+
+    pub fn move_detection(&mut self, address: DetectionAddress, media_tick: MediaTick) {
+        let Some(cue) = self
+            .project_session
+            .project
+            .detections()
+            .detection(address)
+            .cloned()
+        else {
+            return;
+        };
+        if cue.media_tick == media_tick {
+            return;
+        }
+        let change = DetectionChange::Move {
+            address,
+            old_tick: cue.media_tick,
+            new_tick: media_tick,
+        };
+        let command = Command::Detection { change };
+        let can_coalesce = matches!(
+            self.project_session.history.last(),
+            Some(Command::Detection {
+                change: DetectionChange::Move {
+                    address: previous,
+                    ..
+                }
+            }) if *previous == address
+        );
+        if can_coalesce {
+            EditExecutor::coalesce(
+                &mut self.project_session,
+                command,
+                |last| {
+                    if let Command::Detection {
+                        change: DetectionChange::Move { new_tick, .. },
+                    } = last
+                    {
+                        *new_tick = media_tick;
+                    }
+                },
+                EditOrigin::Local,
+            );
+            self.broadcast_detection_sync();
+        } else {
+            self.execute_detection_command(command);
+        }
+    }
+
+    pub fn delete_detection(&mut self, address: DetectionAddress) {
+        let Some(cue) = self
+            .project_session
+            .project
+            .detections()
+            .detection(address)
+            .cloned()
+        else {
+            return;
+        };
+        let kind = cue.kind;
+        let change = DetectionChange::Remove { address, cue };
+        self.execute_detection_command(Command::Detection { change });
+        if matches!(
+            self.ui_shell.ui.rythmo_state().selected,
+            Some(Selection::Detection(selected)) if selected == address
+        ) {
+            self.ui_shell.ui.rythmo_state.selected = None;
+        }
+        self.ui_shell.ui.rythmo_state.detection_drag = None;
+        self.announce_detection_visual(kind, "supprimé");
+    }
+
+    pub fn delete_selected_detection(&mut self) {
+        if let Some(Selection::Detection(address)) = self.ui_shell.ui.rythmo_state().selected {
+            self.delete_detection(address);
+        }
+    }
+
+    pub fn nudge_selected_detection(&mut self, delta_ticks: i64) {
+        let Some(Selection::Detection(address)) = self.ui_shell.ui.rythmo_state().selected else {
+            return;
+        };
+        if delta_ticks == 0 {
+            self.audition_selected_detection();
+            return;
+        }
+        let Some(cue) = self
+            .project_session
+            .project
+            .detections()
+            .detection(address)
+            .cloned()
+        else {
+            return;
+        };
+        self.move_detection(
+            address,
+            MediaTick(cue.media_tick.raw().saturating_add(delta_ticks)),
+        );
+        self.announce_detection_visual(cue.kind, "déplacé");
+    }
+
+    /// Ctrl+Space audition: decode exactly the available two seconds before and
+    /// after the selected sign, mix a short beep at the sign, and play the
+    /// preview through the default output device. This is independent from the
+    /// main player, so it stops precisely at the end of the four-second window.
+    pub fn audition_selected_detection(&mut self) {
+        let Some(Selection::Detection(address)) = self.ui_shell.ui.rythmo_state().selected else {
+            return;
+        };
+        let fps = self.fps().max(1.0);
+        let Some(cue) = self
+            .project_session
+            .project
+            .detections()
+            .detection(address)
+            .cloned()
+        else {
+            return;
+        };
+        if cue.kind.is_sync_point() {
+            return;
+        }
+        let Some((window_start, window_end)) = self
+            .project_session
+            .project
+            .detections()
+            .audition_window(address, fps)
+        else {
+            return;
+        };
+
+        let total_frames = self
+            .playback
+            .video_player
+            .as_ref()
+            .map(|player| player.total_frames())
+            .unwrap_or(0);
+        let start_frame = window_start.as_frame_position().floor().max(0.0) as i64;
+        let mut end_frame = window_end.as_frame_position().ceil().max(start_frame as f64) as i64;
+        if total_frames > 0 {
+            end_frame = end_frame.min(total_frames);
+        }
+        if end_frame <= start_frame {
+            return;
+        }
+
+        self.seek_absolute(start_frame);
+        self.finish_seek();
+
+        let source_path = if self.active_audio_is_instrumental() {
+            self.project_session
+                .project
+                .settings()
+                .instrumental_audio_path
+                .as_ref()
+                .map(PathBuf::from)
+                .or_else(|| self.playback.source_video_path.clone())
+        } else {
+            self.playback.source_video_path.clone()
+        };
+        let Some(source_path) = source_path else {
+            return;
+        };
+
+        let audio_offset = self.active_audio_offset_frames();
+        let start_seconds = start_frame as f64 / fps;
+        let end_seconds = end_frame as f64 / fps;
+        let cue_seconds = cue.media_tick.as_frame_position() / fps;
+        let audio_start_seconds = ((start_frame - audio_offset) as f64 / fps).max(0.0);
+        let leading_silence_seconds = ((audio_offset - start_frame).max(0) as f64 / fps)
+            .min(end_seconds - start_seconds);
+        let duration_seconds = (end_seconds - start_seconds).max(0.01);
+        let beep_offset_seconds = (cue_seconds - start_seconds).clamp(0.0, duration_seconds);
+        let volume = self.ui_shell.ui.volume().clamp(0.0, 1.0);
+        let generation = AUDITION_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+
+        std::thread::spawn(move || {
+            if let Err(error) = play_detection_preview(
+                generation,
+                source_path,
+                audio_start_seconds,
+                duration_seconds,
+                leading_silence_seconds,
+                beep_offset_seconds,
+                volume,
+            ) {
+                log::warn!("Detection audition failed: {error}");
+            }
+        });
+    }
+
+    fn execute_detection_command(&mut self, command: Command) {
+        EditExecutor::execute(&mut self.project_session, command, EditOrigin::Local);
+        self.broadcast_detection_sync();
+    }
+
+    fn broadcast_detection_sync(&self) {
+        if !self.collaboration.network.is_in_room() {
+            return;
+        }
+        let data = ProjectData::from_project(&self.project_session.project);
+        self.collaboration
+            .network
+            .send_raw("sync", serde_json::json!({ "project": data }));
+    }
+
+    /// Screen readers are told only what visual object changed. Sign type,
+    /// track, timecode and surrounding dialogue remain deliberately silent.
+    fn announce_detection_visual(&self, kind: DetectionKind, verb: &str) {
+        let object = if kind.is_sync_point() {
+            "Point de synchronisation"
+        } else {
+            "Symbole de détection"
+        };
+        self.narration
+            .announce_event(AccessibilityEvent::Success {
+                message: format!("{object} {verb}"),
+            });
+    }
+}
+
+fn play_detection_preview(
+    generation: u64,
+    source_path: PathBuf,
+    audio_start_seconds: f64,
+    duration_seconds: f64,
+    leading_silence_seconds: f64,
+    beep_offset_seconds: f64,
+    volume: f32,
+) -> Result<(), String> {
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or_else(|| "aucune sortie audio disponible".to_string())?;
+    let supported = device
+        .default_output_config()
+        .map_err(|error| format!("configuration audio indisponible: {error}"))?;
+    let config = supported.config();
+    let sample_rate = config.sample_rate.0;
+    let channels = config.channels as usize;
+
+    let decode_duration = (duration_seconds - leading_silence_seconds).max(0.0);
+    let mut decoded = Vec::new();
+    if decode_duration > 0.001 {
+        let output = crate::media_binary::command("ffmpeg")
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-ss")
+            .arg(format!("{audio_start_seconds:.6}"))
+            .arg("-i")
+            .arg(&source_path)
+            .arg("-t")
+            .arg(format!("{decode_duration:.6}"))
+            .arg("-vn")
+            .arg("-f")
+            .arg("f32le")
+            .arg("-acodec")
+            .arg("pcm_f32le")
+            .arg("-ac")
+            .arg(channels.to_string())
+            .arg("-ar")
+            .arg(sample_rate.to_string())
+            .arg("pipe:1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|error| format!("ffmpeg ne démarre pas: {error}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        decoded = output
+            .stdout
+            .chunks_exact(4)
+            .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            .collect();
+    }
+
+    let target_frames = (duration_seconds * sample_rate as f64).ceil() as usize;
+    let target_samples = target_frames.saturating_mul(channels);
+    let silence_samples = (leading_silence_seconds * sample_rate as f64).round() as usize * channels;
+    let mut samples = vec![0.0_f32; target_samples];
+    let copy_len = decoded.len().min(samples.len().saturating_sub(silence_samples));
+    if copy_len > 0 {
+        samples[silence_samples..silence_samples + copy_len].copy_from_slice(&decoded[..copy_len]);
+    }
+    for sample in &mut samples {
+        *sample *= volume;
+    }
+
+    mix_detection_beep(
+        &mut samples,
+        channels,
+        sample_rate,
+        beep_offset_seconds,
+        volume,
+    );
+
+    let shared = Arc::new(Mutex::new((samples, 0usize)));
+    let stream = match supported.sample_format() {
+        cpal::SampleFormat::F32 => build_preview_stream::<f32>(&device, &config, shared, generation),
+        cpal::SampleFormat::I16 => build_preview_stream::<i16>(&device, &config, shared, generation),
+        cpal::SampleFormat::U16 => build_preview_stream::<u16>(&device, &config, shared, generation),
+        format => return Err(format!("format audio non pris en charge: {format:?}")),
+    }?;
+    stream
+        .play()
+        .map_err(|error| format!("lecture audio impossible: {error}"))?;
+
+    let started = std::time::Instant::now();
+    while started.elapsed().as_secs_f64() < duration_seconds + 0.08 {
+        if AUDITION_GENERATION.load(Ordering::SeqCst) != generation {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(stream);
+    Ok(())
+}
+
+fn mix_detection_beep(
+    samples: &mut [f32],
+    channels: usize,
+    sample_rate: u32,
+    offset_seconds: f64,
+    volume: f32,
+) {
+    let start_frame = (offset_seconds * sample_rate as f64).round().max(0.0) as usize;
+    let beep_frames = (0.075 * sample_rate as f64).round() as usize;
+    let amplitude = (0.42 * volume.max(0.35)).min(0.55);
+    for frame in 0..beep_frames {
+        let envelope = 1.0 - frame as f32 / beep_frames.max(1) as f32;
+        let phase = std::f32::consts::TAU * 1046.5 * frame as f32 / sample_rate as f32;
+        let value = phase.sin() * amplitude * envelope;
+        let output_frame = start_frame + frame;
+        for channel in 0..channels {
+            let index = output_frame.saturating_mul(channels).saturating_add(channel);
+            if let Some(sample) = samples.get_mut(index) {
+                *sample = (*sample + value).clamp(-1.0, 1.0);
+            }
+        }
+    }
+}
+
+fn build_preview_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    shared: Arc<Mutex<(Vec<f32>, usize)>>,
+    generation: u64,
+) -> Result<cpal::Stream, String>
+where
+    T: SizedSample + FromSample<f32>,
+{
+    device
+        .build_output_stream(
+            config,
+            move |output: &mut [T], _| {
+                let active = AUDITION_GENERATION.load(Ordering::SeqCst) == generation;
+                let Ok(mut guard) = shared.lock() else {
+                    for sample in output {
+                        *sample = T::from_sample(0.0);
+                    }
+                    return;
+                };
+                let (samples, cursor) = &mut *guard;
+                for output_sample in output {
+                    let value = if active {
+                        samples.get(*cursor).copied().unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
+                    *output_sample = T::from_sample(value);
+                    *cursor = cursor.saturating_add(1);
+                }
+            },
+            move |error| log::warn!("Detection preview stream error: {error}"),
+            None,
+        )
+        .map_err(|error| format!("création du flux audio impossible: {error}"))
+}
