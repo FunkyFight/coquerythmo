@@ -29,7 +29,11 @@ pub(crate) fn syllable_mouse_press(
             continue;
         }
 
-        let ratios = syllable_ratios_for_line(line, state.syllable_drag.as_ref(), lang, state)?;
+        let Some(ratios) =
+            syllable_ratios_for_line(line, state.syllable_drag.as_ref(), lang, state)
+        else {
+            continue;
+        };
         if ratios.len() <= 1 {
             continue;
         }
