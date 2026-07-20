@@ -2428,37 +2428,23 @@ pub fn render_lines<'a>(
         ));
     }
 
-    let mut latest_karaoke_by_row: HashMap<(usize, usize), (i64, u64)> = HashMap::new();
-    for (line_id, data) in &line_data {
-        if !data.karaoke_playback {
-            continue;
-        }
-        let Some(line) = project.get_line(*line_id) else {
-            continue;
-        };
-        let key = (
-            rythmo_layout::track_index_for_y_slot(line.y_slot),
-            karaoke_index.stack_row(line),
-        );
-        let candidate = (line.start_frame, line.id);
-        latest_karaoke_by_row
-            .entry(key)
-            .and_modify(|current| *current = (*current).max(candidate))
-            .or_insert(candidate);
-    }
-    line_data.retain(|(line_id, data)| {
-        if !data.karaoke_playback {
-            return true;
-        }
-        let Some(line) = project.get_line(*line_id) else {
-            return false;
-        };
-        let key = (
-            rythmo_layout::track_index_for_y_slot(line.y_slot),
-            karaoke_index.stack_row(line),
-        );
-        latest_karaoke_by_row.get(&key).copied() == Some((line.start_frame, line.id))
-    });
+    let karaoke_row_winners = crate::rendering::rythmo::scene::karaoke_row_winners(
+        line_data.iter().filter_map(|(line_id, data)| {
+            if !data.karaoke_playback {
+                return None;
+            }
+            let line = project.get_line(*line_id)?;
+            Some(crate::rendering::rythmo::scene::KaraokeRowCandidate {
+                id: line.id,
+                track_index: rythmo_layout::track_index_for_y_slot(line.y_slot),
+                stack_row: karaoke_index.stack_row(line),
+                start_frame: line.start_frame,
+                active: line.karaoke_active(current_frame),
+            })
+        }),
+    );
+    line_data
+        .retain(|(line_id, data)| !data.karaoke_playback || karaoke_row_winners.contains(line_id));
 
     // Keep a stable vertical draw order, then compare every badge with the
     // actual body of the other visible lines.
