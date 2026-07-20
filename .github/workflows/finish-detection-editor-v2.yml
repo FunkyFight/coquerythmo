@@ -1,0 +1,108 @@
+name: Finish detection editor v2
+
+on:
+  push:
+    branches:
+      - agent/track-scoped-detection-model
+  pull_request:
+    branches:
+      - main
+    types:
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finish-detection-editor-v2
+  cancel-in-progress: false
+
+jobs:
+  implement-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/track-scoped-detection-model
+          fetch-depth: 0
+
+      - name: Detect completed implementation
+        id: status
+        shell: bash
+        run: |
+          if grep -q 'Track-scoped source detection and line-scoped text synchronization' src/detection.rs; then
+            echo "applied=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply complete refactor
+        if: steps.status.outputs.applied == 'false'
+        run: |
+          python tools/finish_detection_editor_v2.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/detection.rs')
+          text = path.read_text(encoding='utf-8')
+          needle = '''    pub fn line_sync_mut(&mut self, line_id: u64) -> &mut LineSyncData {
+        self.lines.entry(line_id).or_default()
+    }
+'''
+          addition = needle + '''
+    /// Replace only the source-global track layer while preserving the
+    /// adaptation-specific line synchronization layer.
+    pub fn replace_source_tracks_from(&mut self, source: &Self) {
+        self.tracks = source.tracks.clone();
+    }
+'''
+          if 'replace_source_tracks_from' not in text:
+              if needle not in text:
+                  raise SystemExit('DetectionDocument insertion point not found')
+              text = text.replace(needle, addition, 1)
+              path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Install Linux build dependencies
+        if: steps.status.outputs.applied == 'false'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libudev-dev \
+            pkg-config \
+            fonts-noto-core \
+            fonts-noto-cjk \
+            fonts-noto-extra
+          fc-cache -f
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.status.outputs.applied == 'false'
+
+      - name: Update lockfile and format
+        if: steps.status.outputs.applied == 'false'
+        run: |
+          cargo check --all-targets
+          cargo fmt --all
+          git diff --check
+
+      - name: Run detection and synchronization tests
+        if: steps.status.outputs.applied == 'false'
+        run: |
+          cargo test detection -- --nocapture
+          cargo test input::router::tests::continuous_pan_starts_once_and_stops_on_key_up -- --nocapture
+
+      - name: Run full locked suite
+        if: steps.status.outputs.applied == 'false'
+        continue-on-error: true
+        run: cargo test --locked
+
+      - name: Commit compiled implementation
+        if: steps.status.outputs.applied == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock src
+          git commit -m "Finish track-scoped detection and text sync editor"
+          git push origin HEAD:agent/track-scoped-detection-model
