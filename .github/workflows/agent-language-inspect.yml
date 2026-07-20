@@ -22,11 +22,11 @@ jobs:
             printf '%s\n' '--- working tree ---'
             git status --short
             printf '%s\n' '--- configuration language callers ---'
-            rg -n -C 5 'config::get\(\)\.lang|config::get\(\)\.lang\.clone' src tests || true
+            grep -RIn -E 'config::get\(\)\.lang|config::get\(\)\.lang\.clone' src tests 2>/dev/null || true
             printf '%s\n' '--- syllable API callers ---'
-            rg -n -C 4 'syllable_breaks|syllable_count|timing_ratios|visual_progress_from_timing|read_highlight_end_from_timing|split_dialogue_at_syllable|visible_syllable_segments|syllable_ratios_for_line' src tests || true
+            grep -RIn -E 'syllable_breaks|syllable_count|timing_ratios|visual_progress_from_timing|read_highlight_end_from_timing|split_dialogue_at_syllable|visible_syllable_segments|syllable_ratios_for_line' src tests 2>/dev/null || true
             printf '%s\n' '--- language modal and state callers ---'
-            rg -n -C 5 'LanguageListItem|LanguageModalResult|open_languages_modal|refresh_languages_modal|create_language|rename_language|select_language|ProjectLanguage' src tests || true
+            grep -RIn -E 'LanguageListItem|LanguageModalResult|open_languages_modal|refresh_languages_modal|create_language|rename_language|select_language|ProjectLanguage' src tests 2>/dev/null || true
           } > .agent-language-inspection.txt
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
