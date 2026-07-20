@@ -1,0 +1,72 @@
+name: Agent per-language syllabification
+
+on:
+  push:
+    branches:
+      - agent/language-syllabification-v2
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    if: ${{ !contains(github.event.head_commit.message, '[agent source]') && !contains(github.event.head_commit.message, '[agent validation]') && !contains(github.event.head_commit.message, '[agent cleanup]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Apply architecture layers and validate
+        shell: bash
+        run: |
+          set +e
+          : > .agent-language-validation.txt
+
+          python3 scripts/agent_apply_language_core.py >> .agent-language-validation.txt 2>&1
+          core_status=$?
+          echo "CORE_STATUS=$core_status" >> .agent-language-validation.txt
+
+          if [ "$core_status" -eq 0 ]; then
+            python3 scripts/agent_apply_language_modal.py >> .agent-language-validation.txt 2>&1
+            modal_status=$?
+          else
+            modal_status=1
+          fi
+          echo "MODAL_STATUS=$modal_status" >> .agent-language-validation.txt
+
+          if [ "$modal_status" -eq 0 ]; then
+            python3 scripts/agent_apply_language_callers.py >> .agent-language-validation.txt 2>&1
+            callers_status=$?
+          else
+            callers_status=1
+          fi
+          echo "CALLERS_STATUS=$callers_status" >> .agent-language-validation.txt
+
+          if [ "$callers_status" -eq 0 ]; then
+            cargo fmt --all >> .agent-language-validation.txt 2>&1
+            fmt_status=$?
+            echo "FMT_STATUS=$fmt_status" >> .agent-language-validation.txt
+
+            cargo test --lib syllable_language -- --nocapture >> .agent-language-validation.txt 2>&1
+            domain_status=$?
+            echo "DOMAIN_TEST_STATUS=$domain_status" >> .agent-language-validation.txt
+
+            cargo test --lib language_modal -- --nocapture >> .agent-language-validation.txt 2>&1
+            modal_test_status=$?
+            echo "MODAL_TEST_STATUS=$modal_test_status" >> .agent-language-validation.txt
+
+            cargo test --lib >> .agent-language-validation.txt 2>&1
+            lib_status=$?
+            echo "LIB_TEST_STATUS=$lib_status" >> .agent-language-validation.txt
+
+            git diff --check >> .agent-language-validation.txt 2>&1
+            diff_status=$?
+            echo "DIFF_CHECK_STATUS=$diff_status" >> .agent-language-validation.txt
+          fi
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m '[agent source] Add per-language syllabification'
+          git push
