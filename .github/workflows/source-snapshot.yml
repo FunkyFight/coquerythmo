@@ -21,7 +21,8 @@ jobs:
       - name: Prepare source snapshot
         run: |
           find . -path './target' -prune -o -path './.git' -prune -o -type f -print | sort > repo-files.txt
-          tar --exclude=.git --exclude=target -czf coquerythmo-source.tar.gz .
+          tar --exclude=.git --exclude=target --exclude=coquerythmo-source.tar.gz -czf /tmp/coquerythmo-source.tar.gz .
+          cp /tmp/coquerythmo-source.tar.gz .
       - uses: actions/upload-artifact@v4
         with:
           name: coquerythmo-source
