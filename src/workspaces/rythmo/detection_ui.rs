@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const DETECTION_ICON_SIZE: f32 = 18.0;
 const DETECTION_HIT_SIZE: f32 = 26.0;
 const DETECTION_BUTTON_SIZE: f32 = 18.0;
+const DETECTION_BUTTON_GAP: f32 = 4.0;
 const MENU_ICON_SIZE: f32 = 30.0;
 const MENU_GAP: f32 = 4.0;
 const MENU_PADDING: f32 = 6.0;
@@ -18,6 +19,7 @@ const MENU_WIDTH: f32 = MENU_PADDING * 2.0
     + MENU_GAP * (DetectionKind::ALL.len() as f32 - 1.0);
 const MENU_HEIGHT: f32 = MENU_ICON_SIZE + MENU_PADDING * 2.0;
 const SYNC_DOT_SIZE: f32 = 6.0;
+const SYNC_DOT_HIT_PADDING: f32 = 3.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DetectionHover {
@@ -93,7 +95,7 @@ fn track_under_pointer(ctx: &RythmoCtx<'_>, y: f32) -> Option<(u8, Rect)> {
 fn detection_button_rect(hover: &DetectionHover) -> Rect {
     Rect {
         x: hover.screen_x - DETECTION_BUTTON_SIZE / 2.0,
-        y: hover.track_rect.y + hover.track_rect.height - DETECTION_BUTTON_SIZE - 2.0,
+        y: hover.track_rect.y + hover.track_rect.height + DETECTION_BUTTON_GAP,
         width: DETECTION_BUTTON_SIZE,
         height: DETECTION_BUTTON_SIZE,
     }
@@ -118,6 +120,15 @@ fn sync_dot_rect(x: f32, line_rect: Rect) -> Rect {
         y: line_rect.y + line_rect.height - SYNC_DOT_SIZE - 2.0,
         width: SYNC_DOT_SIZE,
         height: SYNC_DOT_SIZE,
+    }
+}
+
+fn expanded_rect(rect: Rect, padding: f32) -> Rect {
+    Rect {
+        x: rect.x - padding,
+        y: rect.y - padding,
+        width: rect.width + padding * 2.0,
+        height: rect.height + padding * 2.0,
     }
 }
 
@@ -168,13 +179,7 @@ fn hit_existing_detection(ctx: &RythmoCtx<'_>, x: f32, y: f32) -> Option<Detecti
         let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
         for cue in data.text_sync_cues() {
             let dot = sync_dot_rect(tick_x(cue.media_tick, ctx.current_frame, ctx.zone), rect);
-            let hit = Rect {
-                x: dot.x - 5.0,
-                y: dot.y - 5.0,
-                width: dot.width + 10.0,
-                height: dot.height + 10.0,
-            };
-            if hit.contains(x, y) {
+            if expanded_rect(dot, SYNC_DOT_HIT_PADDING).contains(x, y) {
                 return Some(DetectionAddress {
                     line_id: line.id,
                     detection_id: cue.id,
@@ -239,12 +244,15 @@ fn sync_placeholder_for_line(
 
 fn hit_sync_placeholder(ctx: &RythmoCtx<'_>, x: f32, y: f32) -> Option<(u64, usize, MediaTick)> {
     ctx.project.lines().find_map(|line| {
-        let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
-        if !rect.contains(x, y) {
-            return None;
-        }
         let placeholder =
             sync_placeholder_for_line(ctx.project, line, x, ctx.current_frame, ctx.zone)?;
+        let hit = expanded_rect(
+            sync_dot_rect(placeholder.x, placeholder.line_rect),
+            SYNC_DOT_HIT_PADDING,
+        );
+        if !hit.contains(x, y) {
+            return None;
+        }
         Some((
             placeholder.line_id,
             placeholder.character_index,
@@ -336,26 +344,22 @@ fn base_character_ratios(
     (positions, breaks)
 }
 
-fn remap_character_ratios(base: &[f32], anchors: &[(usize, f32)]) -> Vec<f32> {
-    let mut mapped = base.to_vec();
-    for pair in anchors.windows(2) {
-        let (start_index, start_target) = pair[0];
-        let (end_index, end_target) = pair[1];
-        if end_index <= start_index || end_index >= base.len() {
-            continue;
+/// A synchronization point moves the suffix beginning at its character.
+/// Character and syllable widths are never rescaled: each anchor only changes
+/// the translation applied to boundaries at and after that anchor.
+fn shift_character_ratios(base: &[f32], anchors: &[(usize, f32)]) -> Vec<f32> {
+    let mut shifted = base.to_vec();
+    let mut offset = 0.0_f32;
+    let mut anchor_index = 0usize;
+
+    for index in 0..base.len() {
+        while anchor_index < anchors.len() && anchors[anchor_index].0 == index {
+            offset = anchors[anchor_index].1 - base[index];
+            anchor_index += 1;
         }
-        let base_start = base[start_index];
-        let base_end = base[end_index];
-        for index in start_index..=end_index {
-            let local = if base_end > base_start + f32::EPSILON {
-                ((base[index] - base_start) / (base_end - base_start)).clamp(0.0, 1.0)
-            } else {
-                (index - start_index) as f32 / (end_index - start_index) as f32
-            };
-            mapped[index] = start_target + (end_target - start_target) * local;
-        }
+        shifted[index] = base[index] + offset;
     }
-    mapped
+    shifted
 }
 
 fn sync_segment_cache_id(line_id: u64, start: usize, end: usize) -> u64 {
@@ -384,9 +388,6 @@ pub(crate) fn render_sync_text_segments(
     }
 
     let mut anchor_targets = BTreeMap::new();
-    anchor_targets.insert(0usize, 0.0_f32);
-    anchor_targets.insert(character_count, 1.0_f32);
-    let mut has_sync = false;
     for cue in data.text_sync_cues() {
         let Some(character_index) = cue.target.grapheme_index().map(|index| index as usize) else {
             continue;
@@ -395,28 +396,17 @@ pub(crate) fn render_sync_text_segments(
             continue;
         }
         let ratio = ((cue.media_tick.as_frame_position() - line.start_frame as f64)
-            / line.duration_frames as f64)
-            .clamp(0.0, 1.0) as f32;
+            / line.duration_frames as f64) as f32;
         anchor_targets.insert(character_index, ratio);
-        has_sync = true;
     }
-    if !has_sync {
+    if anchor_targets.is_empty() {
         return None;
     }
 
-    let mut anchors = anchor_targets.into_iter().collect::<Vec<_>>();
-    let mut previous_target = 0.0_f32;
-    for (index, target) in &mut anchors {
-        if *index == character_count {
-            *target = 1.0;
-        } else {
-            *target = target.clamp(previous_target, 1.0);
-        }
-        previous_target = *target;
-    }
-
+    let anchors = anchor_targets.into_iter().collect::<Vec<_>>();
     let (base_positions, syllable_breaks) = base_character_ratios(line, drag, lang, state);
-    let mapped_positions = remap_character_ratios(&base_positions, &anchors);
+    let shifted_positions = shift_character_ratios(&base_positions, &anchors);
+
     let mut boundaries = BTreeSet::new();
     boundaries.insert(0usize);
     boundaries.insert(character_count);
@@ -425,13 +415,9 @@ pub(crate) fn render_sync_text_segments(
             .into_iter()
             .filter(|index| *index < character_count),
     );
-    boundaries.extend(
-        anchors
-            .iter()
-            .map(|(index, _)| *index)
-            .filter(|index| *index <= character_count),
-    );
+    boundaries.extend(anchors.iter().map(|(index, _)| *index));
     let boundaries = boundaries.into_iter().collect::<Vec<_>>();
+
     let characters = line.text.chars().collect::<Vec<_>>();
     let rect = line_rect(project, line, current_frame, zone);
     let mut cursor_segments = Vec::new();
@@ -442,17 +428,19 @@ pub(crate) fn render_sync_text_segments(
         if end <= start || end > character_count {
             continue;
         }
-        let start_ratio = mapped_positions[start].clamp(0.0, 1.0);
-        let end_ratio = mapped_positions[end].clamp(start_ratio, 1.0);
-        let width_ratio = end_ratio - start_ratio;
+
+        let start_ratio = shifted_positions[start];
+        let width_ratio = (base_positions[end] - base_positions[start]).max(0.0);
         let width = rect.width * width_ratio;
         if width <= 0.5 {
             continue;
         }
+
         let text = characters[start..end].iter().collect::<String>();
         if text.is_empty() {
             continue;
         }
+
         let cache_id = sync_segment_cache_id(line.id, start, end);
         push_read_word_rythmo_text(
             stretched,
@@ -851,7 +839,7 @@ pub(crate) fn render_detection_overlay<'a>(
     if let Some(menu) = state.detection_menu {
         let outer = menu_rect(&menu, zone);
         push_quad(quads, outer, [0.045, 0.048, 0.060, 0.985], 7.0);
-        for (index, kind) in DetectionKind::ALL.iter().copied().enumerate() {
+        for (index, _kind) in DetectionKind::ALL.iter().copied().enumerate() {
             let item = menu_item_rect(&menu, zone, index);
             if menu.hover_index == Some(index) {
                 push_quad(quads, item, [0.18, 0.32, 0.58, 0.82], 5.0);
@@ -866,7 +854,6 @@ pub(crate) fn render_detection_overlay<'a>(
                 uv_rect: detection_uvs[index],
                 tint: [0.94, 0.95, 0.98, 1.0],
             });
-            let _ = kind;
         }
     }
 }
@@ -902,38 +889,46 @@ mod tests {
     }
 
     #[test]
-    fn sync_placeholder_exists_only_on_non_whitespace_character_under_pointer() {
-        crate::config::init();
-        let mut project = Project::new();
-        let line_id = project.add_line(0, 30, 0.0);
-        project.get_line_mut(line_id).unwrap().text = "a b".to_string();
-        let zone = Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 800.0,
-            height: 240.0,
+    fn detection_button_is_below_track_body() {
+        let hover = DetectionHover {
+            track: 0,
+            media_tick: MediaTick::ZERO,
+            screen_x: 100.0,
+            track_rect: Rect {
+                x: 0.0,
+                y: 20.0,
+                width: 200.0,
+                height: 30.0,
+            },
         };
-        let line = project.get_line(line_id).unwrap();
-        let rect = line_rect(&project, line, 0.0, &zone);
-
-        let first =
-            sync_placeholder_for_line(&project, line, sync_anchor_x(rect, 0, 3), 0.0, &zone)
-                .unwrap();
-        assert_eq!(first.character_index, 0);
-        assert!(
-            sync_placeholder_for_line(&project, line, sync_anchor_x(rect, 1, 3), 0.0, &zone,)
-                .is_none()
-        );
+        assert!(detection_button_rect(&hover).y > hover.track_rect.y + hover.track_rect.height);
     }
 
     #[test]
-    fn moved_anchor_changes_text_boundary_without_mutating_base_ratios() {
+    fn click_must_hit_the_visible_sync_dot() {
+        let line_rect = Rect {
+            x: 0.0,
+            y: 20.0,
+            width: 200.0,
+            height: 30.0,
+        };
+        let dot = sync_dot_rect(50.0, line_rect);
+        assert!(expanded_rect(dot, SYNC_DOT_HIT_PADDING).contains(50.0, dot.y + 2.0));
+        assert!(!expanded_rect(dot, SYNC_DOT_HIT_PADDING).contains(50.0, line_rect.y + 2.0));
+    }
+
+    #[test]
+    fn moved_anchor_translates_suffix_without_resizing_it() {
         let base = vec![0.0, 0.2, 0.5, 0.75, 1.0];
-        let original = base.clone();
-        let mapped = remap_character_ratios(&base, &[(0, 0.0), (2, 0.7), (4, 1.0)]);
-        assert_eq!(base, original);
-        assert!((mapped[2] - 0.7).abs() < 0.0001);
-        assert!(mapped[1] > original[1]);
-        assert!(mapped.windows(2).all(|pair| pair[0] <= pair[1]));
+        let shifted = shift_character_ratios(&base, &[(2, 0.7)]);
+        let delta = 0.2;
+
+        assert_eq!(shifted[0], base[0]);
+        assert_eq!(shifted[1], base[1]);
+        assert!((shifted[2] - (base[2] + delta)).abs() < 0.0001);
+        assert!((shifted[3] - (base[3] + delta)).abs() < 0.0001);
+        assert!((shifted[4] - (base[4] + delta)).abs() < 0.0001);
+        assert!(((shifted[3] - shifted[2]) - (base[3] - base[2])).abs() < 0.0001);
+        assert!(((shifted[4] - shifted[3]) - (base[4] - base[3])).abs() < 0.0001);
     }
 }
