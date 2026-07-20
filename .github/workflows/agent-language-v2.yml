@@ -17,17 +17,17 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Complete renderer wiring and validate
+      - name: Complete GPU wiring and validate
         shell: bash
         run: |
           set +e
           : > .agent-language-validation.txt
 
-          python3 scripts/agent_finish_language_renderers.py >> .agent-language-validation.txt 2>&1
-          renderer_status=$?
-          echo "RENDERER_STATUS=$renderer_status" >> .agent-language-validation.txt
+          python3 scripts/agent_finish_gpu_language.py >> .agent-language-validation.txt 2>&1
+          gpu_status=$?
+          echo "GPU_STATUS=$gpu_status" >> .agent-language-validation.txt
 
-          if [ "$renderer_status" -eq 0 ]; then
+          if [ "$gpu_status" -eq 0 ]; then
             cargo fmt --all >> .agent-language-validation.txt 2>&1
             fmt_status=$?
             echo "FMT_STATUS=$fmt_status" >> .agent-language-validation.txt
@@ -52,5 +52,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
-          git commit -m '[agent validation] Validate per-language syllabification'
+          git commit -m '[agent validation] Validate GPU syllable language path'
           git push
