@@ -2274,6 +2274,7 @@ pub fn render_lines<'a>(
     note_icons: &mut Vec<IconInstance>,
     actor_icons: &mut Vec<VoiceActorIconDraw>,
     note_uv: [f32; 4],
+    detection_uvs: [[f32; 4]; 7],
 ) -> Option<(
     u64,
     usize,
@@ -2599,8 +2600,23 @@ pub fn render_lines<'a>(
                 let drag_ratios = state
                     .syllable_drag
                     .as_ref()
-                    .filter(|d| d.line_id == line.id);
-                if let Some((breaks, ratios)) = visible_syllable_segments(
+                    .filter(|drag| drag.line_id == line.id);
+                if let Some(segments) = render_sync_text_segments(
+                    project,
+                    line,
+                    current_frame,
+                    zone,
+                    drag_ratios,
+                    karaoke_lang,
+                    state,
+                    read_highlight_end,
+                    scrolling_text_tint,
+                    stretched,
+                ) {
+                    if is_editing {
+                        cursor_segments = Some(segments);
+                    }
+                } else if let Some((breaks, ratios)) = visible_syllable_segments(
                     line,
                     drag_ratios,
                     karaoke_lang,
@@ -2897,7 +2913,16 @@ pub fn render_lines<'a>(
     }
 
     if !karaoke_preview {
-        render_detection_overlay(zone, project, current_frame, state, quads, labels);
+        render_detection_overlay(
+            zone,
+            project,
+            current_frame,
+            state,
+            quads,
+            labels,
+            note_icons,
+            detection_uvs,
+        );
     }
 
     push_editor_karaoke_texture_prewarm_texts(

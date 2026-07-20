@@ -5,6 +5,7 @@ use super::*;
 use crate::detection::{
     track_storage_line_id, DetectionAddress, DetectionKind, MediaTick, TextAnchor,
 };
+use std::collections::{BTreeMap, BTreeSet};
 
 const DETECTION_ICON_SIZE: f32 = 18.0;
 const DETECTION_HIT_SIZE: f32 = 26.0;
@@ -108,8 +109,7 @@ fn source_icon_rect(tick: MediaTick, track_rect: Rect, current_frame: f64, zone:
 }
 
 fn sync_anchor_x(line_rect: Rect, character_index: usize, character_count: usize) -> f32 {
-    line_rect.x
-        + line_rect.width * ((character_index as f32 + 0.5) / character_count.max(1) as f32)
+    line_rect.x + line_rect.width * ((character_index as f32 + 0.5) / character_count.max(1) as f32)
 }
 
 fn sync_dot_rect(x: f32, line_rect: Rect) -> Rect {
@@ -192,44 +192,292 @@ fn existing_sync_at(project: &Project, line_id: u64, character_index: usize) -> 
     })
 }
 
-fn hit_sync_placeholder(
-    ctx: &RythmoCtx<'_>,
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SyncPlaceholder {
+    line_id: u64,
+    character_index: usize,
+    media_tick: MediaTick,
     x: f32,
-    y: f32,
-) -> Option<(u64, usize, MediaTick)> {
-    for line in ctx.project.lines() {
-        let character_count = line.text.chars().count();
-        if character_count == 0 || line.duration_frames <= 0 {
-            continue;
-        }
+    line_rect: Rect,
+}
+
+fn sync_placeholder_for_line(
+    project: &Project,
+    line: &crate::rythmo_line::RythmoLine,
+    x: f32,
+    current_frame: f64,
+    zone: &Rect,
+) -> Option<SyncPlaceholder> {
+    let characters: Vec<char> = line.text.chars().collect();
+    if characters.is_empty() || line.duration_frames <= 0 {
+        return None;
+    }
+
+    let line_rect = line_rect(project, line, current_frame, zone);
+    if x < line_rect.x || x > line_rect.x + line_rect.width || line_rect.width <= 0.0 {
+        return None;
+    }
+
+    let ratio = ((x - line_rect.x) / line_rect.width).clamp(0.0, 0.999_999);
+    let character_index = (ratio * characters.len() as f32).floor() as usize;
+    let character = *characters.get(character_index)?;
+    if character.is_whitespace() || existing_sync_at(project, line.id, character_index) {
+        return None;
+    }
+
+    let anchor_x = sync_anchor_x(line_rect, character_index, characters.len());
+    let anchor_ratio = ((anchor_x - line_rect.x) / line_rect.width).clamp(0.0, 1.0);
+    let frame = line.start_frame as f64 + line.duration_frames as f64 * anchor_ratio as f64;
+    Some(SyncPlaceholder {
+        line_id: line.id,
+        character_index,
+        media_tick: MediaTick::from_frame_position(frame),
+        x: anchor_x,
+        line_rect,
+    })
+}
+
+fn hit_sync_placeholder(ctx: &RythmoCtx<'_>, x: f32, y: f32) -> Option<(u64, usize, MediaTick)> {
+    ctx.project.lines().find_map(|line| {
         let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
-        if y < rect.y || y > rect.y + rect.height {
+        if !rect.contains(x, y) {
+            return None;
+        }
+        let placeholder =
+            sync_placeholder_for_line(ctx.project, line, x, ctx.current_frame, ctx.zone)?;
+        Some((
+            placeholder.line_id,
+            placeholder.character_index,
+            placeholder.media_tick,
+        ))
+    })
+}
+
+fn clamp_sync_drag_tick(
+    project: &Project,
+    address: DetectionAddress,
+    tick: MediaTick,
+) -> MediaTick {
+    if address.track().is_some() {
+        return tick;
+    }
+    let Some(line) = project.get_line(address.line_id) else {
+        return tick;
+    };
+    let Some(data) = project.detections().line(address.line_id) else {
+        return tick.clamp(
+            MediaTick::from_frame(line.start_frame),
+            MediaTick::from_frame(line.end_frame()),
+        );
+    };
+    let Some(current) = data.detection(address.detection_id) else {
+        return tick;
+    };
+    let Some(current_index) = current.target.grapheme_index() else {
+        return tick;
+    };
+
+    let mut minimum = MediaTick::from_frame(line.start_frame);
+    let mut maximum = MediaTick::from_frame(line.end_frame());
+    for cue in data.text_sync_cues() {
+        if cue.id == address.detection_id {
             continue;
         }
-        for character_index in 0..character_count {
-            if existing_sync_at(ctx.project, line.id, character_index) {
-                continue;
-            }
-            let anchor_x = sync_anchor_x(rect, character_index, character_count);
-            let dot = sync_dot_rect(anchor_x, rect);
-            let hit = Rect {
-                x: dot.x - 4.0,
-                y: dot.y - 4.0,
-                width: dot.width + 8.0,
-                height: dot.height + 8.0,
-            };
-            if hit.contains(x, y) {
-                let ratio = (character_index as f64 + 0.5) / character_count as f64;
-                let frame = line.start_frame as f64 + line.duration_frames as f64 * ratio;
-                return Some((
-                    line.id,
-                    character_index,
-                    MediaTick::from_frame_position(frame),
-                ));
-            }
+        let Some(index) = cue.target.grapheme_index() else {
+            continue;
+        };
+        if index < current_index {
+            minimum = MediaTick(minimum.raw().max(cue.media_tick.raw().saturating_add(1)));
+        } else if index > current_index {
+            maximum = MediaTick(maximum.raw().min(cue.media_tick.raw().saturating_sub(1)));
         }
     }
-    None
+    if minimum > maximum {
+        return minimum;
+    }
+    tick.clamp(minimum, maximum)
+}
+
+fn base_character_ratios(
+    line: &crate::rythmo_line::RythmoLine,
+    drag: Option<&SyllableDrag>,
+    lang: &str,
+    state: &RythmoState,
+) -> (Vec<f32>, Vec<usize>) {
+    let character_count = line.text.chars().count();
+    let mut positions = (0..=character_count)
+        .map(|index| index as f32 / character_count.max(1) as f32)
+        .collect::<Vec<_>>();
+    let Some((breaks, ratios)) = visible_syllable_segments(line, drag, lang, false, state) else {
+        return (positions, Vec::new());
+    };
+
+    let mut character_start = 0usize;
+    let mut ratio_start = 0.0_f32;
+    for (segment_index, segment_ratio) in ratios.iter().copied().enumerate() {
+        let character_end = breaks
+            .get(segment_index)
+            .copied()
+            .unwrap_or(character_count)
+            .min(character_count);
+        let length = character_end.saturating_sub(character_start);
+        if length > 0 {
+            for local_index in 0..=length {
+                positions[character_start + local_index] =
+                    ratio_start + segment_ratio * local_index as f32 / length as f32;
+            }
+        }
+        ratio_start += segment_ratio;
+        character_start = character_end;
+    }
+    if let Some(last) = positions.last_mut() {
+        *last = 1.0;
+    }
+    (positions, breaks)
+}
+
+fn remap_character_ratios(base: &[f32], anchors: &[(usize, f32)]) -> Vec<f32> {
+    let mut mapped = base.to_vec();
+    for pair in anchors.windows(2) {
+        let (start_index, start_target) = pair[0];
+        let (end_index, end_target) = pair[1];
+        if end_index <= start_index || end_index >= base.len() {
+            continue;
+        }
+        let base_start = base[start_index];
+        let base_end = base[end_index];
+        for index in start_index..=end_index {
+            let local = if base_end > base_start + f32::EPSILON {
+                ((base[index] - base_start) / (base_end - base_start)).clamp(0.0, 1.0)
+            } else {
+                (index - start_index) as f32 / (end_index - start_index) as f32
+            };
+            mapped[index] = start_target + (end_target - start_target) * local;
+        }
+    }
+    mapped
+}
+
+fn sync_segment_cache_id(line_id: u64, start: usize, end: usize) -> u64 {
+    (1_u64 << 61)
+        ^ line_id.wrapping_mul(1_000_003)
+        ^ (start as u64).wrapping_mul(65_537)
+        ^ end as u64
+}
+
+pub(crate) fn render_sync_text_segments(
+    project: &Project,
+    line: &crate::rythmo_line::RythmoLine,
+    current_frame: f64,
+    zone: &Rect,
+    drag: Option<&SyllableDrag>,
+    lang: &str,
+    state: &RythmoState,
+    read_highlight_end: Option<usize>,
+    tint: [f32; 4],
+    stretched: &mut Vec<StretchedText>,
+) -> Option<Vec<CursorSegmentInfo>> {
+    let data = project.detections().line(line.id)?;
+    let character_count = line.text.chars().count();
+    if character_count == 0 || line.duration_frames <= 0 {
+        return None;
+    }
+
+    let mut anchor_targets = BTreeMap::new();
+    anchor_targets.insert(0usize, 0.0_f32);
+    anchor_targets.insert(character_count, 1.0_f32);
+    let mut has_sync = false;
+    for cue in data.text_sync_cues() {
+        let Some(character_index) = cue.target.grapheme_index().map(|index| index as usize) else {
+            continue;
+        };
+        if character_index >= character_count {
+            continue;
+        }
+        let ratio = ((cue.media_tick.as_frame_position() - line.start_frame as f64)
+            / line.duration_frames as f64)
+            .clamp(0.0, 1.0) as f32;
+        anchor_targets.insert(character_index, ratio);
+        has_sync = true;
+    }
+    if !has_sync {
+        return None;
+    }
+
+    let mut anchors = anchor_targets.into_iter().collect::<Vec<_>>();
+    let mut previous_target = 0.0_f32;
+    for (index, target) in &mut anchors {
+        if *index == character_count {
+            *target = 1.0;
+        } else {
+            *target = target.clamp(previous_target, 1.0);
+        }
+        previous_target = *target;
+    }
+
+    let (base_positions, syllable_breaks) = base_character_ratios(line, drag, lang, state);
+    let mapped_positions = remap_character_ratios(&base_positions, &anchors);
+    let mut boundaries = BTreeSet::new();
+    boundaries.insert(0usize);
+    boundaries.insert(character_count);
+    boundaries.extend(
+        syllable_breaks
+            .into_iter()
+            .filter(|index| *index < character_count),
+    );
+    boundaries.extend(
+        anchors
+            .iter()
+            .map(|(index, _)| *index)
+            .filter(|index| *index <= character_count),
+    );
+    let boundaries = boundaries.into_iter().collect::<Vec<_>>();
+    let characters = line.text.chars().collect::<Vec<_>>();
+    let rect = line_rect(project, line, current_frame, zone);
+    let mut cursor_segments = Vec::new();
+
+    for pair in boundaries.windows(2) {
+        let start = pair[0];
+        let end = pair[1];
+        if end <= start || end > character_count {
+            continue;
+        }
+        let start_ratio = mapped_positions[start].clamp(0.0, 1.0);
+        let end_ratio = mapped_positions[end].clamp(start_ratio, 1.0);
+        let width_ratio = end_ratio - start_ratio;
+        let width = rect.width * width_ratio;
+        if width <= 0.5 {
+            continue;
+        }
+        let text = characters[start..end].iter().collect::<String>();
+        if text.is_empty() {
+            continue;
+        }
+        let cache_id = sync_segment_cache_id(line.id, start, end);
+        push_read_word_rythmo_text(
+            stretched,
+            cache_id,
+            text,
+            Rect {
+                x: rect.x + rect.width * start_ratio,
+                y: rect.y,
+                width,
+                height: rect.height,
+            },
+            start,
+            read_highlight_end,
+            tint,
+        );
+        cursor_segments.push(CursorSegmentInfo {
+            cache_id,
+            start_char: start,
+            end_char: end,
+            start_ratio,
+            width_ratio,
+        });
+    }
+
+    (!cursor_segments.is_empty()).then_some(cursor_segments)
 }
 
 fn navigate_detection(project: &Project, state: &mut RythmoState, direction: i32) -> bool {
@@ -273,11 +521,7 @@ pub(crate) fn handle_detection_event(
             if let Some(drag) = state.detection_drag {
                 let mut tick = pointer_tick(*x, ctx.current_frame, ctx.zone);
                 if drag.address.track().is_none() {
-                    let line = ctx.project.get_line(drag.address.line_id)?;
-                    tick = tick.clamp(
-                        MediaTick::from_frame(line.start_frame),
-                        MediaTick::from_frame(line.end_frame()),
-                    );
+                    tick = clamp_sync_drag_tick(ctx.project, drag.address, tick);
                 }
                 return Some(EventResponse::Action(UiAction::MoveDetection {
                     address: drag.address,
@@ -302,12 +546,13 @@ pub(crate) fn handle_detection_event(
                 return Some(EventResponse::Consumed);
             }
 
-            state.detection_hover = track_under_pointer(ctx, *y).map(|(track, rect)| DetectionHover {
-                track,
-                media_tick: pointer_tick(*x, ctx.current_frame, ctx.zone),
-                screen_x: *x,
-                track_rect: rect,
-            });
+            state.detection_hover =
+                track_under_pointer(ctx, *y).map(|(track, rect)| DetectionHover {
+                    track,
+                    media_tick: pointer_tick(*x, ctx.current_frame, ctx.zone),
+                    screen_x: *x,
+                    track_rect: rect,
+                });
         }
         UiEvent::MousePress { x, y } => {
             if let Some(menu) = state.detection_menu {
@@ -434,74 +679,6 @@ fn push_line(
     });
 }
 
-/// The geometry is identical to the SVG assets loaded from
-/// `src/icons/detection`; no textual fallback is drawn.
-fn render_detection_asset(
-    quads: &mut Vec<QuadInstance>,
-    kind: DetectionKind,
-    bounds: Rect,
-    color: [f32; 4],
-) {
-    let cx = bounds.x + bounds.width / 2.0;
-    let cy = bounds.y + bounds.height / 2.0;
-    let s = bounds.width.min(bounds.height) * 0.36;
-    let t = (bounds.width.min(bounds.height) * 0.085).max(1.2);
-    match kind {
-        DetectionKind::Labial => {
-            push_line(quads, cx - s, cy, cx + s, cy, t, color);
-            push_line(quads, cx, cy - s, cx, cy + s, t, color);
-            push_line(quads, cx - s * 0.72, cy - s * 0.72, cx + s * 0.72, cy + s * 0.72, t, color);
-        }
-        DetectionKind::SemiLabial => {
-            push_line(quads, cx - s, cy, cx + s, cy, t, color);
-            push_line(quads, cx, cy - s, cx, cy + s, t, color);
-            push_line(quads, cx, cy, cx + s * 0.72, cy + s * 0.72, t, color);
-        }
-        DetectionKind::MouthOpen => {
-            push_line(quads, cx, cy - s, cx + s, cy, t, color);
-            push_line(quads, cx + s, cy, cx, cy + s, t, color);
-            push_line(quads, cx, cy + s, cx - s, cy, t, color);
-            push_line(quads, cx - s, cy, cx, cy - s, t, color);
-        }
-        DetectionKind::MouthClosed => {
-            push_line(quads, cx - s, cy, cx + s, cy, t * 1.35, color);
-            push_line(quads, cx - s * 0.45, cy - s * 0.35, cx + s * 0.45, cy - s * 0.35, t * 0.65, color);
-        }
-        DetectionKind::TeethVisible => {
-            push_line(quads, cx - s, cy - s * 0.55, cx + s, cy - s * 0.55, t, color);
-            push_line(quads, cx - s, cy + s * 0.55, cx + s, cy + s * 0.55, t, color);
-            for offset in [-0.62_f32, 0.0, 0.62] {
-                push_line(quads, cx + s * offset, cy - s * 0.55, cx + s * offset, cy + s * 0.55, t * 0.75, color);
-            }
-        }
-        DetectionKind::Breath => {
-            for offset in [-0.52_f32, 0.0, 0.52] {
-                push_line(quads, cx - s, cy + s * offset, cx + s, cy + s * (offset - 0.28), t * 0.72, color);
-            }
-        }
-        DetectionKind::Reaction => {
-            for angle in [0.0_f32, 0.785, 1.57, 2.355] {
-                let dx = angle.cos() * s;
-                let dy = angle.sin() * s;
-                push_line(quads, cx - dx, cy - dy, cx + dx, cy + dy, t, color);
-            }
-        }
-        DetectionKind::TextSyncPoint => {
-            push_quad(
-                quads,
-                Rect {
-                    x: cx - s * 0.28,
-                    y: cy - s * 0.28,
-                    width: s * 0.56,
-                    height: s * 0.56,
-                },
-                color,
-                s * 0.28,
-            );
-        }
-    }
-}
-
 pub(crate) fn render_detection_overlay<'a>(
     zone: &Rect,
     project: &'a Project,
@@ -509,6 +686,8 @@ pub(crate) fn render_detection_overlay<'a>(
     state: &RythmoState,
     quads: &mut Vec<QuadInstance>,
     _labels: &mut Vec<LabelInfo<'a>>,
+    icons: &mut Vec<IconInstance>,
+    detection_uvs: [[f32; 4]; 7],
 ) {
     let selected_address = selected_address(state);
     for track in 0..rythmo_layout::track_count() {
@@ -559,92 +738,70 @@ pub(crate) fn render_detection_overlay<'a>(
                     [0.72, 0.74, 0.80, 0.42]
                 },
             );
-            render_detection_asset(
-                quads,
-                cue.kind,
-                Rect {
-                    x: hit.x + (hit.width - DETECTION_ICON_SIZE) / 2.0,
-                    y: hit.y + (hit.height - DETECTION_ICON_SIZE) / 2.0,
-                    width: DETECTION_ICON_SIZE,
-                    height: DETECTION_ICON_SIZE,
-                },
-                if selected {
-                    [0.78, 0.88, 1.0, 1.0]
-                } else {
-                    [0.92, 0.92, 0.95, 0.94]
-                },
-            );
+            if let Some(index) = DetectionKind::ALL.iter().position(|kind| *kind == cue.kind) {
+                icons.push(IconInstance {
+                    rect: [
+                        hit.x + (hit.width - DETECTION_ICON_SIZE) / 2.0,
+                        hit.y + (hit.height - DETECTION_ICON_SIZE) / 2.0,
+                        DETECTION_ICON_SIZE,
+                        DETECTION_ICON_SIZE,
+                    ],
+                    uv_rect: detection_uvs[index],
+                    tint: if selected {
+                        [0.78, 0.88, 1.0, 1.0]
+                    } else {
+                        [0.92, 0.92, 0.95, 0.94]
+                    },
+                });
+            }
         }
     }
 
     for line in project.lines() {
-        let character_count = line.text.chars().count();
-        if character_count == 0 || line.duration_frames <= 0 {
+        let Some(data) = project.detections().line(line.id) else {
             continue;
-        }
+        };
         let rect = line_rect(project, line, current_frame, zone);
-        let data = project.detections().line(line.id);
-        for character_index in 0..character_count {
-            let anchor_x = sync_anchor_x(rect, character_index, character_count);
-            let existing = data.and_then(|data| {
-                data.text_sync_cues()
-                    .find(|cue| cue.target.grapheme_index() == Some(character_index as u32))
-            });
-            if let Some(cue) = existing {
-                let cue_x = tick_x(cue.media_tick, current_frame, zone);
-                let address = DetectionAddress {
-                    line_id: line.id,
-                    detection_id: cue.id,
-                };
-                let selected = selected_address == Some(address);
-                if (cue_x - anchor_x).abs() > 1.5 {
-                    push_line(
+        for cue in data.text_sync_cues() {
+            let cue_x = tick_x(cue.media_tick, current_frame, zone);
+            let address = DetectionAddress {
+                line_id: line.id,
+                detection_id: cue.id,
+            };
+            let selected = selected_address == Some(address);
+            let dot = sync_dot_rect(cue_x, rect);
+            let extra = if selected { 1.5 } else { 0.0 };
+            push_quad(
+                quads,
+                Rect {
+                    x: dot.x - extra,
+                    y: dot.y - extra,
+                    width: dot.width + extra * 2.0,
+                    height: dot.height + extra * 2.0,
+                },
+                if selected {
+                    [0.72, 0.88, 1.0, 1.0]
+                } else {
+                    [0.48, 0.72, 1.0, 0.96]
+                },
+                8.0,
+            );
+        }
+    }
+
+    if state.detection_menu.is_none() && state.detection_drag.is_none() {
+        if let (Some(line_id), Some(hover)) = (state.hovered_line, state.detection_hover) {
+            if let Some(line) = project.get_line(line_id) {
+                if let Some(placeholder) =
+                    sync_placeholder_for_line(project, line, hover.screen_x, current_frame, zone)
+                {
+                    push_quad(
                         quads,
-                        anchor_x,
-                        rect.y + rect.height - 5.0,
-                        cue_x,
-                        rect.y + rect.height - 5.0,
-                        1.0,
-                        [0.43, 0.68, 1.0, 0.46],
+                        sync_dot_rect(placeholder.x, placeholder.line_rect),
+                        [0.70, 0.72, 0.78, 0.48],
+                        6.0,
                     );
                 }
-                push_line(
-                    quads,
-                    cue_x,
-                    rect.y + 2.0,
-                    cue_x,
-                    rect.y + rect.height - 2.0,
-                    if selected { 1.5 } else { 1.0 },
-                    if selected {
-                        [0.55, 0.78, 1.0, 0.92]
-                    } else {
-                        [0.48, 0.70, 0.96, 0.62]
-                    },
-                );
-                let dot = sync_dot_rect(cue_x, rect);
-                let extra = if selected { 1.5 } else { 0.0 };
-                push_quad(
-                    quads,
-                    Rect {
-                        x: dot.x - extra,
-                        y: dot.y - extra,
-                        width: dot.width + extra * 2.0,
-                        height: dot.height + extra * 2.0,
-                    },
-                    if selected {
-                        [0.72, 0.88, 1.0, 1.0]
-                    } else {
-                        [0.48, 0.72, 1.0, 0.96]
-                    },
-                    8.0,
-                );
-            } else {
-                push_quad(
-                    quads,
-                    sync_dot_rect(anchor_x, rect),
-                    [0.70, 0.72, 0.78, 0.28],
-                    6.0,
-                );
             }
         }
     }
@@ -699,17 +856,17 @@ pub(crate) fn render_detection_overlay<'a>(
             if menu.hover_index == Some(index) {
                 push_quad(quads, item, [0.18, 0.32, 0.58, 0.82], 5.0);
             }
-            render_detection_asset(
-                quads,
-                kind,
-                Rect {
-                    x: item.x + 5.0,
-                    y: item.y + 5.0,
-                    width: item.width - 10.0,
-                    height: item.height - 10.0,
-                },
-                [0.94, 0.95, 0.98, 1.0],
-            );
+            icons.push(IconInstance {
+                rect: [
+                    item.x + 5.0,
+                    item.y + 5.0,
+                    item.width - 10.0,
+                    item.height - 10.0,
+                ],
+                uv_rect: detection_uvs[index],
+                tint: [0.94, 0.95, 0.98, 1.0],
+            });
+            let _ = kind;
         }
     }
 }
@@ -742,5 +899,41 @@ mod tests {
     fn palette_contains_only_the_seven_professional_signs() {
         assert_eq!(DetectionKind::ALL.len(), 7);
         assert!(!DetectionKind::ALL.contains(&DetectionKind::TextSyncPoint));
+    }
+
+    #[test]
+    fn sync_placeholder_exists_only_on_non_whitespace_character_under_pointer() {
+        crate::config::init();
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 30, 0.0);
+        project.get_line_mut(line_id).unwrap().text = "a b".to_string();
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 240.0,
+        };
+        let line = project.get_line(line_id).unwrap();
+        let rect = line_rect(&project, line, 0.0, &zone);
+
+        let first =
+            sync_placeholder_for_line(&project, line, sync_anchor_x(rect, 0, 3), 0.0, &zone)
+                .unwrap();
+        assert_eq!(first.character_index, 0);
+        assert!(
+            sync_placeholder_for_line(&project, line, sync_anchor_x(rect, 1, 3), 0.0, &zone,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn moved_anchor_changes_text_boundary_without_mutating_base_ratios() {
+        let base = vec![0.0, 0.2, 0.5, 0.75, 1.0];
+        let original = base.clone();
+        let mapped = remap_character_ratios(&base, &[(0, 0.0), (2, 0.7), (4, 1.0)]);
+        assert_eq!(base, original);
+        assert!((mapped[2] - 0.7).abs() < 0.0001);
+        assert!(mapped[1] > original[1]);
+        assert!(mapped.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 }
