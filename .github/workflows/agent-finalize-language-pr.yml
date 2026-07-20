@@ -69,6 +69,7 @@ jobs:
               raise SystemExit(f'expected one project test anchor, found {text.count(anchor)}')
           path.write_text(text.replace(anchor, tests + anchor, 1), encoding='utf-8')
           PY
+          sed -i 's/\r$//' i18n/en.toml
 
       - name: Validate
         run: |
