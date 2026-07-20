@@ -46,6 +46,7 @@ jobs:
         run: |
           python tools/implement_detection_editor.py
           python tools/fix_detection_editor_compile.py
+          python tools/fix_detection_editor_tests.py
 
       - name: Format Rust
         if: steps.status.outputs.applied == 'false'
@@ -55,7 +56,14 @@ jobs:
         if: steps.status.outputs.applied == 'false'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev pkg-config
+          sudo apt-get install -y \
+            libasound2-dev \
+            libudev-dev \
+            pkg-config \
+            fonts-noto-core \
+            fonts-noto-cjk \
+            fonts-noto-extra
+          fc-cache -f
 
       - name: Test locked dependency graph
         id: cargo_test
