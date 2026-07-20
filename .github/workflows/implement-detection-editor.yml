@@ -55,18 +55,18 @@ jobs:
           set -o pipefail
           cargo test --locked 2>&1 | tee cargo-test.log
 
-      - name: Upload compiler diagnostics on failure
+      - name: Persist compiler diagnostics on failure
         if: steps.status.outputs.applied == 'false' && steps.cargo_test.outcome == 'failure'
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: detection-editor-cargo-log
-          path: cargo-test.log
-          if-no-files-found: warn
-
-      - name: Stop on test failure
-        if: steps.status.outputs.applied == 'false' && steps.cargo_test.outcome == 'failure'
-        run: exit 1
+        shell: bash
+        run: |
+          mkdir -p tools
+          tail -n 300 cargo-test.log > tools/detection-editor-errors.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f tools/detection-editor-errors.txt
+          git commit -m "Capture detection editor compiler errors [skip ci]"
+          git push origin HEAD:agent/track-scoped-detection-model
+          exit 1
 
       - name: Check whitespace
         if: steps.status.outputs.applied == 'false' && steps.cargo_test.outcome == 'success'
