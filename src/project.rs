@@ -181,6 +181,43 @@ impl Default for ExportConfiguration {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyllableLanguage {
+    #[default]
+    French,
+    English,
+}
+
+impl SyllableLanguage {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::French => "fr-fr",
+            Self::English => "en-us",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Self {
+        let normalized = code.trim().to_lowercase();
+        if normalized == "en"
+            || normalized.starts_with("en-")
+            || normalized.contains("english")
+            || normalized.contains("anglais")
+        {
+            Self::English
+        } else {
+            Self::French
+        }
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::French => Self::English,
+            Self::English => Self::French,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProjectSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -193,10 +230,16 @@ pub struct ProjectSettings {
     pub highlight_read_word: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub scrolling_text_uses_character_color: bool,
+    #[serde(default, skip_serializing_if = "is_default_syllable_language")]
+    pub syllable_language: SyllableLanguage,
     #[serde(default, skip_serializing_if = "is_default_export_configuration")]
     pub export_configuration: ExportConfiguration,
     #[serde(default, skip_serializing_if = "is_default_automation_graph")]
     pub automation: crate::automation::AutomationGraph,
+}
+
+fn is_default_syllable_language(language: &SyllableLanguage) -> bool {
+    *language == SyllableLanguage::default()
 }
 
 fn is_default_export_configuration(configuration: &ExportConfiguration) -> bool {
@@ -298,7 +341,10 @@ impl Project {
             code: code.into(),
         };
         let language_id = language.id;
-        let mut settings = ProjectSettings::default();
+        let mut settings = ProjectSettings {
+            syllable_language: SyllableLanguage::from_code(&language.code),
+            ..ProjectSettings::default()
+        };
         settings
             .export_configuration
             .selected_language_ids
@@ -376,6 +422,14 @@ impl Project {
 
     pub fn settings(&self) -> &ProjectSettings {
         &self.settings
+    }
+
+    pub fn syllable_language(&self) -> SyllableLanguage {
+        self.settings.syllable_language
+    }
+
+    pub fn syllable_language_code(&self) -> &'static str {
+        self.syllable_language().code()
     }
 
     pub fn active_language(&self) -> &ProjectLanguage {
@@ -475,6 +529,7 @@ impl Project {
         self.settings.export_configuration = global_export_configuration.clone();
 
         let mut band = self.current_band_snapshot();
+        band.settings.syllable_language = SyllableLanguage::from_code(&language.code);
         band.settings.instrumental_audio_path = None;
         band.settings.instrumental_audio_offset_frames = 0;
         band.settings.export_configuration = global_export_configuration;
@@ -551,6 +606,41 @@ impl Project {
         self.language_snapshots
             .get(&id)
             .and_then(|snapshot| snapshot.band.settings.instrumental_audio_path.clone())
+    }
+
+    pub fn language_syllable_language(&self, id: LanguageId) -> Option<SyllableLanguage> {
+        if id == self.active_language.id {
+            return Some(self.settings.syllable_language);
+        }
+        self.language_snapshots
+            .get(&id)
+            .map(|snapshot| snapshot.band.settings.syllable_language)
+    }
+
+    pub fn set_language_syllable_language(
+        &mut self,
+        id: LanguageId,
+        language: SyllableLanguage,
+    ) -> bool {
+        if id == self.active_language.id {
+            if self.settings.syllable_language == language {
+                return false;
+            }
+            self.settings.syllable_language = language;
+            self.bump_revision();
+            return true;
+        }
+
+        let Some(snapshot) = self.language_snapshots.get_mut(&id) else {
+            return false;
+        };
+        if snapshot.band.settings.syllable_language == language {
+            return false;
+        }
+        snapshot.band.settings.syllable_language = language;
+        snapshot.band.revision = snapshot.band.revision.wrapping_add(1);
+        self.bump_revision();
+        true
     }
 
     pub fn set_language_instrumental_audio_path(
@@ -1769,6 +1859,59 @@ mod tests {
         assert!(project.delete_language(english_id));
         assert_eq!(project.language_count(), 1);
         assert!(!project.delete_language(french_id));
+    }
+
+    #[test]
+    fn creating_language_preserves_manual_syllable_timings() {
+        let mut project = Project::new_with_language("Français", "fr-fr");
+        let french_id = project.active_language_id();
+        let line_id = project.add_line_full(0, 48, 0.5, "tambourine".into(), "A".into(), [1.0; 4]);
+        project.get_line_mut(line_id).unwrap().syllable_ratios = vec![0.25, 0.75];
+
+        let english_id = project.create_language("English", "en");
+        assert_eq!(project.syllable_language(), SyllableLanguage::English);
+        assert_eq!(
+            project.get_line(line_id).unwrap().syllable_ratios,
+            vec![0.25, 0.75]
+        );
+
+        assert!(project.select_language(french_id));
+        assert_eq!(project.syllable_language(), SyllableLanguage::French);
+        assert_eq!(
+            project.get_line(line_id).unwrap().syllable_ratios,
+            vec![0.25, 0.75]
+        );
+        assert_eq!(
+            project.language_syllable_language(english_id),
+            Some(SyllableLanguage::English)
+        );
+    }
+
+    #[test]
+    fn changing_syllable_language_preserves_manual_timings_in_every_band() {
+        let mut project = Project::new_with_language("Français", "fr-fr");
+        let french_id = project.active_language_id();
+        let line_id = project.add_line_full(0, 48, 0.5, "Bonjour".into(), "A".into(), [1.0; 4]);
+        project.get_line_mut(line_id).unwrap().syllable_ratios = vec![0.4, 0.6];
+
+        let english_id = project.create_language("English", "en");
+        project.get_line_mut(line_id).unwrap().syllable_ratios = vec![0.2, 0.3, 0.5];
+        assert!(project.set_language_syllable_language(english_id, SyllableLanguage::French));
+        assert_eq!(
+            project.get_line(line_id).unwrap().syllable_ratios,
+            vec![0.2, 0.3, 0.5]
+        );
+
+        assert!(project.select_language(french_id));
+        assert_eq!(
+            project.get_line(line_id).unwrap().syllable_ratios,
+            vec![0.4, 0.6]
+        );
+        assert!(project.set_language_syllable_language(french_id, SyllableLanguage::English));
+        assert_eq!(
+            project.get_line(line_id).unwrap().syllable_ratios,
+            vec![0.4, 0.6]
+        );
     }
 
     #[test]

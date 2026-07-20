@@ -10,23 +10,43 @@ const LIST_W: f32 = 320.0;
 const ROW_H: f32 = 46.0;
 const LIST_TOP: f32 = 70.0;
 const LIST_BOTTOM: f32 = 70.0;
+const CONTROL_COUNT: usize = 10;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LanguageListItem {
     pub id: u64,
     pub name: String,
     pub instrumental_audio_path: Option<String>,
+    pub syllable_language: crate::project::SyllableLanguage,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum LanguageModalResult {
     Consumed,
     Close,
-    Create { name: String },
-    Rename { id: u64, name: String },
-    Delete { id: u64 },
-    Select { id: u64 },
-    PickInstrumental { id: u64 },
-    ClearInstrumental { id: u64 },
+    Create {
+        name: String,
+    },
+    Rename {
+        id: u64,
+        name: String,
+    },
+    Delete {
+        id: u64,
+    },
+    Select {
+        id: u64,
+    },
+    SetSyllableLanguage {
+        id: u64,
+        language: crate::project::SyllableLanguage,
+    },
+    PickInstrumental {
+        id: u64,
+    },
+    ClearInstrumental {
+        id: u64,
+    },
 }
 
 pub struct LanguageModal {
@@ -139,8 +159,24 @@ impl LanguageModal {
             4 => t("languages.select").to_string(),
             5 => t("languages.instrumental").to_string(),
             6 => t("languages.delete").to_string(),
-            7 => t("languages.clear_instrumental").to_string(),
+            7 => format!(
+                "{}: {}",
+                t("languages.syllables"),
+                self.selected()
+                    .map(|language| syllable_language_label(language.syllable_language))
+                    .unwrap_or(t("languages.syllables.french"))
+            ),
+            8 => t("languages.clear_instrumental").to_string(),
             _ => t("file_explorer.cancel").to_string(),
+        }
+    }
+
+    pub fn keyboard_focus_role(&self) -> &'static str {
+        match self.keyboard_focus {
+            0 => "list box",
+            1 => "text field",
+            7 => "radio group",
+            _ => "button",
         }
     }
 
@@ -176,6 +212,17 @@ impl LanguageModal {
             y: details.y + 96.0 + index as f32 * 48.0,
             width: details.width,
             height: 38.0,
+        }
+    }
+
+    fn syllable_option_rect(details: Rect, index: usize) -> Rect {
+        let gap = 8.0;
+        let width = (details.width - gap) / 2.0;
+        Rect {
+            x: details.x + index.min(1) as f32 * (width + gap),
+            y: details.y + 362.0,
+            width,
+            height: 36.0,
         }
     }
 
@@ -229,9 +276,9 @@ impl LanguageModal {
                 }
                 if text == "\t" || text == "\u{b}" {
                     self.keyboard_focus = if text == "\t" {
-                        (self.keyboard_focus + 1) % 9
+                        (self.keyboard_focus + 1) % CONTROL_COUNT
                     } else {
-                        (self.keyboard_focus + 8) % 9
+                        (self.keyboard_focus + CONTROL_COUNT - 1) % CONTROL_COUNT
                     };
                     self.editing_name = self.keyboard_focus == 1;
                     self.replace_name = self.editing_name;
@@ -259,7 +306,16 @@ impl LanguageModal {
                                 id: self.selected_id,
                             }
                         }
-                        7 if self
+                        7 if self.selected().is_some() => {
+                            LanguageModalResult::SetSyllableLanguage {
+                                id: self.selected_id,
+                                language: self
+                                    .selected()
+                                    .map(|language| language.syllable_language.toggled())
+                                    .unwrap_or_default(),
+                            }
+                        }
+                        8 if self
                             .selected()
                             .and_then(|language| language.instrumental_audio_path.as_ref())
                             .is_some() =>
@@ -268,7 +324,7 @@ impl LanguageModal {
                                 id: self.selected_id,
                             }
                         }
-                        8 => LanguageModalResult::Close,
+                        9 => LanguageModalResult::Close,
                         _ => LanguageModalResult::Consumed,
                     };
                 }
@@ -300,6 +356,24 @@ impl LanguageModal {
                     self.sync_name_from_selection();
                 }
                 LanguageModalResult::Consumed
+            }
+            UiEvent::CursorLeft | UiEvent::CursorRight if self.keyboard_focus == 7 => {
+                let language = if matches!(event, UiEvent::CursorRight) {
+                    crate::project::SyllableLanguage::English
+                } else {
+                    crate::project::SyllableLanguage::French
+                };
+                if self
+                    .selected()
+                    .is_some_and(|selected| selected.syllable_language != language)
+                {
+                    LanguageModalResult::SetSyllableLanguage {
+                        id: self.selected_id,
+                        language,
+                    }
+                } else {
+                    LanguageModalResult::Consumed
+                }
             }
             UiEvent::Scroll { x, y, delta, .. } if list.contains(*x, *y) => {
                 self.scroll_offset -= *delta * 32.0;
@@ -358,6 +432,26 @@ impl LanguageModal {
                     if self.languages.len() > 1 && self.selected().is_some() {
                         return LanguageModalResult::Delete {
                             id: self.selected_id,
+                        };
+                    }
+                } else if Self::syllable_option_rect(details, 0).contains(*x, *y) {
+                    self.keyboard_focus = 7;
+                    if self.selected().is_some_and(|selected| {
+                        selected.syllable_language != crate::project::SyllableLanguage::French
+                    }) {
+                        return LanguageModalResult::SetSyllableLanguage {
+                            id: self.selected_id,
+                            language: crate::project::SyllableLanguage::French,
+                        };
+                    }
+                } else if Self::syllable_option_rect(details, 1).contains(*x, *y) {
+                    self.keyboard_focus = 7;
+                    if self.selected().is_some_and(|selected| {
+                        selected.syllable_language != crate::project::SyllableLanguage::English
+                    }) {
+                        return LanguageModalResult::SetSyllableLanguage {
+                            id: self.selected_id,
+                            language: crate::project::SyllableLanguage::English,
                         };
                     }
                 } else if Self::clear_audio_rect(details).contains(*x, *y)
@@ -629,6 +723,56 @@ impl LanguageModal {
             self.languages.len() > 1,
         );
 
+        labels.push(label(
+            t("languages.syllables"),
+            Rect {
+                x: details.x,
+                y: details.y + 338.0,
+                width: details.width,
+                height: 18.0,
+            },
+            12.0,
+            HAlign::Left,
+            Some([137, 143, 160]),
+        ));
+        let selected_syllable_language = self
+            .selected()
+            .map(|language| language.syllable_language)
+            .unwrap_or_default();
+        for (index, language) in [
+            crate::project::SyllableLanguage::French,
+            crate::project::SyllableLanguage::English,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let selected = language == selected_syllable_language;
+            let focused = self.keyboard_focus == 7;
+            let rect = Self::syllable_option_rect(details, index);
+            push_panel(
+                quads,
+                rect,
+                if selected {
+                    [0.16, 0.31, 0.55, 1.0]
+                } else {
+                    [0.10, 0.11, 0.15, 1.0]
+                },
+                8.0,
+                if selected || focused {
+                    [0.31, 0.52, 0.90, 1.0]
+                } else {
+                    [0.22, 0.25, 0.32, 1.0]
+                },
+            );
+            labels.push(label(
+                syllable_language_label(language),
+                rect,
+                13.0,
+                HAlign::Center,
+                None,
+            ));
+        }
+
         let audio_path = self
             .selected()
             .and_then(|language| language.instrumental_audio_path.as_deref())
@@ -671,6 +815,13 @@ impl LanguageModal {
                 .and_then(|language| language.instrumental_audio_path.as_ref())
                 .is_some(),
         );
+    }
+}
+
+pub(super) fn syllable_language_label(language: crate::project::SyllableLanguage) -> &'static str {
+    match language {
+        crate::project::SyllableLanguage::French => t("languages.syllables.french"),
+        crate::project::SyllableLanguage::English => t("languages.syllables.english"),
     }
 }
 
@@ -729,6 +880,68 @@ fn push_panel(
 mod tests {
     use super::*;
 
+    fn item(language: crate::project::SyllableLanguage) -> LanguageListItem {
+        LanguageListItem {
+            id: 1,
+            name: "English".into(),
+            instrumental_audio_path: None,
+            syllable_language: language,
+        }
+    }
+
+    #[test]
+    fn syllable_language_control_has_keyboard_and_pointer_parity() {
+        let mut modal = LanguageModal::new(vec![item(crate::project::SyllableLanguage::French)], 1);
+        modal.keyboard_focus = 7;
+        assert_eq!(
+            modal.handle_event(&UiEvent::KeyInput { text: "\r".into() }, 1280.0, 720.0,),
+            LanguageModalResult::SetSyllableLanguage {
+                id: 1,
+                language: crate::project::SyllableLanguage::English,
+            }
+        );
+
+        modal.refresh(vec![item(crate::project::SyllableLanguage::English)], 1);
+        let details = LanguageModal::details_rect(LanguageModal::card(1280.0, 720.0));
+        let french = LanguageModal::syllable_option_rect(details, 0);
+        assert_eq!(
+            modal.handle_event(
+                &UiEvent::MousePress {
+                    x: french.x + 2.0,
+                    y: french.y + 2.0,
+                },
+                1280.0,
+                720.0,
+            ),
+            LanguageModalResult::SetSyllableLanguage {
+                id: 1,
+                language: crate::project::SyllableLanguage::French,
+            }
+        );
+        assert_eq!(modal.keyboard_focus, 7);
+    }
+
+    #[test]
+    fn tab_and_shift_tab_reach_the_syllable_control_deterministically() {
+        let mut modal = LanguageModal::new(vec![item(crate::project::SyllableLanguage::French)], 1);
+        modal.handle_event(
+            &UiEvent::KeyInput {
+                text: "\u{b}".into(),
+            },
+            1280.0,
+            720.0,
+        );
+        assert_eq!(modal.keyboard_focus, CONTROL_COUNT - 1);
+        for _ in 0..8 {
+            modal.handle_event(&UiEvent::KeyInput { text: "\t".into() }, 1280.0, 720.0);
+        }
+        assert_eq!(modal.keyboard_focus, 7);
+        assert_eq!(modal.keyboard_focus_role(), "radio group");
+        assert!(modal
+            .keyboard_focus_label()
+            .contains(t("languages.syllables")));
+    }
+
     #[test]
     fn instrumental_details_start_below_last_language_action() {
         let card = LanguageModal::card(1280.0, 720.0);
@@ -736,6 +949,8 @@ mod tests {
         let delete_button = LanguageModal::action_rect(details, 4);
         let instrumental_label_y = details.y + details.height - 104.0;
 
+        let syllable_options_bottom = LanguageModal::syllable_option_rect(details, 0).y + 36.0;
+        assert!(syllable_options_bottom + 18.0 <= instrumental_label_y);
         assert!(instrumental_label_y >= delete_button.y + delete_button.height + 24.0);
         assert!(LanguageModal::clear_audio_rect(details).y + 34.0 <= details.y + details.height);
     }

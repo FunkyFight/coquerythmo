@@ -1921,11 +1921,11 @@ impl Ui {
         if let Some((ratio, is_shift)) = pending_click {
             if let Some(line_id) = self.rythmo_state.editing_line {
                 let segmented_idx = project.get_line(line_id).and_then(|line| {
-                    let lang = crate::config::get().lang.clone();
+                    let lang = project.syllable_language_code();
                     rythmo::cursor_segments_for_line(
                         line,
                         self.rythmo_state.syllable_drag.as_ref(),
-                        &lang,
+                        lang,
                         self.playing,
                         &self.rythmo_state,
                     )
@@ -1934,7 +1934,7 @@ impl Ui {
                         rythmo::segmented_cursor_index_for_line_at_ratio(
                             line,
                             self.rythmo_state.syllable_drag.as_ref(),
-                            &lang,
+                            lang,
                             self.playing,
                             &self.rythmo_state,
                             ratio,

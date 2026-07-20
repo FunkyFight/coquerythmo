@@ -555,16 +555,14 @@ impl ModalHost {
             _ => false,
         };
         if focus_navigation && matches!(result, LanguageModalResult::Consumed) {
-            if let Some(label) = self
-                .languages
-                .as_ref()
-                .map(|modal| modal.keyboard_focus_label())
-            {
+            if let Some((label, role)) = self.languages.as_ref().map(|modal| {
+                (
+                    modal.keyboard_focus_label(),
+                    modal.keyboard_focus_role().to_string(),
+                )
+            }) {
                 return ModalOutcome::Action(UiAction::Accessibility(
-                    crate::accessibility::AccessibilityEvent::Focus {
-                        label,
-                        role: "control".to_string(),
-                    },
+                    crate::accessibility::AccessibilityEvent::Focus { label, role },
                 ));
             }
         }
@@ -585,6 +583,18 @@ impl ModalHost {
             }
             LanguageModalResult::Select { id } => {
                 ModalOutcome::Action(UiAction::SelectLanguage { id })
+            }
+            LanguageModalResult::SetSyllableLanguage { id, language } => {
+                ModalOutcome::Actions(vec![
+                    UiAction::SetLanguageSyllableLanguage { id, language },
+                    UiAction::Accessibility(
+                        crate::accessibility::AccessibilityEvent::ValueChanged {
+                            label: crate::i18n::t("languages.syllables").to_string(),
+                            value: super::language_modal::syllable_language_label(language)
+                                .to_string(),
+                        },
+                    ),
+                ])
             }
             LanguageModalResult::PickInstrumental { id } => {
                 ModalOutcome::Action(UiAction::PickLanguageInstrumentalAudio { id })

@@ -129,6 +129,7 @@ fn push_playhead_segments(
 fn push_karaoke_dot(
     quads: &mut Vec<QuadInstance>,
     line: &RythmoLine,
+    lang: &str,
     current_frame: f64,
     x: f32,
     y: f32,
@@ -138,18 +139,14 @@ fn push_karaoke_dot(
     let Some(progress) = line.karaoke_progress(current_frame) else {
         return;
     };
-    let ratios = crate::syllable::timing_ratios(
-        &line.text,
-        &line.syllable_ratios,
-        &crate::config::get().lang,
-    );
+    let ratios = crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
     let local_progress = crate::syllable::active_syllable_local_progress(&ratios, progress)
         .unwrap_or(progress)
         .clamp(0.0, 1.0);
     let visual_progress = crate::syllable::visual_progress_from_timing(
         &line.text,
         &line.syllable_ratios,
-        &crate::config::get().lang,
+        lang,
         progress,
     );
     let bounce = (local_progress * std::f32::consts::PI).sin().max(0.0);
@@ -2267,7 +2264,7 @@ impl GpuRenderer {
                         crate::syllable::read_highlight_end_from_timing(
                             &line.text,
                             &line.syllable_ratios,
-                            &crate::config::get().lang,
+                            scene.project.syllable_language_code(),
                             progress as f32,
                         )
                     } else {
@@ -2303,7 +2300,7 @@ impl GpuRenderer {
                         let visual_progress = crate::syllable::visual_progress_from_timing(
                             &line.text,
                             &line.syllable_ratios,
-                            &crate::config::get().lang,
+                            scene.project.syllable_language_code(),
                             progress,
                         );
                         self.push_rythmo_text_icons_natural_tinted_clipped(
@@ -2325,7 +2322,7 @@ impl GpuRenderer {
                         );
                     }
                 } else {
-                    let lang = &crate::config::get().lang;
+                    let lang = scene.project.syllable_language_code();
                     let breaks = crate::syllable::syllable_breaks(&line.text, lang);
                     let ratios =
                         crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
@@ -2465,7 +2462,16 @@ impl GpuRenderer {
                     s,
                 );
             } else {
-                push_karaoke_dot(&mut quads, line, current_frame, x1, line_y, lw, s);
+                push_karaoke_dot(
+                    &mut quads,
+                    line,
+                    scene.project.syllable_language_code(),
+                    current_frame,
+                    x1,
+                    line_y,
+                    lw,
+                    s,
+                );
             }
 
             // Note text (discrete, gray, at the bottom of the line)

@@ -80,11 +80,11 @@ pub(crate) fn handle_mouse_press(
                 let ratio = ((x - r.x) / r.width).clamp(0.0, 1.0);
                 state.pending_cursor_click = Some((ratio, false));
 
-                let lang = crate::config::get().lang.clone();
+                let lang = ctx.project.syllable_language_code();
                 let char_pos = cursor_index_for_line_at_ratio(
                     line,
                     state.syllable_drag.as_ref(),
-                    &lang,
+                    lang,
                     ctx.karaoke_preview,
                     state,
                     ratio,
