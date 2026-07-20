@@ -4,12 +4,18 @@ on:
   push:
     branches:
       - agent/language-syllabification-pr
+  pull_request:
+    branches:
+      - main
+    types:
+      - synchronize
 
 permissions:
   contents: write
 
 jobs:
   fix:
+    if: github.head_ref == 'agent/language-syllabification-pr' || github.ref_name == 'agent/language-syllabification-pr'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
