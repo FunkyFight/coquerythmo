@@ -51,9 +51,6 @@ impl PaletteSign {
             Self::MouthOpen => (DetectionKind::MouthOpen, TextAnchor::BeforeText),
             Self::MouthClosed => (DetectionKind::MouthClosed, TextAnchor::BeforeText),
             Self::TeethVisible => (DetectionKind::TeethVisible, TextAnchor::BeforeText),
-            // Source signs do not otherwise use their text anchor. AfterText is
-            // therefore a backwards-compatible persisted discriminator for the
-            // two additional professional signs.
             Self::DentalTh => (DetectionKind::TeethVisible, TextAnchor::AfterText),
             Self::Breath => (DetectionKind::Breath, TextAnchor::BeforeText),
             Self::Neutral => (DetectionKind::Breath, TextAnchor::AfterText),
@@ -240,9 +237,6 @@ fn palette_uv(sign: PaletteSign, detection_uvs: [[f32; 4]; 7]) -> [f32; 4] {
         return detection_uvs[index];
     }
 
-    // The two extra assets are appended immediately after the original seven
-    // detection cells in the horizontal atlas. Deriving their UV from the
-    // existing cells keeps Ui's public render signature unchanged.
     let cell_width = detection_uvs[0][2] - detection_uvs[0][0];
     let extra_index = match sign {
         PaletteSign::DentalTh => 0.0,
@@ -296,8 +290,19 @@ fn base_character_ratios(
     let mut positions = (0..=character_count)
         .map(|index| index as f32 / character_count.max(1) as f32)
         .collect::<Vec<_>>();
-    let drag = effective_drag_for_line(line.id, drag, state);
-    let Some((breaks, ratios)) = visible_syllable_segments(line, drag, lang, false, state) else {
+
+    let effective_drag = effective_drag_for_line(line.id, drag, state);
+    let segments = if let Some(drag) = effective_drag {
+        let breaks = state.get_syllable_breaks(line, lang);
+        if !breaks.is_empty() && drag.ratios.len() == breaks.len() + 1 {
+            Some((breaks, drag.ratios.clone()))
+        } else {
+            visible_syllable_segments(line, None, lang, false, state)
+        }
+    } else {
+        visible_syllable_segments(line, None, lang, false, state)
+    };
+    let Some((breaks, ratios)) = segments else {
         return (positions, Vec::new());
     };
 
@@ -351,9 +356,6 @@ fn sync_anchor_targets(
     anchors.into_iter().collect()
 }
 
-/// A synchronization point targets the centre of its character and translates
-/// that character plus the suffix. Every original character/syllable width is
-/// preserved; only the translation offset changes at an anchor.
 fn shift_character_ratios(base: &[f32], anchors: &[(usize, f32)]) -> Vec<f32> {
     let mut shifted = base.to_vec();
     let mut offset = 0.0_f32;
@@ -491,7 +493,7 @@ fn sync_placeholder_for_line(
         let distance = (pointer_ratio - center).abs();
         if candidate
             .as_ref()
-            .is_none_or(|(_, best_distance): &(usize, f32)| distance < *best_distance)
+            .map_or(true, |(_, best_distance): &(usize, f32)| distance < *best_distance)
         {
             candidate = Some((index, distance));
         }
@@ -828,9 +830,6 @@ pub(crate) fn handle_detection_event(
             )
             .is_some_and(|line| has_sync_cues(ctx.project, line))
             {
-                // The stock syllable overlay uses unshifted ratios. Keep it
-                // disabled for synchronized lines; the correctly shifted
-                // overlay is rendered below from the shared character layout.
                 state.hovered_line = None;
                 return Some(EventResponse::Consumed);
             }
