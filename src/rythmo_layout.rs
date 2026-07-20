@@ -153,42 +153,70 @@ pub fn karaoke_mode_tracks(
     current_frame: f64,
     count_in_frames: i64,
 ) -> Vec<bool> {
-    let mut tracks = vec![false; track_count()];
+    let track_count = track_count();
+    let mut active: Vec<Option<&crate::rythmo_line::RythmoLine>> = vec![None; track_count];
+    let mut previous: Vec<Option<&crate::rythmo_line::RythmoLine>> = vec![None; track_count];
+    let mut next: Vec<Option<&crate::rythmo_line::RythmoLine>> = vec![None; track_count];
 
-    for (track_index, has_karaoke) in tracks.iter_mut().enumerate() {
-        let on_track = |line: &&crate::rythmo_line::RythmoLine| {
-            track_index_for_y_slot(line.y_slot) == track_index
-        };
-        let active = project
-            .lines()
-            .filter(on_track)
-            .filter(|line| {
-                current_frame >= line.start_frame as f64 && current_frame <= line.end_frame() as f64
-            })
-            .max_by_key(|line| (line.start_frame, line.id));
-        if let Some(active) = active {
-            *has_karaoke = active.karaoke;
+    // This used to scan the complete project up to three times for every
+    // track. Keep the exact ordering rules while collecting every candidate in
+    // one pass; long bands therefore pay O(lines + tracks), not O(lines * tracks).
+    for line in project.lines() {
+        let track_index = track_index_for_y_slot(line.y_slot);
+        let is_active = current_frame >= line.start_frame as f64
+            && current_frame <= line.end_frame() as f64;
+
+        if is_active {
+            let should_replace = active[track_index]
+                .map(|current| {
+                    (line.start_frame, line.id) > (current.start_frame, current.id)
+                })
+                .unwrap_or(true);
+            if should_replace {
+                active[track_index] = Some(line);
+            }
             continue;
         }
 
-        let previous = project
-            .lines()
-            .filter(on_track)
-            .filter(|line| (line.end_frame() as f64) < current_frame)
-            .max_by_key(|line| (line.end_frame(), line.start_frame, line.id));
-        let next = project
-            .lines()
-            .filter(on_track)
-            .filter(|line| line.start_frame as f64 > current_frame)
-            .min_by_key(|line| (line.start_frame, line.id));
+        if (line.end_frame() as f64) < current_frame {
+            let should_replace = previous[track_index]
+                .map(|current| {
+                    (line.end_frame(), line.start_frame, line.id)
+                        > (current.end_frame(), current.start_frame, current.id)
+                })
+                .unwrap_or(true);
+            if should_replace {
+                previous[track_index] = Some(line);
+            }
+            continue;
+        }
 
-        let Some(next) = next.filter(|line| line.karaoke) else {
+        if line.start_frame as f64 > current_frame {
+            let should_replace = next[track_index]
+                .map(|current| {
+                    (line.start_frame, line.id) < (current.start_frame, current.id)
+                })
+                .unwrap_or(true);
+            if should_replace {
+                next[track_index] = Some(line);
+            }
+        }
+    }
+
+    let mut tracks = vec![false; track_count];
+    for track_index in 0..track_count {
+        if let Some(active) = active[track_index] {
+            tracks[track_index] = active.karaoke;
+            continue;
+        }
+
+        let Some(next) = next[track_index].filter(|line| line.karaoke) else {
             continue;
         };
-        let continues_karaoke = previous.is_some_and(|line| line.karaoke);
+        let continues_karaoke = previous[track_index].is_some_and(|line| line.karaoke);
         let count_in_started =
             current_frame >= next.start_frame.saturating_sub(count_in_frames.max(0)) as f64;
-        *has_karaoke = continues_karaoke || count_in_started;
+        tracks[track_index] = continues_karaoke || count_in_started;
     }
 
     tracks

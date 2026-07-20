@@ -56,12 +56,18 @@ pub(crate) fn render_window(zone: &Rect, current_frame: f64, margin_frames: i64)
     (first_frame, last_frame.max(first_frame))
 }
 
-pub(crate) fn interactive_render_margin_frames(fps: f64, render_index: &ProjectRenderIndex) -> i64 {
+pub(crate) fn interactive_render_margin_frames(
+    fps: f64,
+    _render_index: &ProjectRenderIndex,
+) -> i64 {
     let fps = fps.max(1.0);
+    // ProjectRenderIndex::visible_line_ids already accounts for lines that
+    // started before the window but still overlap it. Adding the longest line
+    // duration here expanded both sides a second time and could turn viewport
+    // culling into an almost full-project scan.
     karaoke_adjacent_max_gap_frames(fps)
         .max(karaoke_count_in_frames(fps))
         .max((fps * 10.0).round() as i64)
-        .saturating_add(render_index.max_duration_frames())
 }
 
 pub(crate) fn frame_to_x(frame: i64, current_frame: f64, zone: &Rect) -> f32 {
@@ -356,7 +362,8 @@ impl EditorLayoutCtx {
             current_frame,
             karaoke_count_in_frames(fps),
         );
-        let karaoke_track_count = rythmo_layout::karaoke_tracks(project)
+        let reserved_karaoke_tracks = rythmo_layout::karaoke_tracks(project);
+        let karaoke_track_count = reserved_karaoke_tracks
             .iter()
             .filter(|has_karaoke| **has_karaoke)
             .count();
@@ -364,7 +371,7 @@ impl EditorLayoutCtx {
         let track_layouts = build_track_layouts_from_karaoke_flags(
             &rythmo_layout::all_track_indices(),
             &karaoke_mode_tracks,
-            &rythmo_layout::karaoke_tracks(project),
+            &reserved_karaoke_tracks,
             normal_body_h,
             slot_header_height(),
             BADGE_GAP,
