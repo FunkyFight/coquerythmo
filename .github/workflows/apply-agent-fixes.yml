@@ -1,9 +1,9 @@
 name: Apply and validate requested fixes
 
 on:
-  pull_request:
+  push:
     branches:
-      - main
+      - agent/fix-karaoke-dev-recording
     paths:
       - tools/validation-trigger.txt
 
@@ -34,9 +34,24 @@ jobs:
         run: git diff --check
 
       - name: Run tests
-        run: RUSTFLAGS="-Awarnings" cargo test --all-targets --quiet
+        run: |
+          set +e
+          RUSTFLAGS="-Awarnings" cargo test --all-targets --quiet > tools/test-output.log 2>&1
+          status=$?
+          cat tools/test-output.log
+          exit $status
+
+      - name: Commit validation failure log
+        if: failure()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tools/test-output.log
+          git commit -m "Capture validation failure"
+          git push origin HEAD:agent/fix-karaoke-dev-recording
 
       - name: Commit validated changes
+        if: success()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
