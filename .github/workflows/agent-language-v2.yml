@@ -17,17 +17,17 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Apply architecture layers and validate
+      - name: Complete UI and renderer wiring, then validate
         shell: bash
         run: |
           set +e
           : > .agent-language-validation.txt
 
-          python3 scripts/agent_apply_language_core.py >> .agent-language-validation.txt 2>&1
-          core_status=$?
-          echo "CORE_STATUS=$core_status" >> .agent-language-validation.txt
+          python3 scripts/agent_fix_modal_script.py >> .agent-language-validation.txt 2>&1
+          fix_status=$?
+          echo "SCRIPT_FIX_STATUS=$fix_status" >> .agent-language-validation.txt
 
-          if [ "$core_status" -eq 0 ]; then
+          if [ "$fix_status" -eq 0 ]; then
             python3 scripts/agent_apply_language_modal.py >> .agent-language-validation.txt 2>&1
             modal_status=$?
           else
@@ -68,5 +68,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
-          git commit -m '[agent source] Add per-language syllabification'
+          git commit -m '[agent validation] Complete per-language syllabification'
           git push
