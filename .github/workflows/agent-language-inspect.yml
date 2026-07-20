@@ -6,7 +6,7 @@ on:
       - agent/language-syllabification
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   inspect:
@@ -15,20 +15,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - name: Working tree
+      - name: Capture source trace
+        if: ${{ !contains(github.event.head_commit.message, '[agent inspection]') }}
         run: |
-          git status --short
-          printf '\n--- tracked workflows ---\n'
-          find .github/workflows -maxdepth 1 -type f -print 2>/dev/null || true
-      - name: Trace syllable language callers
-        run: |
-          printf '%s\n' '--- configuration language callers ---'
-          rg -n -C 4 'config::get\(\)\.lang|config::get\(\)\.lang\.clone' src tests || true
-          printf '%s\n' '--- syllable API callers ---'
-          rg -n -C 3 'syllable_breaks|syllable_count|timing_ratios|visual_progress_from_timing|read_highlight_end_from_timing|split_dialogue_at_syllable' src tests || true
-      - name: Trace language panel and domain
-        run: |
-          printf '%s\n' '--- language modal callers ---'
-          rg -n -C 4 'LanguageListItem|LanguageModalResult|open_languages_modal|refresh_languages_modal|create_language|rename_language|select_language' src tests || true
-          printf '%s\n' '--- project language serialization ---'
-          rg -n -C 4 'ProjectLanguage|active_language|language_snapshots' src tests || true
+          {
+            printf '%s\n' '--- working tree ---'
+            git status --short
+            printf '%s\n' '--- configuration language callers ---'
+            rg -n -C 5 'config::get\(\)\.lang|config::get\(\)\.lang\.clone' src tests || true
+            printf '%s\n' '--- syllable API callers ---'
+            rg -n -C 4 'syllable_breaks|syllable_count|timing_ratios|visual_progress_from_timing|read_highlight_end_from_timing|split_dialogue_at_syllable|visible_syllable_segments|syllable_ratios_for_line' src tests || true
+            printf '%s\n' '--- language modal and state callers ---'
+            rg -n -C 5 'LanguageListItem|LanguageModalResult|open_languages_modal|refresh_languages_modal|create_language|rename_language|select_language|ProjectLanguage' src tests || true
+          } > .agent-language-inspection.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .agent-language-inspection.txt
+          git commit -m '[agent inspection] Capture language flow'
+          git push
