@@ -43,6 +43,10 @@ pub enum UiAction {
     SelectLanguage {
         id: u64,
     },
+    SetLanguageSyllableLanguage {
+        id: u64,
+        language: crate::project::SyllableLanguage,
+    },
     PickLanguageInstrumentalAudio {
         id: u64,
     },
@@ -413,6 +417,7 @@ impl UiAction {
                 | Self::RenameLanguage { .. }
                 | Self::DeleteLanguage { .. }
                 | Self::SelectLanguage { .. }
+                | Self::SetLanguageSyllableLanguage { .. }
                 | Self::PickLanguageInstrumentalAudio { .. }
                 | Self::ClearLanguageInstrumentalAudio { .. }
                 | Self::PickProjectInstrumentalAudio

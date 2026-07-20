@@ -1066,7 +1066,7 @@ impl State {
             .and_then(|line_id| self.project_session.project.get_line(*line_id))
             .map(|line| !line.karaoke);
 
-        let lang = crate::config::get().lang.clone();
+        let lang = self.project_session.project.syllable_language_code();
         let commands: Vec<_> = line_ids
             .into_iter()
             .filter_map(|line_id| {
@@ -1075,7 +1075,7 @@ impl State {
                     let old_ratios = line.syllable_ratios.clone();
                     let new_karaoke = !old_karaoke;
                     let new_ratios = if new_karaoke {
-                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, &lang)
+                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang)
                     } else {
                         old_ratios.clone()
                     };
@@ -1149,6 +1149,11 @@ impl State {
                     .project_session
                     .project
                     .language_instrumental_audio_path(language.id),
+                syllable_language: self
+                    .project_session
+                    .project
+                    .language_syllable_language(language.id)
+                    .unwrap_or_default(),
             })
             .collect()
     }
@@ -1290,6 +1295,26 @@ impl State {
                 format!("{} {}", crate::i18n::t("toast.language_deleted"), name),
                 3.0,
             );
+        }
+    }
+
+    pub fn set_language_syllable_language(
+        &mut self,
+        id: u64,
+        language: crate::project::SyllableLanguage,
+    ) {
+        let active = id == self.project_session.project.active_language_id();
+        if self
+            .project_session
+            .project
+            .set_language_syllable_language(id, language)
+        {
+            self.project_session.dirty = true;
+            if active {
+                self.project_session.history.clear();
+                self.project_session.render_index = crate::render_index::ProjectRenderIndex::new();
+            }
+            self.refresh_languages_modal();
         }
     }
 
@@ -3253,13 +3278,13 @@ impl State {
             return false;
         }
 
-        let lang = crate::config::get().lang.clone();
+        let lang = self.project_session.project.syllable_language_code();
         let split = match target {
             DialogueSplitTarget::Cursor { cursor_pos, .. } => {
                 crate::syllable::split_dialogue_at_syllable_cursor(
                     &old_line.text,
                     &old_line.syllable_ratios,
-                    &lang,
+                    lang,
                     cursor_pos,
                 )
             }
@@ -3267,7 +3292,7 @@ impl State {
                 crate::syllable::split_dialogue_at_syllable_progress(
                     &old_line.text,
                     &old_line.syllable_ratios,
-                    &lang,
+                    lang,
                     progress,
                 )
             }

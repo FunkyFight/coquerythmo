@@ -82,6 +82,7 @@ pub struct SceneMarker {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RythmoScene {
     pub frame_window: FrameWindow,
+    pub syllable_language: crate::project::SyllableLanguage,
     pub current_frame: f64,
     pub tracks: Vec<TrackLayout>,
     pub lines: Vec<SceneLine>,
@@ -182,6 +183,7 @@ impl RythmoScene {
 
         Self {
             frame_window: options.frame_window,
+            syllable_language: project.syllable_language(),
             current_frame: options.current_frame,
             tracks,
             lines,
@@ -348,6 +350,25 @@ pub fn karaoke_stack_y(y: f32, height: f32, row: usize, scale: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::rythmo_line::{MarkerKind, RythmoMarker};
+
+    #[test]
+    fn scene_carries_the_projects_syllable_language_for_all_render_backends() {
+        let mut project = Project::new_with_language("English", "en");
+        project.set_language_syllable_language(
+            project.active_language_id(),
+            crate::project::SyllableLanguage::English,
+        );
+        let mut render_index = ProjectRenderIndex::new();
+        render_index.refresh(&project);
+
+        let scene = RythmoScene::build(&project, &render_index, SceneOptions::default());
+
+        assert_eq!(
+            scene.syllable_language,
+            crate::project::SyllableLanguage::English
+        );
+        assert_eq!(scene.syllable_language.code(), "en-us");
+    }
 
     #[test]
     fn scene_build_is_deterministic_and_revision_indexed() {

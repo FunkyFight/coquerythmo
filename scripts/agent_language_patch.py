@@ -78,8 +78,8 @@ text = replace_once(
 )
 text = replace_once(
     text,
-    "        let mut settings = ProjectSettings::default();\n        settings\n            .export_configuration",
-    "        let mut settings = ProjectSettings {\n            syllable_language: SyllableLanguage::from_code(&language.code),\n            ..ProjectSettings::default()\n        };\n        settings\n            .export_configuration",
+    "        let language_id = language.id;\n        let mut settings = ProjectSettings::default();\n        settings\n            .export_configuration",
+    "        let language_id = language.id;\n        let mut settings = ProjectSettings {\n            syllable_language: SyllableLanguage::from_code(&language.code),\n            ..ProjectSettings::default()\n        };\n        settings\n            .export_configuration",
     "initialize first language",
 )
 text = replace_once(
