@@ -1,207 +1,3 @@
-  Downloaded tracing v0.1.44
-  Downloaded x11rb-protocol v0.13.2
-  Downloaded regex-automata v0.4.14
-  Downloaded tokio v1.51.0
-  Downloaded ring v0.17.14
-   Compiling proc-macro2 v1.0.106
-   Compiling quote v1.0.45
-   Compiling unicode-ident v1.0.24
-   Compiling cfg-if v1.0.4
-   Compiling libc v0.2.184
-   Compiling syn v2.0.117
-   Compiling bitflags v2.11.0
-   Compiling log v0.4.29
-   Compiling once_cell v1.21.4
-   Compiling pkg-config v0.3.32
-   Compiling smallvec v1.15.1
-   Compiling find-msvc-tools v0.1.9
-   Compiling shlex v1.3.0
-   Compiling cc v1.2.58
-   Compiling pin-project-lite v0.2.17
-   Compiling libm v0.2.16
-   Compiling serde_core v1.0.228
-   Compiling equivalent v1.0.2
-   Compiling memchr v2.8.0
-   Compiling serde v1.0.228
-   Compiling futures-core v0.3.32
-   Compiling serde_derive v1.0.228
-   Compiling synstructure v0.13.2
-   Compiling libloading v0.8.9
-   Compiling rustix v1.1.4
-   Compiling autocfg v1.5.0
-   Compiling zerofrom-derive v0.1.7
-   Compiling zerocopy v0.8.48
-   Compiling version_check v0.9.5
-   Compiling slab v0.4.12
-   Compiling linux-raw-sys v0.12.1
-   Compiling zerofrom v0.1.7
-   Compiling yoke-derive v0.8.2
-   Compiling bytemuck_derive v1.10.2
-   Compiling zerocopy-derive v0.8.48
-   Compiling stable_deref_trait v1.2.1
-   Compiling yoke v0.8.2
-   Compiling bytemuck v1.25.0
-   Compiling dlib v0.5.3
-   Compiling zerovec-derive v0.11.3
-   Compiling wayland-sys v0.31.11
-   Compiling futures-io v0.3.32
-   Compiling zerovec v0.11.6
-   Compiling displaydoc v0.2.5
-   Compiling allocator-api2 v0.2.21
-   Compiling foldhash v0.2.0
-   Compiling bytes v1.11.1
-   Compiling hashbrown v0.16.1
-   Compiling crossbeam-utils v0.8.21
-   Compiling tinystr v0.8.3
-   Compiling core_maths v0.1.1
-   Compiling writeable v0.6.2
-   Compiling percent-encoding v2.3.2
-   Compiling itoa v1.0.18
-   Compiling litemap v0.8.2
-   Compiling icu_locale_core v2.2.0
-   Compiling indexmap v2.13.0
-   Compiling zerotrie v0.2.4
-   Compiling potential_utf v0.1.5
-   Compiling icu_properties_data v2.2.0
-   Compiling parking v2.2.1
-   Compiling icu_normalizer_data v2.2.0
-   Compiling utf8_iter v1.0.4
-   Compiling icu_collections v2.2.0
-   Compiling icu_provider v2.2.0
-   Compiling concurrent-queue v2.5.0
-   Compiling num-traits v0.2.19
-   Compiling wayland-backend v0.3.15
-   Compiling futures-sink v0.3.32
-   Compiling cfg_aliases v0.2.1
-   Compiling http v1.4.0
-   Compiling downcast-rs v1.2.1
-   Compiling atomic-waker v1.1.2
-   Compiling arrayvec v0.7.6
-   Compiling vcpkg v0.2.15
-   Compiling scoped-tls v1.0.1
-   Compiling openssl-sys v0.9.112
-   Compiling icu_normalizer v2.2.0
-   Compiling icu_properties v2.2.0
-   Compiling quick-xml v0.39.2
-   Compiling mio v1.2.0
-   Compiling socket2 v0.6.3
-   Compiling winnow v0.7.15
-   Compiling wayland-client v0.31.14
-   Compiling tokio v1.51.0
-   Compiling wayland-scanner v0.31.10
-   Compiling idna_adapter v1.2.1
-   Compiling form_urlencoded v1.2.2
-   Compiling polling v3.11.0
-   Compiling getrandom v0.2.17
-   Compiling simd-adler32 v0.3.9
-   Compiling httparse v1.10.1
-   Compiling winnow v1.0.1
-   Compiling fastrand v2.3.0
-   Compiling crc32fast v1.5.0
-   Compiling toml_parser v1.1.2+spec-1.1.0
-   Compiling idna v1.1.0
-   Compiling event-listener v5.4.1
-   Compiling ppv-lite86 v0.2.21
-   Compiling futures-macro v0.3.32
-   Compiling tracing-attributes v0.1.31
-   Compiling tracing-core v0.1.36
-   Compiling typenum v1.19.0
-   Compiling toml_datetime v1.1.1+spec-1.1.0
-   Compiling thiserror v1.0.69
-   Compiling adler2 v2.0.1
-   Compiling futures-task v0.3.32
-   Compiling futures-util v0.3.32
-   Compiling miniz_oxide v0.8.9
-   Compiling toml_edit v0.25.10+spec-1.1.0
-   Compiling tracing v0.1.44
-   Compiling event-listener-strategy v0.5.4
-   Compiling url v2.5.8
-   Compiling futures-lite v2.6.1
-   Compiling generic-array v0.14.7
-   Compiling thiserror-impl v1.0.69
-   Compiling raw-window-handle v0.6.2
-   Compiling foreign-types-shared v0.1.1
-   Compiling thiserror v2.0.18
-   Compiling openssl v0.10.76
-   Compiling foreign-types v0.3.2
-   Compiling flate2 v1.1.9
-   Compiling proc-macro-crate v3.5.0
-   Compiling zvariant_utils v3.3.0
-   Compiling openssl-macros v0.1.1
-   Compiling enumflags2_derive v0.7.12
-   Compiling thiserror-impl v2.0.18
-   Compiling memmap2 v0.9.10
-   Compiling native-tls v0.2.18
-   Compiling base64 v0.22.1
-   Compiling getrandom v0.3.4
-   Compiling enumflags2 v0.7.12
-   Compiling zvariant_derive v5.10.0
-   Compiling http-body v1.0.1
-   Compiling naga v29.0.1
-   Compiling futures-channel v0.3.32
-   Compiling slotmap v1.1.1
-   Compiling async-io v2.6.0
-   Compiling parking_lot_core v0.9.12
-   Compiling zeroize v1.8.2
-   Compiling bit-vec v0.9.1
-   Compiling unicode-width v0.2.2
-   Compiling ash v0.38.0+1.3.281
-   Compiling openssl-probe v0.2.1
-   Compiling endi v1.1.1
-   Compiling async-task v4.7.1
-   Compiling codespan-reporting v0.13.1
-   Compiling bit-set v0.9.1
-   Compiling rustls-pki-types v1.14.0
-   Compiling async-channel v2.5.0
-   Compiling fdeflate v0.3.7
-   Compiling rand_core v0.6.4
-   Compiling tokio-util v0.7.18
-   Compiling half v2.7.1
-   Compiling ttf-parser v0.25.1
-   Compiling spirv v0.4.0+sdk-1.4.341.0
-   Compiling fnv v1.0.7
-   Compiling tower-service v0.3.3
-   Compiling hexf-parse v0.2.1
-   Compiling roxmltree v0.20.0
-   Compiling float-cmp v0.9.0
-   Compiling tinyvec_macros v0.1.1
-   Compiling khronos-egl v6.0.0
-   Compiling scopeguard v1.2.0
-   Compiling rustix v0.38.44
-   Compiling foldhash v0.1.5
-   Compiling rustc-hash v1.1.0
-   Compiling try-lock v0.2.5
-   Compiling want v0.3.1
-   Compiling hashbrown v0.15.5
-   Compiling lock_api v0.4.14
-   Compiling tinyvec v1.11.0
-   Compiling strict-num v0.1.1
-   Compiling fontconfig-parser v0.5.8
-   Compiling h2 v0.4.13
-   Compiling rand_chacha v0.3.1
-   Compiling crypto-common v0.1.7
-   Compiling block-buffer v0.10.4
-   Compiling wgpu-types v29.0.1
-   Compiling piper v0.2.5
-   Compiling wgpu-hal v29.0.1
-   Compiling font-types v0.11.1
-   Compiling ring v0.17.14
-   Compiling gpu-descriptor-types v0.2.0
-   Compiling errno v0.3.14
-   Compiling zmij v1.0.21
-   Compiling linux-raw-sys v0.4.15
-   Compiling presser v0.3.1
-   Compiling arrayref v0.3.9
-   Compiling tiny-skia-path v0.11.4
-   Compiling gpu-allocator v0.28.0
-   Compiling signal-hook-registry v1.4.8
-   Compiling gpu-descriptor v0.3.2
-   Compiling read-fonts v0.37.0
-   Compiling blocking v1.6.2
-   Compiling wgpu-naga-bridge v29.0.1
-   Compiling digest v0.10.7
-   Compiling parking_lot v0.12.5
-   Compiling rand v0.8.5
    Compiling hyper v1.9.0
    Compiling tokio-native-tls v0.3.1
    Compiling zvariant v5.10.0
@@ -210,18 +6,18 @@
    Compiling ordered-float v5.3.0
    Compiling sync_wrapper v1.0.2
    Compiling async-trait v0.1.89
-   Compiling bitflags v1.3.2
-   Compiling profiling v1.0.17
-   Compiling ipnet v2.12.0
-   Compiling tower-layer v0.3.3
-   Compiling serde_json v1.0.149
    Compiling renderdoc-sys v1.1.0
-   Compiling unicode-script v0.5.8
-   Compiling cpufeatures v0.2.17
+   Compiling serde_json v1.0.149
+   Compiling profiling v1.0.17
    Compiling glow v0.17.0
-   Compiling sha1 v0.10.6
-   Compiling tower v0.5.3
+   Compiling bitflags v1.3.2
+   Compiling cpufeatures v0.2.17
+   Compiling tower-layer v0.3.3
+   Compiling unicode-script v0.5.8
+   Compiling ipnet v2.12.0
    Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling sha1 v0.10.6
    Compiling png v0.17.16
    Compiling zbus_names v4.3.1
    Compiling async-signal v0.2.13
@@ -232,69 +28,273 @@
    Compiling ttf-parser v0.24.1
    Compiling aho-corasick v1.1.4
    Compiling alsa-sys v0.3.1
-   Compiling byteorder v1.5.0
-   Compiling xcursor v0.3.10
-   Compiling smithay-client-toolkit v0.18.1
-   Compiling quick-error v2.0.1
-   Compiling litrs v1.0.0
-   Compiling weezl v0.1.12
-   Compiling xkeysym v0.2.1
-   Compiling unicode-bidi v0.3.18
-   Compiling data-encoding v2.10.0
    Compiling iri-string v0.7.12
+   Compiling quick-error v2.0.1
+   Compiling byteorder v1.5.0
    Compiling regex-syntax v0.8.10
-   Compiling cursor-icon v1.2.0
+   Compiling utf-8 v0.7.6
+   Compiling unicode-bidi v0.3.18
+   Compiling color_quant v1.1.0
+   Compiling weezl v0.1.12
    Compiling ryu v1.0.23
+   Compiling cursor-icon v1.2.0
+   Compiling smithay-client-toolkit v0.18.1
+   Compiling xkeysym v0.2.1
    Compiling byteorder-lite v0.1.0
    Compiling untrusted v0.9.0
-   Compiling utf-8 v0.7.6
-   Compiling color_quant v1.1.0
+   Compiling litrs v1.0.0
+   Compiling data-encoding v2.10.0
+   Compiling xcursor v0.3.10
+   Compiling wayland-cursor v0.31.14
+   Compiling document-features v0.2.12
    Compiling tungstenite v0.21.0
+   Compiling wayland-csd-frame v0.3.0
    Compiling serde_urlencoded v0.7.1
    Compiling regex-automata v0.4.14
-   Compiling wayland-csd-frame v0.3.0
    Compiling tower-http v0.6.8
-   Compiling document-features v0.2.12
-   Compiling wayland-cursor v0.31.14
-error: failed to run custom build command for `alsa-sys v0.3.1`
+   Compiling hyper-tls v0.6.0
+   Compiling rand_chacha v0.9.0
+   Compiling calloop-wayland-source v0.2.0
+   Compiling wgpu-core-deps-windows-linux-android v29.0.0
+   Compiling async-process v2.5.0
+   Compiling zbus_macros v5.14.0
+   Compiling tiny-skia v0.11.4
+   Compiling wayland-protocols-wlr v0.2.0
+   Compiling skrifa v0.40.0
+   Compiling owned_ttf_parser v0.25.1
+   Compiling async-executor v1.14.0
+   Compiling async-broadcast v0.7.2
+   Compiling kurbo v0.11.3
+   Compiling wgpu v29.0.1
+   Compiling ahash v0.8.12
+   Compiling toml v0.5.11
+   Compiling ordered-stream v0.2.0
+   Compiling uuid v1.23.0
+   Compiling async-stream-impl v0.3.6
+   Compiling async-recursion v1.1.1
+   Compiling serde_repr v0.1.20
+   Compiling x11-dl v2.21.0
+   Compiling encoding_rs v0.8.35
+   Compiling unicode-properties v0.1.4
+   Compiling cfg_aliases v0.1.1
+   Compiling mime v0.3.17
+   Compiling siphasher v1.0.2
+   Compiling unicode-bidi-mirroring v0.3.0
+   Compiling rustls v0.23.37
+   Compiling yazi v0.2.1
+   Compiling unicode-ccc v0.3.0
+   Compiling utf8parse v0.2.2
+   Compiling ab_glyph_rasterizer v0.1.10
+   Compiling zeno v0.3.3
+   Compiling hex v0.4.3
+   Compiling zbus v5.14.0
+   Compiling swash v0.2.7
+   Compiling ab_glyph v0.2.32
+   Compiling anstyle-parse v1.0.0
+   Compiling rustybuzz v0.18.0
+   Compiling reqwest v0.12.28
+   Compiling svgtypes v0.15.3
+   Compiling winit v0.29.15
+   Compiling async-stream v0.3.6
+   Compiling winres v0.1.12
+   Compiling regex v1.12.3
+   Compiling rand v0.9.2
+   Compiling rustls-webpki v0.103.10
+   Compiling tokio-tungstenite v0.21.0
+   Compiling fontdb v0.22.0
+   Compiling async-fs v2.2.0
+   Compiling harfrust v0.5.2
+   Compiling async-net v2.0.0
+   Compiling fontdb v0.23.0
+   Compiling wayland-protocols v0.32.12
+   Compiling euclid v0.22.14
+   Compiling gethostname v1.1.0
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling is-docker v0.2.0
+   Compiling simplecss v0.2.2
+   Compiling instant v0.1.13
+   Compiling linebender_resource_handle v0.1.1
+   Compiling cpal v0.15.3
+   Compiling sys-locale v0.3.2
+   Compiling rustc-hash v2.1.2
+   Compiling toml_write v0.1.2
+   Compiling x11rb-protocol v0.13.2
+   Compiling xmlwriter v0.1.0
+   Compiling anstyle v1.0.14
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling rangemap v1.7.1
+   Compiling zune-core v0.5.1
+   Compiling as-raw-xcb-connection v1.0.1
+   Compiling anstyle-query v1.1.5
+   Compiling svg_fmt v0.4.5
+   Compiling smol_str v0.3.6
+   Compiling unicode-linebreak v0.1.5
+   Compiling option-ext v0.2.0
+   Compiling pxfm v0.1.29
+   Compiling base64 v0.21.7
+   Compiling unicode-segmentation v1.13.2
+   Compiling unicode-vo v0.1.0
+   Compiling rfd v0.15.4
+   Compiling adler32 v1.2.0
+   Compiling static_assertions v1.1.0
+   Compiling data-url v0.3.2
+   Compiling imagesize v0.13.0
+   Compiling pico-args v0.5.0
+   Compiling colorchoice v1.0.5
+   Compiling self_cell v1.2.2
+   Compiling subtle v2.6.1
+   Compiling zune-core v0.4.12
+   Compiling zune-jpeg v0.4.21
+   Compiling cosmic-text v0.18.2
+   Compiling anstream v1.0.0
+   Compiling usvg v0.44.0
+   Compiling x11rb v0.13.2
+   Compiling rust_engineio v0.6.0
+   Compiling moxcms v0.8.1
+   Compiling dirs-sys v0.5.0
+   Compiling etagere v0.2.15
+   Compiling zune-jpeg v0.5.15
+   Compiling ashpd v0.11.1
+   Compiling toml_edit v0.22.27
+   Compiling backoff v0.4.0
+   Compiling is-wsl v0.4.0
+   Compiling alsa v0.9.1
+   Compiling env_filter v1.0.1
+   Compiling sctk-adwaita v0.8.3
+   Compiling coquerythmo v3.6.0 (/home/runner/work/coquerythmo/coquerythmo)
+   Compiling image-webp v0.2.4
+   Compiling image-webp v0.1.3
+   Compiling xkbcommon-dl v0.4.2
+   Compiling gif v0.13.3
+   Compiling gif v0.14.2
+   Compiling wayland-protocols-plasma v0.2.0
+   Compiling png v0.18.1
+   Compiling webpki-roots v1.0.6
+   Compiling ureq-proto v0.6.0
+   Compiling rgb v0.8.53
+   Compiling urlencoding v2.1.3
+   Compiling jiff v0.2.23
+   Compiling lru v0.16.3
+   Compiling utf8-zero v0.8.1
+   Compiling pollster v0.4.0
+   Compiling smol_str v0.2.2
+   Compiling dasp_sample v0.11.0
+   Compiling env_logger v0.11.10
+   Compiling ureq v3.3.0
+   Compiling glyphon v0.10.0 (https://github.com/RuairidhWilliamson/glyphon?rev=45a4a34#45a4a341)
+   Compiling resvg v0.44.0
+   Compiling image v0.25.10
+   Compiling open v5.3.6
+   Compiling rust_socketio v0.6.0
+   Compiling toml v0.8.23
+   Compiling dirs v6.0.0
+   Compiling quick-xml v0.37.5
+   Compiling hypher v0.1.7
+   Compiling pollster v0.3.0
+error[E0004]: non-exhaustive patterns: `&command::Command::Detection { .. }` not covered
+   --> src/application/delta_codec.rs:14:16
+    |
+ 14 |     Some(match command {
+    |                ^^^^^^^ pattern `&command::Command::Detection { .. }` not covered
+    |
+note: `command::Command` defined here
+   --> src/command.rs:25:10
+    |
+ 25 | pub enum Command {
+    |          ^^^^^^^
+...
+128 |     Detection {
+    |     --------- not covered
+    = note: the matched value is of type `&command::Command`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+    |
+174 ~         }),
+175 ~         &command::Command::Detection { .. } => todo!(),
+    |
 
-Caused by:
-  process didn't exit successfully: `/home/runner/work/coquerythmo/coquerythmo/target/debug/build/alsa-sys-db1f448ca5ddf81d/build-script-build` (exit status: 101)
-  --- stdout
-  cargo:rerun-if-env-changed=ALSA_NO_PKG_CONFIG
-  cargo:rerun-if-env-changed=PKG_CONFIG_x86_64-unknown-linux-gnu
-  cargo:rerun-if-env-changed=PKG_CONFIG_x86_64_unknown_linux_gnu
-  cargo:rerun-if-env-changed=HOST_PKG_CONFIG
-  cargo:rerun-if-env-changed=PKG_CONFIG
-  cargo:rerun-if-env-changed=ALSA_STATIC
-  cargo:rerun-if-env-changed=ALSA_DYNAMIC
-  cargo:rerun-if-env-changed=PKG_CONFIG_ALL_STATIC
-  cargo:rerun-if-env-changed=PKG_CONFIG_ALL_DYNAMIC
-  cargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64-unknown-linux-gnu
-  cargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64_unknown_linux_gnu
-  cargo:rerun-if-env-changed=HOST_PKG_CONFIG_PATH
-  cargo:rerun-if-env-changed=PKG_CONFIG_PATH
-  cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64-unknown-linux-gnu
-  cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64_unknown_linux_gnu
-  cargo:rerun-if-env-changed=HOST_PKG_CONFIG_LIBDIR
-  cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR
-  cargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64-unknown-linux-gnu
-  cargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64_unknown_linux_gnu
-  cargo:rerun-if-env-changed=HOST_PKG_CONFIG_SYSROOT_DIR
-  cargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR
+error[E0004]: non-exhaustive patterns: `&command::Command::Detection { .. }` not covered
+    --> src/project_metadata.rs:811:11
+     |
+ 811 |     match command {
+     |           ^^^^^^^ pattern `&command::Command::Detection { .. }` not covered
+     |
+note: `command::Command` defined here
+    --> src/command.rs:25:10
+     |
+  25 | pub enum Command {
+     |          ^^^^^^^
+...
+ 128 |     Detection {
+     |     --------- not covered
+     = note: the matched value is of type `&command::Command`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+     |
+1114 ~         },
+1115 +         &command::Command::Detection { .. } => todo!()
+     |
 
-  --- stderr
+error[E0004]: non-exhaustive patterns: `&workspaces::rythmo::view::state::Selection::Detection(_)` not covered
+    --> src/state.rs:2896:19
+     |
+2896 |             match sel {
+     |                   ^^^ pattern `&workspaces::rythmo::view::state::Selection::Detection(_)` not covered
+     |
+note: `workspaces::rythmo::view::state::Selection` defined here
+    --> src/workspaces/rythmo/state.rs:7:10
+     |
+   7 | pub enum Selection {
+     |          ^^^^^^^^^
+...
+  11 |     Detection(crate::detection::DetectionAddress),
+     |     --------- not covered
+     = note: the matched value is of type `&workspaces::rythmo::view::state::Selection`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+     |
+2956 ~                 },
+2957 +                 &workspaces::rythmo::view::state::Selection::Detection(_) => todo!()
+     |
 
-  thread 'main' (5682) panicked at /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alsa-sys-0.3.1/build.rs:13:18:
+error[E0004]: non-exhaustive patterns: `Some(&workspaces::rythmo::view::state::Selection::Detection(_))` not covered
+    --> src/state.rs:3764:15
+     |
+3764 |         match self.ui_shell.ui.rythmo_state.selected.as_ref() {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ pattern `Some(&workspaces::rythmo::view::state::Selection::Detection(_))` not covered
+     |
+note: `std::option::Option<&workspaces::rythmo::view::state::Selection>` defined here
+    --> /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/option.rs:597:0
+    ::: /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/option.rs:605:4
+     |
+     = note: not covered
+     = note: the matched value is of type `std::option::Option<&workspaces::rythmo::view::state::Selection>`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+     |
+3784 ~             Some(Selection::Marker(_) | Selection::Strokes(_)) | None => Vec::new(),
+3785 ~             Some(&workspaces::rythmo::view::state::Selection::Detection(_)) => todo!(),
+     |
 
-  pkg-config exited with status code 1
-  > PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 pkg-config --libs --cflags alsa
+error[E0004]: non-exhaustive patterns: `&workspaces::rythmo::view::state::Selection::Detection(_)` not covered
+  --> src/workspaces/rythmo/selection.rs:20:11
+   |
+20 |     match selection {
+   |           ^^^^^^^^^ pattern `&workspaces::rythmo::view::state::Selection::Detection(_)` not covered
+   |
+note: `workspaces::rythmo::view::state::Selection` defined here
+  --> src/workspaces/rythmo/state.rs:7:10
+   |
+ 7 | pub enum Selection {
+   |          ^^^^^^^^^
+...
+11 |     Detection(crate::detection::DetectionAddress),
+   |     --------- not covered
+   = note: the matched value is of type `&workspaces::rythmo::view::state::Selection`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+   |
+31 ~         Selection::Line(_) | Selection::Marker(_) | Selection::Strokes(_) => Vec::new(),
+32 ~         &workspaces::rythmo::view::state::Selection::Detection(_) => todo!(),
+   |
 
-  The system library `alsa` required by crate `alsa-sys` was not found.
-  The file `alsa.pc` needs to be installed and the PKG_CONFIG_PATH environment variable must contain its parent directory.
-  The PKG_CONFIG_PATH environment variable is not set.
-
-  HINT: if you have installed the library, try setting PKG_CONFIG_PATH to the directory containing `alsa.pc`.
-
-  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+For more information about this error, try `rustc --explain E0004`.
+error: could not compile `coquerythmo` (lib) due to 5 previous errors
 warning: build failed, waiting for other jobs to finish...
+error: could not compile `coquerythmo` (lib test) due to 5 previous errors
