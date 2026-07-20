@@ -360,7 +360,7 @@ text = replace_once(
             1,
         );
         modal.handle_event(
-            &UiEvent::KeyInput { text: "\u{b}".into() },
+            &UiEvent::KeyInput { text: "\\u{b}".into() },
             1280.0,
             720.0,
         );

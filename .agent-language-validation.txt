@@ -1,10 +1,7 @@
+SCRIPT_FIX_STATUS=0
+MODAL_STATUS=0
 Traceback (most recent call last):
-  File "/home/runner/work/coquerythmo/coquerythmo/scripts/agent_apply_language_core.py", line 66, in <module>
-    text = replace_once(
-           ^^^^^^^^^^^^^
-  File "/home/runner/work/coquerythmo/coquerythmo/scripts/agent_apply_language_core.py", line 15, in replace_once
-    raise RuntimeError(f"{label}: expected one occurrence, found {count}")
-RuntimeError: add per-band setting: expected one occurrence, found 0
-CORE_STATUS=1
-MODAL_STATUS=1
+  File "/home/runner/work/coquerythmo/coquerythmo/scripts/agent_apply_language_callers.py", line 108, in <module>
+    raise RuntimeError(
+RuntimeError: CPU locale references: expected 2 before/2 in helper, got 3/2
 CALLERS_STATUS=1

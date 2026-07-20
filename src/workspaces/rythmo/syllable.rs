@@ -29,8 +29,8 @@ pub(crate) fn syllable_mouse_press(
 
     let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
 
-    let lang = crate::config::get().lang.clone();
-    let ratios = syllable_ratios_for_line(line, state.syllable_drag.as_ref(), &lang, state)?;
+    let lang = ctx.project.syllable_language_code();
+    let ratios = syllable_ratios_for_line(line, state.syllable_drag.as_ref(), lang, state)?;
     if ratios.len() <= 1 {
         return None;
     }
