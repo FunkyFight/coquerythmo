@@ -1,0 +1,112 @@
+name: Patch detection shortcut to Alt+D
+
+on:
+  push:
+    branches:
+      - agent/track-scoped-detection-model
+
+permissions:
+  contents: write
+
+concurrency:
+  group: patch-detection-alt-d
+  cancel-in-progress: true
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/track-scoped-detection-model
+          fetch-depth: 0
+
+      - name: Skip once patched
+        id: status
+        shell: bash
+        run: |
+          if grep -q 'OpenDetectionPalette' src/application/command.rs; then
+            echo "patched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "patched=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply Alt+D patch
+        if: steps.status.outputs.patched == 'false'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              if old not in text:
+                  raise SystemExit(f"missing expected block in {path}: {old[:80]!r}")
+              p.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          replace_once(
+              "src/application/command.rs",
+              "    AddDetection {\n",
+              "    OpenDetectionPalette,\n    AddDetection {\n",
+          )
+
+          replace_once(
+              "src/input/router.rs",
+              "    let shift = Modifiers {\n        shift: true,\n        ..Modifiers::NONE\n    };\n",
+              "    let shift = Modifiers {\n        shift: true,\n        ..Modifiers::NONE\n    };\n    let alt = Modifiers {\n        alt: true,\n        ..Modifiers::NONE\n    };\n",
+          )
+
+          replace_once(
+              "src/input/router.rs",
+              "    router.bind(\n        InputContext::Workspace,\n        KeyCode::Character('d'),\n        ctrl,\n        RepeatPolicy::PressOnly,\n        UiAction::SetToolMode(ToolMode::Draw),\n    );\n",
+              "    router.bind(\n        InputContext::Workspace,\n        KeyCode::Character('d'),\n        ctrl,\n        RepeatPolicy::PressOnly,\n        UiAction::SetToolMode(ToolMode::Draw),\n    );\n    router.bind(\n        InputContext::Workspace,\n        KeyCode::Character('d'),\n        alt,\n        RepeatPolicy::PressOnly,\n        UiAction::OpenDetectionPalette,\n    );\n",
+          )
+
+          replace_once(
+              "src/input/router.rs",
+              "        let ctrl_shift = Modifiers {\n            ctrl: true,\n            shift: true,\n            ..Modifiers::NONE\n        };\n\n        for (key, modifiers, contexts, expected) in [\n",
+              "        let ctrl_shift = Modifiers {\n            ctrl: true,\n            shift: true,\n            ..Modifiers::NONE\n        };\n        let alt = Modifiers {\n            alt: true,\n            ..Modifiers::NONE\n        };\n\n        for (key, modifiers, contexts, expected) in [\n",
+          )
+
+          replace_once(
+              "src/input/router.rs",
+              "            (\n                KeyCode::Character('d'),\n                ctrl,\n                &workspace,\n                UiAction::SetToolMode(ToolMode::Draw),\n            ),\n",
+              "            (\n                KeyCode::Character('d'),\n                ctrl,\n                &workspace,\n                UiAction::SetToolMode(ToolMode::Draw),\n            ),\n            (\n                KeyCode::Character('d'),\n                alt,\n                &workspace,\n                UiAction::OpenDetectionPalette,\n            ),\n",
+          )
+
+          replace_once(
+              "src/app/dispatcher.rs",
+              "            UiAction::AddDetection {\n",
+              "            UiAction::OpenDetectionPalette => {\n                state.open_detection_palette_from_hover();\n            }\n            UiAction::AddDetection {\n",
+          )
+
+          replace_once(
+              "src/workspaces/rythmo/detection_ui.rs",
+              "        UiEvent::KeyInput { text } if text.eq_ignore_ascii_case(\"d\") => {\n            if state.open_detection_palette_from_hover() {\n                return Some(EventResponse::Consumed);\n            }\n        }\n",
+              "",
+          )
+          PY
+
+      - name: Install Linux dependencies
+        if: steps.status.outputs.patched == 'false'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev pkg-config
+
+      - name: Format and test
+        if: steps.status.outputs.patched == 'false'
+        run: |
+          cargo fmt --all
+          cargo test --locked input::router::tests::accessibility_shortcuts_table_is_complete
+          cargo test --locked detection
+          git diff --check
+
+      - name: Commit patch
+        if: steps.status.outputs.patched == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src
+          git commit -m "Use Alt+D for detection palette"
+          git push origin HEAD:agent/track-scoped-detection-model
