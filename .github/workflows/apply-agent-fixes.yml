@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - tools/apply_agent_fixes.py
+      - tools/validation-trigger.txt
 
 permissions:
   contents: write
