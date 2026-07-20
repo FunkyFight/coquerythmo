@@ -248,9 +248,12 @@ pub fn handle_rythmo_event(
         UiEvent::ShiftCursorLeft => handle_cursor_move(&ctx, state, -1, true),
         UiEvent::ShiftCursorRight => handle_cursor_move(&ctx, state, 1, true),
         UiEvent::SelectWordLeft => handle_word_selection(&ctx, state, -1),
-        UiEvent::SelectWordRight => handle_word_selection(&ctx, state, 1, true),
+        UiEvent::SelectWordRight => handle_word_selection(&ctx, state, 1),
         UiEvent::CursorUp => {
             if state.editing_line.is_some() || state.editing_note.is_some() {
+                // A line/note editor is single-line: Up/Down have no
+                // vertical target, but must still be consumed so they never
+                // fall through to the workspace volume shortcuts.
                 EventResponse::Consumed
             } else {
                 handle_autocomplete_nav(&ctx, state, -1)
