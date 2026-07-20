@@ -2317,7 +2317,7 @@ pub fn render_lines<'a>(
     }
 
     let mut cursor_info = None;
-    let karaoke_lang = crate::config::get().lang.clone();
+    let karaoke_lang = project.syllable_language_code();
     let margin_frames = interactive_render_margin_frames(fps, render_index);
     let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames);
     let mut visible_line_ids = render_index.visible_line_ids(project, first_frame, last_frame);
@@ -2411,7 +2411,7 @@ pub fn render_lines<'a>(
         }
 
         let karaoke_progress_info = if karaoke_playback {
-            karaoke_progress_render_info(line, current_frame, &karaoke_lang)
+            karaoke_progress_render_info(line, current_frame, karaoke_lang)
         } else {
             None
         };
@@ -2511,7 +2511,7 @@ pub fn render_lines<'a>(
             crate::syllable::read_highlight_end_from_timing(
                 &line.text,
                 &line.syllable_ratios,
-                &karaoke_lang,
+                karaoke_lang,
                 progress as f32,
             )
         } else {
@@ -2577,7 +2577,7 @@ pub fn render_lines<'a>(
                 if let Some((breaks, ratios)) = visible_syllable_segments(
                     line,
                     drag_ratios,
-                    &karaoke_lang,
+                    karaoke_lang,
                     karaoke_preview,
                     state,
                 ) {
@@ -2676,7 +2676,7 @@ pub fn render_lines<'a>(
             state.syllable_drag.as_ref().map(|d| d.line_id) == Some(line.id);
         if !karaoke_playback_line && (is_hovered || is_syllable_drag_line) {
             if let Some(ratios) =
-                syllable_ratios_for_line(line, state.syllable_drag.as_ref(), &karaoke_lang, state)
+                syllable_ratios_for_line(line, state.syllable_drag.as_ref(), karaoke_lang, state)
             {
                 render_syllable_handles(&data.rect, &ratios, true, syllable_quads);
             }

@@ -1,6 +1,5 @@
 Traceback (most recent call last):
-  File "/home/runner/work/coquerythmo/coquerythmo/scripts/repair_agent_language_patch.py", line 66, in <module>
-    raise RuntimeError("ambiguous constructor replacement not found")
-RuntimeError: ambiguous constructor replacement not found
-REPAIR_STATUS=1
+  File "/home/runner/work/coquerythmo/coquerythmo/scripts/agent_language_finish.py", line 169, in <module>
+    raise RuntimeError(f"CPU renderer: expected four direct locale references, found {len(positions)}")
+RuntimeError: CPU renderer: expected four direct locale references, found 5
 PATCH_STATUS=1

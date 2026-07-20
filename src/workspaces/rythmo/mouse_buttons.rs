@@ -80,11 +80,11 @@ pub(crate) fn handle_shift_mouse_press(
                     state.line_input.selection = Some((current, current));
                 }
 
-                let lang = crate::config::get().lang.clone();
+                let lang = ctx.project.syllable_language_code();
                 let char_pos = cursor_index_for_line_at_ratio(
                     line,
                     state.syllable_drag.as_ref(),
-                    &lang,
+                    lang,
                     ctx.karaoke_preview,
                     state,
                     ratio,
@@ -195,11 +195,11 @@ pub(crate) fn handle_double_click(
             // If already editing this line, select the clicked word.
             if state.editing_line == Some(line.id) && !line.text.is_empty() {
                 let ratio = ((x - r.x) / r.width).clamp(0.0, 1.0);
-                let lang = crate::config::get().lang.clone();
+                let lang = ctx.project.syllable_language_code();
                 let char_pos = cursor_index_for_line_at_ratio(
                     line,
                     state.syllable_drag.as_ref(),
-                    &lang,
+                    lang,
                     ctx.karaoke_preview,
                     state,
                     ratio,
