@@ -17,20 +17,29 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Complete GPU wiring and validate
+      - name: Install native test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libasound2-dev libudev-dev
+
+      - name: Normalize tests and validate
         shell: bash
         run: |
           set +e
           : > .agent-language-validation.txt
 
-          python3 scripts/agent_finish_gpu_language.py >> .agent-language-validation.txt 2>&1
-          gpu_status=$?
-          echo "GPU_STATUS=$gpu_status" >> .agent-language-validation.txt
+          python3 scripts/agent_fix_language_test_literals.py >> .agent-language-validation.txt 2>&1
+          fix_status=$?
+          echo "LITERAL_FIX_STATUS=$fix_status" >> .agent-language-validation.txt
 
-          if [ "$gpu_status" -eq 0 ]; then
+          if [ "$fix_status" -eq 0 ]; then
             cargo fmt --all >> .agent-language-validation.txt 2>&1
             fmt_status=$?
             echo "FMT_STATUS=$fmt_status" >> .agent-language-validation.txt
+
+            cargo check --lib >> .agent-language-validation.txt 2>&1
+            check_status=$?
+            echo "CHECK_STATUS=$check_status" >> .agent-language-validation.txt
 
             cargo test --lib syllable_language -- --nocapture >> .agent-language-validation.txt 2>&1
             domain_status=$?
@@ -52,5 +61,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
-          git commit -m '[agent validation] Validate GPU syllable language path'
+          git commit -m '[agent validation] Compile and test per-language syllabification'
           git push
