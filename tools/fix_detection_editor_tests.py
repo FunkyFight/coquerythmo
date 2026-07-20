@@ -4,6 +4,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 
+subprocess.run(["sudo", "apt-get", "update"], cwd=ROOT, check=True)
 subprocess.run(
     [
         "sudo",
