@@ -30,6 +30,8 @@ pub mod packet;
 pub mod platform;
 pub mod project;
 pub mod project_archive;
+#[cfg(test)]
+mod project_detection_test_support;
 pub mod project_metadata;
 pub mod recording;
 pub mod recording_mix;
