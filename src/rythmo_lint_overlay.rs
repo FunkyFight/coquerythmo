@@ -3,7 +3,6 @@
 //! The overlay is synchronized by the rythmo controller and composed by the
 //! modal host. Export, studio and CPU video renderers never call this module.
 
-use crate::detection::TextAnchor;
 use crate::project::Project;
 use crate::rythmo_lint::{lint_project, LintScope, LintSeverity};
 use crate::ui::primitives::{
@@ -18,7 +17,7 @@ const WAVE_THICKNESS: f32 = 1.6;
 const TOOLTIP_WIDTH: f32 = 500.0;
 const TOOLTIP_HEIGHT: f32 = 52.0;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 struct Wave {
     x1: f32,
     x2: f32,
@@ -35,19 +34,17 @@ impl Wave {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 struct Tooltip {
     rect: Rect,
     severity: LintSeverity,
     message: &'static str,
 }
 
-#[derive(Debug)]
 struct OverlayState {
     waves: Vec<Wave>,
     pointer: (f32, f32),
     tooltip: Option<Tooltip>,
-    screen: Rect,
 }
 
 impl Default for OverlayState {
@@ -56,7 +53,6 @@ impl Default for OverlayState {
             waves: Vec::new(),
             pointer: (0.0, 0.0),
             tooltip: None,
-            screen: Rect::default(),
         }
     }
 }
@@ -109,10 +105,7 @@ fn sync_anchors(project: &Project, line_id: u64, character_count: usize) -> Vec<
     let mut anchors = data
         .text_sync_cues()
         .filter_map(|cue| {
-            let TextAnchor::GraphemeIndex(index) = cue.target else {
-                return None;
-            };
-            let index = index as usize;
+            let index = cue.target.grapheme_index()? as usize;
             if index >= character_count {
                 return None;
             }
@@ -260,7 +253,6 @@ pub fn sync_from_state(
     event: &UiEvent,
 ) {
     let mut state = lock_state();
-    state.screen = zone;
     if let Some(pointer) = event_pointer(event) {
         state.pointer = pointer;
     }
