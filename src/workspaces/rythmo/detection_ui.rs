@@ -1,8 +1,8 @@
 //! Detection UI facade.
 //!
-//! The legacy detector still owns persistence and the information menu. This
-//! facade owns the stable add button, cross-track source-sign dragging and the
-//! piecewise text layout used around synchronization points.
+//! The legacy detector owns persistence, hit testing and menu semantics. This
+//! facade owns cross-track source-sign dragging and the single piecewise text
+//! geometry shared by rendering and caret placement.
 
 use super::*;
 use crate::detection::{
@@ -23,6 +23,7 @@ pub(crate) use base::{
 const SIGN_BADGE_SIZE: f32 = 26.0;
 const SIGN_ICON_SIZE: f32 = 18.0;
 const SIGN_BOTTOM_MARGIN: f32 = 2.0;
+const SIGN_DISPLAY_DROP: f32 = 8.0;
 const ADD_BUTTON_SIZE: f32 = 18.0;
 const ADD_BUTTON_INSET: f32 = 2.0;
 const DRAG_THRESHOLD: f32 = 4.0;
@@ -41,36 +42,13 @@ struct SourceDrag {
     lock_x: bool,
 }
 
-#[derive(Clone)]
-struct SyncSyllableDragContext {
-    encoded_line_id: u64,
-    line_id: u64,
-    start_frame: i64,
-    duration_frames: i64,
-    character_count: usize,
-    breaks: Vec<usize>,
-    anchors: Vec<(usize, MediaTick)>,
-    edit_range: (usize, usize),
-}
-
 fn source_drag_slot() -> &'static Mutex<Option<SourceDrag>> {
     static SLOT: OnceLock<Mutex<Option<SourceDrag>>> = OnceLock::new();
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
-fn sync_drag_slot() -> &'static Mutex<Option<SyncSyllableDragContext>> {
-    static SLOT: OnceLock<Mutex<Option<SyncSyllableDragContext>>> = OnceLock::new();
-    SLOT.get_or_init(|| Mutex::new(None))
-}
-
 fn source_drag() -> std::sync::MutexGuard<'static, Option<SourceDrag>> {
     source_drag_slot()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn sync_drag() -> std::sync::MutexGuard<'static, Option<SyncSyllableDragContext>> {
-    sync_drag_slot()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -108,8 +86,6 @@ fn track_under_pointer(
 fn add_button_rect(hover: &DetectionHover) -> Rect {
     Rect {
         x: hover.screen_x - ADD_BUTTON_SIZE / 2.0,
-        // Entirely inside the current track: approaching the button can no
-        // longer switch hover to the adjacent line and make it disappear.
         y: hover.track_rect.y + ADD_BUTTON_INSET,
         width: ADD_BUTTON_SIZE,
         height: ADD_BUTTON_SIZE,
@@ -132,6 +108,32 @@ fn sign_badge_rect(
 
 fn sign_icon_rect(tick: MediaTick, track: Rect, current_frame: f64, zone: &Rect) -> Rect {
     let badge = sign_badge_rect(tick, track, current_frame, zone);
+    Rect {
+        x: badge.x + (badge.width - SIGN_ICON_SIZE) / 2.0,
+        y: badge.y + (badge.height - SIGN_ICON_SIZE) / 2.0,
+        width: SIGN_ICON_SIZE,
+        height: SIGN_ICON_SIZE,
+    }
+}
+
+fn displayed_badge_rect(
+    tick: MediaTick,
+    track: Rect,
+    current_frame: f64,
+    zone: &Rect,
+) -> Rect {
+    let mut rect = sign_badge_rect(tick, track, current_frame, zone);
+    rect.y += SIGN_DISPLAY_DROP;
+    rect
+}
+
+fn displayed_icon_rect(
+    tick: MediaTick,
+    track: Rect,
+    current_frame: f64,
+    zone: &Rect,
+) -> Rect {
+    let badge = displayed_badge_rect(tick, track, current_frame, zone);
     Rect {
         x: badge.x + (badge.width - SIGN_ICON_SIZE) / 2.0,
         y: badge.y + (badge.height - SIGN_ICON_SIZE) / 2.0,
@@ -311,8 +313,6 @@ pub(crate) fn handle_detection_event(
                         }))
                         .or(Some(EventResponse::Consumed));
                 }
-                // The add action allocates the target bucket's own stable id and
-                // selects it after the old address has been removed.
                 return Some(EventResponse::Actions(vec![
                     UiAction::DeleteDetection {
                         address: drag.address,
@@ -337,13 +337,9 @@ pub(crate) fn handle_detection_event(
             {
                 state.detection_drag = None;
                 if let Some(line) = ctx.project.get_line(address.line_id) {
-                    if let Some((start_frame, duration_frames)) = synchronized_line_bounds(
-                        ctx.project,
-                        line,
-                        None,
-                        ctx.project.syllable_language_code(),
-                        state,
-                    ) {
+                    if let Some((start_frame, duration_frames)) =
+                        synchronized_line_bounds(ctx.project, line)
+                    {
                         if start_frame != line.start_frame
                             || duration_frames != line.duration_frames
                         {
@@ -418,7 +414,7 @@ fn sync_anchors(project: &Project, line: &crate::rythmo_line::RythmoLine) -> Vec
         if index < character_count {
             let ratio = ((cue.media_tick.as_frame_position() - line.start_frame as f64)
                 / line.duration_frames as f64) as f32;
-            anchors.insert(index, ratio);
+            anchors.insert(index, ratio.clamp(0.0, 1.0));
         }
     }
     anchors.into_iter().collect()
@@ -453,43 +449,78 @@ fn base_character_positions(
         ratio_start += segment_ratio;
         character_start = character_end;
     }
+    if let Some(first) = positions.first_mut() {
+        *first = 0.0;
+    }
     if let Some(last) = positions.last_mut() {
         *last = 1.0;
     }
     positions
 }
 
+/// Piecewise affine mapping with fixed line endpoints. Sync points constrain the
+/// character centres between those endpoints; every interval is therefore fully
+/// occupied, without extrapolated whitespace or text spilling past its limits.
 fn map_character_positions(base: &[f32], anchors: &[(usize, f32)]) -> Vec<f32> {
-    let controls = anchors
-        .iter()
-        .filter_map(|(index, target)| {
-            Some(((base.get(*index)? + base.get(index + 1)?) * 0.5, *target))
-        })
-        .collect::<Vec<_>>();
-    if controls.is_empty() {
+    if base.len() < 2 || anchors.is_empty() {
         return base.to_vec();
     }
-    base.iter()
-        .copied()
-        .map(|source| {
-            let first = controls[0];
-            if source <= first.0 {
-                return source + first.1 - first.0;
+
+    let mut controls = vec![(0.0_f32, 0.0_f32), (1.0_f32, 1.0_f32)];
+    controls.extend(anchors.iter().filter_map(|(index, target)| {
+        let left = *base.get(*index)?;
+        let right = *base.get(index + 1)?;
+        Some(((left + right) * 0.5, target.clamp(0.0, 1.0)))
+    }));
+    controls.sort_by(|left, right| left.0.total_cmp(&right.0));
+    controls.dedup_by(|left, right| {
+        if (left.0 - right.0).abs() <= 0.000_001 {
+            right.1 = right.1.max(left.1);
+            true
+        } else {
+            false
+        }
+    });
+
+    let mut previous_target = 0.0_f32;
+    for control in &mut controls {
+        control.1 = control.1.max(previous_target).clamp(0.0, 1.0);
+        previous_target = control.1;
+    }
+    if let Some(first) = controls.first_mut() {
+        *first = (0.0, 0.0);
+    }
+    if let Some(last) = controls.last_mut() {
+        *last = (1.0, 1.0);
+    }
+
+    let mut mapped = Vec::with_capacity(base.len());
+    for source in base.iter().copied() {
+        let mut value = source;
+        for pair in controls.windows(2) {
+            let (source_start, target_start) = pair[0];
+            let (source_end, target_end) = pair[1];
+            if source <= source_end || (source_end - 1.0).abs() <= f32::EPSILON {
+                let local = ((source - source_start)
+                    / (source_end - source_start).max(0.000_001))
+                .clamp(0.0, 1.0);
+                value = target_start + (target_end - target_start) * local;
+                break;
             }
-            for pair in controls.windows(2) {
-                let (source_start, target_start) = pair[0];
-                let (source_end, target_end) = pair[1];
-                if source <= source_end {
-                    let local = ((source - source_start)
-                        / (source_end - source_start).max(0.000_1))
-                    .clamp(0.0, 1.0);
-                    return target_start + (target_end - target_start) * local;
-                }
-            }
-            let last = *controls.last().expect("controls is not empty");
-            source + last.1 - last.0
-        })
-        .collect()
+        }
+        mapped.push(value.clamp(0.0, 1.0));
+    }
+
+    for index in 1..mapped.len() {
+        mapped[index] = mapped[index].max(mapped[index - 1]);
+    }
+    if let Some(first) = mapped.first_mut() {
+        *first = 0.0;
+    }
+    if let Some(last) = mapped.last_mut() {
+        *last = 1.0;
+    }
+    mapped
 }
 
 fn character_layout(
@@ -500,10 +531,7 @@ fn character_layout(
     state: &RythmoState,
 ) -> Option<(Vec<f32>, Vec<f32>, Vec<usize>, Vec<(usize, f32)>)> {
     let breaks = state.get_syllable_breaks(line, lang);
-    let effective_drag = drag.filter(|drag| {
-        drag.line_id == line.id
-            || decode_sync_syllable_drag_line_id(drag.line_id) == Some(line.id)
-    });
+    let effective_drag = drag.filter(|drag| drag.line_id == line.id);
     let ratios = if let Some(drag) =
         effective_drag.filter(|drag| drag.ratios.len() == breaks.len() + 1)
     {
@@ -517,31 +545,16 @@ fn character_layout(
     Some((base, mapped, breaks, anchors))
 }
 
+/// Normal lines no longer expose syllable handles. Karaoke keeps the existing
+/// native handle geometry and never has text synchronization points.
 pub(crate) fn sync_syllable_boundary_ratios(
-    project: &Project,
-    line: &crate::rythmo_line::RythmoLine,
-    drag: Option<&SyllableDrag>,
-    lang: &str,
-    state: &RythmoState,
+    _project: &Project,
+    _line: &crate::rythmo_line::RythmoLine,
+    _drag: Option<&SyllableDrag>,
+    _lang: &str,
+    _state: &RythmoState,
 ) -> Option<Vec<f32>> {
-    if !line_has_visible_sync_points(project, line) {
-        return None;
-    }
-    let (_, mapped, breaks, _) = character_layout(project, line, drag, lang, state)?;
-    if breaks.is_empty() {
-        return None;
-    }
-    let character_count = line.text.chars().count();
-    let mut boundaries = Vec::with_capacity(breaks.len() + 2);
-    boundaries.push(*mapped.first()?);
-    boundaries.extend(
-        breaks
-            .into_iter()
-            .filter(|index| *index < mapped.len())
-            .map(|index| mapped[index]),
-    );
-    boundaries.push(mapped[character_count]);
-    Some(boundaries)
+    None
 }
 
 fn sync_segment_cache_id(line_id: u64, start: usize, end: usize) -> u64 {
@@ -628,166 +641,44 @@ pub(crate) fn render_sync_text_segments(
 }
 
 pub(crate) fn begin_sync_syllable_drag(
-    project: &Project,
-    line: &crate::rythmo_line::RythmoLine,
-    encoded_line_id: u64,
-    separator_index: usize,
-    state: &RythmoState,
+    _project: &Project,
+    _line: &crate::rythmo_line::RythmoLine,
+    _encoded_line_id: u64,
+    _separator_index: usize,
+    _state: &RythmoState,
 ) {
-    let breaks = state.get_syllable_breaks(line, project.syllable_language_code());
-    let boundary = breaks.get(separator_index).copied().unwrap_or(0);
-    let anchors = project
-        .detections()
-        .line(line.id)
-        .map(|data| {
-            data.text_sync_cues()
-                .filter_map(|cue| Some((cue.target.grapheme_index()? as usize, cue.media_tick)))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let previous = anchors
-        .iter()
-        .filter(|(index, _)| *index < boundary)
-        .map(|(index, _)| *index)
-        .max();
-    let next = anchors
-        .iter()
-        .filter(|(index, _)| *index > boundary)
-        .map(|(index, _)| *index)
-        .min();
-    let segment_count = breaks.len() + 1;
-    let start = previous
-        .map(|index| breaks.iter().take_while(|value| **value <= index).count())
-        .unwrap_or(0)
-        .min(segment_count.saturating_sub(1));
-    let end = next
-        .map(|index| breaks.iter().take_while(|value| **value < index).count() + 1)
-        .unwrap_or(segment_count)
-        .min(segment_count);
-    let edit_range = if anchors.iter().any(|(index, _)| *index == boundary) {
-        // A separator carrying a sync point is itself fixed. Adjacent handles
-        // remain editable, but this exact anchor cannot redistribute either side.
-        (separator_index + 1, separator_index + 1)
-    } else if start <= separator_index && separator_index + 1 < end {
-        (start, end)
-    } else {
-        (0, segment_count)
-    };
-    *sync_drag() = Some(SyncSyllableDragContext {
-        encoded_line_id,
-        line_id: line.id,
-        start_frame: line.start_frame,
-        duration_frames: line.duration_frames,
-        character_count: line.text.chars().count(),
-        breaks,
-        anchors,
-        edit_range,
-    });
 }
 
 pub(crate) fn active_sync_syllable_edit_range(
-    encoded_line_id: u64,
-    segment_count: usize,
+    _encoded_line_id: u64,
+    _segment_count: usize,
 ) -> Option<(usize, usize)> {
-    let slot = sync_drag();
-    let context = slot.as_ref()?;
-    (context.encoded_line_id == encoded_line_id).then_some((
-        context.edit_range.0.min(segment_count),
-        context.edit_range.1.min(segment_count),
-    ))
-}
-
-fn bounds_from_context(
-    context: &SyncSyllableDragContext,
-    ratios: &[f32],
-) -> Option<(i64, i64)> {
-    if context.duration_frames <= 0 || context.character_count == 0 {
-        return None;
-    }
-    let base = base_character_positions(context.character_count, ratios, &context.breaks);
-    let line_start = MediaTick::from_frame(context.start_frame);
-    let duration_ticks = MediaTick::from_frame(context.duration_frames).raw().max(1) as f32;
-    let anchors = context
-        .anchors
-        .iter()
-        .map(|(index, tick)| {
-            (
-                *index,
-                tick.raw().saturating_sub(line_start.raw()) as f32 / duration_ticks,
-            )
-        })
-        .collect::<Vec<_>>();
-    let mapped = map_character_positions(&base, &anchors);
-    let first = *mapped.first()? as f64;
-    let last = *mapped.last()? as f64;
-    let text_start =
-        (context.start_frame as f64 + first * context.duration_frames as f64).floor() as i64;
-    let text_end =
-        (context.start_frame as f64 + last * context.duration_frames as f64).ceil() as i64;
-    let sync_start = context
-        .anchors
-        .iter()
-        .map(|(_, tick)| tick.as_frame_position().floor() as i64)
-        .min()
-        .unwrap_or(text_start);
-    let sync_end = context
-        .anchors
-        .iter()
-        .map(|(_, tick)| tick.as_frame_position().ceil() as i64)
-        .max()
-        .unwrap_or(text_end);
-    let start = text_start.min(sync_start);
-    let end = text_end.max(sync_end);
-    Some((start, end.saturating_sub(start).max(1)))
+    None
 }
 
 pub(crate) fn finish_sync_syllable_drag(
-    encoded_line_id: u64,
-    ratios: &[f32],
+    _encoded_line_id: u64,
+    _ratios: &[f32],
 ) -> Option<(i64, i64)> {
-    let context = sync_drag().take()?;
-    (context.encoded_line_id == encoded_line_id)
-        .then(|| bounds_from_context(&context, ratios))
-        .flatten()
+    None
 }
 
-pub(crate) fn clear_sync_syllable_drag() {
-    *sync_drag() = None;
-}
+pub(crate) fn clear_sync_syllable_drag() {}
 
-/// Fit the line to the rendered text while retaining every absolute sync point.
-/// Moving text outside expands the box; leaving unused space at either edge
-/// shrinks it, but never so far that a point falls outside its parent line.
 fn synchronized_line_bounds(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
-    drag: Option<&SyllableDrag>,
-    lang: &str,
-    state: &RythmoState,
 ) -> Option<(i64, i64)> {
-    let (_, mapped, _, anchors) = character_layout(project, line, drag, lang, state)?;
-    if anchors.is_empty() {
-        return None;
+    let data = project.detections().line(line.id)?;
+    let mut start = line.start_frame;
+    let mut end = line.end_frame();
+    let mut found = false;
+    for cue in data.text_sync_cues() {
+        found = true;
+        start = start.min(cue.media_tick.as_frame_position().floor() as i64);
+        end = end.max(cue.media_tick.as_frame_position().ceil() as i64);
     }
-    let first = *mapped.first()? as f64;
-    let last = *mapped.last()? as f64;
-    let text_start = (line.start_frame as f64 + first * line.duration_frames as f64).floor() as i64;
-    let text_end = (line.start_frame as f64 + last * line.duration_frames as f64).ceil() as i64;
-    let sync_start = anchors
-        .iter()
-        .map(|(_, ratio)| line.start_frame as f64 + *ratio as f64 * line.duration_frames as f64)
-        .map(|frame| frame.floor() as i64)
-        .min()
-        .unwrap_or(text_start);
-    let sync_end = anchors
-        .iter()
-        .map(|(_, ratio)| line.start_frame as f64 + *ratio as f64 * line.duration_frames as f64)
-        .map(|frame| frame.ceil() as i64)
-        .max()
-        .unwrap_or(text_end);
-    let start = text_start.min(sync_start);
-    let end = text_end.max(sync_end);
-    Some((start, end.saturating_sub(start).max(1)))
+    found.then_some((start, end.saturating_sub(start).max(1)))
 }
 
 fn rect_center(rect: [f32; 4]) -> (f32, f32) {
@@ -798,7 +689,9 @@ fn pop_icon_tail_inside(icons: &mut Vec<IconInstance>, outer: Rect, maximum: usi
     for _ in 0..maximum {
         let Some(last) = icons.last() else { break };
         let (x, y) = rect_center(last.rect);
-        if !outer.contains(x, y) { break }
+        if !outer.contains(x, y) {
+            break;
+        }
         icons.pop();
     }
 }
@@ -807,7 +700,9 @@ fn pop_quad_tail_inside(quads: &mut Vec<QuadInstance>, outer: Rect, maximum: usi
     for _ in 0..maximum {
         let Some(last) = quads.last() else { break };
         let (x, y) = rect_center(last.rect);
-        if !outer.contains(x, y) { break }
+        if !outer.contains(x, y) {
+            break;
+        }
         quads.pop();
     }
 }
@@ -817,7 +712,9 @@ fn pop_label_tail_inside<'a>(labels: &mut Vec<LabelInfo<'a>>, outer: Rect, maxim
         let Some(last) = labels.last() else { break };
         let x = last.bounds.x + last.bounds.width / 2.0;
         let y = last.bounds.y + last.bounds.height / 2.0;
-        if !outer.contains(x, y) { break }
+        if !outer.contains(x, y) {
+            break;
+        }
         labels.pop();
     }
 }
@@ -891,64 +788,6 @@ fn push_line(
     });
 }
 
-fn render_sync_handles(
-    project: &Project,
-    line: &crate::rythmo_line::RythmoLine,
-    current_frame: f64,
-    zone: &Rect,
-    state: &RythmoState,
-    quads: &mut Vec<QuadInstance>,
-) {
-    let Some(boundaries) = sync_syllable_boundary_ratios(
-        project,
-        line,
-        state.syllable_drag.as_ref(),
-        project.syllable_language_code(),
-        state,
-    ) else {
-        return;
-    };
-    if boundaries.len() <= 2 {
-        return;
-    }
-    let rect = line_rect(project, line, current_frame, zone);
-    let points = boundaries
-        .into_iter()
-        .map(|ratio| rect.x + rect.width * ratio)
-        .collect::<Vec<_>>();
-    let color = [0.95, 0.08, 0.03, 1.0];
-    for pair in points.windows(2) {
-        let start = pair[0] + 2.0;
-        let end = pair[1] - 2.0;
-        if end > start {
-            push_quad(
-                quads,
-                Rect {
-                    x: start,
-                    y: rect.y + 1.0,
-                    width: end - start,
-                    height: 3.0,
-                },
-                color,
-                1.5,
-            );
-        }
-    }
-    for x in points {
-        push_quad(
-            quads,
-            Rect {
-                x: x - 1.5,
-                y: rect.y + 1.0,
-                width: 3.0,
-                height: 9.0,
-            },
-            color,
-            1.5,
-        );
-    }
-}
-
 pub(crate) fn render_detection_overlay<'a>(
     zone: &Rect,
     project: &'a Project,
@@ -972,15 +811,20 @@ pub(crate) fn render_detection_overlay<'a>(
         &mut detector_icons,
         detection_uvs,
     );
-    strip_legacy_popup(&mut detector_quads, &mut detector_labels, &mut detector_icons);
+    strip_legacy_popup(
+        &mut detector_quads,
+        &mut detector_labels,
+        &mut detector_icons,
+    );
 
-    // Remove the legacy whole-suffix handles; the replacement below follows
-    // the same piecewise positions as the text and hit testing.
+    // Normal lines no longer display the legacy red syllable-handle suffix.
     detector_quads.retain(|quad| quad.color != [0.95, 0.08, 0.03, 1.0]);
 
+    // The add button is composed once in detection_foreground, after text,
+    // handles and icons. Remove the legacy below-track copy from this pass.
     if state.detection_menu.is_none() {
         if let Some(hover) = state.detection_hover {
-            let old_button = Rect {
+            let legacy_button = Rect {
                 x: hover.screen_x - ADD_BUTTON_SIZE / 2.0,
                 y: hover.track_rect.y + hover.track_rect.height + 4.0,
                 width: ADD_BUTTON_SIZE,
@@ -988,63 +832,71 @@ pub(crate) fn render_detection_overlay<'a>(
             };
             detector_quads.retain(|quad| {
                 let (x, y) = rect_center(quad.rect);
-                !old_button.contains(x, y)
+                !legacy_button.contains(x, y)
             });
-            if source_drag().is_none() && state.detection_drag.is_none() {
-                let button = add_button_rect(&hover);
-                push_quad(&mut detector_quads, button, [0.10, 0.11, 0.14, 0.94], 4.0);
-                push_line(
-                    &mut detector_quads,
-                    button.x + 5.0,
-                    button.y + button.height / 2.0,
-                    button.x + button.width - 5.0,
-                    button.y + button.height / 2.0,
-                    1.5,
-                    [0.90, 0.92, 0.96, 1.0],
-                );
-                push_line(
-                    &mut detector_quads,
-                    button.x + button.width / 2.0,
-                    button.y + 5.0,
-                    button.x + button.width / 2.0,
-                    button.y + button.height - 5.0,
-                    1.5,
-                    [0.90, 0.92, 0.96, 1.0],
-                );
-            }
         }
     }
 
-    let sync_line = state
-        .syllable_drag
-        .as_ref()
-        .and_then(|drag| decode_sync_syllable_drag_line_id(drag.line_id))
-        .or_else(|| {
-            state.detection_hover.and_then(|hover| {
-                project.lines().find_map(|line| {
-                    let rect = line_rect(project, line, current_frame, zone);
-                    (rect.contains(hover.screen_x, hover.screen_y)
-                        && line_has_visible_sync_points(project, line))
-                        .then_some(line.id)
-                })
-            })
-        });
-    if let Some(line_id) = sync_line {
-        if let Some(line) = project.get_line(line_id) {
-            render_sync_handles(project, line, current_frame, zone, state, &mut detector_quads);
+    // Move source signs below synchronization points. Hit testing keeps the
+    // generous original badge rectangle, while the visible glyph is dropped.
+    let selected = selected_detection(state);
+    for track in 0..rythmo_layout::track_count() {
+        let line_id = track_storage_line_id(track as u8);
+        let Some(data) = project.detections().line(line_id) else {
+            continue;
+        };
+        let rect = track_rect(project, track, current_frame, zone);
+        for cue in data.source_detections() {
+            let address = DetectionAddress {
+                line_id,
+                detection_id: cue.id,
+            };
+            let original_icon = sign_icon_rect(cue.media_tick, rect, current_frame, zone);
+            detector_icons.retain(|icon| {
+                let (x, y) = rect_center(icon.rect);
+                !original_icon.contains(x, y)
+            });
+            let original_badge = sign_badge_rect(cue.media_tick, rect, current_frame, zone);
+            detector_quads.retain(|quad| {
+                let (x, y) = rect_center(quad.rect);
+                !original_badge.contains(x, y)
+                    || quad.rect[3] > original_badge.height + 2.0
+            });
+
+            if source_drag()
+                .as_ref()
+                .is_some_and(|drag| drag.address == address && drag.moved)
+            {
+                continue;
+            }
+            let badge = displayed_badge_rect(cue.media_tick, rect, current_frame, zone);
+            push_quad(
+                &mut detector_quads,
+                badge,
+                if selected == Some(address) {
+                    [0.09, 0.16, 0.29, 0.998]
+                } else {
+                    [0.055, 0.059, 0.074, 0.998]
+                },
+                badge.width / 2.0,
+            );
+            let icon = displayed_icon_rect(cue.media_tick, rect, current_frame, zone);
+            detector_icons.push(IconInstance {
+                rect: [icon.x, icon.y, icon.width, icon.height],
+                uv_rect: palette_uv(cue, detection_uvs),
+                tint: if selected == Some(address) {
+                    [0.78, 0.88, 1.0, 1.0]
+                } else {
+                    [0.92, 0.92, 0.95, 0.94]
+                },
+            });
         }
     }
 
     let drag_snapshot = source_drag().clone().filter(|drag| drag.moved);
     if let Some(drag) = drag_snapshot.as_ref() {
-        let original_track = track_rect(project, drag.origin_track as usize, current_frame, zone);
-        let original_icon = sign_icon_rect(drag.origin_tick, original_track, current_frame, zone);
-        detector_icons.retain(|icon| {
-            let (x, y) = rect_center(icon.rect);
-            !original_icon.contains(x, y)
-        });
         let target_track = track_rect(project, drag.target_track as usize, current_frame, zone);
-        let badge = sign_badge_rect(drag.target_tick, target_track, current_frame, zone);
+        let badge = displayed_badge_rect(drag.target_tick, target_track, current_frame, zone);
         let x = badge.x + badge.width / 2.0;
         push_line(
             &mut detector_quads,
@@ -1061,7 +913,7 @@ pub(crate) fn render_detection_overlay<'a>(
             [0.09, 0.16, 0.29, 0.998],
             badge.width / 2.0,
         );
-        let icon = sign_icon_rect(drag.target_tick, target_track, current_frame, zone);
+        let icon = displayed_icon_rect(drag.target_tick, target_track, current_frame, zone);
         detector_icons.push(IconInstance {
             rect: [icon.x, icon.y, icon.width, icon.height],
             uv_rect: palette_uv(&drag.cue, detection_uvs),
@@ -1072,36 +924,6 @@ pub(crate) fn render_detection_overlay<'a>(
     quads.extend(detector_quads);
     labels.extend(detector_labels);
     icons.extend(detector_icons);
-
-    // Opaque masks sit below the later icon pass and hide each vertical guide
-    // inside its circular sign badge.
-    let selected = selected_detection(state);
-    for track in 0..rythmo_layout::track_count() {
-        let line_id = track_storage_line_id(track as u8);
-        let Some(data) = project.detections().line(line_id) else {
-            continue;
-        };
-        let rect = track_rect(project, track, current_frame, zone);
-        for cue in data.source_detections() {
-            let address = DetectionAddress {
-                line_id,
-                detection_id: cue.id,
-            };
-            if drag_snapshot
-                .as_ref()
-                .is_some_and(|drag| drag.address == address)
-            {
-                continue;
-            }
-            let badge = sign_badge_rect(cue.media_tick, rect, current_frame, zone);
-            let color = if selected == Some(address) {
-                [0.09, 0.16, 0.29, 0.998]
-            } else {
-                [0.055, 0.059, 0.074, 0.998]
-            };
-            push_quad(quads, badge, color, badge.width / 2.0);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1130,10 +952,26 @@ mod tests {
     }
 
     #[test]
-    fn piecewise_mapping_centres_anchor_characters() {
+    fn synchronized_mapping_fills_the_complete_line() {
         let base = vec![0.0, 0.2, 0.4, 0.7, 1.0];
         let mapped = map_character_positions(&base, &[(1, 0.25), (3, 0.8)]);
+        assert_eq!(mapped.first().copied(), Some(0.0));
+        assert_eq!(mapped.last().copied(), Some(1.0));
+        assert!(mapped.windows(2).all(|pair| pair[0] <= pair[1]));
         assert!((((mapped[1] + mapped[2]) * 0.5) - 0.25).abs() < 0.0001);
         assert!((((mapped[3] + mapped[4]) * 0.5) - 0.8).abs() < 0.0001);
+    }
+
+    #[test]
+    fn source_sign_display_is_lower_than_its_hit_badge() {
+        let track = Rect {
+            x: 0.0,
+            y: 20.0,
+            width: 300.0,
+            height: 50.0,
+        };
+        let original = sign_badge_rect(MediaTick::ZERO, track, 0.0, &track);
+        let displayed = displayed_badge_rect(MediaTick::ZERO, track, 0.0, &track);
+        assert!(displayed.y > original.y);
     }
 }
