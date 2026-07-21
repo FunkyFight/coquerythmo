@@ -23,6 +23,8 @@ pub fn handle_rythmo_event(
     erasing: bool,
     interaction_mode: RythmoInteractionMode,
 ) -> EventResponse {
+    crate::rythmo_lint_overlay::set_playing(karaoke_preview);
+
     let had_information_card = state.detection_menu.is_some() && state.detection_hover.is_none();
     let response = base::handle_rythmo_event(
         event,
