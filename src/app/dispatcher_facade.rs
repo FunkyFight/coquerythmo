@@ -1,8 +1,7 @@
 //! Application command dispatcher facade.
 //!
 //! The established dispatcher remains authoritative. This boundary normalizes
-//! note-editing actions so line presentation metadata never enters the text
-//! editor and cannot be erased by cut, paste or undo.
+//! note-editing actions and non-exported production marker commands.
 
 use super::event_loop;
 use super::file_picker;
@@ -10,6 +9,7 @@ use super::file_picker;
 #[path = "dispatcher.rs"]
 mod legacy;
 
+use crate::detection::MediaTick;
 use crate::state::State;
 use crate::ui::primitives::{EventResponse, UiAction, UiEvent};
 use crate::workspaces::rythmo::view::Selection;
@@ -33,6 +33,14 @@ fn selected_note_line_id(state: &State) -> Option<u64> {
     state.project_session.project.get_line(candidate).map(|line| line.id)
 }
 
+fn selected_special_marker(state: &State) -> bool {
+    matches!(
+        state.ui_shell.ui.rythmo_state.selected.as_ref(),
+        Some(Selection::Detection(address))
+            if crate::rythmo_special_markers::is_special_address(*address)
+    )
+}
+
 fn begin_visible_note_edit(state: &mut State) -> bool {
     let Some(line_id) = selected_note_line_id(state) else {
         return false;
@@ -51,7 +59,7 @@ fn begin_visible_note_edit(state: &mut State) -> bool {
     true
 }
 
-fn normalize_note_action(action: UiAction, state: &State) -> UiAction {
+fn normalize_action(action: UiAction, state: &State) -> UiAction {
     match action {
         UiAction::UpdateLineNote { line_id, note } => {
             let note = state
@@ -79,6 +87,19 @@ fn normalize_note_action(action: UiAction, state: &State) -> UiAction {
                 note,
             }
         }
+        UiAction::AddDetection {
+            line_id,
+            kind,
+            media_tick: _,
+            target,
+        } if line_id == crate::rythmo_special_markers::storage_line_id() => {
+            UiAction::AddDetection {
+                line_id,
+                kind,
+                media_tick: MediaTick::from_frame(state.current_frame()),
+                target,
+            }
+        }
         other => other,
     }
 }
@@ -100,7 +121,12 @@ impl CommandDispatcher {
             }
             return false;
         }
-        let action = normalize_note_action(action, state);
+        if matches!(action, UiAction::NudgeSelectedDetection { delta_ticks: 0 })
+            && selected_special_marker(state)
+        {
+            return false;
+        }
+        let action = normalize_action(action, state);
         legacy::CommandDispatcher::dispatch_shortcut(action, state, elwt)
     }
 
@@ -116,7 +142,12 @@ impl CommandDispatcher {
                 legacy::CommandDispatcher::dispatch(UiAction::AddNote, state, elwt)
             };
         }
-        let action = normalize_note_action(action, state);
+        if matches!(action, UiAction::NudgeSelectedDetection { delta_ticks: 0 })
+            && selected_special_marker(state)
+        {
+            return false;
+        }
+        let action = normalize_action(action, state);
         legacy::CommandDispatcher::dispatch(action, state, elwt)
     }
 }
