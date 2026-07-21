@@ -154,7 +154,7 @@ where
                         0.0
                     };
                     *output_sample = T::from_sample(value);
-                    *cursor = cursor.saturating_add(1);
+                    *cursor = (*cursor).saturating_add(1);
                 }
             },
             move |error| log::warn!("1000 Hz marker stream error: {error}"),
