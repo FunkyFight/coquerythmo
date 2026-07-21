@@ -11,9 +11,7 @@ use crate::packet::ProjectData;
 use crate::state::State;
 use crate::workspaces::rythmo::view::Selection;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SizedSample};
-use std::path::PathBuf;
-use std::process::Stdio;
+use cpal::{FromSample, SizedSample};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -251,40 +249,21 @@ impl State {
             self.toggle_play_pause();
         }
 
-        let source_path = if self.active_audio_is_instrumental() {
-            self.project_session
-                .project
-                .settings()
-                .instrumental_audio_path
-                .as_ref()
-                .map(PathBuf::from)
-                .or_else(|| self.playback.source_video_path.clone())
-        } else {
-            self.playback.source_video_path.clone()
-        };
-        let Some(source_path) = source_path else {
-            return;
-        };
-
-        let audio_offset = self.active_audio_offset_frames();
+        // The real player supplies the selected source/instrumental audio. The
+        // auxiliary CPAL stream contains only the cue, otherwise the dialogue
+        // would be decoded and heard twice.
         let start_seconds = start_frame as f64 / fps;
         let end_seconds = end_frame as f64 / fps;
         let cue_seconds = cue.media_tick.as_frame_position() / fps;
-        let audio_start_seconds = ((start_frame - audio_offset) as f64 / fps).max(0.0);
-        let leading_silence_seconds = ((audio_offset - start_frame).max(0) as f64 / fps)
-            .min(end_seconds - start_seconds);
         let duration_seconds = (end_seconds - start_seconds).max(0.01);
         let beep_offset_seconds = (cue_seconds - start_seconds).clamp(0.0, duration_seconds);
         let volume = self.ui_shell.ui.volume().clamp(0.0, 1.0);
         let generation = AUDITION_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
 
         std::thread::spawn(move || {
-            if let Err(error) = play_detection_preview(
+            if let Err(error) = play_detection_beep(
                 generation,
-                source_path,
-                audio_start_seconds,
                 duration_seconds,
-                leading_silence_seconds,
                 beep_offset_seconds,
                 volume,
             ) {
@@ -321,12 +300,9 @@ impl State {
     }
 }
 
-fn play_detection_preview(
+fn play_detection_beep(
     generation: u64,
-    source_path: PathBuf,
-    audio_start_seconds: f64,
     duration_seconds: f64,
-    leading_silence_seconds: f64,
     beep_offset_seconds: f64,
     volume: f32,
 ) -> Result<(), String> {
@@ -341,58 +317,9 @@ fn play_detection_preview(
     let sample_rate = config.sample_rate.0;
     let channels = config.channels as usize;
 
-    let decode_duration = (duration_seconds - leading_silence_seconds).max(0.0);
-    let mut decoded = Vec::new();
-    if decode_duration > 0.001 {
-        let output = crate::media_binary::command("ffmpeg")
-            .arg("-hide_banner")
-            .arg("-loglevel")
-            .arg("error")
-            .arg("-ss")
-            .arg(format!("{audio_start_seconds:.6}"))
-            .arg("-i")
-            .arg(&source_path)
-            .arg("-t")
-            .arg(format!("{decode_duration:.6}"))
-            .arg("-vn")
-            .arg("-f")
-            .arg("f32le")
-            .arg("-acodec")
-            .arg("pcm_f32le")
-            .arg("-ac")
-            .arg(channels.to_string())
-            .arg("-ar")
-            .arg(sample_rate.to_string())
-            .arg("pipe:1")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|error| format!("ffmpeg ne démarre pas: {error}"))?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-        }
-        decoded = output
-            .stdout
-            .chunks_exact(4)
-            .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-            .collect();
-    }
-
     let target_frames = (duration_seconds * sample_rate as f64).ceil() as usize;
     let target_samples = target_frames.saturating_mul(channels);
-    let silence_samples =
-        (leading_silence_seconds * sample_rate as f64).round() as usize * channels;
     let mut samples = vec![0.0_f32; target_samples];
-    let copy_len = decoded
-        .len()
-        .min(samples.len().saturating_sub(silence_samples));
-    if copy_len > 0 {
-        samples[silence_samples..silence_samples + copy_len]
-            .copy_from_slice(&decoded[..copy_len]);
-    }
-    for sample in &mut samples {
-        *sample *= volume;
-    }
     mix_detection_beep(
         &mut samples,
         channels,
@@ -509,5 +436,15 @@ mod tests {
             .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
         assert!(peak > 0.7);
         assert!(peak <= 1.0);
+    }
+
+    #[test]
+    fn auxiliary_preview_contains_no_dialogue_before_the_beep() {
+        let sample_rate = 48_000;
+        let channels = 2;
+        let mut samples = vec![0.0; sample_rate as usize * channels];
+        mix_detection_beep(&mut samples, channels, sample_rate, 0.25, 1.0);
+        let start = (sample_rate as f64 * 0.25).round() as usize * channels;
+        assert!(samples[..start].iter().all(|sample| *sample == 0.0));
     }
 }
