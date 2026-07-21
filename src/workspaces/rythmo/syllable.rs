@@ -19,7 +19,10 @@ pub(crate) fn syllable_mouse_press(
     let hit_w = 7.0;
 
     for line in ctx.project.lines() {
-        if ctx.karaoke_preview && line.karaoke {
+        // Ordinary adaptation lines are laid out by synchronization points and
+        // no longer expose syllable handles. Manual handle editing is a karaoke
+        // authoring feature only.
+        if !line.karaoke || ctx.karaoke_preview {
             continue;
         }
 
@@ -133,9 +136,6 @@ pub(crate) fn syllable_mouse_move(state: &mut RythmoState, x: f32) -> Option<Eve
         return Some(EventResponse::Consumed);
     }
 
-    // With synchronization points, redistribution is local to the interval
-    // bounded by the previous and next point. Without synchronization, the
-    // original whole-line behavior remains unchanged.
     let local_range = crate::workspaces::rythmo::detection_ui::active_sync_syllable_edit_range(
         drag.line_id,
         segment_count,
@@ -184,9 +184,6 @@ pub(crate) fn syllable_mouse_move(state: &mut RythmoState, x: f32) -> Option<Eve
         }
     }
 
-    // The local transfer preserves the total exactly. Avoid a whole-vector
-    // normalization here: even tiny renormalization would move text outside the
-    // active synchronization interval.
     if local_range.is_none() {
         normalize_ratios_in_place(&mut drag.ratios);
     }
@@ -199,8 +196,6 @@ pub(crate) fn syllable_drag_min_ratio(segment_count: usize, line_width: f32) -> 
         return 0.001;
     }
 
-    // Keep handles usable without reserving a large percentage of the line.
-    // A fixed 5% minimum made separators feel blocked on lines with many syllables.
     let pixel_min = 3.0 / line_width.max(1.0);
     let total_budget_min = 0.35 / segment_count as f32;
     pixel_min

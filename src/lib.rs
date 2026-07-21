@@ -1,6 +1,6 @@
 //! Testable product modules for Coquerythmo.
 //!
-//! The binary is intentionally kept as a thin process entry point.  Runtime
+//! The binary is intentionally kept as a thin process entry point. Runtime
 //! composition belongs to [`app`]; the existing product modules remain
 //! private to the crate while their unit tests run through this library target.
 
@@ -28,7 +28,14 @@ pub mod observer;
 pub mod packet;
 pub mod platform;
 pub mod project;
+mod project_text_sync;
+#[cfg(test)]
+mod project_text_sync_journal_tests;
+#[cfg(test)]
+mod project_sync_geometry_tests;
 pub mod project_archive;
+#[cfg(test)]
+mod project_detection_test_support;
 pub mod project_metadata;
 pub mod recording;
 pub mod recording_mix;
@@ -51,3 +58,14 @@ pub mod video_export;
 pub mod video_proxy;
 pub mod voice_actor;
 pub mod workspaces;
+
+// The focused synchronization facade shares its geometry hook with the prior
+// overlay boundary. No lint or editor-diagnostic feature is included here.
+mod rythmo_lint_overlay {
+    pub(crate) fn sync_geometry(
+        _project: &crate::project::Project,
+        _state: &crate::workspaces::rythmo::view::RythmoState,
+        _zone: crate::ui::primitives::Rect,
+        _current_frame: f64,
+    ) {}
+}
