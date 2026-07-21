@@ -60,7 +60,7 @@ impl LintDiagnostic {
 }
 
 const REACTION_DESCRIPTOR_MESSAGE: &str =
-    "Les descriptifs de réaction doivent être écrits entre piquants, pas entre chevrons.";
+    "Les descriptifs de réaction doivent être écrits entre parenthèses, pas entre chevrons.";
 const PARENTHESIZED_REACTION_MESSAGE: &str =
     "Cette réaction isolée devrait être écrite entre crochets puis parenthèses, par exemple ([Pleurs]).";
 const LOOP_LONG_MESSAGE: &str =
@@ -333,6 +333,7 @@ mod tests {
                 end_char: 19,
             }
         );
+        assert!(diagnostic.message.contains("parenthèses"));
     }
 
     #[test]
@@ -403,7 +404,7 @@ mod tests {
         }
         let suffix = line_accessibility_suffix(&project, line_id);
         assert!(suffix.contains("Erreur"));
-        assert!(suffix.contains("piquants"));
+        assert!(suffix.contains("parenthèses"));
         assert!(suffix.contains("minute trente"));
     }
 }
