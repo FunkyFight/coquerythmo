@@ -28,6 +28,11 @@ pub mod observer;
 pub mod packet;
 pub mod platform;
 pub mod project;
+mod project_text_sync;
+#[cfg(test)]
+mod project_text_sync_journal_tests;
+#[cfg(test)]
+mod project_sync_geometry_tests;
 pub mod project_archive;
 #[cfg(test)]
 mod project_detection_test_support;

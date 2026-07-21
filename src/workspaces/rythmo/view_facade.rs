@@ -1,8 +1,8 @@
 //! Focused view facade for the rythmo workspace.
 //!
-//! The established renderer remains authoritative. This boundary removes
-//! syllable-authoring handles from ordinary adaptation lines and replaces the
-//! legacy stretched synchronization intervals with letter-anchored natural text.
+//! Ordinary lines keep the historical fit-to-line rendering. Synchronization
+//! points split that fitted text into independent time boxes; every box is
+//! stretched only between its own two temporal boundaries.
 
 #[path = "view.rs"]
 mod legacy;
@@ -10,8 +10,7 @@ mod legacy;
 pub use legacy::*;
 
 use crate::detection::{
-    track_storage_line_id, DetectionAddress, DetectionCueId, DetectionKind, LineDetectionData,
-    MediaTick, TextAnchor,
+    track_storage_line_id, DetectionKind, LineDetectionData, MediaTick, TextAnchor,
 };
 use crate::project::Project;
 use crate::render_index::ProjectRenderIndex;
@@ -28,20 +27,10 @@ const SOURCE_SIGN_SIZE: f32 = 26.0;
 const SOURCE_SIGN_BOTTOM_MARGIN: f32 = 2.0;
 const SOURCE_SIGN_DISPLAY_DROP: f32 = 8.0;
 
-#[derive(Clone, Debug, PartialEq)]
-struct SyncTextSegment {
-    cache_id: u64,
-    start_char: usize,
-    end_char: usize,
-    start_ratio: f32,
-    width_ratio: f32,
-    text: String,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct LetterAnchor {
+struct SyncBoundaryAnchor {
     line_id: u64,
-    character_index: usize,
+    boundary_index: usize,
     media_tick: MediaTick,
     x: f32,
     line_rect: Rect,
@@ -53,6 +42,11 @@ fn ppf() -> f32 {
 
 fn tick_x(tick: MediaTick, current_frame: f64, zone: &Rect) -> f32 {
     zone.x + zone.width / 2.0 + (tick.as_frame_position() - current_frame) as f32 * ppf()
+}
+
+fn pointer_tick(x: f32, current_frame: f64, zone: &Rect) -> MediaTick {
+    let frame = current_frame + ((x - (zone.x + zone.width / 2.0)) / ppf().max(0.001)) as f64;
+    MediaTick::from_frame_position(frame).clamp(MediaTick::ZERO, MediaTick(i64::MAX))
 }
 
 fn quad_center(quad: &QuadInstance) -> (f32, f32) {
@@ -96,13 +90,6 @@ fn strip_normal_line_syllable_handles(
             index += 1;
         }
     }
-}
-
-fn sync_segment_cache_id(line_id: u64, start: usize, end: usize) -> u64 {
-    (1_u64 << 61)
-        ^ line_id.wrapping_mul(1_000_003)
-        ^ (start as u64).wrapping_mul(65_537)
-        ^ end as u64
 }
 
 fn sync_boundaries(
@@ -149,69 +136,9 @@ fn sync_boundaries(
     boundaries
 }
 
-fn line_has_sync_points(project: &Project, line_id: u64) -> bool {
-    project
-        .detections()
-        .line(line_id)
-        .is_some_and(|data| data.text_sync_cues().next().is_some())
-}
-
-fn build_sync_segments_with_measure<F>(
-    project: &Project,
-    line: &crate::rythmo_line::RythmoLine,
-    line_width: f32,
-    mut measure_width: F,
-) -> Vec<SyncTextSegment>
-where
-    F: FnMut(&str) -> f32,
-{
-    let boundaries = sync_boundaries(project, line);
-    if boundaries.len() <= 2 {
-        return Vec::new();
-    }
-
-    let characters = line.text.chars().collect::<Vec<_>>();
-    let line_start = MediaTick::from_frame(line.start_frame);
-    let line_duration = MediaTick::from_frame(line.duration_frames).raw().max(1) as f32;
-    let line_width = line_width.max(1.0);
-    let mut segments = Vec::new();
-
-    for pair in boundaries.windows(2) {
-        let (start_char, start_tick) = pair[0];
-        let (end_char, end_tick) = pair[1];
-        if end_char <= start_char || end_char > characters.len() || end_tick <= start_tick {
-            continue;
-        }
-        let text = characters[start_char..end_char].iter().collect::<String>();
-        if text.is_empty() {
-            continue;
-        }
-        let natural_width = measure_width(&text).max(1.0);
-        segments.push(SyncTextSegment {
-            cache_id: sync_segment_cache_id(line.id, start_char, end_char),
-            start_char,
-            end_char,
-            start_ratio: ((start_tick.raw() - line_start.raw()) as f32 / line_duration)
-                .clamp(0.0, 1.0),
-            width_ratio: natural_width / line_width,
-            text,
-        });
-    }
-    segments
-}
-
-fn rythmo_font_size() -> f32 {
-    crate::config::get().ui.font_size * 2.0
-}
-
-fn natural_text_width(text: &str) -> f32 {
-    crate::vector_text::measure_rythmo_text_width_standalone(text, rythmo_font_size())
-        .unwrap_or_else(|| text.chars().count().max(1) as f32 * rythmo_font_size() * 0.5)
-        .max(1.0)
-}
-
 fn character_ratios(text: &str) -> Vec<f32> {
-    crate::vector_text::measure_rythmo_text_char_ratios_standalone(text, rythmo_font_size())
+    let font_size = crate::config::get().ui.font_size * 2.0;
+    crate::vector_text::measure_rythmo_text_char_ratios_standalone(text, font_size)
         .filter(|ratios| ratios.len() == text.chars().count() + 1)
         .unwrap_or_else(|| {
             let count = text.chars().count().max(1);
@@ -219,99 +146,6 @@ fn character_ratios(text: &str) -> Vec<f32> {
                 .map(|index| index as f32 / count as f32)
                 .collect()
         })
-}
-
-fn display_segments_for_hit_test(
-    project: &Project,
-    line: &crate::rythmo_line::RythmoLine,
-    line_width: f32,
-) -> Vec<SyncTextSegment> {
-    let synced = build_sync_segments_with_measure(project, line, line_width, natural_text_width);
-    if !synced.is_empty() {
-        return synced;
-    }
-
-    vec![SyncTextSegment {
-        cache_id: line.id,
-        start_char: 0,
-        end_char: line.text.chars().count(),
-        start_ratio: 0.0,
-        width_ratio: 1.0,
-        text: line.text.clone(),
-    }]
-}
-
-fn character_index_at_x_with_ratios<F>(
-    characters: &[char],
-    segments: &[SyncTextSegment],
-    line_rect: Rect,
-    x: f32,
-    mut ratios_for: F,
-) -> Option<(usize, f32)>
-where
-    F: FnMut(&str) -> Vec<f32>,
-{
-    for segment in segments {
-        let local_count = segment.end_char.saturating_sub(segment.start_char);
-        if local_count == 0 {
-            continue;
-        }
-        let ratios = ratios_for(&segment.text);
-        if ratios.len() != local_count + 1 {
-            continue;
-        }
-        for local_index in 0..local_count {
-            let character_index = segment.start_char + local_index;
-            let Some(character) = characters.get(character_index) else {
-                continue;
-            };
-            if character.is_whitespace() {
-                continue;
-            }
-            let start_ratio = segment.start_ratio + ratios[local_index] * segment.width_ratio;
-            let end_ratio = segment.start_ratio + ratios[local_index + 1] * segment.width_ratio;
-            let start_x = line_rect.x + line_rect.width * start_ratio;
-            let end_x = line_rect.x + line_rect.width * end_ratio;
-            if x >= start_x.min(end_x) && x <= start_x.max(end_x) {
-                return Some((character_index, start_ratio));
-            }
-        }
-    }
-    None
-}
-
-fn closest_cursor_index_at_x_with_ratios<F>(
-    segments: &[SyncTextSegment],
-    line_rect: Rect,
-    x: f32,
-    mut ratios_for: F,
-) -> Option<usize>
-where
-    F: FnMut(&str) -> Vec<f32>,
-{
-    let mut closest = None;
-    let mut closest_distance = f32::MAX;
-    for segment in segments {
-        let local_count = segment.end_char.saturating_sub(segment.start_char);
-        let ratios = ratios_for(&segment.text);
-        if ratios.len() != local_count + 1 {
-            continue;
-        }
-        for (local_index, ratio) in ratios.iter().copied().enumerate() {
-            let global_ratio = segment.start_ratio + ratio * segment.width_ratio;
-            let boundary_x = line_rect.x + line_rect.width * global_ratio;
-            let distance = (boundary_x - x).abs();
-            if distance < closest_distance
-                || (distance == closest_distance
-                    && local_index == 0
-                    && segment.start_char > closest.unwrap_or(0))
-            {
-                closest_distance = distance;
-                closest = Some(segment.start_char + local_index);
-            }
-        }
-    }
-    closest
 }
 
 fn normal_line_at<'a>(
@@ -326,53 +160,129 @@ fn normal_line_at<'a>(
     })
 }
 
-fn letter_anchor_at(
+fn choose_boundary_for_character(
+    characters: &[char],
+    character_index: usize,
+    local_position: f32,
+    segment_start: usize,
+    segment_end: usize,
+    existing: &HashSet<usize>,
+) -> Option<usize> {
+    let before = character_index;
+    let after = character_index.saturating_add(1);
+    let previous_is_space = character_index > 0 && characters[character_index - 1].is_whitespace();
+    let next_is_space = characters
+        .get(character_index + 1)
+        .is_some_and(|character| character.is_whitespace());
+
+    let mut candidates = Vec::with_capacity(4);
+    if previous_is_space {
+        candidates.push(before);
+    }
+    if next_is_space {
+        candidates.push(after);
+    }
+    if local_position <= 0.5 {
+        candidates.extend([before, after]);
+    } else {
+        candidates.extend([after, before]);
+    }
+
+    candidates.into_iter().find(|boundary| {
+        *boundary > segment_start
+            && *boundary < segment_end
+            && *boundary > 0
+            && *boundary < characters.len()
+            && !existing.contains(boundary)
+    })
+}
+
+fn sync_boundary_anchor_at(
     project: &Project,
     current_frame: f64,
     zone: &Rect,
     x: f32,
     y: f32,
-) -> Option<LetterAnchor> {
+) -> Option<SyncBoundaryAnchor> {
     let line = normal_line_at(project, current_frame, zone, x, y)?;
     if line.text.is_empty() || line.duration_frames <= 0 {
         return None;
     }
+
     let line_rect = legacy::line_rect(project, line, current_frame, zone);
     let characters = line.text.chars().collect::<Vec<_>>();
-    let segments = display_segments_for_hit_test(project, line, line_rect.width);
-    let (character_index, anchor_ratio) =
-        character_index_at_x_with_ratios(&characters, &segments, line_rect, x, character_ratios)?;
-    if character_index == 0 {
-        return None;
-    }
-    let duplicate = project.detections().line(line.id).is_some_and(|data| {
-        data.text_sync_cues()
-            .any(|cue| cue.target.grapheme_index() == Some(character_index as u32))
-    });
-    if duplicate {
-        return None;
-    }
+    let boundaries = sync_boundaries(project, line);
+    let existing = boundaries
+        .iter()
+        .skip(1)
+        .take(boundaries.len().saturating_sub(2))
+        .map(|(index, _)| *index)
+        .collect::<HashSet<_>>();
 
-    let line_start = MediaTick::from_frame(line.start_frame);
-    let line_end = MediaTick::from_frame(line.end_frame());
-    let duration = MediaTick::from_frame(line.duration_frames).raw().max(1) as f64;
-    let media_tick = MediaTick(
-        line_start
-            .raw()
-            .saturating_add((duration * anchor_ratio as f64).round() as i64),
-    )
-    .clamp(
-        MediaTick(line_start.raw().saturating_add(1)),
-        MediaTick(line_end.raw().saturating_sub(1)),
-    );
+    for pair in boundaries.windows(2) {
+        let (segment_start, start_tick) = pair[0];
+        let (segment_end, end_tick) = pair[1];
+        if segment_end <= segment_start || segment_end > characters.len() || end_tick <= start_tick {
+            continue;
+        }
+        let start_x = tick_x(start_tick, current_frame, zone);
+        let end_x = tick_x(end_tick, current_frame, zone);
+        if x < start_x.min(end_x) || x > start_x.max(end_x) {
+            continue;
+        }
 
-    Some(LetterAnchor {
-        line_id: line.id,
-        character_index,
-        media_tick,
-        x: tick_x(media_tick, current_frame, zone),
-        line_rect,
-    })
+        let text = characters[segment_start..segment_end]
+            .iter()
+            .collect::<String>();
+        let ratios = character_ratios(&text);
+        let width = (end_x - start_x).abs().max(0.001);
+        let x_ratio = ((x - start_x) / width).clamp(0.0, 1.0);
+        for local_index in 0..segment_end.saturating_sub(segment_start) {
+            let character_index = segment_start + local_index;
+            if characters[character_index].is_whitespace() {
+                continue;
+            }
+            let left = ratios[local_index];
+            let right = ratios[local_index + 1];
+            if x_ratio < left.min(right) || x_ratio > left.max(right) {
+                continue;
+            }
+            let glyph_width = (right - left).abs().max(0.000_001);
+            let local_position = ((x_ratio - left) / glyph_width).clamp(0.0, 1.0);
+            let boundary_index = choose_boundary_for_character(
+                &characters,
+                character_index,
+                local_position,
+                segment_start,
+                segment_end,
+                &existing,
+            )?;
+            let local_boundary = boundary_index.saturating_sub(segment_start);
+            let boundary_ratio = ratios
+                .get(local_boundary)
+                .copied()
+                .unwrap_or(local_boundary as f32 / text.chars().count().max(1) as f32)
+                .clamp(0.0, 1.0);
+            let duration = end_tick.raw().saturating_sub(start_tick.raw()).max(1);
+            let media_tick = MediaTick(
+                start_tick
+                    .raw()
+                    .saturating_add((duration as f64 * boundary_ratio as f64).round() as i64),
+            )
+            .clamp(
+                MediaTick(start_tick.raw().saturating_add(1)),
+                MediaTick(end_tick.raw().saturating_sub(1)),
+            );
+            return Some(SyncBoundaryAnchor {
+                line_id: line.id,
+                boundary_index,
+                media_tick,
+                x: tick_x(media_tick, current_frame, zone),
+                line_rect,
+            });
+        }
+    }
+    None
 }
 
 fn sync_dot_rect(x: f32, line_rect: Rect) -> Rect {
@@ -433,164 +343,25 @@ fn hit_source_detection(
             zone,
         );
         data.source_detections().any(|cue| {
-            let badge = Rect {
-                x: tick_x(cue.media_tick, current_frame, zone) - SOURCE_SIGN_SIZE / 2.0,
-                y: (track_rect.y + track_rect.height - SOURCE_SIGN_SIZE - SOURCE_SIGN_BOTTOM_MARGIN)
-                    .max(track_rect.y)
-                    + SOURCE_SIGN_DISPLAY_DROP,
-                width: SOURCE_SIGN_SIZE,
-                height: SOURCE_SIGN_SIZE,
-            };
-            expanded_rect(badge, 3.0).contains(x, y)
+            let center = tick_x(cue.media_tick, current_frame, zone);
+            let base_y = (track_rect.y + track_rect.height - SOURCE_SIGN_SIZE - SOURCE_SIGN_BOTTOM_MARGIN)
+                .max(track_rect.y);
+            [base_y, base_y + SOURCE_SIGN_DISPLAY_DROP]
+                .into_iter()
+                .any(|badge_y| {
+                    expanded_rect(
+                        Rect {
+                            x: center - SOURCE_SIGN_SIZE / 2.0,
+                            y: badge_y,
+                            width: SOURCE_SIGN_SIZE,
+                            height: SOURCE_SIGN_SIZE,
+                        },
+                        3.0,
+                    )
+                    .contains(x, y)
+                })
         })
     })
-}
-
-fn next_detection_address(project: &Project, line_id: u64) -> Option<DetectionAddress> {
-    let detection_id = project
-        .detections()
-        .line(line_id)
-        .map(LineDetectionData::next_detection_id)
-        .unwrap_or(Some(DetectionCueId(1)))?;
-    Some(DetectionAddress {
-        line_id,
-        detection_id,
-    })
-}
-
-fn append_natural_segment_text(
-    stretched: &mut Vec<StretchedText>,
-    segment: &SyncTextSegment,
-    line_rect: Rect,
-    read_highlight_end: Option<usize>,
-    tint: [f32; 4],
-) {
-    let destination = Rect {
-        x: line_rect.x + line_rect.width * segment.start_ratio,
-        y: line_rect.y,
-        width: (line_rect.width * segment.width_ratio).max(1.0),
-        height: line_rect.height,
-    };
-    let mut base = StretchedText::new(segment.cache_id, segment.text.clone(), destination);
-    base.tint = tint;
-
-    let Some(highlight_end) = read_highlight_end else {
-        stretched.push(base);
-        return;
-    };
-    if highlight_end <= segment.start_char {
-        stretched.push(base);
-        return;
-    }
-    if highlight_end >= segment.end_char {
-        base.tint = [1.0, 0.82, 0.08, 1.0];
-        stretched.push(base);
-        return;
-    }
-
-    stretched.push(base);
-    let local_end = highlight_end.saturating_sub(segment.start_char);
-    let ratios = character_ratios(&segment.text);
-    let clip_ratio = ratios
-        .get(local_end)
-        .copied()
-        .unwrap_or(local_end as f32 / segment.text.chars().count().max(1) as f32)
-        .clamp(0.0, 1.0);
-    let mut overlay = StretchedText::new(segment.cache_id, segment.text.clone(), destination);
-    overlay.draw_rect.width *= clip_ratio;
-    overlay.uv_rect[2] = clip_ratio;
-    overlay.tint = [1.0, 0.82, 0.08, 1.0];
-    stretched.push(overlay);
-}
-
-fn replace_synced_text_layout(
-    project: &Project,
-    current_frame: f64,
-    zone: &Rect,
-    first_stretched: usize,
-    editing_line: Option<u64>,
-    stretched: &mut Vec<StretchedText>,
-) -> Option<Vec<CursorSegmentInfo>> {
-    let mut legacy_cache_ids = HashSet::new();
-    for line in project.lines().filter(|line| line_has_sync_points(project, line.id)) {
-        for pair in sync_boundaries(project, line).windows(2) {
-            legacy_cache_ids.insert(sync_segment_cache_id(line.id, pair[0].0, pair[1].0));
-        }
-    }
-
-    let mut index = first_stretched.min(stretched.len());
-    while index < stretched.len() {
-        if legacy_cache_ids.contains(&stretched[index].line_id) {
-            stretched.remove(index);
-        } else {
-            index += 1;
-        }
-    }
-
-    let language = project.syllable_language_code();
-    let mut editing_segments = None;
-    for line in project
-        .lines()
-        .filter(|line| !line.karaoke && line_has_sync_points(project, line.id))
-    {
-        let line_rect = legacy::line_rect(project, line, current_frame, zone);
-        if line_rect.x + line_rect.width < zone.x
-            || line_rect.x > zone.x + zone.width
-            || line_rect.y + line_rect.height < zone.y
-            || line_rect.y > zone.y + zone.height
-        {
-            continue;
-        }
-        let segments =
-            build_sync_segments_with_measure(project, line, line_rect.width, natural_text_width);
-        let read_highlight_end = if project.settings().highlight_read_word {
-            let progress =
-                (current_frame - line.start_frame as f64) / line.duration_frames.max(1) as f64;
-            crate::syllable::read_highlight_end_from_timing(
-                &line.text,
-                &line.syllable_ratios,
-                language,
-                progress as f32,
-            )
-        } else {
-            None
-        };
-        let tint = if project.settings().scrolling_text_uses_character_color {
-            [
-                line.character_color[0].clamp(0.0, 1.0),
-                line.character_color[1].clamp(0.0, 1.0),
-                line.character_color[2].clamp(0.0, 1.0),
-                1.0,
-            ]
-        } else {
-            [1.0; 4]
-        };
-
-        for segment in &segments {
-            append_natural_segment_text(
-                stretched,
-                segment,
-                line_rect,
-                read_highlight_end,
-                tint,
-            );
-        }
-        if editing_line == Some(line.id) {
-            editing_segments = Some(
-                segments
-                    .iter()
-                    .map(|segment| CursorSegmentInfo {
-                        cache_id: segment.cache_id,
-                        start_char: segment.start_char,
-                        end_char: segment.end_char,
-                        start_ratio: segment.start_ratio,
-                        width_ratio: segment.width_ratio,
-                    })
-                    .collect(),
-            );
-        }
-    }
-    editing_segments
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -621,8 +392,7 @@ pub fn render_lines<'a>(
     Option<Vec<CursorSegmentInfo>>,
 )> {
     let first_new_quad = syllable_quads.len();
-    let first_stretched = stretched.len();
-    let mut result = legacy::render_lines(
+    let result = legacy::render_lines(
         zone,
         project,
         render_index,
@@ -646,101 +416,17 @@ pub fn render_lines<'a>(
         first_new_quad,
         syllable_quads,
     );
-    let editing_line = result.as_ref().map(|cursor| cursor.0);
-    let natural_cursor_segments = replace_synced_text_layout(
-        project,
-        current_frame,
-        zone,
-        first_stretched,
-        editing_line,
-        stretched,
-    );
-    if let Some((_, _, _, _, _, _, _, cursor_segments)) = result.as_mut() {
-        if natural_cursor_segments.is_some() {
-            *cursor_segments = natural_cursor_segments;
-        }
-    }
     result
 }
 
-fn direct_line_pointer_response(
-    event: &UiEvent,
-    zone: &Rect,
+fn sync_foreground(
     project: &Project,
-    render_index: &ProjectRenderIndex,
+    state: &RythmoState,
+    zone: &Rect,
     current_frame: f64,
-    karaoke_preview: bool,
-    fps: f64,
-    state: &mut RythmoState,
-    active_mode: ToolMode,
-) -> Option<EventResponse> {
-    let (x, y) = match event {
-        UiEvent::MousePress { x, y } | UiEvent::ShiftMousePress { x, y } => (*x, *y),
-        _ => return None,
-    };
-    let line = normal_line_at(project, current_frame, zone, x, y)?;
-    if state.editing_character.is_some()
-        || state.audio_offset_mode
-        || state.panning
-        || state.syllable_drag.is_some()
-    {
-        return None;
-    }
-    if hit_existing_sync(project, current_frame, zone, x, y)
-        || hit_source_detection(project, current_frame, zone, x, y)
-    {
-        return None;
-    }
-
-    let ctx = legacy::RythmoCtx {
-        zone,
-        project,
-        render_index,
-        current_frame,
-        karaoke_preview,
-        fps,
-        active_mode,
-    };
-
-    if matches!(event, UiEvent::ShiftMousePress { .. }) {
-        return Some(legacy::handle_shift_mouse_press(&ctx, state, x, y));
-    }
-
-    let line_rect = legacy::line_rect(project, line, current_frame, zone);
-    let on_resize_handle = x < line_rect.x + crate::constants::HANDLE_WIDTH
-        || x > line_rect.x + line_rect.width - crate::constants::HANDLE_WIDTH;
-    if state.editing_line == Some(line.id) && !on_resize_handle {
-        let response = legacy::handle_mouse_press(&ctx, state, x, y);
-        let segments = display_segments_for_hit_test(project, line, line_rect.width);
-        if let Some(cursor_index) =
-            closest_cursor_index_at_x_with_ratios(&segments, line_rect, x, character_ratios)
-        {
-            state.pending_cursor_click = None;
-            state.line_input.start_selection(cursor_index);
-        }
-        return Some(response);
-    }
-    if on_resize_handle {
-        return Some(legacy::handle_mouse_press(&ctx, state, x, y));
-    }
-
-    if let Some(anchor) = letter_anchor_at(project, current_frame, zone, x, y) {
-        if let Some(address) = next_detection_address(project, anchor.line_id) {
-            state.selected = Some(Selection::Detection(address));
-        }
-        state.detection_menu = None;
-        state.detection_drag = None;
-        return Some(EventResponse::Action(UiAction::AddDetection {
-            line_id: anchor.line_id,
-            kind: DetectionKind::TextSyncPoint,
-            media_tick: anchor.media_tick,
-            target: TextAnchor::Grapheme {
-                index: anchor.character_index as u32,
-            },
-        }));
-    }
-
-    Some(legacy::handle_mouse_press(&ctx, state, x, y))
+    event: &UiEvent,
+) {
+    crate::detection_foreground::sync_from_state(project, state, *zone, current_frame, event);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -760,25 +446,53 @@ pub fn handle_rythmo_event(
     interaction_mode: RythmoInteractionMode,
 ) -> EventResponse {
     if interaction_mode == RythmoInteractionMode::Editable && active_mode != ToolMode::Draw {
-        if let Some(response) = direct_line_pointer_response(
-            event,
-            zone,
-            project,
-            render_index,
-            current_frame,
-            karaoke_preview,
-            fps,
-            state,
-            active_mode,
-        ) {
-            crate::detection_foreground::sync_from_state(
-                project,
-                state,
-                *zone,
-                current_frame,
-                event,
-            );
-            return response;
+        if let UiEvent::DoubleClick { x, y } = event {
+            if !hit_existing_sync(project, current_frame, zone, *x, *y) {
+                if let Some(anchor) = sync_boundary_anchor_at(project, current_frame, zone, *x, *y) {
+                    state.dragging = None;
+                    state.detection_menu = None;
+                    state.detection_drag = None;
+                    let response = EventResponse::Action(UiAction::AddDetection {
+                        line_id: anchor.line_id,
+                        kind: DetectionKind::TextSyncPoint,
+                        media_tick: anchor.media_tick,
+                        target: TextAnchor::Grapheme {
+                            index: anchor.boundary_index as u32,
+                        },
+                    });
+                    sync_foreground(project, state, zone, current_frame, event);
+                    return response;
+                }
+            }
+        }
+
+        if let UiEvent::MousePress { x, y } | UiEvent::ShiftMousePress { x, y } = event {
+            let plain_line_press = state.detection_menu.is_none()
+                && state.editing_character.is_none()
+                && !state.audio_offset_mode
+                && !state.panning
+                && state.syllable_drag.is_none()
+                && normal_line_at(project, current_frame, zone, *x, *y).is_some()
+                && !hit_existing_sync(project, current_frame, zone, *x, *y)
+                && !hit_source_detection(project, current_frame, zone, *x, *y);
+            if plain_line_press {
+                let ctx = legacy::RythmoCtx {
+                    zone,
+                    project,
+                    render_index,
+                    current_frame,
+                    karaoke_preview,
+                    fps,
+                    active_mode,
+                };
+                let response = if matches!(event, UiEvent::ShiftMousePress { .. }) {
+                    legacy::handle_shift_mouse_press(&ctx, state, *x, *y)
+                } else {
+                    legacy::handle_mouse_press(&ctx, state, *x, *y)
+                };
+                sync_foreground(project, state, zone, current_frame, event);
+                return response;
+            }
         }
     }
 
@@ -799,7 +513,7 @@ pub fn handle_rythmo_event(
     )
 }
 
-fn push_hover_dot(quads: &mut Vec<QuadInstance>, anchor: LetterAnchor) {
+fn push_hover_dot(quads: &mut Vec<QuadInstance>, anchor: SyncBoundaryAnchor) {
     let dot = sync_dot_rect(anchor.x, anchor.line_rect);
     quads.push(QuadInstance {
         rect: [dot.x, dot.y, dot.width, dot.height],
@@ -849,7 +563,7 @@ pub(crate) fn render_detection_overlay<'a>(
 
     if state.detection_menu.is_none() {
         if let Some(hover) = state.detection_hover {
-            if let Some(anchor) = letter_anchor_at(
+            if let Some(anchor) = sync_boundary_anchor_at(
                 project,
                 current_frame,
                 zone,
@@ -865,7 +579,6 @@ pub(crate) fn render_detection_overlay<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detection::DetectionCue;
 
     fn quad(rect: [f32; 4], color: [f32; 4]) -> QuadInstance {
         QuadInstance {
@@ -881,30 +594,6 @@ mod tests {
             rotation: 0.0,
             _padding: [0.0; 2],
         }
-    }
-
-    fn project_with_sync_points(first_frame: i64) -> (Project, u64) {
-        let mut project = Project::new();
-        let line_id = project.add_line(100, 100, 0.25);
-        project.get_line_mut(line_id).unwrap().text = "abcdefghij".to_string();
-        for (id, frame, index) in [(1, first_frame, 3), (2, 170, 7)] {
-            let cue = DetectionCue {
-                id: DetectionCueId(id),
-                kind: DetectionKind::TextSyncPoint,
-                media_tick: MediaTick::from_frame(frame),
-                target: TextAnchor::Grapheme { index },
-            };
-            assert!(project
-                .detections_mut()
-                .insert_detection(
-                    DetectionAddress {
-                        line_id,
-                        detection_id: cue.id,
-                    },
-                    cue,
-                ));
-        }
-        (project, line_id)
     }
 
     #[test]
@@ -924,104 +613,45 @@ mod tests {
     }
 
     #[test]
-    fn sync_points_anchor_letter_inclusive_groups_without_squashing_them() {
-        let (project, line_id) = project_with_sync_points(130);
-        let line = project.get_line(line_id).unwrap();
-        let segments = build_sync_segments_with_measure(&project, line, 200.0, |text| {
-            text.chars().count() as f32 * 10.0
-        });
-
-        assert_eq!(segments.len(), 3);
-        assert_eq!(segments[0].text, "abc");
-        assert_eq!(segments[1].text, "defg");
-        assert_eq!(segments[2].text, "hij");
-        assert_eq!(segments[1].start_char, 3, "the anchored letter stays in its group");
-        assert!((segments[0].width_ratio - 0.15).abs() < 0.0001);
-        assert!((segments[1].width_ratio - 0.20).abs() < 0.0001);
-        assert!((segments[2].width_ratio - 0.15).abs() < 0.0001);
-        assert!((segments[1].start_ratio - 0.30).abs() < 0.0001);
-        assert!(segments[0].start_ratio + segments[0].width_ratio < segments[1].start_ratio);
-    }
-
-    #[test]
-    fn moving_a_point_moves_the_anchored_group_but_keeps_glyph_widths() {
-        let (before, line_id) = project_with_sync_points(130);
-        let (after, _) = project_with_sync_points(150);
-        let before_segments = build_sync_segments_with_measure(
-            &before,
-            before.get_line(line_id).unwrap(),
-            200.0,
-            |text| text.chars().count() as f32 * 10.0,
-        );
-        let after_segments = build_sync_segments_with_measure(
-            &after,
-            after.get_line(line_id).unwrap(),
-            200.0,
-            |text| text.chars().count() as f32 * 10.0,
-        );
-
-        assert_eq!(before_segments[1].width_ratio, after_segments[1].width_ratio);
-        assert_eq!(before_segments[2].start_ratio, after_segments[2].start_ratio);
-        assert!((before_segments[1].start_ratio - 0.30).abs() < 0.0001);
-        assert!((after_segments[1].start_ratio - 0.50).abs() < 0.0001);
-    }
-
-    #[test]
-    fn point_creation_hits_a_letter_and_not_the_generated_gap() {
-        let (project, line_id) = project_with_sync_points(130);
-        let line = project.get_line(line_id).unwrap();
-        let segments = build_sync_segments_with_measure(&project, line, 200.0, |text| {
-            text.chars().count() as f32 * 10.0
-        });
-        let characters = line.text.chars().collect::<Vec<_>>();
-        let rect = Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 200.0,
-            height: 30.0,
-        };
-        let uniform_ratios = |text: &str| {
-            let count = text.chars().count();
-            (0..=count)
-                .map(|index| index as f32 / count.max(1) as f32)
-                .collect::<Vec<_>>()
-        };
+    fn word_start_anchors_before_the_letter_and_word_end_anchors_after_it() {
+        let characters = "Bonjour à tous".chars().collect::<Vec<_>>();
+        let existing = HashSet::new();
+        let a_index = characters.iter().position(|character| *character == 'à').unwrap();
+        let r_index = characters.iter().position(|character| *character == 'r').unwrap();
 
         assert_eq!(
-            character_index_at_x_with_ratios(&characters, &segments, rect, 65.0, uniform_ratios),
-            Some((3, 0.30))
+            choose_boundary_for_character(
+                &characters,
+                a_index,
+                0.5,
+                0,
+                characters.len(),
+                &existing,
+            ),
+            Some(a_index),
+            "a word-initial letter starts the following fitted box"
         );
         assert_eq!(
-            character_index_at_x_with_ratios(&characters, &segments, rect, 45.0, uniform_ratios),
-            None,
-            "the empty synchronization gap is not a valid point target"
+            choose_boundary_for_character(
+                &characters,
+                r_index,
+                0.5,
+                0,
+                characters.len(),
+                &existing,
+            ),
+            Some(r_index + 1),
+            "a word-final letter remains in the preceding fitted box"
         );
     }
 
     #[test]
-    fn caret_hit_testing_uses_the_same_generated_spaces() {
-        let (project, line_id) = project_with_sync_points(130);
-        let line = project.get_line(line_id).unwrap();
-        let segments = build_sync_segments_with_measure(&project, line, 200.0, |text| {
-            text.chars().count() as f32 * 10.0
-        });
-        let rect = Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 200.0,
-            height: 30.0,
-        };
-        let uniform_ratios = |text: &str| {
-            let count = text.chars().count();
-            (0..=count)
-                .map(|index| index as f32 / count.max(1) as f32)
-                .collect::<Vec<_>>()
-        };
-
-        assert_eq!(
-            closest_cursor_index_at_x_with_ratios(&segments, rect, 58.0, uniform_ratios),
-            Some(3),
-            "a click in the gap snaps to the anchored letter, not a globally remapped index"
+    fn an_existing_boundary_is_never_created_twice() {
+        let characters = "bonjour".chars().collect::<Vec<_>>();
+        let existing = HashSet::from([3]);
+        assert_ne!(
+            choose_boundary_for_character(&characters, 3, 0.1, 0, characters.len(), &existing),
+            Some(3)
         );
     }
 }
