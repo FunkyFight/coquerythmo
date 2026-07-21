@@ -47,6 +47,7 @@ pub mod rythmo_line_metadata;
 #[path = "rythmo_lint_facade.rs"]
 pub mod rythmo_lint;
 pub mod rythmo_lint_overlay;
+pub mod rythmo_special_markers;
 pub mod state;
 mod state_detection;
 pub mod syllable;
