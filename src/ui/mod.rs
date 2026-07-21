@@ -55,7 +55,7 @@ use primitives::{
     UiEvent, VAlign, Widget,
 };
 use renderer::StretchedText;
-use tooltip::TooltipState;
+use tooltip::{LintTooltipState, TooltipState};
 
 use crate::application::workspace_service::WorkspaceId;
 use crate::i18n::t;
@@ -2014,6 +2014,21 @@ impl Ui {
                 )
             })
             .flatten();
+        let lint_tooltip = if show_rythmo && rythmo_zone.contains(self.cursor_pos.0, self.cursor_pos.1) {
+            self.rythmo_state.hovered_line.and_then(|line_id| {
+                let diagnostics = crate::lint::for_line(project, fps, line_id);
+                        (!diagnostics.is_empty()).then(|| LintTooltipState::new(
+                            &diagnostics, self.cursor_pos.0, self.cursor_pos.1,
+                        ))
+            }).or_else(|| {
+                let diagnostics = rythmo::lint_zone_diagnostics(
+                    &rythmo_zone, project, render_frame, fps, self.cursor_pos.0, self.cursor_pos.1,
+                );
+                (!diagnostics.is_empty()).then(|| LintTooltipState::new(
+                    &diagnostics, self.cursor_pos.0, self.cursor_pos.1,
+                ))
+            })
+        } else { None };
         icons.extend(note_icons);
         for draw in actor_icon_draws {
             if let Some(actor) = project.find_voice_actor(&draw.actor_name) {
@@ -2097,6 +2112,7 @@ impl Ui {
                 project,
                 render_index,
                 render_frame,
+                fps,
                 &mut quads,
                 &mut labels,
                 &mut liaison_icons,
@@ -2299,7 +2315,10 @@ impl Ui {
         }
 
         // Tooltip → overlay
-        if let Some(tooltip) = &self.tooltip {
+        if let Some(tooltip) = lint_tooltip.as_ref() {
+            overlay_quads.extend(tooltip.render_quads(self.screen_w));
+            overlay_labels.extend(tooltip.render_labels(self.screen_w));
+        } else if let Some(tooltip) = &self.tooltip {
             overlay_quads.extend(tooltip.render_quads(self.screen_w));
             overlay_labels.extend(tooltip.render_labels(self.screen_w));
         }

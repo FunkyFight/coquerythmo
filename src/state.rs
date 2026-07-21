@@ -3651,8 +3651,19 @@ impl State {
                     "{character}, {dialogue}, {} {track}",
                     crate::i18n::t("accessibility.track")
                 );
-                if line.karaoke {
+                let label = if line.karaoke {
                     format!("{label}, {}", crate::i18n::t("accessibility.karaoke_line"))
+                } else {
+                    label
+                };
+                // Convention diagnostics are appended last so AccessKit reads
+                // the normal line description before its line and zone issues.
+                if let Some(suffix) = crate::lint::line_description_suffix(
+                    &self.project_session.project,
+                    self.fps(),
+                    id,
+                ) {
+                    format!("{label}. {suffix}")
                 } else {
                     label
                 }

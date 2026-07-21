@@ -2285,6 +2285,7 @@ pub fn render_lines<'a>(
     f32,
     Option<Vec<CursorSegmentInfo>>,
 )> {
+    let lint_diagnostics = crate::lint::analyze(project, fps);
     if let Some(drag) = state.dragging.as_ref().filter(|drag| {
         drag.handle == DragHandle::VerticalOnly && matches!(drag.target, DragTarget::Line(_))
     }) {
@@ -2531,6 +2532,12 @@ pub fn render_lines<'a>(
             || matches!(state.selected, Some(Selection::Lines(ref ids)) if ids.contains(&line.id))
             || matches!(state.selected, Some(Selection::AllLines));
         let is_editing = state.editing_line == Some(line.id);
+        let lint_severity = lint_diagnostics.iter().filter_map(|diagnostic| match diagnostic.scope {
+            crate::lint::Scope::Line(id) if id == line.id => Some(diagnostic.severity),
+            crate::lint::Scope::Zone { start_frame, end_frame }
+                if line.start_frame < end_frame && line.end_frame() > start_frame => Some(diagnostic.severity),
+            _ => None,
+        }).max();
         let karaoke_playback_line = data.karaoke_playback;
         let read_highlight_end = if project.settings().highlight_read_word && !line.karaoke {
             let progress =
@@ -2576,6 +2583,10 @@ pub fn render_lines<'a>(
                 rotation: 0.0,
                 _padding: [0.0; 2],
             });
+            if let Some(severity) = lint_severity {
+                push_lint_wave(quads, data.rect.x, data.rect.x + data.rect.width,
+                    data.rect.y + data.rect.height - 2.0, severity);
+            }
         }
 
         let scrolling_text_tint = if project.settings().scrolling_text_uses_character_color {
@@ -3413,12 +3424,24 @@ pub fn render_markers<'a>(
     project: &'a Project,
     render_index: &ProjectRenderIndex,
     current_frame: f64,
+    fps: f64,
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
     liaison_icons: &mut Vec<IconInstance>,
     liaison_left_uv: [f32; 4],
     liaison_right_uv: [f32; 4],
 ) {
+    for diagnostic in crate::lint::analyze(project, fps) {
+        if let crate::lint::Scope::Zone { start_frame, end_frame } = diagnostic.scope {
+            let left = frame_to_x(start_frame, current_frame, zone).max(zone.x);
+            let right = frame_to_x(end_frame, current_frame, zone).min(zone.x + zone.width);
+            if right > left {
+                // Zone diagnostics sit outside the dialogue rows, directly
+                // under the ruler, and therefore remain visible on empty parts.
+                push_lint_wave(quads, left, right, zone.y + constants::RULER_HEIGHT + 3.0, diagnostic.severity);
+            }
+        }
+    }
     let margin_frames = f64_ceil_to_i64(20.0 / ppf().max(0.001) as f64).saturating_add(1);
     let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames);
     for marker_index in render_index.visible_marker_indices(first_frame, last_frame) {
@@ -3574,6 +3597,46 @@ pub fn render_markers<'a>(
             }
         }
     }
+}
+
+fn push_lint_wave(quads: &mut Vec<QuadInstance>, left: f32, right: f32, y: f32, severity: crate::lint::Severity) {
+    let color = match severity {
+        crate::lint::Severity::Error => [0.95, 0.18, 0.18, 0.98],
+        crate::lint::Severity::Warning => [0.96, 0.72, 0.12, 0.98],
+    };
+    let step = 5.0_f32;
+    let mut x = left;
+    let mut rising = true;
+    while x < right {
+        let width = step.min(right - x);
+        quads.push(QuadInstance {
+            rect: [x, y, width + 0.5, 1.5], color, color_bottom: color,
+            border_color: [0.0; 4], border_width: 0.0, border_radius: 0.75,
+            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
+            rotation: if rising { 0.38 } else { -0.38 }, _padding: [0.0; 2],
+        });
+        rising = !rising; x += step;
+    }
+}
+
+pub fn lint_zone_diagnostics(
+    zone: &Rect,
+    project: &Project,
+    current_frame: f64,
+    fps: f64,
+    cursor_x: f32,
+    cursor_y: f32,
+) -> Vec<crate::lint::Diagnostic> {
+    let wave_y = zone.y + constants::RULER_HEIGHT + 3.0;
+    if (cursor_y - wave_y).abs() > 7.0 { return Vec::new(); }
+    let diagnostics: Vec<_> = crate::lint::analyze(project, fps).into_iter().filter(|diagnostic| {
+        if let crate::lint::Scope::Zone { start_frame, end_frame } = diagnostic.scope {
+            let left = frame_to_x(start_frame, current_frame, zone).max(zone.x);
+            let right = frame_to_x(end_frame, current_frame, zone).min(zone.x + zone.width);
+            cursor_x >= left && cursor_x <= right
+        } else { false }
+    }).collect();
+    diagnostics
 }
 
 pub fn autocomplete_hit(

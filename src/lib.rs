@@ -21,6 +21,7 @@ pub mod graphics;
 pub mod i18n;
 pub mod input;
 mod integrity;
+pub mod lint;
 pub mod media_binary;
 pub mod media_recording;
 pub mod network;
