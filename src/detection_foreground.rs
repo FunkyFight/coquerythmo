@@ -1,31 +1,32 @@
-//! Final foreground layer for detection palettes and information cards.
+//! Highest foreground surface for the detection palette and information card.
 //!
-//! Detection signs stay in the rythmo layer. Only the Alt+D palette, its quick
-//! tooltip and the information card are mirrored into the last modal-overlay
-//! pass. The module also provides the complete semantic label announced by
-//! AccessKit when a card opens.
+//! The original rythmo renderer still owns signs, guides and hit testing. This
+//! module owns the one visible popup surface so palette and card never render
+//! twice or drift after an unrelated pointer release.
 
-use crate::detection::{DetectionAddress, DetectionCue, TextAnchor};
+use crate::accessibility::AccessibilityEvent;
+use crate::detection::{
+    track_storage_line_id, DetectionAddress, DetectionKind, MediaTick, TextAnchor,
+};
 use crate::project::Project;
-use crate::ui::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
-use crate::workspaces::rythmo::view::{editor_track_body_rect_at_frame, RythmoState, Selection};
+use crate::ui::primitives::{
+    EventResponse, HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiAction, UiEvent, VAlign,
+};
+use crate::workspaces::rythmo::view::{RythmoState, Selection};
 use std::sync::{Mutex, OnceLock};
 
-const SIGN_SIZE: f32 = 26.0;
-const SIGN_BOTTOM_MARGIN: f32 = 2.0;
-const BUTTON_SIZE: f32 = 18.0;
-const BUTTON_GAP: f32 = 4.0;
 const MENU_ICON_SIZE: f32 = 30.0;
 const MENU_GAP: f32 = 4.0;
 const MENU_PADDING: f32 = 6.0;
+const MENU_WIDTH: f32 = MENU_PADDING * 2.0 + MENU_ICON_SIZE * 9.0 + MENU_GAP * 8.0;
 const MENU_HEIGHT: f32 = MENU_ICON_SIZE + MENU_PADDING * 2.0;
+const POPUP_CURSOR_GAP: f32 = 10.0;
 const INFO_WIDTH: f32 = 470.0;
 const INFO_HEIGHT: f32 = 176.0;
 const INFO_PADDING: f32 = 12.0;
 const INFO_IMAGE_SIZE: f32 = 136.0;
 const TOOLTIP_WIDTH: f32 = 350.0;
 const TOOLTIP_HEIGHT: f32 = 30.0;
-const MOUTH_PIXELS: u32 = 44;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sign {
@@ -53,19 +54,33 @@ impl Sign {
         Self::Reaction,
     ];
 
-    fn from_cue(cue: &DetectionCue) -> Option<Self> {
+    fn from_cue(cue: &crate::detection::DetectionCue) -> Option<Self> {
         let alternate = matches!(&cue.target, TextAnchor::AfterText);
         match (cue.kind, alternate) {
-            (crate::detection::DetectionKind::Labial, _) => Some(Self::Labial),
-            (crate::detection::DetectionKind::SemiLabial, _) => Some(Self::SemiLabial),
-            (crate::detection::DetectionKind::MouthOpen, _) => Some(Self::MouthOpen),
-            (crate::detection::DetectionKind::MouthClosed, _) => Some(Self::MouthClosed),
-            (crate::detection::DetectionKind::TeethVisible, false) => Some(Self::TeethVisible),
-            (crate::detection::DetectionKind::TeethVisible, true) => Some(Self::DentalTh),
-            (crate::detection::DetectionKind::Breath, false) => Some(Self::Breath),
-            (crate::detection::DetectionKind::Breath, true) => Some(Self::Neutral),
-            (crate::detection::DetectionKind::Reaction, _) => Some(Self::Reaction),
-            (crate::detection::DetectionKind::TextSyncPoint, _) => None,
+            (DetectionKind::Labial, _) => Some(Self::Labial),
+            (DetectionKind::SemiLabial, _) => Some(Self::SemiLabial),
+            (DetectionKind::MouthOpen, _) => Some(Self::MouthOpen),
+            (DetectionKind::MouthClosed, _) => Some(Self::MouthClosed),
+            (DetectionKind::TeethVisible, false) => Some(Self::TeethVisible),
+            (DetectionKind::TeethVisible, true) => Some(Self::DentalTh),
+            (DetectionKind::Breath, false) => Some(Self::Breath),
+            (DetectionKind::Breath, true) => Some(Self::Neutral),
+            (DetectionKind::Reaction, _) => Some(Self::Reaction),
+            (DetectionKind::TextSyncPoint, _) => None,
+        }
+    }
+
+    const fn storage(self) -> (DetectionKind, TextAnchor) {
+        match self {
+            Self::Labial => (DetectionKind::Labial, TextAnchor::BeforeText),
+            Self::SemiLabial => (DetectionKind::SemiLabial, TextAnchor::BeforeText),
+            Self::MouthOpen => (DetectionKind::MouthOpen, TextAnchor::BeforeText),
+            Self::MouthClosed => (DetectionKind::MouthClosed, TextAnchor::BeforeText),
+            Self::TeethVisible => (DetectionKind::TeethVisible, TextAnchor::BeforeText),
+            Self::DentalTh => (DetectionKind::TeethVisible, TextAnchor::AfterText),
+            Self::Breath => (DetectionKind::Breath, TextAnchor::BeforeText),
+            Self::Neutral => (DetectionKind::Breath, TextAnchor::AfterText),
+            Self::Reaction => (DetectionKind::Reaction, TextAnchor::BeforeText),
         }
     }
 
@@ -172,25 +187,56 @@ fn info(sign: Sign) -> Info {
 }
 
 #[derive(Clone, Copy)]
+struct HoverAnchor {
+    track: u8,
+    media_tick: MediaTick,
+    screen_x: f32,
+    screen_y: f32,
+    track_rect: Rect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PopupKind {
+    Palette,
+    Info,
+}
+
+#[derive(Clone, Copy)]
 enum Popup {
     None,
-    Palette { outer: Rect, hover_index: Option<usize> },
-    Info { outer: Rect, sign: Sign },
+    Palette {
+        visual: Rect,
+        suppressed: Rect,
+        track: u8,
+        media_tick: MediaTick,
+        selected: usize,
+    },
+    Info {
+        visual: Rect,
+        suppressed: Rect,
+        sign: Sign,
+    },
+    Dismissed {
+        kind: PopupKind,
+        suppressed: Rect,
+    },
 }
 
 #[derive(Clone, Copy)]
 struct ForegroundState {
     popup: Popup,
-    last_palette_outer: Option<Rect>,
-    selected_anchor_x: Option<f32>,
+    last_zone: Rect,
+    last_hover: Option<HoverAnchor>,
+    last_pointer: (f32, f32),
 }
 
 impl Default for ForegroundState {
     fn default() -> Self {
         Self {
             popup: Popup::None,
-            last_palette_outer: None,
-            selected_anchor_x: None,
+            last_zone: Rect::default(),
+            last_hover: None,
+            last_pointer: (0.0, 0.0),
         }
     }
 }
@@ -201,21 +247,9 @@ fn foreground() -> &'static Mutex<ForegroundState> {
 }
 
 fn lock_state() -> std::sync::MutexGuard<'static, ForegroundState> {
-    foreground().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn ppf() -> f32 {
-    crate::constants::PIXELS_PER_FRAME * crate::config::scroll_speed()
-}
-
-fn tick_x(tick: crate::detection::MediaTick, current_frame: f64, zone: Rect) -> f32 {
-    zone.x + zone.width / 2.0 + (tick.as_frame_position() - current_frame) as f32 * ppf()
-}
-
-fn clamp_popup(mut rect: Rect, zone: Rect) -> Rect {
-    rect.x = rect.x.clamp(zone.x, (zone.x + zone.width - rect.width).max(zone.x));
-    rect.y = rect.y.clamp(zone.y, (zone.y + zone.height - rect.height).max(zone.y));
-    rect
+    foreground()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn event_pointer(event: &UiEvent) -> Option<(f32, f32)> {
@@ -234,6 +268,58 @@ fn event_pointer(event: &UiEvent) -> Option<(f32, f32)> {
     }
 }
 
+fn clamp_popup(mut rect: Rect, zone: Rect) -> Rect {
+    rect.x = rect
+        .x
+        .clamp(zone.x, (zone.x + zone.width - rect.width).max(zone.x));
+    rect.y = rect
+        .y
+        .clamp(zone.y, (zone.y + zone.height - rect.height).max(zone.y));
+    rect
+}
+
+fn palette_visual_outer(hover: HoverAnchor, zone: Rect) -> Rect {
+    clamp_popup(
+        Rect {
+            x: hover.screen_x + POPUP_CURSOR_GAP,
+            y: hover.screen_y + POPUP_CURSOR_GAP,
+            width: MENU_WIDTH,
+            height: MENU_HEIGHT,
+        },
+        zone,
+    )
+}
+
+fn palette_base_outer(hover: HoverAnchor, zone: Rect) -> Rect {
+    let button_x = hover.screen_x - 9.0;
+    let button_y = hover.track_rect.y + hover.track_rect.height + 4.0;
+    clamp_popup(
+        Rect {
+            x: button_x,
+            y: button_y + 20.0,
+            width: MENU_WIDTH,
+            height: MENU_HEIGHT,
+        },
+        zone,
+    )
+}
+
+fn palette_item_rect(outer: Rect, index: usize) -> Rect {
+    Rect {
+        x: outer.x + MENU_PADDING + index as f32 * (MENU_ICON_SIZE + MENU_GAP),
+        y: outer.y + MENU_PADDING,
+        width: MENU_ICON_SIZE,
+        height: MENU_ICON_SIZE,
+    }
+}
+
+fn palette_item_at(outer: Rect, x: f32, y: f32) -> Option<usize> {
+    Sign::ALL
+        .iter()
+        .enumerate()
+        .find_map(|(index, _)| palette_item_rect(outer, index).contains(x, y).then_some(index))
+}
+
 fn selected_address(state: &RythmoState) -> Option<DetectionAddress> {
     match state.selected.as_ref() {
         Some(Selection::Detection(address)) => Some(*address),
@@ -241,50 +327,186 @@ fn selected_address(state: &RythmoState) -> Option<DetectionAddress> {
     }
 }
 
-fn palette_outer(state: &RythmoState, zone: Rect) -> Option<Rect> {
-    let hover = state.detection_hover?;
-    let button = Rect {
-        x: hover.screen_x - BUTTON_SIZE / 2.0,
-        y: hover.track_rect.y + hover.track_rect.height + BUTTON_GAP,
-        width: BUTTON_SIZE,
-        height: BUTTON_SIZE,
-    };
-    Some(clamp_popup(
-        Rect {
-            x: button.x,
-            y: button.y + button.height + 2.0,
-            width: MENU_PADDING * 2.0
-                + MENU_ICON_SIZE * Sign::ALL.len() as f32
-                + MENU_GAP * (Sign::ALL.len() as f32 - 1.0),
-            height: MENU_HEIGHT,
-        },
-        zone,
-    ))
-}
-
-fn selected_sign_anchor(
+fn selected_anchor_x(
     project: &Project,
     state: &RythmoState,
     zone: Rect,
     current_frame: f64,
 ) -> Option<f32> {
     let address = selected_address(state)?;
-    let track = address.track()? as usize;
+    address.track()?;
     let cue = project.detections().detection(address)?;
-    let track_rect = editor_track_body_rect_at_frame(
-        project,
-        crate::rythmo_layout::y_slot_for_track_index(track),
-        current_frame,
-        &zone,
-    );
-    let center = tick_x(cue.media_tick, current_frame, zone);
-    let badge_y = (track_rect.y + track_rect.height - SIGN_SIZE - SIGN_BOTTOM_MARGIN)
-        .max(track_rect.y);
-    let _ = badge_y;
-    Some(center + SIGN_SIZE / 2.0 + 8.0)
+    let ppf = crate::constants::PIXELS_PER_FRAME * crate::config::scroll_speed();
+    Some(
+        zone.x
+            + zone.width / 2.0
+            + (cue.media_tick.as_frame_position() - current_frame) as f32 * ppf
+            + 18.0,
+    )
 }
 
-/// Mirror interaction state after each rythmo event.
+fn moved_index(current: usize, direction: i32) -> usize {
+    (current as i32 + direction).rem_euclid(Sign::ALL.len() as i32) as usize
+}
+
+fn dismiss(kind: PopupKind, suppressed: Rect) {
+    lock_state().popup = Popup::Dismissed { kind, suppressed };
+}
+
+fn activate_palette_choice(
+    track: u8,
+    media_tick: MediaTick,
+    selected: usize,
+    suppressed: Rect,
+) -> EventResponse {
+    let sign = Sign::ALL[selected.min(Sign::ALL.len() - 1)];
+    let (kind, target) = sign.storage();
+    dismiss(PopupKind::Palette, suppressed);
+    EventResponse::Action(UiAction::AddDetection {
+        line_id: track_storage_line_id(track),
+        kind,
+        media_tick,
+        target,
+    })
+}
+
+fn announce_palette_selection(selected: usize) -> EventResponse {
+    let details = info(Sign::ALL[selected.min(Sign::ALL.len() - 1)]);
+    EventResponse::Action(UiAction::Accessibility(AccessibilityEvent::Selection {
+        label: details.quick_label.to_string(),
+    }))
+}
+
+/// The popup is a true input-capturing surface. This makes the event loop route
+/// arrows, Enter, Escape and pointer input before toolbar sliders or the BR.
+pub fn captures_input() -> bool {
+    matches!(lock_state().popup, Popup::Palette { .. } | Popup::Info { .. })
+}
+
+/// Handle popup input without borrowing the workspace. Activation returns the
+/// normal application action; the stale legacy menu is reconciled on the next
+/// rythmo event while remaining visually suppressed in the meantime.
+pub fn handle_modal_event(event: &UiEvent) -> Option<EventResponse> {
+    let popup = lock_state().popup;
+    match popup {
+        Popup::None | Popup::Dismissed { .. } => None,
+        Popup::Palette {
+            visual,
+            suppressed,
+            track,
+            media_tick,
+            selected,
+        } => match event {
+            UiEvent::CursorLeft | UiEvent::CursorUp => {
+                let next = moved_index(selected, -1);
+                if let Popup::Palette { selected, .. } = &mut lock_state().popup {
+                    *selected = next;
+                }
+                Some(announce_palette_selection(next))
+            }
+            UiEvent::CursorRight | UiEvent::CursorDown => {
+                let next = moved_index(selected, 1);
+                if let Popup::Palette { selected, .. } = &mut lock_state().popup {
+                    *selected = next;
+                }
+                Some(announce_palette_selection(next))
+            }
+            UiEvent::Home => {
+                if let Popup::Palette { selected, .. } = &mut lock_state().popup {
+                    *selected = 0;
+                }
+                Some(announce_palette_selection(0))
+            }
+            UiEvent::End => {
+                let last = Sign::ALL.len() - 1;
+                if let Popup::Palette { selected, .. } = &mut lock_state().popup {
+                    *selected = last;
+                }
+                Some(announce_palette_selection(last))
+            }
+            UiEvent::Activate => Some(activate_palette_choice(
+                track,
+                media_tick,
+                selected,
+                suppressed,
+            )),
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => {
+                Some(activate_palette_choice(
+                    track,
+                    media_tick,
+                    selected,
+                    suppressed,
+                ))
+            }
+            UiEvent::KeyInput { text } if text == "\x1b" => {
+                dismiss(PopupKind::Palette, suppressed);
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::MouseMove { x, y } => {
+                if let Some(index) = palette_item_at(visual, *x, *y) {
+                    if let Popup::Palette { selected, .. } = &mut lock_state().popup {
+                        *selected = index;
+                    }
+                }
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::MousePress { x, y } => {
+                if let Some(index) = palette_item_at(visual, *x, *y) {
+                    return Some(activate_palette_choice(
+                        track,
+                        media_tick,
+                        index,
+                        suppressed,
+                    ));
+                }
+                if !visual.contains(*x, *y) {
+                    dismiss(PopupKind::Palette, suppressed);
+                }
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::MouseRelease { .. }
+            | UiEvent::Scroll { .. }
+            | UiEvent::DoubleClick { .. }
+            | UiEvent::CtrlClick { .. }
+            | UiEvent::ShiftMousePress { .. }
+            | UiEvent::MiddlePress { .. }
+            | UiEvent::MiddleRelease { .. }
+            | UiEvent::ContextMenu { .. } => Some(EventResponse::Consumed),
+            _ => Some(EventResponse::Consumed),
+        },
+        Popup::Info {
+            visual,
+            suppressed,
+            ..
+        } => match event {
+            UiEvent::KeyInput { text } if text == "\x1b" => {
+                dismiss(PopupKind::Info, suppressed);
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::MousePress { x, y } => {
+                if !visual.contains(*x, *y) {
+                    dismiss(PopupKind::Info, suppressed);
+                }
+                Some(EventResponse::Consumed)
+            }
+            _ => Some(EventResponse::Consumed),
+        },
+    }
+}
+
+/// Clear a dismissed legacy menu before the next detector event can interpret
+/// its obsolete position. The popup remains hidden between dismissal and this
+/// reconciliation, so no one-frame duplicate can flash back.
+pub(crate) fn reconcile_legacy_menu(state: &mut RythmoState) {
+    let mut foreground = lock_state();
+    if matches!(foreground.popup, Popup::Dismissed { .. }) {
+        state.detection_menu = None;
+        foreground.popup = Popup::None;
+    }
+}
+
+/// Mirror the detector state after each event. Existing popup geometry is
+/// preserved; a later click inside the card can no longer move it.
 pub fn sync_from_state(
     project: &Project,
     state: &RythmoState,
@@ -292,35 +514,58 @@ pub fn sync_from_state(
     current_frame: f64,
     event: &UiEvent,
 ) {
+    let pointer = event_pointer(event);
+    let hover = state.detection_hover.map(|hover| HoverAnchor {
+        track: hover.track,
+        media_tick: hover.media_tick,
+        screen_x: hover.screen_x,
+        screen_y: hover.screen_y,
+        track_rect: hover.track_rect,
+    });
+
     let mut foreground = lock_state();
-    let previous_popup = foreground.popup;
-    foreground.selected_anchor_x = selected_sign_anchor(project, state, zone, current_frame);
-    if let Some(outer) = palette_outer(state, zone) {
-        foreground.last_palette_outer = Some(outer);
+    foreground.last_zone = zone;
+    if let Some(pointer) = pointer {
+        foreground.last_pointer = pointer;
+    }
+    if let Some(hover) = hover {
+        foreground.last_hover = Some(hover);
     }
 
+    if matches!(foreground.popup, Popup::Dismissed { .. }) {
+        return;
+    }
     if state.detection_menu.is_none() {
         foreground.popup = Popup::None;
         return;
     }
 
-    if state.detection_hover.is_some() {
-        let Some(outer) = palette_outer(state, zone).or(foreground.last_palette_outer) else {
-            foreground.popup = Popup::None;
-            return;
+    if let Some(hover) = hover {
+        let (visual, suppressed, mut selected) = match foreground.popup {
+            Popup::Palette {
+                visual,
+                suppressed,
+                selected,
+                ..
+            } => (visual, suppressed, selected),
+            _ => (
+                palette_visual_outer(hover, zone),
+                palette_base_outer(hover, zone),
+                0,
+            ),
         };
-        let hover_index = event_pointer(event).and_then(|(x, y)| {
-            Sign::ALL.iter().enumerate().find_map(|(index, _)| {
-                let item = Rect {
-                    x: outer.x + MENU_PADDING + index as f32 * (MENU_ICON_SIZE + MENU_GAP),
-                    y: outer.y + MENU_PADDING,
-                    width: MENU_ICON_SIZE,
-                    height: MENU_ICON_SIZE,
-                };
-                item.contains(x, y).then_some(index)
-            })
-        });
-        foreground.popup = Popup::Palette { outer, hover_index };
+        if let Some((x, y)) = pointer {
+            if let Some(index) = palette_item_at(visual, x, y) {
+                selected = index;
+            }
+        }
+        foreground.popup = Popup::Palette {
+            visual,
+            suppressed,
+            track: hover.track,
+            media_tick: hover.media_tick,
+            selected,
+        };
         return;
     }
 
@@ -336,50 +581,81 @@ pub fn sync_from_state(
         foreground.popup = Popup::None;
         return;
     };
-    let preserved = match previous_popup {
-        Popup::Info { outer, sign: previous_sign } if previous_sign == sign => Some(outer),
-        _ => None,
-    };
-    let outer = match event {
-        UiEvent::MouseRelease { x, y } => clamp_popup(
-            Rect {
-                x: *x + 8.0,
-                y: *y - INFO_HEIGHT - 8.0,
-                width: INFO_WIDTH,
-                height: INFO_HEIGHT,
-            },
-            zone,
+
+    if let Popup::Info {
+        visual,
+        suppressed,
+        sign: previous_sign,
+    } = foreground.popup
+    {
+        if previous_sign == sign {
+            foreground.popup = Popup::Info {
+                visual,
+                suppressed,
+                sign,
+            };
+            return;
+        }
+    }
+
+    let (x, y) = match event {
+        UiEvent::MouseRelease { x, y } => (*x, *y),
+        _ => (
+            selected_anchor_x(project, state, zone, current_frame)
+                .unwrap_or(foreground.last_pointer.0),
+            foreground.last_pointer.1,
         ),
-        _ => preserved.unwrap_or_else(|| {
-            clamp_popup(
-                Rect {
-                    x: foreground
-                        .selected_anchor_x
-                        .unwrap_or(zone.x + zone.width / 2.0),
-                    y: zone.y + zone.height / 2.0 - INFO_HEIGHT / 2.0,
-                    width: INFO_WIDTH,
-                    height: INFO_HEIGHT,
-                },
-                zone,
-            )
-        }),
     };
-    foreground.popup = Popup::Info { outer, sign };
+    let outer = clamp_popup(
+        Rect {
+            x: x + 8.0,
+            y: y - INFO_HEIGHT - 8.0,
+            width: INFO_WIDTH,
+            height: INFO_HEIGHT,
+        },
+        zone,
+    );
+    foreground.popup = Popup::Info {
+        visual: outer,
+        suppressed: outer,
+        sign,
+    };
 }
 
-/// Called by the Alt+D path, which opens the palette without a pointer event.
+/// Alt+D opens without a pointer event, so use the last cursor/track snapshot
+/// already mirrored by the rythmo controller.
 pub fn activate_palette() {
     let mut state = lock_state();
-    if let Some(outer) = state.last_palette_outer {
-        state.popup = Popup::Palette { outer, hover_index: None };
-    }
+    let Some(hover) = state.last_hover else {
+        return;
+    };
+    let zone = state.last_zone;
+    state.popup = Popup::Palette {
+        visual: palette_visual_outer(hover, zone),
+        suppressed: palette_base_outer(hover, zone),
+        track: hover.track,
+        media_tick: hover.media_tick,
+        selected: 0,
+    };
 }
 
 pub fn clear() {
     *lock_state() = ForegroundState::default();
 }
 
-pub fn selected_info_accessibility_label(project: &Project, state: &RythmoState) -> Option<String> {
+pub(crate) fn suppressed_popup() -> Option<(PopupKind, Rect)> {
+    match lock_state().popup {
+        Popup::None => None,
+        Popup::Palette { suppressed, .. } => Some((PopupKind::Palette, suppressed)),
+        Popup::Info { suppressed, .. } => Some((PopupKind::Info, suppressed)),
+        Popup::Dismissed { kind, suppressed } => Some((kind, suppressed)),
+    }
+}
+
+pub fn selected_info_accessibility_label(
+    project: &Project,
+    state: &RythmoState,
+) -> Option<String> {
     let cue = project.detections().detection(selected_address(state)?)?;
     let details = info(Sign::from_cue(cue)?);
     Some(format!(
@@ -442,58 +718,96 @@ fn push_label<'a>(
     });
 }
 
-fn mouth_pixels(mouth: Mouth) -> &'static Vec<[u8; 4]> {
-    static AA: OnceLock<Vec<[u8; 4]>> = OnceLock::new();
-    static EH_AE: OnceLock<Vec<[u8; 4]>> = OnceLock::new();
-    static FV: OnceLock<Vec<[u8; 4]>> = OnceLock::new();
-    static KST_EE: OnceLock<Vec<[u8; 4]>> = OnceLock::new();
-    static PBM: OnceLock<Vec<[u8; 4]>> = OnceLock::new();
-    static UW_OW_W: OnceLock<Vec<[u8; 4]>> = OnceLock::new();
+struct MouthBitmap {
+    width: u32,
+    height: u32,
+    pixels: Vec<[u8; 4]>,
+}
 
-    fn decode(bytes: &[u8]) -> Vec<[u8; 4]> {
+fn mouth_bitmap(mouth: Mouth) -> &'static MouthBitmap {
+    static AA: OnceLock<MouthBitmap> = OnceLock::new();
+    static EH_AE: OnceLock<MouthBitmap> = OnceLock::new();
+    static FV: OnceLock<MouthBitmap> = OnceLock::new();
+    static KST_EE: OnceLock<MouthBitmap> = OnceLock::new();
+    static PBM: OnceLock<MouthBitmap> = OnceLock::new();
+    static UW_OW_W: OnceLock<MouthBitmap> = OnceLock::new();
+
+    fn decode(bytes: &[u8]) -> MouthBitmap {
         let source = image::load_from_memory(bytes)
             .expect("Rhubarb mouth PNG should decode")
             .to_rgba8();
-        let resized = image::imageops::resize(
-            &source,
-            MOUTH_PIXELS,
-            MOUTH_PIXELS,
-            image::imageops::FilterType::Triangle,
-        );
-        resized
+        let width = source.width();
+        let height = source.height();
+        let pixels = source
             .as_raw()
             .chunks_exact(4)
             .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
-            .collect()
+            .collect();
+        MouthBitmap {
+            width,
+            height,
+            pixels,
+        }
     }
 
     match mouth {
-        Mouth::Aa => AA.get_or_init(|| decode(include_bytes!("icons/detection/rhubarb_lips/AA.png"))),
-        Mouth::EhAe => EH_AE.get_or_init(|| decode(include_bytes!("icons/detection/rhubarb_lips/EH_AE.png"))),
-        Mouth::Fv => FV.get_or_init(|| decode(include_bytes!("icons/detection/rhubarb_lips/F_V.png"))),
-        Mouth::KstEe => KST_EE.get_or_init(|| decode(include_bytes!("icons/detection/rhubarb_lips/K_S_T_EE.png"))),
-        Mouth::Pbm => PBM.get_or_init(|| decode(include_bytes!("icons/detection/rhubarb_lips/P_B_M.png"))),
-        Mouth::UwOwW => UW_OW_W.get_or_init(|| decode(include_bytes!("icons/detection/rhubarb_lips/UW_OW_W.png"))),
+        Mouth::Aa => AA.get_or_init(|| {
+            decode(include_bytes!("icons/detection/rhubarb_lips/AA.png"))
+        }),
+        Mouth::EhAe => EH_AE.get_or_init(|| {
+            decode(include_bytes!("icons/detection/rhubarb_lips/EH_AE.png"))
+        }),
+        Mouth::Fv => FV.get_or_init(|| {
+            decode(include_bytes!("icons/detection/rhubarb_lips/F_V.png"))
+        }),
+        Mouth::KstEe => KST_EE.get_or_init(|| {
+            decode(include_bytes!("icons/detection/rhubarb_lips/K_S_T_EE.png"))
+        }),
+        Mouth::Pbm => PBM.get_or_init(|| {
+            decode(include_bytes!("icons/detection/rhubarb_lips/P_B_M.png"))
+        }),
+        Mouth::UwOwW => UW_OW_W.get_or_init(|| {
+            decode(include_bytes!("icons/detection/rhubarb_lips/UW_OW_W.png"))
+        }),
     }
 }
 
+/// Reconstruct the source PNG at native resolution. Horizontal run-length
+/// encoding keeps the exact mouth pixels without the blurry resized duplicate.
 fn render_mouth(quads: &mut Vec<QuadInstance>, rect: Rect, mouth: Mouth) {
-    let pixels = mouth_pixels(mouth);
-    let pixel_w = rect.width / MOUTH_PIXELS as f32;
-    let pixel_h = rect.height / MOUTH_PIXELS as f32;
-    for y in 0..MOUTH_PIXELS {
-        for x in 0..MOUTH_PIXELS {
-            let pixel = pixels[(y * MOUTH_PIXELS + x) as usize];
-            if pixel[3] < 12 {
+    let bitmap = mouth_bitmap(mouth);
+    if bitmap.width == 0 || bitmap.height == 0 {
+        return;
+    }
+    let scale = (rect.width / bitmap.width as f32)
+        .min(rect.height / bitmap.height as f32);
+    let draw_width = bitmap.width as f32 * scale;
+    let draw_height = bitmap.height as f32 * scale;
+    let origin_x = rect.x + (rect.width - draw_width) / 2.0;
+    let origin_y = rect.y + (rect.height - draw_height) / 2.0;
+
+    for y in 0..bitmap.height {
+        let mut x = 0;
+        while x < bitmap.width {
+            let pixel = bitmap.pixels[(y * bitmap.width + x) as usize];
+            if pixel[3] < 8 {
+                x += 1;
                 continue;
+            }
+            let start = x;
+            x += 1;
+            while x < bitmap.width
+                && bitmap.pixels[(y * bitmap.width + x) as usize] == pixel
+            {
+                x += 1;
             }
             push_flat_quad(
                 quads,
                 Rect {
-                    x: rect.x + x as f32 * pixel_w,
-                    y: rect.y + y as f32 * pixel_h,
-                    width: pixel_w + 0.15,
-                    height: pixel_h + 0.15,
+                    x: origin_x + start as f32 * scale,
+                    y: origin_y + y as f32 * scale,
+                    width: (x - start) as f32 * scale,
+                    height: scale,
                 },
                 [
                     pixel[0] as f32 / 255.0,
@@ -506,7 +820,7 @@ fn render_mouth(quads: &mut Vec<QuadInstance>, rect: Rect, mouth: Mouth) {
     }
 }
 
-/// Append palette and card visuals after every other UI layer.
+/// Append the single visible popup after every ordinary UI layer.
 pub fn append_foreground<'a>(
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
@@ -514,55 +828,69 @@ pub fn append_foreground<'a>(
     screen_h: f32,
 ) {
     let snapshot = *lock_state();
-    let screen = Rect { x: 0.0, y: 0.0, width: screen_w, height: screen_h };
+    let screen = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: screen_w,
+        height: screen_h,
+    };
     match snapshot.popup {
-        Popup::None => {}
-        Popup::Palette { outer, hover_index } => {
-            let outer = clamp_popup(outer, screen);
+        Popup::None | Popup::Dismissed { .. } => {}
+        Popup::Palette {
+            visual, selected, ..
+        } => {
+            let outer = clamp_popup(visual, screen);
             push_panel_quad(quads, outer, [0.035, 0.039, 0.052, 0.999], 8.0);
             for (index, sign) in Sign::ALL.iter().copied().enumerate() {
-                let item = Rect {
-                    x: outer.x + MENU_PADDING + index as f32 * (MENU_ICON_SIZE + MENU_GAP),
-                    y: outer.y + MENU_PADDING,
-                    width: MENU_ICON_SIZE,
-                    height: MENU_ICON_SIZE,
-                };
-                if hover_index == Some(index) {
+                let item = palette_item_rect(outer, index);
+                if selected == index {
                     push_panel_quad(quads, item, [0.18, 0.32, 0.58, 0.99], 5.0);
                 }
                 push_label(
                     labels,
                     sign.glyph(),
                     item,
-                    if matches!(sign, Sign::DentalTh | Sign::Neutral) { 13.0 } else { 20.0 },
+                    if matches!(sign, Sign::DentalTh | Sign::Neutral) {
+                        13.0
+                    } else {
+                        20.0
+                    },
                     [244, 246, 252],
                     HAlign::Center,
                     VAlign::Center,
                 );
             }
-            if let Some(index) = hover_index {
-                let details = info(Sign::ALL[index]);
-                let tooltip_y = if outer.y + outer.height + 6.0 + TOOLTIP_HEIGHT <= screen_h {
-                    outer.y + outer.height + 6.0
-                } else {
-                    (outer.y - TOOLTIP_HEIGHT - 6.0).max(0.0)
-                };
-                let tooltip = Rect {
-                    x: (outer.x + MENU_PADDING
-                        + index as f32 * (MENU_ICON_SIZE + MENU_GAP)
-                        + MENU_ICON_SIZE / 2.0
-                        - TOOLTIP_WIDTH / 2.0)
-                        .clamp(0.0, (screen_w - TOOLTIP_WIDTH).max(0.0)),
-                    y: tooltip_y,
-                    width: TOOLTIP_WIDTH.min(screen_w),
-                    height: TOOLTIP_HEIGHT,
-                };
-                push_panel_quad(quads, tooltip, [0.025, 0.028, 0.038, 0.999], 6.0);
-                push_label(labels, details.quick_label, tooltip, 13.0, [245, 247, 252], HAlign::Center, VAlign::Center);
-            }
+
+            let details = info(Sign::ALL[selected.min(Sign::ALL.len() - 1)]);
+            let tooltip_y = if outer.y + outer.height + 6.0 + TOOLTIP_HEIGHT <= screen_h {
+                outer.y + outer.height + 6.0
+            } else {
+                (outer.y - TOOLTIP_HEIGHT - 6.0).max(0.0)
+            };
+            let tooltip = Rect {
+                x: (outer.x
+                    + MENU_PADDING
+                    + selected as f32 * (MENU_ICON_SIZE + MENU_GAP)
+                    + MENU_ICON_SIZE / 2.0
+                    - TOOLTIP_WIDTH / 2.0)
+                    .clamp(0.0, (screen_w - TOOLTIP_WIDTH).max(0.0)),
+                y: tooltip_y,
+                width: TOOLTIP_WIDTH.min(screen_w),
+                height: TOOLTIP_HEIGHT,
+            };
+            push_panel_quad(quads, tooltip, [0.025, 0.028, 0.038, 0.999], 6.0);
+            push_label(
+                labels,
+                details.quick_label,
+                tooltip,
+                13.0,
+                [245, 247, 252],
+                HAlign::Center,
+                VAlign::Center,
+            );
         }
-        Popup::Info { outer, sign } => {
-            let outer = clamp_popup(outer, screen);
+        Popup::Info { visual, sign, .. } => {
+            let outer = clamp_popup(visual, screen);
             let details = info(sign);
             push_panel_quad(quads, outer, [0.026, 0.030, 0.042, 0.999], 11.0);
             let image_rect = Rect {
@@ -576,11 +904,76 @@ pub fn append_foreground<'a>(
 
             let text_x = image_rect.x + image_rect.width + 14.0;
             let text_width = (outer.x + outer.width - INFO_PADDING - text_x).max(0.0);
-            push_label(labels, details.title, Rect { x: text_x, y: outer.y + 12.0, width: text_width, height: 28.0 }, 18.0, [246, 248, 253], HAlign::Left, VAlign::Center);
-            push_label(labels, "Description", Rect { x: text_x, y: outer.y + 48.0, width: text_width, height: 18.0 }, 11.0, [142, 164, 202], HAlign::Left, VAlign::Center);
-            push_label(labels, details.description, Rect { x: text_x, y: outer.y + 66.0, width: text_width, height: 28.0 }, 13.0, [222, 227, 238], HAlign::Left, VAlign::Center);
-            push_label(labels, "Sons correspondants", Rect { x: text_x, y: outer.y + 104.0, width: text_width, height: 18.0 }, 11.0, [142, 164, 202], HAlign::Left, VAlign::Center);
-            push_label(labels, details.sounds, Rect { x: text_x, y: outer.y + 122.0, width: text_width, height: 38.0 }, 13.0, [242, 244, 249], HAlign::Left, VAlign::Top);
+            push_label(
+                labels,
+                details.title,
+                Rect {
+                    x: text_x,
+                    y: outer.y + 12.0,
+                    width: text_width,
+                    height: 28.0,
+                },
+                18.0,
+                [246, 248, 253],
+                HAlign::Left,
+                VAlign::Center,
+            );
+            push_label(
+                labels,
+                "Description",
+                Rect {
+                    x: text_x,
+                    y: outer.y + 48.0,
+                    width: text_width,
+                    height: 18.0,
+                },
+                11.0,
+                [142, 164, 202],
+                HAlign::Left,
+                VAlign::Center,
+            );
+            push_label(
+                labels,
+                details.description,
+                Rect {
+                    x: text_x,
+                    y: outer.y + 66.0,
+                    width: text_width,
+                    height: 28.0,
+                },
+                13.0,
+                [222, 227, 238],
+                HAlign::Left,
+                VAlign::Center,
+            );
+            push_label(
+                labels,
+                "Sons correspondants",
+                Rect {
+                    x: text_x,
+                    y: outer.y + 104.0,
+                    width: text_width,
+                    height: 18.0,
+                },
+                11.0,
+                [142, 164, 202],
+                HAlign::Left,
+                VAlign::Center,
+            );
+            push_label(
+                labels,
+                details.sounds,
+                Rect {
+                    x: text_x,
+                    y: outer.y + 122.0,
+                    width: text_width,
+                    height: 38.0,
+                },
+                13.0,
+                [242, 244, 249],
+                HAlign::Left,
+                VAlign::Top,
+            );
         }
     }
 }
@@ -590,9 +983,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quick_tooltip_contains_name_and_sounds() {
-        assert_eq!(info(Sign::Labial).quick_label, "Labiale (P, B, M)");
-        assert!(info(Sign::DentalTh).quick_label.contains("TH ("));
+    fn keyboard_navigation_wraps() {
+        assert_eq!(moved_index(0, -1), Sign::ALL.len() - 1);
+        assert_eq!(moved_index(Sign::ALL.len() - 1, 1), 0);
+    }
+
+    #[test]
+    fn palette_is_anchored_to_the_cursor() {
+        let hover = HoverAnchor {
+            track: 0,
+            media_tick: MediaTick::ZERO,
+            screen_x: 100.0,
+            screen_y: 80.0,
+            track_rect: Rect {
+                x: 0.0,
+                y: 40.0,
+                width: 600.0,
+                height: 50.0,
+            },
+        };
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 400.0,
+        };
+        let outer = palette_visual_outer(hover, zone);
+        assert_eq!(outer.x, 110.0);
+        assert_eq!(outer.y, 90.0);
     }
 
     #[test]

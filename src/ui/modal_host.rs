@@ -1,9 +1,8 @@
 //! Modal host facade.
 //!
 //! The established modal implementation remains unchanged in
-//! `modal_host_base.rs`. This facade only reserves the final modal-overlay pass
-//! for detection signs and popovers, guaranteeing that the Alt+D palette and
-//! information card render above every ordinary UI layer.
+//! `modal_host_base.rs`. This facade reserves the final modal-overlay pass and
+//! input priority for the detection palette and information card.
 
 use super::{
     connect_modal, export_modal, file_explorer, language_modal, pricing_license_modal,
@@ -11,7 +10,7 @@ use super::{
     proxy_modal, rename_character_modal, save_prompt_modal, server_browser, settings_modal,
     voice_actor_modal, whats_new_modal,
 };
-use super::primitives::{LabelInfo, QuadInstance};
+use super::primitives::{EventResponse, LabelInfo, QuadInstance, UiEvent};
 use std::ops::{Deref, DerefMut};
 
 #[path = "modal_host_base.rs"]
@@ -24,6 +23,31 @@ pub struct ModalHost(base::ModalHost);
 impl ModalHost {
     pub fn new() -> Self {
         Self(base::ModalHost::new())
+    }
+
+    /// Detection popups capture input like a real modal surface, so arrows and
+    /// Enter reach them before toolbar sliders or the rythmo workspace.
+    pub fn captures_input(&self) -> bool {
+        crate::detection_foreground::captures_input() || self.0.captures_input()
+    }
+
+    /// Detection is the topmost visual layer and therefore owns the first event
+    /// routing opportunity as well.
+    pub fn handle_topmost_event(
+        &mut self,
+        event: &UiEvent,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> Option<ModalOutcome> {
+        if let Some(response) = crate::detection_foreground::handle_modal_event(event) {
+            return match response {
+                EventResponse::Consumed => Some(ModalOutcome::Consumed),
+                EventResponse::Action(action) => Some(ModalOutcome::Action(action)),
+                EventResponse::Actions(actions) => Some(ModalOutcome::Actions(actions)),
+                EventResponse::Ignored => None,
+            };
+        }
+        self.0.handle_topmost_event(event, screen_w, screen_h)
     }
 
     /// Render every established top-level modal first, then append the detector

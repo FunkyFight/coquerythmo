@@ -1,10 +1,8 @@
 //! Detection UI facade.
 //!
-//! Interaction and the established detector renderer remain in
-//! `detection_ui_base.rs`. This facade inserts one opaque badge background into
-//! the same rythmo layer after the vertical guide and before icon rendering, so
-//! the guide never shows through the sign while the original SVG remains
-//! untouched above it.
+//! The established detector owns signs, guides and synchronization points. This
+//! facade removes its legacy popup tail, then lets the single modal foreground
+//! own palette/card rendering and interaction.
 
 use super::*;
 
@@ -14,12 +12,20 @@ mod base;
 pub use base::{DetectionDrag, DetectionHover, DetectionMenu};
 pub(crate) use base::{
     decode_sync_syllable_drag_line_id, encode_sync_syllable_drag_line_id,
-    handle_detection_event, line_has_visible_sync_points, render_sync_text_segments,
-    sync_syllable_boundary_ratios,
+    line_has_visible_sync_points, render_sync_text_segments, sync_syllable_boundary_ratios,
 };
 
 const SIGN_BADGE_SIZE: f32 = 26.0;
 const SIGN_BOTTOM_MARGIN: f32 = 2.0;
+
+pub(crate) fn handle_detection_event(
+    ctx: &RythmoCtx<'_>,
+    event: &UiEvent,
+    state: &mut RythmoState,
+) -> Option<EventResponse> {
+    crate::detection_foreground::reconcile_legacy_menu(state);
+    base::handle_detection_event(ctx, event, state)
+}
 
 fn selected_detection(state: &RythmoState) -> Option<crate::detection::DetectionAddress> {
     match state.selected.as_ref() {
@@ -46,6 +52,71 @@ fn sign_badge_rect(
     }
 }
 
+fn rect_center(rect: [f32; 4]) -> (f32, f32) {
+    (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0)
+}
+
+fn pop_icon_tail_inside(icons: &mut Vec<IconInstance>, outer: Rect, maximum: usize) {
+    for _ in 0..maximum {
+        let Some(last) = icons.last() else {
+            break;
+        };
+        let (x, y) = rect_center(last.rect);
+        if !outer.contains(x, y) {
+            break;
+        }
+        icons.pop();
+    }
+}
+
+fn pop_quad_tail_inside(quads: &mut Vec<QuadInstance>, outer: Rect, maximum: usize) {
+    for _ in 0..maximum {
+        let Some(last) = quads.last() else {
+            break;
+        };
+        let (x, y) = rect_center(last.rect);
+        if !outer.contains(x, y) {
+            break;
+        }
+        quads.pop();
+    }
+}
+
+fn pop_label_tail_inside<'a>(labels: &mut Vec<LabelInfo<'a>>, outer: Rect, maximum: usize) {
+    for _ in 0..maximum {
+        let Some(last) = labels.last() else {
+            break;
+        };
+        let x = last.bounds.x + last.bounds.width / 2.0;
+        let y = last.bounds.y + last.bounds.height / 2.0;
+        if !outer.contains(x, y) {
+            break;
+        }
+        labels.pop();
+    }
+}
+
+fn strip_legacy_popup<'a>(
+    quads: &mut Vec<QuadInstance>,
+    labels: &mut Vec<LabelInfo<'a>>,
+    icons: &mut Vec<IconInstance>,
+) {
+    let Some((kind, outer)) = crate::detection_foreground::suppressed_popup() else {
+        return;
+    };
+    match kind {
+        crate::detection_foreground::PopupKind::Palette => {
+            pop_icon_tail_inside(icons, outer, 9);
+            pop_quad_tail_inside(quads, outer, 2);
+        }
+        crate::detection_foreground::PopupKind::Info => {
+            pop_icon_tail_inside(icons, outer, 1);
+            pop_label_tail_inside(labels, outer, 5);
+            pop_quad_tail_inside(quads, outer, 2);
+        }
+    }
+}
+
 pub(crate) fn render_detection_overlay<'a>(
     zone: &Rect,
     project: &'a Project,
@@ -56,17 +127,30 @@ pub(crate) fn render_detection_overlay<'a>(
     icons: &mut Vec<IconInstance>,
     detection_uvs: [[f32; 4]; 7],
 ) {
+    let mut detector_quads = Vec::new();
+    let mut detector_labels = Vec::new();
+    let mut detector_icons = Vec::new();
     base::render_detection_overlay(
         zone,
         project,
         current_frame,
         state,
-        quads,
-        labels,
-        icons,
+        &mut detector_quads,
+        &mut detector_labels,
+        &mut detector_icons,
         detection_uvs,
     );
+    strip_legacy_popup(
+        &mut detector_quads,
+        &mut detector_labels,
+        &mut detector_icons,
+    );
+    quads.extend(detector_quads);
+    labels.extend(detector_labels);
+    icons.extend(detector_icons);
 
+    // Mask the vertical guide in the badge itself. Icons are a later renderer
+    // stage, so the original SVG remains untouched above this opaque quad.
     let selected = selected_detection(state);
     for track in 0..rythmo_layout::track_count() {
         let line_id = crate::detection::track_storage_line_id(track as u8);
