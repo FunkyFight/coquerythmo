@@ -46,15 +46,15 @@ pub struct LintDiagnostic {
 
 impl LintDiagnostic {
     pub fn applies_to_line(&self, line_id: u64, start_frame: i64, end_frame: i64) -> bool {
-        match self.scope {
+        match &self.scope {
             LintScope::Line {
                 line_id: diagnostic_line,
                 ..
-            } => diagnostic_line == line_id,
+            } => *diagnostic_line == line_id,
             LintScope::Zone {
                 start_frame: zone_start,
                 end_frame: zone_end,
-            } => start_frame < zone_end && end_frame > zone_start,
+            } => start_frame < *zone_end && end_frame > *zone_start,
         }
     }
 }
@@ -109,13 +109,13 @@ pub fn line_accessibility_suffix(project: &Project, line_id: u64) -> String {
 }
 
 fn diagnostic_sort_key(diagnostic: &LintDiagnostic) -> (i64, usize, u8, &'static str) {
-    let (frame, character) = match diagnostic.scope {
+    let (frame, character) = match &diagnostic.scope {
         LintScope::Line {
             line_id,
             start_char,
             ..
-        } => (line_id.min(i64::MAX as u64) as i64, start_char),
-        LintScope::Zone { start_frame, .. } => (start_frame, 0),
+        } => ((*line_id).min(i64::MAX as u64) as i64, *start_char),
+        LintScope::Zone { start_frame, .. } => (*start_frame, 0),
     };
     let severity = match diagnostic.severity {
         LintSeverity::Error => 0,
@@ -232,7 +232,7 @@ fn lint_loop_lengths(project: &Project, diagnostics: &mut Vec<LintDiagnostic>) {
     let mut starts = project
         .markers()
         .iter()
-        .filter(|marker| matches!(marker.kind, MarkerKind::Boucle))
+        .filter(|marker| matches!(&marker.kind, MarkerKind::Boucle))
         .map(|marker| marker.frame)
         .collect::<Vec<_>>();
     starts.sort_unstable();
@@ -344,11 +344,11 @@ mod tests {
         let diagnostics = lint_project(&project);
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "reaction.parentheses_without_brackets"
-                && matches!(diagnostic.scope, LintScope::Line { line_id, .. } if line_id == warned)
+                && matches!(&diagnostic.scope, LintScope::Line { line_id, .. } if *line_id == warned)
         }));
         assert!(!diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "reaction.parentheses_without_brackets"
-                && matches!(diagnostic.scope, LintScope::Line { line_id, .. } if line_id == safe)
+                && matches!(&diagnostic.scope, LintScope::Line { line_id, .. } if *line_id == safe)
         }));
     }
 
