@@ -15,6 +15,7 @@ pub mod configured_export;
 pub mod constants;
 pub mod delivery_export;
 pub mod detection;
+#[path = "detection_foreground_facade.rs"]
 pub mod detection_foreground;
 pub mod export;
 pub mod graphics;
