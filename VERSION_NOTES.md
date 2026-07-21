@@ -45,9 +45,13 @@
 - seuls les neuf SVG utilisés sont conservés sous `src/icons/detection` ;
 - les signes sont sélectionnables, déplaçables, navigables, ajustables, supprimables et pris en charge par l’historique ;
 - un clic simple sur un signe ouvre une grande fiche avec une bouche Rhubarb, son nom, sa description et les sons correspondants ;
+- AccessKit lit l’intégralité de cette fiche à son ouverture : nom, description et sons correspondants ;
+- la palette `Alt+D`, ses infobulles rapides et la fiche sont composées dans la dernière couche modale afin de rester au-dessus de toute l’interface ;
+- le survol d’un choix de la palette affiche immédiatement son nom et ses sons entre parenthèses ;
+- le fond opaque du sigle masque le trait vertical dans la bulle tout en conservant exactement le même axe ;
 - un glisser démarre directement depuis un signe existant ou depuis un nouveau point de synchronisation, avec un seuil de quatre pixels pour distinguer clic et déplacement ;
 - les signes sont ancrés en bas de leur ligne et leur trait vertical reste aligné sur leur axe ;
 - `Ctrl+Espace` écoute les deux secondes disponibles avant et après le signe sélectionné avec un bip exactement au repère ;
 - les lignes de dialogue affichent des points de synchronisation par caractère, persistants et déplaçables ;
-- les annonces AccessKit restent limitées à l’opération visuelle : ajout, déplacement ou suppression du signe ou du point ;
+- les opérations d’ajout, déplacement et suppression conservent leurs annonces AccessKit synthétiques ;
 - les détections et points de synchronisation participent à la persistance, à la conversion de cadence et à la collaboration.

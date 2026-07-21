@@ -37,10 +37,15 @@ impl State {
     }
 
     pub fn open_detection_palette_from_hover(&mut self) -> bool {
-        self.ui_shell
+        let opened = self
+            .ui_shell
             .ui
             .rythmo_state
-            .open_detection_palette_from_hover()
+            .open_detection_palette_from_hover();
+        if opened {
+            crate::detection_foreground::activate_palette();
+        }
+        opened
     }
 
     pub fn focus_detection_parent_line(&mut self) {
@@ -301,8 +306,8 @@ impl State {
             .send_raw("sync", serde_json::json!({ "project": data }));
     }
 
-    /// AccessKit receives only the visual object and operation. Sign type,
-    /// track, timecode and dialogue content are intentionally omitted.
+    /// AccessKit receives only the visual object and operation for edits.
+    /// Opening a fiche is announced separately with its complete semantic text.
     fn announce_detection_visual(&self, kind: DetectionKind, verb: &str) {
         let object = if kind.is_sync_point() {
             "Point de synchronisation"
