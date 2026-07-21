@@ -207,11 +207,11 @@ impl Command {
                 }
             }
             Command::UpdateLineText {
-                line_id, new_text, ..
+                line_id,
+                old_text,
+                new_text,
             } => {
-                if let Some(l) = project.get_line_mut(*line_id) {
-                    l.text = new_text.clone();
-                }
+                project.update_line_text_preserving_sync_boxes(*line_id, old_text, new_text);
             }
             Command::SetLineKaraoke {
                 line_id,
@@ -390,11 +390,11 @@ impl Command {
                 }
             }
             Command::UpdateLineText {
-                line_id, old_text, ..
+                line_id,
+                old_text,
+                new_text,
             } => {
-                if let Some(l) = project.get_line_mut(*line_id) {
-                    l.text = old_text.clone();
-                }
+                project.update_line_text_preserving_sync_boxes(*line_id, new_text, old_text);
             }
             Command::SetLineKaraoke {
                 line_id,
