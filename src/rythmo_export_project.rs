@@ -284,13 +284,16 @@ mod tests {
     fn normalization_never_mutates_source_project() {
         let mut source = Project::new();
         let id = source.add_line(20, 30, 0.0);
-        let line = source.get_line_mut(id).unwrap();
-        line.text = "Ambiance".to_string();
-        line.character_name = "FOULE".to_string();
-        line.note = with_kind("note", LineSemanticKind::AmbienceStart);
+        let expected_note = {
+            let line = source.get_line_mut(id).unwrap();
+            line.text = "Ambiance".to_string();
+            line.character_name = "FOULE".to_string();
+            line.note = with_kind("note", LineSemanticKind::AmbienceStart);
+            line.note.clone()
+        };
         let normalized = normalize_for_video(&source);
         assert_eq!(source.get_line(id).unwrap().character_name, "FOULE");
-        assert_eq!(source.get_line(id).unwrap().note, line.note);
+        assert_eq!(source.get_line(id).unwrap().note, expected_note);
         assert_eq!(normalized.get_line(id).unwrap().character_name, "");
         assert_eq!(normalized.get_line(id).unwrap().note, "note");
         assert!(normalized.line_count() > source.line_count());
@@ -312,7 +315,7 @@ mod tests {
 
     #[test]
     fn production_markers_are_not_promoted_to_export_markers() {
-        let mut source = Project::new();
+        let source = Project::new();
         let original_markers = source.marker_count();
         let normalized = normalize_for_video(&source);
         assert_eq!(normalized.marker_count(), original_markers);
