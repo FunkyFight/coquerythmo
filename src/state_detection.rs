@@ -202,9 +202,8 @@ impl State {
         self.announce_detection_visual(cue.kind, "déplacé");
     }
 
-    /// Ctrl+Space decodes the available two seconds before and after the
-    /// selected source sign, mixes a short beep exactly at the sign and plays
-    /// the bounded preview through the default output device.
+    /// Ctrl+Space seeks to the available two-second lead-in, starts the real
+    /// video player and mixes a clearly audible cue at the exact detection.
     pub fn audition_selected_detection(&mut self) {
         let Some(address) = self.selected_detection_address() else {
             return;
@@ -248,6 +247,9 @@ impl State {
 
         self.seek_absolute(start_frame);
         self.finish_seek();
+        if !self.is_video_playing() {
+            self.toggle_play_pause();
+        }
 
         let source_path = if self.active_audio_is_instrumental() {
             self.project_session
@@ -306,8 +308,6 @@ impl State {
             .send_raw("sync", serde_json::json!({ "project": data }));
     }
 
-    /// AccessKit receives only the visual object and operation for edits.
-    /// Opening a fiche is announced separately with its complete semantic text.
     fn announce_detection_visual(&self, kind: DetectionKind, verb: &str) {
         let object = if kind.is_sync_point() {
             "Point de synchronisation"
@@ -437,8 +437,8 @@ fn mix_detection_beep(
     volume: f32,
 ) {
     let start_frame = (offset_seconds * sample_rate as f64).round().max(0.0) as usize;
-    let beep_frames = (0.075 * sample_rate as f64).round() as usize;
-    let amplitude = (0.42 * volume.max(0.35)).min(0.55);
+    let beep_frames = (0.090 * sample_rate as f64).round() as usize;
+    let amplitude = (0.82 * volume.max(0.55)).min(0.92);
     for frame in 0..beep_frames {
         let envelope = 1.0 - frame as f32 / beep_frames.max(1) as f32;
         let phase = std::f32::consts::TAU * 1046.5 * frame as f32 / sample_rate as f32;
@@ -490,4 +490,24 @@ where
             None,
         )
         .map_err(|error| format!("création du flux audio impossible: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn louder_beep_is_mixed_at_the_requested_frame() {
+        let sample_rate = 48_000;
+        let channels = 2;
+        let mut samples = vec![0.0; sample_rate as usize * channels];
+        mix_detection_beep(&mut samples, channels, sample_rate, 0.25, 1.0);
+        let start = (sample_rate as f64 * 0.25).round() as usize * channels;
+        let peak = samples[start..]
+            .iter()
+            .take((sample_rate as f32 * 0.09) as usize * channels)
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        assert!(peak > 0.7);
+        assert!(peak <= 1.0);
+    }
 }
