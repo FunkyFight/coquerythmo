@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 64"
-fill="none" stroke="currentColor" stroke-width="4"
-stroke-linecap="round" stroke-linejoin="round" role="img" aria-labelledby="title desc">
-  <title id="title">Pointillés personnage de dos</title>
-  <desc id="desc">Soulignement pointillé pour un personnage de dos ou dont la bouche n'est pas visible.</desc>
-  <path d="M12 36 H148" stroke-dasharray="6 8"/>
-</svg>
