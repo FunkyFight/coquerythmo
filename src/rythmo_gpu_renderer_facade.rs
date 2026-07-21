@@ -29,7 +29,7 @@ impl GpuRenderer {
     }
 
     pub fn stats(&self) -> GpuRenderStats {
-        self.inner.stats()
+        self.inner.stats().clone()
     }
 
     pub fn submit_render(
