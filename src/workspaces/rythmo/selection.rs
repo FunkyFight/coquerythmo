@@ -28,7 +28,10 @@ pub(crate) fn selected_line_origins(
                 original_y_slot: line.y_slot,
             })
             .collect(),
-        Selection::Line(_) | Selection::Marker(_) | Selection::Strokes(_) => Vec::new(),
+        Selection::Line(_)
+        | Selection::Marker(_)
+        | Selection::Detection(_)
+        | Selection::Strokes(_) => Vec::new(),
     }
 }
 

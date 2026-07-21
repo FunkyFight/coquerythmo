@@ -234,6 +234,11 @@ pub struct ProjectSettings {
     pub syllable_language: SyllableLanguage,
     #[serde(default, skip_serializing_if = "is_default_export_configuration")]
     pub export_configuration: ExportConfiguration,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::detection::DetectionDocument::is_empty"
+    )]
+    pub detections: crate::detection::DetectionDocument,
     #[serde(default, skip_serializing_if = "is_default_automation_graph")]
     pub automation: crate::automation::AutomationGraph,
 }
@@ -422,6 +427,26 @@ impl Project {
 
     pub fn settings(&self) -> &ProjectSettings {
         &self.settings
+    }
+
+    pub fn detections(&self) -> &crate::detection::DetectionDocument {
+        &self.settings.detections
+    }
+
+    pub(crate) fn apply_detection_change(
+        &mut self,
+        change: &crate::detection::DetectionChange,
+        forward: bool,
+    ) -> bool {
+        let changed = if forward {
+            change.apply(&mut self.settings.detections)
+        } else {
+            change.unapply(&mut self.settings.detections)
+        };
+        if changed {
+            self.bump_revision();
+        }
+        changed
     }
 
     pub fn syllable_language(&self) -> SyllableLanguage {
@@ -1117,6 +1142,7 @@ impl Project {
         self.line_map.clear();
         self.line_order.clear();
         self.known_characters.clear();
+        self.settings.detections = crate::detection::DetectionDocument::default();
         self.bump_revision();
     }
 

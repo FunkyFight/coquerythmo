@@ -173,6 +173,13 @@ impl Ui {
             "select-mode",
             "draw-mode",
             "eraser",
+            "detection/labial",
+            "detection/semi_labial",
+            "detection/mouth_open",
+            "detection/mouth_closed",
+            "detection/teeth_visible",
+            "detection/breath",
+            "detection/reaction",
         ];
         let icon_uvs: std::collections::HashMap<String, [f32; 4]> = icon_names
             .iter()
@@ -1984,6 +1991,8 @@ impl Ui {
         let mut note_icons: Vec<IconInstance> = Vec::new();
         let mut actor_icon_draws: Vec<rythmo::VoiceActorIconDraw> = Vec::new();
         let note_uv = self.uv("note");
+        let detection_uvs =
+            crate::detection::DetectionKind::ALL.map(|kind| self.uv(kind.asset_name()));
         let cursor_info = show_rythmo
             .then(|| {
                 rythmo::render_lines(
@@ -2001,6 +2010,7 @@ impl Ui {
                     &mut note_icons,
                     &mut actor_icon_draws,
                     note_uv,
+                    detection_uvs,
                 )
             })
             .flatten();

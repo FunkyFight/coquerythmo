@@ -182,6 +182,8 @@ pub struct MoveLinePayload {
 pub struct ProjectData {
     pub lines: Vec<RythmoLine>,
     pub markers: Vec<RythmoMarker>,
+    #[serde(default)]
+    pub detections: crate::detection::DetectionDocument,
     pub known_characters: Vec<CharacterData>,
     #[serde(default)]
     pub voice_actors: Vec<VoiceActor>,
@@ -209,7 +211,7 @@ impl Packetable for Command {
     fn to_packet(&self, project: &Project) -> Packet {
         if matches!(
             self,
-            Command::InsertLines { .. } | Command::DeleteLines { .. }
+            Command::InsertLines { .. } | Command::DeleteLines { .. } | Command::Detection { .. }
         ) {
             return Packet::Sync {
                 project: ProjectData::from_project(project),
@@ -227,6 +229,7 @@ impl Packetable for Command {
                 line_id: snapshot.id,
             },
             Command::DeleteLines { .. } => unreachable!("handled as a full sync above"),
+            Command::Detection { .. } => unreachable!("handled as a full sync above"),
             Command::SplitLine {
                 first_line,
                 second_line,
@@ -382,6 +385,7 @@ impl ProjectData {
         Self {
             lines: project.lines_vec(),
             markers: project.markers().to_vec(),
+            detections: project.detections().clone(),
             known_characters: project
                 .known_characters()
                 .iter()
