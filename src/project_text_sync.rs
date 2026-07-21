@@ -40,6 +40,29 @@ fn lcs_matches(old: &[char], new: &[char]) -> Vec<(usize, usize)> {
     matches
 }
 
+fn edit_span_at_boundary(
+    new_len: usize,
+    boundary: usize,
+    matches: &[(usize, usize)],
+) -> (usize, usize) {
+    let start = matches
+        .iter()
+        .copied()
+        .rev()
+        .find(|(old_index, _)| *old_index < boundary)
+        .map(|(_, new_index)| new_index + 1)
+        .unwrap_or(0)
+        .min(new_len);
+    let end = matches
+        .iter()
+        .copied()
+        .find(|(old_index, _)| *old_index >= boundary)
+        .map(|(_, new_index)| new_index)
+        .unwrap_or(new_len)
+        .min(new_len);
+    (start.min(end), end.max(start))
+}
+
 fn rebase_boundary(
     old_len: usize,
     new_len: usize,
@@ -66,8 +89,7 @@ fn rebase_boundary(
 
     if let Some((old_index, new_index)) = left {
         if old_index + 1 == boundary {
-            // Insertions exactly on a cut belong to the box on its right: the
-            // cut remains immediately after the same left-side character.
+            // A single cut remains before text inserted on its right.
             return (new_index + 1).min(new_len);
         }
     }
@@ -101,20 +123,46 @@ fn rebased_indices(old_text: &str, new_text: &str, cues: &[DetectionCue]) -> Vec
     let old = old_text.chars().collect::<Vec<_>>();
     let new = new_text.chars().collect::<Vec<_>>();
     let matches = lcs_matches(&old, &new);
-    let mut result = cues
-        .iter()
-        .map(|cue| {
-            rebase_boundary(
+    let mut result = vec![0usize; cues.len()];
+
+    let mut group_start = 0usize;
+    while group_start < cues.len() {
+        let old_boundary = cues[group_start]
+            .target
+            .grapheme_index()
+            .unwrap_or(0) as usize;
+        let mut group_end = group_start + 1;
+        while group_end < cues.len()
+            && cues[group_end].target.grapheme_index()
+                == cues[group_start].target.grapheme_index()
+        {
+            group_end += 1;
+        }
+
+        let group_len = group_end - group_start;
+        if group_len >= 2 {
+            // When a fitted box is emptied, its two temporal edges collapse onto
+            // the same text boundary. If text is later inserted there, reopen
+            // that exact box: the first edge stays before the inserted run and
+            // the last edge moves after it. Intermediate coincident edges keep
+            // their temporal order and are distributed on character boundaries.
+            let (span_start, span_end) = edit_span_at_boundary(new.len(), old_boundary, &matches);
+            let span = span_end.saturating_sub(span_start);
+            for rank in 0..group_len {
+                result[group_start + rank] =
+                    span_start + (span * rank + (group_len - 1) / 2) / (group_len - 1);
+            }
+        } else {
+            result[group_start] = rebase_boundary(
                 old.len(),
                 new.len(),
-                cue.target.grapheme_index().unwrap_or(0) as usize,
+                old_boundary,
                 &matches,
-            )
-        })
-        .collect::<Vec<_>>();
+            );
+        }
+        group_start = group_end;
+    }
 
-    // Several cuts may legitimately collapse onto one text boundary when a box
-    // becomes empty. Keep their temporal order instead of deleting a box.
     let mut previous = 0usize;
     for index in &mut result {
         *index = (*index).clamp(previous, new.len());
@@ -222,7 +270,16 @@ mod tests {
     }
 
     #[test]
-    fn project_mutation_changes_indices_but_never_ticks() {
+    fn refilling_an_empty_box_reopens_between_the_same_two_edges() {
+        let collapsed = vec![cue(1, 3, 300), cue(2, 3, 700)];
+        assert_eq!(
+            rebased_indices("abcghi", "abcNOUVEAUghi", &collapsed),
+            vec![3, 10]
+        );
+    }
+
+    #[test]
+    fn empty_then_refill_round_trip_preserves_ticks_and_box_identity() {
         let mut project = Project::new();
         let line_id = project.add_line_full(
             0,
@@ -249,8 +306,14 @@ mod tests {
         assert!(project.update_line_text_preserving_sync_boxes(
             line_id,
             "abcdefghi",
-            "abcdXXXXefghi",
+            "abcghi",
         ));
+        assert!(project.update_line_text_preserving_sync_boxes(
+            line_id,
+            "abcghi",
+            "abcNOUVEAUghi",
+        ));
+
         let mut values = project
             .detections()
             .line(line_id)
@@ -258,7 +321,7 @@ mod tests {
             .text_sync_cues()
             .map(|cue| (cue.target.grapheme_index().unwrap(), cue.media_tick))
             .collect::<Vec<_>>();
-        values.sort_by_key(|(index, _)| *index);
+        values.sort_by_key(|(index, tick)| (*index, *tick));
         assert_eq!(values, vec![(3, MediaTick(300)), (10, MediaTick(700))]);
     }
 }

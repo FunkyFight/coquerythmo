@@ -2,7 +2,7 @@
 
 use crate::application::workspace_service::{Workspace, WorkspaceCommand, WorkspaceId};
 
-#[path = "view_input_facade.rs"]
+#[path = "view_point_facade.rs"]
 pub mod view;
 
 /// Narrow bridge for sibling controller modules that need the synchronization
