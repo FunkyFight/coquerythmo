@@ -13,6 +13,7 @@ pub mod command;
 pub mod config;
 pub mod configured_export;
 pub mod constants;
+#[path = "delivery_export_facade.rs"]
 pub mod delivery_export;
 pub mod detection;
 #[path = "detection_foreground_facade.rs"]
