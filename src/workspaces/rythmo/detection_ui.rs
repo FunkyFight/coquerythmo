@@ -17,6 +17,17 @@ pub(crate) use base::{
 
 const SIGN_BADGE_SIZE: f32 = 26.0;
 const SIGN_BOTTOM_MARGIN: f32 = 2.0;
+const DETECTION_BUTTON_SIZE: f32 = 18.0;
+const DETECTION_BUTTON_GAP: f32 = 4.0;
+
+fn visible_detection_button_rect(hover: &DetectionHover) -> Rect {
+    Rect {
+        x: hover.screen_x - DETECTION_BUTTON_SIZE / 2.0,
+        y: hover.track_rect.y + hover.track_rect.height + DETECTION_BUTTON_GAP,
+        width: DETECTION_BUTTON_SIZE,
+        height: DETECTION_BUTTON_SIZE,
+    }
+}
 
 pub(crate) fn handle_detection_event(
     ctx: &RythmoCtx<'_>,
@@ -24,6 +35,27 @@ pub(crate) fn handle_detection_event(
     state: &mut RythmoState,
 ) -> Option<EventResponse> {
     crate::detection_foreground::reconcile_legacy_menu(state);
+
+    // The + button is visually produced by the legacy detector, but the palette
+    // itself is now a modal foreground. Open both states atomically here rather
+    // than relying on the legacy handler to hand the click off afterwards.
+    if state.detection_menu.is_none() {
+        if let (UiEvent::MousePress { x, y }, Some(hover)) = (event, state.detection_hover) {
+            if visible_detection_button_rect(&hover).contains(*x, *y) {
+                if state.open_detection_palette_from_hover() {
+                    crate::detection_foreground::sync_from_state(
+                        ctx.project,
+                        state,
+                        *ctx.zone,
+                        ctx.current_frame,
+                        event,
+                    );
+                }
+                return Some(EventResponse::Consumed);
+            }
+        }
+    }
+
     base::handle_detection_event(ctx, event, state)
 }
 
@@ -215,5 +247,23 @@ mod tests {
         };
         let rect = sign_badge_rect(crate::detection::MediaTick::ZERO, track, 0.0, &zone);
         assert_eq!(rect.x + rect.width / 2.0, zone.width / 2.0);
+    }
+
+    #[test]
+    fn visible_plus_uses_the_same_hit_box_as_the_legacy_button() {
+        let hover = DetectionHover {
+            track: 0,
+            media_tick: crate::detection::MediaTick::ZERO,
+            screen_x: 120.0,
+            screen_y: 40.0,
+            track_rect: Rect {
+                x: 0.0,
+                y: 20.0,
+                width: 300.0,
+                height: 50.0,
+            },
+        };
+        let button = visible_detection_button_rect(&hover);
+        assert!(button.contains(120.0, 83.0));
     }
 }

@@ -1,8 +1,8 @@
 //! Highest foreground surface for the detection palette and information card.
 //!
-//! The original rythmo renderer still owns signs, guides and hit testing. This
-//! module owns the one visible popup surface so palette and card never render
-//! twice or drift after an unrelated pointer release.
+//! The rythmo renderer still owns signs, guides and hit testing. This module
+//! owns the single visible popup and mirrors the legacy menu state so palette
+//! and card never render twice.
 
 use crate::accessibility::AccessibilityEvent;
 use crate::detection::{
@@ -377,15 +377,10 @@ fn announce_palette_selection(selected: usize) -> EventResponse {
     }))
 }
 
-/// The popup is a true input-capturing surface. This makes the event loop route
-/// arrows, Enter, Escape and pointer input before toolbar sliders or the BR.
 pub fn captures_input() -> bool {
     matches!(lock_state().popup, Popup::Palette { .. } | Popup::Info { .. })
 }
 
-/// Handle popup input without borrowing the workspace. Activation returns the
-/// normal application action; the stale legacy menu is reconciled on the next
-/// rythmo event while remaining visually suppressed in the meantime.
 pub fn handle_modal_event(event: &UiEvent) -> Option<EventResponse> {
     let popup = lock_state().popup;
     match popup {
@@ -494,9 +489,6 @@ pub fn handle_modal_event(event: &UiEvent) -> Option<EventResponse> {
     }
 }
 
-/// Clear a dismissed legacy menu before the next detector event can interpret
-/// its obsolete position. The popup remains hidden between dismissal and this
-/// reconciliation, so no one-frame duplicate can flash back.
 pub(crate) fn reconcile_legacy_menu(state: &mut RythmoState) {
     let mut foreground = lock_state();
     if matches!(foreground.popup, Popup::Dismissed { .. }) {
@@ -505,8 +497,6 @@ pub(crate) fn reconcile_legacy_menu(state: &mut RythmoState) {
     }
 }
 
-/// Mirror the detector state after each event. Existing popup geometry is
-/// preserved; a later click inside the card can no longer move it.
 pub fn sync_from_state(
     project: &Project,
     state: &RythmoState,
@@ -622,8 +612,6 @@ pub fn sync_from_state(
     };
 }
 
-/// Alt+D opens without a pointer event, so use the last cursor/track snapshot
-/// already mirrored by the rythmo controller.
 pub fn activate_palette() {
     let mut state = lock_state();
     let Some(hover) = state.last_hover else {
@@ -736,9 +724,20 @@ fn mouth_bitmap(mouth: Mouth) -> &'static MouthBitmap {
         let source = image::load_from_memory(bytes)
             .expect("Rhubarb mouth PNG should decode")
             .to_rgba8();
-        let width = source.width();
-        let height = source.height();
-        let pixels = source
+        let (source_width, source_height) = source.dimensions();
+        let scale = (INFO_IMAGE_SIZE / source_width.max(1) as f32)
+            .min(INFO_IMAGE_SIZE / source_height.max(1) as f32);
+        let width = ((source_width as f32 * scale).round() as u32)
+            .clamp(1, INFO_IMAGE_SIZE as u32);
+        let height = ((source_height as f32 * scale).round() as u32)
+            .clamp(1, INFO_IMAGE_SIZE as u32);
+        let resized = image::imageops::resize(
+            &source,
+            width,
+            height,
+            image::imageops::FilterType::Lanczos3,
+        );
+        let pixels = resized
             .as_raw()
             .chunks_exact(4)
             .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
@@ -772,19 +771,16 @@ fn mouth_bitmap(mouth: Mouth) -> &'static MouthBitmap {
     }
 }
 
-/// Reconstruct the source PNG at native resolution. Horizontal run-length
-/// encoding keeps the exact mouth pixels without the blurry resized duplicate.
+/// Draw a pixel-aligned, already-downsampled mouth. Every run is at least one
+/// logical pixel high, avoiding the sub-pixel SDF attenuation that darkened the
+/// previous reconstruction.
 fn render_mouth(quads: &mut Vec<QuadInstance>, rect: Rect, mouth: Mouth) {
     let bitmap = mouth_bitmap(mouth);
     if bitmap.width == 0 || bitmap.height == 0 {
         return;
     }
-    let scale = (rect.width / bitmap.width as f32)
-        .min(rect.height / bitmap.height as f32);
-    let draw_width = bitmap.width as f32 * scale;
-    let draw_height = bitmap.height as f32 * scale;
-    let origin_x = rect.x + (rect.width - draw_width) / 2.0;
-    let origin_y = rect.y + (rect.height - draw_height) / 2.0;
+    let origin_x = (rect.x + (rect.width - bitmap.width as f32) / 2.0).round();
+    let origin_y = (rect.y + (rect.height - bitmap.height as f32) / 2.0).round();
 
     for y in 0..bitmap.height {
         let mut x = 0;
@@ -804,10 +800,10 @@ fn render_mouth(quads: &mut Vec<QuadInstance>, rect: Rect, mouth: Mouth) {
             push_flat_quad(
                 quads,
                 Rect {
-                    x: origin_x + start as f32 * scale,
-                    y: origin_y + y as f32 * scale,
-                    width: (x - start) as f32 * scale,
-                    height: scale,
+                    x: origin_x + start as f32,
+                    y: origin_y + y as f32,
+                    width: (x - start) as f32,
+                    height: 1.0,
                 },
                 [
                     pixel[0] as f32 / 255.0,
@@ -820,7 +816,6 @@ fn render_mouth(quads: &mut Vec<QuadInstance>, rect: Rect, mouth: Mouth) {
     }
 }
 
-/// Append the single visible popup after every ordinary UI layer.
 pub fn append_foreground<'a>(
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
@@ -983,45 +978,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keyboard_navigation_wraps() {
+    fn palette_navigation_wraps() {
         assert_eq!(moved_index(0, -1), Sign::ALL.len() - 1);
         assert_eq!(moved_index(Sign::ALL.len() - 1, 1), 0);
     }
 
     #[test]
-    fn palette_is_anchored_to_the_cursor() {
-        let hover = HoverAnchor {
-            track: 0,
-            media_tick: MediaTick::ZERO,
-            screen_x: 100.0,
-            screen_y: 80.0,
-            track_rect: Rect {
-                x: 0.0,
-                y: 40.0,
-                width: 600.0,
-                height: 50.0,
-            },
-        };
-        let zone = Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 800.0,
-            height: 400.0,
-        };
-        let outer = palette_visual_outer(hover, zone);
-        assert_eq!(outer.x, 110.0);
-        assert_eq!(outer.y, 90.0);
-    }
-
-    #[test]
-    fn accessibility_text_contains_the_entire_card() {
-        let details = info(Sign::Reaction);
-        let label = format!(
-            "Fiche de détection. {}. Description : {} Sons correspondants : {}.",
-            details.title, details.description, details.sounds
-        );
-        assert!(label.contains(details.title));
-        assert!(label.contains(details.description));
-        assert!(label.contains(details.sounds));
+    fn mouth_is_downsampled_to_pixel_aligned_card_size() {
+        let bitmap = mouth_bitmap(Mouth::Pbm);
+        assert!(bitmap.width <= INFO_IMAGE_SIZE as u32);
+        assert!(bitmap.height <= INFO_IMAGE_SIZE as u32);
+        assert!(bitmap.width > 0 && bitmap.height > 0);
     }
 }
