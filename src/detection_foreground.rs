@@ -1,8 +1,9 @@
-//! Highest foreground surface for the detection palette and information card.
+//! Highest foreground surface for detection authoring.
 //!
-//! The rythmo renderer still owns signs, guides and hit testing. This module
-//! owns the single visible popup and mirrors the legacy menu state so palette
-//! and card never render twice.
+//! Detection hit testing and persistence stay in the rythmo workspace. This
+//! module owns the final visual layer for the add button, palette and
+//! information card so editor overlays cannot be duplicated or covered by line
+//! text, synchronization handles, panels or toasts.
 
 use crate::accessibility::AccessibilityEvent;
 use crate::detection::{
@@ -15,6 +16,8 @@ use crate::ui::primitives::{
 use crate::workspaces::rythmo::view::{RythmoState, Selection};
 use std::sync::{Mutex, OnceLock};
 
+const ADD_BUTTON_SIZE: f32 = 18.0;
+const ADD_BUTTON_INSET: f32 = 2.0;
 const MENU_ICON_SIZE: f32 = 30.0;
 const MENU_GAP: f32 = 4.0;
 const MENU_PADDING: f32 = 6.0;
@@ -291,12 +294,12 @@ fn palette_visual_outer(hover: HoverAnchor, zone: Rect) -> Rect {
 }
 
 fn palette_base_outer(hover: HoverAnchor, zone: Rect) -> Rect {
-    let button_x = hover.screen_x - 9.0;
+    let button_x = hover.screen_x - ADD_BUTTON_SIZE / 2.0;
     let button_y = hover.track_rect.y + hover.track_rect.height + 4.0;
     clamp_popup(
         Rect {
             x: button_x,
-            y: button_y + 20.0,
+            y: button_y + ADD_BUTTON_SIZE + 2.0,
             width: MENU_WIDTH,
             height: MENU_HEIGHT,
         },
@@ -377,8 +380,10 @@ fn announce_palette_selection(selected: usize) -> EventResponse {
     }))
 }
 
+/// Only the choice palette is a keyboard focus trap. The information card is a
+/// passive tooltip, so global semantic commands such as Delete remain active.
 pub fn captures_input() -> bool {
-    matches!(lock_state().popup, Popup::Palette { .. } | Popup::Info { .. })
+    matches!(lock_state().popup, Popup::Palette { .. })
 }
 
 pub fn handle_modal_event(event: &UiEvent) -> Option<EventResponse> {
@@ -478,13 +483,11 @@ pub fn handle_modal_event(event: &UiEvent) -> Option<EventResponse> {
                 dismiss(PopupKind::Info, suppressed);
                 Some(EventResponse::Consumed)
             }
-            UiEvent::MousePress { x, y } => {
-                if !visual.contains(*x, *y) {
-                    dismiss(PopupKind::Info, suppressed);
-                }
+            UiEvent::MousePress { x, y } if !visual.contains(*x, *y) => {
+                dismiss(PopupKind::Info, suppressed);
                 Some(EventResponse::Consumed)
             }
-            _ => Some(EventResponse::Consumed),
+            _ => None,
         },
     }
 }
@@ -518,9 +521,7 @@ pub fn sync_from_state(
     if let Some(pointer) = pointer {
         foreground.last_pointer = pointer;
     }
-    if let Some(hover) = hover {
-        foreground.last_hover = Some(hover);
-    }
+    foreground.last_hover = hover;
 
     if matches!(foreground.popup, Popup::Dismissed { .. }) {
         return;
@@ -614,9 +615,13 @@ pub fn sync_from_state(
 
 pub fn activate_palette() {
     let mut state = lock_state();
-    let Some(hover) = state.last_hover else {
+    let Some(mut hover) = state.last_hover else {
         return;
     };
+    if hover.track_rect.contains(state.last_pointer.0, state.last_pointer.1) {
+        hover.screen_x = state.last_pointer.0;
+        hover.screen_y = state.last_pointer.1;
+    }
     let zone = state.last_zone;
     state.popup = Popup::Palette {
         visual: palette_visual_outer(hover, zone),
@@ -706,6 +711,96 @@ fn push_label<'a>(
     });
 }
 
+fn push_line(
+    quads: &mut Vec<QuadInstance>,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    thickness: f32,
+    color: [f32; 4],
+) {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let length = (dx * dx + dy * dy).sqrt().max(0.1);
+    quads.push(QuadInstance {
+        rect: [
+            (x1 + x2) * 0.5 - length / 2.0,
+            (y1 + y2) * 0.5 - thickness / 2.0,
+            length,
+            thickness,
+        ],
+        color,
+        color_bottom: color,
+        border_color: [0.0; 4],
+        border_width: 0.0,
+        border_radius: thickness / 2.0,
+        shadow_offset: [0.0; 2],
+        shadow_color: [0.0; 4],
+        shadow_blur: 0.0,
+        rotation: dy.atan2(dx),
+        _padding: [0.0; 2],
+    });
+}
+
+fn add_button_rect(hover: HoverAnchor, pointer: (f32, f32)) -> Option<Rect> {
+    if !hover.track_rect.contains(pointer.0, pointer.1) {
+        return None;
+    }
+    Some(Rect {
+        x: pointer.0 - ADD_BUTTON_SIZE / 2.0,
+        y: hover.track_rect.y + ADD_BUTTON_INSET,
+        width: ADD_BUTTON_SIZE,
+        height: ADD_BUTTON_SIZE,
+    })
+}
+
+fn render_add_button(quads: &mut Vec<QuadInstance>, snapshot: ForegroundState) {
+    if !matches!(snapshot.popup, Popup::None) {
+        return;
+    }
+    let Some(hover) = snapshot.last_hover else {
+        return;
+    };
+    let Some(button) = add_button_rect(hover, snapshot.last_pointer) else {
+        return;
+    };
+
+    // The workspace still owns hit testing. Mask its legacy visual at the last
+    // stored x, then paint the single authoritative button at the live pointer.
+    let stale = Rect {
+        x: hover.screen_x - ADD_BUTTON_SIZE / 2.0 - 1.0,
+        y: hover.track_rect.y + ADD_BUTTON_INSET - 1.0,
+        width: ADD_BUTTON_SIZE + 2.0,
+        height: ADD_BUTTON_SIZE + 2.0,
+    };
+    if (stale.x - button.x).abs() > 0.5 {
+        push_flat_quad(quads, stale, [0.055, 0.059, 0.074, 1.0]);
+    }
+
+    push_panel_quad(quads, button, [0.10, 0.11, 0.14, 0.999], 4.0);
+    let center_x = button.x + button.width / 2.0;
+    let center_y = button.y + button.height / 2.0;
+    push_line(
+        quads,
+        button.x + 5.0,
+        center_y,
+        button.x + button.width - 5.0,
+        center_y,
+        1.5,
+        [0.90, 0.92, 0.96, 1.0],
+    );
+    push_line(
+        quads,
+        center_x,
+        button.y + 5.0,
+        center_x,
+        button.y + button.height - 5.0,
+        1.5,
+        [0.90, 0.92, 0.96, 1.0],
+    );
+}
+
 struct MouthBitmap {
     width: u32,
     height: u32,
@@ -737,15 +832,13 @@ fn mouth_bitmap(mouth: Mouth) -> &'static MouthBitmap {
             height,
             image::imageops::FilterType::Lanczos3,
         );
-        let pixels = resized
-            .as_raw()
-            .chunks_exact(4)
-            .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
-            .collect();
         MouthBitmap {
             width,
             height,
-            pixels,
+            pixels: resized
+                .pixels()
+                .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
+                .collect(),
         }
     }
 
@@ -771,9 +864,6 @@ fn mouth_bitmap(mouth: Mouth) -> &'static MouthBitmap {
     }
 }
 
-/// Draw a pixel-aligned, already-downsampled mouth. Every run is at least one
-/// logical pixel high, avoiding the sub-pixel SDF attenuation that darkened the
-/// previous reconstruction.
 fn render_mouth(quads: &mut Vec<QuadInstance>, rect: Rect, mouth: Mouth) {
     let bitmap = mouth_bitmap(mouth);
     if bitmap.width == 0 || bitmap.height == 0 {
@@ -823,6 +913,8 @@ pub fn append_foreground<'a>(
     screen_h: f32,
 ) {
     let snapshot = *lock_state();
+    render_add_button(quads, snapshot);
+
     let screen = Rect {
         x: 0.0,
         y: 0.0,
@@ -981,6 +1073,38 @@ mod tests {
     fn palette_navigation_wraps() {
         assert_eq!(moved_index(0, -1), Sign::ALL.len() - 1);
         assert_eq!(moved_index(Sign::ALL.len() - 1, 1), 0);
+    }
+
+    #[test]
+    fn information_card_does_not_capture_global_commands() {
+        let mut state = lock_state();
+        state.popup = Popup::Info {
+            visual: Rect::default(),
+            suppressed: Rect::default(),
+            sign: Sign::Labial,
+        };
+        drop(state);
+        assert!(!captures_input());
+        clear();
+    }
+
+    #[test]
+    fn add_button_tracks_the_live_pointer_inside_the_track() {
+        let hover = HoverAnchor {
+            track: 0,
+            media_tick: MediaTick::ZERO,
+            screen_x: 40.0,
+            screen_y: 20.0,
+            track_rect: Rect {
+                x: 0.0,
+                y: 10.0,
+                width: 200.0,
+                height: 40.0,
+            },
+        };
+        let rect = add_button_rect(hover, (120.0, 25.0)).expect("pointer is on track");
+        assert_eq!(rect.x + rect.width / 2.0, 120.0);
+        assert_eq!(rect.y, 12.0);
     }
 
     #[test]
