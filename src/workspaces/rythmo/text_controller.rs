@@ -5,7 +5,8 @@ use super::*;
 pub(crate) fn handle_text_undo(ctx: &RythmoCtx, state: &mut RythmoState) -> EventResponse {
     if let Some(line_id) = state.editing_note {
         if let Some(line) = ctx.project.get_line(line_id) {
-            if let Some(note) = state.note_input.undo(&line.note) {
+            let visible_note = crate::rythmo_line_metadata::user_note(&line.note);
+            if let Some(note) = state.note_input.undo(visible_note) {
                 return EventResponse::Action(UiAction::UpdateLineNote { line_id, note });
             }
         }
