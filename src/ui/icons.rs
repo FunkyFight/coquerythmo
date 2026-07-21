@@ -90,6 +90,14 @@ impl IconAtlas {
                 "detection/reaction",
                 include_bytes!("../icons/detection/reaction.svg"),
             ),
+            SvgEntry::new(
+                "detection/th",
+                include_bytes!("../icons/detection/th.svg"),
+            ),
+            SvgEntry::new(
+                "detection/neutral",
+                include_bytes!("../icons/detection/neutral.svg"),
+            ),
         ];
 
         let count = svgs.len() as u32;

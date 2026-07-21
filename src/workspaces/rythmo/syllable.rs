@@ -15,47 +15,78 @@ pub(crate) fn syllable_mouse_press(
         return None;
     }
 
-    // Find which line was clicked
-    let line = ctx
-        .project
-        .lines()
-        .find(|l| line_rect(ctx.project, l, ctx.current_frame, ctx.zone).contains(x, y))?;
-    if ctx.karaoke_preview && line.karaoke {
-        return None;
-    }
-    if state.hovered_line != Some(line.id) {
-        return None;
-    }
-
-    let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
-
     let lang = ctx.project.syllable_language_code();
-    let ratios = syllable_ratios_for_line(line, state.syllable_drag.as_ref(), lang, state)?;
-    if ratios.len() <= 1 {
-        return None;
-    }
-
-    // Find which separator is closest to click
-    let mut sep_x = r.x;
     let hit_w = 7.0;
-    let top_y = r.y + 1.0;
-    if y < top_y - 6.0 || y > top_y + 14.0 {
-        return None;
-    }
-    for (i, ratio) in ratios.iter().enumerate() {
-        sep_x += ratio * r.width;
-        if i < ratios.len() - 1 && (x - sep_x).abs() < hit_w {
-            state.syllable_drag = Some(SyllableDrag {
-                line_id: line.id,
-                separator_index: i,
-                ratios: ratios.clone(),
-                drag_start_x: x,
-                line_rect: r,
-                preserve_prefix,
-            });
-            return Some(EventResponse::Consumed);
+
+    for line in ctx.project.lines() {
+        if ctx.karaoke_preview && line.karaoke {
+            continue;
+        }
+
+        let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
+        let top_y = r.y + 1.0;
+        if y < top_y - 6.0 || y > top_y + 14.0 {
+            continue;
+        }
+
+        let Some(ratios) =
+            syllable_ratios_for_line(line, state.syllable_drag.as_ref(), lang, state)
+        else {
+            continue;
+        };
+        if ratios.len() <= 1 {
+            continue;
+        }
+
+        if let Some(boundaries) = sync_syllable_boundary_ratios(
+            ctx.project,
+            line,
+            state.syllable_drag.as_ref(),
+            lang,
+            state,
+        ) {
+            for separator_index in 0..ratios.len() - 1 {
+                let Some(boundary_ratio) = boundaries.get(separator_index + 1).copied() else {
+                    continue;
+                };
+                let separator_x = r.x + boundary_ratio * r.width;
+                if (x - separator_x).abs() < hit_w {
+                    state.hovered_line = None;
+                    state.syllable_drag = Some(SyllableDrag {
+                        line_id: encode_sync_syllable_drag_line_id(line.id),
+                        separator_index,
+                        ratios: ratios.clone(),
+                        drag_start_x: x,
+                        line_rect: r,
+                        preserve_prefix,
+                    });
+                    return Some(EventResponse::Consumed);
+                }
+            }
+            continue;
+        }
+
+        if state.hovered_line != Some(line.id) || !r.contains(x, y) {
+            continue;
+        }
+
+        let mut separator_x = r.x;
+        for (separator_index, ratio) in ratios.iter().enumerate() {
+            separator_x += ratio * r.width;
+            if separator_index < ratios.len() - 1 && (x - separator_x).abs() < hit_w {
+                state.syllable_drag = Some(SyllableDrag {
+                    line_id: line.id,
+                    separator_index,
+                    ratios: ratios.clone(),
+                    drag_start_x: x,
+                    line_rect: r,
+                    preserve_prefix,
+                });
+                return Some(EventResponse::Consumed);
+            }
         }
     }
+
     None
 }
 
@@ -188,8 +219,9 @@ pub(crate) fn normalize_ratios_in_place(ratios: &mut [f32]) {
 
 pub(crate) fn syllable_mouse_release(state: &mut RythmoState) -> Option<EventResponse> {
     let drag = state.syllable_drag.take()?;
+    let line_id = decode_sync_syllable_drag_line_id(drag.line_id).unwrap_or(drag.line_id);
     Some(EventResponse::Action(UiAction::SetSyllableRatios {
-        line_id: drag.line_id,
+        line_id,
         ratios: drag.ratios,
     }))
 }

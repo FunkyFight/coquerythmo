@@ -194,6 +194,24 @@ pub fn handle_rythmo_event(
         }
     }
 
+    // Once a syllable handle owns the pointer, detection hover must not consume
+    // its move or release events. This keeps shifted handles interactive.
+    if state.syllable_drag.is_some() {
+        match event {
+            UiEvent::MouseMove { x, .. } => {
+                if let Some(response) = syllable_mouse_move(state, *x) {
+                    return response;
+                }
+            }
+            UiEvent::MouseRelease { .. } => {
+                if let Some(response) = syllable_mouse_release(state) {
+                    return response;
+                }
+            }
+            _ => {}
+        }
+    }
+
     if let Some(response) = handle_detection_event(&ctx, event, state) {
         return response;
     }
