@@ -4,13 +4,13 @@
 //! `modal_host_base.rs`. This facade reserves the final modal-overlay pass and
 //! input priority for the detection palette and information card.
 
+use super::primitives::{EventResponse, LabelInfo, QuadInstance, UiEvent};
 use super::{
     connect_modal, export_modal, file_explorer, language_modal, pricing_license_modal,
     pricing_page, pricing_plan_modal, primitives, project_settings_modal, proxy_error_modal,
     proxy_modal, rename_character_modal, save_prompt_modal, server_browser, settings_modal,
     voice_actor_modal, whats_new_modal,
 };
-use super::primitives::{EventResponse, LabelInfo, QuadInstance, UiEvent};
 use std::ops::{Deref, DerefMut};
 
 #[path = "modal_host_base.rs"]
@@ -50,9 +50,8 @@ impl ModalHost {
         self.0.handle_topmost_event(event, screen_w, screen_h)
     }
 
-    /// Render every established top-level modal first, then append the detector
-    /// surface to the final overlay arrays. Its backgrounds, mouth image,
-    /// glyphs and labels therefore share one coherent highest z-layer.
+    /// Render editor diagnostics first, established modal surfaces above them,
+    /// then append the detector palette as the single highest foreground.
     pub fn render_top<'a>(
         &'a self,
         modal_quads: &mut Vec<QuadInstance>,
@@ -62,6 +61,12 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) {
+        crate::rythmo_lint_overlay::append_foreground(
+            modal_overlay_quads,
+            modal_overlay_labels,
+            screen_w,
+            screen_h,
+        );
         self.0.render_top(
             modal_quads,
             modal_labels,
