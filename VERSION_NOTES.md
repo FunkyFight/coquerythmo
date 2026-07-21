@@ -37,17 +37,17 @@
 - invalide les timings syllabiques manuels uniquement pour la langue dont la règle change ;
 - ajoute une navigation clavier déterministe, un rôle/une valeur accessibles et des annonces de changement ;
 
+## Détections et points de synchronisation
 
-
-
-source detections are attached to a track and an absolute media time, not to dialogue lines
-detections can be placed on any rythmo track even when no dialogue exists
-the detector palette contains only the seven requested professional signs
-Alt+D opens the palette; plain D keeps its existing horizontal navigation role
-textual/yellow placeholder badges have been removed
-seven SVG assets live under src/icons/detection and are loaded into the application icon atlas
-signs can be selected, dragged, navigated, nudged, deleted, undone and redone
-Ctrl+Space auditions the available two seconds before and after the selected sign and mixes a short beep at the exact cue position
-dialogue lines expose per-character synchronization dots; clicking creates a persistent sync point and dragging changes its media timing
-AccessKit announcements are deliberately limited to the visual operation: detection symbol or synchronization point added, moved or removed
-detection and sync data participate in project persistence, FPS conversion and collaboration synchronization
+- les signes de détection sont rattachés à une piste et à un temps média absolu, indépendamment des lignes de dialogue ;
+- la palette expose neuf signes professionnels : labiale, semi-labiale, bouche ouverte, bouche fermée, dents visibles, TH, respiration, neutre et réaction ;
+- `Alt+D` ouvre la palette tandis que `D` conserve sa navigation horizontale existante ;
+- seuls les neuf SVG utilisés sont conservés sous `src/icons/detection` ;
+- les signes sont sélectionnables, déplaçables, navigables, ajustables, supprimables et pris en charge par l’historique ;
+- un clic simple sur un signe ouvre une grande fiche avec une bouche Rhubarb, son nom, sa description et les sons correspondants ;
+- un glisser démarre directement depuis un signe existant ou depuis un nouveau point de synchronisation, avec un seuil de quatre pixels pour distinguer clic et déplacement ;
+- les signes sont ancrés en bas de leur ligne et leur trait vertical reste aligné sur leur axe ;
+- `Ctrl+Espace` écoute les deux secondes disponibles avant et après le signe sélectionné avec un bip exactement au repère ;
+- les lignes de dialogue affichent des points de synchronisation par caractère, persistants et déplaçables ;
+- les annonces AccessKit restent limitées à l’opération visuelle : ajout, déplacement ou suppression du signe ou du point ;
+- les détections et points de synchronisation participent à la persistance, à la conversion de cadence et à la collaboration.
