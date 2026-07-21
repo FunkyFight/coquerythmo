@@ -43,6 +43,7 @@ pub mod rythmo_drawing;
 pub mod rythmo_gpu_renderer;
 pub mod rythmo_layout;
 pub mod rythmo_line;
+pub mod rythmo_line_metadata;
 pub mod rythmo_lint;
 pub mod rythmo_lint_overlay;
 pub mod state;
