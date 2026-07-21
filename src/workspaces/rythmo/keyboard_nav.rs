@@ -199,12 +199,10 @@ pub(crate) fn handle_cursor_move(
                 } else {
                     state.char_input.move_left();
                 }
+            } else if shift {
+                state.char_input.move_right_shift(&line.character_name);
             } else {
-                if shift {
-                    state.char_input.move_right_shift(&line.character_name);
-                } else {
-                    state.char_input.move_right(&line.character_name);
-                }
+                state.char_input.move_right(&line.character_name);
             }
             return if shift {
                 selection_response(&state.char_input, &line.character_name)
@@ -221,12 +219,10 @@ pub(crate) fn handle_cursor_move(
                 } else {
                     state.line_input.move_left();
                 }
+            } else if shift {
+                state.line_input.move_right_shift(&line.text);
             } else {
-                if shift {
-                    state.line_input.move_right_shift(&line.text);
-                } else {
-                    state.line_input.move_right(&line.text);
-                }
+                state.line_input.move_right(&line.text);
             }
             return if shift {
                 selection_response(&state.line_input, &line.text)
@@ -243,12 +239,10 @@ pub(crate) fn handle_cursor_move(
                 } else {
                     state.note_input.move_left();
                 }
+            } else if shift {
+                state.note_input.move_right_shift(&line.note);
             } else {
-                if shift {
-                    state.note_input.move_right_shift(&line.note);
-                } else {
-                    state.note_input.move_right(&line.note);
-                }
+                state.note_input.move_right(&line.note);
             }
             return if shift {
                 selection_response(&state.note_input, &line.note)
@@ -307,11 +301,16 @@ fn editing_line_label(ctx: &RythmoCtx<'_>, line_id: u64) -> Option<String> {
     if !line.text.trim().is_empty() {
         parts.push(line.text.clone());
     }
-    Some(if parts.is_empty() {
+    let mut label = if parts.is_empty() {
         crate::i18n::t("accessibility.line").to_string()
     } else {
         parts.join(", ")
-    })
+    };
+    label.push_str(&crate::rythmo_lint::line_accessibility_suffix(
+        ctx.project,
+        line_id,
+    ));
+    Some(label)
 }
 
 pub(crate) fn reread_editing_line(ctx: &RythmoCtx<'_>, state: &RythmoState) -> EventResponse {
