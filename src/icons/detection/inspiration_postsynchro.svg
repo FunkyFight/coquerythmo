@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 64"
+fill="none" stroke="currentColor" stroke-width="4"
+stroke-linecap="round" stroke-linejoin="round" role="img" aria-labelledby="title desc">
+  <title id="title">Inspiration de postsynchronisation</title>
+  <desc id="desc">Flèche en fuseau dont les lignes convergent vers la pointe à droite.</desc>
+  <path d="M14 39 L137 25"/>
+  <path d="M14 39 H137"/>
+  <path d="M128 19 L144 25 L132 36" fill="currentColor" stroke="none"/>
+</svg>

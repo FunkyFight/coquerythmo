@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 64"
+fill="none" stroke="currentColor" stroke-width="4"
+stroke-linecap="round" stroke-linejoin="round" role="img" aria-labelledby="title desc">
+  <title id="title">Respiration bouche ouverte, expiration</title>
+  <desc id="desc">Deux ondulations de respiration prolongées par un trait.</desc>
+  <path d="M12 42 C7 31 11 20 20 21
+           C30 22 27 39 35 40
+           C43 41 44 27 51 27
+           C59 27 59 38 67 40
+           C75 42 76 27 83 27
+           C91 27 91 38 99 40
+           H148"/>
+</svg>

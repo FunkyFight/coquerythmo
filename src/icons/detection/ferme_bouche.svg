@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
+fill="none" stroke="currentColor" stroke-width="5"
+stroke-linecap="round" stroke-linejoin="round" role="img" aria-labelledby="title desc">
+  <title id="title">Ferme la bouche</title>
+  <desc id="desc">Flèche verticale dirigée vers le bas.</desc>
+  <path d="M32 12 V49"/>
+  <path d="M18 35 L32 49 L46 35"/>
+</svg>

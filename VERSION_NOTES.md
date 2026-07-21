@@ -36,3 +36,18 @@
 - transmet la même valeur à la scène de rendu, au rendu CPU et au rendu GPU ;
 - invalide les timings syllabiques manuels uniquement pour la langue dont la règle change ;
 - ajoute une navigation clavier déterministe, un rôle/une valeur accessibles et des annonces de changement ;
+
+
+
+
+source detections are attached to a track and an absolute media time, not to dialogue lines
+detections can be placed on any rythmo track even when no dialogue exists
+the detector palette contains only the seven requested professional signs
+Alt+D opens the palette; plain D keeps its existing horizontal navigation role
+textual/yellow placeholder badges have been removed
+seven SVG assets live under src/icons/detection and are loaded into the application icon atlas
+signs can be selected, dragged, navigated, nudged, deleted, undone and redone
+Ctrl+Space auditions the available two seconds before and after the selected sign and mixes a short beep at the exact cue position
+dialogue lines expose per-character synchronization dots; clicking creates a persistent sync point and dragging changes its media timing
+AccessKit announcements are deliberately limited to the visual operation: detection symbol or synchronization point added, moved or removed
+detection and sync data participate in project persistence, FPS conversion and collaboration synchronization
