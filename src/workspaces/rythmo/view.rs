@@ -2716,7 +2716,7 @@ pub fn render_lines<'a>(
 
         let is_syllable_drag_line =
             state.syllable_drag.as_ref().map(|d| d.line_id) == Some(line.id);
-        if !karaoke_playback_line && (is_hovered || is_syllable_drag_line) {
+        if line.karaoke && !karaoke_playback_line && (is_hovered || is_syllable_drag_line) {
             if let Some(ratios) =
                 syllable_ratios_for_line(line, state.syllable_drag.as_ref(), karaoke_lang, state)
             {
@@ -2912,18 +2912,20 @@ pub fn render_lines<'a>(
         );
     }
 
-    if !karaoke_preview {
-        render_detection_overlay(
-            zone,
-            project,
-            current_frame,
-            state,
-            quads,
-            labels,
-            note_icons,
-            detection_uvs,
-        );
-    }
+    // Detection signs remain part of the rythmo display during playback. Their
+    // position is tied to `current_frame`, so the overlay must be rendered on
+    // every frame rather than only while the video is paused.
+    render_detection_overlay(
+        zone,
+        project,
+        current_frame,
+        fps,
+        state,
+        quads,
+        labels,
+        note_icons,
+        detection_uvs,
+    );
 
     push_editor_karaoke_texture_prewarm_texts(
         stretched,

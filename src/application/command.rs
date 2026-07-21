@@ -239,6 +239,15 @@ pub enum UiAction {
     NudgeSelectedDetection {
         delta_ticks: i64,
     },
+    NudgeSelectedSyncAnchor {
+        delta_graphemes: i32,
+    },
+    ToggleSelectedSyncAffinity,
+    MoveSyncAnchor {
+        address: crate::detection::DetectionAddress,
+        grapheme_boundary: u32,
+    },
+    AddSyncPointAtPlayhead,
     UpdateLineText {
         id: u64,
         text: String,
@@ -465,6 +474,9 @@ impl UiAction {
                 | Self::MoveDetection { .. }
                 | Self::DeleteDetection { .. }
                 | Self::NudgeSelectedDetection { .. }
+                | Self::NudgeSelectedSyncAnchor { .. }
+                | Self::MoveSyncAnchor { .. }
+                | Self::AddSyncPointAtPlayhead
                 | Self::UpdateLineText { .. }
                 | Self::SetCharacter { .. }
                 | Self::SetCharacterColor { .. }

@@ -519,6 +519,21 @@ impl CommandDispatcher {
             UiAction::NudgeSelectedDetection { delta_ticks } => {
                 state.nudge_selected_detection(delta_ticks);
             }
+            UiAction::NudgeSelectedSyncAnchor { delta_graphemes } => {
+                state.nudge_selected_sync_anchor(delta_graphemes);
+            }
+            UiAction::ToggleSelectedSyncAffinity => {
+                state.toggle_selected_sync_affinity();
+            }
+            UiAction::MoveSyncAnchor {
+                address,
+                grapheme_boundary,
+            } => {
+                state.move_sync_anchor(address, grapheme_boundary);
+            }
+            UiAction::AddSyncPointAtPlayhead => {
+                state.add_sync_point_at_playhead();
+            }
             UiAction::UpdateLineText { id, text } => {
                 state.update_line_text(id, text);
             }

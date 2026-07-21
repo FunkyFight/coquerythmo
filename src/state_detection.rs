@@ -11,12 +11,13 @@ use crate::packet::ProjectData;
 use crate::state::State;
 use crate::workspaces::rythmo::view::Selection;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SizedSample};
+use cpal::{FromSample, SizedSample};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use unicode_segmentation::UnicodeSegmentation;
 
 static AUDITION_GENERATION: AtomicU64 = AtomicU64::new(0);
 
@@ -54,7 +55,12 @@ impl State {
         };
         self.ui_shell.ui.rythmo_state.selected = if address.track().is_some() {
             None
-        } else if self.project_session.project.get_line(address.line_id).is_some() {
+        } else if self
+            .project_session
+            .project
+            .get_line(address.line_id)
+            .is_some()
+        {
             Some(Selection::Line(address.line_id))
         } else {
             None
@@ -71,6 +77,34 @@ impl State {
     ) {
         if target.validate().is_err() {
             return;
+        }
+        if kind.is_sync_point() {
+            let Some(line) = self.project_session.project.get_line(line_id) else {
+                return;
+            };
+            let Some(boundary) = target.grapheme_index() else {
+                return;
+            };
+            let grapheme_count = UnicodeSegmentation::graphemes(line.text.as_str(), true).count();
+            let start = MediaTick::from_frame(line.start_frame);
+            let end = MediaTick::from_frame(line.end_frame());
+            if grapheme_count == 0
+                || boundary as usize >= grapheme_count
+                || media_tick <= start
+                || media_tick >= end
+            {
+                return;
+            }
+            if let Some(data) = self.project_session.project.detections().line(line_id) {
+                if data.sync_points().iter().any(|point| {
+                    point.grapheme_boundary == boundary && point.line_tick == media_tick
+                }) || data.sync_points().iter().any(|point| {
+                    (point.grapheme_boundary < boundary && point.line_tick >= media_tick)
+                        || (point.grapheme_boundary > boundary && point.line_tick <= media_tick)
+                }) {
+                    return;
+                }
+            }
         }
         let detection_id = self
             .project_session
@@ -102,16 +136,54 @@ impl State {
         self.announce_detection_visual(kind, "ajouté");
     }
 
-    pub fn move_detection(&mut self, address: DetectionAddress, media_tick: MediaTick) {
+    pub fn move_detection(&mut self, address: DetectionAddress, mut media_tick: MediaTick) {
         let Some(cue) = self
             .project_session
             .project
             .detections()
-            .detection(address)
-            .cloned()
+            .command_cue(address)
         else {
             return;
         };
+        if cue.kind.is_sync_point() {
+            let Some(line) = self.project_session.project.get_line(address.line_id) else {
+                return;
+            };
+            let Some(point) = self
+                .project_session
+                .project
+                .detections()
+                .sync_point(address)
+            else {
+                return;
+            };
+            let data = self
+                .project_session
+                .project
+                .detections()
+                .line(address.line_id)
+                .expect("selected sync point owns line data");
+            let minimum = data
+                .sync_points()
+                .iter()
+                .filter(|other| other.grapheme_boundary < point.grapheme_boundary)
+                .map(|other| other.line_tick)
+                .max()
+                .unwrap_or(MediaTick::from_frame(line.start_frame))
+                .saturating_add(MediaTick(1));
+            let maximum = data
+                .sync_points()
+                .iter()
+                .filter(|other| other.grapheme_boundary > point.grapheme_boundary)
+                .map(|other| other.line_tick)
+                .min()
+                .unwrap_or(MediaTick::from_frame(line.end_frame()))
+                .saturating_sub(MediaTick(1));
+            if minimum > maximum {
+                return;
+            }
+            media_tick = media_tick.clamp(minimum, maximum);
+        }
         if cue.media_tick == media_tick {
             return;
         }
@@ -156,8 +228,7 @@ impl State {
             .project_session
             .project
             .detections()
-            .detection(address)
-            .cloned()
+            .command_cue(address)
         else {
             return;
         };
@@ -190,8 +261,7 @@ impl State {
             .project_session
             .project
             .detections()
-            .detection(address)
-            .cloned()
+            .command_cue(address)
         else {
             return;
         };
@@ -200,6 +270,190 @@ impl State {
             MediaTick(cue.media_tick.raw().saturating_add(delta_ticks)),
         );
         self.announce_detection_visual(cue.kind, "déplacé");
+    }
+
+    pub fn nudge_selected_sync_anchor(&mut self, delta_graphemes: i32) {
+        let Some(address) = self
+            .selected_detection_address()
+            .filter(|address| address.track().is_none())
+        else {
+            return;
+        };
+        let Some(point) = self
+            .project_session
+            .project
+            .detections()
+            .sync_point(address)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(line) = self.project_session.project.get_line(address.line_id) else {
+            return;
+        };
+        let count = UnicodeSegmentation::graphemes(line.text.as_str(), true).count();
+        let new_boundary = (point.grapheme_boundary as i64 + delta_graphemes as i64)
+            .clamp(0, count.saturating_sub(1) as i64) as u32;
+        if new_boundary == point.grapheme_boundary {
+            return;
+        }
+        self.move_sync_anchor(address, new_boundary);
+    }
+
+    pub fn toggle_selected_sync_affinity(&mut self) {
+        let Some(address) = self
+            .selected_detection_address()
+            .filter(|address| address.track().is_none())
+        else {
+            return;
+        };
+        let Some(point) = self
+            .project_session
+            .project
+            .detections()
+            .sync_point(address)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(line) = self.project_session.project.get_line(address.line_id) else {
+            return;
+        };
+        let punctuation = UnicodeSegmentation::graphemes(line.text.as_str(), true)
+            .nth(point.grapheme_boundary as usize)
+            .is_some_and(|grapheme| grapheme.chars().all(crate::detection::is_sync_punctuation));
+        let currently_left = match point.affinity {
+            crate::detection::SyncAffinity::Left => true,
+            crate::detection::SyncAffinity::Right => false,
+            crate::detection::SyncAffinity::Auto => punctuation,
+        };
+        let new_affinity = if currently_left {
+            crate::detection::SyncAffinity::Right
+        } else {
+            crate::detection::SyncAffinity::Left
+        };
+        self.execute_detection_command(Command::Detection {
+            change: DetectionChange::SetAffinity {
+                address,
+                old_affinity: point.affinity,
+                new_affinity,
+            },
+        });
+    }
+
+    pub fn move_sync_anchor(&mut self, address: DetectionAddress, new_boundary: u32) {
+        let Some(point) = self
+            .project_session
+            .project
+            .detections()
+            .sync_point(address)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(line) = self.project_session.project.get_line(address.line_id) else {
+            return;
+        };
+        let count = UnicodeSegmentation::graphemes(line.text.as_str(), true).count();
+        if new_boundary as usize >= count || new_boundary == point.grapheme_boundary {
+            return;
+        }
+        let mut probe = self.project_session.project.detections().clone();
+        if !probe.retarget_sync_point(address, new_boundary) {
+            return;
+        }
+        let command = Command::Detection {
+            change: DetectionChange::Retarget {
+                address,
+                old_boundary: point.grapheme_boundary,
+                new_boundary,
+            },
+        };
+        let can_coalesce = matches!(
+            self.project_session.history.last(),
+            Some(Command::Detection {
+                change: DetectionChange::Retarget {
+                    address: previous,
+                    ..
+                }
+            }) if *previous == address
+        );
+        if can_coalesce {
+            EditExecutor::coalesce(
+                &mut self.project_session,
+                command,
+                |last| {
+                    if let Command::Detection {
+                        change:
+                            DetectionChange::Retarget {
+                                new_boundary: last_boundary,
+                                ..
+                            },
+                    } = last
+                    {
+                        *last_boundary = new_boundary;
+                    }
+                },
+                EditOrigin::Local,
+            );
+            self.broadcast_detection_sync();
+        } else {
+            self.execute_detection_command(command);
+        }
+    }
+
+    pub fn add_sync_point_at_playhead(&mut self) {
+        let rythmo = self.ui_shell.ui.rythmo_state();
+        if rythmo.editing_character.is_some() || rythmo.editing_note.is_some() {
+            return;
+        }
+        let line_id = rythmo
+            .editing_line
+            .or_else(|| match rythmo.selected.as_ref() {
+                Some(Selection::Line(id)) => Some(*id),
+                Some(Selection::Detection(address)) if address.track().is_none() => {
+                    Some(address.line_id)
+                }
+                _ => None,
+            });
+        let Some(line_id) = line_id else {
+            return;
+        };
+        let Some(line) = self.project_session.project.get_line(line_id) else {
+            return;
+        };
+        let graphemes =
+            UnicodeSegmentation::graphemes(line.text.as_str(), true).collect::<Vec<_>>();
+        if graphemes.is_empty() || line.duration_frames <= 0 {
+            return;
+        }
+        let boundary = if rythmo.editing_line == Some(line_id) {
+            let cursor_chars = rythmo.line_input.cursor_pos;
+            let byte = line
+                .text
+                .char_indices()
+                .nth(cursor_chars)
+                .map(|(byte, _)| byte)
+                .unwrap_or(line.text.len());
+            UnicodeSegmentation::graphemes(&line.text[..byte], true)
+                .count()
+                .min(graphemes.len() - 1)
+        } else {
+            let progress = ((self.current_frame() - line.start_frame) as f64
+                / line.duration_frames as f64)
+                .clamp(0.0, 1.0);
+            (progress * graphemes.len() as f64)
+                .floor()
+                .min((graphemes.len() - 1) as f64) as usize
+        };
+        self.add_detection(
+            line_id,
+            DetectionKind::TextSyncPoint,
+            MediaTick::from_frame(self.current_frame()),
+            TextAnchor::Grapheme {
+                index: boundary as u32,
+            },
+        );
     }
 
     /// Ctrl+Space decodes the available two seconds before and after the
@@ -214,8 +468,7 @@ impl State {
             .project_session
             .project
             .detections()
-            .detection(address)
-            .cloned()
+            .command_cue(address)
         else {
             return;
         };
@@ -238,7 +491,10 @@ impl State {
             .map(|player| player.total_frames())
             .unwrap_or(0);
         let start_frame = window_start.as_frame_position().floor().max(0.0) as i64;
-        let mut end_frame = window_end.as_frame_position().ceil().max(start_frame as f64) as i64;
+        let mut end_frame = window_end
+            .as_frame_position()
+            .ceil()
+            .max(start_frame as f64) as i64;
         if total_frames > 0 {
             end_frame = end_frame.min(total_frames);
         }
@@ -269,8 +525,8 @@ impl State {
         let end_seconds = end_frame as f64 / fps;
         let cue_seconds = cue.media_tick.as_frame_position() / fps;
         let audio_start_seconds = ((start_frame - audio_offset) as f64 / fps).max(0.0);
-        let leading_silence_seconds = ((audio_offset - start_frame).max(0) as f64 / fps)
-            .min(end_seconds - start_seconds);
+        let leading_silence_seconds =
+            ((audio_offset - start_frame).max(0) as f64 / fps).min(end_seconds - start_seconds);
         let duration_seconds = (end_seconds - start_seconds).max(0.01);
         let beep_offset_seconds = (cue_seconds - start_seconds).clamp(0.0, duration_seconds);
         let volume = self.ui_shell.ui.volume().clamp(0.0, 1.0);
@@ -314,10 +570,9 @@ impl State {
         } else {
             "Symbole de détection"
         };
-        self.narration
-            .announce_event(AccessibilityEvent::Success {
-                message: format!("{object} {verb}"),
-            });
+        self.narration.announce_event(AccessibilityEvent::Success {
+            message: format!("{object} {verb}"),
+        });
     }
 }
 
@@ -387,8 +642,7 @@ fn play_detection_preview(
         .len()
         .min(samples.len().saturating_sub(silence_samples));
     if copy_len > 0 {
-        samples[silence_samples..silence_samples + copy_len]
-            .copy_from_slice(&decoded[..copy_len]);
+        samples[silence_samples..silence_samples + copy_len].copy_from_slice(&decoded[..copy_len]);
     }
     for sample in &mut samples {
         *sample *= volume;

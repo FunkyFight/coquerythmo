@@ -325,6 +325,7 @@
 "toast.voice_actor_name_required" = "Voice actor name is required."
 "toast.voice_actor_icon_failed" = "Invalid voice actor icon:"
 "toast.karaoke_select_line" = "Select a line before toggling karaoke mode."
+"toast.sync_points_ambiguous" = "Ambiguous synchronization points were removed"
 "toast.no_character_to_rename" = "No character to rename in the rythmo band."
 "toast.rename_character_select" = "Select a character to rename."
 "toast.rename_character_name_required" = "The new character name is required."

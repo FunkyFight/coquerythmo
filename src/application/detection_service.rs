@@ -46,7 +46,7 @@ impl DetectionEditService {
         document: &mut DetectionDocument,
         address: DetectionAddress,
     ) -> Option<DetectionChange> {
-        let cue = document.detection(address)?.clone();
+        let cue = document.command_cue(address)?;
         let change = DetectionChange::Remove { address, cue };
         change.apply(document).then_some(change)
     }
@@ -56,7 +56,7 @@ impl DetectionEditService {
         address: DetectionAddress,
         new_tick: MediaTick,
     ) -> Option<DetectionChange> {
-        let old_tick = document.detection(address)?.media_tick;
+        let old_tick = document.command_cue(address)?.media_tick;
         if old_tick == new_tick {
             return None;
         }

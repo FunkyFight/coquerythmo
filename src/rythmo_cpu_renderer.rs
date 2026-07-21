@@ -807,8 +807,16 @@ impl CpuRenderer {
                 } else {
                     let lang = scene.syllable_language.code();
                     let breaks = crate::syllable::syllable_breaks(&line.text, lang);
-                    let ratios =
+                    let base_ratios =
                         crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
+                    let ratios = project.detections().warped_ratios(
+                        line.id,
+                        &line.text,
+                        &breaks,
+                        &base_ratios,
+                        line.start_frame,
+                        line.duration_frames,
+                    );
                     if !ratios.is_empty() {
                         let chars: Vec<char> = line.text.chars().collect();
                         let mut seg_x = x1;

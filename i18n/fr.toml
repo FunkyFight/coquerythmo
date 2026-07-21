@@ -361,6 +361,7 @@
 "toast.voice_actor_name_required" = "Le nom du comédien est obligatoire."
 "toast.voice_actor_icon_failed" = "Icône du comédien invalide :"
 "toast.karaoke_select_line" = "Sélectionne une ligne avant d'activer le karaoké."
+"toast.sync_points_ambiguous" = "Des points de synchronisation ambigus ont été retirés"
 "toast.no_character_to_rename" = "Aucun personnage à renommer dans la bande rythmo."
 "toast.rename_character_select" = "Sélectionne un personnage à renommer."
 "toast.rename_character_name_required" = "Le nouveau nom du personnage est obligatoire."

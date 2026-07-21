@@ -451,6 +451,41 @@ mod tests {
     }
 
     #[test]
+    fn project_data_roundtrip_preserves_sync_points() {
+        let mut project = Project::new();
+        let line_id = project.add_line_full(
+            10,
+            40,
+            0.5,
+            "hello".into(),
+            "Bob".into(),
+            [0.0, 1.0, 0.0, 1.0],
+        );
+        let mut data = ProjectData::from_project(&project);
+        let address = data
+            .detections
+            .add_sync_point(
+                line_id,
+                5,
+                crate::detection::MediaTick::from_frame(10),
+                crate::detection::MediaTick::from_frame(50),
+                2,
+                crate::detection::MediaTick::from_frame(30),
+            )
+            .unwrap();
+        let json = serde_json::to_string(&data).unwrap();
+        let restored: ProjectData = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            restored
+                .detections
+                .sync_point(address)
+                .unwrap()
+                .grapheme_boundary,
+            2
+        );
+    }
+
+    #[test]
     fn test_packet_serde() {
         let packet = Packet::RoomCreated {
             code: "ABC123".into(),

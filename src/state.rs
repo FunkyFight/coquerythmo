@@ -46,9 +46,16 @@ fn rebase_pasted_start_frame(source_start: i64, source_anchor: i64, target_ancho
     target_anchor.saturating_add(source_start.saturating_sub(source_anchor))
 }
 
+#[derive(Clone)]
+struct LineClipboardEntry {
+    line: RythmoLine,
+    detections: Option<crate::detection::LineDetectionData>,
+}
+
 #[cfg(test)]
 mod clipboard_tests {
     use super::rebase_pasted_start_frame;
+    use crate::detection::{DetectionDocument, MediaTick};
 
     #[test]
     fn pasted_lines_are_rebased_to_the_playhead_and_keep_their_spacing() {
@@ -62,6 +69,32 @@ mod clipboard_tests {
         assert_eq!(
             rebase_pasted_start_frame(165, source_anchor, playhead),
             playhead + 45
+        );
+    }
+
+    #[test]
+    fn pasted_sync_points_follow_the_line_timeline_offset() {
+        let mut document = DetectionDocument::default();
+        let address = document
+            .add_sync_point(
+                42,
+                4,
+                MediaTick::from_frame(100),
+                MediaTick::from_frame(140),
+                2,
+                MediaTick::from_frame(120),
+            )
+            .unwrap();
+        let mut copied = document.line(42).unwrap().clone();
+
+        copied.shift_sync_points(MediaTick::from_frame(300));
+
+        assert_eq!(
+            copied
+                .sync_point(crate::detection::SyncPointId(address.detection_id.0))
+                .unwrap()
+                .line_tick,
+            MediaTick::from_frame(420)
         );
     }
 }
@@ -79,7 +112,7 @@ pub struct State {
     pub workspace_host: WorkspaceHost,
     pub narration: NarrationService,
     last_autosave: Instant,
-    line_clipboard: Option<Vec<RythmoLine>>,
+    line_clipboard: Option<Vec<LineClipboardEntry>>,
     automation_last_run: Option<(u64, u64)>,
     last_progress_percent: Option<u32>,
     last_progress_announcement: Option<Instant>,
@@ -3013,19 +3046,22 @@ impl State {
     }
 
     pub fn copy_lines_by_ids(&mut self, line_ids: Vec<u64>, cut: bool) {
-        let lines: Vec<RythmoLine> = self
+        let lines: Vec<LineClipboardEntry> = self
             .project_session
             .project
             .lines()
             .filter(|line| line_ids.contains(&line.id))
-            .cloned()
+            .map(|line| LineClipboardEntry {
+                line: line.clone(),
+                detections: self.project_session.project.detections().line(line.id).cloned(),
+            })
             .collect();
         if lines.is_empty() {
             return;
         }
         let clipboard_text = lines
             .iter()
-            .map(|line| line.text.as_str())
+            .map(|entry| entry.line.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
         self.line_clipboard = Some(lines);
@@ -3061,7 +3097,20 @@ impl State {
                 .map(|line| line.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
-            self.line_clipboard = Some(lines.clone());
+            self.line_clipboard = Some(
+                lines
+                    .iter()
+                    .map(|line| LineClipboardEntry {
+                        line: line.clone(),
+                        detections: self
+                            .project_session
+                            .project
+                            .detections()
+                            .line(line.id)
+                            .cloned(),
+                    })
+                    .collect(),
+            );
             crate::platform::clipboard_set(&clipboard_text);
             let key = if lines.len() == 1 {
                 "accessibility.line_copied"
@@ -3108,16 +3157,16 @@ impl State {
         let target_anchor_frame = self.current_frame();
         let source_anchor_frame = snapshots
             .iter()
-            .map(|line| line.start_frame)
+            .map(|entry| entry.line.start_frame)
             .min()
-            .unwrap_or(first_snapshot.start_frame);
+            .unwrap_or(first_snapshot.line.start_frame);
         let source_anchor_track =
-            crate::rythmo_layout::track_index_for_y_slot(first_snapshot.y_slot) as i32;
+            crate::rythmo_layout::track_index_for_y_slot(first_snapshot.line.y_slot) as i32;
         let last_track = crate::rythmo_layout::track_count().saturating_sub(1) as i32;
         let source_track_offsets: Vec<i32> = snapshots
             .iter()
-            .map(|line| {
-                crate::rythmo_layout::track_index_for_y_slot(line.y_slot) as i32
+            .map(|entry| {
+                crate::rythmo_layout::track_index_for_y_slot(entry.line.y_slot) as i32
                     - source_anchor_track
             })
             .collect();
@@ -3128,9 +3177,12 @@ impl State {
         let pasted_count = snapshots.len();
         let base_index = self.project_session.project.line_count();
         let mut inserted_lines: Vec<(RythmoLine, usize)> = Vec::with_capacity(pasted_count);
-        for (offset, mut line) in snapshots.into_iter().enumerate() {
+        let mut pasted_detections = Vec::new();
+        for (offset, entry) in snapshots.into_iter().enumerate() {
+            let mut line = entry.line;
             let source_track = crate::rythmo_layout::track_index_for_y_slot(line.y_slot) as i32;
             let pasted_track = target_anchor_track + source_track - source_anchor_track;
+            let old_start_frame = line.start_frame;
             line.id = loop {
                 let id = self.project_session.project.generate_line_id();
                 if inserted_lines.iter().all(|(inserted, _)| inserted.id != id) {
@@ -3142,6 +3194,13 @@ impl State {
                 source_anchor_frame,
                 target_anchor_frame,
             );
+            if let Some(mut detections) = entry.detections {
+                let delta = crate::detection::MediaTick::from_frame(
+                    line.start_frame.saturating_sub(old_start_frame),
+                );
+                detections.shift_sync_points(delta);
+                pasted_detections.push((line.id, detections));
+            }
             line.y_slot = crate::rythmo_layout::y_slot_for_track_index(pasted_track as usize);
             inserted_lines.push((line, base_index + offset));
         }
@@ -3153,6 +3212,11 @@ impl State {
             self.execute_and_broadcast(Command::InsertLines {
                 lines: inserted_lines,
             });
+        }
+        for (line_id, detections) in pasted_detections {
+            self.project_session
+                .project
+                .restore_line_detections(line_id, detections);
         }
         self.ui_shell.ui.rythmo_state.selected = Some(if pasted_ids.len() == 1 {
             crate::workspaces::rythmo::view::Selection::Line(pasted_ids[0])
@@ -4084,6 +4148,26 @@ impl State {
     }
 
     pub fn update_line_text(&mut self, id: u64, text: String) {
+        let ambiguous_sync_points = self
+            .project_session
+            .project
+            .get_line(id)
+            .map(|line| {
+                self.project_session
+                    .project
+                    .detections()
+                    .ambiguous_sync_point_count(id, &line.text, &text)
+            })
+            .unwrap_or(0);
+        if ambiguous_sync_points > 0 {
+            self.show_toast(
+                format!(
+                    "{} ({ambiguous_sync_points})",
+                    crate::i18n::t("toast.sync_points_ambiguous")
+                ),
+                5.0,
+            );
+        }
         // Coalesce: update last text command for same line
         if self
             .project_session

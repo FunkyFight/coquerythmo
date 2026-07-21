@@ -182,17 +182,15 @@ impl Command {
                 new_y_slot,
                 ..
             } => {
-                if let Some(l) = project.get_line_mut(*line_id) {
-                    l.start_frame = *new_start;
-                    l.y_slot = *new_y_slot;
-                }
+                project.move_line_with_sync_points(*line_id, *new_start, *new_y_slot);
             }
             Command::MoveLines { moves } => {
                 for movement in moves {
-                    if let Some(l) = project.get_line_mut(movement.line_id) {
-                        l.start_frame = movement.new_start;
-                        l.y_slot = movement.new_y_slot;
-                    }
+                    project.move_line_with_sync_points(
+                        movement.line_id,
+                        movement.new_start,
+                        movement.new_y_slot,
+                    );
                 }
             }
             Command::ResizeLine {
@@ -207,11 +205,11 @@ impl Command {
                 }
             }
             Command::UpdateLineText {
-                line_id, new_text, ..
+                line_id,
+                old_text,
+                new_text,
             } => {
-                if let Some(l) = project.get_line_mut(*line_id) {
-                    l.text = new_text.clone();
-                }
+                project.set_line_text_rebasing_sync_points(*line_id, old_text, new_text);
             }
             Command::SetLineKaraoke {
                 line_id,
@@ -365,17 +363,15 @@ impl Command {
                 old_y_slot,
                 ..
             } => {
-                if let Some(l) = project.get_line_mut(*line_id) {
-                    l.start_frame = *old_start;
-                    l.y_slot = *old_y_slot;
-                }
+                project.move_line_with_sync_points(*line_id, *old_start, *old_y_slot);
             }
             Command::MoveLines { moves } => {
                 for movement in moves {
-                    if let Some(l) = project.get_line_mut(movement.line_id) {
-                        l.start_frame = movement.old_start;
-                        l.y_slot = movement.old_y_slot;
-                    }
+                    project.move_line_with_sync_points(
+                        movement.line_id,
+                        movement.old_start,
+                        movement.old_y_slot,
+                    );
                 }
             }
             Command::ResizeLine {
@@ -390,11 +386,11 @@ impl Command {
                 }
             }
             Command::UpdateLineText {
-                line_id, old_text, ..
+                line_id,
+                old_text,
+                new_text,
             } => {
-                if let Some(l) = project.get_line_mut(*line_id) {
-                    l.text = old_text.clone();
-                }
+                project.set_line_text_rebasing_sync_points(*line_id, new_text, old_text);
             }
             Command::SetLineKaraoke {
                 line_id,
@@ -619,6 +615,48 @@ mod tests {
     }
 
     #[test]
+    fn moving_a_line_translates_its_sync_points_and_undo_restores_them() {
+        let (mut project, id) = make_project_with_line();
+        let address = crate::detection::DetectionAddress {
+            line_id: id,
+            detection_id: crate::detection::DetectionCueId(1),
+        };
+        Command::Detection {
+            change: crate::detection::DetectionChange::Add {
+                address,
+                cue: crate::detection::DetectionCue {
+                    id: address.detection_id,
+                    kind: crate::detection::DetectionKind::TextSyncPoint,
+                    media_tick: crate::detection::MediaTick::from_frame(20),
+                    target: crate::detection::TextAnchor::Grapheme { index: 2 },
+                },
+            },
+        }
+        .apply(&mut project);
+        let mut history = CommandHistory::new();
+        let command = Command::MoveLine {
+            line_id: id,
+            old_start: 0,
+            old_y_slot: 0.5,
+            new_start: 100,
+            new_y_slot: 0.5,
+        };
+
+        command.apply(&mut project);
+        history.push(command);
+        assert_eq!(
+            project.detections().sync_point(address).unwrap().line_tick,
+            crate::detection::MediaTick::from_frame(120)
+        );
+
+        history.undo(&mut project);
+        assert_eq!(
+            project.detections().sync_point(address).unwrap().line_tick,
+            crate::detection::MediaTick::from_frame(20)
+        );
+    }
+
+    #[test]
     fn test_undo_redo_delete() {
         let (mut project, id) = make_project_with_line();
         let mut history = CommandHistory::new();
@@ -710,6 +748,90 @@ mod tests {
 
         history.undo(&mut project);
         assert_eq!(project.get_line(id).unwrap().text, "test");
+    }
+
+    #[test]
+    fn sync_point_add_move_retarget_and_delete_share_command_history() {
+        let (mut project, line_id) = make_project_with_line();
+        let address = crate::detection::DetectionAddress {
+            line_id,
+            detection_id: crate::detection::DetectionCueId(1),
+        };
+        let mut cue = crate::detection::DetectionCue {
+            id: address.detection_id,
+            kind: crate::detection::DetectionKind::TextSyncPoint,
+            media_tick: crate::detection::MediaTick::from_frame(10),
+            target: crate::detection::TextAnchor::Grapheme { index: 1 },
+        };
+        let commands = [
+            Command::Detection {
+                change: crate::detection::DetectionChange::Add {
+                    address,
+                    cue: cue.clone(),
+                },
+            },
+            Command::Detection {
+                change: crate::detection::DetectionChange::Move {
+                    address,
+                    old_tick: crate::detection::MediaTick::from_frame(10),
+                    new_tick: crate::detection::MediaTick::from_frame(20),
+                },
+            },
+            Command::Detection {
+                change: crate::detection::DetectionChange::Retarget {
+                    address,
+                    old_boundary: 1,
+                    new_boundary: 2,
+                },
+            },
+            Command::Detection {
+                change: {
+                    cue.media_tick = crate::detection::MediaTick::from_frame(20);
+                    cue.target = crate::detection::TextAnchor::Grapheme { index: 2 };
+                    crate::detection::DetectionChange::Remove {
+                        address,
+                        cue: cue.clone(),
+                    }
+                },
+            },
+        ];
+        let mut history = CommandHistory::new();
+        for command in commands {
+            command.apply(&mut project);
+            history.push(command);
+        }
+        assert!(project.detections().sync_point(address).is_none());
+
+        history.undo(&mut project);
+        assert_eq!(
+            project
+                .detections()
+                .sync_point(address)
+                .unwrap()
+                .grapheme_boundary,
+            2
+        );
+        history.undo(&mut project);
+        assert_eq!(
+            project
+                .detections()
+                .sync_point(address)
+                .unwrap()
+                .grapheme_boundary,
+            1
+        );
+        history.undo(&mut project);
+        assert_eq!(
+            project.detections().sync_point(address).unwrap().line_tick,
+            crate::detection::MediaTick::from_frame(10)
+        );
+        history.undo(&mut project);
+        assert!(project.detections().sync_point(address).is_none());
+
+        for _ in 0..4 {
+            history.redo(&mut project);
+        }
+        assert!(project.detections().sync_point(address).is_none());
     }
 
     #[test]

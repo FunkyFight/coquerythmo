@@ -18,7 +18,7 @@ fn moving_sync_point_changes_only_its_timing_data() {
 
     assert!(detections.move_detection(address, MediaTick::from_frame(60)));
     assert_eq!(
-        detections.detection(address).unwrap().media_tick,
+        detections.sync_point(address).unwrap().line_tick,
         MediaTick::from_frame(60)
     );
     assert_eq!(base_ratios, original_ratios);

@@ -4,9 +4,10 @@
 use super::*;
 use crate::detection::{
     track_storage_line_id, DetectionAddress, DetectionCue, DetectionCueId, DetectionKind,
-    LineDetectionData, MediaTick, TextAnchor,
+    LineDetectionData, MediaTick, SyncPointId, TextAnchor, TextSyncPoint,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use unicode_segmentation::UnicodeSegmentation;
 
 const DETECTION_ICON_SIZE: f32 = 18.0;
 const DETECTION_HIT_SIZE: f32 = 26.0;
@@ -23,7 +24,7 @@ const INFO_PADDING: f32 = 12.0;
 const INFO_IMAGE_SIZE: f32 = 136.0;
 const INFO_TEXT_GAP: f32 = 14.0;
 const SYNC_DOT_SIZE: f32 = 6.0;
-const SYNC_DOT_HIT_PADDING: f32 = 3.0;
+const SYNC_DOT_HIT_PADDING: f32 = 9.0;
 const SYNC_SYLLABLE_DRAG_MASK: u64 = 1_u64 << 63;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -203,16 +204,26 @@ pub struct DetectionDrag {
     start_x: f32,
     start_y: f32,
     moved: bool,
+    retarget_text: bool,
 }
 
 impl DetectionDrag {
     fn new(address: DetectionAddress, x: f32, y: f32) -> Self {
+        Self::with_retarget(address, x, y, false)
+    }
+
+    fn with_retarget(address: DetectionAddress, x: f32, y: f32, retarget_text: bool) -> Self {
         Self {
             address,
             start_x: x,
             start_y: y,
             moved: false,
+            retarget_text,
         }
+    }
+
+    pub(crate) const fn retargets_text(self) -> bool {
+        self.retarget_text
     }
 
     fn exceeds_threshold(self, x: f32, y: f32) -> bool {
@@ -336,8 +347,12 @@ fn popup_rect(menu: &DetectionMenu, zone: &Rect) -> Rect {
         DetectionMenuKind::Info { .. } => (INFO_WIDTH, INFO_HEIGHT),
     };
     Rect {
-        x: menu.x.clamp(zone.x, (zone.x + zone.width - width).max(zone.x)),
-        y: menu.y.clamp(zone.y, (zone.y + zone.height - height).max(zone.y)),
+        x: menu
+            .x
+            .clamp(zone.x, (zone.x + zone.width - width).max(zone.x)),
+        y: menu
+            .y
+            .clamp(zone.y, (zone.y + zone.height - height).max(zone.y)),
         width,
         height,
     }
@@ -404,7 +419,7 @@ fn has_sync_cues(project: &Project, line: &crate::rythmo_line::RythmoLine) -> bo
         && project
             .detections()
             .line(line.id)
-            .is_some_and(|data| data.text_sync_cues().next().is_some())
+            .is_some_and(|data| !data.sync_points().is_empty())
 }
 
 pub(crate) fn line_has_visible_sync_points(
@@ -443,15 +458,14 @@ fn base_character_ratios(
         return (positions, Vec::new());
     }
     let effective_drag = effective_drag_for_line(line.id, drag, state);
-    let ratios = if let Some(drag) =
-        effective_drag.filter(|drag| drag.ratios.len() == breaks.len() + 1)
-    {
-        drag.ratios.clone()
-    } else if let Some(ratios) = syllable_ratios_for_line(line, None, lang, state) {
-        ratios
-    } else {
-        return (positions, Vec::new());
-    };
+    let ratios =
+        if let Some(drag) = effective_drag.filter(|drag| drag.ratios.len() == breaks.len() + 1) {
+            drag.ratios.clone()
+        } else if let Some(ratios) = syllable_ratios_for_line(line, None, lang, state) {
+            ratios
+        } else {
+            return (positions, Vec::new());
+        };
 
     let mut character_start = 0usize;
     let mut ratio_start = 0.0_f32;
@@ -487,42 +501,92 @@ fn sync_anchor_targets(
     let Some(data) = project.detections().line(line.id) else {
         return Vec::new();
     };
-    let character_count = line.text.chars().count();
+    let grapheme_count = UnicodeSegmentation::graphemes(line.text.as_str(), true).count();
+    let spans = grapheme_char_spans(&line.text);
+    let characters = line.text.chars().collect::<Vec<_>>();
     let mut anchors = BTreeMap::new();
-    for cue in data.text_sync_cues() {
-        let Some(index) = cue.target.grapheme_index().map(|index| index as usize) else {
-            continue;
-        };
-        if index >= character_count {
+    for point in data.sync_points() {
+        let index = point.grapheme_boundary as usize;
+        if index >= grapheme_count {
             continue;
         }
-        let ratio = ((cue.media_tick.as_frame_position() - line.start_frame as f64)
+        let ratio = ((point.line_tick.as_frame_position() - line.start_frame as f64)
             / line.duration_frames as f64) as f32;
-        anchors.insert(index, ratio);
+        let (start, end) = spans[index];
+        let punctuation = characters[start..end]
+            .iter()
+            .all(|character| crate::detection::is_sync_punctuation(*character));
+        let boundary = match point.affinity {
+            crate::detection::SyncAffinity::Left => end,
+            crate::detection::SyncAffinity::Right => start,
+            crate::detection::SyncAffinity::Auto if punctuation => end,
+            crate::detection::SyncAffinity::Auto => start,
+        };
+        anchors.insert(boundary, ratio);
     }
     anchors.into_iter().collect()
 }
 
-fn shift_character_ratios(base: &[f32], anchors: &[(usize, f32)]) -> Vec<f32> {
-    let mut shifted = base.to_vec();
-    let mut offset = 0.0_f32;
-    let mut anchor_index = 0usize;
-
-    for boundary in 0..base.len() {
-        while anchor_index < anchors.len() && anchors[anchor_index].0 == boundary {
-            if boundary + 1 < base.len() {
-                let base_center = (base[boundary] + base[boundary + 1]) * 0.5;
-                offset = anchors[anchor_index].1 - base_center;
-            }
-            anchor_index += 1;
-        }
-        shifted[boundary] = base[boundary] + offset;
-    }
-    shifted
+fn grapheme_char_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut char_start = 0usize;
+    UnicodeSegmentation::graphemes(text, true)
+        .map(|grapheme| {
+            let char_end = char_start + grapheme.chars().count();
+            let span = (char_start, char_end);
+            char_start = char_end;
+            span
+        })
+        .collect()
 }
 
-fn character_center_ratio(positions: &[f32], character_index: usize) -> Option<f32> {
-    Some((positions.get(character_index)? + positions.get(character_index + 1)?) * 0.5)
+fn uniform_grapheme_character_positions(spans: &[(usize, usize)]) -> Vec<f32> {
+    let character_count = spans.last().map_or(0, |(_, end)| *end);
+    let mut positions = vec![0.0; character_count + 1];
+    let grapheme_count = spans.len().max(1) as f32;
+    for (grapheme_index, (start, end)) in spans.iter().copied().enumerate() {
+        let scalar_count = end.saturating_sub(start).max(1) as f32;
+        for offset in 0..=end.saturating_sub(start) {
+            positions[start + offset] =
+                (grapheme_index as f32 + offset as f32 / scalar_count) / grapheme_count;
+        }
+    }
+    positions
+}
+
+fn shift_character_ratios(
+    base: &[f32],
+    anchors: &[(usize, f32)],
+) -> Vec<f32> {
+    let mut controls = vec![(0.0_f32, 0.0_f32), (1.0_f32, 1.0_f32)];
+    controls.extend(anchors.iter().filter_map(|(boundary, target)| {
+        Some((base.get(*boundary)?.to_owned(), target.clamp(0.0, 1.0)))
+    }));
+    controls.sort_by(|left, right| left.0.total_cmp(&right.0));
+    controls.dedup_by(|left, right| (left.0 - right.0).abs() < 0.000_01);
+    base.iter()
+        .map(|source| {
+            controls
+                .windows(2)
+                .find_map(|pair| {
+                    let (x0, y0) = pair[0];
+                    let (x1, y1) = pair[1];
+                    (*source <= x1).then(|| {
+                        let local = ((*source - x0) / (x1 - x0).max(0.000_1)).clamp(0.0, 1.0);
+                        y0 + (y1 - y0) * local
+                    })
+                })
+                .unwrap_or(1.0)
+        })
+        .collect()
+}
+
+fn grapheme_center_ratio(
+    positions: &[f32],
+    spans: &[(usize, usize)],
+    grapheme_index: usize,
+) -> Option<f32> {
+    let (start, end) = *spans.get(grapheme_index)?;
+    Some((positions.get(start)? + positions.get(end)?) * 0.5)
 }
 
 fn character_layout(
@@ -532,8 +596,15 @@ fn character_layout(
     lang: &str,
     state: &RythmoState,
 ) -> (Vec<f32>, Vec<f32>, Vec<usize>, Vec<(usize, f32)>) {
-    let (base, breaks) = base_character_ratios(line, drag, lang, state);
     let anchors = sync_anchor_targets(project, line);
+    if !anchors.is_empty() {
+        let spans = grapheme_char_spans(line.text.as_str());
+        let base = uniform_grapheme_character_positions(&spans);
+        let breaks = state.get_syllable_breaks(line, lang);
+        let shifted = shift_character_ratios(&base, &anchors);
+        return (base, shifted, breaks, anchors);
+    }
+    let (base, breaks) = base_character_ratios(line, drag, lang, state);
     let shifted = if anchors.is_empty() {
         base.clone()
     } else {
@@ -572,27 +643,66 @@ pub(crate) fn sync_syllable_boundary_ratios(
 fn sync_point_x(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
-    cue: &DetectionCue,
+    point: &TextSyncPoint,
     current_frame: f64,
     zone: &Rect,
-    state: &RythmoState,
+    _state: &RythmoState,
 ) -> Option<f32> {
     if line.karaoke {
         return None;
     }
-    let index = cue.target.grapheme_index()? as usize;
-    let lang = project.syllable_language_code();
-    let (_, shifted, _, _) = character_layout(project, line, None, lang, state);
-    let center = character_center_ratio(&shifted, index)?;
     let rect = line_rect(project, line, current_frame, zone);
-    Some(rect.x + rect.width * center)
+    let ratio = ((point.line_tick.as_frame_position() - line.start_frame as f64)
+        / line.duration_frames.max(1) as f64) as f32;
+    Some(rect.x + rect.width * ratio.clamp(0.0, 1.0))
 }
 
 fn existing_sync_at(project: &Project, line_id: u64, character_index: usize) -> bool {
     project.detections().line(line_id).is_some_and(|data| {
-        data.text_sync_cues()
-            .any(|cue| cue.target.grapheme_index() == Some(character_index as u32))
+        data.sync_points()
+            .iter()
+            .any(|point| point.grapheme_boundary == character_index as u32)
     })
+}
+
+fn sync_retarget_boundary_at(
+    ctx: &RythmoCtx<'_>,
+    state: &RythmoState,
+    address: DetectionAddress,
+    x: f32,
+    y: f32,
+) -> Option<u32> {
+    let line = ctx.project.get_line(address.line_id)?;
+    let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
+    if y < rect.y - 10.0 || y > rect.y + rect.height + 10.0 || rect.width <= 0.0 {
+        return None;
+    }
+    let (_, positions, _, _) = character_layout(
+        ctx.project,
+        line,
+        None,
+        ctx.project.syllable_language_code(),
+        state,
+    );
+    let pointer = ((x - rect.x) / rect.width).clamp(0.0, 1.0);
+    let current_id = SyncPointId(address.detection_id.0);
+    let data = ctx.project.detections().line(address.line_id)?;
+    let spans = grapheme_char_spans(line.text.as_str());
+    (0..spans.len())
+        .filter(|index| {
+            !data
+                .sync_points()
+                .iter()
+                .any(|point| point.id != current_id && point.grapheme_boundary == *index as u32)
+        })
+        .filter_map(|index| {
+            Some((
+                index,
+                (grapheme_center_ratio(&positions, &spans, index)? - pointer).abs(),
+            ))
+        })
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(index, _)| index as u32)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -613,8 +723,8 @@ fn sync_placeholder_for_line(
     current_frame: f64,
     zone: &Rect,
 ) -> Option<SyncPlaceholder> {
-    let characters: Vec<char> = line.text.chars().collect();
-    if line.karaoke || characters.is_empty() || line.duration_frames <= 0 {
+    let graphemes = UnicodeSegmentation::graphemes(line.text.as_str(), true).collect::<Vec<_>>();
+    if line.karaoke || graphemes.is_empty() || line.duration_frames <= 0 {
         return None;
     }
 
@@ -627,26 +737,32 @@ fn sync_placeholder_for_line(
     let (_, shifted, _, _) = character_layout(project, line, None, lang, state);
     let pointer_ratio = (x - line_rect.x) / line_rect.width;
     let mut candidate = None;
-    for index in 0..characters.len() {
-        if characters[index].is_whitespace() || existing_sync_at(project, line.id, index) {
+    let spans = grapheme_char_spans(line.text.as_str());
+    for index in 0..graphemes.len() {
+        if graphemes[index].chars().all(char::is_whitespace)
+            || existing_sync_at(project, line.id, index)
+        {
             continue;
         }
-        let left = shifted[index].min(shifted[index + 1]);
-        let right = shifted[index].max(shifted[index + 1]);
+        let (start, end) = spans[index];
+        let left = shifted[start].min(shifted[end]);
+        let right = shifted[start].max(shifted[end]);
         if pointer_ratio < left || pointer_ratio > right {
             continue;
         }
-        let center = character_center_ratio(&shifted, index)?;
+        let center = grapheme_center_ratio(&shifted, &spans, index)?;
         let distance = (pointer_ratio - center).abs();
         if candidate
             .as_ref()
-            .map_or(true, |(_, best_distance): &(usize, f32)| distance < *best_distance)
+            .map_or(true, |(_, best_distance): &(usize, f32)| {
+                distance < *best_distance
+            })
         {
             candidate = Some((index, distance));
         }
     }
     let character_index = candidate?.0;
-    let center_ratio = character_center_ratio(&shifted, character_index)?;
+    let center_ratio = grapheme_center_ratio(&shifted, &spans, character_index)?;
     let frame = line.start_frame as f64 + line.duration_frames as f64 * center_ratio as f64;
     Some(SyncPlaceholder {
         line_id: line.id,
@@ -680,15 +796,8 @@ fn hit_sync_placeholder(
     y: f32,
 ) -> Option<(u64, usize, MediaTick)> {
     ctx.project.lines().find_map(|line| {
-        let placeholder = sync_placeholder_for_line(
-            ctx.project,
-            line,
-            state,
-            x,
-            y,
-            ctx.current_frame,
-            ctx.zone,
-        )?;
+        let placeholder =
+            sync_placeholder_for_line(ctx.project, line, state, x, y, ctx.current_frame, ctx.zone)?;
         let hit = expanded_rect(
             sync_dot_rect(placeholder.x, placeholder.line_rect),
             SYNC_DOT_HIT_PADDING,
@@ -731,21 +840,16 @@ fn hit_existing_detection(
             continue;
         };
         let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
-        for cue in data.text_sync_cues() {
-            let Some(cue_x) = sync_point_x(
-                ctx.project,
-                line,
-                cue,
-                ctx.current_frame,
-                ctx.zone,
-                state,
-            ) else {
+        for point in data.sync_points() {
+            let Some(cue_x) =
+                sync_point_x(ctx.project, line, point, ctx.current_frame, ctx.zone, state)
+            else {
                 continue;
             };
             if expanded_rect(sync_dot_rect(cue_x, rect), SYNC_DOT_HIT_PADDING).contains(x, y) {
                 return Some(DetectionAddress {
                     line_id: line.id,
-                    detection_id: cue.id,
+                    detection_id: DetectionCueId(point.id.0),
                 });
             }
         }
@@ -770,26 +874,22 @@ fn clamp_sync_drag_tick(
             MediaTick::from_frame(line.end_frame()),
         );
     };
-    let Some(current) = data.detection(address.detection_id) else {
+    let Some(current) = data.sync_point(SyncPointId(address.detection_id.0)) else {
         return tick;
     };
-    let Some(current_index) = current.target.grapheme_index() else {
-        return tick;
-    };
+    let current_index = current.grapheme_boundary;
 
-    let mut minimum = MediaTick::from_frame(line.start_frame);
-    let mut maximum = MediaTick::from_frame(line.end_frame());
-    for cue in data.text_sync_cues() {
-        if cue.id == address.detection_id {
+    let mut minimum = MediaTick::from_frame(line.start_frame).saturating_add(MediaTick(1));
+    let mut maximum = MediaTick::from_frame(line.end_frame()).saturating_sub(MediaTick(1));
+    for point in data.sync_points() {
+        if point.id.0 == address.detection_id.0 {
             continue;
         }
-        let Some(index) = cue.target.grapheme_index() else {
-            continue;
-        };
+        let index = point.grapheme_boundary;
         if index < current_index {
-            minimum = MediaTick(minimum.raw().max(cue.media_tick.raw().saturating_add(1)));
+            minimum = MediaTick(minimum.raw().max(point.line_tick.raw().saturating_add(1)));
         } else if index > current_index {
-            maximum = MediaTick(maximum.raw().min(cue.media_tick.raw().saturating_sub(1)));
+            maximum = MediaTick(maximum.raw().min(point.line_tick.raw().saturating_sub(1)));
         }
     }
     if minimum > maximum {
@@ -892,36 +992,72 @@ pub(crate) fn render_sync_text_segments(
     (!cursor_segments.is_empty()).then_some(cursor_segments)
 }
 
-fn navigate_detection(project: &Project, state: &mut RythmoState, direction: i32) -> bool {
+fn navigate_detection(
+    project: &Project,
+    state: &mut RythmoState,
+    direction: i32,
+) -> Option<DetectionAddress> {
     let Some(address) = selected_address(state) else {
-        return false;
+        return None;
     };
     let Some(data) = project.detections().line(address.line_id) else {
-        return false;
+        return None;
     };
-    let cues = if address.track().is_some() {
-        data.source_detections().collect::<Vec<_>>()
+    let ids = if address.track().is_some() {
+        data.source_detections()
+            .map(|cue| cue.id)
+            .collect::<Vec<_>>()
     } else {
-        data.text_sync_cues().collect::<Vec<_>>()
+        data.sync_points()
+            .iter()
+            .map(|point| DetectionCueId(point.id.0))
+            .collect::<Vec<_>>()
     };
-    if cues.is_empty() {
-        return false;
+    if ids.is_empty() {
+        return None;
     }
-    let current = cues
+    let current = ids
         .iter()
-        .position(|cue| cue.id == address.detection_id)
+        .position(|id| *id == address.detection_id)
         .unwrap_or(0);
     let index = if direction < 0 {
-        current.checked_sub(1).unwrap_or(cues.len() - 1)
+        current.checked_sub(1).unwrap_or(ids.len() - 1)
     } else {
-        (current + 1) % cues.len()
+        (current + 1) % ids.len()
     };
-    state.selected = Some(Selection::Detection(DetectionAddress {
+    let selected = DetectionAddress {
         line_id: address.line_id,
-        detection_id: cues[index].id,
-    }));
+        detection_id: ids[index],
+    };
+    state.selected = Some(Selection::Detection(selected));
     state.detection_menu = None;
-    true
+    Some(selected)
+}
+
+fn sync_point_accessibility_label(
+    project: &Project,
+    address: DetectionAddress,
+    fps: f64,
+) -> Option<String> {
+    let point = project.detections().sync_point(address)?;
+    let line = project.get_line(address.line_id)?;
+    let grapheme = UnicodeSegmentation::graphemes(line.text.as_str(), true)
+        .nth(point.grapheme_boundary as usize)
+        .unwrap_or("?");
+    let fps = fps.max(1.0);
+    let total_frames = point.line_tick.as_frame_position().max(0.0);
+    let whole_frames = total_frames.floor() as u64;
+    let frames_per_second = fps.round().max(1.0) as u64;
+    let seconds = whole_frames / frames_per_second;
+    let frame = whole_frames % frames_per_second;
+    let subframe = ((total_frames.fract() * 10.0).round() as u64).min(9);
+    Some(format!(
+        "Point de synchronisation, lettre {grapheme}, {:02}:{:02}:{:02}:{:02}.{subframe}",
+        seconds / 3600,
+        (seconds / 60) % 60,
+        seconds % 60,
+        frame
+    ))
 }
 
 pub(crate) fn handle_detection_event(
@@ -940,6 +1076,17 @@ pub(crate) fn handle_detection_event(
                     state.detection_drag = Some(drag);
                     state.detection_menu = None;
                 }
+                if drag.retarget_text && drag.address.track().is_none() {
+                    if let Some(grapheme_boundary) =
+                        sync_retarget_boundary_at(ctx, state, drag.address, *x, *y)
+                    {
+                        return Some(EventResponse::Action(UiAction::MoveSyncAnchor {
+                            address: drag.address,
+                            grapheme_boundary,
+                        }));
+                    }
+                    return Some(EventResponse::Consumed);
+                }
                 let mut tick = pointer_tick(*x, ctx.current_frame, ctx.zone);
                 if drag.address.track().is_none() {
                     tick = clamp_sync_drag_tick(ctx.project, drag.address, tick);
@@ -952,9 +1099,7 @@ pub(crate) fn handle_detection_event(
 
             if let Some(mut menu) = state.detection_menu {
                 if let DetectionMenuKind::Palette {
-                    track,
-                    media_tick,
-                    ..
+                    track, media_tick, ..
                 } = menu.kind
                 {
                     let hover_index = PaletteSign::ALL
@@ -988,35 +1133,26 @@ pub(crate) fn handle_detection_event(
                     track_rect: rect,
                 });
 
-            if line_under_pointer(
-                ctx.project,
-                state,
-                *x,
-                *y,
-                ctx.current_frame,
-                ctx.zone,
-            )
-            .is_some_and(|line| has_sync_cues(ctx.project, line))
-            {
-                state.hovered_line = None;
-                return Some(EventResponse::Consumed);
-            }
+            // Merely hovering a line that owns synchronization points must not
+            // swallow the event. Mouse presses on an actual point or sync
+            // placeholder are handled below; every other part of the line
+            // needs to reach the regular line controller so it can be moved or
+            // resized.
         }
-        UiEvent::MousePress { x, y } => {
+        UiEvent::MousePress { x, y } | UiEvent::ShiftMousePress { x, y } => {
             if let Some(menu) = state.detection_menu {
                 match menu.kind {
                     DetectionMenuKind::Palette {
-                        track,
-                        media_tick,
-                        ..
+                        track, media_tick, ..
                     } => {
-                        if let Some((_, sign)) = PaletteSign::ALL
-                            .iter()
-                            .copied()
-                            .enumerate()
-                            .find(|(index, _)| {
-                                menu_item_rect(&menu, ctx.zone, *index).contains(*x, *y)
-                            })
+                        if let Some((_, sign)) =
+                            PaletteSign::ALL
+                                .iter()
+                                .copied()
+                                .enumerate()
+                                .find(|(index, _)| {
+                                    menu_item_rect(&menu, ctx.zone, *index).contains(*x, *y)
+                                })
                         {
                             let (kind, target) = sign.storage();
                             state.detection_menu = None;
@@ -1042,12 +1178,23 @@ pub(crate) fn handle_detection_event(
             if let Some(address) = hit_existing_detection(ctx, state, *x, *y) {
                 state.selected = Some(Selection::Detection(address));
                 state.detection_menu = None;
-                state.detection_drag = Some(DetectionDrag::new(address, *x, *y));
+                let retarget_text =
+                    matches!(event, UiEvent::ShiftMousePress { .. }) && address.track().is_none();
+                state.detection_drag =
+                    Some(DetectionDrag::with_retarget(address, *x, *y, retarget_text));
+                if address.track().is_none() {
+                    if let Some(label) =
+                        sync_point_accessibility_label(ctx.project, address, ctx.fps)
+                    {
+                        return Some(EventResponse::Action(UiAction::Accessibility(
+                            crate::accessibility::AccessibilityEvent::Selection { label },
+                        )));
+                    }
+                }
                 return Some(EventResponse::Consumed);
             }
 
-            if let Some((line_id, character_index, tick)) =
-                hit_sync_placeholder(ctx, state, *x, *y)
+            if let Some((line_id, character_index, tick)) = hit_sync_placeholder(ctx, state, *x, *y)
             {
                 let Some(address) = next_detection_address(ctx.project, line_id) else {
                     return Some(EventResponse::Consumed);
@@ -1110,12 +1257,22 @@ pub(crate) fn handle_detection_event(
             }
         }
         UiEvent::AltCursorLeft => {
-            if navigate_detection(ctx.project, state, -1) {
+            if let Some(address) = navigate_detection(ctx.project, state, -1) {
+                if let Some(label) = sync_point_accessibility_label(ctx.project, address, ctx.fps) {
+                    return Some(EventResponse::Action(UiAction::Accessibility(
+                        crate::accessibility::AccessibilityEvent::Selection { label },
+                    )));
+                }
                 return Some(EventResponse::Consumed);
             }
         }
         UiEvent::AltCursorRight => {
-            if navigate_detection(ctx.project, state, 1) {
+            if let Some(address) = navigate_detection(ctx.project, state, 1) {
+                if let Some(label) = sync_point_accessibility_label(ctx.project, address, ctx.fps) {
+                    return Some(EventResponse::Action(UiAction::Accessibility(
+                        crate::accessibility::AccessibilityEvent::Selection { label },
+                    )));
+                }
                 return Some(EventResponse::Consumed);
             }
         }
@@ -1190,8 +1347,7 @@ fn render_shifted_syllable_handles(
 ) {
     let lang = project.syllable_language_code();
     let drag = effective_drag_for_line(line.id, state.syllable_drag.as_ref(), state);
-    let Some(boundary_ratios) =
-        sync_syllable_boundary_ratios(project, line, drag, lang, state)
+    let Some(boundary_ratios) = sync_syllable_boundary_ratios(project, line, drag, lang, state)
     else {
         return;
     };
@@ -1332,10 +1488,91 @@ fn push_info_labels<'a>(
     });
 }
 
+fn digit_label(digit: u64) -> &'static str {
+    match digit % 10 {
+        0 => "0",
+        1 => "1",
+        2 => "2",
+        3 => "3",
+        4 => "4",
+        5 => "5",
+        6 => "6",
+        7 => "7",
+        8 => "8",
+        _ => "9",
+    }
+}
+
+fn render_sync_timecode<'a>(
+    tick: MediaTick,
+    fps: f64,
+    x: f32,
+    line_rect: Rect,
+    zone: &Rect,
+    quads: &mut Vec<QuadInstance>,
+    labels: &mut Vec<LabelInfo<'a>>,
+) {
+    let fps = fps.max(1.0);
+    let frame_position = tick.as_frame_position().max(0.0);
+    let whole_frames = frame_position.floor() as u64;
+    let frame_rate = fps.round().max(1.0) as u64;
+    let total_seconds = whole_frames / frame_rate;
+    let hours = (total_seconds / 3600).min(99);
+    let minutes = (total_seconds / 60) % 60;
+    let seconds = total_seconds % 60;
+    let frames = whole_frames % frame_rate;
+    let subframe = ((frame_position.fract() * 10.0).round() as u64).min(9);
+    let tokens = [
+        digit_label(hours / 10),
+        digit_label(hours),
+        ":",
+        digit_label(minutes / 10),
+        digit_label(minutes),
+        ":",
+        digit_label(seconds / 10),
+        digit_label(seconds),
+        ":",
+        digit_label(frames / 10),
+        digit_label(frames),
+        ".",
+        digit_label(subframe),
+    ];
+    let cell = 7.0;
+    let width = tokens.len() as f32 * cell + 8.0;
+    let left = (x - width / 2.0).clamp(zone.x, (zone.x + zone.width - width).max(zone.x));
+    let top = (line_rect.y - 21.0).max(zone.y);
+    let panel = Rect {
+        x: left,
+        y: top,
+        width,
+        height: 18.0,
+    };
+    push_quad(quads, panel, [0.035, 0.045, 0.065, 0.98], 4.0);
+    for (index, token) in tokens.into_iter().enumerate() {
+        labels.push(LabelInfo {
+            text: token,
+            bounds: Rect {
+                x: left + 4.0 + index as f32 * cell,
+                y: top,
+                width: cell,
+                height: panel.height,
+            },
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Visible,
+            padding: 0.0,
+            font_size_override: Some(11.0),
+            color_override: Some([220, 232, 255]),
+            font_family_override: None,
+        });
+    }
+}
+
 pub(crate) fn render_detection_overlay<'a>(
     zone: &Rect,
     project: &'a Project,
     current_frame: f64,
+    fps: f64,
     state: &RythmoState,
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
@@ -1418,13 +1655,13 @@ pub(crate) fn render_detection_overlay<'a>(
             continue;
         };
         let rect = line_rect(project, line, current_frame, zone);
-        for cue in data.text_sync_cues() {
-            let Some(cue_x) = sync_point_x(project, line, cue, current_frame, zone, state) else {
+        for point in data.sync_points() {
+            let Some(cue_x) = sync_point_x(project, line, point, current_frame, zone, state) else {
                 continue;
             };
             let address = DetectionAddress {
                 line_id: line.id,
-                detection_id: cue.id,
+                detection_id: DetectionCueId(point.id.0),
             };
             let selected = selected_address == Some(address);
             let dot = sync_dot_rect(cue_x, rect);
@@ -1444,6 +1681,9 @@ pub(crate) fn render_detection_overlay<'a>(
                 },
                 8.0,
             );
+            if selected {
+                render_sync_timecode(point.line_tick, fps, cue_x, rect, zone, quads, labels);
+            }
         }
     }
 
@@ -1520,29 +1760,8 @@ pub(crate) fn render_detection_overlay<'a>(
                 );
                 y += 6.0;
             }
-            let button = detection_button_rect(&DetectionHover {
-                screen_x: x,
-                ..hover
-            });
-            push_quad(quads, button, [0.10, 0.11, 0.14, 0.94], 4.0);
-            push_line(
-                quads,
-                button.x + 5.0,
-                button.y + button.height / 2.0,
-                button.x + button.width - 5.0,
-                button.y + button.height / 2.0,
-                1.5,
-                [0.90, 0.92, 0.96, 1.0],
-            );
-            push_line(
-                quads,
-                button.x + button.width / 2.0,
-                button.y + 5.0,
-                button.x + button.width / 2.0,
-                button.y + button.height - 5.0,
-                1.5,
-                [0.90, 0.92, 0.96, 1.0],
-            );
+            // Keep the existing palette hit target, but do not draw the small
+            // transient plus requested for removal.
         }
     }
 
@@ -1583,7 +1802,12 @@ pub(crate) fn render_detection_overlay<'a>(
                 };
                 push_quad(quads, image_rect, [0.11, 0.12, 0.15, 1.0], 8.0);
                 icons.push(IconInstance {
-                    rect: [image_rect.x, image_rect.y, image_rect.width, image_rect.height],
+                    rect: [
+                        image_rect.x,
+                        image_rect.y,
+                        image_rect.width,
+                        image_rect.height,
+                    ],
                     uv_rect: rhubarb_uv(info.rhubarb_image_asset, detection_uvs),
                     tint: [1.0, 1.0, 1.0, 1.0],
                 });
@@ -1620,8 +1844,14 @@ mod tests {
     #[test]
     fn palette_contains_nine_distinct_professional_signs() {
         assert_eq!(PaletteSign::ALL.len(), 9);
-        assert_ne!(PaletteSign::DentalTh.storage(), PaletteSign::TeethVisible.storage());
-        assert_ne!(PaletteSign::Neutral.storage(), PaletteSign::Breath.storage());
+        assert_ne!(
+            PaletteSign::DentalTh.storage(),
+            PaletteSign::TeethVisible.storage()
+        );
+        assert_ne!(
+            PaletteSign::Neutral.storage(),
+            PaletteSign::Breath.storage()
+        );
     }
 
     #[test]
@@ -1705,19 +1935,36 @@ mod tests {
     }
 
     #[test]
-    fn moved_anchor_centres_dot_and_translates_suffix_without_resizing_it() {
+    fn piecewise_sync_layout_keeps_implicit_line_edges() {
         let base = vec![0.0, 0.2, 0.5, 0.75, 1.0];
         let shifted = shift_character_ratios(&base, &[(2, 0.8)]);
-        let delta = 0.8 - 0.625;
+        assert_eq!(shifted.first().copied(), Some(0.0));
+        assert_eq!(shifted.last().copied(), Some(1.0));
+        assert!(shifted.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!(shifted[2] > base[2]);
+    }
 
-        assert_eq!(shifted[0], base[0]);
-        assert_eq!(shifted[1], base[1]);
-        assert!((shifted[2] - (base[2] + delta)).abs() < 0.0001);
-        assert!((shifted[3] - (base[3] + delta)).abs() < 0.0001);
-        assert!((shifted[4] - (base[4] + delta)).abs() < 0.0001);
-        assert!((character_center_ratio(&shifted, 2).unwrap() - 0.8).abs() < 0.0001);
-        assert!(((shifted[3] - shifted[2]) - (base[3] - base[2])).abs() < 0.0001);
-        assert!(((shifted[4] - shifted[3]) - (base[4] - base[3])).abs() < 0.0001);
+    #[test]
+    fn sync_layout_indexes_extended_graphemes_as_single_letters() {
+        let spans = grapheme_char_spans("e\u{301}👨‍👩‍👧‍👦P");
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0], (0, 2));
+        assert!(spans[1].1 - spans[1].0 > 1);
+
+        let base = uniform_grapheme_character_positions(&spans);
+        assert_eq!(base.first().copied(), Some(0.0));
+        assert_eq!(base.last().copied(), Some(1.0));
+        let center = grapheme_center_ratio(&base, &spans, 2).unwrap();
+        assert!((center - 5.0 / 6.0).abs() < 0.000_01);
+    }
+
+    #[test]
+    fn sync_control_lands_on_grapheme_edge_not_inside_glyph() {
+        let spans = grapheme_char_spans("A\u{301}BC");
+        let base = uniform_grapheme_character_positions(&spans);
+        let shifted = shift_character_ratios(&base, &[(spans[1].0, 0.8)]);
+        assert!((shifted[spans[1].0] - 0.8).abs() < 0.000_01);
+        assert!(shifted[spans[1].0] <= shifted[spans[1].1]);
     }
 
     #[test]

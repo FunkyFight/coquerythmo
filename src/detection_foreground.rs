@@ -314,10 +314,11 @@ fn palette_item_rect(outer: Rect, index: usize) -> Rect {
 }
 
 fn palette_item_at(outer: Rect, x: f32, y: f32) -> Option<usize> {
-    Sign::ALL
-        .iter()
-        .enumerate()
-        .find_map(|(index, _)| palette_item_rect(outer, index).contains(x, y).then_some(index))
+    Sign::ALL.iter().enumerate().find_map(|(index, _)| {
+        palette_item_rect(outer, index)
+            .contains(x, y)
+            .then_some(index)
+    })
 }
 
 fn selected_address(state: &RythmoState) -> Option<DetectionAddress> {
@@ -378,7 +379,10 @@ fn announce_palette_selection(selected: usize) -> EventResponse {
 }
 
 pub fn captures_input() -> bool {
-    matches!(lock_state().popup, Popup::Palette { .. } | Popup::Info { .. })
+    matches!(
+        lock_state().popup,
+        Popup::Palette { .. } | Popup::Info { .. }
+    )
 }
 
 pub fn handle_modal_event(event: &UiEvent) -> Option<EventResponse> {
@@ -420,19 +424,11 @@ pub fn handle_modal_event(event: &UiEvent) -> Option<EventResponse> {
                 Some(announce_palette_selection(last))
             }
             UiEvent::Activate => Some(activate_palette_choice(
-                track,
-                media_tick,
-                selected,
-                suppressed,
+                track, media_tick, selected, suppressed,
             )),
-            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => {
-                Some(activate_palette_choice(
-                    track,
-                    media_tick,
-                    selected,
-                    suppressed,
-                ))
-            }
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => Some(
+                activate_palette_choice(track, media_tick, selected, suppressed),
+            ),
             UiEvent::KeyInput { text } if text == "\x1b" => {
                 dismiss(PopupKind::Palette, suppressed);
                 Some(EventResponse::Consumed)
@@ -448,10 +444,7 @@ pub fn handle_modal_event(event: &UiEvent) -> Option<EventResponse> {
             UiEvent::MousePress { x, y } => {
                 if let Some(index) = palette_item_at(visual, *x, *y) {
                     return Some(activate_palette_choice(
-                        track,
-                        media_tick,
-                        index,
-                        suppressed,
+                        track, media_tick, index, suppressed,
                     ));
                 }
                 if !visual.contains(*x, *y) {
@@ -470,10 +463,11 @@ pub fn handle_modal_event(event: &UiEvent) -> Option<EventResponse> {
             _ => Some(EventResponse::Consumed),
         },
         Popup::Info {
-            visual,
-            suppressed,
-            ..
+            visual, suppressed, ..
         } => match event {
+            // Deletion is a global command. An open mouth information card must
+            // not trap it before the selected detection reaches the workspace.
+            UiEvent::Delete => None,
             UiEvent::KeyInput { text } if text == "\x1b" => {
                 dismiss(PopupKind::Info, suppressed);
                 Some(EventResponse::Consumed)
@@ -640,10 +634,7 @@ pub(crate) fn suppressed_popup() -> Option<(PopupKind, Rect)> {
     }
 }
 
-pub fn selected_info_accessibility_label(
-    project: &Project,
-    state: &RythmoState,
-) -> Option<String> {
+pub fn selected_info_accessibility_label(project: &Project, state: &RythmoState) -> Option<String> {
     let cue = project.detections().detection(selected_address(state)?)?;
     let details = info(Sign::from_cue(cue)?);
     Some(format!(
@@ -727,10 +718,9 @@ fn mouth_bitmap(mouth: Mouth) -> &'static MouthBitmap {
         let (source_width, source_height) = source.dimensions();
         let scale = (INFO_IMAGE_SIZE / source_width.max(1) as f32)
             .min(INFO_IMAGE_SIZE / source_height.max(1) as f32);
-        let width = ((source_width as f32 * scale).round() as u32)
-            .clamp(1, INFO_IMAGE_SIZE as u32);
-        let height = ((source_height as f32 * scale).round() as u32)
-            .clamp(1, INFO_IMAGE_SIZE as u32);
+        let width = ((source_width as f32 * scale).round() as u32).clamp(1, INFO_IMAGE_SIZE as u32);
+        let height =
+            ((source_height as f32 * scale).round() as u32).clamp(1, INFO_IMAGE_SIZE as u32);
         let resized = image::imageops::resize(
             &source,
             width,
@@ -750,24 +740,22 @@ fn mouth_bitmap(mouth: Mouth) -> &'static MouthBitmap {
     }
 
     match mouth {
-        Mouth::Aa => AA.get_or_init(|| {
-            decode(include_bytes!("icons/detection/rhubarb_lips/AA.png"))
-        }),
-        Mouth::EhAe => EH_AE.get_or_init(|| {
-            decode(include_bytes!("icons/detection/rhubarb_lips/EH_AE.png"))
-        }),
-        Mouth::Fv => FV.get_or_init(|| {
-            decode(include_bytes!("icons/detection/rhubarb_lips/F_V.png"))
-        }),
-        Mouth::KstEe => KST_EE.get_or_init(|| {
-            decode(include_bytes!("icons/detection/rhubarb_lips/K_S_T_EE.png"))
-        }),
-        Mouth::Pbm => PBM.get_or_init(|| {
-            decode(include_bytes!("icons/detection/rhubarb_lips/P_B_M.png"))
-        }),
-        Mouth::UwOwW => UW_OW_W.get_or_init(|| {
-            decode(include_bytes!("icons/detection/rhubarb_lips/UW_OW_W.png"))
-        }),
+        Mouth::Aa => {
+            AA.get_or_init(|| decode(include_bytes!("icons/detection/rhubarb_lips/AA.png")))
+        }
+        Mouth::EhAe => {
+            EH_AE.get_or_init(|| decode(include_bytes!("icons/detection/rhubarb_lips/EH_AE.png")))
+        }
+        Mouth::Fv => {
+            FV.get_or_init(|| decode(include_bytes!("icons/detection/rhubarb_lips/F_V.png")))
+        }
+        Mouth::KstEe => KST_EE
+            .get_or_init(|| decode(include_bytes!("icons/detection/rhubarb_lips/K_S_T_EE.png"))),
+        Mouth::Pbm => {
+            PBM.get_or_init(|| decode(include_bytes!("icons/detection/rhubarb_lips/P_B_M.png")))
+        }
+        Mouth::UwOwW => UW_OW_W
+            .get_or_init(|| decode(include_bytes!("icons/detection/rhubarb_lips/UW_OW_W.png"))),
     }
 }
 
@@ -792,9 +780,7 @@ fn render_mouth(quads: &mut Vec<QuadInstance>, rect: Rect, mouth: Mouth) {
             }
             let start = x;
             x += 1;
-            while x < bitmap.width
-                && bitmap.pixels[(y * bitmap.width + x) as usize] == pixel
-            {
+            while x < bitmap.width && bitmap.pixels[(y * bitmap.width + x) as usize] == pixel {
                 x += 1;
             }
             push_flat_quad(
@@ -989,5 +975,22 @@ mod tests {
         assert!(bitmap.width <= INFO_IMAGE_SIZE as u32);
         assert!(bitmap.height <= INFO_IMAGE_SIZE as u32);
         assert!(bitmap.width > 0 && bitmap.height > 0);
+    }
+
+    #[test]
+    fn delete_passes_through_an_open_information_card() {
+        let rect = Rect {
+            x: 10.0,
+            y: 10.0,
+            width: INFO_WIDTH,
+            height: INFO_HEIGHT,
+        };
+        lock_state().popup = Popup::Info {
+            visual: rect,
+            suppressed: rect,
+            sign: Sign::MouthOpen,
+        };
+        assert!(handle_modal_event(&UiEvent::Delete).is_none());
+        clear();
     }
 }

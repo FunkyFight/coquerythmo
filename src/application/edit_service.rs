@@ -144,6 +144,19 @@ impl EditExecutor {
     where
         F: FnOnce(&mut Command),
     {
+        // An undo leaves the previous command at the top of the undo stack,
+        // where gesture-level matching can mistake it for the command being
+        // actively coalesced. In that case this edit starts a new branch: it
+        // must be pushed normally so the redo branch is discarded in both
+        // history representations.
+        let journal_is_at_active_tip = session.transaction_journal.cursor() > 0
+            && session.transaction_journal.cursor() == session.transaction_journal.entries().len();
+        if matches!(origin, EditOrigin::Local | EditOrigin::Import)
+            && (session.history.can_redo() || !journal_is_at_active_tip)
+        {
+            return Self::execute(session, command, origin);
+        }
+
         command.apply(&mut session.project);
         session.history.update_last(update_last);
         if matches!(origin, EditOrigin::Local | EditOrigin::Import) {
@@ -594,5 +607,47 @@ mod tests {
         let mut session = ProjectSession::new();
         assert!(!EditExecutor::undo(&mut session));
         assert!(!EditExecutor::redo(&mut session));
+    }
+
+    #[test]
+    fn coalescing_after_undo_starts_a_new_branch() {
+        let mut session = ProjectSession::new();
+        let line_id = session.project.add_line(0, 48, 0.0);
+
+        let _ = EditExecutor::execute(
+            &mut session,
+            Command::UpdateLineText {
+                line_id,
+                old_text: String::new(),
+                new_text: "first".into(),
+            },
+            EditOrigin::Local,
+        );
+        assert!(EditExecutor::undo(&mut session));
+
+        let _ = EditExecutor::coalesce(
+            &mut session,
+            Command::UpdateLineText {
+                line_id,
+                old_text: String::new(),
+                new_text: "replacement".into(),
+            },
+            |last| {
+                if let Command::UpdateLineText { new_text, .. } = last {
+                    *new_text = "replacement".into();
+                }
+            },
+            EditOrigin::Local,
+        );
+
+        assert_eq!(
+            session.project.get_line(line_id).unwrap().text,
+            "replacement"
+        );
+        assert_eq!(session.transaction_journal.cursor(), 1);
+        assert_eq!(session.transaction_journal.entries().len(), 1);
+        assert!(!session.history.can_redo());
+        assert!(EditExecutor::undo(&mut session));
+        assert_eq!(session.project.get_line(line_id).unwrap().text, "");
     }
 }

@@ -1561,6 +1561,45 @@ mod tests {
     }
 
     #[test]
+    fn project_save_reload_preserves_sync_points() {
+        let mut project = Project::new();
+        let line_id = project.add_line_full(
+            10,
+            40,
+            0.5,
+            "hello".into(),
+            "Bob".into(),
+            [0.0, 1.0, 0.0, 1.0],
+        );
+        let address = crate::detection::DetectionAddress {
+            line_id,
+            detection_id: crate::detection::DetectionCueId(1),
+        };
+        let change = crate::detection::DetectionChange::Add {
+            address,
+            cue: crate::detection::DetectionCue {
+                id: address.detection_id,
+                kind: crate::detection::DetectionKind::TextSyncPoint,
+                media_tick: crate::detection::MediaTick::from_frame(30),
+                target: crate::detection::TextAnchor::Grapheme { index: 2 },
+            },
+        };
+        assert!(project.apply_detection_change(&change, true));
+        let encoded = serde_json::to_string(&ProjectData::from_project(&project, 24.0)).unwrap();
+        let decoded: ProjectData = serde_json::from_str(&encoded).unwrap();
+        let mut restored = Project::new();
+        decoded.try_apply_to_project(&mut restored, 24.0).unwrap();
+        assert_eq!(
+            restored
+                .detections()
+                .sync_point(address)
+                .unwrap()
+                .grapheme_boundary,
+            2
+        );
+    }
+
+    #[test]
     fn test_unknown_marker_skipped() {
         let data = ProjectData {
             source_fps: 24.0,

@@ -1077,54 +1077,112 @@ fn validate_command_precondition(command: &Command, project: &Project) -> Result
                 return Err(format!("line {line_id} does not match the previous note"));
             }
         }
-        Command::Detection { change } => match change {
-            crate::detection::DetectionChange::Add { address, cue } => {
-                if project.get_line(address.line_id).is_none() {
-                    return Err(missing_line(address.line_id));
+        Command::Detection { change } => {
+            match change {
+                crate::detection::DetectionChange::Add { address, cue } => {
+                    if project.get_line(address.line_id).is_none() {
+                        return Err(missing_line(address.line_id));
+                    }
+                    if cue.id != address.detection_id {
+                        return Err("detection address does not match cue id".into());
+                    }
+                    if project.detections().command_cue(*address).is_some() {
+                        return Err(format!(
+                            "detection {} already exists on line {}",
+                            address.detection_id.0, address.line_id
+                        ));
+                    }
+                    cue.target.validate()?;
                 }
-                if cue.id != address.detection_id {
-                    return Err("detection address does not match cue id".into());
+                crate::detection::DetectionChange::Remove { address, cue } => {
+                    if project.detections().command_cue(*address).as_ref() != Some(cue) {
+                        return Err(format!(
+                            "detection {} on line {} does not match the remove snapshot",
+                            address.detection_id.0, address.line_id
+                        ));
+                    }
                 }
-                if project.detections().detection(*address).is_some() {
-                    return Err(format!(
-                        "detection {} already exists on line {}",
-                        address.detection_id.0, address.line_id
-                    ));
+                crate::detection::DetectionChange::Move {
+                    address, old_tick, ..
+                } => {
+                    let current = project.detections().command_cue(*address).ok_or_else(|| {
+                        format!(
+                            "detection {} on line {} does not exist",
+                            address.detection_id.0, address.line_id
+                        )
+                    })?;
+                    if current.media_tick != *old_tick {
+                        return Err(format!(
+                            "detection {} on line {} does not match the move origin",
+                            address.detection_id.0, address.line_id
+                        ));
+                    }
                 }
-                cue.target.validate()?;
+                crate::detection::DetectionChange::Retarget {
+                    address,
+                    old_boundary,
+                    ..
+                } => {
+                    let current = project.detections().sync_point(*address).ok_or_else(|| {
+                        format!(
+                            "synchronization point {} on line {} does not exist",
+                            address.detection_id.0, address.line_id
+                        )
+                    })?;
+                    if current.grapheme_boundary != *old_boundary {
+                        return Err(format!(
+                            "synchronization point {} on line {} does not match the anchor origin",
+                            address.detection_id.0, address.line_id
+                        ));
+                    }
+                }
+                crate::detection::DetectionChange::SetAffinity {
+                    address,
+                    old_affinity,
+                    ..
+                } => {
+                    let current = project.detections().sync_point(*address).ok_or_else(|| {
+                        format!(
+                            "synchronization point {} on line {} does not exist",
+                            address.detection_id.0, address.line_id
+                        )
+                    })?;
+                    if current.affinity != *old_affinity {
+                        return Err(format!(
+                            "synchronization point {} on line {} does not match the affinity origin",
+                            address.detection_id.0, address.line_id
+                        ));
+                    }
+                }
+                crate::detection::DetectionChange::RemoveLine { line_id, data } => {
+                    if project.detections().line(*line_id) != Some(data) {
+                        return Err(format!(
+                            "detection data for line {line_id} does not match the remove snapshot"
+                        ));
+                    }
+                }
             }
-            crate::detection::DetectionChange::Remove { address, cue } => {
-                if project.detections().detection(*address) != Some(cue) {
-                    return Err(format!(
-                        "detection {} on line {} does not match the remove snapshot",
-                        address.detection_id.0, address.line_id
-                    ));
-                }
+
+            let mut candidate = project.detections().clone();
+            if !change.apply(&mut candidate) {
+                return Err("detection command cannot be applied to the current project".into());
             }
-            crate::detection::DetectionChange::Move {
-                address, old_tick, ..
-            } => {
-                let current = project.detections().detection(*address).ok_or_else(|| {
-                    format!(
-                        "detection {} on line {} does not exist",
-                        address.detection_id.0, address.line_id
+            candidate.validate()?;
+            if let Some(line) = project.get_line(change.line_id()) {
+                if let Some(data) = candidate.line(line.id) {
+                    let grapheme_count = unicode_segmentation::UnicodeSegmentation::graphemes(
+                        line.text.as_str(),
+                        true,
                     )
-                })?;
-                if current.media_tick != *old_tick {
-                    return Err(format!(
-                        "detection {} on line {} does not match the move origin",
-                        address.detection_id.0, address.line_id
-                    ));
+                    .count();
+                    data.validate_sync_points(
+                        grapheme_count,
+                        crate::detection::MediaTick::from_frame(line.start_frame),
+                        crate::detection::MediaTick::from_frame(line.end_frame()),
+                    )?;
                 }
             }
-            crate::detection::DetectionChange::RemoveLine { line_id, data } => {
-                if project.detections().line(*line_id) != Some(data) {
-                    return Err(format!(
-                        "detection data for line {line_id} does not match the remove snapshot"
-                    ));
-                }
-            }
-        },
+        }
         Command::AddDrawingStroke { stroke } => {
             if project.drawing().get(stroke.id).is_some() {
                 return Err(format!("drawing stroke {} already exists", stroke.id));
@@ -1248,6 +1306,44 @@ mod tests {
             decoded.replay(25.0),
             Err(TransactionJournalError::ReplayFpsMismatch)
         ));
+    }
+
+    #[test]
+    fn journal_rejects_sync_points_outside_line_or_text_bounds() {
+        let (project, line_id) = project_with_line();
+        let address = crate::detection::DetectionAddress {
+            line_id,
+            detection_id: crate::detection::DetectionCueId(1),
+        };
+        let command = |media_tick, grapheme_boundary| Command::Detection {
+            change: crate::detection::DetectionChange::Add {
+                address,
+                cue: crate::detection::DetectionCue {
+                    id: address.detection_id,
+                    kind: crate::detection::DetectionKind::TextSyncPoint,
+                    media_tick,
+                    target: crate::detection::TextAnchor::Grapheme {
+                        index: grapheme_boundary,
+                    },
+                },
+            },
+        };
+
+        assert!(validate_command_precondition(
+            &command(crate::detection::MediaTick::from_frame(0), 1),
+            &project,
+        )
+        .is_err());
+        assert!(validate_command_precondition(
+            &command(crate::detection::MediaTick::from_frame(24), 99),
+            &project,
+        )
+        .is_err());
+        assert!(validate_command_precondition(
+            &command(crate::detection::MediaTick::from_frame(24), 1),
+            &project,
+        )
+        .is_ok());
     }
 
     #[test]

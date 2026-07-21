@@ -433,6 +433,52 @@ impl Project {
         &self.settings.detections
     }
 
+    pub(crate) fn restore_line_detections(
+        &mut self,
+        line_id: u64,
+        data: crate::detection::LineDetectionData,
+    ) {
+        self.settings.detections.restore_line(line_id, data);
+        self.bump_revision();
+    }
+
+    pub(crate) fn move_line_with_sync_points(
+        &mut self,
+        line_id: u64,
+        start_frame: i64,
+        y_slot: f32,
+    ) {
+        let Some(old_start) = self.get_line(line_id).map(|line| line.start_frame) else {
+            return;
+        };
+        if old_start != start_frame {
+            let delta = crate::detection::MediaTick::from_frame(
+                start_frame.saturating_sub(old_start),
+            );
+            if let Some(data) = self.settings.detections.line_mut_if_present(line_id) {
+                data.shift_sync_points(delta);
+            }
+        }
+        if let Some(line) = self.get_line_mut(line_id) {
+            line.start_frame = start_frame;
+            line.y_slot = y_slot;
+        }
+    }
+
+    pub(crate) fn set_line_text_rebasing_sync_points(
+        &mut self,
+        line_id: u64,
+        old_text: &str,
+        new_text: &str,
+    ) {
+        self.settings
+            .detections
+            .rebase_sync_points(line_id, old_text, new_text);
+        if let Some(line) = self.get_line_mut(line_id) {
+            line.text = new_text.to_string();
+        }
+    }
+
     pub(crate) fn apply_detection_change(
         &mut self,
         change: &crate::detection::DetectionChange,

@@ -19,7 +19,7 @@ pub(crate) fn syllable_mouse_press(
     let hit_w = 7.0;
 
     for line in ctx.project.lines() {
-        if ctx.karaoke_preview && line.karaoke {
+        if !line.karaoke || (ctx.karaoke_preview && line.karaoke) {
             continue;
         }
 

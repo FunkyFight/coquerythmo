@@ -234,6 +234,7 @@ pub fn run(startup_path: Option<PathBuf>) {
     let mut last_click_time = None;
     let mut ctrl_held = false;
     let mut shift_held = false;
+    let mut shift_used_as_modifier = false;
     let mut keyboard_modifiers = Modifiers::NONE;
     let mut cursor_icon = winit::window::CursorIcon::Default;
 
@@ -372,8 +373,34 @@ pub fn run(startup_path: Option<PathBuf>) {
                         && is_shift_key(event.physical_key)
                         && !event.repeat
                     {
+                        shift_used_as_modifier = false;
                         state.resume_narration();
                         state.request_redraw();
+                        return;
+                    }
+                    if event.state == ElementState::Pressed
+                        && shift_held
+                        && !is_shift_key(event.physical_key)
+                    {
+                        shift_used_as_modifier = true;
+                    }
+                    if event.state == ElementState::Released && is_shift_key(event.physical_key) {
+                        if !shift_used_as_modifier
+                            && !state.is_editing_text()
+                            && !state.captures_modal_input()
+                            && state.has_selected_detection()
+                        {
+                            dispatch_key_action(
+                                UiAction::ToggleSelectedSyncAffinity,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
+                            state.request_redraw();
+                        }
+                        shift_used_as_modifier = false;
                         return;
                     }
                     // Release-driven commands (notably continuous Q/D panning)
@@ -470,7 +497,10 @@ pub fn run(startup_path: Option<PathBuf>) {
                             };
                             let action = if state.has_selected_detection() {
                                 UiAction::NudgeSelectedDetection {
-                                    delta_ticks: delta_frames,
+                                    delta_ticks: crate::detection::MediaTick::from_frame(
+                                        delta_frames,
+                                    )
+                                    .raw(),
                                 }
                             } else {
                                 UiAction::NudgeSelectedLines { delta_frames }
@@ -820,6 +850,28 @@ pub fn run(startup_path: Option<PathBuf>) {
                             key_text
                         };
 
+                        // A line editor may coexist with a previously focused
+                        // syllable separator. Plain Space belongs to the text
+                        // editor in that state; do not let the stale focus
+                        // activate (and advance to) the separator instead.
+                        // Modified Space chords have already been resolved by
+                        // the shortcut router above.
+                        if state.is_rythmo_text_editing()
+                            && !ctrl_held
+                            && !keyboard_modifiers.alt
+                            && is_space_key(&event.logical_key)
+                        {
+                            dispatch(
+                                UiEvent::KeyInput {
+                                    text: " ".to_string(),
+                                },
+                                &mut state,
+                                elwt,
+                            );
+                            state.request_redraw();
+                            return;
+                        }
+
                         if matches!(event.logical_key, Key::Named(NamedKey::Tab)) {
                             dispatch(
                                 if shift_held {
@@ -835,6 +887,20 @@ pub fn run(startup_path: Option<PathBuf>) {
                         if keyboard_modifiers.alt
                             && matches!(event.logical_key, Key::Named(NamedKey::ArrowLeft))
                         {
+                            if shift_held && state.has_selected_detection() {
+                                dispatch_key_action(
+                                    UiAction::NudgeSelectedSyncAnchor {
+                                        delta_graphemes: -1,
+                                    },
+                                    &event,
+                                    keyboard_modifiers,
+                                    InputWindow::Main,
+                                    &mut state,
+                                    elwt,
+                                );
+                                state.request_redraw();
+                                return;
+                            }
                             announce_key_chord(
                                 &event,
                                 keyboard_modifiers,
@@ -847,6 +913,20 @@ pub fn run(startup_path: Option<PathBuf>) {
                         if keyboard_modifiers.alt
                             && matches!(event.logical_key, Key::Named(NamedKey::ArrowRight))
                         {
+                            if shift_held && state.has_selected_detection() {
+                                dispatch_key_action(
+                                    UiAction::NudgeSelectedSyncAnchor {
+                                        delta_graphemes: 1,
+                                    },
+                                    &event,
+                                    keyboard_modifiers,
+                                    InputWindow::Main,
+                                    &mut state,
+                                    elwt,
+                                );
+                                state.request_redraw();
+                                return;
+                            }
                             announce_key_chord(
                                 &event,
                                 keyboard_modifiers,
