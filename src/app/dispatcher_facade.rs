@@ -4,8 +4,8 @@
 //! note-editing actions so line presentation metadata never enters the text
 //! editor and cannot be erased by cut, paste or undo.
 
-pub(crate) use super::event_loop;
-pub(crate) use super::file_picker;
+use super::event_loop;
+use super::file_picker;
 
 #[path = "dispatcher.rs"]
 mod legacy;
