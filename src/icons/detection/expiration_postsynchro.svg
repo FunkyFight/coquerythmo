@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 64"
-fill="none" stroke="currentColor" stroke-width="4"
-stroke-linecap="round" stroke-linejoin="round" role="img" aria-labelledby="title desc">
-  <title id="title">Expiration de postsynchronisation</title>
-  <desc id="desc">Flèche en fuseau inversé dont les lignes convergent vers la pointe à droite.</desc>
-  <path d="M14 25 L137 39"/>
-  <path d="M14 25 H137"/>
-  <path d="M128 28 L144 39 L129 44" fill="currentColor" stroke="none"/>
-</svg>
