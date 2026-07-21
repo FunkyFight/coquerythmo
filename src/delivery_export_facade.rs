@@ -161,7 +161,9 @@ pub fn export_presence_grid_pdf(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detection::{DetectionKind, MediaTick};
+    use crate::detection::{
+        DetectionAddress, DetectionCue, DetectionCueId, DetectionKind, MediaTick,
+    };
     use crate::rythmo_line_metadata::{with_kind, with_presentation};
     use crate::rythmo_special_markers::SpecialMarkerKind;
 
@@ -209,12 +211,19 @@ mod tests {
     #[test]
     fn production_marker_bucket_is_removed_from_json() {
         let mut project = Project::new();
-        project.settings_mut_for_test().detections.add_detection(
-            crate::rythmo_special_markers::storage_line_id(),
-            DetectionKind::Reaction,
-            MediaTick::from_frame(10),
-            SpecialMarkerKind::Start.target(),
-        );
+        let cue = DetectionCue {
+            id: DetectionCueId(1),
+            kind: DetectionKind::Reaction,
+            media_tick: MediaTick::from_frame(10),
+            target: SpecialMarkerKind::Start.target(),
+        };
+        assert!(project.detections_mut().insert_detection(
+            DetectionAddress {
+                line_id: crate::rythmo_special_markers::storage_line_id(),
+                detection_id: cue.id,
+            },
+            cue,
+        ));
         let json = json_document(&project, 24.0).unwrap();
         assert!(!json.contains(&crate::rythmo_special_markers::storage_line_id().to_string()));
     }
