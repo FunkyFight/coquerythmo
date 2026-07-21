@@ -212,6 +212,7 @@ fn add_ambience_label_line(
 pub fn normalize_for_video(project: &Project) -> Project {
     let originals = project.lines_vec();
     let geometries = export_track_geometries(project);
+    let original_character_text = project.settings().scrolling_text_uses_character_color;
     let mut export = project.clone();
     let mut settings = export.settings().clone();
     settings.scrolling_text_uses_character_color = true;
@@ -219,6 +220,11 @@ pub fn normalize_for_video(project: &Project) -> Project {
 
     for original in &originals {
         if original.karaoke {
+            if !original_character_text {
+                if let Some(line) = export.get_line_mut(original.id) {
+                    line.character_color = DIALOGUE_TEXT_COLOR;
+                }
+            }
             continue;
         }
         let (metadata, visible_note) = decode(&original.note);
@@ -237,10 +243,12 @@ pub fn normalize_for_video(project: &Project) -> Project {
             line.note = visible_note.to_string();
             line.character_name.clear();
             line.voice_actor_names.clear();
-            line.character_color = if metadata.kind == LineSemanticKind::Dialogue {
-                DIALOGUE_TEXT_COLOR
-            } else {
-                AMBIENCE_TEXT_COLOR
+            line.character_color = match metadata.kind {
+                LineSemanticKind::Dialogue if original_character_text => original.character_color,
+                LineSemanticKind::Dialogue => DIALOGUE_TEXT_COLOR,
+                LineSemanticKind::AmbienceStart | LineSemanticKind::AmbienceEnd => {
+                    AMBIENCE_TEXT_COLOR
+                }
             };
         }
 
@@ -319,5 +327,26 @@ mod tests {
         let original_markers = source.marker_count();
         let normalized = normalize_for_video(&source);
         assert_eq!(normalized.marker_count(), original_markers);
+    }
+
+    #[test]
+    fn ordinary_text_colour_setting_is_preserved() {
+        let mut source = Project::new();
+        let id = source.add_line(0, 24, 0.0);
+        source.get_line_mut(id).unwrap().character_color = [0.2, 0.8, 0.4, 1.0];
+        let normalized = normalize_for_video(&source);
+        assert_eq!(
+            normalized.get_line(id).unwrap().character_color,
+            DIALOGUE_TEXT_COLOR
+        );
+
+        let mut settings = source.settings().clone();
+        settings.scrolling_text_uses_character_color = true;
+        source.set_settings(settings);
+        let normalized = normalize_for_video(&source);
+        assert_eq!(
+            normalized.get_line(id).unwrap().character_color,
+            [0.2, 0.8, 0.4, 1.0]
+        );
     }
 }
