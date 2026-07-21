@@ -41,6 +41,7 @@ pub mod rythmo_gpu_renderer;
 pub mod rythmo_layout;
 pub mod rythmo_line;
 pub mod rythmo_lint;
+pub mod rythmo_lint_overlay;
 pub mod state;
 mod state_detection;
 pub mod syllable;
