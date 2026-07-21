@@ -38,8 +38,11 @@ pub mod recording_mix;
 pub mod recording_runtime;
 pub mod render_index;
 pub mod rendering;
+#[path = "rythmo_cpu_renderer_facade.rs"]
 pub mod rythmo_cpu_renderer;
 pub mod rythmo_drawing;
+pub mod rythmo_export_project;
+#[path = "rythmo_gpu_renderer_facade.rs"]
 pub mod rythmo_gpu_renderer;
 pub mod rythmo_layout;
 pub mod rythmo_line;
