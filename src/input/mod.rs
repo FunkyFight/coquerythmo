@@ -4,9 +4,8 @@ pub mod binding;
 pub mod context;
 pub mod key;
 
-// Keep the established shortcut table untouched and wrap it with the detection
-// audition chord. This makes Ctrl+Space resolve before the event loop's generic
-// Space playback fallback, while plain Space and D keep their existing jobs.
+// Keep the established shortcut table untouched and wrap it with detection and
+// non-exported production-marker chords.
 #[path = "router.rs"]
 mod router_base;
 
@@ -17,10 +16,11 @@ pub mod router {
     use super::context::InputContext;
     use super::key::{KeyCode, Modifiers};
     use crate::application::command::UiAction;
+    use crate::rythmo_special_markers::SpecialMarkerKind;
 
     pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         let mut router = super::router_base::existing_shortcuts();
-        let chord = Modifiers {
+        let ctrl = Modifiers {
             ctrl: true,
             ..Modifiers::NONE
         };
@@ -28,9 +28,29 @@ pub mod router {
             router.bind(
                 context,
                 KeyCode::Space,
-                chord,
+                ctrl,
                 RepeatPolicy::PressOnly,
                 UiAction::NudgeSelectedDetection { delta_ticks: 0 },
+            );
+        }
+
+        let marker_chord = Modifiers {
+            shift: true,
+            alt: true,
+            ..Modifiers::NONE
+        };
+        for (key, kind) in [
+            (KeyCode::Digit1, SpecialMarkerKind::Start),
+            (KeyCode::Digit2, SpecialMarkerKind::Bip1000),
+            (KeyCode::Digit3, SpecialMarkerKind::FirstImage),
+            (KeyCode::Digit4, SpecialMarkerKind::LastImage),
+        ] {
+            router.bind(
+                InputContext::Workspace,
+                key,
+                marker_chord,
+                RepeatPolicy::PressOnly,
+                crate::rythmo_special_markers::add_action(kind),
             );
         }
         router
