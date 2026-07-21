@@ -91,8 +91,9 @@ pub(crate) fn handle_select_all(ctx: &RythmoCtx, state: &mut RythmoState) -> Eve
     }
     if let Some(line_id) = state.editing_note {
         if let Some(line) = ctx.project.get_line(line_id) {
-            state.note_input.select_all(&line.note);
-            return selection_response(&state.note_input, &line.note);
+            let note = crate::rythmo_line_metadata::user_note(&line.note);
+            state.note_input.select_all(note);
+            return selection_response(&state.note_input, note);
         }
     }
     if ctx.project.lines().next().is_some() {
@@ -109,7 +110,8 @@ pub(crate) fn handle_select_all(ctx: &RythmoCtx, state: &mut RythmoState) -> Eve
 pub(crate) fn handle_copy(ctx: &RythmoCtx, state: &mut RythmoState) -> EventResponse {
     if let Some(line_id) = state.editing_note {
         if let Some(line) = ctx.project.get_line(line_id) {
-            if let Some(text) = state.note_input.selected_text(&line.note) {
+            let note = crate::rythmo_line_metadata::user_note(&line.note);
+            if let Some(text) = state.note_input.selected_text(note) {
                 return EventResponse::Action(UiAction::SetClipboard(text));
             }
         }
@@ -135,9 +137,10 @@ pub(crate) fn handle_cut(ctx: &RythmoCtx, state: &mut RythmoState) -> EventRespo
     let delete = "\x08";
     if let Some(line_id) = state.editing_note {
         if let Some(line) = ctx.project.get_line(line_id) {
-            if let Some(text) = state.note_input.selected_text(&line.note) {
+            let visible_note = crate::rythmo_line_metadata::user_note(&line.note);
+            if let Some(text) = state.note_input.selected_text(visible_note) {
                 if let Some(crate::ui::text_input::TextInputAction::Changed(note)) =
-                    state.note_input.handle_key(delete, &line.note)
+                    state.note_input.handle_key(delete, visible_note)
                 {
                     return EventResponse::Action(UiAction::SetClipboardAndUpdateLineNote {
                         clipboard: text,
@@ -233,6 +236,7 @@ pub(crate) fn handle_cursor_move(
     }
     if let Some(line_id) = state.editing_note {
         if let Some(line) = ctx.project.get_line(line_id) {
+            let note = crate::rythmo_line_metadata::user_note(&line.note);
             if dir < 0 {
                 if shift {
                     state.note_input.move_left_shift();
@@ -240,12 +244,12 @@ pub(crate) fn handle_cursor_move(
                     state.note_input.move_left();
                 }
             } else if shift {
-                state.note_input.move_right_shift(&line.note);
+                state.note_input.move_right_shift(note);
             } else {
-                state.note_input.move_right(&line.note);
+                state.note_input.move_right(note);
             }
             return if shift {
-                selection_response(&state.note_input, &line.note)
+                selection_response(&state.note_input, note)
             } else {
                 EventResponse::Consumed
             };
@@ -281,12 +285,13 @@ pub(crate) fn handle_word_selection(
     }
     if let Some(line_id) = state.editing_note {
         if let Some(line) = ctx.project.get_line(line_id) {
+            let note = crate::rythmo_line_metadata::user_note(&line.note);
             if dir < 0 {
-                state.note_input.move_word_left_shift(&line.note);
+                state.note_input.move_word_left_shift(note);
             } else {
-                state.note_input.move_word_right_shift(&line.note);
+                state.note_input.move_word_right_shift(note);
             }
-            return selection_response(&state.note_input, &line.note);
+            return selection_response(&state.note_input, note);
         }
     }
     EventResponse::Ignored
@@ -362,8 +367,9 @@ pub(crate) fn handle_cursor_boundary(
     }
     if let Some(line_id) = state.editing_note {
         if let Some(line) = ctx.project.get_line(line_id) {
+            let note = crate::rythmo_line_metadata::user_note(&line.note);
             if end {
-                state.note_input.move_end(&line.note, shift);
+                state.note_input.move_end(note, shift);
             } else {
                 state.note_input.move_home(shift);
             }
