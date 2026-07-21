@@ -1,4 +1,4 @@
-//! Rythmo controller facade for detection foreground and accessibility.
+//! Rythmo controller facade for foreground, special markers and accessibility.
 
 use super::*;
 
@@ -26,21 +26,34 @@ pub fn handle_rythmo_event(
     crate::rythmo_lint_overlay::set_playing(karaoke_preview);
 
     let had_information_card = state.detection_menu.is_some() && state.detection_hover.is_none();
-    let response = base::handle_rythmo_event(
-        event,
-        zone,
-        project,
-        render_index,
-        current_frame,
-        karaoke_preview,
-        fps,
-        state,
-        active_mode,
-        brush_color,
-        brush_radius_frac,
-        erasing,
-        interaction_mode,
-    );
+    let marker_response = (interaction_mode == RythmoInteractionMode::Editable)
+        .then(|| {
+            crate::rythmo_special_markers::handle_event(
+                project,
+                state,
+                zone,
+                current_frame,
+                event,
+            )
+        })
+        .flatten();
+    let response = marker_response.unwrap_or_else(|| {
+        base::handle_rythmo_event(
+            event,
+            zone,
+            project,
+            render_index,
+            current_frame,
+            karaoke_preview,
+            fps,
+            state,
+            active_mode,
+            brush_color,
+            brush_radius_frac,
+            erasing,
+            interaction_mode,
+        )
+    });
 
     crate::detection_foreground::sync_from_state(
         project,
