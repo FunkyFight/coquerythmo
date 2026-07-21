@@ -9,10 +9,12 @@ pub(crate) fn handle_key_input(
 ) -> EventResponse {
     use crate::ui::text_input::TextInputAction;
 
-    // Note editing takes priority
+    // Note editing takes priority. Presentation metadata is intentionally kept
+    // outside the text input and restored by the application dispatcher.
     if let Some(line_id) = state.editing_note {
         if let Some(line) = ctx.project.get_line(line_id) {
-            match state.note_input.handle_key(text, &line.note) {
+            let visible_note = crate::rythmo_line_metadata::user_note(&line.note);
+            match state.note_input.handle_key(text, visible_note) {
                 Some(TextInputAction::Changed(new_note)) => {
                     return EventResponse::Action(UiAction::UpdateLineNote {
                         line_id,
