@@ -3,17 +3,25 @@
 
 use super::*;
 use crate::detection::{
-    track_storage_line_id, DetectionAddress, DetectionCue, DetectionKind, MediaTick, TextAnchor,
+    track_storage_line_id, DetectionAddress, DetectionCue, DetectionCueId, DetectionKind,
+    LineDetectionData, MediaTick, TextAnchor,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 const DETECTION_ICON_SIZE: f32 = 18.0;
 const DETECTION_HIT_SIZE: f32 = 26.0;
+const DETECTION_ICON_BOTTOM_MARGIN: f32 = 2.0;
 const DETECTION_BUTTON_SIZE: f32 = 18.0;
 const DETECTION_BUTTON_GAP: f32 = 4.0;
+const DETECTION_DRAG_THRESHOLD: f32 = 4.0;
 const MENU_ICON_SIZE: f32 = 30.0;
 const MENU_GAP: f32 = 4.0;
 const MENU_PADDING: f32 = 6.0;
+const INFO_WIDTH: f32 = 470.0;
+const INFO_HEIGHT: f32 = 176.0;
+const INFO_PADDING: f32 = 12.0;
+const INFO_IMAGE_SIZE: f32 = 136.0;
+const INFO_TEXT_GAP: f32 = 14.0;
 const SYNC_DOT_SIZE: f32 = 6.0;
 const SYNC_DOT_HIT_PADDING: f32 = 3.0;
 const SYNC_SYLLABLE_DRAG_MASK: u64 = 1_u64 << 63;
@@ -88,6 +96,73 @@ impl PaletteSign {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DetectionInfo {
+    title: &'static str,
+    description: &'static str,
+    sound_labels: &'static str,
+    rhubarb_image_asset: &'static str,
+}
+
+fn detection_info(sign: PaletteSign) -> DetectionInfo {
+    match sign {
+        PaletteSign::Labial => DetectionInfo {
+            title: "Labiale",
+            description: "Fermeture nette des lèvres.",
+            sound_labels: "P, B, M",
+            rhubarb_image_asset: "detection/rhubarb_lips/P_B_M.png",
+        },
+        PaletteSign::SemiLabial => DetectionInfo {
+            title: "Semi-labiale",
+            description: "Contact lèvre-dents, fermeture incomplète.",
+            sound_labels: "F, V",
+            rhubarb_image_asset: "detection/rhubarb_lips/F_V.png",
+        },
+        PaletteSign::MouthOpen => DetectionInfo {
+            title: "Bouche ouverte",
+            description: "Ouverture marquée de la bouche.",
+            sound_labels: "A, AN, O ouverts, voyelles larges",
+            rhubarb_image_asset: "detection/rhubarb_lips/AA.png",
+        },
+        PaletteSign::MouthClosed => DetectionInfo {
+            title: "Bouche fermée",
+            description: "Bouche refermée, occlusion visible.",
+            sound_labels: "Fermetures et attaques de consonnes occlusives",
+            rhubarb_image_asset: "detection/rhubarb_lips/P_B_M.png",
+        },
+        PaletteSign::TeethVisible => DetectionInfo {
+            title: "Dents visibles",
+            description: "Dents apparentes, articulation tendue.",
+            sound_labels: "F, V, S, T, EE",
+            rhubarb_image_asset: "detection/rhubarb_lips/K_S_T_EE.png",
+        },
+        PaletteSign::DentalTh => DetectionInfo {
+            title: "TH",
+            description: "Articulation dentale appuyée du « th ».",
+            sound_labels: "TH, T, S appuyés",
+            rhubarb_image_asset: "detection/rhubarb_lips/K_S_T_EE.png",
+        },
+        PaletteSign::Neutral => DetectionInfo {
+            title: "Neutre / parenthèses",
+            description: "Mouvement neutre ou intermédiaire.",
+            sound_labels: "CH, dentales appuyées, articulation neutre",
+            rhubarb_image_asset: "detection/rhubarb_lips/EH_AE.png",
+        },
+        PaletteSign::Breath => DetectionInfo {
+            title: "Respiration",
+            description: "Souffle ou reprise d’air.",
+            sound_labels: "Respiration, souffle, aspiration",
+            rhubarb_image_asset: "detection/rhubarb_lips/UW_OW_W.png",
+        },
+        PaletteSign::Reaction => DetectionInfo {
+            title: "Réaction",
+            description: "Réaction vocale non verbale.",
+            sound_labels: "Rires, exclamations, petits bruits vocaux",
+            rhubarb_image_asset: "detection/rhubarb_lips/AA.png",
+        },
+    }
+}
+
 const MENU_WIDTH: f32 = MENU_PADDING * 2.0
     + MENU_ICON_SIZE * PaletteSign::ALL.len() as f32
     + MENU_GAP * (PaletteSign::ALL.len() as f32 - 1.0);
@@ -103,17 +178,48 @@ pub struct DetectionHover {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+enum DetectionMenuKind {
+    Palette {
+        track: u8,
+        media_tick: MediaTick,
+        hover_index: Option<usize>,
+    },
+    Info {
+        address: DetectionAddress,
+        sign: PaletteSign,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DetectionMenu {
-    pub track: u8,
-    pub media_tick: MediaTick,
-    pub x: f32,
-    pub y: f32,
-    pub hover_index: Option<usize>,
+    x: f32,
+    y: f32,
+    kind: DetectionMenuKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DetectionDrag {
-    pub address: DetectionAddress,
+    address: DetectionAddress,
+    start_x: f32,
+    start_y: f32,
+    moved: bool,
+}
+
+impl DetectionDrag {
+    fn new(address: DetectionAddress, x: f32, y: f32) -> Self {
+        Self {
+            address,
+            start_x: x,
+            start_y: y,
+            moved: false,
+        }
+    }
+
+    fn exceeds_threshold(self, x: f32, y: f32) -> bool {
+        let dx = x - self.start_x;
+        let dy = y - self.start_y;
+        dx * dx + dy * dy >= DETECTION_DRAG_THRESHOLD * DETECTION_DRAG_THRESHOLD
+    }
 }
 
 impl RythmoState {
@@ -123,11 +229,13 @@ impl RythmoState {
         };
         let button = detection_button_rect(&hover);
         self.detection_menu = Some(DetectionMenu {
-            track: hover.track,
-            media_tick: hover.media_tick,
             x: button.x,
             y: button.y + button.height + 2.0,
-            hover_index: None,
+            kind: DetectionMenuKind::Palette {
+                track: hover.track,
+                media_tick: hover.media_tick,
+                hover_index: None,
+            },
         });
         true
     }
@@ -146,6 +254,18 @@ fn selected_address(state: &RythmoState) -> Option<DetectionAddress> {
         Some(Selection::Detection(address)) => Some(*address),
         _ => None,
     }
+}
+
+fn next_detection_address(project: &Project, line_id: u64) -> Option<DetectionAddress> {
+    let detection_id = project
+        .detections()
+        .line(line_id)
+        .map(LineDetectionData::next_detection_id)
+        .unwrap_or(Some(DetectionCueId(1)))?;
+    Some(DetectionAddress {
+        line_id,
+        detection_id,
+    })
 }
 
 fn tick_x(tick: MediaTick, current_frame: f64, zone: &Rect) -> f32 {
@@ -185,7 +305,8 @@ fn detection_button_rect(hover: &DetectionHover) -> Rect {
 fn source_icon_rect(tick: MediaTick, track_rect: Rect, current_frame: f64, zone: &Rect) -> Rect {
     Rect {
         x: tick_x(tick, current_frame, zone) - DETECTION_HIT_SIZE / 2.0,
-        y: track_rect.y + (track_rect.height - DETECTION_HIT_SIZE) / 2.0,
+        y: (track_rect.y + track_rect.height - DETECTION_HIT_SIZE - DETECTION_ICON_BOTTOM_MARGIN)
+            .max(track_rect.y),
         width: DETECTION_HIT_SIZE,
         height: DETECTION_HIT_SIZE,
     }
@@ -209,21 +330,21 @@ fn expanded_rect(rect: Rect, padding: f32) -> Rect {
     }
 }
 
-fn menu_rect(menu: &DetectionMenu, zone: &Rect) -> Rect {
+fn popup_rect(menu: &DetectionMenu, zone: &Rect) -> Rect {
+    let (width, height) = match menu.kind {
+        DetectionMenuKind::Palette { .. } => (MENU_WIDTH, MENU_HEIGHT),
+        DetectionMenuKind::Info { .. } => (INFO_WIDTH, INFO_HEIGHT),
+    };
     Rect {
-        x: menu
-            .x
-            .clamp(zone.x, (zone.x + zone.width - MENU_WIDTH).max(zone.x)),
-        y: menu
-            .y
-            .clamp(zone.y, (zone.y + zone.height - MENU_HEIGHT).max(zone.y)),
-        width: MENU_WIDTH,
-        height: MENU_HEIGHT,
+        x: menu.x.clamp(zone.x, (zone.x + zone.width - width).max(zone.x)),
+        y: menu.y.clamp(zone.y, (zone.y + zone.height - height).max(zone.y)),
+        width,
+        height,
     }
 }
 
 fn menu_item_rect(menu: &DetectionMenu, zone: &Rect, index: usize) -> Rect {
-    let outer = menu_rect(menu, zone);
+    let outer = popup_rect(menu, zone);
     Rect {
         x: outer.x + MENU_PADDING + index as f32 * (MENU_ICON_SIZE + MENU_GAP),
         y: outer.y + MENU_PADDING,
@@ -249,6 +370,32 @@ fn palette_uv(sign: PaletteSign, detection_uvs: [[f32; 4]; 7]) -> [f32; 4] {
         detection_uvs[6][1],
         u_min + cell_width,
         detection_uvs[6][3],
+    ]
+}
+
+fn rhubarb_uv(asset: &str, detection_uvs: [[f32; 4]; 7]) -> [f32; 4] {
+    let index = match asset {
+        "detection/rhubarb_lips/AA.png" => 0.0,
+        "detection/rhubarb_lips/AO_ER.png" => 1.0,
+        "detection/rhubarb_lips/EH_AE.png" => 2.0,
+        "detection/rhubarb_lips/F_V.png" => 3.0,
+        "detection/rhubarb_lips/K_S_T_EE.png" => 4.0,
+        "detection/rhubarb_lips/L.png" => 5.0,
+        "detection/rhubarb_lips/P_B_M.png" => 6.0,
+        "detection/rhubarb_lips/UW_OW_W.png" => 7.0,
+        _ => 0.0,
+    };
+    let sign_width = detection_uvs[0][2] - detection_uvs[0][0];
+    let sign_height = detection_uvs[0][3] - detection_uvs[0][1];
+    let image_width = sign_width * 4.0;
+    let image_height = sign_height * 4.0;
+    let first_u = detection_uvs[6][2] + sign_width * 2.0;
+    let u_min = first_u + image_width * index;
+    [
+        u_min,
+        detection_uvs[0][1],
+        u_min + image_width,
+        detection_uvs[0][1] + image_height,
     ]
 }
 
@@ -296,8 +443,8 @@ fn base_character_ratios(
         return (positions, Vec::new());
     }
     let effective_drag = effective_drag_for_line(line.id, drag, state);
-    let ratios = if let Some(drag) = effective_drag
-        .filter(|drag| drag.ratios.len() == breaks.len() + 1)
+    let ratios = if let Some(drag) =
+        effective_drag.filter(|drag| drag.ratios.len() == breaks.len() + 1)
     {
         drag.ratios.clone()
     } else if let Some(ratios) = syllable_ratios_for_line(line, None, lang, state) {
@@ -773,6 +920,7 @@ fn navigate_detection(project: &Project, state: &mut RythmoState, direction: i32
         line_id: address.line_id,
         detection_id: cues[index].id,
     }));
+    state.detection_menu = None;
     true
 }
 
@@ -783,7 +931,15 @@ pub(crate) fn handle_detection_event(
 ) -> Option<EventResponse> {
     match event {
         UiEvent::MouseMove { x, y } => {
-            if let Some(drag) = state.detection_drag {
+            if let Some(mut drag) = state.detection_drag {
+                if !drag.moved {
+                    if !drag.exceeds_threshold(*x, *y) {
+                        return Some(EventResponse::Consumed);
+                    }
+                    drag.moved = true;
+                    state.detection_drag = Some(drag);
+                    state.detection_menu = None;
+                }
                 let mut tick = pointer_tick(*x, ctx.current_frame, ctx.zone);
                 if drag.address.track().is_none() {
                     tick = clamp_sync_drag_tick(ctx.project, drag.address, tick);
@@ -795,12 +951,24 @@ pub(crate) fn handle_detection_event(
             }
 
             if let Some(mut menu) = state.detection_menu {
-                menu.hover_index = PaletteSign::ALL
-                    .iter()
-                    .enumerate()
-                    .find(|(index, _)| menu_item_rect(&menu, ctx.zone, *index).contains(*x, *y))
-                    .map(|(index, _)| index);
-                state.detection_menu = Some(menu);
+                if let DetectionMenuKind::Palette {
+                    track,
+                    media_tick,
+                    ..
+                } = menu.kind
+                {
+                    let hover_index = PaletteSign::ALL
+                        .iter()
+                        .enumerate()
+                        .find(|(index, _)| menu_item_rect(&menu, ctx.zone, *index).contains(*x, *y))
+                        .map(|(index, _)| index);
+                    menu.kind = DetectionMenuKind::Palette {
+                        track,
+                        media_tick,
+                        hover_index,
+                    };
+                    state.detection_menu = Some(menu);
+                }
                 return Some(EventResponse::Consumed);
             }
 
@@ -836,34 +1004,56 @@ pub(crate) fn handle_detection_event(
         }
         UiEvent::MousePress { x, y } => {
             if let Some(menu) = state.detection_menu {
-                if let Some((_, sign)) = PaletteSign::ALL
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .find(|(index, _)| menu_item_rect(&menu, ctx.zone, *index).contains(*x, *y))
-                {
-                    let (kind, target) = sign.storage();
-                    state.detection_menu = None;
-                    return Some(EventResponse::Action(UiAction::AddDetection {
-                        line_id: track_storage_line_id(menu.track),
-                        kind,
-                        media_tick: menu.media_tick,
-                        target,
-                    }));
+                match menu.kind {
+                    DetectionMenuKind::Palette {
+                        track,
+                        media_tick,
+                        ..
+                    } => {
+                        if let Some((_, sign)) = PaletteSign::ALL
+                            .iter()
+                            .copied()
+                            .enumerate()
+                            .find(|(index, _)| {
+                                menu_item_rect(&menu, ctx.zone, *index).contains(*x, *y)
+                            })
+                        {
+                            let (kind, target) = sign.storage();
+                            state.detection_menu = None;
+                            return Some(EventResponse::Action(UiAction::AddDetection {
+                                line_id: track_storage_line_id(track),
+                                kind,
+                                media_tick,
+                                target,
+                            }));
+                        }
+                        state.detection_menu = None;
+                        return Some(EventResponse::Consumed);
+                    }
+                    DetectionMenuKind::Info { .. } => {
+                        if popup_rect(&menu, ctx.zone).contains(*x, *y) {
+                            return Some(EventResponse::Consumed);
+                        }
+                        state.detection_menu = None;
+                    }
                 }
-                state.detection_menu = None;
-                return Some(EventResponse::Consumed);
             }
 
             if let Some(address) = hit_existing_detection(ctx, state, *x, *y) {
                 state.selected = Some(Selection::Detection(address));
-                state.detection_drag = Some(DetectionDrag { address });
+                state.detection_menu = None;
+                state.detection_drag = Some(DetectionDrag::new(address, *x, *y));
                 return Some(EventResponse::Consumed);
             }
 
             if let Some((line_id, character_index, tick)) =
                 hit_sync_placeholder(ctx, state, *x, *y)
             {
+                let Some(address) = next_detection_address(ctx.project, line_id) else {
+                    return Some(EventResponse::Consumed);
+                };
+                state.selected = Some(Selection::Detection(address));
+                state.detection_drag = Some(DetectionDrag::new(address, *x, *y));
                 return Some(EventResponse::Action(UiAction::AddDetection {
                     line_id,
                     kind: DetectionKind::TextSyncPoint,
@@ -882,9 +1072,28 @@ pub(crate) fn handle_detection_event(
                 return Some(EventResponse::Consumed);
             }
         }
-        UiEvent::MouseRelease { .. } if state.detection_drag.is_some() => {
-            state.detection_drag = None;
-            return Some(EventResponse::Consumed);
+        UiEvent::MouseRelease { x, y } => {
+            if let Some(drag) = state.detection_drag.take() {
+                if !drag.moved && drag.address.track().is_some() {
+                    if let Some(sign) = ctx
+                        .project
+                        .detections()
+                        .detection(drag.address)
+                        .and_then(PaletteSign::from_cue)
+                    {
+                        state.detection_menu = Some(DetectionMenu {
+                            x: *x + 8.0,
+                            y: *y - INFO_HEIGHT - 8.0,
+                            kind: DetectionMenuKind::Info {
+                                address: drag.address,
+                                sign,
+                            },
+                        });
+                        state.detection_hover = None;
+                    }
+                }
+                return Some(EventResponse::Consumed);
+            }
         }
         UiEvent::KeyInput { text } if text == "\x1b" => {
             if state.detection_menu.take().is_some() {
@@ -912,6 +1121,7 @@ pub(crate) fn handle_detection_event(
         }
         UiEvent::Delete => {
             if let Some(address) = selected_address(state) {
+                state.detection_menu = None;
                 return Some(EventResponse::Action(UiAction::DeleteDetection { address }));
             }
         }
@@ -1032,13 +1242,103 @@ fn render_shifted_syllable_handles(
     }
 }
 
+fn push_info_labels<'a>(
+    labels: &mut Vec<LabelInfo<'a>>,
+    outer: Rect,
+    image_rect: Rect,
+    info: DetectionInfo,
+) {
+    let text_x = image_rect.x + image_rect.width + INFO_TEXT_GAP;
+    let text_width = (outer.x + outer.width - INFO_PADDING - text_x).max(0.0);
+    labels.push(LabelInfo {
+        text: info.title,
+        bounds: Rect {
+            x: text_x,
+            y: outer.y + 12.0,
+            width: text_width,
+            height: 28.0,
+        },
+        h_align: HAlign::Left,
+        v_align: VAlign::Center,
+        overflow: Overflow::Ellipsis,
+        padding: 0.0,
+        font_size_override: Some(18.0),
+        color_override: Some([244, 246, 252]),
+        font_family_override: None,
+    });
+    labels.push(LabelInfo {
+        text: "Description",
+        bounds: Rect {
+            x: text_x,
+            y: outer.y + 48.0,
+            width: text_width,
+            height: 18.0,
+        },
+        h_align: HAlign::Left,
+        v_align: VAlign::Center,
+        overflow: Overflow::Ellipsis,
+        padding: 0.0,
+        font_size_override: Some(11.0),
+        color_override: Some([142, 164, 202]),
+        font_family_override: None,
+    });
+    labels.push(LabelInfo {
+        text: info.description,
+        bounds: Rect {
+            x: text_x,
+            y: outer.y + 66.0,
+            width: text_width,
+            height: 24.0,
+        },
+        h_align: HAlign::Left,
+        v_align: VAlign::Center,
+        overflow: Overflow::Ellipsis,
+        padding: 0.0,
+        font_size_override: Some(13.0),
+        color_override: Some([220, 225, 236]),
+        font_family_override: None,
+    });
+    labels.push(LabelInfo {
+        text: "Sons correspondants",
+        bounds: Rect {
+            x: text_x,
+            y: outer.y + 104.0,
+            width: text_width,
+            height: 18.0,
+        },
+        h_align: HAlign::Left,
+        v_align: VAlign::Center,
+        overflow: Overflow::Ellipsis,
+        padding: 0.0,
+        font_size_override: Some(11.0),
+        color_override: Some([142, 164, 202]),
+        font_family_override: None,
+    });
+    labels.push(LabelInfo {
+        text: info.sound_labels,
+        bounds: Rect {
+            x: text_x,
+            y: outer.y + 122.0,
+            width: text_width,
+            height: 36.0,
+        },
+        h_align: HAlign::Left,
+        v_align: VAlign::Top,
+        overflow: Overflow::Ellipsis,
+        padding: 0.0,
+        font_size_override: Some(13.0),
+        color_override: Some([240, 242, 248]),
+        font_family_override: None,
+    });
+}
+
 pub(crate) fn render_detection_overlay<'a>(
     zone: &Rect,
     project: &'a Project,
     current_frame: f64,
     state: &RythmoState,
     quads: &mut Vec<QuadInstance>,
-    _labels: &mut Vec<LabelInfo<'a>>,
+    labels: &mut Vec<LabelInfo<'a>>,
     icons: &mut Vec<IconInstance>,
     detection_uvs: [[f32; 4]; 7],
 ) {
@@ -1202,66 +1502,93 @@ pub(crate) fn render_detection_overlay<'a>(
         }
     }
 
-    if let Some(hover) = state.detection_hover {
-        let x = tick_x(hover.media_tick, current_frame, zone);
-        let mut y = hover.track_rect.y + 2.0;
-        while y < hover.track_rect.y + hover.track_rect.height - 2.0 {
-            push_quad(
+    if state.detection_menu.is_none() {
+        if let Some(hover) = state.detection_hover {
+            let x = tick_x(hover.media_tick, current_frame, zone);
+            let mut y = hover.track_rect.y + 2.0;
+            while y < hover.track_rect.y + hover.track_rect.height - 2.0 {
+                push_quad(
+                    quads,
+                    Rect {
+                        x: x - 0.5,
+                        y,
+                        width: 1.0,
+                        height: 3.0_f32.min(hover.track_rect.y + hover.track_rect.height - y),
+                    },
+                    [0.68, 0.70, 0.76, 0.52],
+                    0.5,
+                );
+                y += 6.0;
+            }
+            let button = detection_button_rect(&DetectionHover {
+                screen_x: x,
+                ..hover
+            });
+            push_quad(quads, button, [0.10, 0.11, 0.14, 0.94], 4.0);
+            push_line(
                 quads,
-                Rect {
-                    x: x - 0.5,
-                    y,
-                    width: 1.0,
-                    height: 3.0_f32.min(hover.track_rect.y + hover.track_rect.height - y),
-                },
-                [0.68, 0.70, 0.76, 0.52],
-                0.5,
+                button.x + 5.0,
+                button.y + button.height / 2.0,
+                button.x + button.width - 5.0,
+                button.y + button.height / 2.0,
+                1.5,
+                [0.90, 0.92, 0.96, 1.0],
             );
-            y += 6.0;
+            push_line(
+                quads,
+                button.x + button.width / 2.0,
+                button.y + 5.0,
+                button.x + button.width / 2.0,
+                button.y + button.height - 5.0,
+                1.5,
+                [0.90, 0.92, 0.96, 1.0],
+            );
         }
-        let button = detection_button_rect(&DetectionHover {
-            screen_x: x,
-            ..hover
-        });
-        push_quad(quads, button, [0.10, 0.11, 0.14, 0.94], 4.0);
-        push_line(
-            quads,
-            button.x + 5.0,
-            button.y + button.height / 2.0,
-            button.x + button.width - 5.0,
-            button.y + button.height / 2.0,
-            1.5,
-            [0.90, 0.92, 0.96, 1.0],
-        );
-        push_line(
-            quads,
-            button.x + button.width / 2.0,
-            button.y + 5.0,
-            button.x + button.width / 2.0,
-            button.y + button.height - 5.0,
-            1.5,
-            [0.90, 0.92, 0.96, 1.0],
-        );
     }
 
     if let Some(menu) = state.detection_menu {
-        let outer = menu_rect(&menu, zone);
-        push_quad(quads, outer, [0.045, 0.048, 0.060, 0.985], 7.0);
-        for (index, sign) in PaletteSign::ALL.iter().copied().enumerate() {
-            let item = menu_item_rect(&menu, zone, index);
-            if menu.hover_index == Some(index) {
-                push_quad(quads, item, [0.18, 0.32, 0.58, 0.82], 5.0);
+        let outer = popup_rect(&menu, zone);
+        match menu.kind {
+            DetectionMenuKind::Palette { hover_index, .. } => {
+                push_quad(quads, outer, [0.045, 0.048, 0.060, 0.985], 7.0);
+                for (index, sign) in PaletteSign::ALL.iter().copied().enumerate() {
+                    let item = menu_item_rect(&menu, zone, index);
+                    if hover_index == Some(index) {
+                        push_quad(quads, item, [0.18, 0.32, 0.58, 0.82], 5.0);
+                    }
+                    icons.push(IconInstance {
+                        rect: [
+                            item.x + 5.0,
+                            item.y + 5.0,
+                            item.width - 10.0,
+                            item.height - 10.0,
+                        ],
+                        uv_rect: palette_uv(sign, detection_uvs),
+                        tint: [0.94, 0.95, 0.98, 1.0],
+                    });
+                }
             }
-            icons.push(IconInstance {
-                rect: [
-                    item.x + 5.0,
-                    item.y + 5.0,
-                    item.width - 10.0,
-                    item.height - 10.0,
-                ],
-                uv_rect: palette_uv(sign, detection_uvs),
-                tint: [0.94, 0.95, 0.98, 1.0],
-            });
+            DetectionMenuKind::Info { address, sign } => {
+                if project.detections().detection(address).is_none() {
+                    return;
+                }
+                let info = detection_info(sign);
+                push_quad(quads, outer, [0.035, 0.039, 0.052, 0.992], 10.0);
+                let image_size = INFO_IMAGE_SIZE.min(outer.height - INFO_PADDING * 2.0);
+                let image_rect = Rect {
+                    x: outer.x + INFO_PADDING,
+                    y: outer.y + (outer.height - image_size) / 2.0,
+                    width: image_size,
+                    height: image_size,
+                };
+                push_quad(quads, image_rect, [0.11, 0.12, 0.15, 1.0], 8.0);
+                icons.push(IconInstance {
+                    rect: [image_rect.x, image_rect.y, image_rect.width, image_rect.height],
+                    uv_rect: rhubarb_uv(info.rhubarb_image_asset, detection_uvs),
+                    tint: [1.0, 1.0, 1.0, 1.0],
+                });
+                push_info_labels(labels, outer, image_rect, info);
+            }
         }
     }
 }
@@ -1312,6 +1639,56 @@ mod tests {
             },
         };
         assert!(detection_button_rect(&hover).y > hover.track_rect.y + hover.track_rect.height);
+    }
+
+    #[test]
+    fn source_icon_is_anchored_to_track_bottom() {
+        crate::config::init();
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 240.0,
+        };
+        let track = Rect {
+            x: 0.0,
+            y: 20.0,
+            width: 800.0,
+            height: 50.0,
+        };
+        let hit = source_icon_rect(MediaTick::ZERO, track, 0.0, &zone);
+        assert_eq!(
+            hit.y,
+            track.y + track.height - DETECTION_HIT_SIZE - DETECTION_ICON_BOTTOM_MARGIN
+        );
+        assert_eq!(hit.x + hit.width / 2.0, tick_x(MediaTick::ZERO, 0.0, &zone));
+    }
+
+    #[test]
+    fn drag_starts_after_four_pixel_threshold() {
+        let address = DetectionAddress {
+            line_id: 1,
+            detection_id: DetectionCueId(1),
+        };
+        let drag = DetectionDrag::new(address, 10.0, 10.0);
+        assert!(!drag.exceeds_threshold(13.0, 12.0));
+        assert!(drag.exceeds_threshold(14.0, 10.0));
+    }
+
+    #[test]
+    fn rhubarb_mapping_uses_expected_reference_mouths() {
+        assert_eq!(
+            detection_info(PaletteSign::Labial).rhubarb_image_asset,
+            "detection/rhubarb_lips/P_B_M.png"
+        );
+        assert_eq!(
+            detection_info(PaletteSign::SemiLabial).rhubarb_image_asset,
+            "detection/rhubarb_lips/F_V.png"
+        );
+        assert_eq!(
+            detection_info(PaletteSign::Neutral).rhubarb_image_asset,
+            "detection/rhubarb_lips/EH_AE.png"
+        );
     }
 
     #[test]
