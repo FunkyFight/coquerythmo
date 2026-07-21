@@ -34,6 +34,10 @@ pub struct LineMetadata {
     pub kind: LineSemanticKind,
 }
 
+pub fn is_encoded(note: &str) -> bool {
+    note.starts_with(HEADER_PREFIX)
+}
+
 pub fn decode(note: &str) -> (LineMetadata, &str) {
     let Some(rest) = note.strip_prefix(HEADER_PREFIX) else {
         return (LineMetadata::default(), note);
@@ -49,13 +53,32 @@ pub fn user_note(note: &str) -> &str {
     decode(note).1
 }
 
-pub fn encode(metadata: LineMetadata, existing_note: &str) -> String {
-    let user_note = user_note(existing_note);
+fn encode_with_user_note(metadata: LineMetadata, user_note: &str) -> String {
     if metadata == LineMetadata::default() {
         return user_note.to_string();
     }
     let json = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
     format!("{HEADER_PREFIX}{json}\n{user_note}")
+}
+
+pub fn encode(metadata: LineMetadata, existing_note: &str) -> String {
+    encode_with_user_note(metadata, user_note(existing_note))
+}
+
+/// Replace only the human-authored note while retaining presentation metadata.
+pub fn replace_user_note(existing_note: &str, new_user_note: &str) -> String {
+    let (metadata, _) = decode(existing_note);
+    encode_with_user_note(metadata, new_user_note)
+}
+
+/// Normalize any note update at the application boundary. Semantic controls
+/// submit an already encoded value; text editors submit plain human text.
+pub fn merge_note_update(existing_note: &str, proposed_note: &str) -> String {
+    if is_encoded(proposed_note) {
+        proposed_note.to_string()
+    } else {
+        replace_user_note(existing_note, proposed_note)
+    }
 }
 
 pub fn with_presentation(existing_note: &str, presentation: LinePresentation) -> String {
@@ -88,6 +111,22 @@ mod tests {
         let encoded = with_presentation("note", LinePresentation::Back);
         let decoded = with_presentation(&encoded, LinePresentation::On);
         assert_eq!(decoded, "note");
+    }
+
+    #[test]
+    fn text_update_preserves_existing_semantics() {
+        let encoded = with_kind("ancienne note", LineSemanticKind::AmbienceStart);
+        let updated = merge_note_update(&encoded, "nouvelle note");
+        let (metadata, note) = decode(&updated);
+        assert_eq!(metadata.kind, LineSemanticKind::AmbienceStart);
+        assert_eq!(note, "nouvelle note");
+    }
+
+    #[test]
+    fn semantic_update_is_not_wrapped_twice() {
+        let existing = with_presentation("note", LinePresentation::Off);
+        let proposed = with_kind(&existing, LineSemanticKind::AmbienceEnd);
+        assert_eq!(merge_note_update(&existing, &proposed), proposed);
     }
 
     #[test]
