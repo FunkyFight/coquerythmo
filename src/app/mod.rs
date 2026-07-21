@@ -1,6 +1,7 @@
 //! Application composition and the native event loop.
 
 mod bootstrap;
+#[path = "dispatcher_facade.rs"]
 mod dispatcher;
 mod event_loop;
 mod file_picker;
