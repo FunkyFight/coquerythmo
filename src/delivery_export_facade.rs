@@ -15,7 +15,14 @@ use std::path::Path;
 
 fn document_project(project: &Project) -> Project {
     let mut document = project.clone();
-    document.retain_lines(|line| decode(&line.note).0.kind == LineSemanticKind::Dialogue);
+    let ambience_ids = document
+        .lines()
+        .filter(|line| decode(&line.note).0.kind != LineSemanticKind::Dialogue)
+        .map(|line| line.id)
+        .collect::<Vec<_>>();
+    for line_id in ambience_ids {
+        document.remove_line(line_id);
+    }
 
     let line_ids = document.lines().map(|line| line.id).collect::<Vec<_>>();
     for line_id in line_ids {
