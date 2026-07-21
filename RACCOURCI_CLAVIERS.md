@@ -70,7 +70,7 @@ Ces quatre marqueurs sont visibles et déplaçables dans l’éditeur, mais ne s
 | `Pavé 8` | Ajouter une liaison à droite |
 | `Pavé 9` | Activer ou désactiver le karaoké pour la sélection |
 | `Ctrl` + `Pavé 1…4` | Créer une réplique sur la piste correspondante |
-| `Maj` + `Pavé -` | Couper ou rétabl le son |
+| `Maj` + `Pavé -` | Couper ou rétablir le son |
 
 ## Projet et interface
 
