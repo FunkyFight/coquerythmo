@@ -1,6 +1,6 @@
 # Raccourcis clavier de Coquerythmo
 
-Cette liste décrit les raccourcis effectivement câblés dans `src/input/router.rs`. Les actions sont sémantiques : AccessKit annonce leur résultat, jamais le nom brut des touches à la place de l’action.
+Cette liste décrit les raccourcis effectivement câblés dans le routeur d’entrée. Les actions sont sémantiques : AccessKit annonce leur résultat, jamais le nom brut des touches à la place de l’action.
 
 ## Lecture et navigation de la bande rythmo
 
@@ -19,7 +19,28 @@ Cette liste décrit les raccourcis effectivement câblés dans `src/input/router
 | `Flèche haut` / `Flèche bas` | Déplacer la réplique sélectionnée sur la piste voisine |
 | `Entrée` | Sélectionner la réplique au curseur de lecture |
 | `Échap` | Quitter la sélection ou fermer l’interaction courante |
-| `Suppr` | Supprimer la sélection, y compris un signe de détection quand sa fiche d’information est ouverte |
+| `Suppr` | Supprimer la sélection, y compris une détection ou un marqueur de production |
+
+## Détection et états de ligne
+
+| Raccourci | Action |
+|---|---|
+| `Alt` + `D` | Ouvrir la palette de détection à la position survolée |
+| `Tab` dans la palette | Atteindre la rangée OFF, de dos, début d’ambiance et fin d’ambiance |
+| `Maj` + `Tab` | Revenir au contrôle précédent |
+| `Flèche gauche` / `Flèche droite` | Parcourir la rangée active |
+| `Entrée` | Activer ou désactiver l’état sélectionné |
+
+## Marqueurs de production non exportés
+
+| Raccourci | Action |
+|---|---|
+| `Alt` + `Maj` + `1` | Ajouter un marqueur `START` à l’image courante |
+| `Alt` + `Maj` + `2` | Ajouter un marqueur `1000` ; il joue un bip de 1000 Hz au franchissement en lecture |
+| `Alt` + `Maj` + `3` | Ajouter un marqueur première image `P.I` |
+| `Alt` + `Maj` + `4` | Ajouter un marqueur dernière image `D.I` |
+
+Ces quatre marqueurs sont visibles et déplaçables dans l’éditeur, mais ne sont ni dessinés ni sonorisés dans les exports.
 
 ## Édition des répliques
 
@@ -49,7 +70,7 @@ Cette liste décrit les raccourcis effectivement câblés dans `src/input/router
 | `Pavé 8` | Ajouter une liaison à droite |
 | `Pavé 9` | Activer ou désactiver le karaoké pour la sélection |
 | `Ctrl` + `Pavé 1…4` | Créer une réplique sur la piste correspondante |
-| `Maj` + `Pavé -` | Couper ou rétablir le son |
+| `Maj` + `Pavé -` | Couper ou rétabl le son |
 
 ## Projet et interface
 
@@ -69,11 +90,12 @@ Cette liste décrit les raccourcis effectivement câblés dans `src/input/router
 | `Ctrl` + `Tab` | Basculer entre l’audio source et l’instrumental |
 | `Ctrl` + `Maj` + `N` | Activer ou désactiver le lecteur d’écran intégré |
 
-## Souris et détection
+## Souris
 
 | Interaction | Action |
 |---|---|
-| Clic sur le `+` d’une piste | Ouvrir la palette des signes de détection |
-| Glisser un signe | Changer son image ou sa piste |
+| Glisser un signe de détection | Changer son image ou sa piste |
 | `Maj` + glisser un signe | Changer sa piste en conservant son image |
-| Clic molette + glisser | Déplacer la vue sans désynchroniser le `+` de détection |
+| Glisser un point de synchronisation | Déplacer uniquement la limite entre ses deux segments voisins |
+| Glisser un marqueur `START`, `1000`, `P.I` ou `D.I` | Changer son image |
+| Clic molette + glisser | Déplacer la vue |
