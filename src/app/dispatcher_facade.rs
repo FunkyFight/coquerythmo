@@ -9,7 +9,9 @@ use super::file_picker;
 #[path = "dispatcher.rs"]
 mod legacy;
 
+use crate::accessibility::AccessibilityEvent;
 use crate::detection::MediaTick;
+use crate::rythmo_special_markers::SpecialMarkerKind;
 use crate::state::State;
 use crate::ui::primitives::{EventResponse, UiAction, UiEvent};
 use crate::workspaces::rythmo::view::Selection;
@@ -39,6 +41,24 @@ fn selected_special_marker(state: &State) -> bool {
         Some(Selection::Detection(address))
             if crate::rythmo_special_markers::is_special_address(*address)
     )
+}
+
+fn special_marker_action(action: &UiAction) -> Option<SpecialMarkerKind> {
+    let UiAction::AddDetection {
+        line_id, target, ..
+    } = action
+    else {
+        return None;
+    };
+    (*line_id == crate::rythmo_special_markers::storage_line_id())
+        .then(|| SpecialMarkerKind::from_target(target))
+        .flatten()
+}
+
+fn announce_special_marker(state: &State, kind: SpecialMarkerKind) {
+    state.announce_accessibility(AccessibilityEvent::Success {
+        message: format!("{} ajouté", kind.accessible_name()),
+    });
 }
 
 fn begin_visible_note_edit(state: &mut State) -> bool {
@@ -126,8 +146,17 @@ impl CommandDispatcher {
         {
             return false;
         }
+        let marker_kind = special_marker_action(&action);
         let action = normalize_action(action, state);
-        legacy::CommandDispatcher::dispatch_shortcut(action, state, elwt)
+        let should_exit = if marker_kind.is_some() {
+            legacy::CommandDispatcher::dispatch(action, state, elwt)
+        } else {
+            legacy::CommandDispatcher::dispatch_shortcut(action, state, elwt)
+        };
+        if let Some(kind) = marker_kind {
+            announce_special_marker(state, kind);
+        }
+        should_exit
     }
 
     pub(crate) fn dispatch(
@@ -147,8 +176,13 @@ impl CommandDispatcher {
         {
             return false;
         }
+        let marker_kind = special_marker_action(&action);
         let action = normalize_action(action, state);
-        legacy::CommandDispatcher::dispatch(action, state, elwt)
+        let should_exit = legacy::CommandDispatcher::dispatch(action, state, elwt);
+        if let Some(kind) = marker_kind {
+            announce_special_marker(state, kind);
+        }
+        should_exit
     }
 }
 
