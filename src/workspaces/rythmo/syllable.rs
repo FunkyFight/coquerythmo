@@ -15,47 +15,87 @@ pub(crate) fn syllable_mouse_press(
         return None;
     }
 
-    // Find which line was clicked
-    let line = ctx
-        .project
-        .lines()
-        .find(|l| line_rect(ctx.project, l, ctx.current_frame, ctx.zone).contains(x, y))?;
-    if ctx.karaoke_preview && line.karaoke {
-        return None;
-    }
-    if state.hovered_line != Some(line.id) {
-        return None;
-    }
-
-    let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
-
     let lang = ctx.project.syllable_language_code();
-    let ratios = syllable_ratios_for_line(line, state.syllable_drag.as_ref(), lang, state)?;
-    if ratios.len() <= 1 {
-        return None;
-    }
-
-    // Find which separator is closest to click
-    let mut sep_x = r.x;
     let hit_w = 7.0;
-    let top_y = r.y + 1.0;
-    if y < top_y - 6.0 || y > top_y + 14.0 {
-        return None;
-    }
-    for (i, ratio) in ratios.iter().enumerate() {
-        sep_x += ratio * r.width;
-        if i < ratios.len() - 1 && (x - sep_x).abs() < hit_w {
-            state.syllable_drag = Some(SyllableDrag {
-                line_id: line.id,
-                separator_index: i,
-                ratios: ratios.clone(),
-                drag_start_x: x,
-                line_rect: r,
-                preserve_prefix,
-            });
-            return Some(EventResponse::Consumed);
+
+    for line in ctx.project.lines() {
+        if ctx.karaoke_preview && line.karaoke {
+            continue;
+        }
+
+        let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
+        let top_y = r.y + 1.0;
+        if y < top_y - 6.0 || y > top_y + 14.0 {
+            continue;
+        }
+
+        let Some(ratios) =
+            syllable_ratios_for_line(line, state.syllable_drag.as_ref(), lang, state)
+        else {
+            continue;
+        };
+        if ratios.len() <= 1 {
+            continue;
+        }
+
+        if let Some(boundaries) = sync_syllable_boundary_ratios(
+            ctx.project,
+            line,
+            state.syllable_drag.as_ref(),
+            lang,
+            state,
+        ) {
+            for separator_index in 0..ratios.len() - 1 {
+                let Some(boundary_ratio) = boundaries.get(separator_index + 1).copied() else {
+                    continue;
+                };
+                let separator_x = r.x + boundary_ratio * r.width;
+                if (x - separator_x).abs() < hit_w {
+                    state.hovered_line = None;
+                    let encoded_line_id = encode_sync_syllable_drag_line_id(line.id);
+                    state.syllable_drag = Some(SyllableDrag {
+                        line_id: encoded_line_id,
+                        separator_index,
+                        ratios: ratios.clone(),
+                        drag_start_x: x,
+                        line_rect: r,
+                        preserve_prefix,
+                    });
+                    crate::workspaces::rythmo::detection_ui::begin_sync_syllable_drag(
+                        ctx.project,
+                        line,
+                        encoded_line_id,
+                        separator_index,
+                        state,
+                    );
+                    return Some(EventResponse::Consumed);
+                }
+            }
+            continue;
+        }
+
+        if state.hovered_line != Some(line.id) || !r.contains(x, y) {
+            continue;
+        }
+
+        let mut separator_x = r.x;
+        for (separator_index, ratio) in ratios.iter().enumerate() {
+            separator_x += ratio * r.width;
+            if separator_index < ratios.len() - 1 && (x - separator_x).abs() < hit_w {
+                crate::workspaces::rythmo::detection_ui::clear_sync_syllable_drag();
+                state.syllable_drag = Some(SyllableDrag {
+                    line_id: line.id,
+                    separator_index,
+                    ratios: ratios.clone(),
+                    drag_start_x: x,
+                    line_rect: r,
+                    preserve_prefix,
+                });
+                return Some(EventResponse::Consumed);
+            }
         }
     }
+
     None
 }
 
@@ -67,8 +107,9 @@ pub(crate) fn syllable_mouse_move(state: &mut RythmoState, x: f32) -> Option<Eve
     drag.drag_start_x = x;
 
     let i = drag.separator_index;
-    let min_ratio = syllable_drag_min_ratio(drag.ratios.len(), drag.line_rect.width);
-    if delta_ratio.abs() <= 0.0001 || i + 1 >= drag.ratios.len() {
+    let segment_count = drag.ratios.len();
+    let min_ratio = syllable_drag_min_ratio(segment_count, drag.line_rect.width);
+    if delta_ratio.abs() <= 0.0001 || i + 1 >= segment_count {
         return Some(EventResponse::Consumed);
     }
 
@@ -92,23 +133,37 @@ pub(crate) fn syllable_mouse_move(state: &mut RythmoState, x: f32) -> Option<Eve
         return Some(EventResponse::Consumed);
     }
 
+    // With synchronization points, redistribution is local to the interval
+    // bounded by the previous and next point. Without synchronization, the
+    // original whole-line behavior remains unchanged.
+    let local_range = crate::workspaces::rythmo::detection_ui::active_sync_syllable_edit_range(
+        drag.line_id,
+        segment_count,
+    );
+    let (range_start, range_end) = local_range.unwrap_or((0, segment_count));
     let left_end = i + 1;
     let right_start = i + 1;
-    let left_total: f32 = drag.ratios[..left_end].iter().sum();
-    let right_total: f32 = drag.ratios[right_start..].iter().sum();
-    let left_min_total = min_ratio * left_end as f32;
-    let right_min_total = min_ratio * (drag.ratios.len() - right_start) as f32;
+    if range_start >= left_end || right_start >= range_end {
+        return Some(EventResponse::Consumed);
+    }
+
+    let left_total: f32 = drag.ratios[range_start..left_end].iter().sum();
+    let right_total: f32 = drag.ratios[right_start..range_end].iter().sum();
+    let left_count = left_end - range_start;
+    let right_count = range_end - right_start;
+    let left_min_total = min_ratio * left_count as f32;
+    let right_min_total = min_ratio * right_count as f32;
 
     if delta_ratio > 0.0 {
         let applied = delta_ratio.min((right_total - right_min_total).max(0.0));
         if applied > 0.0 {
             redistribute_group_to_total(
-                &mut drag.ratios[..left_end],
+                &mut drag.ratios[range_start..left_end],
                 left_total + applied,
                 min_ratio,
             );
             redistribute_group_to_total(
-                &mut drag.ratios[right_start..],
+                &mut drag.ratios[right_start..range_end],
                 right_total - applied,
                 min_ratio,
             );
@@ -117,19 +172,24 @@ pub(crate) fn syllable_mouse_move(state: &mut RythmoState, x: f32) -> Option<Eve
         let applied = (-delta_ratio).min((left_total - left_min_total).max(0.0));
         if applied > 0.0 {
             redistribute_group_to_total(
-                &mut drag.ratios[..left_end],
+                &mut drag.ratios[range_start..left_end],
                 left_total - applied,
                 min_ratio,
             );
             redistribute_group_to_total(
-                &mut drag.ratios[right_start..],
+                &mut drag.ratios[right_start..range_end],
                 right_total + applied,
                 min_ratio,
             );
         }
     }
 
-    normalize_ratios_in_place(&mut drag.ratios);
+    // The local transfer preserves the total exactly. Avoid a whole-vector
+    // normalization here: even tiny renormalization would move text outside the
+    // active synchronization interval.
+    if local_range.is_none() {
+        normalize_ratios_in_place(&mut drag.ratios);
+    }
 
     Some(EventResponse::Consumed)
 }
@@ -188,8 +248,25 @@ pub(crate) fn normalize_ratios_in_place(ratios: &mut [f32]) {
 
 pub(crate) fn syllable_mouse_release(state: &mut RythmoState) -> Option<EventResponse> {
     let drag = state.syllable_drag.take()?;
-    Some(EventResponse::Action(UiAction::SetSyllableRatios {
-        line_id: drag.line_id,
+    let line_id = decode_sync_syllable_drag_line_id(drag.line_id).unwrap_or(drag.line_id);
+    let fitted = crate::workspaces::rythmo::detection_ui::finish_sync_syllable_drag(
+        drag.line_id,
+        &drag.ratios,
+    );
+    let mut actions = vec![UiAction::SetSyllableRatios {
+        line_id,
         ratios: drag.ratios,
-    }))
+    }];
+    if let Some((start_frame, duration_frames)) = fitted {
+        actions.push(UiAction::ResizeLine {
+            id: line_id,
+            start_frame,
+            duration_frames,
+        });
+    }
+    Some(if actions.len() == 1 {
+        EventResponse::Action(actions.remove(0))
+    } else {
+        EventResponse::Actions(actions)
+    })
 }

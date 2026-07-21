@@ -4,6 +4,15 @@ use crate::application::workspace_service::{Workspace, WorkspaceCommand, Workspa
 
 pub mod view;
 
+/// Narrow bridge for sibling controller modules that need the synchronization
+/// drag helpers implemented by the view adapter.
+pub(crate) mod detection_ui {
+    pub(crate) use super::view::{
+        active_sync_syllable_edit_range, begin_sync_syllable_drag,
+        clear_sync_syllable_drag, finish_sync_syllable_drag,
+    };
+}
+
 /// The sole product workspace. Its transient interaction state remains in the
 /// existing UI while the adapter establishes the future extension boundary.
 pub struct RythmoWorkspace {

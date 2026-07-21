@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn hit_test_line_and_track(
+pub(crate) fn hit_test_line_and_track(
     ctx: &RythmoCtx,
     state: &RythmoState,
     x: f32,

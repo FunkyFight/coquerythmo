@@ -392,6 +392,7 @@ impl ProjectData {
             (settings.source_audio_offset_frames as f64 * fps_ratio) as i64;
         settings.instrumental_audio_offset_frames =
             (settings.instrumental_audio_offset_frames as f64 * fps_ratio) as i64;
+        settings.detections = settings.detections.scaled_time(fps_ratio);
         project.set_settings(settings);
 
         let characters = self

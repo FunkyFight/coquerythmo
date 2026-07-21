@@ -468,8 +468,15 @@ pub fn run(startup_path: Option<PathBuf>) {
                             } else {
                                 1
                             };
+                            let action = if state.has_selected_detection() {
+                                UiAction::NudgeSelectedDetection {
+                                    delta_ticks: delta_frames,
+                                }
+                            } else {
+                                UiAction::NudgeSelectedLines { delta_frames }
+                            };
                             dispatch_key_action(
-                                UiAction::NudgeSelectedLines { delta_frames },
+                                action,
                                 &event,
                                 keyboard_modifiers,
                                 InputWindow::Main,
@@ -743,6 +750,30 @@ pub fn run(startup_path: Option<PathBuf>) {
                                 return;
                             }
                         }
+                        if matches!(event.logical_key, Key::Named(NamedKey::Escape))
+                            && !state.captures_modal_input()
+                            && !state.is_editing_text()
+                            && state.has_selected_detection()
+                        {
+                            state.focus_detection_parent_line();
+                            state.request_redraw();
+                            return;
+                        }
+                        if !ctrl_held
+                            && !shift_held
+                            && keyboard_modifiers.alt
+                            && !event.repeat
+                            && !state.captures_modal_input()
+                            && !state.is_editing_text()
+                            && state.active_workspace() == WorkspaceId::Rythmo
+                            && state.rythmo_detection_hovered()
+                            && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("d"))
+                        {
+                            state.open_detection_palette_from_hover();
+                            state.request_redraw();
+                            return;
+                        }
+
                         let mut contexts = Vec::new();
                         if state.captures_modal_input() {
                             contexts.push(InputContext::Modal);
