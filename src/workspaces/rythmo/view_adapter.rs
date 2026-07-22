@@ -82,11 +82,8 @@ pub fn render_lines<'a>(
         return result;
     }
 
-    let collision_targets = super::badge_policy::character_badge_collision_targets(
-        project,
-        current_frame,
-        zone,
-    );
+    let collision_layout =
+        super::badge_policy::CharacterBadgeLayoutContext::new(project, current_frame, zone);
     let mut hidden_line_ids = HashSet::new();
     for line_id in rendered_character_line_ids {
         let Some(line) = project.get_line(line_id) else {
@@ -96,15 +93,7 @@ pub fn render_lines<'a>(
         let hidden = if karaoke_preview && line.karaoke {
             !super::badge_policy::karaoke_character_label_visible(project, line)
         } else {
-            line.kind.is_dialogue()
-                && super::badge_policy::character_badge_layout_with_targets(
-                    project,
-                    line,
-                    current_frame,
-                    zone,
-                    &collision_targets,
-                )
-                .0
+            line.kind.is_dialogue() && collision_layout.badge_layout(line).0
         };
         if hidden {
             hidden_line_ids.insert(line_id);
