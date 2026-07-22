@@ -47,8 +47,11 @@ pub mod rythmo_line;
 pub mod state;
 mod state_detection;
 pub mod syllable;
+pub mod text_emotion;
+pub mod text_emotion_foreground;
 pub mod ui;
 pub mod update;
+#[path = "vector_text_emotions.rs"]
 pub mod vector_text;
 #[path = "video_timing.rs"]
 pub mod video;
