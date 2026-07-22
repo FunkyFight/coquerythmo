@@ -51,9 +51,11 @@ fn is_text_emotion_shortcut(action: &UiAction) -> bool {
 }
 
 fn open_text_emotion_palette(state: &mut State) -> bool {
+    let size = state.render.gfx.size;
+    let (screen_w, screen_h) =
+        state.window_to_ui_position(size.width as f32, size.height as f32);
     let opened = {
         let ui = &state.ui_shell.ui;
-        let (screen_w, screen_h) = ui.text_emotion_screen_size();
         let (cursor_x, cursor_y) = ui.cursor_pos;
         crate::text_emotion_foreground::open_keyboard(
             &state.project_session.project,
@@ -66,14 +68,16 @@ fn open_text_emotion_palette(state: &mut State) -> bool {
     };
 
     if opened {
-        state
-            .ui_shell
-            .ui
-            .open_text_emotion_accessibility_scope();
         state.announce_shortcut_accessibility(
             crate::accessibility::AccessibilityEvent::Opened {
-                label: "Menu des émotions du texte. Retirer l’émotion. Utilisez les flèches haut et bas puis Entrée."
+                label: "Menu des émotions du texte. Utilisez les flèches haut et bas puis Entrée."
                     .to_string(),
+            },
+        );
+        state.announce_shortcut_accessibility(
+            crate::accessibility::AccessibilityEvent::Focus {
+                label: "Retirer l’émotion".to_string(),
+                role: "bouton de menu".to_string(),
             },
         );
     } else {
