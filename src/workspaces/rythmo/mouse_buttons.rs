@@ -147,20 +147,8 @@ pub(crate) fn handle_double_click(
     // Save current character edit before switching
     let finalize_line_id = state.editing_character;
 
-    // The hitbox must follow the same visibility rules as the rendered badge.
-    // Otherwise an invisible label can steal the double-click from the line
-    // body it overlaps.
-    let collision_targets: Vec<(u64, Rect, &str)> = ctx
-        .project
-        .lines()
-        .map(|line| {
-            (
-                line.id,
-                line_rect(ctx.project, line, ctx.current_frame, ctx.zone),
-                line.character_name.as_str(),
-            )
-        })
-        .collect();
+    // Karaoke labels follow singer continuity per track. The set is computed
+    // from the complete project, never from the current viewport subset.
     let hidden_karaoke_badges: HashSet<u64> = if ctx.karaoke_preview {
         ctx.project
             .lines()
@@ -185,16 +173,16 @@ pub(crate) fn handle_double_click(
         {
             continue;
         }
-        let line_body = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
+
         let base_badge = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone);
-        let br = if line.kind.is_dialogue() {
-            let (hidden, fitted, _) = character_badge_collision_layout(
-                line.id,
-                &line.character_name,
-                &base_badge,
-                line_body.x,
-                &collision_targets,
-            );
+        let br = if line.kind.is_dialogue() && (!ctx.karaoke_preview || !line.karaoke) {
+            let (hidden, fitted, _) =
+                crate::workspaces::rythmo::badge_policy::stable_character_badge_layout(
+                    ctx.project,
+                    line,
+                    ctx.current_frame,
+                    ctx.zone,
+                );
             if hidden {
                 continue;
             }
@@ -202,6 +190,7 @@ pub(crate) fn handle_double_click(
         } else {
             base_badge
         };
+
         if br.contains(x, y) {
             if let Some(old_id) = finalize_line_id {
                 if old_id != line.id {
