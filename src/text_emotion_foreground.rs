@@ -185,32 +185,24 @@ pub fn handle_modal_event(event: &UiEvent) -> Option<EventResponse> {
     match current {
         Popup::None => None,
         Popup::Parent { rect, target } => match event {
-            UiEvent::Activate
-            | UiEvent::CursorRight
-            | UiEvent::KeyInput { text } if text == "\r" || text == "\n" => {
-                let palette = Rect {
-                    x: rect.x,
-                    y: rect.y,
-                    width: WIDTH,
-                    height: PALETTE_HEIGHT,
-                };
-                *lock_popup() = Popup::Palette {
-                    rect: palette,
-                    target,
-                    selected: 0,
-                };
+            UiEvent::Activate | UiEvent::CursorRight => {
+                open_palette_from_parent(rect, target);
                 Some(opened_response())
+            }
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => {
+                open_palette_from_parent(rect, target);
+                Some(opened_response())
+            }
+            UiEvent::KeyInput { text } if text == "\x1b" => {
+                clear();
+                Some(closed_response())
             }
             UiEvent::MouseMove { .. } => Some(EventResponse::Consumed),
             UiEvent::MousePress { x, y } if rect.contains(*x, *y) => {
-                *lock_popup() = Popup::Palette {
-                    rect: Rect { height: PALETTE_HEIGHT, ..rect },
-                    target,
-                    selected: 0,
-                };
+                open_palette_from_parent(rect, target);
                 Some(opened_response())
             }
-            UiEvent::MousePress { .. } | UiEvent::KeyInput { text } if text == "\x1b" => {
+            UiEvent::MousePress { .. } => {
                 clear();
                 Some(closed_response())
             }
@@ -262,6 +254,17 @@ pub fn handle_modal_event(event: &UiEvent) -> Option<EventResponse> {
     }
 }
 
+fn open_palette_from_parent(rect: Rect, target: Target) {
+    *lock_popup() = Popup::Palette {
+        rect: Rect {
+            height: PALETTE_HEIGHT,
+            ..rect
+        },
+        target,
+        selected: 0,
+    };
+}
+
 fn moved_index(current: usize, direction: i32) -> usize {
     (current as i32 + direction).rem_euclid(10) as usize
 }
@@ -280,7 +283,9 @@ fn set_selection(index: usize) -> EventResponse {
 }
 
 fn activate(target: Target, index: usize) -> EventResponse {
-    let emotion = index.checked_sub(1).and_then(|index| TextEmotion::ALL.get(index).copied());
+    let emotion = index
+        .checked_sub(1)
+        .and_then(|index| TextEmotion::ALL.get(index).copied());
     let label = emotion.map(TextEmotion::label).unwrap_or(REMOVE_LABEL);
     let changed = text_emotion::apply_range(
         target.line_id,
@@ -341,7 +346,12 @@ fn palette_labels() -> [&'static str; 10] {
 
 fn clamped_rect(x: f32, y: f32, width: f32, height: f32, sw: f32, sh: f32) -> Rect {
     let (x, y) = crate::ui::context_menu::clamped_origin(x, y, width, height, sw, sh);
-    Rect { x, y, width, height }
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
 }
 
 fn palette_item_at(rect: Rect, x: f32, y: f32) -> Option<usize> {
