@@ -34,7 +34,10 @@ impl RythmoScene {
         let mut lines = scene.lines;
         for scene_line in &mut lines {
             let line = &mut scene_line.line;
-            if line.kind.is_dialogue() && !line.karaoke && crate::text_emotion::has_line(line.id) {
+            if line.kind.is_dialogue()
+                && !line.karaoke
+                && crate::text_emotion::has_line_for_text(line.id, &line.text)
+            {
                 line.text = crate::text_emotion::encode_render_text(line.id, &line.text);
             }
         }
