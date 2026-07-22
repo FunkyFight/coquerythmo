@@ -27,7 +27,7 @@ pub(crate) fn crop(
     for y in 0..(padded_height / 2) as usize {
         for x in (0..output_width as usize).step_by(2) {
             let sx = x as i64 + chroma_left;
-            if sx < 0 || sx + 1 >= source_width as i64 {
+            if x + 1 >= output_width as usize || sx < 0 || sx + 1 >= source_width as i64 {
                 continue;
             }
             let src = source_y + y * source_width as usize + sx as usize;
