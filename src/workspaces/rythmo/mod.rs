@@ -2,6 +2,10 @@
 
 use crate::application::workspace_service::{Workspace, WorkspaceCommand, WorkspaceId};
 
+pub(crate) mod badge_policy;
+#[path = "view.rs"]
+mod view_implementation;
+#[path = "view_adapter.rs"]
 pub mod view;
 
 /// Narrow bridge for sibling controller modules that need the synchronization

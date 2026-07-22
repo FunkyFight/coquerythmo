@@ -1,6 +1,7 @@
 //! Mouse button controllers for the rythmo workspace.
 
 use super::*;
+use std::collections::HashSet;
 
 pub(crate) fn handle_mouse_release(state: &mut RythmoState, ctx: &RythmoCtx) -> EventResponse {
     // Handle transform handle release
@@ -146,12 +147,50 @@ pub(crate) fn handle_double_click(
     // Save current character edit before switching
     let finalize_line_id = state.editing_character;
 
+    // Karaoke labels follow singer continuity per track. The set is computed
+    // from the complete project, never from the current viewport subset.
+    let hidden_karaoke_badges: HashSet<u64> = if ctx.karaoke_preview {
+        ctx.project
+            .lines()
+            .filter(|line| {
+                line.karaoke
+                    && line.kind.is_dialogue()
+                    && !crate::workspaces::rythmo::badge_policy::karaoke_character_label_visible(
+                        ctx.project,
+                        line,
+                    )
+            })
+            .map(|line| line.id)
+            .collect()
+    } else {
+        HashSet::new()
+    };
+    let collision_layout =
+        crate::workspaces::rythmo::badge_policy::CharacterBadgeLayoutContext::new(
+            ctx.project,
+            ctx.current_frame,
+            ctx.zone,
+        );
+
     // Badge → character/ambiance-name editing. End markers have no label.
     for line in ctx.project.lines() {
-        if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceEnd) {
+        if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceEnd)
+            || hidden_karaoke_badges.contains(&line.id)
+        {
             continue;
         }
-        let br = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone);
+
+        let base_badge = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone);
+        let br = if line.kind.is_dialogue() && (!ctx.karaoke_preview || !line.karaoke) {
+            let (hidden, fitted, _) = collision_layout.badge_layout(line);
+            if hidden {
+                continue;
+            }
+            fitted
+        } else {
+            base_badge
+        };
+
         if br.contains(x, y) {
             if let Some(old_id) = finalize_line_id {
                 if old_id != line.id {
