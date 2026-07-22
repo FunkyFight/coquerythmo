@@ -1,6 +1,7 @@
 //! Application composition and the native event loop.
 
 mod bootstrap;
+#[path = "dispatcher_text_emotions.rs"]
 mod dispatcher;
 mod event_loop;
 mod file_picker;
