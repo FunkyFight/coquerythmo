@@ -27,7 +27,7 @@ impl CommandDispatcher {
         if is_text_emotion_shortcut(&action) {
             return open_text_emotion_palette(state);
         }
-        base::CommandDispatcher::dispatch_shortcut(action, state, elwt)
+        dispatch_with_text_rebase(action, state, elwt, true)
     }
 
     pub(crate) fn dispatch(
@@ -38,8 +38,35 @@ impl CommandDispatcher {
         if is_text_emotion_shortcut(&action) {
             return open_text_emotion_palette(state);
         }
-        base::CommandDispatcher::dispatch(action, state, elwt)
+        dispatch_with_text_rebase(action, state, elwt, false)
     }
+}
+
+fn dispatch_with_text_rebase(
+    action: UiAction,
+    state: &mut State,
+    elwt: &EventLoopWindowTarget<AppEvent>,
+    shortcut: bool,
+) -> bool {
+    let text_edit = match &action {
+        UiAction::UpdateLineText { id, text } => state
+            .project_session
+            .project
+            .get_line(*id)
+            .map(|line| (*id, line.text.clone(), text.clone())),
+        _ => None,
+    };
+    let should_exit = if shortcut {
+        base::CommandDispatcher::dispatch_shortcut(action, state, elwt)
+    } else {
+        base::CommandDispatcher::dispatch(action, state, elwt)
+    };
+    if let Some((line_id, old_text, new_text)) = text_edit {
+        if old_text != new_text {
+            crate::text_emotion::rebase_after_text_edit(line_id, &old_text, &new_text);
+        }
+    }
+    should_exit
 }
 
 fn is_text_emotion_shortcut(action: &UiAction) -> bool {
