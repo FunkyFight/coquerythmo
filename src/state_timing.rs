@@ -34,6 +34,10 @@ impl State {
         crate::text_emotion_foreground::captures_input() || self.0.captures_modal_input()
     }
 
+    pub fn needs_continuous_redraw(&self) -> bool {
+        crate::text_emotion::has_any() || self.0.needs_continuous_redraw()
+    }
+
     /// Present the interactive band at the monitor cadence. Its position still
     /// comes from a continuous f64 media clock, so interpolation is preserved
     /// without asking wgpu to present frames the monitor can never display.
@@ -42,9 +46,7 @@ impl State {
     }
 
     pub fn needs_redraw_now(&self) -> bool {
-        if (self.is_video_playing() || crate::text_emotion::has_any())
-            && self.active_workspace() == WorkspaceId::Rythmo
-        {
+        if self.needs_continuous_redraw() && self.active_workspace() == WorkspaceId::Rythmo {
             return redraw_due_at_display_rate(
                 Instant::now(),
                 self.render.last_redraw,
@@ -55,9 +57,7 @@ impl State {
     }
 
     pub fn next_wake_deadline(&self) -> Option<Instant> {
-        if (self.is_video_playing() || crate::text_emotion::has_any())
-            && self.active_workspace() == WorkspaceId::Rythmo
-        {
+        if self.needs_continuous_redraw() && self.active_workspace() == WorkspaceId::Rythmo {
             return Some(self.render.last_redraw + self.display_refresh_interval());
         }
         self.0.next_wake_deadline()
