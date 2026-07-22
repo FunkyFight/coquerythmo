@@ -37,8 +37,14 @@ pub mod recording_mix;
 pub mod recording_runtime;
 pub mod render_index;
 pub mod rendering;
+#[path = "rythmo_cpu_renderer.rs"]
+mod rythmo_cpu_renderer_original;
 #[path = "rythmo_cpu_renderer_offset.rs"]
-pub mod rythmo_cpu_renderer;
+mod rythmo_cpu_renderer_offset;
+pub mod rythmo_cpu_renderer {
+    pub use super::rythmo_cpu_renderer_offset::CpuRenderer;
+    pub use super::rythmo_cpu_renderer_original::br_height;
+}
 #[path = "rythmo_drawing_offset.rs"]
 pub mod rythmo_drawing;
 #[path = "rythmo_gpu_renderer_offset.rs"]
