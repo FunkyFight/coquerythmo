@@ -100,6 +100,7 @@ pub(crate) fn open_file_picker(
         return;
     }
 
+    let extra_locations = picker_extra_locations(state);
     state.open_file_explorer(FileExplorerRequest {
         title: title.to_string(),
         mode,
@@ -108,7 +109,7 @@ pub(crate) fn open_file_picker(
         initial_dir,
         default_extension: default_extension.map(str::to_string),
         initial_filename: None,
-        extra_locations: picker_extra_locations(state),
+        extra_locations,
     });
 }
 
