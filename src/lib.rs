@@ -22,6 +22,7 @@ pub mod graphics;
 pub mod i18n;
 pub mod input;
 mod integrity;
+#[path = "lint_text_emotions.rs"]
 pub mod lint;
 pub mod media_binary;
 pub mod media_recording;
