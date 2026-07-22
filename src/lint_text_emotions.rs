@@ -16,7 +16,7 @@ pub fn analyze(project: &Project, fps: f64) -> Vec<Diagnostic> {
     diagnostics.extend(project.lines().filter_map(|line| {
         (line.kind.is_dialogue()
             && !line.karaoke
-            && crate::text_emotion::has_line(line.id))
+            && crate::text_emotion::has_line_for_text(line.id, &line.text))
         .then_some(Diagnostic {
             severity: Severity::Warning,
             // The existing public rule enum is kept wire-compatible. The
@@ -65,7 +65,7 @@ pub fn line_description_suffix(project: &Project, fps: f64, line_id: u64) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text_emotion::{TextEmotion, apply_range, clear};
+    use crate::text_emotion::{apply_range, clear, TextEmotion};
 
     #[test]
     fn emotional_dialogue_gets_exact_warning_and_accessibility_suffix() {
