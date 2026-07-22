@@ -133,7 +133,7 @@ fn hidden_character_label(
     hidden_line_ids.contains(&line_id)
         && project
             .get_line(line_id)
-            .is_some_and(|line| line.character_name == text.text)
+            .is_some_and(|line| line.character_name.as_str() == text.text.as_str())
 }
 
 fn is_badge_underline(quad: &QuadInstance, badge: Rect, tint: [f32; 4]) -> bool {
