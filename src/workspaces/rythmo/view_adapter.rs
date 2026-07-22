@@ -88,12 +88,6 @@ pub fn render_lines<'a>(
         return result;
     }
 
-    let hidden_badges: Vec<(Rect, [f32; 4])> = stretched[stretched_start..]
-        .iter()
-        .filter_map(|text| hidden_character_label(project, &hidden_line_ids, text))
-        .map(|_| unreachable!())
-        .collect();
-
     // Build the geometry list before deleting the matching text entries.
     let hidden_badges: Vec<(Rect, [f32; 4])> = stretched[stretched_start..]
         .iter()
