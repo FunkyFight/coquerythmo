@@ -135,12 +135,12 @@ impl ModalHost {
                     self.set_playhead_offset(0.0);
                     return Some(self.offset_selection_outcome());
                 }
-                UiEvent::Activate
-                | UiEvent::KeyInput { text }
+                UiEvent::Activate if self.playhead_offset_focused => {
+                    return Some(self.offset_focus_outcome());
+                }
+                UiEvent::KeyInput { text }
                     if self.playhead_offset_focused
-                        && matches!(event, UiEvent::Activate)
-                            || self.playhead_offset_focused
-                                && matches!(event, UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " ") =>
+                        && (text == "\r" || text == "\n" || text == " ") =>
                 {
                     return Some(self.offset_focus_outcome());
                 }
@@ -227,15 +227,9 @@ impl ModalHost {
             return self.offset_focus_outcome();
         }
 
-        // The legacy modal has six focus stops. Our extra stop sits between its
-        // scroll-speed field (3) and Save button (4), so crossing that boundary
-        // must not advance the legacy ring twice.
-        let crossing_into_offset = forward && old_slot == 3 && new_slot == OFFSET_FOCUS_SLOT;
-        let crossing_back_into_offset = !forward && old_slot == 5 && new_slot == OFFSET_FOCUS_SLOT;
-        if crossing_into_offset || crossing_back_into_offset {
-            return ModalOutcome::Consumed;
-        }
-
+        // The legacy modal has six focus stops. The added offset stop remains
+        // between scroll speed (3) and Save (4); forwarding a synthetic Tab for
+        // every other transition keeps both rings synchronized.
         let synthetic = UiEvent::KeyInput {
             text: if forward { "\t" } else { "\u{b}" }.to_string(),
         };
