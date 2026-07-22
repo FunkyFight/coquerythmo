@@ -1,6 +1,7 @@
 //! Mouse button controllers for the rythmo workspace.
 
 use super::*;
+use std::collections::HashSet;
 
 pub(crate) fn handle_mouse_release(state: &mut RythmoState, ctx: &RythmoCtx) -> EventResponse {
     // Handle transform handle release
@@ -146,12 +147,60 @@ pub(crate) fn handle_double_click(
     // Save current character edit before switching
     let finalize_line_id = state.editing_character;
 
+    // The hitbox must follow the same visibility rules as the rendered badge.
+    // Otherwise an invisible label can steal the double-click from the line
+    // body it overlaps.
+    let collision_targets: Vec<(u64, Rect, &str)> = ctx
+        .project
+        .lines()
+        .map(|line| {
+            (
+                line.id,
+                line_rect(ctx.project, line, ctx.current_frame, ctx.zone),
+                line.character_name.as_str(),
+            )
+        })
+        .collect();
+    let hidden_karaoke_badges: HashSet<u64> = if ctx.karaoke_preview {
+        let max_gap_frames = karaoke_adjacent_max_gap_frames(ctx.fps);
+        let index = state.cached_karaoke_ui_index(ctx.project, max_gap_frames);
+        ctx.project
+            .lines()
+            .filter(|line| {
+                line.karaoke
+                    && line.kind.is_dialogue()
+                    && !index.character_label_visible(line)
+            })
+            .map(|line| line.id)
+            .collect()
+    } else {
+        HashSet::new()
+    };
+
     // Badge → character/ambiance-name editing. End markers have no label.
     for line in ctx.project.lines() {
-        if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceEnd) {
+        if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceEnd)
+            || hidden_karaoke_badges.contains(&line.id)
+        {
             continue;
         }
-        let br = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone);
+        let line_body = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
+        let base_badge = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone);
+        let br = if line.kind.is_dialogue() {
+            let (hidden, fitted, _) = character_badge_collision_layout(
+                line.id,
+                &line.character_name,
+                &base_badge,
+                line_body.x,
+                &collision_targets,
+            );
+            if hidden {
+                continue;
+            }
+            fitted
+        } else {
+            base_badge
+        };
         if br.contains(x, y) {
             if let Some(old_id) = finalize_line_id {
                 if old_id != line.id {
