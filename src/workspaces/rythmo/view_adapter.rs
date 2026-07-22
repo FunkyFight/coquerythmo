@@ -1,8 +1,8 @@
 //! Output adapter for the legacy rythmo view.
 //!
 //! The underlying view still owns layout and drawing. This adapter applies the
-//! character-label continuity policy to the completed draw lists so the text,
-//! its two underlines and its note icon disappear together.
+//! stable character-label policies to the completed draw lists so text, its two
+//! underlines and its note icon disappear together.
 
 use std::collections::{HashMap, HashSet};
 
@@ -71,19 +71,39 @@ pub fn render_lines<'a>(
         detection_uvs,
     );
 
-    if !karaoke_preview {
-        return result;
-    }
-
-    let hidden_line_ids: HashSet<u64> = project
+    let mut hidden_line_ids: HashSet<u64> = project
         .lines()
         .filter(|line| {
-            line.karaoke
-                && line.kind.is_dialogue()
-                && !super::badge_policy::karaoke_character_label_visible(project, line)
+            line.kind.is_dialogue()
+                && !line.character_name.is_empty()
+                // Karaoke playback uses centered stacked rows rather than the
+                // ordinary scrolling badge geometry. Its visibility is handled
+                // below by the per-track singer-continuity rule.
+                && (!karaoke_preview || !line.karaoke)
+                && super::badge_policy::stable_character_badge_layout(
+                    project,
+                    line,
+                    current_frame,
+                    zone,
+                )
+                .0
         })
         .map(|line| line.id)
         .collect();
+
+    if karaoke_preview {
+        hidden_line_ids.extend(
+            project
+                .lines()
+                .filter(|line| {
+                    line.karaoke
+                        && line.kind.is_dialogue()
+                        && !super::badge_policy::karaoke_character_label_visible(project, line)
+                })
+                .map(|line| line.id),
+        );
+    }
+
     if hidden_line_ids.is_empty() {
         return result;
     }
