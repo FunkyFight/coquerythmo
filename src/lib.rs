@@ -37,9 +37,11 @@ pub mod recording_mix;
 pub mod recording_runtime;
 pub mod render_index;
 pub mod rendering;
+#[path = "rythmo_cpu_renderer_offset.rs"]
 pub mod rythmo_cpu_renderer;
 #[path = "rythmo_drawing_offset.rs"]
 pub mod rythmo_drawing;
+#[path = "rythmo_gpu_renderer_offset.rs"]
 pub mod rythmo_gpu_renderer;
 pub mod rythmo_layout;
 pub mod rythmo_line;
