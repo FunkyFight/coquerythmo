@@ -1,27 +1,23 @@
 //! Shared visibility rules for character labels in the rythmo workspace.
 
 use crate::project::Project;
-use crate::rythmo_layout;
 use crate::rythmo_line::RythmoLine;
 
-/// Show a karaoke character label only for the first karaoke line on its track
-/// or when the singer changes from the previous karaoke line.
+/// Show a karaoke character label only for the first karaoke line or when the
+/// singer changes from the chronologically previous karaoke line.
 ///
-/// Ordinary dialogue lines and long pauses do not reset the singer continuity:
-/// they split the visual karaoke island, but they do not make the same name
-/// useful to repeat.
+/// Ordinary dialogue lines, track changes and long pauses do not reset singer
+/// continuity: they do not make the same name useful to repeat.
 pub(crate) fn karaoke_character_label_visible(project: &Project, line: &RythmoLine) -> bool {
     if !line.karaoke || line.character_name.is_empty() {
         return false;
     }
 
-    let track = rythmo_layout::track_index_for_y_slot(line.y_slot);
     project
         .lines()
         .filter(|candidate| {
             candidate.id != line.id
                 && candidate.karaoke
-                && rythmo_layout::track_index_for_y_slot(candidate.y_slot) == track
                 && (candidate.start_frame < line.start_frame
                     || (candidate.start_frame == line.start_frame && candidate.id < line.id))
         })
@@ -66,11 +62,11 @@ mod tests {
     }
 
     #[test]
-    fn singer_continuity_is_scoped_to_each_track() {
+    fn changing_track_does_not_repeat_the_same_singer() {
         let mut project = Project::new();
-        let first_track_id = project.add_line(0, 24, 0.0);
+        let first_id = project.add_line(0, 24, 0.0);
         let other_track_id = project.add_line(48, 24, 0.5);
-        for id in [first_track_id, other_track_id] {
+        for id in [first_id, other_track_id] {
             let line = project.get_line_mut(id).unwrap();
             line.karaoke = true;
             line.character_name = "Alice".to_string();
@@ -78,8 +74,30 @@ mod tests {
 
         assert!(karaoke_character_label_visible(
             &project,
-            project.get_line(first_track_id).unwrap()
+            project.get_line(first_id).unwrap()
         ));
+        assert!(!karaoke_character_label_visible(
+            &project,
+            project.get_line(other_track_id).unwrap()
+        ));
+    }
+
+    #[test]
+    fn changing_singer_on_another_track_shows_the_new_name() {
+        let mut project = Project::new();
+        let first_id = project.add_line(0, 24, 0.0);
+        let other_track_id = project.add_line(48, 24, 0.5);
+        {
+            let first = project.get_line_mut(first_id).unwrap();
+            first.karaoke = true;
+            first.character_name = "Alice".to_string();
+        }
+        {
+            let other = project.get_line_mut(other_track_id).unwrap();
+            other.karaoke = true;
+            other.character_name = "Bob".to_string();
+        }
+
         assert!(karaoke_character_label_visible(
             &project,
             project.get_line(other_track_id).unwrap()
