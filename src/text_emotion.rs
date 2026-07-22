@@ -132,12 +132,21 @@ pub fn has_line(line_id: u64) -> bool {
         .is_some_and(|line| !line.spans.is_empty())
 }
 
+pub fn has_line_for_text(line_id: u64, text: &str) -> bool {
+    document()
+        .read()
+        .ok()
+        .and_then(|value| value.lines.get(&line_id).cloned())
+        .is_some_and(|line| line.source_text == text && !line.spans.is_empty())
+}
+
 pub fn spans_for_line(line_id: u64, text: &str) -> Vec<TextEmotionSpan> {
     let grapheme_count = text.graphemes(true).count();
     document()
         .read()
         .ok()
         .and_then(|value| value.lines.get(&line_id).cloned())
+        .filter(|line| line.source_text == text)
         .map(|line| {
             line.spans
                 .into_iter()
@@ -178,6 +187,9 @@ pub fn apply_range(
     let mut changed = false;
     if let Ok(mut value) = document().write() {
         let line = value.lines.entry(line_id).or_default();
+        if line.source_text != text {
+            line.spans.clear();
+        }
         line.source_text = text.to_string();
         let previous = line.spans.clone();
         let mut next = Vec::with_capacity(previous.len() + usize::from(emotion.is_some()));
@@ -260,6 +272,9 @@ pub fn rebase_after_text_edit(line_id: u64, old_text: &str, new_text: &str) {
         let Some(line) = value.lines.get_mut(&line_id) else {
             return;
         };
+        if line.source_text != old_text {
+            return;
+        }
         line.source_text = new_text.to_string();
         for span in &mut line.spans {
             span.start_grapheme = rebase_boundary(
@@ -321,7 +336,7 @@ fn normalize_spans(spans: &mut Vec<TextEmotionSpan>) {
 }
 
 pub fn encode_render_text(line_id: u64, text: &str) -> String {
-    if !has_line(line_id) {
+    if !has_line_for_text(line_id, text) {
         return text.to_string();
     }
     format!(
@@ -389,11 +404,32 @@ mod tests {
         assert_eq!(
             spans_for_line(1, text),
             vec![
-                TextEmotionSpan { start_grapheme: 0, end_grapheme: 1, emotion: TextEmotion::Wave },
-                TextEmotionSpan { start_grapheme: 1, end_grapheme: 3, emotion: TextEmotion::Bounce },
-                TextEmotionSpan { start_grapheme: 3, end_grapheme: 4, emotion: TextEmotion::Wave },
+                TextEmotionSpan {
+                    start_grapheme: 0,
+                    end_grapheme: 1,
+                    emotion: TextEmotion::Wave,
+                },
+                TextEmotionSpan {
+                    start_grapheme: 1,
+                    end_grapheme: 3,
+                    emotion: TextEmotion::Bounce,
+                },
+                TextEmotionSpan {
+                    start_grapheme: 3,
+                    end_grapheme: 4,
+                    emotion: TextEmotion::Wave,
+                },
             ]
         );
+    }
+
+    #[test]
+    fn source_text_prevents_cross_project_id_collisions() {
+        clear();
+        apply_range(42, "Bonjour", 0, 7, Some(TextEmotion::Pendulum));
+        assert!(has_line_for_text(42, "Bonjour"));
+        assert!(!has_line_for_text(42, "Au revoir"));
+        assert!(spans_for_line(42, "Au revoir").is_empty());
     }
 
     #[test]
