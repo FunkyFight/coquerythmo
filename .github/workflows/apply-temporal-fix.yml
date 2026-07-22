@@ -1,0 +1,144 @@
+name: Apply fractional rythmo export fix
+
+on:
+  push:
+    branches:
+      - agent/smooth-fractional-rythmo-export
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/smooth-fractional-rythmo-export
+          fetch-depth: 0
+
+      - name: Apply focused source changes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected exactly one match, found {count}")
+              return text.replace(old, new, 1)
+
+          cpu_path = Path("src/rythmo_cpu_renderer.rs")
+          cpu = cpu_path.read_text(encoding="utf-8")
+          cpu = replace_once(
+              cpu,
+              """    /// Render the bande rythmo for a given frame. All sizes scale with width.\n    pub fn render_br(\n        &mut self,\n        project: &Project,\n        current_frame: i64,\n        width: u32,\n        source_fps: f64,\n        br_scale: f32,\n        karaoke_text_scale: f32,\n    ) -> Vec<u8> {\n        let s = width as f32 / constants::REF_WIDTH * br_scale; // export BR scale factor\n""",
+              """    /// Render the bande rythmo for a fractional source-frame position.\n    ///\n    /// Integer frame bounds are used only for visibility queries; every visual\n    /// position keeps the fractional component so a 24 fps project can scroll\n    /// smoothly in a 60 fps export.\n    pub fn render_br(\n        &mut self,\n        project: &Project,\n        current_frame: f64,\n        width: u32,\n        source_fps: f64,\n        br_scale: f32,\n        karaoke_text_scale: f32,\n    ) -> Vec<u8> {\n        let current_frame = if current_frame.is_finite() {\n            current_frame\n        } else {\n            0.0\n        };\n        let current_frame_floor = current_frame.floor() as i64;\n        let current_frame_ceil = current_frame.ceil() as i64;\n        let s = width as f32 / constants::REF_WIDTH * br_scale; // export BR scale factor\n""",
+              "CPU renderer signature",
+          )
+          cpu = replace_once(
+              cpu,
+              """                frame_window: FrameWindow {\n                    first: current_frame\n                        .saturating_sub(visible_frames / 2)\n                        .saturating_sub(render_margin_frames),\n                    last: current_frame\n                        .saturating_add(visible_frames / 2)\n                        .saturating_add(render_margin_frames),\n                },\n                current_frame: current_frame as f64,\n""",
+              """                frame_window: FrameWindow {\n                    first: current_frame_floor\n                        .saturating_sub(visible_frames / 2)\n                        .saturating_sub(render_margin_frames),\n                    last: current_frame_ceil\n                        .saturating_add(visible_frames / 2)\n                        .saturating_add(render_margin_frames),\n                },\n                current_frame,\n""",
+              "CPU render frame window",
+          )
+          cpu = replace_once(
+              cpu,
+              """        let first_tick_frame = current_frame - visible_frames / 2;\n        let first_tick =\n            first_tick_frame.div_euclid(constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;\n        let mut tf = first_tick;\n        loop {\n            let x = center_x + (tf - current_frame) as f32 * ppf;\n""",
+              """        let first_tick_frame = current_frame_floor - visible_frames / 2;\n        let first_tick =\n            first_tick_frame.div_euclid(constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;\n        let mut tf = first_tick;\n        loop {\n            let x = center_x + (tf as f64 - current_frame) as f32 * ppf;\n""",
+              "CPU ruler interpolation",
+          )
+          cpu = cpu.replace("current_frame as f64", "current_frame")
+          cpu_path.write_text(cpu, encoding="utf-8")
+
+          frame_source_path = Path("src/video_export/frame_source.rs")
+          frame_source = frame_source_path.read_text(encoding="utf-8")
+          frame_source = replace_once(
+              frame_source,
+              """use super::types::{BrFrameWriteStats, BrInputFormat, BrRenderBackend, StdinWriteError};\n\npub(super) fn write_br_frames(\n""",
+              """use super::types::{BrFrameWriteStats, BrInputFormat, BrRenderBackend, StdinWriteError};\n\nfn source_frame_at_export_frame(\n    timeline_start_source_frame: f64,\n    export_frame: i64,\n    source_frames_per_export_frame: f64,\n) -> f64 {\n    timeline_start_source_frame + export_frame as f64 * source_frames_per_export_frame\n}\n\npub(super) fn write_br_frames(\n""",
+              "export source-frame helper",
+          )
+          old_gpu_position = (
+              "let video_pos = timeline_start_source_frame + frame as f64 * frame_ratio;"
+          )
+          gpu_count = frame_source.count(old_gpu_position)
+          if gpu_count != 2:
+              raise RuntimeError(
+                  f"GPU fractional positions: expected two matches, found {gpu_count}"
+              )
+          frame_source = frame_source.replace(
+              old_gpu_position,
+              "let video_pos = source_frame_at_export_frame(\n"
+              "                        timeline_start_source_frame,\n"
+              "                        frame,\n"
+              "                        frame_ratio,\n"
+              "                    );",
+          )
+          frame_source = replace_once(
+              frame_source,
+              """                        .map(|(&frame, renderer)| {\n                            let vf = (timeline_start_source_frame + frame as f64 * frame_ratio)\n                                .round() as i64;\n                            scope.spawn(move || {\n""",
+              """                        .map(|(&frame, renderer)| {\n                            let vf = source_frame_at_export_frame(\n                                timeline_start_source_frame,\n                                frame,\n                                frame_ratio,\n                            );\n                            scope.spawn(move || {\n""",
+              "CPU fractional positions",
+          )
+          frame_source += """
+
+#[cfg(test)]
+mod tests {
+    use super::source_frame_at_export_frame;
+
+    #[test]
+    fn higher_export_fps_keeps_fractional_source_positions() {
+        let ratio = 24.0 / 60.0;
+        let expected = [0.0, 0.4, 0.8, 1.2, 1.6, 2.0];
+
+        for (frame, expected_position) in expected.into_iter().enumerate() {
+            let actual = source_frame_at_export_frame(0.0, frame as i64, ratio);
+            assert!((actual - expected_position).abs() < 1.0e-9);
+        }
+    }
+
+    #[test]
+    fn preroll_offset_does_not_remove_fractional_motion() {
+        let ratio = 25.0 / 60.0;
+        let first = source_frame_at_export_frame(-50.0, 1, ratio);
+        let second = source_frame_at_export_frame(-50.0, 2, ratio);
+
+        assert!((first + 49.583333333333336).abs() < 1.0e-9);
+        assert!((second - first - ratio).abs() < 1.0e-9);
+    }
+}
+"""
+          frame_source_path.write_text(frame_source, encoding="utf-8")
+          PY
+
+      - name: Format changed Rust files
+        run: cargo fmt --all
+
+      - name: Reject unrelated formatting changes
+        run: |
+          unexpected="$(git diff --name-only | grep -Ev '^(src/rythmo_cpu_renderer.rs|src/video_export/frame_source.rs)$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "Unexpected files changed:"
+            echo "$unexpected"
+            exit 1
+          fi
+
+      - name: Install Linux audio build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Run focused tests
+        run: cargo test --locked video_export::frame_source::tests
+
+      - name: Commit source fix and remove temporary workflow
+        run: |
+          rm .github/workflows/apply-temporal-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/rythmo_cpu_renderer.rs src/video_export/frame_source.rs
+          git add -u .github/workflows/apply-temporal-fix.yml
+          git commit -m "fix export rythmo interpolation"
+          git push origin HEAD:agent/smooth-fractional-rythmo-export
