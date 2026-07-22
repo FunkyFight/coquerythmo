@@ -437,3 +437,14 @@ impl Default for ModalHost {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{OFFSET_FOCUS_SLOT, SETTINGS_FOCUS_COUNT};
+
+    #[test]
+    fn offset_focus_sits_between_scroll_speed_and_save() {
+        assert_eq!(OFFSET_FOCUS_SLOT, 4);
+        assert_eq!(SETTINGS_FOCUS_COUNT, 7);
+    }
+}
