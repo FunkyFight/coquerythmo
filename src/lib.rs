@@ -10,6 +10,7 @@ pub mod application;
 pub mod audio_transfer;
 pub mod automation;
 pub mod command;
+#[path = "config_offset.rs"]
 pub mod config;
 pub mod configured_export;
 pub mod constants;
