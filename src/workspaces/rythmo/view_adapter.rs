@@ -236,7 +236,11 @@ pub fn render_rythmo_base(
         .map(|quad| (quad.rect[1], quad.rect[1] + quad.rect[3]))
         .collect();
     original_segments.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let original_gaps = complement_ranges(zone.y, zone.y + zone.height, &original_segments);
+    let original_gaps = if original_segments.is_empty() {
+        Vec::new()
+    } else {
+        complement_ranges(zone.y, zone.y + zone.height, &original_segments)
+    };
 
     quads.retain(|quad| !is_playhead_quad(quad, centered_playhead_x));
     for quad in &mut quads {
@@ -250,10 +254,10 @@ pub fn render_rythmo_base(
 
     let playhead_x = crate::config::playhead_x(zone.x, zone.width, PLAYHEAD_WIDTH);
     let overlaps_centered_karaoke = scene.lines.iter().any(|scene_line| {
-        if !scene_line.karaoke_active && scene_line.karaoke_count_in_progress.is_none() {
+        if !scene_line.karaoke_should_be_centered() {
             return false;
         }
-        let width = state.karaoke_ui_text_width_for_render(&scene_line.line);
+        let width = karaoke_ui_text_width(&scene_line.line.text);
         let left = zone.x + (zone.width - width) * 0.5;
         playhead_x + PLAYHEAD_WIDTH > left && playhead_x < left + width
     });
@@ -264,6 +268,118 @@ pub fn render_rythmo_base(
     };
     push_playhead_segments(&mut quads, playhead_x, zone.y, zone.height, gaps);
     quads
+}
+
+pub fn render_autocomplete<'a>(
+    zone: &Rect,
+    project: &'a Project,
+    current_frame: f64,
+    state: &RythmoState,
+    quads: &mut Vec<QuadInstance>,
+    labels: &mut Vec<LabelInfo<'a>>,
+) {
+    let quad_start = quads.len();
+    let label_start = labels.len();
+    super::view_implementation::render_autocomplete(
+        zone,
+        project,
+        current_frame,
+        state,
+        quads,
+        labels,
+    );
+    let delta = playhead_delta(zone);
+    for quad in &mut quads[quad_start..] {
+        quad.rect[0] += delta;
+    }
+    for label in &mut labels[label_start..] {
+        label.bounds.x += delta;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_markers<'a>(
+    zone: &Rect,
+    project: &'a Project,
+    render_index: &ProjectRenderIndex,
+    current_frame: f64,
+    fps: f64,
+    lint_diagnostics: &[crate::lint::Diagnostic],
+    quads: &mut Vec<QuadInstance>,
+    labels: &mut Vec<LabelInfo<'a>>,
+    liaison_icons: &mut Vec<IconInstance>,
+    liaison_left_uv: [f32; 4],
+    liaison_right_uv: [f32; 4],
+) {
+    let quad_start = quads.len();
+    let label_start = labels.len();
+    let icon_start = liaison_icons.len();
+    super::view_implementation::render_markers(
+        zone,
+        project,
+        render_index,
+        current_frame,
+        fps,
+        lint_diagnostics,
+        quads,
+        labels,
+        liaison_icons,
+        liaison_left_uv,
+        liaison_right_uv,
+    );
+    let delta = playhead_delta(zone);
+    for quad in &mut quads[quad_start..] {
+        quad.rect[0] += delta;
+    }
+    for label in &mut labels[label_start..] {
+        label.bounds.x += delta;
+    }
+    for icon in &mut liaison_icons[icon_start..] {
+        icon.rect[0] += delta;
+    }
+}
+
+pub fn render_ambiance_liaison_icons(
+    zone: &Rect,
+    project: &Project,
+    render_index: &ProjectRenderIndex,
+    current_frame: f64,
+    icons: &mut Vec<IconInstance>,
+    liaison_left_uv: [f32; 4],
+    liaison_right_uv: [f32; 4],
+) {
+    let icon_start = icons.len();
+    super::view_implementation::render_ambiance_liaison_icons(
+        zone,
+        project,
+        render_index,
+        current_frame,
+        icons,
+        liaison_left_uv,
+        liaison_right_uv,
+    );
+    let delta = playhead_delta(zone);
+    for icon in &mut icons[icon_start..] {
+        icon.rect[0] += delta;
+    }
+}
+
+pub fn lint_zone_diagnostics(
+    zone: &Rect,
+    project: &Project,
+    current_frame: f64,
+    diagnostics: &[crate::lint::Diagnostic],
+    cursor_x: f32,
+    cursor_y: f32,
+) -> Vec<crate::lint::Diagnostic> {
+    super::view_implementation::lint_zone_diagnostics(
+        zone,
+        project,
+        current_frame,
+        diagnostics,
+        cursor_x - playhead_delta(zone),
+        cursor_y,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -282,7 +398,14 @@ pub fn handle_rythmo_event(
     erasing: bool,
     interaction_mode: RythmoInteractionMode,
 ) -> EventResponse {
-    let adjusted = event_with_shifted_x(event, -playhead_delta(zone));
+    // Drawing coordinates already consume the global offset in
+    // crate::rythmo_drawing; translating their pointer a second time would
+    // apply the offset twice.
+    let adjusted = if matches!(tool_mode, ToolMode::Draw) {
+        event.clone()
+    } else {
+        event_with_shifted_x(event, -playhead_delta(zone))
+    };
     super::view_implementation::handle_rythmo_event(
         &adjusted,
         zone,
@@ -309,16 +432,33 @@ pub fn handle_context_menu_event(
     screen_h: f32,
     state: &mut RythmoState,
 ) -> EventResponse {
-    let adjusted = event_with_shifted_x(event, -playhead_delta(zone));
-    super::view_implementation::handle_context_menu_event(
-        &adjusted,
-        project,
-        current_frame,
-        zone,
-        screen_w,
-        screen_h,
-        state,
-    )
+    if matches!(event, UiEvent::ContextMenu { .. }) {
+        let delta = playhead_delta(zone);
+        let adjusted = event_with_shifted_x(event, -delta);
+        let response = super::view_implementation::handle_context_menu_event(
+            &adjusted,
+            project,
+            current_frame,
+            zone,
+            screen_w,
+            screen_h,
+            state,
+        );
+        if let Some(menu) = state.context_menu.as_mut() {
+            menu.x += delta;
+        }
+        response
+    } else {
+        super::view_implementation::handle_context_menu_event(
+            event,
+            project,
+            current_frame,
+            zone,
+            screen_w,
+            screen_h,
+            state,
+        )
+    }
 }
 
 fn event_with_shifted_x(event: &UiEvent, delta: f32) -> UiEvent {
