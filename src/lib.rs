@@ -41,12 +41,14 @@ pub mod rythmo_drawing;
 pub mod rythmo_gpu_renderer;
 pub mod rythmo_layout;
 pub mod rythmo_line;
+#[path = "state_timing.rs"]
 pub mod state;
 mod state_detection;
 pub mod syllable;
 pub mod ui;
 pub mod update;
 pub mod vector_text;
+#[path = "video_timing.rs"]
 pub mod video;
 pub mod video_export;
 pub mod video_proxy;
