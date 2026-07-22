@@ -28,6 +28,21 @@ fn playhead_delta(zone: &Rect) -> f32 {
     crate::config::playhead_delta_pixels(zone.width)
 }
 
+/// The legacy renderer culls symmetrically around the middle of its zone.
+/// Keep the same visual centre but enlarge the virtual zone enough that, after
+/// applying the negative playhead translation, the complete real viewport is
+/// already populated. This prevents waveforms and lines from being clipped or
+/// popping in at the right edge.
+fn expanded_timeline_zone(zone: &Rect) -> Rect {
+    let delta = playhead_delta(zone).min(0.0);
+    Rect {
+        x: zone.x + delta,
+        y: zone.y,
+        width: zone.width - delta * 2.0,
+        height: zone.height,
+    }
+}
+
 type CursorInfo = Option<(
     u64,
     usize,
@@ -64,9 +79,10 @@ pub fn render_lines<'a>(
     let stretched_start = stretched.len();
     let note_icon_start = note_icons.len();
     let actor_icon_start = actor_icons.len();
+    let timeline_zone = expanded_timeline_zone(zone);
 
     let mut result = super::view_implementation::render_lines(
-        zone,
+        &timeline_zone,
         project,
         render_index,
         current_frame,
@@ -84,17 +100,17 @@ pub fn render_lines<'a>(
         detection_uvs,
     );
 
-    // Only labels emitted by this render pass need a decision. Their collision
-    // targets still cover the complete project, which keeps the result stable
-    // when another line is culled outside the viewport.
     let rendered_character_line_ids: HashSet<u64> = stretched[stretched_start..]
         .iter()
         .filter_map(|text| character_label_line_id(project, text))
         .collect();
 
     if !rendered_character_line_ids.is_empty() {
-        let collision_layout =
-            super::badge_policy::CharacterBadgeLayoutContext::new(project, current_frame, zone);
+        let collision_layout = super::badge_policy::CharacterBadgeLayoutContext::new(
+            project,
+            current_frame,
+            &timeline_zone,
+        );
         let mut hidden_line_ids = HashSet::new();
         for line_id in rendered_character_line_ids {
             let Some(line) = project.get_line(line_id) else {
@@ -112,7 +128,6 @@ pub fn render_lines<'a>(
         }
 
         if !hidden_line_ids.is_empty() {
-            // Build the geometry list before deleting the matching text entries.
             let hidden_badges: Vec<(Rect, [f32; 4])> = stretched[stretched_start..]
                 .iter()
                 .filter_map(|text| {
@@ -211,8 +226,9 @@ pub fn render_rythmo_base(
     state: &RythmoState,
     scene: &crate::rendering::rythmo::scene::RythmoScene,
 ) -> Vec<QuadInstance> {
+    let timeline_zone = expanded_timeline_zone(zone);
     let mut quads = super::view_implementation::render_rythmo_base(
-        zone,
+        &timeline_zone,
         project,
         current_frame,
         waveform,
@@ -244,10 +260,11 @@ pub fn render_rythmo_base(
 
     quads.retain(|quad| !is_playhead_quad(quad, centered_playhead_x));
     for quad in &mut quads {
-        let covers_zone = quad.rect[2] >= zone.width - 0.5
-            && quad.rect[0] <= zone.x + 0.5
-            && quad.rect[0] + quad.rect[2] >= zone.x + zone.width - 0.5;
-        if !covers_zone {
+        let covers_timeline_zone = quad.rect[2] >= timeline_zone.width - 0.5
+            && quad.rect[0] <= timeline_zone.x + 0.5
+            && quad.rect[0] + quad.rect[2]
+                >= timeline_zone.x + timeline_zone.width - 0.5;
+        if !covers_timeline_zone {
             quad.rect[0] += delta;
         }
     }
@@ -280,8 +297,9 @@ pub fn render_autocomplete<'a>(
 ) {
     let quad_start = quads.len();
     let label_start = labels.len();
+    let timeline_zone = expanded_timeline_zone(zone);
     super::view_implementation::render_autocomplete(
-        zone,
+        &timeline_zone,
         project,
         current_frame,
         state,
@@ -314,8 +332,9 @@ pub fn render_markers<'a>(
     let quad_start = quads.len();
     let label_start = labels.len();
     let icon_start = liaison_icons.len();
+    let timeline_zone = expanded_timeline_zone(zone);
     super::view_implementation::render_markers(
-        zone,
+        &timeline_zone,
         project,
         render_index,
         current_frame,
@@ -349,8 +368,9 @@ pub fn render_ambiance_liaison_icons(
     liaison_right_uv: [f32; 4],
 ) {
     let icon_start = icons.len();
+    let timeline_zone = expanded_timeline_zone(zone);
     super::view_implementation::render_ambiance_liaison_icons(
-        zone,
+        &timeline_zone,
         project,
         render_index,
         current_frame,
@@ -372,8 +392,9 @@ pub fn lint_zone_diagnostics(
     cursor_x: f32,
     cursor_y: f32,
 ) -> Vec<crate::lint::Diagnostic> {
+    let timeline_zone = expanded_timeline_zone(zone);
     super::view_implementation::lint_zone_diagnostics(
-        zone,
+        &timeline_zone,
         project,
         current_frame,
         diagnostics,
@@ -398,17 +419,20 @@ pub fn handle_rythmo_event(
     erasing: bool,
     interaction_mode: RythmoInteractionMode,
 ) -> EventResponse {
-    // Drawing coordinates already consume the global offset in
-    // crate::rythmo_drawing; translating their pointer a second time would
-    // apply the offset twice.
-    let adjusted = if matches!(tool_mode, ToolMode::Draw) {
+    let drawing_mode = matches!(tool_mode, ToolMode::Draw);
+    let adjusted = if drawing_mode {
         event.clone()
     } else {
         event_with_shifted_x(event, -playhead_delta(zone))
     };
+    let timeline_zone = if drawing_mode {
+        *zone
+    } else {
+        expanded_timeline_zone(zone)
+    };
     super::view_implementation::handle_rythmo_event(
         &adjusted,
-        zone,
+        &timeline_zone,
         project,
         render_index,
         current_frame,
@@ -432,6 +456,7 @@ pub fn handle_context_menu_event(
     screen_h: f32,
     state: &mut RythmoState,
 ) -> EventResponse {
+    let timeline_zone = expanded_timeline_zone(zone);
     if matches!(event, UiEvent::ContextMenu { .. }) {
         let delta = playhead_delta(zone);
         let adjusted = event_with_shifted_x(event, -delta);
@@ -439,7 +464,7 @@ pub fn handle_context_menu_event(
             &adjusted,
             project,
             current_frame,
-            zone,
+            &timeline_zone,
             screen_w,
             screen_h,
             state,
@@ -453,7 +478,7 @@ pub fn handle_context_menu_event(
             event,
             project,
             current_frame,
-            zone,
+            &timeline_zone,
             screen_w,
             screen_h,
             state,
@@ -613,7 +638,7 @@ fn array_rect_inside(rect: [f32; 4], container: Rect) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{array_rect_inside, complement_ranges, is_badge_underline};
+    use super::{array_rect_inside, complement_ranges, expanded_timeline_zone, is_badge_underline};
     use crate::ui::primitives::{QuadInstance, Rect};
 
     #[test]
@@ -654,5 +679,18 @@ mod tests {
             complement_ranges(0.0, 100.0, &[(0.0, 20.0), (40.0, 100.0)]),
             vec![(20.0, 40.0)]
         );
+    }
+
+    #[test]
+    fn expanded_zone_keeps_the_same_center() {
+        let zone = Rect {
+            x: 10.0,
+            y: 20.0,
+            width: 800.0,
+            height: 240.0,
+        };
+        let expanded = expanded_timeline_zone(&zone);
+        assert!(((expanded.x + expanded.width * 0.5) - (zone.x + zone.width * 0.5)).abs() < 0.01);
+        assert!(expanded.width >= zone.width);
     }
 }
