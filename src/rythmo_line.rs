@@ -35,8 +35,8 @@ impl RythmoLineKind {
 pub const AMBIANCE_LABEL_PREFIX: &str = "amb.";
 
 /// Build the immutable-prefix label shown for ambiance starts. The editable
-/// model stores only the ambiance name; legacy values that already contain
-/// the prefix are normalized to avoid displaying it twice.
+/// model stores only the ambiance name; legacy values that already contain the
+/// prefix are normalized to avoid displaying it twice.
 pub fn ambiance_name(name: &str) -> &str {
     let without_leading_space = name.trim_start();
     without_leading_space
@@ -93,7 +93,9 @@ impl RythmoLine {
 
         let start = self.start_frame as f64;
         let end = self.end_frame() as f64;
-        if current_frame < start || current_frame > end {
+        // Frame ranges are half-open: the karaoke overlay exists on
+        // [start_frame, end_frame), then disappears immediately at its end.
+        if current_frame < start || current_frame >= end {
             return None;
         }
 
@@ -187,5 +189,28 @@ mod tests {
         assert_eq!(ambiance_label("Amb. bureaux"), "amb.bureaux");
         assert_eq!(ambiance_name("amb.pluie"), "pluie");
         assert_eq!(ambiance_label("bruit de "), "amb.bruit de ");
+    }
+
+    #[test]
+    fn karaoke_disappears_at_its_end_frame() {
+        let line = RythmoLine {
+            id: 1,
+            start_frame: 10,
+            duration_frames: 5,
+            y_slot: 0.0,
+            text: "karaoke".into(),
+            character_name: String::new(),
+            character_color: [1.0; 4],
+            kind: RythmoLineKind::Dialogue,
+            voice_actor_names: Vec::new(),
+            syllable_ratios: Vec::new(),
+            karaoke: true,
+            note: String::new(),
+            presence: LinePresence::On,
+        };
+
+        assert!(line.karaoke_active(14.999));
+        assert!(!line.karaoke_active(15.0));
+        assert_eq!(line.karaoke_progress(15.0), None);
     }
 }
