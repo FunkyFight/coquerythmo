@@ -10,6 +10,7 @@ pub mod application;
 pub mod audio_transfer;
 pub mod automation;
 pub mod command;
+#[path = "config_offset.rs"]
 pub mod config;
 pub mod configured_export;
 pub mod constants;
@@ -37,6 +38,7 @@ pub mod recording_runtime;
 pub mod render_index;
 pub mod rendering;
 pub mod rythmo_cpu_renderer;
+#[path = "rythmo_drawing_offset.rs"]
 pub mod rythmo_drawing;
 pub mod rythmo_gpu_renderer;
 pub mod rythmo_layout;
