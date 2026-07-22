@@ -34,8 +34,14 @@ impl State {
         crate::text_emotion_foreground::captures_input() || self.0.captures_modal_input()
     }
 
+    fn active_project_has_text_emotions(&self) -> bool {
+        self.project_session.project.lines().any(|line| {
+            crate::text_emotion::has_line_for_text(line.id, &line.text)
+        })
+    }
+
     pub fn needs_continuous_redraw(&self) -> bool {
-        crate::text_emotion::has_any() || self.0.needs_continuous_redraw()
+        self.active_project_has_text_emotions() || self.0.needs_continuous_redraw()
     }
 
     /// Present the interactive band at the monitor cadence. Its position still
