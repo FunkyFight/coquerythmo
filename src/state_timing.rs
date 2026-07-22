@@ -27,6 +27,13 @@ impl State {
         Self(implementation::State::new(window, accessibility_sender).await)
     }
 
+    /// The text-emotion palette is a native modal surface even though it lives
+    /// beside the legacy UI modal host. This keeps arrows, Home/End, Enter and
+    /// Escape inside the palette before workspace shortcuts can consume them.
+    pub fn captures_modal_input(&self) -> bool {
+        crate::text_emotion_foreground::captures_input() || self.0.captures_modal_input()
+    }
+
     /// Present the interactive band at the monitor cadence. Its position still
     /// comes from a continuous f64 media clock, so interpolation is preserved
     /// without asking wgpu to present frames the monitor can never display.
@@ -35,7 +42,9 @@ impl State {
     }
 
     pub fn needs_redraw_now(&self) -> bool {
-        if self.is_video_playing() && self.active_workspace() == WorkspaceId::Rythmo {
+        if (self.is_video_playing() || crate::text_emotion::has_any())
+            && self.active_workspace() == WorkspaceId::Rythmo
+        {
             return redraw_due_at_display_rate(
                 Instant::now(),
                 self.render.last_redraw,
@@ -46,7 +55,9 @@ impl State {
     }
 
     pub fn next_wake_deadline(&self) -> Option<Instant> {
-        if self.is_video_playing() && self.active_workspace() == WorkspaceId::Rythmo {
+        if (self.is_video_playing() || crate::text_emotion::has_any())
+            && self.active_workspace() == WorkspaceId::Rythmo
+        {
             return Some(self.render.last_redraw + self.display_refresh_interval());
         }
         self.0.next_wake_deadline()
@@ -83,12 +94,12 @@ mod tests {
         assert!(!redraw_due_at_display_rate(
             start + Duration::from_millis(4),
             start,
-            interval,
+            interval
         ));
         assert!(redraw_due_at_display_rate(
             start + Duration::from_millis(17),
             start,
-            interval,
+            interval
         ));
     }
 
@@ -99,12 +110,12 @@ mod tests {
         assert!(!redraw_due_at_display_rate(
             start + Duration::from_millis(6),
             start,
-            interval,
+            interval
         ));
         assert!(redraw_due_at_display_rate(
             start + Duration::from_millis(7),
             start,
-            interval,
+            interval
         ));
     }
 }
