@@ -1138,6 +1138,33 @@ impl State {
         }
     }
 
+    pub fn set_line_presence(&mut self, line_id: u64, presence: crate::rythmo_line::LinePresence) {
+        let Some(line) = self.project_session.project.get_line(line_id) else {
+            return;
+        };
+        let old_presence = line.presence;
+        if old_presence == presence {
+            return;
+        }
+        self.execute_and_broadcast(Command::SetLinePresence {
+            line_id,
+            old_presence,
+            new_presence: presence,
+        });
+    }
+
+    pub fn set_hovered_line_presence(&mut self, presence: crate::rythmo_line::LinePresence) {
+        let line_id = self
+            .ui_shell
+            .ui
+            .rythmo_state
+            .hovered_line
+            .or_else(|| self.selected_line_ids().first().copied());
+        if let Some(line_id) = line_id {
+            self.set_line_presence(line_id, presence);
+        }
+    }
+
     pub fn open_export_modal(&mut self) {
         let (video_width, video_height) = self.source_video_size().unwrap_or((1920, 1080));
         let languages = self
@@ -2204,15 +2231,8 @@ impl State {
         self.playback.scroll_needs_decode = false;
         self.playback.last_scroll_time = None;
 
-        let bgl = self.render.ui_renderer.texture_bind_group_layout();
-        let sampler = self.render.ui_renderer.texture_sampler();
         if let Some(player) = &mut self.playback.video_player {
-            player.decode_current_frame(
-                &self.render.gfx.device,
-                &self.render.gfx.queue,
-                bgl,
-                sampler,
-            );
+            player.prepare_current_frame();
         }
     }
 
@@ -2261,18 +2281,11 @@ impl State {
         if let Some(t) = self.playback.last_scroll_time {
             if t.elapsed().as_millis() >= constants::SCROLL_DECODE_DELAY_MS {
                 self.playback.scroll_needs_decode = false;
-                let bgl = self.render.ui_renderer.texture_bind_group_layout();
-                let sampler = self.render.ui_renderer.texture_sampler();
                 if let Some(player) = &mut self.playback.video_player {
                     if player.is_playing() {
                         player.restart_playback_decoders();
                     } else {
-                        player.decode_current_frame(
-                            &self.render.gfx.device,
-                            &self.render.gfx.queue,
-                            bgl,
-                            sampler,
-                        );
+                        player.prepare_current_frame();
                     }
                 }
                 return true;
@@ -3053,7 +3066,12 @@ impl State {
             .filter(|line| line_ids.contains(&line.id))
             .map(|line| LineClipboardEntry {
                 line: line.clone(),
-                detections: self.project_session.project.detections().line(line.id).cloned(),
+                detections: self
+                    .project_session
+                    .project
+                    .detections()
+                    .line(line.id)
+                    .cloned(),
             })
             .collect();
         if lines.is_empty() {
@@ -3474,6 +3492,78 @@ impl State {
         let marker = crate::rythmo_line::RythmoMarker { kind, frame };
         let index = self.project_session.project.marker_count();
         self.execute_and_broadcast(Command::AddMarker { marker, index });
+    }
+
+    pub fn add_ambiance_line(&mut self, liaison: crate::rythmo_line::MarkerKind) {
+        use crate::rythmo_line::{MarkerKind, RythmoLineKind};
+        let frame = self.current_frame();
+        let dur = (self.fps() * constants::DEFAULT_LINE_DURATION_SEC) as i64;
+        let previous_ambiance_name = self
+            .project_session
+            .project
+            .lines()
+            .filter(|line| line.kind.is_ambiance() && !line.character_name.trim().is_empty())
+            .map(|line| line.character_name.clone())
+            .last()
+            .unwrap_or_default();
+        let (line_id, _) = EditExecutor::create_line(
+            &mut self.project_session,
+            frame,
+            dur,
+            crate::rythmo_layout::y_slot_for_track_index(0),
+            String::new(),
+        );
+        if let Some(line) = self.project_session.project.get_line_mut(line_id) {
+            line.kind = if matches!(liaison, MarkerKind::LiaisonRight) {
+                RythmoLineKind::AmbianceStart
+            } else {
+                RythmoLineKind::AmbianceEnd
+            };
+            // Ambiance text never inherits a dialogue role or colour.
+            line.character_name = previous_ambiance_name;
+            line.character_color = [1.0, 1.0, 1.0, 1.0];
+        }
+        self.project_session.project.prune_unused_characters();
+        // The create command snapshot must include the semantic kind for undo,
+        // collaboration and project persistence.
+        let index = self
+            .project_session
+            .project
+            .line_index(line_id)
+            .unwrap_or(0);
+        if let Some(snapshot) = self.project_session.project.get_line(line_id).cloned() {
+            let command = Command::CreateLine { snapshot, index };
+            self.project_session
+                .history
+                .update_last(|last| *last = command.clone());
+            let _ = self
+                .project_session
+                .transaction_journal
+                .replace_last(command.clone());
+            self.broadcast_delta(&command);
+        }
+        let rythmo_state = &mut self.ui_shell.ui.rythmo_state;
+        rythmo_state.selected = Some(crate::workspaces::rythmo::view::Selection::Line(line_id));
+        if matches!(liaison, MarkerKind::LiaisonRight) {
+            let name = self
+                .project_session
+                .project
+                .get_line(line_id)
+                .map(|line| line.character_name.clone())
+                .unwrap_or_default();
+            rythmo_state.stop_line_editing();
+            rythmo_state.editing_character = Some(line_id);
+            rythmo_state.char_input.activate(&name);
+            rythmo_state.char_input.select_all(&name);
+            rythmo_state.autocomplete_index = None;
+            rythmo_state.autocomplete_hover = None;
+            rythmo_state.autocomplete_scroll = 0;
+        } else {
+            rythmo_state.stop_char_editing();
+            rythmo_state.stop_note_editing();
+            rythmo_state.start_editing_line(line_id, "");
+            rythmo_state.line_input.select_all("");
+        }
     }
 
     pub fn add_quick_line(&mut self, text: String) {
@@ -4241,10 +4331,21 @@ impl State {
         let Some(line) = self.project_session.project.get_line(line_id) else {
             return;
         };
+        let is_ambiance = line.kind.is_ambiance();
+        let name = if is_ambiance {
+            crate::rythmo_line::ambiance_name(&name).to_string()
+        } else {
+            name
+        };
+        let color = if is_ambiance { [1.0; 4] } else { color };
         let old_name = line.character_name.clone();
         let old_color = line.character_color;
         let old_voice_actor_names = line.voice_actor_names.clone();
-        let new_voice_actor_names = self.voice_actor_names_for_character_change(line_id, &name);
+        let new_voice_actor_names = if is_ambiance {
+            Vec::new()
+        } else {
+            self.voice_actor_names_for_character_change(line_id, &name)
+        };
         if old_name == name && old_color == color && old_voice_actor_names == new_voice_actor_names
         {
             return;
@@ -4319,6 +4420,11 @@ impl State {
     pub fn update_character_name(&mut self, line_id: u64, name: String) {
         let Some(current_line) = self.project_session.project.get_line(line_id) else {
             return;
+        };
+        let name = if current_line.kind.is_ambiance() {
+            crate::rythmo_line::ambiance_name(&name).to_string()
+        } else {
+            name
         };
         let old_name = current_line.character_name.clone();
         let old_color = current_line.character_color;
@@ -5180,8 +5286,22 @@ impl State {
             .is_some_and(|player| player.is_waveform_decoding())
     }
 
-    fn app_refresh_interval() -> Duration {
-        Duration::from_nanos(constants::APP_REFRESH_INTERVAL_NS)
+    pub fn display_refresh_interval(&self) -> Duration {
+        self.render.refresh_interval
+    }
+
+    /// The scrolling bande rythmo owns a 240 Hz animation clock.  Do not tie
+    /// this cadence to decoded video frames or to the monitor refresh rate.
+    pub fn rythmo_refresh_interval(&self) -> Duration {
+        constants::RYTHMO_RENDER_INTERVAL
+    }
+
+    fn active_animation_interval(&self) -> Duration {
+        if self.is_video_playing() && self.active_workspace() == WorkspaceId::Rythmo {
+            self.rythmo_refresh_interval()
+        } else {
+            self.display_refresh_interval()
+        }
     }
     fn scroll_decode_due(&self, now: Instant) -> bool {
         self.playback.scroll_needs_decode
@@ -5214,7 +5334,7 @@ impl State {
     fn continuous_redraw_due(&self, now: Instant) -> bool {
         (self.needs_continuous_redraw() || self.secondary_needs_continuous_redraw())
             && now.saturating_duration_since(self.render.last_redraw)
-                >= Self::app_refresh_interval()
+                >= self.active_animation_interval()
     }
     pub fn needs_redraw_now(&self) -> bool {
         let now = Instant::now();
@@ -5226,6 +5346,11 @@ impl State {
 
     pub fn needs_continuous_redraw(&self) -> bool {
         self.is_video_playing()
+            || self
+                .playback
+                .video_player
+                .as_ref()
+                .is_some_and(|player| player.is_preparing_frame())
             || self.recording_runtime.is_active()
             || self.ui_shell.ui.needs_animation_or_interaction()
     }
@@ -5242,7 +5367,7 @@ impl State {
         };
 
         if self.needs_continuous_redraw() || self.secondary_needs_continuous_redraw() {
-            push_deadline(self.render.last_redraw + Self::app_refresh_interval());
+            push_deadline(self.render.last_redraw + self.active_animation_interval());
         }
 
         if self.ui_shell.ui.has_active_progress()
@@ -5287,6 +5412,10 @@ impl State {
     }
 
     pub fn render(&mut self) {
+        // Pace from frame start, so CPU/GPU preparation is part of the display
+        // budget. Pacing from the end added a full refresh interval after the
+        // render cost and produced severe judder on large projects.
+        self.render.last_redraw = Instant::now();
         if self.active_workspace() == WorkspaceId::Recording {
             self.sync_recording_workspace_ui();
         }
@@ -5397,10 +5526,10 @@ impl State {
             .queue
             .submit(std::iter::once(encoder.finish()));
         surface_texture.present();
-        self.render.last_redraw = Instant::now();
     }
 
     pub fn render_secondary_display(&mut self, window_id: WindowId) {
+        self.render.last_redraw = Instant::now();
         self.tick_video();
 
         let Some(display) = &mut self.window_manager.secondary_display else {
@@ -5487,7 +5616,6 @@ impl State {
             .queue
             .submit(std::iter::once(encoder.finish()));
         surface_texture.present();
-        self.render.last_redraw = Instant::now();
     }
 }
 

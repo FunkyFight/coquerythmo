@@ -41,22 +41,6 @@ fn quad(x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: f32, a: f32) -> QuadI
     }
 }
 
-fn quad_rounded(
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-    border_radius: f32,
-) -> QuadInstance {
-    let mut q = quad(x, y, w, h, r, g, b, a);
-    q.border_radius = border_radius;
-    q
-}
-
 fn rotated_line(
     cx: f32,
     cy: f32,
@@ -1396,7 +1380,7 @@ impl GpuRenderer {
         tile_w: u32,
     ) -> u64 {
         self.get_or_upload_rythmo_text_tile_with_mode(
-            text, font_size, full_w, dest_h, tile_x, tile_w, true,
+            text, font_size, full_w, dest_h, tile_x, tile_w, true, false,
         )
     }
 
@@ -1410,7 +1394,21 @@ impl GpuRenderer {
         tile_w: u32,
     ) -> u64 {
         self.get_or_upload_rythmo_text_tile_with_mode(
-            text, font_size, full_w, dest_h, tile_x, tile_w, false,
+            text, font_size, full_w, dest_h, tile_x, tile_w, false, false,
+        )
+    }
+
+    fn get_or_upload_rythmo_text_tile_emphasized(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        full_w: u32,
+        dest_h: u32,
+        tile_x: u32,
+        tile_w: u32,
+    ) -> u64 {
+        self.get_or_upload_rythmo_text_tile_with_mode(
+            text, font_size, full_w, dest_h, tile_x, tile_w, false, true,
         )
     }
 
@@ -1423,9 +1421,12 @@ impl GpuRenderer {
         tile_x: u32,
         tile_w: u32,
         stretch: bool,
+        emphasized: bool,
     ) -> u64 {
         let tile_w = tile_w.min(full_w.saturating_sub(tile_x)).max(1);
-        let kind = if stretch {
+        let kind = if emphasized {
+            "vector-rythmo-tile-emphasized"
+        } else if stretch {
             "vector-rythmo-tile"
         } else {
             "vector-rythmo-tile-natural"
@@ -1446,7 +1447,17 @@ impl GpuRenderer {
         }
 
         let upload_start = Instant::now();
-        let rendered = if stretch {
+        let rendered = if emphasized {
+            // Ambiance labels are short; they fit one tile. Rendering the
+            // complete styled SVG preserves the selected user font.
+            crate::vector_text::render_rythmo_text_natural_emphasized(
+                &mut self.font_system,
+                text,
+                font_size,
+                full_w,
+                dest_h,
+            )
+        } else if stretch {
             crate::vector_text::render_rythmo_text_tile(
                 &mut self.font_system,
                 text,
@@ -1639,6 +1650,7 @@ impl GpuRenderer {
             tint,
             clip_ratio,
             true,
+            false,
             all_icons,
             icon_batches,
         );
@@ -1667,6 +1679,35 @@ impl GpuRenderer {
             tint,
             clip_ratio,
             false,
+            false,
+            all_icons,
+            icon_batches,
+        );
+    }
+
+    fn push_rythmo_text_icons_emphasized(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        tint: [f32; 4],
+        all_icons: &mut Vec<IconInstance>,
+        icon_batches: &mut Vec<IconBatch>,
+    ) {
+        self.push_rythmo_text_icons_tinted_clipped_with_mode(
+            text,
+            font_size,
+            x,
+            y,
+            w,
+            h,
+            tint,
+            1.0,
+            false,
+            true,
             all_icons,
             icon_batches,
         );
@@ -1683,6 +1724,7 @@ impl GpuRenderer {
         tint: [f32; 4],
         clip_ratio: f32,
         stretch: bool,
+        emphasized: bool,
         all_icons: &mut Vec<IconInstance>,
         icon_batches: &mut Vec<IconBatch>,
     ) {
@@ -1707,7 +1749,11 @@ impl GpuRenderer {
                 break;
             }
             let visible_tile_w = tile_w.min(clip_px - tile_x).max(1);
-            let hash = if stretch {
+            let hash = if emphasized {
+                self.get_or_upload_rythmo_text_tile_emphasized(
+                    text, font_size, full_w, full_h, tile_x, tile_w,
+                )
+            } else if stretch {
                 self.get_or_upload_rythmo_text_tile(text, font_size, full_w, full_h, tile_x, tile_w)
             } else {
                 self.get_or_upload_rythmo_text_tile_natural(
@@ -2116,10 +2162,27 @@ impl GpuRenderer {
             } else {
                 line.visual_x_width(current_frame, center_x, ppf, w, s)
             };
-            let badge_w = rythmo_layout::scaled_character_badge_width(&line.character_name, s);
-            let badge_x = rythmo_layout::leading_character_badge_x(x1, badge_w, s);
-            let show_badge = !line.karaoke || scene_line.character_label_visible;
-            let leading_visual = show_badge.then(|| {
+            let badge_w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart)
+            {
+                rythmo_layout::scaled_character_badge_width(
+                    &crate::rythmo_line::ambiance_label(&line.character_name),
+                    s,
+                )
+                .max(150.0 * s)
+            } else {
+                rythmo_layout::scaled_character_badge_width(&line.character_name, s)
+            };
+            let label_gap = if scene_line.karaoke_should_be_centered() {
+                constants::BADGE_GAP * s
+            } else {
+                4.0 * ppf
+            };
+            let badge_x = x1 - badge_w - label_gap;
+            let show_badge =
+                line.kind.is_dialogue() && (!line.karaoke || scene_line.character_label_visible);
+            let has_leading_label = show_badge
+                || matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart);
+            let leading_visual = has_leading_label.then(|| {
                 rythmo_layout::leading_visual_bounds(
                     badge_x,
                     badge_w,
@@ -2171,10 +2234,22 @@ impl GpuRenderer {
             } else {
                 line.visual_x_width(current_frame, center_x, ppf, w, s)
             };
-            let badge_w = rythmo_layout::scaled_character_badge_width(&line.character_name, s);
+            let badge_w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart)
+            {
+                rythmo_layout::scaled_character_badge_width(
+                    &crate::rythmo_line::ambiance_label(&line.character_name),
+                    s,
+                )
+                .max(150.0 * s)
+            } else {
+                rythmo_layout::scaled_character_badge_width(&line.character_name, s)
+            };
             let badge_x = rythmo_layout::leading_character_badge_x(x1, badge_w, s);
-            let show_badge = !line.karaoke || scene_line.character_label_visible;
-            let leading_visual = show_badge.then(|| {
+            let show_badge =
+                line.kind.is_dialogue() && (!line.karaoke || scene_line.character_label_visible);
+            let has_leading_label = show_badge
+                || matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart);
+            let leading_visual = has_leading_label.then(|| {
                 rythmo_layout::leading_visual_bounds(
                     badge_x,
                     badge_w,
@@ -2204,9 +2279,51 @@ impl GpuRenderer {
             }
 
             let [cr, cg, cb, _] = line.character_color;
-            let badge_h = body_h * constants::BADGE_OVERLAP_HEIGHT_RATIO;
+            let badge_h = body_h;
             // Rectangular, top-aligned, right edge a few px left of the line's left edge.
             let badge_y = line_y;
+
+            if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
+                let ambiance_label = crate::rythmo_line::ambiance_label(&line.character_name);
+                let underline_x = badge_x + font_size * 0.25;
+                let underline_w = crate::vector_text::measure_rythmo_text_width_standalone(
+                    &ambiance_label,
+                    font_size,
+                )
+                .unwrap_or(badge_w)
+                .min((badge_x + badge_w - underline_x).max(0.0));
+                self.push_rythmo_text_icons_emphasized(
+                    &ambiance_label,
+                    font_size,
+                    badge_x,
+                    badge_y,
+                    badge_w,
+                    badge_h,
+                    [0.2, 0.55, 1.0, 1.0],
+                    &mut all_icons,
+                    &mut icon_batches,
+                );
+                quads.push(quad(
+                    underline_x,
+                    badge_y + badge_h - 2.0 * s,
+                    underline_w,
+                    1.5 * s,
+                    0.2,
+                    0.55,
+                    1.0,
+                    1.0,
+                ));
+                quads.push(quad(
+                    underline_x,
+                    badge_y + badge_h - 5.5 * s,
+                    underline_w,
+                    1.5 * s,
+                    0.2,
+                    0.55,
+                    1.0,
+                    1.0,
+                ));
+            }
 
             // Overlap detection vs OTHER lines: hide if same character, 60% opacity if different
             let mut badge_hidden = false;
@@ -2270,18 +2387,39 @@ impl GpuRenderer {
                     } else {
                         None
                     };
-                let scrolling_text_tint =
-                    if scene.project.settings().scrolling_text_uses_character_color {
-                        [
-                            line.character_color[0].clamp(0.0, 1.0),
-                            line.character_color[1].clamp(0.0, 1.0),
-                            line.character_color[2].clamp(0.0, 1.0),
-                            1.0,
-                        ]
-                    } else {
-                        [1.0; 4]
-                    };
-                if line.karaoke {
+                let scrolling_text_tint = if line.kind.is_ambiance() {
+                    [0.95, 0.12, 0.16, 1.0]
+                } else if scene.project.settings().scrolling_text_uses_character_color {
+                    [
+                        line.character_color[0].clamp(0.0, 1.0),
+                        line.character_color[1].clamp(0.0, 1.0),
+                        line.character_color[2].clamp(0.0, 1.0),
+                        1.0,
+                    ]
+                } else {
+                    [1.0; 4]
+                };
+                if line.kind.is_ambiance() {
+                    let reserve = (54.0 * s).min(lw);
+                    let (text_x, text_w) =
+                        if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
+                            (x1 + reserve, (lw - reserve).max(1.0))
+                        } else {
+                            (x1, (lw - reserve).max(1.0))
+                        };
+                    self.push_rythmo_text_icons_tinted_clipped(
+                        &line.text,
+                        font_size,
+                        text_x,
+                        line_y,
+                        text_w,
+                        body_h,
+                        scrolling_text_tint,
+                        1.0,
+                        &mut all_icons,
+                        &mut icon_batches,
+                    );
+                } else if line.karaoke {
                     let karaoke_font_size =
                         font_size * constants::KARAOKE_TEXT_FONT_SCALE * karaoke_text_scale;
                     self.push_rythmo_text_icons_natural_tinted_clipped(
@@ -2383,42 +2521,119 @@ impl GpuRenderer {
                 }
             }
 
-            // Draw badge AFTER text so it appears on top
+            if !line.presence.is_on() && !line.text.is_empty() {
+                let underline_y = line_y + body_h - (3.0 * s).max(1.0);
+                let thickness = (1.5 * s).max(1.0);
+                if line.presence == crate::rythmo_line::LinePresence::Off {
+                    quads.push(quad(x1, underline_y, lw, thickness, 1.0, 1.0, 1.0, 1.0));
+                } else {
+                    let (dash, gap) = ((8.0 * s).max(2.0), (5.0 * s).max(2.0));
+                    let mut x = x1;
+                    while x < x1 + lw {
+                        quads.push(quad(
+                            x,
+                            underline_y,
+                            dash.min(x1 + lw - x),
+                            thickness,
+                            1.0,
+                            1.0,
+                            1.0,
+                            1.0,
+                        ));
+                        x += dash + gap;
+                    }
+                }
+            }
+
+            if line.kind.is_ambiance() {
+                let at_start =
+                    matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart);
+                let gutter = (46.0 * s).min(lw);
+                let gx = if at_start { x1 } else { x1 + lw - gutter };
+                let dir = if at_start { 1.0 } else { -1.0 };
+                let cy = line_y + body_h * 0.5;
+                let tip_x = if at_start {
+                    gx + gutter - 5.0 * s
+                } else {
+                    gx + 5.0 * s
+                };
+                let base_x = tip_x - dir * 15.0 * s;
+                for dy in [-10.0 * s, 10.0 * s] {
+                    let dx = tip_x - base_x;
+                    quads.push(rotated_line(
+                        base_x + dx * 0.5,
+                        cy + dy * 0.5,
+                        (dx * dx + dy * dy).sqrt(),
+                        5.0 * s,
+                        (-dy).atan2(dx),
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0,
+                    ));
+                }
+                quads.push(quad(
+                    gx + 5.0 * s,
+                    cy - 2.5 * s,
+                    (gutter - 10.0 * s).max(1.0),
+                    5.0 * s,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                ));
+                let bar_x = if at_start {
+                    gx + 3.0 * s
+                } else {
+                    gx + gutter - 3.0 * s
+                };
+                quads.push(quad(
+                    bar_x - 2.5 * s,
+                    cy - 13.0 * s,
+                    5.0 * s,
+                    26.0 * s,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                ));
+            }
+
+            // Draw the character label after the scrolling text, using the
+            // same emphasized, double-underlined treatment as ambiances.
             if let Some((badge_x, badge_y, badge_w, badge_h, cr, cg, cb, ba, hash, tr, tg, tb)) =
                 badge_info
             {
-                let badge_radius = 0.0; // rectangular badge (no rounding)
-                quads.push(quad_rounded(
+                let _ = (hash, tr, tg, tb);
+                let underline_x = badge_x + font_size * 0.25;
+                let underline_w = crate::vector_text::measure_rythmo_text_width_standalone(
+                    &line.character_name,
+                    font_size,
+                )
+                .unwrap_or(badge_w)
+                .min((badge_x + badge_w - underline_x).max(0.0));
+                self.push_rythmo_text_icons_emphasized(
+                    &line.character_name,
+                    font_size,
                     badge_x,
                     badge_y,
                     badge_w,
                     badge_h,
-                    cr,
-                    cg,
-                    cb,
-                    ba,
-                    badge_radius,
-                ));
-
-                if let Some(cached) = self.text_cache.get(&hash) {
-                    let tw = cached.width as f32;
-                    let th = cached.height as f32;
-                    let start = all_icons.len() as u32;
-                    all_icons.push(IconInstance {
-                        rect: [
-                            badge_x + (badge_w - tw) / 2.0,
-                            badge_y + (badge_h - th) / 2.0,
-                            tw,
-                            th,
-                        ],
-                        uv_rect: [0.0, 0.0, 1.0, 1.0],
-                        tint: [tr, tg, tb, ba],
-                    });
-                    icon_batches.push(IconBatch {
-                        hash,
-                        start,
-                        count: 1,
-                    });
+                    [cr, cg, cb, ba],
+                    &mut all_icons,
+                    &mut icon_batches,
+                );
+                for y_offset in [2.0, 5.5] {
+                    quads.push(quad(
+                        underline_x,
+                        badge_y + badge_h - y_offset * s,
+                        underline_w,
+                        1.5 * s,
+                        cr,
+                        cg,
+                        cb,
+                        ba,
+                    ));
                 }
 
                 self.push_voice_actor_icons(

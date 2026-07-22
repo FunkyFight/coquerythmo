@@ -124,6 +124,7 @@ impl State {
             id: detection_id,
             kind,
             media_tick,
+            duration: MediaTick::ZERO,
             target,
         };
         self.execute_detection_command(Command::Detection {
@@ -241,6 +242,39 @@ impl State {
         }
         self.ui_shell.ui.rythmo_state.detection_drag = None;
         self.announce_detection_visual(kind, "supprimé");
+    }
+
+    pub fn resize_detection(
+        &mut self,
+        address: DetectionAddress,
+        media_tick: MediaTick,
+        duration: MediaTick,
+    ) {
+        let Some(cue) = self
+            .project_session
+            .project
+            .detections()
+            .command_cue(address)
+        else {
+            return;
+        };
+        if cue.kind.is_sync_point() {
+            return;
+        }
+        let duration = MediaTick(duration.raw().max(0));
+        if cue.media_tick == media_tick && cue.duration == duration {
+            return;
+        }
+        let command = Command::Detection {
+            change: DetectionChange::Resize {
+                address,
+                old_tick: cue.media_tick,
+                new_tick: media_tick,
+                old_duration: cue.duration,
+                new_duration: duration,
+            },
+        };
+        self.execute_detection_command(command);
     }
 
     pub fn delete_selected_detection(&mut self) {

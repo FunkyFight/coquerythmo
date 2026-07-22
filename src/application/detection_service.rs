@@ -33,6 +33,7 @@ impl DetectionEditService {
             id: detection_id,
             kind,
             media_tick,
+            duration: MediaTick::ZERO,
             target,
         };
         let change = DetectionChange::Add {

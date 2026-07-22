@@ -4,13 +4,13 @@
 //! `modal_host_base.rs`. This facade reserves the final modal-overlay pass and
 //! input priority for the detection palette and information card.
 
+use super::primitives::{EventResponse, LabelInfo, QuadInstance, UiEvent};
 use super::{
     connect_modal, export_modal, file_explorer, language_modal, pricing_license_modal,
     pricing_page, pricing_plan_modal, primitives, project_settings_modal, proxy_error_modal,
     proxy_modal, rename_character_modal, save_prompt_modal, server_browser, settings_modal,
     voice_actor_modal, whats_new_modal,
 };
-use super::primitives::{EventResponse, LabelInfo, QuadInstance, UiEvent};
 use std::ops::{Deref, DerefMut};
 
 #[path = "modal_host_base.rs"]

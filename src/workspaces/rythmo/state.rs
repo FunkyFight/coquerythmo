@@ -61,6 +61,14 @@ struct CachedKaraokeUiIndex {
     index: KaraokeUiIndex,
 }
 
+struct CachedLintDiagnostics {
+    project_revision: u64,
+    fps_bits: u64,
+    diagnostics: Vec<crate::lint::Diagnostic>,
+    severity_by_line: HashMap<u64, crate::lint::Severity>,
+    zone_diagnostics: Vec<crate::lint::Diagnostic>,
+}
+
 #[derive(Default)]
 struct KaraokeWidthPrewarmState {
     signature: u64,
@@ -108,6 +116,7 @@ pub struct RythmoState {
     pub transform_handle: Option<TransformHandle>,
     karaoke_text_width_cache: RefCell<HashMap<u64, KaraokeTextWidthCacheEntry>>,
     karaoke_index_cache: RefCell<Option<CachedKaraokeUiIndex>>,
+    lint_diagnostics_cache: RefCell<Option<CachedLintDiagnostics>>,
     karaoke_width_prewarm: RefCell<KaraokeWidthPrewarmState>,
     cached_layout_signature: RefCell<u64>,
     cached_layout_ctx: RefCell<Option<EditorLayoutCtx>>,
@@ -248,6 +257,7 @@ impl RythmoState {
             transform_handle: None,
             karaoke_text_width_cache: RefCell::new(HashMap::new()),
             karaoke_index_cache: RefCell::new(None),
+            lint_diagnostics_cache: RefCell::new(None),
             karaoke_width_prewarm: RefCell::new(KaraokeWidthPrewarmState::default()),
             cached_layout_signature: RefCell::new(0),
             cached_layout_ctx: RefCell::new(None),
@@ -276,6 +286,77 @@ impl RythmoState {
         *self.karaoke_index_cache.borrow_mut() = Some(CachedKaraokeUiIndex { signature, index });
         Ref::map(self.karaoke_index_cache.borrow(), |cache| {
             &cache.as_ref().unwrap().index
+        })
+    }
+
+    /// Project-wide linting is O(lines). It changes after a domain edit or an
+    /// FPS change, not merely because the playhead moved.
+    pub(crate) fn cached_lint_diagnostics(
+        &self,
+        project: &Project,
+        fps: f64,
+    ) -> Ref<'_, Vec<crate::lint::Diagnostic>> {
+        let project_revision = project.revision();
+        let fps_bits = fps.to_bits();
+        let valid = self
+            .lint_diagnostics_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|cached| {
+                cached.project_revision == project_revision && cached.fps_bits == fps_bits
+            });
+        if !valid {
+            let diagnostics = crate::lint::analyze(project, fps);
+            let mut severity_by_line: HashMap<u64, crate::lint::Severity> = HashMap::new();
+            let mut zone_diagnostics = Vec::new();
+            for diagnostic in &diagnostics {
+                match diagnostic.scope {
+                    crate::lint::Scope::Line(line_id) => {
+                        severity_by_line
+                            .entry(line_id)
+                            .and_modify(|severity| *severity = (*severity).max(diagnostic.severity))
+                            .or_insert(diagnostic.severity);
+                    }
+                    crate::lint::Scope::Zone {
+                        start_frame,
+                        end_frame,
+                    } => {
+                        zone_diagnostics.push(diagnostic.clone());
+                        for line in project.lines().filter(|line| {
+                            line.start_frame < end_frame && line.end_frame() > start_frame
+                        }) {
+                            severity_by_line
+                                .entry(line.id)
+                                .and_modify(|severity| {
+                                    *severity = (*severity).max(diagnostic.severity)
+                                })
+                                .or_insert(diagnostic.severity);
+                        }
+                    }
+                }
+            }
+            *self.lint_diagnostics_cache.borrow_mut() = Some(CachedLintDiagnostics {
+                project_revision,
+                fps_bits,
+                diagnostics,
+                severity_by_line,
+                zone_diagnostics,
+            });
+        }
+        Ref::map(self.lint_diagnostics_cache.borrow(), |cached| {
+            &cached.as_ref().unwrap().diagnostics
+        })
+    }
+
+    pub(crate) fn cached_lint_severities(&self) -> Ref<'_, HashMap<u64, crate::lint::Severity>> {
+        Ref::map(self.lint_diagnostics_cache.borrow(), |cached| {
+            &cached.as_ref().unwrap().severity_by_line
+        })
+    }
+
+    pub(crate) fn cached_lint_zones(&self) -> Ref<'_, Vec<crate::lint::Diagnostic>> {
+        Ref::map(self.lint_diagnostics_cache.borrow(), |cached| {
+            &cached.as_ref().unwrap().zone_diagnostics
         })
     }
 
@@ -518,6 +599,18 @@ impl RythmoState {
             || self.keyboard_pan_direction != 0
             || self.ghost_preview.is_some()
             || self.syllable_drag.is_some()
+    }
+
+    pub fn needs_pointer_motion(&self) -> bool {
+        self.dragging.is_some()
+            || self.selection_drag.is_some()
+            || self.transform_handle.is_some()
+            || self.panning
+            || self.audio_offset_drag.is_some()
+            || self.syllable_drag.is_some()
+            || self.detection_drag.is_some()
+            || self.active_stroke.is_some()
+            || self.ctrl_held
     }
 
     pub fn next_cursor_blink_deadline(&self) -> Option<std::time::Instant> {

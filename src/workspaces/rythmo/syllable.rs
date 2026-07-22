@@ -113,7 +113,18 @@ pub(crate) fn syllable_mouse_move(state: &mut RythmoState, x: f32) -> Option<Eve
         return Some(EventResponse::Consumed);
     }
 
+    // Resolve the synchronization interval before handling either drag mode.
+    // In particular, Ctrl/preserve-prefix used to bypass this guard entirely
+    // and could move a separator across an adjacent synchronization point.
+    let local_range = crate::workspaces::rythmo::detection_ui::active_sync_syllable_edit_range(
+        drag.line_id,
+        segment_count,
+    );
+
     if drag.preserve_prefix {
+        if !separator_is_inside_edit_range(i, local_range) {
+            return Some(EventResponse::Consumed);
+        }
         let left = i;
         let right = i + 1;
         let applied = if delta_ratio > 0.0 {
@@ -136,10 +147,6 @@ pub(crate) fn syllable_mouse_move(state: &mut RythmoState, x: f32) -> Option<Eve
     // With synchronization points, redistribution is local to the interval
     // bounded by the previous and next point. Without synchronization, the
     // original whole-line behavior remains unchanged.
-    let local_range = crate::workspaces::rythmo::detection_ui::active_sync_syllable_edit_range(
-        drag.line_id,
-        segment_count,
-    );
     let (range_start, range_end) = local_range.unwrap_or((0, segment_count));
     let left_end = i + 1;
     let right_start = i + 1;
@@ -192,6 +199,13 @@ pub(crate) fn syllable_mouse_move(state: &mut RythmoState, x: f32) -> Option<Eve
     }
 
     Some(EventResponse::Consumed)
+}
+
+pub(crate) fn separator_is_inside_edit_range(
+    separator_index: usize,
+    edit_range: Option<(usize, usize)>,
+) -> bool {
+    edit_range.is_none_or(|(start, end)| start <= separator_index && separator_index + 1 < end)
 }
 
 pub(crate) fn syllable_drag_min_ratio(segment_count: usize, line_width: f32) -> f32 {

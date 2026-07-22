@@ -71,7 +71,8 @@ pub(crate) fn handle_shift_mouse_press(
         if let Some(line) = ctx.project.get_line(line_id) {
             let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
             if r.contains(x, y) && !line.text.is_empty() {
-                let ratio = ((x - r.x) / r.width).clamp(0.0, 1.0);
+                let text_rect = ambiance_description_rect(r, line.kind);
+                let ratio = ((x - text_rect.x) / text_rect.width).clamp(0.0, 1.0);
                 state.pending_cursor_click = Some((ratio, true));
 
                 // If there's no selection, start one from current cursor
@@ -145,8 +146,11 @@ pub(crate) fn handle_double_click(
     // Save current character edit before switching
     let finalize_line_id = state.editing_character;
 
-    // Badge → character editing
+    // Badge → character/ambiance-name editing. End markers have no label.
     for line in ctx.project.lines() {
+        if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceEnd) {
+            continue;
+        }
         let br = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone);
         if br.contains(x, y) {
             if let Some(old_id) = finalize_line_id {
@@ -161,10 +165,14 @@ pub(crate) fn handle_double_click(
             state.autocomplete_index = None;
             state.autocomplete_hover = None;
             state.autocomplete_scroll = 0;
-            let (picker_x, picker_y) = color_picker_origin_for_badge(&br, ctx.zone);
-            state
-                .color_picker
-                .open(picker_x, picker_y, line.character_color);
+            if line.kind.is_dialogue() {
+                let (picker_x, picker_y) = color_picker_origin_for_badge(&br, ctx.zone);
+                state
+                    .color_picker
+                    .open(picker_x, picker_y, line.character_color);
+            } else {
+                state.color_picker.close();
+            }
             state.stop_line_editing();
             state.stop_note_editing();
             return if let Some(old_id) = finalize_line_id.filter(|&id| id != line.id) {
@@ -194,7 +202,8 @@ pub(crate) fn handle_double_click(
             }
             // If already editing this line, select the clicked word.
             if state.editing_line == Some(line.id) && !line.text.is_empty() {
-                let ratio = ((x - r.x) / r.width).clamp(0.0, 1.0);
+                let text_rect = ambiance_description_rect(r, line.kind);
+                let ratio = ((x - text_rect.x) / text_rect.width).clamp(0.0, 1.0);
                 let lang = ctx.project.syllable_language_code();
                 let char_pos = cursor_index_for_line_at_ratio(
                     line,
@@ -209,6 +218,12 @@ pub(crate) fn handle_double_click(
             }
             state.editing_line = Some(line.id);
             state.line_input.activate(&line.text);
+            // An ambiance end has no label: its whole visible content is the
+            // editable description. Selecting it on entry also lets users
+            // immediately replace legacy placeholders such as "(fin amb.)".
+            if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceEnd) {
+                state.line_input.select_all(&line.text);
+            }
             state.stop_char_editing();
             state.stop_note_editing();
             return if let Some(old_id) = finalize_line_id {

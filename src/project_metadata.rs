@@ -809,6 +809,7 @@ fn hash_serializable<T: Serialize + ?Sized>(
 fn validate_command_precondition(command: &Command, project: &Project) -> Result<(), String> {
     let missing_line = |id: u64| format!("line {id} does not exist");
     match command {
+        Command::SetLinePresence { .. } => {}
         Command::CreateLine { snapshot, index } | Command::InsertLine { snapshot, index } => {
             snapshot.validate()?;
             if project.get_line(snapshot.id).is_some() {
@@ -1118,6 +1119,28 @@ fn validate_command_precondition(command: &Command, project: &Project) -> Result
                         ));
                     }
                 }
+                crate::detection::DetectionChange::Resize {
+                    address,
+                    old_tick,
+                    old_duration,
+                    ..
+                } => {
+                    let current = project.detections().command_cue(*address).ok_or_else(|| {
+                        format!(
+                            "detection {} on line {} does not exist",
+                            address.detection_id.0, address.line_id
+                        )
+                    })?;
+                    if (*old_tick != crate::detection::legacy_resize_tick()
+                        && current.media_tick != *old_tick)
+                        || current.duration != *old_duration
+                    {
+                        return Err(format!(
+                            "detection {} on line {} does not match the resize origin",
+                            address.detection_id.0, address.line_id
+                        ));
+                    }
+                }
                 crate::detection::DetectionChange::Retarget {
                     address,
                     old_boundary,
@@ -1322,6 +1345,7 @@ mod tests {
                     id: address.detection_id,
                     kind: crate::detection::DetectionKind::TextSyncPoint,
                     media_tick,
+                    duration: crate::detection::MediaTick::ZERO,
                     target: crate::detection::TextAnchor::Grapheme {
                         index: grapheme_boundary,
                     },

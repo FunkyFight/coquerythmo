@@ -225,14 +225,23 @@ pub(crate) fn badge_rect_for_name_with_karaoke_preview(
 ) -> Rect {
     let (x1, _) = line_visual_x_width(line, current_frame, zone, karaoke_preview);
     let body_rect = editor_track_body_rect_at_frame(project, line.y_slot, current_frame, zone);
-    let w = badge_width(name);
-    // Right edge a few px to the left of the line's top-left corner, top-aligned.
-    let right = x1 - BADGE_GAP;
+    let w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
+        ambiance_badge_width(name)
+    } else {
+        badge_width(name)
+    };
+    // Dialogue badges keep the traditional four-frame breathing room. An
+    // ambiance name belongs directly to the liaison at the start of its line.
+    let right = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
+        x1
+    } else {
+        x1 - 4.0 * ppf()
+    };
     Rect {
         x: right - w,
         y: body_rect.y,
         width: w,
-        height: body_rect.height * BADGE_OVERLAP_HEIGHT_RATIO,
+        height: body_rect.height,
     }
 }
 
@@ -481,11 +490,17 @@ impl EditorLayoutCtx {
         zone: &Rect,
     ) -> Rect {
         let body_rect = self.track_body_rect(line.y_slot, zone);
-        let badge_h = body_rect.height * BADGE_OVERLAP_HEIGHT_RATIO;
-        let w = badge_width(name);
-        // Right edge a few px to the left of the line's top-left corner;
-        // badge extends leftward from there, top-aligned to the line.
-        let right = x - BADGE_GAP;
+        let badge_h = body_rect.height;
+        let w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
+            ambiance_badge_width(name)
+        } else {
+            badge_width(name)
+        };
+        let right = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
+            x
+        } else {
+            x - 4.0 * ppf()
+        };
         Rect {
             x: right - w,
             y: body_rect.y,
@@ -546,15 +561,29 @@ pub(crate) fn line_rect_with_karaoke_preview(
 }
 
 pub(crate) fn badge_width(name: &str) -> f32 {
-    (text_input::text_width(name, BADGE_FONT_SIZE) + BADGE_PADDING_H * 2.0).max(BADGE_MIN_W)
+    let rendered_font_size = crate::config::get().ui.font_size * 2.0;
+    let measured =
+        crate::vector_text::measure_rythmo_text_width_standalone(name, rendered_font_size)
+            .unwrap_or_else(|| text_input::text_width(name, rendered_font_size));
+    // Character labels now use the same emphasized rythmo glyphs as ambiance
+    // labels. Account for their italic overhang and grow entirely to the left.
+    (measured * 1.25 + BADGE_PADDING_H * 2.0 + 12.0).max(BADGE_MIN_W)
+}
+
+fn ambiance_badge_width(name: &str) -> f32 {
+    let display = crate::rythmo_line::ambiance_label(name);
+    let rendered_font_size = crate::config::get().ui.font_size * 2.0;
+    let measured =
+        crate::vector_text::measure_rythmo_text_width_standalone(&display, rendered_font_size)
+            .unwrap_or_else(|| text_input::text_width(&display, rendered_font_size));
+    // Bold italic glyphs can overhang their regular advance substantially.
+    // Keep the right edge attached to the line and give the label enough
+    // width on its left side so the emphasized bitmap is never clipped.
+    (measured * 1.25 + BADGE_PADDING_H * 2.0 + 12.0).max(150.0)
 }
 
 pub(crate) fn rects_overlap(a: &Rect, b: &Rect) -> bool {
     a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
-}
-
-pub(crate) fn badge_text_metrics() -> TextInputMetrics {
-    TextInputMetrics::center(BADGE_FONT_SIZE, BADGE_PADDING_H)
 }
 
 pub(crate) fn note_text_metrics() -> TextInputMetrics {

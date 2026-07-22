@@ -6,3 +6,4 @@ graphify-out/**
 .github/**
 .claude/**
 skills/**
+.codex-check-target/**

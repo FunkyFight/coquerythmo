@@ -8,8 +8,8 @@ pub mod view;
 /// drag helpers implemented by the view adapter.
 pub(crate) mod detection_ui {
     pub(crate) use super::view::{
-        active_sync_syllable_edit_range, begin_sync_syllable_drag,
-        clear_sync_syllable_drag, finish_sync_syllable_drag,
+        active_sync_syllable_edit_range, begin_sync_syllable_drag, clear_sync_syllable_drag,
+        finish_sync_syllable_drag,
     };
 }
 

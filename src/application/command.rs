@@ -239,6 +239,15 @@ pub enum UiAction {
     NudgeSelectedDetection {
         delta_ticks: i64,
     },
+    SetLinePresence {
+        line_id: u64,
+        presence: crate::rythmo_line::LinePresence,
+    },
+    ResizeDetection {
+        address: crate::detection::DetectionAddress,
+        media_tick: crate::detection::MediaTick,
+        duration: crate::detection::MediaTick,
+    },
     NudgeSelectedSyncAnchor {
         delta_graphemes: i32,
     },
@@ -472,6 +481,7 @@ impl UiAction {
                 | Self::MoveLines { .. }
                 | Self::AddDetection { .. }
                 | Self::MoveDetection { .. }
+                | Self::ResizeDetection { .. }
                 | Self::DeleteDetection { .. }
                 | Self::NudgeSelectedDetection { .. }
                 | Self::NudgeSelectedSyncAnchor { .. }

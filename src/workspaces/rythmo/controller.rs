@@ -40,13 +40,7 @@ pub fn handle_rythmo_event(
         interaction_mode,
     );
 
-    crate::detection_foreground::sync_from_state(
-        project,
-        state,
-        *zone,
-        current_frame,
-        event,
-    );
+    crate::detection_foreground::sync_from_state(project, state, *zone, current_frame, event);
 
     let information_card_open = state.detection_menu.is_some() && state.detection_hover.is_none();
     if !had_information_card && information_card_open {

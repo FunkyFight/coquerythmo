@@ -85,10 +85,12 @@ fn packet_and_command_payload_match_legacy_goldens() {
             text: "test".into(),
             character_name: "Alice".into(),
             character_color: [1.0, 0.0, 0.0, 1.0],
+            kind: coquerythmo::rythmo_line::RythmoLineKind::Dialogue,
             voice_actor_names: Vec::new(),
             syllable_ratios: Vec::new(),
             karaoke: false,
             note: String::new(),
+            presence: coquerythmo::rythmo_line::LinePresence::On,
         },
     };
     assert_eq!(

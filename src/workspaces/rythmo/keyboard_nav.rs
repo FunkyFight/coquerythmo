@@ -8,8 +8,8 @@ pub(crate) fn handle_autocomplete_nav(
     dir: i32,
 ) -> EventResponse {
     if let Some(line_id) = state.editing_character {
-        if ctx.project.get_line(line_id).is_some() {
-            let characters = ctx.project.known_characters();
+        if let Some(line) = ctx.project.get_line(line_id) {
+            let characters = ctx.project.autocomplete_entries_for_line(line);
             if characters.is_empty() {
                 return EventResponse::Ignored;
             }
@@ -48,7 +48,7 @@ pub(crate) fn handle_autocomplete_nav(
                         crate::accessibility::AccessibilityEvent::Selection {
                             label: format!(
                                 "{}. {} {} / {}",
-                                character.name,
+                                character.0,
                                 t("accessibility.choice"),
                                 index + 1,
                                 count

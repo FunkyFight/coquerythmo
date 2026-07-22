@@ -39,17 +39,14 @@ pub(crate) fn handle_key_input(
 
             // Enter with autocomplete → confirm suggestion (default to first)
             if text == "\r" || text == "\n" {
+                let entries = ctx.project.autocomplete_entries_for_line(line);
                 let selected = state
                     .autocomplete_index
-                    .and_then(|index| ctx.project.known_characters().get(index));
-                let exact = ctx
-                    .project
-                    .known_characters()
-                    .iter()
-                    .find(|character| character.name == line.character_name);
-                if let Some(character) = selected.or(exact) {
-                    let name = character.name.clone();
-                    let color = character.color;
+                    .and_then(|index| entries.get(index));
+                let exact = entries.iter().find(|entry| entry.0 == line.character_name);
+                if let Some((entry_name, color)) = selected.or(exact) {
+                    let name = (*entry_name).to_string();
+                    let color = *color;
                     state.stop_char_editing();
                     return EventResponse::Action(UiAction::SetCharacter {
                         line_id,

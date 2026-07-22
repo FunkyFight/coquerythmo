@@ -1731,7 +1731,10 @@ fn roles(project: &Project) -> Vec<(&str, [f32; 4])> {
         }
     }
     for l in project.lines() {
-        if !l.character_name.trim().is_empty() && !out.iter().any(|(n, _)| *n == l.character_name) {
+        if l.kind.is_dialogue()
+            && !l.character_name.trim().is_empty()
+            && !out.iter().any(|(n, _)| *n == l.character_name)
+        {
             out.push((l.character_name.as_str(), l.character_color));
         }
     }

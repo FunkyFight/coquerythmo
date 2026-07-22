@@ -35,6 +35,7 @@ struct TextRasterRequest {
     width: u32,
     height: u32,
     stretch: bool,
+    emphasized: bool,
 }
 
 struct TextRasterResult {
@@ -52,7 +53,15 @@ fn spawn_text_raster_worker() -> (SyncSender<TextRasterRequest>, Receiver<TextRa
         .spawn(move || {
             let mut font_system = FontSystem::new();
             while let Ok(request) = request_rx.recv() {
-                let rendered = if request.stretch {
+                let rendered = if request.emphasized {
+                    crate::vector_text::render_rythmo_text_natural_emphasized(
+                        &mut font_system,
+                        &request.text,
+                        request.font_size,
+                        request.width,
+                        request.height,
+                    )
+                } else if request.stretch {
                     crate::vector_text::render_rythmo_text_with_ratios(
                         &mut font_system,
                         &request.text,
@@ -162,6 +171,7 @@ pub struct StretchedText {
     pub stretch: bool,
     pub font_scale: f32,
     pub prewarm: bool,
+    pub emphasized: bool,
 }
 
 impl StretchedText {
@@ -176,6 +186,7 @@ impl StretchedText {
             stretch: true,
             font_scale: 1.0,
             prewarm: false,
+            emphasized: false,
         }
     }
 
@@ -196,6 +207,7 @@ impl StretchedText {
             stretch: false,
             font_scale,
             prewarm: false,
+            emphasized: false,
         }
     }
 
@@ -215,6 +227,7 @@ impl StretchedText {
             stretch: false,
             font_scale,
             prewarm: true,
+            emphasized: false,
         }
     }
 
@@ -243,6 +256,7 @@ impl StretchedText {
             stretch: false,
             font_scale,
             prewarm: false,
+            emphasized: false,
         })
     }
 }
@@ -258,6 +272,7 @@ enum TextLayer {
 pub struct UiRenderer {
     quad_pipeline: wgpu::RenderPipeline,
     icon_pipeline: wgpu::RenderPipeline,
+    rythmo_text_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     uniform_bind_group_for_icons: wgpu::BindGroup,
@@ -487,6 +502,59 @@ impl UiRenderer {
             cache: None,
         });
 
+        let rythmo_text_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Rythmo Text Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("rythmo_text.wgsl").into()),
+        });
+        let rythmo_text_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Premultiplied Rythmo Text Pipeline"),
+            layout: Some(&icon_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &rythmo_text_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<IconInstance>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 16,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 32,
+                            shader_location: 2,
+                        },
+                    ],
+                }],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &rythmo_text_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         // == Text ==
         let font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
@@ -506,6 +574,7 @@ impl UiRenderer {
         Self {
             quad_pipeline,
             icon_pipeline,
+            rythmo_text_pipeline,
             uniform_buffer,
             uniform_bind_group,
             uniform_bind_group_for_icons,
@@ -625,8 +694,14 @@ impl UiRenderer {
             let effective_font_size = font_size * st.font_scale.max(0.1);
             let tex_w = (st.dest_rect.width.max(1.0) * ui_scale).ceil() as u32;
             let tex_h = (st.dest_rect.height.max(1.0) * ui_scale).ceil() as u32;
-            let cache_hash =
-                Self::hash_stretched_text(&st.text, effective_font_size, tex_w, tex_h, st.stretch);
+            let cache_hash = Self::hash_stretched_text(
+                &st.text,
+                effective_font_size,
+                tex_w,
+                tex_h,
+                st.stretch,
+                st.emphasized,
+            );
 
             // Check cache
             let needs_update = match self.text_texture_cache.get(&st.line_id) {
@@ -653,6 +728,7 @@ impl UiRenderer {
                         width: tex_w,
                         height: tex_h,
                         stretch: st.stretch,
+                        emphasized: st.emphasized,
                     };
                     if self.text_raster_requests.try_send(request).is_ok() {
                         self.pending_text_rasters.insert(st.line_id, cache_hash);
@@ -662,7 +738,15 @@ impl UiRenderer {
                 // Editing and paused views keep their immediate text response. Only
                 // playback misses are rasterized away from the render thread.
                 self.pending_text_rasters.remove(&st.line_id);
-                let rendered = if st.stretch {
+                let rendered = if st.emphasized {
+                    crate::vector_text::render_rythmo_text_natural_emphasized(
+                        &mut self.font_system,
+                        &st.text,
+                        effective_font_size,
+                        tex_w,
+                        tex_h,
+                    )
+                } else if st.stretch {
                     crate::vector_text::render_rythmo_text_with_ratios(
                         &mut self.font_system,
                         &st.text,
@@ -768,7 +852,10 @@ impl UiRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            // tiny-skia's bytes are premultiplied coverage values. Sampling
+            // them through an sRGB view would decode the already multiplied
+            // edge channels non-linearly and darken moving glyph contours.
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -822,6 +909,7 @@ impl UiRenderer {
         dest_w: u32,
         dest_h: u32,
         stretch: bool,
+        emphasized: bool,
     ) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -831,6 +919,7 @@ impl UiRenderer {
         dest_w.hash(&mut hasher);
         dest_h.hash(&mut hasher);
         stretch.hash(&mut hasher);
+        emphasized.hash(&mut hasher);
         crate::vector_text::rythmo_font_family_name().hash(&mut hasher);
         hasher.finish()
     }
@@ -1302,7 +1391,7 @@ impl UiRenderer {
 
             // Draw stretched text textures (rythmo lines)
             if !stretched_quads.is_empty() {
-                pass.set_pipeline(&self.icon_pipeline);
+                pass.set_pipeline(&self.rythmo_text_pipeline);
                 pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
                 if let Some(buffer) = self.stretched_text_buffer.buffer() {
                     pass.set_vertex_buffer(0, buffer.slice(..));

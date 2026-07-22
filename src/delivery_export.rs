@@ -63,6 +63,7 @@ pub fn json_document(project: &Project, fps: f64) -> Result<String, String> {
     // remains the place where the complete multilingual project is stored.
     data.languages.clear();
     data.active_language_id = None;
+    data.lines.retain(|line| line.kind.is_dialogue());
     serde_json::to_string_pretty(&data).map_err(|error| format!("JSON serialize error: {error}"))
 }
 
@@ -338,7 +339,10 @@ fn delivery_lines(project: &Project) -> Vec<&RythmoLine> {
     let mut lines: Vec<_> = project
         .lines()
         .filter(|line| {
-            line.duration_frames > 0 && line.end_frame() > 0 && !line.text.trim().is_empty()
+            line.kind.is_dialogue()
+                && line.duration_frames > 0
+                && line.end_frame() > 0
+                && !line.text.trim().is_empty()
         })
         .collect();
     lines.sort_by_key(|line| (line.start_frame, line.end_frame(), line.id));
@@ -823,13 +827,16 @@ pub fn presence_grid_pdf_bytes(
             characters.insert(character.name.clone());
         }
     }
-    for line in project.lines() {
+    for line in project.lines().filter(|line| line.kind.is_dialogue()) {
         if !line.character_name.trim().is_empty() {
             characters.insert(line.character_name.clone());
         }
     }
     let characters: Vec<_> = characters.into_iter().collect();
-    let lines: Vec<_> = project.lines().collect();
+    let lines: Vec<_> = project
+        .lines()
+        .filter(|line| line.kind.is_dialogue())
+        .collect();
 
     const MAX_CHARACTER_COLUMNS: usize = 10;
     const MAX_LOOP_ROWS: usize = 22;
@@ -1798,6 +1805,38 @@ mod tests {
         assert_eq!(data.lines[0].text, "Au revoir, \"Bob\"");
         assert!(data.languages.is_empty());
         assert!(data.active_language_id.is_none());
+    }
+
+    #[test]
+    fn ambiance_lines_are_excluded_from_every_document_delivery() {
+        let mut project = sample_project();
+        let ambiance = project.add_line_full(
+            12,
+            72,
+            0.25,
+            "(Pluie forte)".into(),
+            "Extérieur".into(),
+            [1.0; 4],
+        );
+        project.get_line_mut(ambiance).unwrap().kind =
+            crate::rythmo_line::RythmoLineKind::AmbianceStart;
+
+        assert_eq!(delivery_lines(&project).len(), 2);
+        assert!(!json_document(&project, 24.0)
+            .unwrap()
+            .contains("Pluie forte"));
+        assert!(!srt_document(&project, 24.0)
+            .unwrap()
+            .contains("Pluie forte"));
+        assert!(!ass_document(&project, 24.0, "fr")
+            .unwrap()
+            .contains("Pluie forte"));
+        assert!(!detx_document(&project, 24.0, "fr")
+            .unwrap()
+            .contains("Pluie forte"));
+        assert!(!cross_reference_csv_document(&project, 24.0, "fr")
+            .unwrap()
+            .contains("Pluie forte"));
     }
 
     #[test]

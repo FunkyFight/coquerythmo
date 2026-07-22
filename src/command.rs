@@ -6,7 +6,7 @@
 
 use crate::project::{Character, LineCharacterNameChange, Project};
 use crate::rythmo_drawing::DrawingStroke;
-use crate::rythmo_line::{RythmoLine, RythmoMarker};
+use crate::rythmo_line::{LinePresence, RythmoLine, RythmoMarker};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +76,11 @@ pub enum Command {
         old_ratios: Vec<f32>,
         new_karaoke: bool,
         new_ratios: Vec<f32>,
+    },
+    SetLinePresence {
+        line_id: u64,
+        old_presence: LinePresence,
+        new_presence: LinePresence,
     },
     SetSyllableRatios {
         line_id: u64,
@@ -220,6 +225,15 @@ impl Command {
                 if let Some(l) = project.get_line_mut(*line_id) {
                     l.karaoke = *new_karaoke;
                     l.syllable_ratios = new_ratios.clone();
+                }
+            }
+            Command::SetLinePresence {
+                line_id,
+                new_presence,
+                ..
+            } => {
+                if let Some(l) = project.get_line_mut(*line_id) {
+                    l.presence = *new_presence;
                 }
             }
             Command::SetSyllableRatios {
@@ -401,6 +415,15 @@ impl Command {
                 if let Some(l) = project.get_line_mut(*line_id) {
                     l.karaoke = *old_karaoke;
                     l.syllable_ratios = old_ratios.clone();
+                }
+            }
+            Command::SetLinePresence {
+                line_id,
+                old_presence,
+                ..
+            } => {
+                if let Some(l) = project.get_line_mut(*line_id) {
+                    l.presence = *old_presence;
                 }
             }
             Command::SetSyllableRatios {
@@ -628,6 +651,7 @@ mod tests {
                     id: address.detection_id,
                     kind: crate::detection::DetectionKind::TextSyncPoint,
                     media_tick: crate::detection::MediaTick::from_frame(20),
+                    duration: crate::detection::MediaTick::ZERO,
                     target: crate::detection::TextAnchor::Grapheme { index: 2 },
                 },
             },
@@ -761,6 +785,7 @@ mod tests {
             id: address.detection_id,
             kind: crate::detection::DetectionKind::TextSyncPoint,
             media_tick: crate::detection::MediaTick::from_frame(10),
+            duration: crate::detection::MediaTick::ZERO,
             target: crate::detection::TextAnchor::Grapheme { index: 1 },
         };
         let commands = [

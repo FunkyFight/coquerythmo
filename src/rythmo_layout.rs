@@ -92,8 +92,11 @@ fn horizontal_rect_intersects_viewport(
 
 pub fn scaled_character_badge_width(character_name: &str, scale: f32) -> f32 {
     let scale = scale.max(0.0);
-    (character_name.chars().count().max(1) as f32 * constants::BADGE_CHAR_W * scale + 12.0 * scale)
-        .max(16.0 * scale)
+    let font_size = constants::RYTHMO_FONT_SIZE;
+    let measured =
+        crate::vector_text::measure_rythmo_text_width_standalone(character_name, font_size)
+            .unwrap_or(character_name.chars().count().max(1) as f32 * constants::BADGE_CHAR_W);
+    (measured * 1.25 * scale + 24.0 * scale).max(16.0 * scale)
 }
 
 pub fn leading_character_badge_x(line_x: f32, badge_width: f32, scale: f32) -> f32 {

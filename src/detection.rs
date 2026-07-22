@@ -30,6 +30,22 @@ pub enum SyncAffinity {
 /// Number of semantic timing units in one video frame.
 pub const MEDIA_TICKS_PER_FRAME: i64 = 10;
 
+/// Sentinel used only while loading resize commands written by the brief
+/// duration-only project format. Those commands kept the cue centre fixed.
+const LEGACY_UNCHANGED_TICK: MediaTick = MediaTick(i64::MIN);
+
+const fn legacy_unchanged_tick() -> MediaTick {
+    LEGACY_UNCHANGED_TICK
+}
+
+const fn is_legacy_unchanged_tick(tick: &MediaTick) -> bool {
+    tick.0 == LEGACY_UNCHANGED_TICK.0
+}
+
+pub(crate) const fn legacy_resize_tick() -> MediaTick {
+    LEGACY_UNCHANGED_TICK
+}
+
 /// Synthetic line ids reserve one storage bucket per rythmo track without
 /// creating fake dialogue lines in the project.
 const TRACK_STORAGE_BASE: u64 = u64::MAX - 255;
@@ -82,6 +98,10 @@ impl MediaTick {
 
     pub const fn raw(self) -> i64 {
         self.0
+    }
+
+    pub const fn is_zero(&self) -> bool {
+        self.0 == 0
     }
 
     pub fn as_frame_position(self) -> f64 {
@@ -165,6 +185,9 @@ pub enum DetectionKind {
     TeethVisible,
     Breath,
     Reaction,
+    Pucker,
+    OpeningWave,
+    ForwardWave,
     TextSyncPoint,
 }
 
@@ -188,6 +211,9 @@ impl DetectionKind {
             Self::TeethVisible => "Dents visibles",
             Self::Breath => "Respiration",
             Self::Reaction => "Réaction",
+            Self::Pucker => "Cul de poule",
+            Self::OpeningWave => "Vague d'ouverture",
+            Self::ForwardWave => "Vague d'avancée",
             Self::TextSyncPoint => "Point de synchronisation",
         }
     }
@@ -201,6 +227,9 @@ impl DetectionKind {
             Self::TeethVisible => "detection/teeth_visible",
             Self::Breath => "detection/breath",
             Self::Reaction => "detection/reaction",
+            Self::Pucker => "detection/pucker",
+            Self::OpeningWave => "detection/opening_wave",
+            Self::ForwardWave => "detection/forward_wave",
             Self::TextSyncPoint => "detection/sync_point",
         }
     }
@@ -216,6 +245,9 @@ impl DetectionKind {
             Self::TeethVisible => "DV",
             Self::Breath => "R",
             Self::Reaction => "!",
+            Self::Pucker => "><",
+            Self::OpeningWave => "⌣",
+            Self::ForwardWave => "⌢",
             Self::TextSyncPoint => "•",
         }
     }
@@ -226,7 +258,10 @@ impl DetectionKind {
             | Self::SemiLabial
             | Self::MouthOpen
             | Self::MouthClosed
-            | Self::TeethVisible => DetectionFamily::Mouth,
+            | Self::TeethVisible
+            | Self::Pucker
+            | Self::OpeningWave
+            | Self::ForwardWave => DetectionFamily::Mouth,
             Self::Breath | Self::Reaction => DetectionFamily::Performance,
             Self::TextSyncPoint => DetectionFamily::Synchronization,
         }
@@ -281,6 +316,9 @@ pub struct DetectionCue {
     pub kind: DetectionKind,
     /// Absolute position in the source media.
     pub media_tick: MediaTick,
+    /// Horizontal extent of the sign. Zero keeps legacy projects point-sized.
+    #[serde(default, skip_serializing_if = "MediaTick::is_zero")]
+    pub duration: MediaTick,
     pub target: TextAnchor,
 }
 
@@ -296,7 +334,6 @@ pub struct TextSyncPoint {
     /// for project-format compatibility.
     pub line_tick: MediaTick,
 }
-
 
 impl SyncAffinity {
     pub const fn is_auto(&self) -> bool {
@@ -451,6 +488,25 @@ impl LineDetectionData {
         true
     }
 
+    pub fn resize_detection(
+        &mut self,
+        id: DetectionCueId,
+        media_tick: MediaTick,
+        duration: MediaTick,
+    ) -> bool {
+        let Some(cue) = self.detections.iter_mut().find(|cue| cue.id == id) else {
+            return false;
+        };
+        let duration = MediaTick(duration.raw().max(0));
+        if cue.media_tick == media_tick && cue.duration == duration {
+            return false;
+        }
+        cue.media_tick = media_tick;
+        cue.duration = duration;
+        self.sort_detections();
+        true
+    }
+
     pub fn detection_before(&self, tick: MediaTick) -> Option<&DetectionCue> {
         self.detections
             .iter()
@@ -566,6 +622,7 @@ impl TextSyncPoint {
             id: DetectionCueId(self.id.0),
             kind: DetectionKind::TextSyncPoint,
             media_tick: self.line_tick,
+            duration: MediaTick::ZERO,
             target: TextAnchor::Grapheme {
                 index: self.grapheme_boundary,
             },
@@ -632,6 +689,7 @@ impl DetectionDocument {
             id: detection_id,
             kind,
             media_tick,
+            duration: MediaTick::ZERO,
             target,
         });
         inserted.then_some(DetectionAddress {
@@ -649,6 +707,17 @@ impl DetectionDocument {
 
     pub fn detection(&self, address: DetectionAddress) -> Option<&DetectionCue> {
         self.line(address.line_id)?.detection(address.detection_id)
+    }
+
+    pub fn resize_detection(
+        &mut self,
+        address: DetectionAddress,
+        media_tick: MediaTick,
+        duration: MediaTick,
+    ) -> bool {
+        self.lines
+            .get_mut(&address.line_id)
+            .is_some_and(|line| line.resize_detection(address.detection_id, media_tick, duration))
     }
 
     pub fn sync_point(&self, address: DetectionAddress) -> Option<&TextSyncPoint> {
@@ -797,16 +866,12 @@ impl DetectionDocument {
         true
     }
 
-    pub fn set_sync_affinity(
-        &mut self,
-        address: DetectionAddress,
-        affinity: SyncAffinity,
-    ) -> bool {
-        let Some(point) = self
-            .lines
-            .get_mut(&address.line_id)
-            .and_then(|line| line.sync_points.iter_mut().find(|point| point.id.0 == address.detection_id.0))
-        else {
+    pub fn set_sync_affinity(&mut self, address: DetectionAddress, affinity: SyncAffinity) -> bool {
+        let Some(point) = self.lines.get_mut(&address.line_id).and_then(|line| {
+            line.sync_points
+                .iter_mut()
+                .find(|point| point.id.0 == address.detection_id.0)
+        }) else {
             return false;
         };
         if point.affinity == affinity {
@@ -867,8 +932,7 @@ impl DetectionDocument {
                 point.grapheme_boundary =
                     (prefix + (offset * new_span + old_span / 2) / old_span) as u32;
             } else if boundary >= old_changed_end {
-                point.grapheme_boundary =
-                    (point.grapheme_boundary as i64 + delta).max(0) as u32;
+                point.grapheme_boundary = (point.grapheme_boundary as i64 + delta).max(0) as u32;
             }
             if new.is_empty() {
                 point.grapheme_boundary = 0;
@@ -1148,6 +1212,21 @@ pub enum DetectionChange {
         old_tick: MediaTick,
         new_tick: MediaTick,
     },
+    Resize {
+        address: DetectionAddress,
+        #[serde(
+            default = "legacy_unchanged_tick",
+            skip_serializing_if = "is_legacy_unchanged_tick"
+        )]
+        old_tick: MediaTick,
+        #[serde(
+            default = "legacy_unchanged_tick",
+            skip_serializing_if = "is_legacy_unchanged_tick"
+        )]
+        new_tick: MediaTick,
+        old_duration: MediaTick,
+        new_duration: MediaTick,
+    },
     Retarget {
         address: DetectionAddress,
         old_boundary: u32,
@@ -1170,6 +1249,7 @@ impl DetectionChange {
             Self::Add { address, .. }
             | Self::Remove { address, .. }
             | Self::Move { address, .. }
+            | Self::Resize { address, .. }
             | Self::Retarget { address, .. }
             | Self::SetAffinity { address, .. } => address.line_id,
             Self::RemoveLine { line_id, .. } => *line_id,
@@ -1183,6 +1263,19 @@ impl DetectionChange {
             Self::Move {
                 address, new_tick, ..
             } => document.move_detection(*address, *new_tick),
+            Self::Resize {
+                address,
+                new_tick,
+                new_duration,
+                ..
+            } => {
+                let tick = if *new_tick == LEGACY_UNCHANGED_TICK {
+                    document.detection(*address).map(|cue| cue.media_tick)
+                } else {
+                    Some(*new_tick)
+                };
+                tick.is_some_and(|tick| document.resize_detection(*address, tick, *new_duration))
+            }
             Self::Retarget {
                 address,
                 new_boundary,
@@ -1204,6 +1297,19 @@ impl DetectionChange {
             Self::Move {
                 address, old_tick, ..
             } => document.move_detection(*address, *old_tick),
+            Self::Resize {
+                address,
+                old_tick,
+                old_duration,
+                ..
+            } => {
+                let tick = if *old_tick == LEGACY_UNCHANGED_TICK {
+                    document.detection(*address).map(|cue| cue.media_tick)
+                } else {
+                    Some(*old_tick)
+                };
+                tick.is_some_and(|tick| document.resize_detection(*address, tick, *old_duration))
+            }
             Self::Retarget {
                 address,
                 old_boundary,
@@ -1287,6 +1393,7 @@ mod tests {
             id: address.detection_id,
             kind: DetectionKind::Reaction,
             media_tick: MediaTick(75),
+            duration: MediaTick::ZERO,
             target: TextAnchor::BeforeText,
         };
         let change = DetectionChange::Add {
@@ -1543,8 +1650,14 @@ mod tests {
         };
 
         assert!(change.apply(&mut document));
-        assert_eq!(document.sync_point(address).unwrap().affinity, SyncAffinity::Left);
+        assert_eq!(
+            document.sync_point(address).unwrap().affinity,
+            SyncAffinity::Left
+        );
         assert!(change.unapply(&mut document));
-        assert_eq!(document.sync_point(address).unwrap().affinity, SyncAffinity::Auto);
+        assert_eq!(
+            document.sync_point(address).unwrap().affinity,
+            SyncAffinity::Auto
+        );
     }
 }

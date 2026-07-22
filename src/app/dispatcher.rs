@@ -507,11 +507,21 @@ impl CommandDispatcher {
             } => {
                 state.add_detection(line_id, kind, media_tick, target);
             }
+            UiAction::SetLinePresence { line_id, presence } => {
+                state.set_line_presence(line_id, presence);
+            }
             UiAction::MoveDetection {
                 address,
                 media_tick,
             } => {
                 state.move_detection(address, media_tick);
+            }
+            UiAction::ResizeDetection {
+                address,
+                media_tick,
+                duration,
+            } => {
+                state.resize_detection(address, media_tick, duration);
             }
             UiAction::DeleteDetection { address } => {
                 state.delete_detection(address);
@@ -678,7 +688,15 @@ impl CommandDispatcher {
                 state.unassign_voice_actor_from_character(line_id, actor_name);
             }
             UiAction::AddMarker(kind) => {
-                state.add_marker(kind);
+                if matches!(
+                    kind,
+                    crate::rythmo_line::MarkerKind::LiaisonLeft
+                        | crate::rythmo_line::MarkerKind::LiaisonRight
+                ) {
+                    state.add_ambiance_line(kind);
+                } else {
+                    state.add_marker(kind);
+                }
             }
             UiAction::AddQuickLine { text } => {
                 state.add_quick_line(text);
@@ -1415,13 +1433,13 @@ pub(crate) fn dispatch(
 
 fn should_request_redraw(
     is_pointer_move: bool,
-    response_changed_ui: bool,
+    _response_changed_ui: bool,
     continuous_redraw: bool,
 ) -> bool {
     // During playback/animation the paced redraw loop is already active.
-    // Ignored raw mouse events must not bypass that pacing and create a render
-    // storm at the mouse polling rate.
-    !is_pointer_move || response_changed_ui || !continuous_redraw
+    // No raw mouse event, including a hover change or a scrub seek, may bypass
+    // that pacing and create a render storm at the mouse polling rate.
+    !is_pointer_move || !continuous_redraw
 }
 
 #[cfg(test)]
@@ -1431,7 +1449,7 @@ mod tests {
     #[test]
     fn ignored_pointer_moves_use_the_paced_redraw_loop() {
         assert!(!should_request_redraw(true, false, true));
-        assert!(should_request_redraw(true, true, true));
+        assert!(!should_request_redraw(true, true, true));
         assert!(should_request_redraw(true, false, false));
         assert!(should_request_redraw(false, false, true));
     }

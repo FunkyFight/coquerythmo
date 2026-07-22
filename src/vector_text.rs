@@ -155,7 +155,16 @@ pub fn render_rythmo_text(
     dest_w: u32,
     dest_h: u32,
 ) -> Option<VectorTextPixmap> {
-    render_rythmo_text_impl(font_system, text, font_size, dest_w, dest_h, false, true)
+    render_rythmo_text_impl(
+        font_system,
+        text,
+        font_size,
+        dest_w,
+        dest_h,
+        false,
+        true,
+        false,
+    )
 }
 
 pub fn render_rythmo_text_natural(
@@ -165,7 +174,35 @@ pub fn render_rythmo_text_natural(
     dest_w: u32,
     dest_h: u32,
 ) -> Option<VectorTextPixmap> {
-    render_rythmo_text_impl(font_system, text, font_size, dest_w, dest_h, false, false)
+    render_rythmo_text_impl(
+        font_system,
+        text,
+        font_size,
+        dest_w,
+        dest_h,
+        false,
+        false,
+        false,
+    )
+}
+
+pub fn render_rythmo_text_natural_emphasized(
+    font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+    dest_w: u32,
+    dest_h: u32,
+) -> Option<VectorTextPixmap> {
+    render_rythmo_text_impl(
+        font_system,
+        text,
+        font_size,
+        dest_w,
+        dest_h,
+        false,
+        false,
+        true,
+    )
 }
 
 pub fn render_rythmo_text_tile(
@@ -243,7 +280,16 @@ pub fn render_rythmo_text_with_ratios(
     dest_w: u32,
     dest_h: u32,
 ) -> Option<VectorTextPixmap> {
-    render_rythmo_text_impl(font_system, text, font_size, dest_w, dest_h, true, true)
+    render_rythmo_text_impl(
+        font_system,
+        text,
+        font_size,
+        dest_w,
+        dest_h,
+        true,
+        true,
+        false,
+    )
 }
 
 pub fn measure_rythmo_text_width(
@@ -360,6 +406,7 @@ fn render_rythmo_text_impl(
     dest_h: u32,
     include_ratios: bool,
     stretch: bool,
+    emphasized: bool,
 ) -> Option<VectorTextPixmap> {
     if text.is_empty() || dest_w == 0 || dest_h == 0 {
         return None;
@@ -374,7 +421,7 @@ fn render_rythmo_text_impl(
         Vec::new()
     };
 
-    let svg = build_svg(
+    let svg = build_svg_styled(
         text,
         &font_family,
         font_size,
@@ -382,6 +429,7 @@ fn render_rythmo_text_impl(
         dest_w,
         dest_h,
         stretch,
+        emphasized,
     );
     let mut options = resvg::usvg::Options::default();
     options.font_family = font_family;
@@ -542,6 +590,28 @@ fn build_svg(
     dest_h: u32,
     stretch: bool,
 ) -> String {
+    build_svg_styled(
+        text,
+        font_family,
+        font_size,
+        line_height,
+        dest_w,
+        dest_h,
+        stretch,
+        false,
+    )
+}
+
+fn build_svg_styled(
+    text: &str,
+    font_family: &str,
+    font_size: f32,
+    line_height: f32,
+    dest_w: u32,
+    dest_h: u32,
+    stretch: bool,
+    emphasized: bool,
+) -> String {
     let escaped_text = escape_xml(text);
     let escaped_family = escape_xml(font_family);
     let baseline = font_size;
@@ -550,10 +620,19 @@ fn build_svg(
     } else {
         String::new()
     };
+    let emphasis = if emphasized {
+        r#" font-style="italic" font-weight="700""#
+    } else {
+        ""
+    };
+    // Bold italic glyphs commonly overhang to the left of their advance.
+    // Starting at x=0 clips the first grapheme regardless of destination
+    // width, so reserve explicit ink space inside emphasized label textures.
+    let text_x = if emphasized { font_size * 0.25 } else { 0.0 };
 
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{dest_w}" height="{dest_h}" viewBox="0 0 {dest_w} {line_height:.3}" preserveAspectRatio="none">
-<text x="0" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white"{stretch_attrs} xml:space="preserve">{escaped_text}</text>
+<text x="{text_x:.3}" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white"{emphasis}{stretch_attrs} xml:space="preserve">{escaped_text}</text>
 </svg>"#
     )
 }

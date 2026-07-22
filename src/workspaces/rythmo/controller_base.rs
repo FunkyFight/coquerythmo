@@ -115,7 +115,7 @@ pub fn handle_rythmo_event(
     if let UiEvent::Scroll { x, y, delta, .. } = event {
         if let Some(line_id) = state.editing_character {
             if let Some(line) = ctx.project.get_line(line_id) {
-                let characters = ctx.project.known_characters();
+                let characters = ctx.project.autocomplete_entries_for_line(line);
                 let visible_rows = characters.len().min(8);
                 let max_scroll = characters.len().saturating_sub(visible_rows);
                 let badge = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone);

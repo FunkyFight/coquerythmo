@@ -1395,7 +1395,7 @@ fn extraction_path(root: &Path, entry_name: &str) -> Result<PathBuf, ProjectArch
 }
 
 fn create_extraction_guard() -> Result<ExtractionGuard, ProjectArchiveError> {
-    let base = std::env::temp_dir().join("coquerythmo-projects");
+    let base = project_extraction_base()?;
     fs::create_dir_all(&base)?;
     for _ in 0..128 {
         let path = base.join(format!("open-{}", unique_suffix()));
@@ -1409,6 +1409,35 @@ fn create_extraction_guard() -> Result<ExtractionGuard, ProjectArchiveError> {
         io::ErrorKind::AlreadyExists,
         "could not allocate a unique project extraction directory",
     )))
+}
+
+fn project_extraction_base() -> Result<PathBuf, ProjectArchiveError> {
+    let executable = std::env::current_exe().map_err(ProjectArchiveError::Io)?;
+    Ok(project_extraction_base_for_executable(&executable))
+}
+
+fn project_extraction_base_for_executable(executable: &Path) -> PathBuf {
+    executable
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+        .join("coquerythmo-temp")
+}
+
+/// Remove project assets left behind by an interrupted previous process.
+/// Active extractions are still individually removed by `ExtractionGuard`.
+pub fn cleanup_project_extraction_at_startup() -> io::Result<()> {
+    let executable = std::env::current_exe()?;
+    let current_base = project_extraction_base_for_executable(&executable);
+    let legacy_base = std::env::temp_dir().join("coquerythmo-projects");
+    for base in [current_base, legacy_base] {
+        match fs::remove_dir_all(base) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 fn create_temporary_file_near(path: &Path) -> Result<(PathBuf, File), ProjectArchiveError> {
@@ -1544,6 +1573,15 @@ mod tests {
     use crate::command::Command;
     use crate::integrity::{digest_to_hex, sha1_bytes};
     use crate::project::ProjectSettings;
+
+    #[test]
+    fn extraction_directory_lives_beside_the_executable() {
+        let executable = Path::new("installation").join("coquerythmo.exe");
+        assert_eq!(
+            project_extraction_base_for_executable(&executable),
+            Path::new("installation").join("coquerythmo-temp")
+        );
+    }
     use crate::project_metadata::TransactionJournal;
     use crate::recording::{
         AudioAsset, AudioAssetId, AudioClip, AudioClipId, AudioTrack, AudioTrackId,

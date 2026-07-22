@@ -238,10 +238,12 @@ mod tests {
             text: String::new(),
             character_name: character.into(),
             character_color: [0.0; 4],
+            kind: crate::rythmo_line::RythmoLineKind::Dialogue,
             voice_actor_names: Vec::new(),
             syllable_ratios: Vec::new(),
             karaoke,
             note: String::new(),
+            presence: crate::rythmo_line::LinePresence::On,
         }
     }
 

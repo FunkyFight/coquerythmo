@@ -452,9 +452,8 @@ impl Project {
             return;
         };
         if old_start != start_frame {
-            let delta = crate::detection::MediaTick::from_frame(
-                start_frame.saturating_sub(old_start),
-            );
+            let delta =
+                crate::detection::MediaTick::from_frame(start_frame.saturating_sub(old_start));
             if let Some(data) = self.settings.detections.line_mut_if_present(line_id) {
                 data.shift_sync_points(delta);
             }
@@ -1050,10 +1049,12 @@ impl Project {
             text: String::new(),
             character_name: char_name,
             character_color: char_color,
+            kind: crate::rythmo_line::RythmoLineKind::Dialogue,
             voice_actor_names,
             syllable_ratios: Vec::new(),
             karaoke: false,
             note: String::new(),
+            presence: crate::rythmo_line::LinePresence::On,
         };
         self.line_map.insert(id, line);
         self.line_order.push(id);
@@ -1101,10 +1102,12 @@ impl Project {
             text,
             character_name,
             character_color,
+            kind: crate::rythmo_line::RythmoLineKind::Dialogue,
             voice_actor_names: Self::normalized_voice_actor_names(voice_actor_names),
             syllable_ratios: Vec::new(),
             karaoke: false,
             note: String::new(),
+            presence: crate::rythmo_line::LinePresence::On,
         };
         self.line_map.insert(id, line);
         self.line_order.push(id);
@@ -1460,7 +1463,7 @@ impl Project {
     fn reconcile_known_characters(&mut self) {
         let used: Vec<(String, [f32; 4])> = self
             .lines()
-            .filter(|line| !line.character_name.trim().is_empty())
+            .filter(|line| line.kind.is_dialogue() && !line.character_name.trim().is_empty())
             .map(|line| (line.character_name.clone(), line.character_color))
             .fold(Vec::new(), |mut characters, character| {
                 if !characters.iter().any(|(name, _)| name == &character.0) {
@@ -1497,7 +1500,7 @@ impl Project {
     pub fn character_names_from_lines(&self) -> Vec<String> {
         let mut names = Vec::new();
         for line in self.lines() {
-            if line.character_name.trim().is_empty() {
+            if !line.kind.is_dialogue() || line.character_name.trim().is_empty() {
                 continue;
             }
             if !names
@@ -1547,6 +1550,29 @@ impl Project {
                 cl.starts_with(&lower) && cl != lower // exclude exact match
             })
             .collect()
+    }
+
+    /// Autocomplete entries are deliberately split by semantic line kind:
+    /// ambiance names never pollute the character catalog and vice versa.
+    pub fn autocomplete_entries_for_line(&self, line: &RythmoLine) -> Vec<(&str, [f32; 4])> {
+        if line.kind.is_dialogue() {
+            return self
+                .known_characters
+                .iter()
+                .map(|character| (character.name.as_str(), character.color))
+                .collect();
+        }
+        let mut entries = Vec::new();
+        for ambiance in self
+            .lines()
+            .filter(|candidate| candidate.kind.is_ambiance())
+        {
+            let name = ambiance.character_name.trim();
+            if !name.is_empty() && !entries.iter().any(|(existing, _)| *existing == name) {
+                entries.push((name, [1.0; 4]));
+            }
+        }
+        entries
     }
 
     pub fn find_voice_actor(&self, name: &str) -> Option<&VoiceActor> {
@@ -1733,10 +1759,12 @@ mod tests {
             text: String::new(),
             character_name: String::new(),
             character_color: [1.0; 4],
+            kind: crate::rythmo_line::RythmoLineKind::Dialogue,
             voice_actor_names: Vec::new(),
             syllable_ratios: Vec::new(),
             karaoke: false,
             note: String::new(),
+            presence: crate::rythmo_line::LinePresence::On,
         };
         p.insert_line_at(1, line);
         let ids: Vec<u64> = p.lines().map(|l| l.id).collect();
@@ -1870,6 +1898,41 @@ mod tests {
         assert_eq!(results[0].name, "Alice");
         // Exact match excluded
         assert!(p.autocomplete("alice").is_empty());
+    }
+
+    #[test]
+    fn ambiance_and_character_autocomplete_catalogs_are_separate() {
+        let mut p = Project::new();
+        let actor = p.add_line(0, 48, 0.5);
+        p.set_character(actor, "Alice".into(), [0.8, 0.2, 0.2, 1.0]);
+        let ambiance = p.add_line(48, 48, 0.5);
+        {
+            let line = p.get_line_mut(ambiance).unwrap();
+            line.kind = crate::rythmo_line::RythmoLineKind::AmbianceStart;
+            line.character_name = "Pluie".into();
+        }
+        p.prune_unused_characters();
+
+        let actor_entries = p.autocomplete_entries_for_line(p.get_line(actor).unwrap());
+        assert_eq!(
+            actor_entries
+                .iter()
+                .map(|entry| entry.0)
+                .collect::<Vec<_>>(),
+            vec!["Alice"]
+        );
+        let ambiance_entries = p.autocomplete_entries_for_line(p.get_line(ambiance).unwrap());
+        assert_eq!(
+            ambiance_entries
+                .iter()
+                .map(|entry| entry.0)
+                .collect::<Vec<_>>(),
+            vec!["Pluie"]
+        );
+        assert!(p
+            .known_characters()
+            .iter()
+            .all(|character| character.name != "Pluie"));
     }
 
     #[test]

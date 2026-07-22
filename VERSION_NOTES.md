@@ -1,5 +1,59 @@
 # 3.6.0
 
+## Correctifs d’édition, de lecture et de chargement
+
+- Le caret des étiquettes de personnages et d’ambiance suit désormais précisément les glyphes de la police rythmo, leur alignement et leur éventuelle réduction.
+- Les espaces saisis dans les noms d’ambiance sont conservés, y compris entre deux mots.
+- Les noms d’ambiance sont accolés à leur flèche de début et n’héritent plus de l’espace de quatre images réservé aux étiquettes de personnages.
+- Pendant la lecture ou le scrub, le survol et les mouvements de souris sur la bande rythmo respectent la cadence de rafraîchissement de l’application et ne provoquent plus de tempête de rendu.
+- En lecture, les mouvements passifs au-dessus de la bande ne déclenchent plus le hit-testing de la timeline ; les gestes actifs restent prioritaires et fluides.
+- Le lint global et ses sévérités sont indexés par révision du projet au lieu d’être recalculés et rescannés plusieurs fois par image.
+- Après un scrub, le décodeur vidéo et l’audio sont préchargés en arrière-plan : le retour en lecture réutilise ce pipeline chaud sans attente bloquante de FFmpeg.
+- Le défilement de la bande utilise désormais une horloge visuelle monotone et continue, indépendante des variations de blocs et de latence du callback audio.
+- La présentation GPU reste obligatoirement synchronisée au rafraîchissement de l’écran, même si une ancienne configuration avait désactivé la VSync.
+- La bande rythmo possède de nouveau sa cadence dédiée de 240 Hz : sa position fractionnaire est interpolée entre les images vidéo, indépendamment des 24/25/30/60 fps du média et de la cadence des autres animations de l’interface.
+- Le texte mobile utilise désormais un pipeline alpha prémultiplié dédié : ses contours ne sont plus multipliés deux fois aux positions sous-pixel, ce qui supprimait leur netteté pendant le défilement.
+- Les liaisons d’ambiance visibles sont obtenues via l’index temporel au lieu de rescanner toutes les lignes du projet à chacun des 240 ticks par seconde.
+- Le pacer mesure chaque intervalle depuis le début de la frame : le temps de rendu d’un gros projet n’est plus ajouté une seconde fois au délai de rafraîchissement.
+- Les médias extraits lors du chargement d’un projet utilisent maintenant le dossier dédié `coquerythmo-temp`, placé dans le répertoire d’installation à côté de l’exécutable.
+- À chaque démarrage, Coquerythmo nettoie ce nouveau dossier ainsi que l’ancien `%TEMP%\coquerythmo-projects`, afin de supprimer les fichiers laissés par une fermeture interrompue ou une version précédente.
+
+## Lignes d'ambiance
+
+- Les anciennes liaisons gauche et droite deviennent les actions `Fin d'ambiance` et `Début d'ambiance`, dessinées directement sur la bande rythmo.
+- Le début affiche une étiquette `amb.` ineffaçable, bleue, grasse, italique et doublement soulignée dans la police rythmo choisie par l'utilisateur. Elle s'agrandit vers la gauche pour conserver le nom complet, sans couper les graphèmes.
+- La fin ne comporte pas d'étiquette : sa description est éditable, s'étend vers la gauche et se termine par une grande liaison blanche pleine. Le début utilise la liaison inverse avant sa description.
+- Le texte descriptif est toujours rouge et un espace est réservé aux liaisons afin qu'elles ne soient jamais recouvertes.
+- Les noms d'ambiance possèdent leur propre liste d'autocomplétion, distincte de celle des personnages.
+- Ces lignes n'acceptent aucun point de synchronisation et ne déclenchent qu'une seule convention de lint : leur contenu doit être placé entre parenthèses.
+- Elles sont conservées dans les projets et rendues dans les exports vidéo MP4, mais sont exclues des croisées et des exports documentaires (CSV, sous-titres, DETX, PDF et livrables similaires).
+- Le placement du caret tient compte du préfixe protégé, des glyphes de la police choisie et de l'espace réservé à la liaison.
+
+## Étiquettes de personnages
+
+- Les noms de personnages reprennent la typographie des étiquettes d'ambiance : texte gras et italique, coloré avec la couleur du personnage et accompagné d'un double soulignage limité à la largeur réelle des graphèmes.
+- L'étiquette s'étend vers la gauche pour afficher le nom complet, occupe toute la hauteur de sa ligne de dialogue et conserve au moins quatre images d'espace avant la réplique.
+- Le raster réserve les débords des glyphes italiques afin que le premier et le dernier graphème ne soient plus coupés.
+- En lecture karaoké, l'étiquette reste attachée à la ligne de dialogue réellement affichée, y compris dans une piste empilée ; elle utilise la même taille lisible et n'hérite plus de la hauteur de toute la piste.
+- Lorsqu'une étiquette rencontre une ligne d'un autre personnage, elle réduit d'abord l'espace avec sa propre réplique. Si cela ne suffit pas, sa largeur, sa hauteur, son texte, ses soulignages et ses icônes diminuent uniformément jusqu'à tenir dans l'espace disponible, tandis que son bord supérieur reste ancré à celui de la ligne.
+
+- Bande rythmo : retrait du glow autour de la barre rouge de précision.
+
+- Detections : `Alt+D` distingue la fleche « bouche ouverte » de la vague d’ouverture ; la palette est reordonnee par famille et son infobulle affiche une bouche agrandie sans recouvrir les boutons.
+- Sur une ligne deja soulignee, l’option active est masquee, l’alternative reste disponible et une action permet de retirer le soulignage.
+- Detections: `Alt+D` distinguishes the open-mouth arrow from the opening wave; the palette is ordered by sign family and its tooltip shows a larger mouth without covering the buttons.
+
+## Contrôle des conventions de la bande rythmo
+
+- ajout d’un lint non bloquant, visible uniquement dans l’éditeur et absent des projets sérialisés comme des exports ;
+- les erreurs certaines sont soulignées par une vague rouge et les avertissements par une vague jaune ; les diagnostics de boucle peuvent couvrir une zone entière en dehors des lignes de dialogue ;
+- le survol d’une vague affiche une infobulle compacte, limitée en largeur et répartie sur plusieurs lignes, avec « Avertissement : » en jaune ou « Non conforme : » en rouge ;
+- AccessKit lit les diagnostics de la ligne et de la boucle qui la contient à la fin de sa description habituelle ;
+- signale en rouge les descriptifs de réaction écrits entre piquants et les boucles de plus d’une minute trente ;
+- avertit pour les réactions seules qui devraient utiliser la forme `([Réaction])`, les boucles de plus d’une minute, les phrases sans ponctuation finale, les personnages répartis sur plusieurs pistes et ceux qui mélangent des répliques ON et OFF ;
+- les réactions abrégées proposées par l’application, comme `(mhm)` ou `(ah)`, ne déclenchent pas l’avertissement sur les crochets ;
+- la durée d’une boucle suit la même délimitation que les exports : du marqueur Boucle au premier OUT ou à la boucle suivante, puis jusqu’à la fin du contenu si la dernière boucle ne possède pas d’OUT.
+
 ## Lecture audio
 
 - Correction du décalage positif de l'audio instrumental dans l'interface et à l'export : la lecture et les fichiers exportés respectent désormais le silence initial demandé avant de démarrer l'instrumental, y compris lorsque la cadence d'export diffère de celle de la source.

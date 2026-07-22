@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 const ICON_SIZE: u32 = 32;
 const RHUBARB_ICON_SIZE: u32 = 128;
+const STRETCHABLE_ICON_WIDTH: u32 = 512;
+const STRETCHABLE_ICON_HEIGHT: u32 = 64;
 
 pub struct IconAtlas {
     pub texture: wgpu::Texture,
@@ -52,6 +54,17 @@ impl AtlasEntry {
         }
     }
 
+    const fn stretchable_svg(name: &'static str, data: &'static [u8]) -> Self {
+        Self {
+            name,
+            data,
+            kind: AtlasEntryKind::Svg,
+            width: STRETCHABLE_ICON_WIDTH,
+            height: STRETCHABLE_ICON_HEIGHT,
+            flip_h: false,
+        }
+    }
+
     const fn rhubarb_png(name: &'static str, data: &'static [u8]) -> Self {
         Self {
             name,
@@ -69,8 +82,7 @@ impl AtlasEntry {
                 let tree =
                     resvg::usvg::Tree::from_data(self.data, &resvg::usvg::Options::default())
                         .expect("Failed to parse SVG");
-                let mut pixmap =
-                    resvg::tiny_skia::Pixmap::new(self.width, self.height).unwrap();
+                let mut pixmap = resvg::tiny_skia::Pixmap::new(self.width, self.height).unwrap();
                 let svg_size = tree.size();
                 resvg::render(
                     &tree,
@@ -96,10 +108,10 @@ impl AtlasEntry {
                 let (source_width, source_height) = source.dimensions();
                 let scale = (self.width as f32 / source_width.max(1) as f32)
                     .min(self.height as f32 / source_height.max(1) as f32);
-                let resized_width = ((source_width as f32 * scale).round() as u32)
-                    .clamp(1, self.width);
-                let resized_height = ((source_height as f32 * scale).round() as u32)
-                    .clamp(1, self.height);
+                let resized_width =
+                    ((source_width as f32 * scale).round() as u32).clamp(1, self.width);
+                let resized_height =
+                    ((source_height as f32 * scale).round() as u32).clamp(1, self.height);
                 let resized = image::imageops::resize(
                     &source,
                     resized_width,
@@ -168,41 +180,45 @@ impl IconAtlas {
             AtlasEntry::svg("karaoke", include_bytes!("../icons/karaoke.svg")),
             AtlasEntry::svg("sound", include_bytes!("../icons/sound.svg")),
             AtlasEntry::svg("mute", include_bytes!("../icons/mute-svgrepo-com (1).svg")),
-            AtlasEntry::svg(
+            AtlasEntry::stretchable_svg(
                 "detection/labial",
                 include_bytes!("../icons/detection/labial.svg"),
             ),
-            AtlasEntry::svg(
+            AtlasEntry::stretchable_svg(
                 "detection/semi_labial",
                 include_bytes!("../icons/detection/semi_labial.svg"),
             ),
-            AtlasEntry::svg(
+            AtlasEntry::stretchable_svg(
                 "detection/mouth_open",
                 include_bytes!("../icons/detection/mouth_open.svg"),
             ),
-            AtlasEntry::svg(
+            AtlasEntry::stretchable_svg(
                 "detection/mouth_closed",
                 include_bytes!("../icons/detection/mouth_closed.svg"),
             ),
-            AtlasEntry::svg(
+            AtlasEntry::stretchable_svg(
                 "detection/teeth_visible",
                 include_bytes!("../icons/detection/teeth_visible.svg"),
             ),
-            AtlasEntry::svg(
+            AtlasEntry::stretchable_svg(
                 "detection/breath",
                 include_bytes!("../icons/detection/breath.svg"),
             ),
-            AtlasEntry::svg(
+            AtlasEntry::stretchable_svg(
                 "detection/reaction",
                 include_bytes!("../icons/detection/reaction.svg"),
             ),
-            AtlasEntry::svg(
+            AtlasEntry::stretchable_svg(
                 "detection/th",
                 include_bytes!("../icons/detection/th.svg"),
             ),
-            AtlasEntry::svg(
+            AtlasEntry::stretchable_svg(
                 "detection/neutral",
                 include_bytes!("../icons/detection/neutral.svg"),
+            ),
+            AtlasEntry::stretchable_svg(
+                "detection/pucker",
+                include_bytes!("../icons/cul_de_poule.svg"),
             ),
             AtlasEntry::rhubarb_png(
                 "detection/rhubarb_lips/AA",
@@ -354,14 +370,12 @@ impl IconAtlas {
     }
 
     pub fn get_uv(&self, name: &str) -> Option<[f32; 4]> {
-        self.icon_positions
-            .get(name)
-            .map(|&(x, y, width, height)| {
-                let u_min = x as f32 / self.atlas_width as f32;
-                let v_min = y as f32 / self.atlas_height as f32;
-                let u_max = (x + width) as f32 / self.atlas_width as f32;
-                let v_max = (y + height) as f32 / self.atlas_height as f32;
-                [u_min, v_min, u_max, v_max]
-            })
+        self.icon_positions.get(name).map(|&(x, y, width, height)| {
+            let u_min = x as f32 / self.atlas_width as f32;
+            let v_min = y as f32 / self.atlas_height as f32;
+            let u_max = (x + width) as f32 / self.atlas_width as f32;
+            let v_max = (y + height) as f32 / self.atlas_height as f32;
+            [u_min, v_min, u_max, v_max]
+        })
     }
 }

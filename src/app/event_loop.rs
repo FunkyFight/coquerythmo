@@ -237,6 +237,8 @@ pub fn run(startup_path: Option<PathBuf>) {
     let mut shift_used_as_modifier = false;
     let mut keyboard_modifiers = Modifiers::NONE;
     let mut cursor_icon = winit::window::CursorIcon::Default;
+    let mut last_pointer_dispatch: Option<Instant> = None;
+    let mut last_dispatched_cursor_pos = cursor_pos;
 
     event_loop
         .run(move |event, elwt| {
@@ -352,7 +354,11 @@ pub fn run(startup_path: Option<PathBuf>) {
                 }
                 WindowEvent::ScaleFactorChanged { .. } => {
                     state.resize(window.inner_size());
+                    state.render.update_refresh_interval();
                     state.request_redraw();
+                }
+                WindowEvent::Moved(_) => {
+                    state.render.update_refresh_interval();
                 }
                 WindowEvent::ModifiersChanged(modifiers) => {
                     keyboard_modifiers = Modifiers::from_winit(modifiers.state());
@@ -1200,9 +1206,17 @@ pub fn run(startup_path: Option<PathBuf>) {
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     cursor_pos = state.window_to_ui_position(position.x as f32, position.y as f32);
-                    dispatch(UiEvent::MouseMove {
-                        x: cursor_pos.0, y: cursor_pos.1,
-                    }, &mut state, elwt);
+                    let now = Instant::now();
+                    let pointer_interval = state.display_refresh_interval();
+                    if last_pointer_dispatch
+                        .is_none_or(|last| now.saturating_duration_since(last) >= pointer_interval)
+                    {
+                        dispatch(UiEvent::MouseMove {
+                            x: cursor_pos.0, y: cursor_pos.1,
+                        }, &mut state, elwt);
+                        last_pointer_dispatch = Some(now);
+                        last_dispatched_cursor_pos = cursor_pos;
+                    }
 
                     // Update cursor icon if hover over active text
                     let is_text_cursor = {
@@ -1276,6 +1290,14 @@ pub fn run(startup_path: Option<PathBuf>) {
                     button: MouseButton::Left,
                     ..
                 } => {
+                    if cursor_pos != last_dispatched_cursor_pos {
+                        dispatch(UiEvent::MouseMove {
+                            x: cursor_pos.0,
+                            y: cursor_pos.1,
+                        }, &mut state, elwt);
+                        last_pointer_dispatch = Some(Instant::now());
+                        last_dispatched_cursor_pos = cursor_pos;
+                    }
                     match button_state {
                             ElementState::Pressed => {
                                 let now = Instant::now();
@@ -1392,7 +1414,6 @@ pub fn run(startup_path: Option<PathBuf>) {
                         crate::application::job_service::SaveContinuation::None => {}
                     }
                 }
-                let needs_continuous = state.needs_continuous_redraw();
                 if changed || state.needs_redraw_now() {
                     state.request_redraw();
                     if state.has_secondary_display() {
@@ -1400,8 +1421,12 @@ pub fn run(startup_path: Option<PathBuf>) {
                     }
                 }
 
-                if needs_continuous {
-                    // Continuous playback is paced by the FIFO surface.
+                // WaitUntil on Windows is not reliably granular enough for a
+                // 4.166 ms bande-rythmo tick. During rythmo playback keep the
+                // loop hot; State still gates actual redraws to exactly 240 Hz.
+                if state.is_video_playing()
+                    && state.active_workspace() == WorkspaceId::Rythmo
+                {
                     elwt.set_control_flow(ControlFlow::Poll);
                 } else if let Some(deadline) = state.next_wake_deadline() {
                     let now = Instant::now();

@@ -2,6 +2,56 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinePresence {
+    #[default]
+    On,
+    Off,
+    Back,
+}
+
+/// Semantic role of a line on the rythmo band. Ambiance lines are visual
+/// annotations for the video band and are deliberately excluded from dialogue
+/// and reference-document exports.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RythmoLineKind {
+    #[default]
+    Dialogue,
+    AmbianceStart,
+    AmbianceEnd,
+}
+
+impl RythmoLineKind {
+    pub fn is_dialogue(&self) -> bool {
+        matches!(self, Self::Dialogue)
+    }
+    pub fn is_ambiance(&self) -> bool {
+        !self.is_dialogue()
+    }
+}
+
+pub const AMBIANCE_LABEL_PREFIX: &str = "amb.";
+
+/// Build the immutable-prefix label shown for ambiance starts. The editable
+/// model stores only the ambiance name; legacy values that already contain
+/// the prefix are normalized to avoid displaying it twice.
+pub fn ambiance_name(name: &str) -> &str {
+    let without_leading_space = name.trim_start();
+    without_leading_space
+        .get(..AMBIANCE_LABEL_PREFIX.len())
+        .filter(|prefix| prefix.eq_ignore_ascii_case(AMBIANCE_LABEL_PREFIX))
+        .map(|_| without_leading_space[AMBIANCE_LABEL_PREFIX.len()..].trim_start())
+        // This function runs after every editing keystroke. Preserve ordinary
+        // whitespace so a just-typed space survives until the next word.
+        .unwrap_or(name)
+}
+
+pub fn ambiance_label(name: &str) -> String {
+    format!("{AMBIANCE_LABEL_PREFIX}{}", ambiance_name(name))
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RythmoLine {
     pub id: u64,
@@ -11,6 +61,8 @@ pub struct RythmoLine {
     pub text: String,
     pub character_name: String,
     pub character_color: [f32; 4],
+    #[serde(default, skip_serializing_if = "RythmoLineKind::is_dialogue")]
+    pub kind: RythmoLineKind,
     #[serde(default)]
     pub voice_actor_names: Vec<String>,
     #[serde(default)]
@@ -19,6 +71,14 @@ pub struct RythmoLine {
     pub karaoke: bool,
     #[serde(default)]
     pub note: String,
+    #[serde(default, skip_serializing_if = "LinePresence::is_on")]
+    pub presence: LinePresence,
+}
+
+impl LinePresence {
+    pub fn is_on(&self) -> bool {
+        matches!(self, Self::On)
+    }
 }
 
 impl RythmoLine {
@@ -114,4 +174,18 @@ pub enum MarkerKind {
 pub struct RythmoMarker {
     pub kind: MarkerKind,
     pub frame: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ambiance_prefix_is_permanent_and_never_duplicated() {
+        assert_eq!(ambiance_label(""), "amb.");
+        assert_eq!(ambiance_label("bureaux"), "amb.bureaux");
+        assert_eq!(ambiance_label("Amb. bureaux"), "amb.bureaux");
+        assert_eq!(ambiance_name("amb.pluie"), "pluie");
+        assert_eq!(ambiance_label("bruit de "), "amb.bruit de ");
+    }
 }

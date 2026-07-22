@@ -180,6 +180,17 @@ impl Ui {
             "detection/teeth_visible",
             "detection/breath",
             "detection/reaction",
+            "detection/th",
+            "detection/neutral",
+            "detection/pucker",
+            "detection/rhubarb_lips/AA",
+            "detection/rhubarb_lips/AO_ER",
+            "detection/rhubarb_lips/EH_AE",
+            "detection/rhubarb_lips/F_V",
+            "detection/rhubarb_lips/K_S_T_EE",
+            "detection/rhubarb_lips/L",
+            "detection/rhubarb_lips/P_B_M",
+            "detection/rhubarb_lips/UW_OW_W",
         ];
         let icon_uvs: std::collections::HashMap<String, [f32; 4]> = icon_names
             .iter()
@@ -1094,25 +1105,32 @@ impl Ui {
             2 => 0.024,
             _ => 0.012,
         };
-        let rythmo_response = rythmo::handle_rythmo_event(
-            event,
-            &self.active_rythmo_rect(),
-            project,
-            render_index,
-            render_frame,
-            self.playing,
-            fps,
-            &mut self.rythmo_state,
-            self.active_mode.unwrap_or(ToolMode::Select),
-            self.brush_color,
-            brush_radius_frac,
-            self.erasing,
-            if self.active_workspace == WorkspaceId::Rythmo {
-                rythmo::RythmoInteractionMode::Editable
-            } else {
-                rythmo::RythmoInteractionMode::ReadOnly
-            },
-        );
+        let passive_playback_move = self.playing
+            && matches!(event, UiEvent::MouseMove { .. })
+            && !self.rythmo_state.needs_pointer_motion();
+        let rythmo_response = if passive_playback_move {
+            EventResponse::Ignored
+        } else {
+            rythmo::handle_rythmo_event(
+                event,
+                &self.active_rythmo_rect(),
+                project,
+                render_index,
+                render_frame,
+                self.playing,
+                fps,
+                &mut self.rythmo_state,
+                self.active_mode.unwrap_or(ToolMode::Select),
+                self.brush_color,
+                brush_radius_frac,
+                self.erasing,
+                if self.active_workspace == WorkspaceId::Rythmo {
+                    rythmo::RythmoInteractionMode::Editable
+                } else {
+                    rythmo::RythmoInteractionMode::ReadOnly
+                },
+            )
+        };
         if rythmo_response != EventResponse::Ignored {
             return rythmo_response;
         }
@@ -1347,6 +1365,12 @@ impl Ui {
 
     pub fn toggle_play_pause(&mut self) {
         self.playing = !self.playing;
+        if self.playing {
+            self.rythmo_state.hovered_line = None;
+            self.rythmo_state.hovered_track = None;
+            self.rythmo_state.detection_hover = None;
+            self.rythmo_state.ghost_preview = None;
+        }
         self.toolbar_widgets = shell::build_toolbar(self.toolbar_build_context());
     }
 
@@ -1929,14 +1953,24 @@ impl Ui {
             if let Some(line_id) = self.rythmo_state.editing_line {
                 let segmented_idx = project.get_line(line_id).and_then(|line| {
                     let lang = project.syllable_language_code();
-                    rythmo::cursor_segments_for_line(
+                    rythmo::sync_cursor_segments_for_line(
+                        project,
                         line,
                         self.rythmo_state.syllable_drag.as_ref(),
                         lang,
-                        self.playing,
                         &self.rythmo_state,
                     )
                     .and_then(|segments| renderer.cursor_pos_from_segments(&segments, ratio))
+                    .or_else(|| {
+                        rythmo::cursor_segments_for_line(
+                            line,
+                            self.rythmo_state.syllable_drag.as_ref(),
+                            lang,
+                            self.playing,
+                            &self.rythmo_state,
+                        )
+                        .and_then(|segments| renderer.cursor_pos_from_segments(&segments, ratio))
+                    })
                     .or_else(|| {
                         rythmo::segmented_cursor_index_for_line_at_ratio(
                             line,
@@ -1991,8 +2025,30 @@ impl Ui {
         let mut note_icons: Vec<IconInstance> = Vec::new();
         let mut actor_icon_draws: Vec<rythmo::VoiceActorIconDraw> = Vec::new();
         let note_uv = self.uv("note");
-        let detection_uvs =
-            crate::detection::DetectionKind::ALL.map(|kind| self.uv(kind.asset_name()));
+        let detection_uvs = [
+            "detection/labial",
+            "detection/semi_labial",
+            "detection/mouth_open",
+            "detection/mouth_closed",
+            "detection/teeth_visible",
+            "detection/breath",
+            "detection/reaction",
+            "detection/th",
+            "detection/neutral",
+            "detection/pucker",
+            "detection/rhubarb_lips/AA",
+            "detection/rhubarb_lips/AO_ER",
+            "detection/rhubarb_lips/EH_AE",
+            "detection/rhubarb_lips/F_V",
+            "detection/rhubarb_lips/K_S_T_EE",
+            "detection/rhubarb_lips/L",
+            "detection/rhubarb_lips/P_B_M",
+            "detection/rhubarb_lips/UW_OW_W",
+        ]
+        .map(|name| self.uv(name));
+        let lint_diagnostics = self.rythmo_state.cached_lint_diagnostics(project, fps);
+        let lint_severities = self.rythmo_state.cached_lint_severities();
+        let lint_zones = self.rythmo_state.cached_lint_zones();
         let cursor_info = show_rythmo
             .then(|| {
                 rythmo::render_lines(
@@ -2003,6 +2059,7 @@ impl Ui {
                     self.playing,
                     fps,
                     &self.rythmo_state,
+                    &lint_severities,
                     &mut quads,
                     &mut syllable_quads,
                     &mut labels,
@@ -2014,21 +2071,36 @@ impl Ui {
                 )
             })
             .flatten();
-        let lint_tooltip = if show_rythmo && rythmo_zone.contains(self.cursor_pos.0, self.cursor_pos.1) {
-            self.rythmo_state.hovered_line.and_then(|line_id| {
-                let diagnostics = crate::lint::for_line(project, fps, line_id);
-                        (!diagnostics.is_empty()).then(|| LintTooltipState::new(
-                            &diagnostics, self.cursor_pos.0, self.cursor_pos.1,
-                        ))
-            }).or_else(|| {
-                let diagnostics = rythmo::lint_zone_diagnostics(
-                    &rythmo_zone, project, render_frame, fps, self.cursor_pos.0, self.cursor_pos.1,
-                );
-                (!diagnostics.is_empty()).then(|| LintTooltipState::new(
-                    &diagnostics, self.cursor_pos.0, self.cursor_pos.1,
-                ))
-            })
-        } else { None };
+        let lint_tooltip = if show_rythmo
+            && rythmo_zone.contains(self.cursor_pos.0, self.cursor_pos.1)
+        {
+            self.rythmo_state
+                .hovered_line
+                .and_then(|line_id| {
+                    let diagnostics = project
+                        .get_line(line_id)
+                        .map(|line| crate::lint::for_line_in(&lint_diagnostics, line))
+                        .unwrap_or_default();
+                    (!diagnostics.is_empty()).then(|| {
+                        LintTooltipState::new(&diagnostics, self.cursor_pos.0, self.cursor_pos.1)
+                    })
+                })
+                .or_else(|| {
+                    let diagnostics = rythmo::lint_zone_diagnostics(
+                        &rythmo_zone,
+                        project,
+                        render_frame,
+                        &lint_zones,
+                        self.cursor_pos.0,
+                        self.cursor_pos.1,
+                    );
+                    (!diagnostics.is_empty()).then(|| {
+                        LintTooltipState::new(&diagnostics, self.cursor_pos.0, self.cursor_pos.1)
+                    })
+                })
+        } else {
+            None
+        };
         icons.extend(note_icons);
         for draw in actor_icon_draws {
             if let Some(actor) = project.find_voice_actor(&draw.actor_name) {
@@ -2113,8 +2185,18 @@ impl Ui {
                 render_index,
                 render_frame,
                 fps,
+                &lint_zones,
                 &mut quads,
                 &mut labels,
+                &mut liaison_icons,
+                self.uv("liaison_left"),
+                self.uv("liaison_right"),
+            );
+            rythmo::render_ambiance_liaison_icons(
+                &rythmo_zone,
+                project,
+                render_index,
+                render_frame,
                 &mut liaison_icons,
                 self.uv("liaison_left"),
                 self.uv("liaison_right"),

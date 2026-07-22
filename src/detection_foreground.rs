@@ -9,6 +9,7 @@ use crate::detection::{
     track_storage_line_id, DetectionAddress, DetectionKind, MediaTick, TextAnchor,
 };
 use crate::project::Project;
+use crate::rythmo_line::LinePresence;
 use crate::ui::primitives::{
     EventResponse, HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiAction, UiEvent, VAlign,
 };
@@ -18,40 +19,53 @@ use std::sync::{Mutex, OnceLock};
 const MENU_ICON_SIZE: f32 = 30.0;
 const MENU_GAP: f32 = 4.0;
 const MENU_PADDING: f32 = 6.0;
+const MENU_COLUMNS: usize = 9;
 const MENU_WIDTH: f32 = MENU_PADDING * 2.0 + MENU_ICON_SIZE * 9.0 + MENU_GAP * 8.0;
-const MENU_HEIGHT: f32 = MENU_ICON_SIZE + MENU_PADDING * 2.0;
+const MENU_HEIGHT: f32 = MENU_ICON_SIZE * 2.0 + MENU_GAP + MENU_PADDING * 2.0;
 const POPUP_CURSOR_GAP: f32 = 10.0;
 const INFO_WIDTH: f32 = 470.0;
 const INFO_HEIGHT: f32 = 176.0;
 const INFO_PADDING: f32 = 12.0;
 const INFO_IMAGE_SIZE: f32 = 136.0;
 const TOOLTIP_WIDTH: f32 = 350.0;
-const TOOLTIP_HEIGHT: f32 = 30.0;
+const TOOLTIP_HEIGHT: f32 = 90.0;
+const TOOLTIP_GAP: f32 = 12.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sign {
     Labial,
     SemiLabial,
     MouthOpen,
+    MouthOpenArrow,
     MouthClosed,
     TeethVisible,
     DentalTh,
     Breath,
     Neutral,
     Reaction,
+    Pucker,
+    ForwardWave,
+    Off,
+    Back,
+    RemoveUnderline,
 }
 
 impl Sign {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 14] = [
         Self::Labial,
         Self::SemiLabial,
-        Self::MouthOpen,
+        Self::MouthOpenArrow,
         Self::MouthClosed,
         Self::TeethVisible,
         Self::DentalTh,
         Self::Breath,
         Self::Neutral,
         Self::Reaction,
+        Self::Pucker,
+        Self::MouthOpen,
+        Self::ForwardWave,
+        Self::Off,
+        Self::Back,
     ];
 
     fn from_cue(cue: &crate::detection::DetectionCue) -> Option<Self> {
@@ -59,44 +73,78 @@ impl Sign {
         match (cue.kind, alternate) {
             (DetectionKind::Labial, _) => Some(Self::Labial),
             (DetectionKind::SemiLabial, _) => Some(Self::SemiLabial),
-            (DetectionKind::MouthOpen, _) => Some(Self::MouthOpen),
+            (DetectionKind::OpeningWave, _) => Some(Self::MouthOpen),
+            (DetectionKind::MouthOpen, _) => Some(Self::MouthOpenArrow),
             (DetectionKind::MouthClosed, _) => Some(Self::MouthClosed),
             (DetectionKind::TeethVisible, false) => Some(Self::TeethVisible),
             (DetectionKind::TeethVisible, true) => Some(Self::DentalTh),
             (DetectionKind::Breath, false) => Some(Self::Breath),
             (DetectionKind::Breath, true) => Some(Self::Neutral),
             (DetectionKind::Reaction, _) => Some(Self::Reaction),
+            (DetectionKind::Pucker, _) => Some(Self::Pucker),
+            (DetectionKind::ForwardWave, _) => Some(Self::ForwardWave),
             (DetectionKind::TextSyncPoint, _) => None,
         }
     }
 
-    const fn storage(self) -> (DetectionKind, TextAnchor) {
-        match self {
+    const fn storage(self) -> Option<(DetectionKind, TextAnchor)> {
+        Some(match self {
             Self::Labial => (DetectionKind::Labial, TextAnchor::BeforeText),
             Self::SemiLabial => (DetectionKind::SemiLabial, TextAnchor::BeforeText),
-            Self::MouthOpen => (DetectionKind::MouthOpen, TextAnchor::BeforeText),
+            Self::MouthOpen => (DetectionKind::OpeningWave, TextAnchor::BeforeText),
+            Self::MouthOpenArrow => (DetectionKind::MouthOpen, TextAnchor::BeforeText),
             Self::MouthClosed => (DetectionKind::MouthClosed, TextAnchor::BeforeText),
             Self::TeethVisible => (DetectionKind::TeethVisible, TextAnchor::BeforeText),
             Self::DentalTh => (DetectionKind::TeethVisible, TextAnchor::AfterText),
             Self::Breath => (DetectionKind::Breath, TextAnchor::BeforeText),
             Self::Neutral => (DetectionKind::Breath, TextAnchor::AfterText),
             Self::Reaction => (DetectionKind::Reaction, TextAnchor::BeforeText),
-        }
+            Self::Pucker => (DetectionKind::Pucker, TextAnchor::BeforeText),
+            Self::ForwardWave => (DetectionKind::ForwardWave, TextAnchor::BeforeText),
+            Self::Off | Self::Back => return None,
+            Self::RemoveUnderline => return None,
+        })
     }
 
     const fn glyph(self) -> &'static str {
         match self {
             Self::Labial => "—",
             Self::SemiLabial => "×",
-            Self::MouthOpen => "↑",
+            Self::MouthOpen => "⌣",
+            Self::MouthOpenArrow => "↑",
             Self::MouthClosed => "↓",
             Self::TeethVisible => "|||",
             Self::DentalTh => "th",
             Self::Breath => "///",
             Self::Neutral => "( )",
             Self::Reaction => "✦",
+            Self::Pucker => "><",
+            Self::Off => "━━━",
+            Self::Back => "┄┄┄",
+            Self::ForwardWave => "⌢",
+            Self::RemoveUnderline => "↶",
         }
     }
+}
+
+fn palette_signs(line_presence: Option<LinePresence>) -> Vec<Sign> {
+    let mut signs = Sign::ALL[..12].to_vec();
+    match line_presence {
+        Some(LinePresence::Off) => {
+            signs.push(Sign::Back);
+            signs.push(Sign::RemoveUnderline);
+        }
+        Some(LinePresence::Back) => {
+            signs.push(Sign::Off);
+            signs.push(Sign::RemoveUnderline);
+        }
+        Some(LinePresence::On) | None => {
+            if line_presence.is_some() {
+                signs.extend([Sign::Off, Sign::Back]);
+            }
+        }
+    }
+    signs
 }
 
 #[derive(Clone, Copy)]
@@ -135,10 +183,17 @@ fn info(sign: Sign) -> Info {
             mouth: Mouth::Fv,
         },
         Sign::MouthOpen => Info {
+            title: "Vague d'ouverture",
+            description: "La bouche s’ouvre ou s’étire nettement.",
+            sounds: "a / â ; é / er / ez ; è / ê / ai / ei ; i / y ; in / im / ain / ein ; parfois an / en",
+            quick_label: "Vague d'ouverture",
+            mouth: Mouth::Aa,
+        },
+        Sign::MouthOpenArrow => Info {
             title: "Bouche ouverte",
-            description: "Ouverture marquée de la bouche.",
-            sounds: "A, AN, O ouverts et voyelles larges",
-            quick_label: "Bouche ouverte (A, AN, O ouverts)",
+            description: "Bouche ouverte, repère d’articulation.",
+            sounds: "Voyelles ouvertes et attaques vocales",
+            quick_label: "Bouche ouverte",
             mouth: Mouth::Aa,
         },
         Sign::MouthClosed => Info {
@@ -183,6 +238,23 @@ fn info(sign: Sign) -> Info {
             quick_label: "Réaction (rires, exclamations, bruits vocaux)",
             mouth: Mouth::Aa,
         },
+        Sign::Pucker => Info {
+            title: "Cul de poule",
+            description: "Les lèvres se resserrent et se projettent en petite moue.",
+            sounds: "Lèvres pincées, baiser, petite projection labiale",
+            quick_label: "Cul de poule",
+            mouth: Mouth::UwOwW,
+        },
+        Sign::ForwardWave => Info {
+            title: "Vague d'avancée",
+            description: "Les lèvres s’arrondissent et se projettent vers l’avant.",
+            sounds: "o ; au / eau ; on / om ; ou ; u ; eu / œu ; parfois w dans oui, quoi, oiseau ou loin",
+            quick_label: "Vague d'avancée",
+            mouth: Mouth::UwOwW,
+        },
+        Sign::Off => Info { title: "OFF", description: "Réplique hors caméra.", sounds: "Soulignage continu à l’export", quick_label: "Marquer la réplique comme OFF (hors caméra)", mouth: Mouth::EhAe },
+        Sign::Back => Info { title: "De dos", description: "Personnage filmé de dos.", sounds: "Soulignage pointillé à l’export", quick_label: "Marquer la réplique comme de dos", mouth: Mouth::EhAe },
+        Sign::RemoveUnderline => Info { title: "Retirer le soulignage", description: "Rétablir la ligne comme une réplique active.", sounds: "Ligne active", quick_label: "Retirer le soulignage", mouth: Mouth::EhAe },
     }
 }
 
@@ -193,6 +265,8 @@ struct HoverAnchor {
     screen_x: f32,
     screen_y: f32,
     track_rect: Rect,
+    line_id: Option<u64>,
+    line_presence: Option<LinePresence>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,6 +284,8 @@ enum Popup {
         track: u8,
         media_tick: MediaTick,
         selected: usize,
+        line_id: Option<u64>,
+        line_presence: Option<LinePresence>,
     },
     Info {
         visual: Rect,
@@ -305,20 +381,30 @@ fn palette_base_outer(hover: HoverAnchor, zone: Rect) -> Rect {
 }
 
 fn palette_item_rect(outer: Rect, index: usize) -> Rect {
+    let column = index % MENU_COLUMNS;
+    let row = index / MENU_COLUMNS;
     Rect {
-        x: outer.x + MENU_PADDING + index as f32 * (MENU_ICON_SIZE + MENU_GAP),
-        y: outer.y + MENU_PADDING,
+        x: outer.x + MENU_PADDING + column as f32 * (MENU_ICON_SIZE + MENU_GAP),
+        y: outer.y + MENU_PADDING + row as f32 * (MENU_ICON_SIZE + MENU_GAP),
         width: MENU_ICON_SIZE,
         height: MENU_ICON_SIZE,
     }
 }
 
-fn palette_item_at(outer: Rect, x: f32, y: f32) -> Option<usize> {
-    Sign::ALL.iter().enumerate().find_map(|(index, _)| {
-        palette_item_rect(outer, index)
-            .contains(x, y)
-            .then_some(index)
-    })
+fn palette_item_at(
+    outer: Rect,
+    x: f32,
+    y: f32,
+    line_presence: Option<LinePresence>,
+) -> Option<usize> {
+    palette_signs(line_presence)
+        .iter()
+        .enumerate()
+        .find_map(|(index, _)| {
+            palette_item_rect(outer, index)
+                .contains(x, y)
+                .then_some(index)
+        })
 }
 
 fn selected_address(state: &RythmoState) -> Option<DetectionAddress> {
@@ -346,8 +432,8 @@ fn selected_anchor_x(
     )
 }
 
-fn moved_index(current: usize, direction: i32) -> usize {
-    (current as i32 + direction).rem_euclid(Sign::ALL.len() as i32) as usize
+fn moved_index(current: usize, direction: i32, count: usize) -> usize {
+    (current as i32 + direction).rem_euclid(count as i32) as usize
 }
 
 fn dismiss(kind: PopupKind, suppressed: Rect) {
@@ -359,10 +445,28 @@ fn activate_palette_choice(
     media_tick: MediaTick,
     selected: usize,
     suppressed: Rect,
+    line_id: Option<u64>,
+    line_presence: Option<LinePresence>,
 ) -> EventResponse {
-    let sign = Sign::ALL[selected.min(Sign::ALL.len() - 1)];
-    let (kind, target) = sign.storage();
+    let signs = palette_signs(line_presence);
+    let sign = signs[selected.min(signs.len() - 1)];
     dismiss(PopupKind::Palette, suppressed);
+    if matches!(sign, Sign::Off | Sign::Back | Sign::RemoveUnderline) {
+        let Some(line_id) = line_id else {
+            return EventResponse::Consumed;
+        };
+        return EventResponse::Action(UiAction::SetLinePresence {
+            line_id,
+            presence: if sign == Sign::Off {
+                LinePresence::Off
+            } else if sign == Sign::Back {
+                LinePresence::Back
+            } else {
+                LinePresence::On
+            },
+        });
+    }
+    let (kind, target) = sign.storage().expect("detection sign");
     EventResponse::Action(UiAction::AddDetection {
         line_id: track_storage_line_id(track),
         kind,
@@ -371,8 +475,12 @@ fn activate_palette_choice(
     })
 }
 
-fn announce_palette_selection(selected: usize) -> EventResponse {
-    let details = info(Sign::ALL[selected.min(Sign::ALL.len() - 1)]);
+fn announce_palette_selection(
+    selected: usize,
+    line_presence: Option<LinePresence>,
+) -> EventResponse {
+    let signs = palette_signs(line_presence);
+    let details = info(signs[selected.min(signs.len() - 1)]);
     EventResponse::Action(UiAction::Accessibility(AccessibilityEvent::Selection {
         label: details.quick_label.to_string(),
     }))
@@ -395,46 +503,60 @@ pub fn handle_modal_event(event: &UiEvent) -> Option<EventResponse> {
             track,
             media_tick,
             selected,
+            line_id,
+            line_presence,
         } => match event {
             UiEvent::CursorLeft | UiEvent::CursorUp => {
-                let next = moved_index(selected, -1);
+                let next = moved_index(selected, -1, palette_signs(line_presence).len());
                 if let Popup::Palette { selected, .. } = &mut lock_state().popup {
                     *selected = next;
                 }
-                Some(announce_palette_selection(next))
+                Some(announce_palette_selection(next, line_presence))
             }
             UiEvent::CursorRight | UiEvent::CursorDown => {
-                let next = moved_index(selected, 1);
+                let next = moved_index(selected, 1, palette_signs(line_presence).len());
                 if let Popup::Palette { selected, .. } = &mut lock_state().popup {
                     *selected = next;
                 }
-                Some(announce_palette_selection(next))
+                Some(announce_palette_selection(next, line_presence))
             }
             UiEvent::Home => {
                 if let Popup::Palette { selected, .. } = &mut lock_state().popup {
                     *selected = 0;
                 }
-                Some(announce_palette_selection(0))
+                Some(announce_palette_selection(0, line_presence))
             }
             UiEvent::End => {
-                let last = Sign::ALL.len() - 1;
+                let last = palette_signs(line_presence).len() - 1;
                 if let Popup::Palette { selected, .. } = &mut lock_state().popup {
                     *selected = last;
                 }
-                Some(announce_palette_selection(last))
+                Some(announce_palette_selection(last, line_presence))
             }
             UiEvent::Activate => Some(activate_palette_choice(
-                track, media_tick, selected, suppressed,
+                track,
+                media_tick,
+                selected,
+                suppressed,
+                line_id,
+                line_presence,
             )),
-            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => Some(
-                activate_palette_choice(track, media_tick, selected, suppressed),
-            ),
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => {
+                Some(activate_palette_choice(
+                    track,
+                    media_tick,
+                    selected,
+                    suppressed,
+                    line_id,
+                    line_presence,
+                ))
+            }
             UiEvent::KeyInput { text } if text == "\x1b" => {
                 dismiss(PopupKind::Palette, suppressed);
                 Some(EventResponse::Consumed)
             }
             UiEvent::MouseMove { x, y } => {
-                if let Some(index) = palette_item_at(visual, *x, *y) {
+                if let Some(index) = palette_item_at(visual, *x, *y, line_presence) {
                     if let Popup::Palette { selected, .. } = &mut lock_state().popup {
                         *selected = index;
                     }
@@ -442,9 +564,14 @@ pub fn handle_modal_event(event: &UiEvent) -> Option<EventResponse> {
                 Some(EventResponse::Consumed)
             }
             UiEvent::MousePress { x, y } => {
-                if let Some(index) = palette_item_at(visual, *x, *y) {
+                if let Some(index) = palette_item_at(visual, *x, *y, line_presence) {
                     return Some(activate_palette_choice(
-                        track, media_tick, index, suppressed,
+                        track,
+                        media_tick,
+                        index,
+                        suppressed,
+                        line_id,
+                        line_presence,
                     ));
                 }
                 if !visual.contains(*x, *y) {
@@ -499,12 +626,21 @@ pub fn sync_from_state(
     event: &UiEvent,
 ) {
     let pointer = event_pointer(event);
-    let hover = state.detection_hover.map(|hover| HoverAnchor {
-        track: hover.track,
-        media_tick: hover.media_tick,
-        screen_x: hover.screen_x,
-        screen_y: hover.screen_y,
-        track_rect: hover.track_rect,
+    let hover = state.detection_hover.map(|hover| {
+        let line = project.lines().find(|line| {
+            crate::rythmo_layout::track_index_for_y_slot(line.y_slot) == hover.track as usize
+                && hover.media_tick.as_frame_position() >= line.start_frame as f64
+                && hover.media_tick.as_frame_position() <= line.end_frame() as f64
+        });
+        HoverAnchor {
+            track: hover.track,
+            media_tick: hover.media_tick,
+            screen_x: hover.screen_x,
+            screen_y: hover.screen_y,
+            track_rect: hover.track_rect,
+            line_id: line.map(|line| line.id),
+            line_presence: line.map(|line| line.presence),
+        }
     });
 
     let mut foreground = lock_state();
@@ -538,8 +674,9 @@ pub fn sync_from_state(
                 0,
             ),
         };
+        selected = selected.min(palette_signs(hover.line_presence).len() - 1);
         if let Some((x, y)) = pointer {
-            if let Some(index) = palette_item_at(visual, x, y) {
+            if let Some(index) = palette_item_at(visual, x, y, hover.line_presence) {
                 selected = index;
             }
         }
@@ -549,6 +686,8 @@ pub fn sync_from_state(
             track: hover.track,
             media_tick: hover.media_tick,
             selected,
+            line_id: hover.line_id,
+            line_presence: hover.line_presence,
         };
         return;
     }
@@ -618,6 +757,8 @@ pub fn activate_palette() {
         track: hover.track,
         media_tick: hover.media_tick,
         selected: 0,
+        line_id: hover.line_id,
+        line_presence: hover.line_presence,
     };
 }
 
@@ -759,11 +900,54 @@ fn mouth_bitmap(mouth: Mouth) -> &'static MouthBitmap {
     }
 }
 
+fn pucker_bitmap() -> &'static MouthBitmap {
+    static BITMAP: OnceLock<MouthBitmap> = OnceLock::new();
+    BITMAP.get_or_init(|| {
+        let tree = resvg::usvg::Tree::from_data(
+            include_bytes!("icons/cul_de_poule.svg"),
+            &resvg::usvg::Options::default(),
+        )
+        .expect("cul_de_poule.svg should parse");
+        let width = MENU_ICON_SIZE as u32;
+        let height = MENU_ICON_SIZE as u32;
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height).unwrap();
+        let size = tree.size();
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::from_scale(
+                width as f32 / size.width(),
+                height as f32 / size.height(),
+            ),
+            &mut pixmap.as_mut(),
+        );
+        let pixels = pixmap
+            .data()
+            .chunks_exact(4)
+            .map(|pixel| {
+                let alpha = pixel[3];
+                [alpha, alpha, alpha, alpha]
+            })
+            .collect();
+        MouthBitmap {
+            width,
+            height,
+            pixels,
+        }
+    })
+}
+
 /// Draw a pixel-aligned, already-downsampled mouth. Every run is at least one
 /// logical pixel high, avoiding the sub-pixel SDF attenuation that darkened the
 /// previous reconstruction.
 fn render_mouth(quads: &mut Vec<QuadInstance>, rect: Rect, mouth: Mouth) {
-    let bitmap = mouth_bitmap(mouth);
+    render_bitmap(quads, rect, mouth_bitmap(mouth));
+}
+
+fn render_mouth_scaled(quads: &mut Vec<QuadInstance>, rect: Rect, mouth: Mouth) {
+    render_bitmap_scaled(quads, rect, mouth_bitmap(mouth));
+}
+
+fn render_bitmap(quads: &mut Vec<QuadInstance>, rect: Rect, bitmap: &MouthBitmap) {
     if bitmap.width == 0 || bitmap.height == 0 {
         return;
     }
@@ -802,6 +986,49 @@ fn render_mouth(quads: &mut Vec<QuadInstance>, rect: Rect, mouth: Mouth) {
     }
 }
 
+fn render_bitmap_scaled(quads: &mut Vec<QuadInstance>, rect: Rect, bitmap: &MouthBitmap) {
+    let width = rect.width.round().max(1.0) as u32;
+    let height = rect.height.round().max(1.0) as u32;
+    if bitmap.width == 0 || bitmap.height == 0 {
+        return;
+    }
+
+    for y in 0..height {
+        let source_y = (y * bitmap.height / height).min(bitmap.height - 1);
+        let mut x = 0;
+        while x < width {
+            let source_x = (x * bitmap.width / width).min(bitmap.width - 1);
+            let pixel = bitmap.pixels[(source_y * bitmap.width + source_x) as usize];
+            let start = x;
+            x += 1;
+            while x < width {
+                let next_x = (x * bitmap.width / width).min(bitmap.width - 1);
+                if bitmap.pixels[(source_y * bitmap.width + next_x) as usize] != pixel {
+                    break;
+                }
+                x += 1;
+            }
+            if pixel[3] >= 8 {
+                push_flat_quad(
+                    quads,
+                    Rect {
+                        x: rect.x + start as f32,
+                        y: rect.y + y as f32,
+                        width: (x - start) as f32,
+                        height: 1.0,
+                    },
+                    [
+                        pixel[0] as f32 / 255.0,
+                        pixel[1] as f32 / 255.0,
+                        pixel[2] as f32 / 255.0,
+                        pixel[3] as f32 / 255.0,
+                    ],
+                );
+            }
+        }
+    }
+}
+
 pub fn append_foreground<'a>(
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
@@ -818,41 +1045,46 @@ pub fn append_foreground<'a>(
     match snapshot.popup {
         Popup::None | Popup::Dismissed { .. } => {}
         Popup::Palette {
-            visual, selected, ..
+            visual,
+            selected,
+            line_presence,
+            ..
         } => {
             let outer = clamp_popup(visual, screen);
             push_panel_quad(quads, outer, [0.035, 0.039, 0.052, 0.999], 8.0);
-            for (index, sign) in Sign::ALL.iter().copied().enumerate() {
+            let signs = palette_signs(line_presence);
+            for (index, sign) in signs.iter().copied().enumerate() {
                 let item = palette_item_rect(outer, index);
                 if selected == index {
                     push_panel_quad(quads, item, [0.18, 0.32, 0.58, 0.99], 5.0);
                 }
-                push_label(
-                    labels,
-                    sign.glyph(),
-                    item,
-                    if matches!(sign, Sign::DentalTh | Sign::Neutral) {
-                        13.0
-                    } else {
-                        20.0
-                    },
-                    [244, 246, 252],
-                    HAlign::Center,
-                    VAlign::Center,
-                );
+                if sign == Sign::Pucker {
+                    render_bitmap(quads, item, pucker_bitmap());
+                } else {
+                    push_label(
+                        labels,
+                        sign.glyph(),
+                        item,
+                        if matches!(sign, Sign::DentalTh | Sign::Neutral) {
+                            13.0
+                        } else {
+                            20.0
+                        },
+                        [244, 246, 252],
+                        HAlign::Center,
+                        VAlign::Center,
+                    );
+                }
             }
 
-            let details = info(Sign::ALL[selected.min(Sign::ALL.len() - 1)]);
-            let tooltip_y = if outer.y + outer.height + 6.0 + TOOLTIP_HEIGHT <= screen_h {
-                outer.y + outer.height + 6.0
+            let details = info(signs[selected.min(signs.len() - 1)]);
+            let tooltip_y = if outer.y + outer.height + TOOLTIP_GAP + TOOLTIP_HEIGHT <= screen_h {
+                outer.y + outer.height + TOOLTIP_GAP
             } else {
-                (outer.y - TOOLTIP_HEIGHT - 6.0).max(0.0)
+                (outer.y - TOOLTIP_HEIGHT - TOOLTIP_GAP).max(0.0)
             };
             let tooltip = Rect {
-                x: (outer.x
-                    + MENU_PADDING
-                    + selected as f32 * (MENU_ICON_SIZE + MENU_GAP)
-                    + MENU_ICON_SIZE / 2.0
+                x: (palette_item_rect(outer, selected).x + MENU_ICON_SIZE / 2.0
                     - TOOLTIP_WIDTH / 2.0)
                     .clamp(0.0, (screen_w - TOOLTIP_WIDTH).max(0.0)),
                 y: tooltip_y,
@@ -860,10 +1092,22 @@ pub fn append_foreground<'a>(
                 height: TOOLTIP_HEIGHT,
             };
             push_panel_quad(quads, tooltip, [0.025, 0.028, 0.038, 0.999], 6.0);
+            let mouth_rect = Rect {
+                x: tooltip.x + 5.0,
+                y: tooltip.y + 5.0,
+                width: 80.0,
+                height: 80.0,
+            };
+            render_mouth_scaled(quads, mouth_rect, details.mouth);
             push_label(
                 labels,
                 details.quick_label,
-                tooltip,
+                Rect {
+                    x: mouth_rect.x + mouth_rect.width + 5.0,
+                    y: tooltip.y,
+                    width: (tooltip.width - 90.0).max(0.0),
+                    height: tooltip.height,
+                },
                 13.0,
                 [245, 247, 252],
                 HAlign::Center,
@@ -965,8 +1209,51 @@ mod tests {
 
     #[test]
     fn palette_navigation_wraps() {
-        assert_eq!(moved_index(0, -1), Sign::ALL.len() - 1);
-        assert_eq!(moved_index(Sign::ALL.len() - 1, 1), 0);
+        assert_eq!(moved_index(0, -1, Sign::ALL.len()), Sign::ALL.len() - 1);
+        assert_eq!(moved_index(Sign::ALL.len() - 1, 1, Sign::ALL.len()), 0);
+    }
+
+    #[test]
+    fn line_palette_replaces_active_presence_with_remove_action() {
+        let off = palette_signs(Some(LinePresence::Off));
+        assert!(!off.contains(&Sign::Off));
+        assert!(off.contains(&Sign::Back));
+        assert_eq!(off.last(), Some(&Sign::RemoveUnderline));
+
+        let back = palette_signs(Some(LinePresence::Back));
+        assert!(!back.contains(&Sign::Back));
+        assert!(back.contains(&Sign::Off));
+        assert_eq!(back.last(), Some(&Sign::RemoveUnderline));
+    }
+
+    #[test]
+    fn waves_are_grouped_on_the_second_palette_row() {
+        let outer = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: MENU_WIDTH,
+            height: MENU_HEIGHT,
+        };
+        let opening = Sign::ALL
+            .iter()
+            .position(|sign| *sign == Sign::MouthOpen)
+            .unwrap();
+        let forward = Sign::ALL
+            .iter()
+            .position(|sign| *sign == Sign::ForwardWave)
+            .unwrap();
+        let pucker = Sign::ALL
+            .iter()
+            .position(|sign| *sign == Sign::Pucker)
+            .unwrap();
+        assert_eq!(
+            palette_item_rect(outer, opening).y,
+            palette_item_rect(outer, forward).y
+        );
+        assert_eq!(
+            palette_item_rect(outer, opening).y,
+            palette_item_rect(outer, pucker).y
+        );
     }
 
     #[test]

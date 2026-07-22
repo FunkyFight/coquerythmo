@@ -97,6 +97,7 @@ impl CpuRenderer {
         dest_w: u32,
         dest_h: u32,
         stretch: bool,
+        emphasized: bool,
     ) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -105,6 +106,7 @@ impl CpuRenderer {
         dest_w.hash(&mut h);
         dest_h.hash(&mut h);
         stretch.hash(&mut h);
+        emphasized.hash(&mut h);
         crate::vector_text::rythmo_font_family_name().hash(&mut h);
         h.finish()
     }
@@ -116,7 +118,7 @@ impl CpuRenderer {
         dest_w: u32,
         dest_h: u32,
     ) -> Option<u64> {
-        self.get_or_render_rythmo_text_with_mode(text, font_size, dest_w, dest_h, true)
+        self.get_or_render_rythmo_text_with_mode(text, font_size, dest_w, dest_h, true, false)
     }
 
     fn get_or_render_rythmo_text_natural(
@@ -126,7 +128,17 @@ impl CpuRenderer {
         dest_w: u32,
         dest_h: u32,
     ) -> Option<u64> {
-        self.get_or_render_rythmo_text_with_mode(text, font_size, dest_w, dest_h, false)
+        self.get_or_render_rythmo_text_with_mode(text, font_size, dest_w, dest_h, false, false)
+    }
+
+    fn get_or_render_rythmo_text_natural_emphasized(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        dest_w: u32,
+        dest_h: u32,
+    ) -> Option<u64> {
+        self.get_or_render_rythmo_text_with_mode(text, font_size, dest_w, dest_h, false, true)
     }
 
     fn get_or_render_rythmo_text_with_mode(
@@ -136,15 +148,24 @@ impl CpuRenderer {
         dest_w: u32,
         dest_h: u32,
         stretch: bool,
+        emphasized: bool,
     ) -> Option<u64> {
         self.cache_tick = self.cache_tick.wrapping_add(1);
-        let key = Self::rythmo_text_cache_key(text, font_size, dest_w, dest_h, stretch);
+        let key = Self::rythmo_text_cache_key(text, font_size, dest_w, dest_h, stretch, emphasized);
         if let Some(cached) = self.rythmo_text_cache.get_mut(&key) {
             cached.last_used = self.cache_tick;
             return Some(key);
         }
 
-        let rendered = if stretch {
+        let rendered = if emphasized {
+            crate::vector_text::render_rythmo_text_natural_emphasized(
+                &mut self.font_system,
+                text,
+                font_size,
+                dest_w,
+                dest_h,
+            )?
+        } else if stretch {
             crate::vector_text::render_rythmo_text(
                 &mut self.font_system,
                 text,
@@ -440,7 +461,7 @@ impl CpuRenderer {
         clip_ratio: f32,
     ) {
         self.blit_rythmo_text_tinted_clipped_with_mode(
-            pixmap, text, x, y, dest_w, dest_h, font_size, tint, clip_ratio, true,
+            pixmap, text, x, y, dest_w, dest_h, font_size, tint, clip_ratio, true, false,
         );
     }
 
@@ -457,7 +478,23 @@ impl CpuRenderer {
         clip_ratio: f32,
     ) {
         self.blit_rythmo_text_tinted_clipped_with_mode(
-            pixmap, text, x, y, dest_w, dest_h, font_size, tint, clip_ratio, false,
+            pixmap, text, x, y, dest_w, dest_h, font_size, tint, clip_ratio, false, false,
+        );
+    }
+
+    fn blit_rythmo_text_natural_emphasized_tinted(
+        &mut self,
+        pixmap: &mut Pixmap,
+        text: &str,
+        x: f32,
+        y: f32,
+        dest_w: f32,
+        dest_h: f32,
+        font_size: f32,
+        tint: [u8; 3],
+    ) {
+        self.blit_rythmo_text_tinted_clipped_with_mode(
+            pixmap, text, x, y, dest_w, dest_h, font_size, tint, 1.0, false, true,
         );
     }
 
@@ -473,10 +510,13 @@ impl CpuRenderer {
         tint: [u8; 3],
         clip_ratio: f32,
         stretch: bool,
+        emphasized: bool,
     ) {
         let tex_w = dest_w.max(1.0).ceil() as u32;
         let tex_h = dest_h.max(1.0).ceil() as u32;
-        let cache_key = if stretch {
+        let cache_key = if emphasized {
+            self.get_or_render_rythmo_text_natural_emphasized(text, font_size, tex_w, tex_h)
+        } else if stretch {
             self.get_or_render_rythmo_text(text, font_size, tex_w, tex_h)
         } else {
             self.get_or_render_rythmo_text_natural(text, font_size, tex_w, tex_h)
@@ -649,10 +689,27 @@ impl CpuRenderer {
             } else {
                 line.visual_x_width(current_frame as f64, center_x, ppf, w, s)
             };
-            let badge_w = rythmo_layout::scaled_character_badge_width(&line.character_name, s);
-            let badge_x = rythmo_layout::leading_character_badge_x(x1, badge_w, s);
-            let show_badge = !line.karaoke || scene_line.character_label_visible;
-            let leading_visual = show_badge.then(|| {
+            let badge_w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart)
+            {
+                rythmo_layout::scaled_character_badge_width(
+                    &crate::rythmo_line::ambiance_label(&line.character_name),
+                    s,
+                )
+                .max(150.0 * s)
+            } else {
+                rythmo_layout::scaled_character_badge_width(&line.character_name, s)
+            };
+            let label_gap = if scene_line.karaoke_should_be_centered() {
+                constants::BADGE_GAP * s
+            } else {
+                4.0 * ppf
+            };
+            let badge_x = x1 - badge_w - label_gap;
+            let show_badge =
+                line.kind.is_dialogue() && (!line.karaoke || scene_line.character_label_visible);
+            let has_leading_label = show_badge
+                || matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart);
+            let leading_visual = has_leading_label.then(|| {
                 rythmo_layout::leading_visual_bounds(
                     badge_x,
                     badge_w,
@@ -704,10 +761,22 @@ impl CpuRenderer {
             } else {
                 line.visual_x_width(current_frame as f64, center_x, ppf, w, s)
             };
-            let badge_w = rythmo_layout::scaled_character_badge_width(&line.character_name, s);
+            let badge_w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart)
+            {
+                rythmo_layout::scaled_character_badge_width(
+                    &crate::rythmo_line::ambiance_label(&line.character_name),
+                    s,
+                )
+                .max(150.0 * s)
+            } else {
+                rythmo_layout::scaled_character_badge_width(&line.character_name, s)
+            };
             let badge_x = rythmo_layout::leading_character_badge_x(x1, badge_w, s);
-            let show_badge = !line.karaoke || scene_line.character_label_visible;
-            let leading_visual = show_badge.then(|| {
+            let show_badge =
+                line.kind.is_dialogue() && (!line.karaoke || scene_line.character_label_visible);
+            let has_leading_label = show_badge
+                || matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart);
+            let leading_visual = has_leading_label.then(|| {
                 rythmo_layout::leading_visual_bounds(
                     badge_x,
                     badge_w,
@@ -738,9 +807,46 @@ impl CpuRenderer {
 
             // Calculate badge position/size for later drawing (on top of text)
             // Rectangular, top-aligned, with right edge a few px left of the line's left edge.
-            let badge_h = body_h * constants::BADGE_OVERLAP_HEIGHT_RATIO;
+            let badge_h = body_h;
             let [cr, cg, cb, _] = line.character_color;
             let badge_y = line_y;
+
+            if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
+                let ambiance_label = crate::rythmo_line::ambiance_label(&line.character_name);
+                let underline_x = badge_x + font_size * 0.25;
+                let underline_w = crate::vector_text::measure_rythmo_text_width_standalone(
+                    &ambiance_label,
+                    font_size,
+                )
+                .unwrap_or(badge_w)
+                .min((badge_x + badge_w - underline_x).max(0.0));
+                self.blit_rythmo_text_natural_emphasized_tinted(
+                    &mut pixmap,
+                    &ambiance_label,
+                    badge_x,
+                    badge_y,
+                    badge_w,
+                    badge_h,
+                    font_size,
+                    [51, 140, 255],
+                );
+                blit_rect(
+                    &mut pixmap,
+                    underline_x,
+                    badge_y + badge_h - 2.0 * s,
+                    underline_w,
+                    1.5 * s,
+                    [51, 140, 255, 255],
+                );
+                blit_rect(
+                    &mut pixmap,
+                    underline_x,
+                    badge_y + badge_h - 5.5 * s,
+                    underline_w,
+                    1.5 * s,
+                    [51, 140, 255, 255],
+                );
+            }
 
             // Rythmo text, rendered vectorially at final size.
             if !line.text.is_empty() && line.text != "↑" && line.text != "↓" {
@@ -757,8 +863,9 @@ impl CpuRenderer {
                 } else {
                     None
                 };
-                let scrolling_text_tint = if project.settings().scrolling_text_uses_character_color
-                {
+                let scrolling_text_tint = if line.kind.is_ambiance() {
+                    [242, 31, 41]
+                } else if project.settings().scrolling_text_uses_character_color {
                     [
                         color_channel(line.character_color[0]),
                         color_channel(line.character_color[1]),
@@ -767,7 +874,26 @@ impl CpuRenderer {
                 } else {
                     [255; 3]
                 };
-                if line.karaoke {
+                if line.kind.is_ambiance() {
+                    let reserve = (54.0 * s).min(lw);
+                    let (text_x, text_w) =
+                        if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
+                            (x1 + reserve, (lw - reserve).max(1.0))
+                        } else {
+                            (x1, (lw - reserve).max(1.0))
+                        };
+                    self.blit_rythmo_text_tinted_clipped(
+                        &mut pixmap,
+                        &line.text,
+                        text_x,
+                        line_y,
+                        text_w,
+                        body_h,
+                        font_size,
+                        scrolling_text_tint,
+                        1.0,
+                    );
+                } else if line.karaoke {
                     let karaoke_font_size =
                         font_size * constants::KARAOKE_TEXT_FONT_SCALE * karaoke_text_scale;
                     self.blit_rythmo_text_natural_tinted_clipped(
@@ -863,6 +989,84 @@ impl CpuRenderer {
                 }
             }
 
+            if !line.presence.is_on() && !line.text.is_empty() {
+                let underline_y = line_y + body_h - (3.0 * s).max(1.0);
+                let thickness = (1.5 * s).max(1.0);
+                if line.presence == crate::rythmo_line::LinePresence::Off {
+                    blit_rect(
+                        &mut pixmap,
+                        x1,
+                        underline_y,
+                        lw,
+                        thickness,
+                        [255, 255, 255, 255],
+                    );
+                } else {
+                    let (dash, gap) = ((8.0 * s).max(2.0), (5.0 * s).max(2.0));
+                    let mut x = x1;
+                    while x < x1 + lw {
+                        blit_rect(
+                            &mut pixmap,
+                            x,
+                            underline_y,
+                            dash.min(x1 + lw - x),
+                            thickness,
+                            [255, 255, 255, 255],
+                        );
+                        x += dash + gap;
+                    }
+                }
+            }
+
+            if line.kind.is_ambiance() {
+                let at_start =
+                    matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart);
+                let gutter = (46.0 * s).min(lw);
+                let gx = if at_start { x1 } else { x1 + lw - gutter };
+                let dir = if at_start { 1.0 } else { -1.0 };
+                let cy = line_y + body_h * 0.5;
+                let tip_x = if at_start {
+                    gx + gutter - 5.0 * s
+                } else {
+                    gx + 5.0 * s
+                };
+                let base_x = tip_x - dir * 15.0 * s;
+                for dy in [-10.0 * s, 10.0 * s] {
+                    blit_thick_line(
+                        &mut pixmap,
+                        base_x,
+                        cy + dy,
+                        tip_x,
+                        cy,
+                        5.0 * s,
+                        [255, 255, 255, 255],
+                    );
+                }
+                blit_thick_line(
+                    &mut pixmap,
+                    gx + 5.0 * s,
+                    cy,
+                    gx + gutter - 5.0 * s,
+                    cy,
+                    5.0 * s,
+                    [255, 255, 255, 255],
+                );
+                let bar_x = if at_start {
+                    gx + 3.0 * s
+                } else {
+                    gx + gutter - 3.0 * s
+                };
+                blit_thick_line(
+                    &mut pixmap,
+                    bar_x,
+                    cy - 13.0 * s,
+                    bar_x,
+                    cy + 13.0 * s,
+                    5.0 * s,
+                    [255, 255, 255, 255],
+                );
+            }
+
             // Overlap detection vs OTHER lines: hide if same character, 60% opacity if different
             let mut badge_hidden = false;
             let mut badge_overlap_alpha = 255u8;
@@ -885,69 +1089,40 @@ impl CpuRenderer {
                 }
             }
 
-            // Badge - drawn AFTER text so it appears on top
+            // Same emphasized typography as ambiance labels, tinted with the
+            // character colour and deliberately left without an underline.
             if show_badge && !badge_hidden {
-                blit_rect(
+                let underline_x = badge_x + font_size * 0.25;
+                let underline_w = crate::vector_text::measure_rythmo_text_width_standalone(
+                    &line.character_name,
+                    font_size,
+                )
+                .unwrap_or(badge_w)
+                .min((badge_x + badge_w - underline_x).max(0.0));
+                self.blit_rythmo_text_natural_emphasized_tinted(
                     &mut pixmap,
+                    &line.character_name,
                     badge_x,
                     badge_y,
                     badge_w,
                     badge_h,
-                    [
-                        color_channel(cr),
-                        color_channel(cg),
-                        color_channel(cb),
-                        badge_overlap_alpha,
-                    ],
+                    font_size,
+                    [color_channel(cr), color_channel(cg), color_channel(cb)],
                 );
-
-                // Badge text
-                if !line.character_name.is_empty() {
-                    let luminance = 0.299 * cr + 0.587 * cg + 0.114 * cb;
-                    let bf = badge_font;
-                    let (tex, tw, th) = self.rasterize_text(&line.character_name, bf);
-                    if tw > 0 && th > 0 {
-                        let tx = badge_x + (badge_w - tw as f32) / 2.0;
-                        let ty = badge_y + (badge_h - th as f32) / 2.0;
-                        // Blit with color tint
-                        let pm_w = pixmap.width() as i32;
-                        let pm_h = pixmap.height() as i32;
-                        let pm_data = pixmap.data_mut();
-                        let (tr, tg, tb) = if luminance > 0.55 {
-                            (0u8, 0, 0)
-                        } else {
-                            (224, 224, 230)
-                        };
-                        for py in 0..th {
-                            for px in 0..tw {
-                                let dx = tx as i32 + px as i32;
-                                let dy = ty as i32 + py as i32;
-                                if dx < 0 || dy < 0 || dx >= pm_w || dy >= pm_h {
-                                    continue;
-                                }
-                                let si = ((py * tw + px) * 4) as usize;
-                                let di = ((dy as u32 * pm_w as u32 + dx as u32) * 4) as usize;
-                                if si + 3 >= tex.len() || di + 3 >= pm_data.len() {
-                                    continue;
-                                }
-                                let mut a = tex[si + 3] as u32;
-                                if badge_overlap_alpha < 255 {
-                                    a = a * badge_overlap_alpha as u32 / 255;
-                                }
-                                if a == 0 {
-                                    continue;
-                                }
-                                let inv = 255 - a;
-                                pm_data[di] =
-                                    ((tr as u32 * a + pm_data[di] as u32 * inv) / 255) as u8;
-                                pm_data[di + 1] =
-                                    ((tg as u32 * a + pm_data[di + 1] as u32 * inv) / 255) as u8;
-                                pm_data[di + 2] =
-                                    ((tb as u32 * a + pm_data[di + 2] as u32 * inv) / 255) as u8;
-                                pm_data[di + 3] = (a + (pm_data[di + 3] as u32 * inv) / 255) as u8;
-                            }
-                        }
-                    }
+                for y_offset in [2.0, 5.5] {
+                    blit_rect(
+                        &mut pixmap,
+                        underline_x,
+                        badge_y + badge_h - y_offset * s,
+                        underline_w,
+                        1.5 * s,
+                        [
+                            color_channel(cr),
+                            color_channel(cg),
+                            color_channel(cb),
+                            badge_overlap_alpha,
+                        ],
+                    );
                 }
 
                 self.render_voice_actor_icons(

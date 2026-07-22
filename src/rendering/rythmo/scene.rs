@@ -426,10 +426,12 @@ mod tests {
             text: "karaoke".into(),
             character_name: "Actor".into(),
             character_color: [1.0, 1.0, 1.0, 1.0],
+            kind: crate::rythmo_line::RythmoLineKind::Dialogue,
             voice_actor_names: Vec::new(),
             syllable_ratios: Vec::new(),
             karaoke: true,
             note: String::new(),
+            presence: crate::rythmo_line::LinePresence::On,
         };
         let scene_line = SceneLine {
             line,
@@ -456,10 +458,12 @@ mod tests {
             text: "karaoke".into(),
             character_name: "Actor".into(),
             character_color: [1.0, 1.0, 1.0, 1.0],
+            kind: crate::rythmo_line::RythmoLineKind::Dialogue,
             voice_actor_names: Vec::new(),
             syllable_ratios: Vec::new(),
             karaoke: true,
             note: String::new(),
+            presence: crate::rythmo_line::LinePresence::On,
         };
         let scene_line = SceneLine {
             line,

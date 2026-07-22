@@ -6,7 +6,7 @@ use crate::project::{
     Character, LanguageId, LanguageSnapshot, Project, ProjectLanguage, ProjectSettings,
 };
 use crate::rythmo_drawing::{DrawingStroke, RythmoDrawing};
-use crate::rythmo_line::{MarkerKind, RythmoMarker};
+use crate::rythmo_line::{LinePresence, MarkerKind, RythmoLineKind, RythmoMarker};
 use crate::voice_actor::VoiceActor;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -71,6 +71,8 @@ pub struct LineData {
     pub text: String,
     pub character_name: String,
     pub character_color: [f32; 4],
+    #[serde(default, skip_serializing_if = "RythmoLineKind::is_dialogue")]
+    pub kind: RythmoLineKind,
     #[serde(default)]
     pub voice_actor_names: Vec<String>,
     #[serde(default)]
@@ -79,6 +81,8 @@ pub struct LineData {
     pub karaoke: bool,
     #[serde(default)]
     pub note: String,
+    #[serde(default, skip_serializing_if = "LinePresence::is_on")]
+    pub presence: LinePresence,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -148,10 +152,12 @@ impl ProjectData {
                     text: l.text.clone(),
                     character_name: l.character_name.clone(),
                     character_color: l.character_color,
+                    kind: l.kind,
                     voice_actor_names: l.voice_actor_names.clone(),
                     syllable_ratios: l.syllable_ratios.clone(),
                     karaoke: l.karaoke,
                     note: l.note.clone(),
+                    presence: l.presence,
                 })
                 .collect(),
             markers: project
@@ -450,10 +456,12 @@ impl ProjectData {
                 text: l.text.clone(),
                 character_name: l.character_name.clone(),
                 character_color: l.character_color,
+                kind: l.kind,
                 voice_actor_names,
                 syllable_ratios: l.syllable_ratios.clone(),
                 karaoke: l.karaoke,
                 note: l.note.clone(),
+                presence: l.presence,
             });
         }
 
@@ -595,6 +603,7 @@ fn push_srt_block(block_lines: &[&str], fps: f64, lines: &mut Vec<LineData>) -> 
     }
 
     lines.push(LineData {
+        presence: LinePresence::On,
         id: None,
         start_frame,
         duration_frames: (end_frame - start_frame).max(1),
@@ -602,6 +611,7 @@ fn push_srt_block(block_lines: &[&str], fps: f64, lines: &mut Vec<LineData>) -> 
         text,
         character_name: "Character".to_string(),
         character_color: [1.0, 1.0, 1.0, 1.0],
+        kind: RythmoLineKind::Dialogue,
         voice_actor_names: Vec::new(),
         syllable_ratios: Vec::new(),
         karaoke: false,
@@ -800,6 +810,7 @@ pub fn import_ass(path: &Path, fps: f64) -> Result<ProjectData, String> {
             .to_string();
         let character_color = styles.get(style).copied().unwrap_or([1.0; 4]);
         lines.push(LineData {
+            presence: LinePresence::On,
             id: None,
             start_frame,
             duration_frames: (end_frame - start_frame).max(1),
@@ -807,6 +818,7 @@ pub fn import_ass(path: &Path, fps: f64) -> Result<ProjectData, String> {
             text,
             character_name,
             character_color,
+            kind: RythmoLineKind::Dialogue,
             voice_actor_names: Vec::new(),
             syllable_ratios: Vec::new(),
             karaoke: false,
@@ -1079,6 +1091,7 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
                             };
 
                             lines.push(LineData {
+                                presence: LinePresence::On,
                                 id: None,
                                 start_frame,
                                 duration_frames: duration,
@@ -1086,6 +1099,7 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
                                 text: full_text,
                                 character_name: char_name,
                                 character_color: char_color,
+                                kind: RythmoLineKind::Dialogue,
                                 voice_actor_names: Vec::new(),
                                 syllable_ratios: Vec::new(),
                                 karaoke: false,
@@ -1339,10 +1353,12 @@ mod tests {
                 text: "test".into(),
                 character_name: "A".into(),
                 character_color: [1.0; 4],
+                kind: RythmoLineKind::Dialogue,
                 voice_actor_names: Vec::new(),
                 syllable_ratios: Vec::new(),
                 karaoke: false,
                 note: String::new(),
+                presence: LinePresence::On,
             }],
             markers: vec![],
             characters: vec![],
@@ -1376,10 +1392,12 @@ mod tests {
                     text: "clipped".into(),
                     character_name: "A".into(),
                     character_color: [1.0; 4],
+                    kind: RythmoLineKind::Dialogue,
                     voice_actor_names: Vec::new(),
                     syllable_ratios: Vec::new(),
                     karaoke: false,
                     note: String::new(),
+                    presence: LinePresence::On,
                 },
                 LineData {
                     id: None,
@@ -1389,10 +1407,12 @@ mod tests {
                     text: "skipped".into(),
                     character_name: "A".into(),
                     character_color: [1.0; 4],
+                    kind: RythmoLineKind::Dialogue,
                     voice_actor_names: Vec::new(),
                     syllable_ratios: Vec::new(),
                     karaoke: false,
                     note: String::new(),
+                    presence: LinePresence::On,
                 },
             ],
             markers: vec![],
@@ -1430,10 +1450,12 @@ mod tests {
                 text: "new".into(),
                 character_name: "X".into(),
                 character_color: [1.0; 4],
+                kind: RythmoLineKind::Dialogue,
                 voice_actor_names: Vec::new(),
                 syllable_ratios: Vec::new(),
                 karaoke: false,
                 note: String::new(),
+                presence: LinePresence::On,
             }],
             markers: vec![],
             characters: vec![],
@@ -1475,10 +1497,12 @@ mod tests {
                 text: "Imported English".into(),
                 character_name: "Bob".into(),
                 character_color: [1.0; 4],
+                kind: RythmoLineKind::Dialogue,
                 voice_actor_names: Vec::new(),
                 syllable_ratios: Vec::new(),
                 karaoke: false,
                 note: String::new(),
+                presence: LinePresence::On,
             }],
             markers: Vec::new(),
             characters: Vec::new(),
@@ -1523,10 +1547,12 @@ mod tests {
                     text: "karaoke".into(),
                     character_name: "A".into(),
                     character_color: [1.0; 4],
+                    kind: RythmoLineKind::Dialogue,
                     voice_actor_names: Vec::new(),
                     syllable_ratios: vec![0.2, 0.8],
                     karaoke: true,
                     note: String::new(),
+                    presence: LinePresence::On,
                 },
                 LineData {
                     id: None,
@@ -1536,10 +1562,12 @@ mod tests {
                     text: "normal".into(),
                     character_name: "B".into(),
                     character_color: [1.0; 4],
+                    kind: RythmoLineKind::Dialogue,
                     voice_actor_names: Vec::new(),
                     syllable_ratios: vec![0.3, 0.7],
                     karaoke: false,
                     note: String::new(),
+                    presence: LinePresence::On,
                 },
             ],
             markers: vec![],
@@ -1558,6 +1586,25 @@ mod tests {
         assert!(lines[0].karaoke);
         assert_eq!(lines[0].syllable_ratios, vec![0.2, 0.8]);
         assert_eq!(lines[1].syllable_ratios, vec![0.3, 0.7]);
+    }
+
+    #[test]
+    fn ambiance_line_kind_survives_project_archive_roundtrip() {
+        let mut project = Project::new();
+        let id = project.add_line_full(10, 50, 0.25, "(Vent)".into(), "Extérieur".into(), [1.0; 4]);
+        project.get_line_mut(id).unwrap().kind = crate::rythmo_line::RythmoLineKind::AmbianceEnd;
+
+        let data = ProjectData::from_project(&project, 24.0);
+        let json = serde_json::to_string(&data).unwrap();
+        let restored_data: ProjectData = serde_json::from_str(&json).unwrap();
+        let mut restored = Project::new();
+        restored_data
+            .try_apply_to_project(&mut restored, 24.0)
+            .unwrap();
+        assert_eq!(
+            restored.get_line(id).unwrap().kind,
+            crate::rythmo_line::RythmoLineKind::AmbianceEnd
+        );
     }
 
     #[test]
@@ -1581,6 +1628,7 @@ mod tests {
                 id: address.detection_id,
                 kind: crate::detection::DetectionKind::TextSyncPoint,
                 media_tick: crate::detection::MediaTick::from_frame(30),
+                duration: crate::detection::MediaTick::ZERO,
                 target: crate::detection::TextAnchor::Grapheme { index: 2 },
             },
         };

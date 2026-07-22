@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SizedSample};
@@ -45,9 +45,14 @@ pub struct VideoPlayer {
     playing: bool,
     playback_start_time: Option<Instant>,
     playback_start_frame: i64,
-    playback_start_audio_frame: u64,
     last_toggle: Option<Instant>,
     receiver: Option<Receiver<VideoFrame>>,
+    /// A freshly started decoder includes the frame at the seek timestamp.
+    /// Consume it without advancing `current_frame` before normal playback.
+    receiver_has_current_frame: bool,
+    /// Playback was requested while the decoder was still warming up. Keep
+    /// audio and the visual clock stopped until the first video frame arrives.
+    waiting_for_first_frame: bool,
     frame_recycler: Option<SyncSender<Vec<u8>>>,
     decoder_handle: Option<JoinHandle<()>>,
     kill_signal: Arc<AtomicBool>,
@@ -116,13 +121,6 @@ impl AudioOutputState {
         f32::from_bits(self.volume_bits.load(Ordering::Relaxed))
     }
 
-    fn audible_frame(&self) -> u64 {
-        let Ok(snapshot) = self.snapshot.lock() else {
-            return self.frames_written.load(Ordering::Relaxed);
-        };
-        self.audible_frame_from_snapshot(&snapshot, Instant::now())
-    }
-
     fn freeze(&self) {
         if let Ok(mut snapshot) = self.snapshot.lock() {
             let now = Instant::now();
@@ -167,9 +165,10 @@ impl VideoPlayer {
             playing: false,
             playback_start_time: None,
             playback_start_frame: 0,
-            playback_start_audio_frame: 0,
             last_toggle: None,
             receiver: None,
+            receiver_has_current_frame: false,
+            waiting_for_first_frame: false,
             frame_recycler: None,
             decoder_handle: None,
             kill_signal: Arc::new(AtomicBool::new(false)),
@@ -329,23 +328,16 @@ impl VideoPlayer {
                 let ts = self.current_frame as f64 / self.fps;
                 self.start_decoders_at(ts);
             }
-
-            self.playback_start_time = Some(now);
-            self.playback_start_frame = self.current_frame;
-            self.playback_start_audio_frame = self
-                .audio_clock
-                .as_ref()
-                .map(|clock| clock.audible_frame())
-                .unwrap_or(0);
-
-            if self.audio_should_wait_at(self.current_frame as f64 / self.fps.max(1.0)) {
-                self.defer_audio_start();
-            } else if let Some(stream) = &self.audio_stream {
-                if let Err(e) = stream.play() {
-                    log::error!("Audio stream play failed: {e}");
-                }
+            if self.receiver_has_current_frame {
+                // Starting the clock here would make the rythmo move while the
+                // video is still waiting for FFmpeg's first frame.
+                self.waiting_for_first_frame = true;
+                self.playback_start_time = None;
+            } else {
+                self.start_playback_clock(now);
             }
         } else {
+            self.waiting_for_first_frame = false;
             if let Some(clock) = &self.audio_clock {
                 clock.freeze();
             }
@@ -397,7 +389,6 @@ impl VideoPlayer {
         if was_playing {
             self.playback_start_time = Some(Instant::now());
             self.playback_start_frame = self.current_frame;
-            self.playback_start_audio_frame = 0;
         }
     }
 
@@ -411,13 +402,25 @@ impl VideoPlayer {
 
         let timestamp = self.current_frame as f64 / self.fps.max(1.0);
         self.start_decoders_at(timestamp);
-        self.playback_start_time = Some(Instant::now());
-        self.playback_start_frame = self.current_frame;
-        self.playback_start_audio_frame = self
-            .audio_clock
-            .as_ref()
-            .map(|clock| clock.audible_frame())
-            .unwrap_or(0);
+        self.waiting_for_first_frame = true;
+        self.playback_start_time = None;
+    }
+
+    /// Start a seek decoder without blocking the UI on a one-shot FFmpeg
+    /// process. The first decoded frame becomes the paused preview and the
+    /// following buffered frames stay warm for an immediate Play.
+    pub fn prepare_current_frame(&mut self) {
+        if self.path.is_none() {
+            return;
+        }
+        self.stop_decoders();
+        self.finished = false;
+        let timestamp = self.current_frame as f64 / self.fps.max(1.0);
+        self.start_decoders_at(timestamp);
+    }
+
+    pub fn is_preparing_frame(&self) -> bool {
+        self.receiver_has_current_frame
     }
 
     /// Decode and display the frame at current_frame. Call after scroll stabilizes.
@@ -484,6 +487,10 @@ impl VideoPlayer {
         bind_group_layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
     ) {
+        if !self.consume_current_decoder_frame(device, queue, bind_group_layout, sampler) {
+            return;
+        }
+
         if !self.playing {
             return;
         }
@@ -549,20 +556,65 @@ impl VideoPlayer {
         }
     }
 
+    fn consume_current_decoder_frame(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+    ) -> bool {
+        if !self.receiver_has_current_frame {
+            return true;
+        }
+
+        let received = self.receiver.as_ref().map(Receiver::try_recv);
+        match received {
+            Some(Ok(frame)) => {
+                self.upload_frame(&frame, device, queue, bind_group_layout, sampler);
+                recycle_frame(frame, self.frame_recycler.as_ref());
+                self.receiver_has_current_frame = false;
+                if self.playing && self.waiting_for_first_frame {
+                    self.waiting_for_first_frame = false;
+                    self.start_playback_clock(Instant::now());
+                }
+                true
+            }
+            Some(Err(mpsc::TryRecvError::Empty)) => false,
+            Some(Err(mpsc::TryRecvError::Disconnected)) | None => {
+                self.receiver_has_current_frame = false;
+                self.waiting_for_first_frame = false;
+                self.receiver = None;
+                false
+            }
+        }
+    }
+
+    fn start_playback_clock(&mut self, now: Instant) {
+        self.playback_start_time = Some(now);
+        self.playback_start_frame = self.current_frame;
+
+        if self.audio_should_wait_at(self.current_frame as f64 / self.fps.max(1.0)) {
+            self.defer_audio_start();
+        } else if let Some(stream) = &self.audio_stream {
+            if let Err(e) = stream.play() {
+                log::error!("Audio stream play failed: {e}");
+            }
+        }
+    }
+
     pub fn current_frame(&self) -> i64 {
         self.current_frame
     }
 
     fn playback_elapsed_seconds_at(&self, now: Instant) -> Option<f64> {
         let start_time = self.playback_start_time?;
-        if let Some(clock) = &self.audio_clock {
-            let audio_frames = clock
-                .audible_frame()
-                .saturating_sub(self.playback_start_audio_frame);
-            Some(audio_frames as f64 / clock.sample_rate as f64)
-        } else {
-            Some(now.duration_since(start_time).as_secs_f64())
-        }
+        // The audio callback arrives in device-sized blocks and its reported
+        // latency can vary slightly between callbacks. Driving horizontal text
+        // from that value made the visual clock alternately jump and stall,
+        // which is especially visible on moving glyph edges. Playback starts
+        // audio and this monotonic clock together; keep every visual element on
+        // the continuous wall clock and let the audio device buffer internally.
+        Some(now.saturating_duration_since(start_time).as_secs_f64())
     }
 
     fn clamp_render_frame(&self, frame: f64) -> f64 {
@@ -638,6 +690,7 @@ impl VideoPlayer {
             decode_video_stream_from(path_clone, w, h, timestamp, tx, free_rx, kill);
         });
         self.receiver = Some(rx);
+        self.receiver_has_current_frame = true;
         self.frame_recycler = Some(free_tx);
         self.decoder_handle = Some(vid_handle);
 
@@ -718,11 +771,6 @@ impl VideoPlayer {
             self.set_volume(self.volume);
             self.playback_start_time = Some(now);
             self.playback_start_frame = video_frame.floor() as i64;
-            self.playback_start_audio_frame = self
-                .audio_clock
-                .as_ref()
-                .map(|clock| clock.audible_frame())
-                .unwrap_or(0);
             if let Some(stream) = &self.audio_stream {
                 let _ = stream.play();
             }
@@ -758,11 +806,6 @@ impl VideoPlayer {
             if was_playing {
                 self.playback_start_time = Some(Instant::now());
                 self.playback_start_frame = self.current_frame;
-                self.playback_start_audio_frame = self
-                    .audio_clock
-                    .as_ref()
-                    .map(|clock| clock.audible_frame())
-                    .unwrap_or(0);
                 if let Some(stream) = &self.audio_stream {
                     let _ = stream.play();
                 }
@@ -866,13 +909,10 @@ impl VideoPlayer {
         let audio_handle = thread::spawn(move || {
             decode_audio_stream_from(path_clone, timestamp, sample_rate, audio_tx);
         });
-        let initial_chunk = match audio_rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(chunk) => Some(chunk),
-            Err(mpsc::RecvTimeoutError::Timeout) => None,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err("No decodable audio stream".to_string());
-            }
-        };
+        // Never wait for FFmpeg on the UI thread. While paused, the bounded
+        // channel naturally pre-buffers audio; the callback is non-blocking if
+        // playback is requested before the first chunk is ready.
+        let initial_chunk = None;
 
         let state = Arc::new(AudioOutputState::new(sample_rate, self.volume));
         let stream = match supported.sample_format() {
@@ -991,6 +1031,8 @@ impl VideoPlayer {
         self.audio_stream = None;
         self.audio_clock = None;
         self.receiver = None;
+        self.receiver_has_current_frame = false;
+        self.waiting_for_first_frame = false;
         self.frame_recycler = None;
         self.decoder_handle.take();
         self.audio_thread.take();
@@ -1040,12 +1082,12 @@ impl AudioSampleReader {
                 self.pos += 1;
                 return Some(sample);
             }
-            match self.rx.recv() {
+            match self.rx.try_recv() {
                 Ok(chunk) => {
                     self.buffer = chunk;
                     self.pos = 0;
                 }
-                Err(_) => return None,
+                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => return None,
             }
         }
     }
@@ -1306,15 +1348,6 @@ fn decode_video_stream_from(
     let stdout = child.stdout.take().unwrap();
     let mut reader =
         std::io::BufReader::with_capacity(width as usize * height as usize * 4, stdout);
-    let frame_size = (width * height * 4) as usize;
-    let mut buf = vec![0u8; frame_size];
-
-    // Skip first frame (already shown by decode_frame_at)
-    if reader.read_exact(&mut buf).is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
-        return;
-    }
 
     loop {
         // Check kill signal
@@ -1477,8 +1510,9 @@ fn decode_waveform_peaks(path: &Path, fps: f64, total_frames: usize) -> Result<V
 #[cfg(test)]
 mod tests {
     use std::sync::{mpsc, Arc};
+    use std::time::{Duration, Instant};
 
-    use super::{AudioOutputState, AudioTrack, VideoPlayer};
+    use super::{AudioOutputState, AudioSampleReader, AudioTrack, VideoPlayer};
 
     #[test]
     fn interactive_seek_pauses_active_playback() {
@@ -1515,5 +1549,60 @@ mod tests {
 
         assert!(player.audio_should_wait_at(0.5));
         assert!(!player.audio_should_wait_at(1.0));
+    }
+
+    #[test]
+    fn playback_clock_waits_for_the_prepared_seek_frame() {
+        let mut player = VideoPlayer::new();
+        let (_sender, receiver) = mpsc::sync_channel(1);
+        player.receiver = Some(receiver);
+        player.receiver_has_current_frame = true;
+
+        assert!(player.toggle());
+        assert!(player.is_playing());
+        assert!(player.waiting_for_first_frame);
+        assert!(player.playback_start_time.is_none());
+    }
+
+    #[test]
+    fn empty_audio_prebuffer_never_blocks_the_output_callback() {
+        let (_sender, receiver) = mpsc::sync_channel(1);
+        let mut reader = AudioSampleReader::new(receiver, None);
+
+        assert_eq!(reader.next_stereo(), None);
+    }
+
+    #[test]
+    fn visual_playback_clock_is_continuous_and_independent_from_audio_blocks() {
+        let mut player = VideoPlayer::new();
+        let start = Instant::now();
+        player.playback_start_time = Some(start);
+        player.audio_clock = Some(Arc::new(AudioOutputState::new(48_000, 1.0)));
+
+        let elapsed = player
+            .playback_elapsed_seconds_at(start + Duration::from_millis(250))
+            .unwrap();
+
+        assert!((elapsed - 0.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rythmo_clock_interpolates_ten_steps_between_24_fps_video_frames() {
+        let mut player = VideoPlayer::new();
+        let start = Instant::now();
+        player.playing = true;
+        player.fps = 24.0;
+        player.current_frame = 100;
+        player.playback_start_frame = 100;
+        player.playback_start_time = Some(start);
+
+        for tick in 0..=10 {
+            let now = start + Duration::from_secs_f64(tick as f64 / 240.0);
+            let frame = player.playback_render_frame_at(now).unwrap();
+            let expected = 100.0 + tick as f64 / 10.0;
+            // Duration stores integer nanoseconds, so a 1/240 s sample has a
+            // tiny representation error once converted back to video frames.
+            assert!((frame - expected).abs() < 1.0e-6);
+        }
     }
 }

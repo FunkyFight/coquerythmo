@@ -15,12 +15,13 @@ pub const REF_WIDTH: f32 = 800.0;
 /// Default export framerate.
 pub const DEFAULT_EXPORT_FPS: u32 = 60;
 
-/// Target app redraw cadence while playback or UI animation is active.
-///
-/// This only controls interactive app refresh. MP4 export remains controlled
-/// independently by `DEFAULT_EXPORT_FPS` / the export modal FPS.
-pub const APP_REFRESH_HZ: u64 = 240;
-pub const APP_REFRESH_INTERVAL_NS: u64 = 1_000_000_000 / APP_REFRESH_HZ;
+/// Interactive bande-rythmo animation rate.  This is deliberately independent
+/// from both the source video's FPS and the monitor cadence: video frames may
+/// advance at 24/25/30/60 Hz while the scrolling position is resampled from the
+/// continuous playback clock at 240 Hz.
+pub const RYTHMO_RENDER_HZ: u32 = 240;
+pub const RYTHMO_RENDER_INTERVAL: std::time::Duration =
+    std::time::Duration::from_nanos(1_000_000_000 / RYTHMO_RENDER_HZ as u64);
 
 /// Delay (ms) before decoding a frame after scrolling stops.
 pub const SCROLL_DECODE_DELAY_MS: u128 = 100;

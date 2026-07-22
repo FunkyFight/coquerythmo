@@ -1,13 +1,11 @@
 use std::sync::Arc;
 use winit::window::Window;
 
-fn present_mode(vsync: bool) -> wgpu::PresentMode {
-    if !vsync {
-        return wgpu::PresentMode::AutoNoVsync;
-    }
-
+fn present_mode(_vsync: bool) -> wgpu::PresentMode {
     // FIFO is the only presentation path that consistently keeps the complete
-    // rythmo band on the same display refresh across supported backends.
+    // rythmo band on the same display refresh across supported backends. Keep
+    // it mandatory: an old `vsync = false` preference must never make moving
+    // text tear across two display refreshes.
     wgpu::PresentMode::Fifo
 }
 
@@ -95,7 +93,9 @@ impl GraphicsContext {
             present_mode: present_mode(crate::config::get().window.vsync),
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            // Avoid presenting a stale 240 Hz interpolation sample one extra
+            // frame later. One queued frame is enough with FIFO VSync.
+            desired_maximum_frame_latency: 1,
         };
         surface.configure(&device, &config);
 
@@ -173,8 +173,8 @@ mod tests {
     use super::present_mode;
 
     #[test]
-    fn present_mode_uses_strict_vsync() {
+    fn present_mode_always_uses_strict_vsync() {
         assert_eq!(present_mode(true), wgpu::PresentMode::Fifo);
-        assert_eq!(present_mode(false), wgpu::PresentMode::AutoNoVsync);
+        assert_eq!(present_mode(false), wgpu::PresentMode::Fifo);
     }
 }

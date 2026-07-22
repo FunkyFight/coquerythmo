@@ -211,13 +211,17 @@ impl Packetable for Command {
     fn to_packet(&self, project: &Project) -> Packet {
         if matches!(
             self,
-            Command::InsertLines { .. } | Command::DeleteLines { .. } | Command::Detection { .. }
+            Command::InsertLines { .. }
+                | Command::DeleteLines { .. }
+                | Command::Detection { .. }
+                | Command::SetLinePresence { .. }
         ) {
             return Packet::Sync {
                 project: ProjectData::from_project(project),
             };
         }
         let payload = match self {
+            Command::SetLinePresence { .. } => unreachable!("handled as a full sync above"),
             Command::CreateLine { snapshot, .. } => CommandPayload::CreateLine {
                 line: snapshot.clone(),
             },
@@ -415,10 +419,12 @@ mod tests {
                 text: "test".into(),
                 character_name: "Alice".into(),
                 character_color: [1.0, 0.0, 0.0, 1.0],
+                kind: crate::rythmo_line::RythmoLineKind::Dialogue,
                 voice_actor_names: Vec::new(),
                 syllable_ratios: Vec::new(),
                 karaoke: false,
                 note: String::new(),
+                presence: crate::rythmo_line::LinePresence::On,
             },
         };
         let json = serde_json::to_string(&payload).unwrap();

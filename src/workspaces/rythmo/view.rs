@@ -31,7 +31,6 @@ use std::hash::{Hash, Hasher};
 
 const PLAYHEAD_WIDTH: f32 = 3.0;
 const PLAYHEAD_COLOR: [f32; 4] = [1.0, 0.02, 0.05, 1.0];
-const PLAYHEAD_GLOW: [f32; 4] = [1.0, 0.0, 0.03, 0.55];
 
 const HANDLE_COLOR: [f32; 4] = [0.9, 0.9, 0.95, 0.8];
 const LINE_BORDER: [f32; 4] = [0.5, 0.5, 0.55, 0.3];
@@ -42,23 +41,50 @@ const KARAOKE_TEXTURE_PREWARM_LOOKAHEAD_SECONDS: f64 = 60.0;
 const KARAOKE_TEXTURE_PREWARM_CANDIDATES_PER_FRAME: usize = 32;
 const KARAOKE_TEXTURE_PREWARM_PUSHES_PER_FRAME: usize = 2;
 
-fn character_badge_collision_style(
+fn character_badge_collision_layout(
     line_id: u64,
     character_name: &str,
     badge_rect: &Rect,
+    line_x: f32,
     other_lines: &[(u64, Rect, &str)],
-) -> (bool, f32) {
-    let mut alpha = 1.0;
+) -> (bool, Rect, f32) {
+    let collides = |candidate: &Rect| {
+        other_lines.iter().any(|(other_id, other_rect, _)| {
+            *other_id != line_id && rects_overlap(candidate, other_rect)
+        })
+    };
     for (other_id, other_rect, other_character_name) in other_lines {
         if *other_id == line_id || !rects_overlap(badge_rect, other_rect) {
             continue;
         }
         if *other_character_name == character_name {
-            return (true, 1.0);
+            return (true, *badge_rect, 1.0);
         }
-        alpha = constants::CHARACTER_BADGE_COLLISION_OPACITY;
     }
-    (false, alpha)
+    if !collides(badge_rect) {
+        return (false, *badge_rect, 1.0);
+    }
+
+    let mut fitted = *badge_rect;
+    fitted.x = line_x - BADGE_GAP - fitted.width;
+    if !collides(&fitted) {
+        return (false, fitted, 1.0);
+    }
+
+    let top = fitted.y;
+    let base_width = fitted.width;
+    let base_height = fitted.height;
+    for step in 1..=95 {
+        let scale = 1.0 - step as f32 * 0.01;
+        fitted.width = base_width * scale;
+        fitted.height = base_height * scale;
+        fitted.x = line_x - BADGE_GAP - fitted.width;
+        fitted.y = top;
+        if !collides(&fitted) {
+            return (false, fitted, scale);
+        }
+    }
+    (false, fitted, 0.05)
 }
 
 fn karaoke_row_candidate_wins(candidate: (bool, i64, u64), current: (bool, i64, u64)) -> bool {
@@ -206,6 +232,15 @@ mod tests {
         assert!((ratios[1] - 0.2).abs() < 0.0001);
         assert!((ratios[2] - 0.3).abs() < 0.0001);
         assert!((ratios[3] - 0.3).abs() < 0.0001);
+    }
+
+    #[test]
+    fn ctrl_syllable_drag_cannot_cross_synchronization_interval_edges() {
+        assert!(separator_is_inside_edit_range(2, Some((1, 4))));
+        assert!(!separator_is_inside_edit_range(0, Some((1, 4))));
+        assert!(!separator_is_inside_edit_range(3, Some((1, 4))));
+        assert!(!separator_is_inside_edit_range(2, Some((3, 3))));
+        assert!(separator_is_inside_edit_range(3, None));
     }
 
     #[test]
@@ -643,14 +678,26 @@ mod tests {
             height: 30.0,
         };
 
-        assert_eq!(
-            character_badge_collision_style(1, "Alice", &badge, &[(2, colliding_line, "Bob")]),
-            (false, constants::CHARACTER_BADGE_COLLISION_OPACITY)
+        let (hidden, fitted, scale) = character_badge_collision_layout(
+            1,
+            "Alice",
+            &badge,
+            200.0,
+            &[(2, colliding_line, "Bob")],
         );
-        assert_eq!(
-            character_badge_collision_style(1, "Alice", &badge, &[(2, colliding_line, "Alice")]),
-            (true, 1.0)
+        assert!(!hidden);
+        assert!(scale < 1.0);
+        assert_eq!(fitted.y, badge.y);
+        assert!(!rects_overlap(&fitted, &colliding_line));
+
+        let (hidden, _, _) = character_badge_collision_layout(
+            1,
+            "Alice",
+            &badge,
+            200.0,
+            &[(2, colliding_line, "Alice")],
         );
+        assert!(hidden);
     }
 
     #[test]
@@ -669,10 +716,9 @@ mod tests {
         };
         let other_lines = [(2, colliding_line, "Bob"), (3, colliding_line, "Alice")];
 
-        assert_eq!(
-            character_badge_collision_style(1, "Alice", &badge, &other_lines),
-            (true, 1.0)
-        );
+        let (hidden, _, _) =
+            character_badge_collision_layout(1, "Alice", &badge, 200.0, &other_lines);
+        assert!(hidden);
     }
 
     #[test]
@@ -1315,8 +1361,8 @@ pub fn render_rythmo_base(
         zone.y,
         zone.height,
         PLAYHEAD_COLOR,
-        PLAYHEAD_GLOW,
-        7.0,
+        [0.0; 4],
+        0.0,
         &skip_ranges,
     );
 
@@ -1328,7 +1374,8 @@ const BADGE_HEIGHT: f32 = 13.0;
 const BADGE_PADDING_H: f32 = 8.0;
 const BADGE_GAP: f32 = 2.0;
 const BADGE_MIN_W: f32 = 24.0;
-const BADGE_FONT_SIZE: f32 = 13.0;
+const AMBIANCE_LIAISON_SIZE: f32 = 46.0;
+const AMBIANCE_LIAISON_GAP: f32 = 8.0;
 
 // Character badge overlaps the upper part of the line body.
 const BADGE_OVERLAP_HEIGHT_RATIO: f32 = constants::BADGE_OVERLAP_HEIGHT_RATIO;
@@ -1345,14 +1392,6 @@ fn line_color_tint(line: &crate::rythmo_line::RythmoLine) -> [f32; 4] {
         line.character_color[1].clamp(0.0, 1.0),
         line.character_color[2].clamp(0.0, 1.0),
         1.0,
-    ]
-}
-
-fn line_color_label(line: &crate::rythmo_line::RythmoLine) -> [u8; 3] {
-    [
-        (line.character_color[0].clamp(0.0, 1.0) * 255.0).round() as u8,
-        (line.character_color[1].clamp(0.0, 1.0) * 255.0).round() as u8,
-        (line.character_color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
     ]
 }
 
@@ -1395,6 +1434,127 @@ fn push_plain_rythmo_text(
     let mut stretched_text = StretchedText::new(line_id, text, dest_rect);
     stretched_text.tint = tint;
     stretched.push(stretched_text);
+}
+
+pub(crate) fn ambiance_description_rect(
+    rect: Rect,
+    kind: crate::rythmo_line::RythmoLineKind,
+) -> Rect {
+    if !kind.is_ambiance() {
+        return rect;
+    }
+    let reserve = (AMBIANCE_LIAISON_SIZE + AMBIANCE_LIAISON_GAP).min(rect.width);
+    if matches!(kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
+        Rect {
+            x: rect.x + reserve,
+            width: (rect.width - reserve).max(1.0),
+            ..rect
+        }
+    } else {
+        Rect {
+            width: (rect.width - reserve).max(1.0),
+            ..rect
+        }
+    }
+}
+
+fn render_ambiance_name_cursor(
+    quads: &mut Vec<QuadInstance>,
+    rect: Rect,
+    value: &str,
+    input: &crate::ui::text_input::TextInputState,
+    focused: bool,
+) {
+    render_emphasized_label_cursor(
+        quads,
+        rect,
+        crate::rythmo_line::AMBIANCE_LABEL_PREFIX,
+        value,
+        input,
+        focused,
+        1.0,
+    );
+}
+
+fn render_character_name_cursor(
+    quads: &mut Vec<QuadInstance>,
+    rect: Rect,
+    value: &str,
+    input: &crate::ui::text_input::TextInputState,
+    focused: bool,
+    font_scale: f32,
+) {
+    render_emphasized_label_cursor(quads, rect, "", value, input, focused, font_scale);
+}
+
+/// Use the exact left anchor and font size of the emphasized rythmo renderer.
+/// Generic UI text inputs are centered and use approximate advances, which is
+/// visibly wrong for these natural-width italic labels.
+fn render_emphasized_label_cursor(
+    quads: &mut Vec<QuadInstance>,
+    rect: Rect,
+    prefix: &str,
+    value: &str,
+    input: &crate::ui::text_input::TextInputState,
+    focused: bool,
+    font_scale: f32,
+) {
+    if !focused {
+        return;
+    }
+    let font_size = crate::config::get().ui.font_size * 2.0 * font_scale.max(0.1);
+    let text_inset = font_size * 0.25;
+    let x_for = |pos: usize| {
+        let suffix: String = value.chars().take(pos.min(value.chars().count())).collect();
+        let displayed = format!("{prefix}{suffix}");
+        rect.x
+            + text_inset
+            + crate::vector_text::measure_rythmo_text_width_standalone(&displayed, font_size)
+                .unwrap_or_else(|| text_input::text_width(&displayed, font_size))
+    };
+    if let Some((start, end)) = input.selection_range() {
+        let left = x_for(start)
+            .min(x_for(end))
+            .clamp(rect.x, rect.x + rect.width);
+        let right = x_for(start)
+            .max(x_for(end))
+            .clamp(rect.x, rect.x + rect.width);
+        if right - left > 1.0 {
+            quads.push(QuadInstance {
+                rect: [left, rect.y + 3.0, right - left, rect.height - 6.0],
+                color: [0.25, 0.45, 0.95, 0.32],
+                color_bottom: [0.25, 0.45, 0.95, 0.32],
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 2.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
+        }
+    }
+    if input.cursor_visible() {
+        quads.push(QuadInstance {
+            rect: [
+                x_for(input.cursor_pos).clamp(rect.x, rect.x + rect.width),
+                rect.y + 3.0,
+                1.5,
+                rect.height - 6.0,
+            ],
+            color: CURSOR_COLOR,
+            color_bottom: CURSOR_COLOR,
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+    }
 }
 
 fn push_read_word_rythmo_text(
@@ -1916,14 +2076,24 @@ fn karaoke_preview_line_rect(
 
 fn badge_rect_for_karaoke_rect(line: &crate::rythmo_line::RythmoLine, line_rect: &Rect) -> Rect {
     let width = badge_width(&line.character_name);
-    let badge_h = line_rect.height * BADGE_OVERLAP_HEIGHT_RATIO;
-    // Right edge a few px to the left of the line's top-left corner, top-aligned.
+    let badge_h = line_rect.height;
+    // During karaoke playback the label belongs to the centered preview row,
+    // so keep it visually attached instead of applying the editing lead-in.
     Rect {
         x: line_rect.x - width - BADGE_GAP,
         y: line_rect.y,
         width,
         height: badge_h,
     }
+}
+
+fn label_underline_span(rect: Rect, text: &str, font_scale: f32) -> (f32, f32) {
+    let font_size = crate::config::get().ui.font_size * 2.0 * font_scale;
+    let left_bearing_space = font_size * 0.25;
+    let ink_width = crate::vector_text::measure_rythmo_text_width_standalone(text, font_size)
+        .unwrap_or_else(|| text_input::text_width(text, font_size));
+    let x = rect.x + left_bearing_space;
+    (x, ink_width.min((rect.x + rect.width - x).max(0.0)))
 }
 
 fn visible_syllable_segments(
@@ -1933,7 +2103,7 @@ fn visible_syllable_segments(
     _karaoke_preview: bool,
     state: &RythmoState,
 ) -> Option<(Vec<usize>, Vec<f32>)> {
-    if line.text.is_empty() || line.text == "↑" || line.text == "↓" {
+    if line.kind.is_ambiance() || line.text.is_empty() || line.text == "↑" || line.text == "↓" {
         return None;
     }
 
@@ -2267,6 +2437,7 @@ pub fn render_lines<'a>(
     karaoke_preview: bool,
     fps: f64,
     state: &RythmoState,
+    lint_severities: &HashMap<u64, crate::lint::Severity>,
     quads: &mut Vec<QuadInstance>,
     syllable_quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
@@ -2274,7 +2445,7 @@ pub fn render_lines<'a>(
     note_icons: &mut Vec<IconInstance>,
     actor_icons: &mut Vec<VoiceActorIconDraw>,
     note_uv: [f32; 4],
-    detection_uvs: [[f32; 4]; 7],
+    detection_uvs: [[f32; 4]; 18],
 ) -> Option<(
     u64,
     usize,
@@ -2285,7 +2456,6 @@ pub fn render_lines<'a>(
     f32,
     Option<Vec<CursorSegmentInfo>>,
 )> {
-    let lint_diagnostics = crate::lint::analyze(project, fps);
     if let Some(drag) = state.dragging.as_ref().filter(|drag| {
         drag.handle == DragHandle::VerticalOnly && matches!(drag.target, DragTarget::Line(_))
     }) {
@@ -2414,17 +2584,24 @@ pub fn render_lines<'a>(
             )
         };
 
-        let badge_rect = if karaoke_playback {
+        let mut badge_rect = if karaoke_playback {
             badge_rect_for_karaoke_rect(line, &r)
         } else {
             layout_ctx.badge_rect_for_name(line, &line.character_name, r.x, zone)
         };
-        let show_badge = !karaoke_playback || karaoke_index.character_label_visible(line);
-        let leading_visual = show_badge.then(|| {
+        // A karaoke track can contain several stacked dialogue rows. The
+        // label belongs to the actual row, never to the full track body.
+        badge_rect.y = r.y;
+        badge_rect.height = r.height;
+        let show_badge = line.kind.is_dialogue()
+            && (!karaoke_playback || karaoke_index.character_label_visible(line));
+        let has_leading_label =
+            show_badge || matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart);
+        let leading_visual = has_leading_label.then(|| {
             rythmo_layout::leading_visual_bounds(
                 badge_rect.x,
                 badge_rect.width,
-                if !karaoke_playback {
+                if !karaoke_playback && line.kind.is_dialogue() {
                     line.voice_actor_names.len()
                 } else {
                     0
@@ -2497,7 +2674,7 @@ pub fn render_lines<'a>(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let mut badge_hidden: HashMap<u64, bool> = HashMap::new();
-    let mut badge_overlap_alpha: HashMap<u64, f32> = HashMap::new();
+    let mut fitted_badges: HashMap<u64, (Rect, f32)> = HashMap::new();
     let collision_targets: Vec<(u64, Rect, &str)> = line_data
         .iter()
         .filter_map(|(line_id, data)| {
@@ -2511,14 +2688,15 @@ pub fn render_lines<'a>(
         let Some(line) = project.get_line(*line_id) else {
             continue;
         };
-        let (hidden, alpha) = character_badge_collision_style(
+        let (hidden, fitted_rect, scale) = character_badge_collision_layout(
             *line_id,
             &line.character_name,
             &data.badge_rect,
+            data.rect.x,
             &collision_targets,
         );
         badge_hidden.insert(*line_id, hidden);
-        badge_overlap_alpha.insert(*line_id, alpha);
+        fitted_badges.insert(*line_id, (fitted_rect, scale));
     }
 
     // Now render all lines using precomputed data
@@ -2532,12 +2710,7 @@ pub fn render_lines<'a>(
             || matches!(state.selected, Some(Selection::Lines(ref ids)) if ids.contains(&line.id))
             || matches!(state.selected, Some(Selection::AllLines));
         let is_editing = state.editing_line == Some(line.id);
-        let lint_severity = lint_diagnostics.iter().filter_map(|diagnostic| match diagnostic.scope {
-            crate::lint::Scope::Line(id) if id == line.id => Some(diagnostic.severity),
-            crate::lint::Scope::Zone { start_frame, end_frame }
-                if line.start_frame < end_frame && line.end_frame() > start_frame => Some(diagnostic.severity),
-            _ => None,
-        }).max();
+        let lint_severity = lint_severities.get(&line.id).copied();
         let karaoke_playback_line = data.karaoke_playback;
         let read_highlight_end = if project.settings().highlight_read_word && !line.karaoke {
             let progress =
@@ -2552,7 +2725,7 @@ pub fn render_lines<'a>(
             None
         };
 
-        if !karaoke_playback_line {
+        if !karaoke_playback_line && line.kind.is_dialogue() {
             // Subtle dark background + border
             let bg = if is_editing {
                 [0.12, 0.12, 0.15, 0.6]
@@ -2584,12 +2757,19 @@ pub fn render_lines<'a>(
                 _padding: [0.0; 2],
             });
             if let Some(severity) = lint_severity {
-                push_lint_wave(quads, data.rect.x, data.rect.x + data.rect.width,
-                    data.rect.y + data.rect.height - 2.0, severity);
+                push_lint_wave(
+                    quads,
+                    data.rect.x,
+                    data.rect.x + data.rect.width,
+                    data.rect.y + data.rect.height - 2.0,
+                    severity,
+                );
             }
         }
 
-        let scrolling_text_tint = if project.settings().scrolling_text_uses_character_color {
+        let scrolling_text_tint = if line.kind.is_ambiance() {
+            [0.95, 0.12, 0.16, 1.0]
+        } else if project.settings().scrolling_text_uses_character_color {
             [
                 line.character_color[0].clamp(0.0, 1.0),
                 line.character_color[1].clamp(0.0, 1.0),
@@ -2600,8 +2780,63 @@ pub fn render_lines<'a>(
             [1.0; 4]
         };
 
+        if line.kind.is_ambiance() {
+            let at_start = matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart);
+            if at_start {
+                let ambiance_label = crate::rythmo_line::ambiance_label(&line.character_name);
+                let (underline_x, underline_width) =
+                    label_underline_span(data.badge_rect, &ambiance_label, 1.0);
+                let mut label = StretchedText::natural(
+                    line.id ^ 0x414D_4249_414E_4345,
+                    ambiance_label,
+                    data.badge_rect,
+                    1.0,
+                    [0.2, 0.55, 1.0, 1.0],
+                );
+                label.emphasized = true;
+                stretched.push(label);
+                quads.push(QuadInstance {
+                    rect: [
+                        underline_x,
+                        data.badge_rect.y + data.badge_rect.height - 2.0,
+                        underline_width,
+                        1.5,
+                    ],
+                    color: [0.2, 0.55, 1.0, 1.0],
+                    color_bottom: [0.2, 0.55, 1.0, 1.0],
+                    border_color: [0.0; 4],
+                    border_width: 0.0,
+                    border_radius: 0.0,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0; 4],
+                    shadow_blur: 0.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
+                });
+                quads.push(QuadInstance {
+                    rect: [
+                        underline_x,
+                        data.badge_rect.y + data.badge_rect.height - 5.5,
+                        underline_width,
+                        1.5,
+                    ],
+                    color: [0.2, 0.55, 1.0, 1.0],
+                    color_bottom: [0.2, 0.55, 1.0, 1.0],
+                    border_color: [0.0; 4],
+                    border_width: 0.0,
+                    border_radius: 0.0,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0; 4],
+                    shadow_blur: 0.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
+                });
+            }
+        }
+
         // Stretched text or special rendering for breath arrows
         let mut cursor_segments = None;
+        let description_rect = ambiance_description_rect(data.rect, line.kind);
         if !line.text.is_empty() {
             if line.text == "↑" || line.text == "↓" {
                 render_breath_arrow(&data.rect, line.text == "↑", quads);
@@ -2682,16 +2917,62 @@ pub fn render_lines<'a>(
                         stretched,
                         line.id,
                         line.text.clone(),
-                        Rect {
-                            x: data.rect.x,
-                            y: data.rect.y,
-                            width: data.rect.width,
-                            height: data.rect.height,
-                        },
+                        description_rect,
                         0,
                         read_highlight_end,
                         scrolling_text_tint,
                     );
+                }
+            }
+        }
+
+        // Keep a genuine clear gutter for the liaison. This is drawn after
+        // text so even a long stretched description cannot cover the symbol.
+        if line.kind.is_ambiance() {
+            let at_start = matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart);
+            let gutter = 14.0_f32.min(data.rect.width);
+            let gx = if at_start {
+                data.rect.x
+            } else {
+                data.rect.x + data.rect.width - gutter
+            };
+            let _ = (gx, gutter); // space is reserved in description_rect; no background panel.
+        }
+
+        if !line.presence.is_on() && !line.text.is_empty() {
+            let y = data.rect.y + data.rect.height - 3.0;
+            let color = scrolling_text_tint;
+            if line.presence == crate::rythmo_line::LinePresence::Off {
+                quads.push(QuadInstance {
+                    rect: [data.rect.x, y, data.rect.width, 1.5],
+                    color,
+                    color_bottom: color,
+                    border_color: [0.0; 4],
+                    border_width: 0.0,
+                    border_radius: 0.0,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0; 4],
+                    shadow_blur: 0.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
+                });
+            } else {
+                let mut x = data.rect.x;
+                while x < data.rect.x + data.rect.width {
+                    quads.push(QuadInstance {
+                        rect: [x, y, 7.0_f32.min(data.rect.x + data.rect.width - x), 1.5],
+                        color,
+                        color_bottom: color,
+                        border_color: [0.0; 4],
+                        border_width: 0.0,
+                        border_radius: 0.0,
+                        shadow_offset: [0.0; 2],
+                        shadow_color: [0.0; 4],
+                        shadow_blur: 0.0,
+                        rotation: 0.0,
+                        _padding: [0.0; 2],
+                    });
+                    x += 12.0;
                 }
             }
         }
@@ -2703,8 +2984,8 @@ pub fn render_lines<'a>(
                     line.id,
                     state.line_input.cursor_pos,
                     state.line_input.selection_range(),
-                    data.rect.x,
-                    data.rect.width,
+                    description_rect.x,
+                    description_rect.width,
                     data.rect.y,
                     data.rect.height,
                     cursor_segments.clone(),
@@ -2775,98 +3056,89 @@ pub fn render_lines<'a>(
             });
         }
 
-        // Character badge — use precomputed badge_rect
-        let br = data.badge_rect;
-
-        // Overlap detection vs OTHER lines: use precomputed HashMaps
-        let badge_hidden = *badge_hidden.get(&line_id).unwrap_or(&false);
-        let badge_overlap_alpha = *badge_overlap_alpha.get(&line_id).unwrap_or(&1.0);
-
-        if karaoke_playback_line {
-            if karaoke_index.character_label_visible(line) {
-                labels.push(LabelInfo {
-                    text: &line.character_name,
-                    bounds: br,
-                    h_align: HAlign::Left,
-                    v_align: VAlign::Center,
-                    overflow: Overflow::Visible,
-                    padding: 0.0,
-                    font_size_override: Some(BADGE_FONT_SIZE),
-                    color_override: Some(line_color_label(line)),
-                    font_family_override: None,
-                });
+        // Ambiance labels use the configured rythmo font through the stretched
+        // text path above. They never receive a character badge or actor icon.
+        if line.kind.is_ambiance() {
+            if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
+                render_ambiance_name_cursor(
+                    quads,
+                    data.badge_rect,
+                    &line.character_name,
+                    &state.char_input,
+                    state.editing_character == Some(line.id),
+                );
             }
             continue;
         }
 
+        // Character badge — use precomputed badge_rect
+        let (br, badge_scale) = fitted_badges
+            .get(&line_id)
+            .copied()
+            .unwrap_or((data.badge_rect, 1.0));
+
+        // Overlap detection vs OTHER lines: use precomputed HashMaps
+        let badge_hidden = *badge_hidden.get(&line_id).unwrap_or(&false);
+
         if !badge_hidden {
-            let mut badge_color = line.character_color;
-            badge_color[3] *= badge_overlap_alpha;
+            let badge_color = line.character_color;
             let is_editing_char = state.editing_character == Some(line.id);
-            let badge_border = if is_editing_char {
-                [0.8, 0.8, 0.85, 0.8]
-            } else {
-                [0.0_f32; 4]
-            };
-            quads.push(QuadInstance {
-                rect: [br.x, br.y, br.width, br.height],
-                color: badge_color,
-                color_bottom: badge_color,
-                border_color: badge_border,
-                border_width: if is_editing_char { 1.0 } else { 0.0 },
-                border_radius: 0.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-
-            // Character name text — black on bright backgrounds for contrast
+            // Same emphasized typography as ambiance labels, tinted with the
+            // character colour and deliberately left without an underline.
             if !line.character_name.is_empty() {
-                let [r, g, b, _] = line.character_color;
-                let luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-                let text_color = if luminance > 0.55 {
-                    Some([0, 0, 0])
-                } else {
-                    None
-                };
-
-                labels.push(LabelInfo {
-                    text: &line.character_name,
-                    bounds: br,
-                    h_align: HAlign::Center,
-                    v_align: VAlign::Center,
-                    overflow: Overflow::Clip,
-                    padding: BADGE_PADDING_H,
-                    font_size_override: Some(BADGE_FONT_SIZE),
-                    color_override: text_color,
-                    font_family_override: None,
-                });
+                let mut label = StretchedText::natural(
+                    line.id ^ 0x4348_4152_4143_5445,
+                    line.character_name.clone(),
+                    br,
+                    badge_scale,
+                    badge_color,
+                );
+                label.emphasized = true;
+                stretched.push(label);
+                let (underline_x, underline_width) =
+                    label_underline_span(br, &line.character_name, badge_scale);
+                for y_offset in [2.0, 5.5] {
+                    quads.push(QuadInstance {
+                        rect: [
+                            underline_x,
+                            br.y + br.height - y_offset * badge_scale,
+                            underline_width,
+                            1.5 * badge_scale,
+                        ],
+                        color: badge_color,
+                        color_bottom: badge_color,
+                        border_color: [0.0; 4],
+                        border_width: 0.0,
+                        border_radius: 0.0,
+                        shadow_offset: [0.0; 2],
+                        shadow_color: [0.0; 4],
+                        shadow_blur: 0.0,
+                        rotation: 0.0,
+                        _padding: [0.0; 2],
+                    });
+                }
             }
 
-            render_voice_actor_icons_for_line(
-                line,
-                project,
-                zone,
-                br,
-                ACTOR_ICON_SIZE,
-                quads,
-                labels,
-                actor_icons,
-            );
+            if !karaoke_playback_line {
+                render_voice_actor_icons_for_line(
+                    line,
+                    project,
+                    zone,
+                    br,
+                    ACTOR_ICON_SIZE * badge_scale,
+                    quads,
+                    labels,
+                    actor_icons,
+                );
+            }
 
-            text_input::render_selection_and_cursor(
+            render_character_name_cursor(
                 quads,
                 br,
                 &line.character_name,
                 &state.char_input,
                 is_editing_char,
-                badge_text_metrics(),
-                3.0,
-                3.0,
-                [0.25, 0.45, 0.95, 0.45],
-                CURSOR_COLOR,
+                badge_scale,
             );
 
             // Note indicator: small icon at the end of the badge if line has a note
@@ -3294,7 +3566,7 @@ pub fn render_autocomplete<'a>(
         Some(l) => l,
         None => return,
     };
-    let suggestions = project.known_characters();
+    let suggestions = project.autocomplete_entries_for_line(line);
     if suggestions.is_empty() {
         return;
     }
@@ -3357,25 +3629,27 @@ pub fn render_autocomplete<'a>(
             });
         }
 
-        // Color swatch
-        quads.push(QuadInstance {
-            rect: [dropdown_x + 4.0, dropdown_y + 4.0, 12.0, item_h - 8.0],
-            color: suggestion.color,
-            color_bottom: suggestion.color,
-            border_color: [0.0; 4],
-            border_width: 0.0,
-            border_radius: 2.0,
-            shadow_offset: [0.0; 2],
-            shadow_color: [0.0; 4],
-            shadow_blur: 0.0,
-            rotation: 0.0,
-            _padding: [0.0; 2],
-        });
+        // Ambiance names have no character colour swatch.
+        if line.kind.is_dialogue() {
+            quads.push(QuadInstance {
+                rect: [dropdown_x + 4.0, dropdown_y + 4.0, 12.0, item_h - 8.0],
+                color: suggestion.1,
+                color_bottom: suggestion.1,
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 2.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
+        }
         // Name label
         labels.push(LabelInfo {
-            text: &suggestion.name,
+            text: suggestion.0,
             bounds: Rect {
-                x: dropdown_x + 20.0,
+                x: dropdown_x + if line.kind.is_dialogue() { 20.0 } else { 4.0 },
                 y: dropdown_y,
                 width: dropdown_w - 24.0,
                 height: item_h,
@@ -3425,20 +3699,32 @@ pub fn render_markers<'a>(
     render_index: &ProjectRenderIndex,
     current_frame: f64,
     fps: f64,
+    lint_diagnostics: &[crate::lint::Diagnostic],
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
     liaison_icons: &mut Vec<IconInstance>,
     liaison_left_uv: [f32; 4],
     liaison_right_uv: [f32; 4],
 ) {
-    for diagnostic in crate::lint::analyze(project, fps) {
-        if let crate::lint::Scope::Zone { start_frame, end_frame } = diagnostic.scope {
+    let _ = fps;
+    for diagnostic in lint_diagnostics {
+        if let crate::lint::Scope::Zone {
+            start_frame,
+            end_frame,
+        } = diagnostic.scope
+        {
             let left = frame_to_x(start_frame, current_frame, zone).max(zone.x);
             let right = frame_to_x(end_frame, current_frame, zone).min(zone.x + zone.width);
             if right > left {
                 // Zone diagnostics sit outside the dialogue rows, directly
                 // under the ruler, and therefore remain visible on empty parts.
-                push_lint_wave(quads, left, right, zone.y + constants::RULER_HEIGHT + 3.0, diagnostic.severity);
+                push_lint_wave(
+                    quads,
+                    left,
+                    right,
+                    zone.y + constants::RULER_HEIGHT + 3.0,
+                    diagnostic.severity,
+                );
             }
         }
     }
@@ -3599,7 +3885,59 @@ pub fn render_markers<'a>(
     }
 }
 
-fn push_lint_wave(quads: &mut Vec<QuadInstance>, left: f32, right: f32, y: f32, severity: crate::lint::Severity) {
+/// Place the actual liaison SVG from the icon atlas inside ambiance lines.
+/// Start lines use the right-facing glyph after their label; end lines use
+/// the left-facing glyph at the right edge of the writable span.
+pub fn render_ambiance_liaison_icons(
+    zone: &Rect,
+    project: &Project,
+    render_index: &ProjectRenderIndex,
+    current_frame: f64,
+    icons: &mut Vec<IconInstance>,
+    liaison_left_uv: [f32; 4],
+    liaison_right_uv: [f32; 4],
+) {
+    let (first_frame, last_frame) = render_window(zone, current_frame, 4);
+    for line_id in render_index.visible_line_ids(project, first_frame, last_frame) {
+        let Some(line) = project
+            .get_line(line_id)
+            .filter(|line| line.kind.is_ambiance())
+        else {
+            continue;
+        };
+        let rect = line_rect(project, line, current_frame, zone);
+        if rect.x + rect.width < zone.x || rect.x > zone.x + zone.width {
+            continue;
+        }
+        let size = AMBIANCE_LIAISON_SIZE;
+        let start = matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart);
+        let x = if start {
+            rect.x + 2.0
+        } else {
+            rect.x + rect.width - size - 2.0
+        };
+        icons.push(IconInstance {
+            rect: [x, rect.y + (rect.height - size) * 0.5, size, size],
+            uv_rect: if start {
+                liaison_right_uv
+            } else {
+                liaison_left_uv
+            },
+            // The liaison SVG is used as an alpha mask by the icon shader.
+            // Keep it fully opaque and white so it remains visible on the
+            // dark rythmo band and retains the glyph's solid silhouette.
+            tint: [1.0, 1.0, 1.0, 1.0],
+        });
+    }
+}
+
+fn push_lint_wave(
+    quads: &mut Vec<QuadInstance>,
+    left: f32,
+    right: f32,
+    y: f32,
+    severity: crate::lint::Severity,
+) {
     let color = match severity {
         crate::lint::Severity::Error => [0.95, 0.18, 0.18, 0.98],
         crate::lint::Severity::Warning => [0.96, 0.72, 0.12, 0.98],
@@ -3610,32 +3948,52 @@ fn push_lint_wave(quads: &mut Vec<QuadInstance>, left: f32, right: f32, y: f32, 
     while x < right {
         let width = step.min(right - x);
         quads.push(QuadInstance {
-            rect: [x, y, width + 0.5, 1.5], color, color_bottom: color,
-            border_color: [0.0; 4], border_width: 0.0, border_radius: 0.75,
-            shadow_offset: [0.0; 2], shadow_color: [0.0; 4], shadow_blur: 0.0,
-            rotation: if rising { 0.38 } else { -0.38 }, _padding: [0.0; 2],
+            rect: [x, y, width + 0.5, 1.5],
+            color,
+            color_bottom: color,
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            border_radius: 0.75,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: if rising { 0.38 } else { -0.38 },
+            _padding: [0.0; 2],
         });
-        rising = !rising; x += step;
+        rising = !rising;
+        x += step;
     }
 }
 
 pub fn lint_zone_diagnostics(
     zone: &Rect,
-    project: &Project,
+    _project: &Project,
     current_frame: f64,
-    fps: f64,
+    diagnostics: &[crate::lint::Diagnostic],
     cursor_x: f32,
     cursor_y: f32,
 ) -> Vec<crate::lint::Diagnostic> {
     let wave_y = zone.y + constants::RULER_HEIGHT + 3.0;
-    if (cursor_y - wave_y).abs() > 7.0 { return Vec::new(); }
-    let diagnostics: Vec<_> = crate::lint::analyze(project, fps).into_iter().filter(|diagnostic| {
-        if let crate::lint::Scope::Zone { start_frame, end_frame } = diagnostic.scope {
-            let left = frame_to_x(start_frame, current_frame, zone).max(zone.x);
-            let right = frame_to_x(end_frame, current_frame, zone).min(zone.x + zone.width);
-            cursor_x >= left && cursor_x <= right
-        } else { false }
-    }).collect();
+    if (cursor_y - wave_y).abs() > 7.0 {
+        return Vec::new();
+    }
+    let diagnostics: Vec<_> = diagnostics
+        .iter()
+        .cloned()
+        .filter(|diagnostic| {
+            if let crate::lint::Scope::Zone {
+                start_frame,
+                end_frame,
+            } = diagnostic.scope
+            {
+                let left = frame_to_x(start_frame, current_frame, zone).max(zone.x);
+                let right = frame_to_x(end_frame, current_frame, zone).min(zone.x + zone.width);
+                cursor_x >= left && cursor_x <= right
+            } else {
+                false
+            }
+        })
+        .collect();
     diagnostics
 }
 
@@ -3651,7 +4009,7 @@ pub fn autocomplete_hit(
         if let Some(line) = project.lines().find(|l| l.id == line_id) {
             let br = badge_rect_for_line(project, line, current_frame, zone);
             let lr = line_rect(project, line, current_frame, zone);
-            let suggestions = project.known_characters();
+            let suggestions = project.autocomplete_entries_for_line(line);
             if !suggestions.is_empty() {
                 let dropdown_x = br.x;
                 let mut dropdown_y = lr.y + lr.height + 2.0;
@@ -3671,7 +4029,7 @@ pub fn autocomplete_hit(
                         height: item_h,
                     };
                     if item_rect.contains(click_x, click_y) {
-                        return Some((suggestion.name.clone(), suggestion.color));
+                        return Some((suggestion.0.to_string(), suggestion.1));
                     }
                     dropdown_y += item_h;
                 }
@@ -4306,7 +4664,7 @@ fn render_menu_scrollbar(quads: &mut Vec<QuadInstance>, rect: Rect, scroll: f32,
 fn autocomplete_hover_index(ctx: &RythmoCtx, state: &RythmoState, x: f32, y: f32) -> Option<usize> {
     let line_id = state.editing_character?;
     let line = ctx.project.get_line(line_id)?;
-    let suggestions = ctx.project.known_characters();
+    let suggestions = ctx.project.autocomplete_entries_for_line(line);
     if suggestions.is_empty() {
         return None;
     }

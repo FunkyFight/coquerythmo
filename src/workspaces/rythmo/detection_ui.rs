@@ -41,6 +41,13 @@ struct SourceDrag {
     lock_x: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ResizeDrag {
+    address: DetectionAddress,
+    fixed_tick: MediaTick,
+    moving_left: bool,
+}
+
 #[derive(Clone)]
 struct SyncSyllableDragContext {
     encoded_line_id: u64,
@@ -56,6 +63,62 @@ struct SyncSyllableDragContext {
 fn source_drag_slot() -> &'static Mutex<Option<SourceDrag>> {
     static SLOT: OnceLock<Mutex<Option<SourceDrag>>> = OnceLock::new();
     SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn resize_drag_slot() -> &'static Mutex<Option<ResizeDrag>> {
+    static SLOT: OnceLock<Mutex<Option<ResizeDrag>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn resize_drag() -> std::sync::MutexGuard<'static, Option<ResizeDrag>> {
+    resize_drag_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn cue_width(cue: &DetectionCue) -> f32 {
+    (cue.duration.as_frame_position().abs() as f32 * ppf()).max(SIGN_ICON_SIZE + 8.0)
+}
+
+fn hit_resize_handle(
+    project: &Project,
+    state: &RythmoState,
+    current_frame: f64,
+    zone: &Rect,
+    x: f32,
+    y: f32,
+) -> Option<ResizeDrag> {
+    let address = selected_detection(state)?;
+    let track = address.track()? as usize;
+    let cue = project.detections().detection(address)?;
+    let rect = track_rect(project, track, current_frame, zone);
+    let center_x = tick_x(cue.media_tick, current_frame, zone);
+    let half = cue_width(cue) / 2.0;
+    let top = rect.y - SIGN_BADGE_SIZE + 2.0;
+    [(center_x - half, true), (center_x + half, false)]
+        .into_iter()
+        .find_map(|(handle_x, moving_left)| {
+            Rect {
+                x: handle_x - 6.0,
+                y: top + 3.0,
+                width: 12.0,
+                height: 20.0,
+            }
+            .contains(x, y)
+            .then_some(ResizeDrag {
+                address,
+                fixed_tick: pointer_tick(
+                    if moving_left {
+                        center_x + half
+                    } else {
+                        center_x - half
+                    },
+                    current_frame,
+                    zone,
+                ),
+                moving_left,
+            })
+        })
 }
 
 fn sync_drag_slot() -> &'static Mutex<Option<SyncSyllableDragContext>> {
@@ -108,7 +171,7 @@ fn track_under_pointer(
 fn sign_badge_rect(tick: MediaTick, track: Rect, current_frame: f64, zone: &Rect) -> Rect {
     Rect {
         x: tick_x(tick, current_frame, zone) - SIGN_BADGE_SIZE / 2.0,
-        y: (track.y + track.height - SIGN_BADGE_SIZE - SIGN_BOTTOM_MARGIN).max(track.y),
+        y: track.y - SIGN_BADGE_SIZE - SIGN_BOTTOM_MARGIN,
         width: SIGN_BADGE_SIZE,
         height: SIGN_BADGE_SIZE,
     }
@@ -124,7 +187,7 @@ fn sign_icon_rect(tick: MediaTick, track: Rect, current_frame: f64, zone: &Rect)
     }
 }
 
-fn palette_uv(cue: &DetectionCue, uvs: [[f32; 4]; 7]) -> [f32; 4] {
+fn palette_uv(cue: &DetectionCue, uvs: [[f32; 4]; 18]) -> [f32; 4] {
     let alternate = matches!(&cue.target, TextAnchor::AfterText);
     let index = match cue.kind {
         DetectionKind::Labial => Some(0),
@@ -134,20 +197,20 @@ fn palette_uv(cue: &DetectionCue, uvs: [[f32; 4]; 7]) -> [f32; 4] {
         DetectionKind::TeethVisible if !alternate => Some(4),
         DetectionKind::Breath if !alternate => Some(5),
         DetectionKind::Reaction => Some(6),
+        DetectionKind::Pucker => return uvs[9],
+        DetectionKind::OpeningWave | DetectionKind::ForwardWave => return [0.0; 4],
         DetectionKind::TeethVisible | DetectionKind::Breath => None,
         DetectionKind::TextSyncPoint => return [0.0; 4],
     };
     if let Some(index) = index {
         return uvs[index];
     }
-    let cell_width = uvs[0][2] - uvs[0][0];
     let extra_index = if matches!(cue.kind, DetectionKind::TeethVisible) {
-        0.0
+        7
     } else {
-        1.0
+        8
     };
-    let u_min = uvs[6][2] + cell_width * extra_index;
-    [u_min, uvs[6][1], u_min + cell_width, uvs[6][3]]
+    uvs[extra_index]
 }
 
 fn selected_detection(state: &RythmoState) -> Option<DetectionAddress> {
@@ -236,6 +299,22 @@ pub(crate) fn handle_detection_event(
     crate::detection_foreground::reconcile_legacy_menu(state);
 
     if let UiEvent::MouseMove { x, y } = event {
+        if let Some(drag) = *resize_drag() {
+            const MINIMUM_DURATION: i64 = 5;
+            let pointer = pointer_tick(*x, ctx.current_frame, ctx.zone);
+            let moving_tick = if drag.moving_left {
+                MediaTick(pointer.raw().min(drag.fixed_tick.raw() - MINIMUM_DURATION))
+            } else {
+                MediaTick(pointer.raw().max(drag.fixed_tick.raw() + MINIMUM_DURATION))
+            };
+            let start = MediaTick(moving_tick.raw().min(drag.fixed_tick.raw()));
+            let end = MediaTick(moving_tick.raw().max(drag.fixed_tick.raw()));
+            return Some(EventResponse::Action(UiAction::ResizeDetection {
+                address: drag.address,
+                media_tick: MediaTick(start.raw() + (end.raw() - start.raw()) / 2),
+                duration: MediaTick(end.raw() - start.raw()),
+            }));
+        }
         let mut slot = source_drag();
         if let Some(drag) = slot.as_mut() {
             if !drag.moved {
@@ -281,6 +360,9 @@ pub(crate) fn handle_detection_event(
     }
 
     if let UiEvent::MouseRelease { .. } = event {
+        if resize_drag().take().is_some() {
+            return Some(EventResponse::Consumed);
+        }
         if let Some(drag) = source_drag().take() {
             if drag.moved {
                 state.detection_drag = None;
@@ -328,10 +410,18 @@ pub(crate) fn handle_detection_event(
 
     if matches!(event, UiEvent::KeyInput { text } if text == "\x1b") {
         *source_drag() = None;
+        *resize_drag() = None;
     }
 
     if state.detection_menu.is_none() {
         if let UiEvent::MousePress { x, y } | UiEvent::ShiftMousePress { x, y } = event {
+            if let Some(drag) =
+                hit_resize_handle(ctx.project, state, ctx.current_frame, ctx.zone, *x, *y)
+            {
+                *resize_drag() = Some(drag);
+                state.detection_menu = None;
+                return Some(EventResponse::Consumed);
+            }
             if let Some((address, cue)) =
                 hit_source_detection(ctx.project, ctx.current_frame, ctx.zone, *x, *y)
             {
@@ -366,12 +456,9 @@ fn sync_anchors(project: &Project, line: &crate::rythmo_line::RythmoLine) -> Vec
         if index < grapheme_count {
             let ratio = ((point.line_tick.as_frame_position() - line.start_frame as f64)
                 / line.duration_frames as f64) as f32;
-            if let Some(boundary) = sync_anchor_char_boundary(
-                &line.text,
-                &spans,
-                index,
-                point.affinity,
-            ) {
+            if let Some(boundary) =
+                sync_anchor_char_boundary(&line.text, &spans, index, point.affinity)
+            {
                 anchors.insert(boundary, ratio);
             }
         }
@@ -456,10 +543,7 @@ fn base_character_positions(character_count: usize, ratios: &[f32], breaks: &[us
     positions
 }
 
-fn map_character_positions(
-    base: &[f32],
-    anchor_boundaries: &[(usize, f32)],
-) -> Vec<f32> {
+fn map_character_positions(base: &[f32], anchor_boundaries: &[(usize, f32)]) -> Vec<f32> {
     let mut controls = anchor_boundaries
         .iter()
         .filter_map(|(boundary, target)| {
@@ -554,6 +638,57 @@ fn sync_segment_cache_id(line_id: u64, start: usize, end: usize) -> u64 {
         ^ end as u64
 }
 
+fn sync_cursor_segments_from_layout(
+    line_id: u64,
+    character_count: usize,
+    boundaries: &BTreeSet<usize>,
+    mapped: &[f32],
+) -> Vec<CursorSegmentInfo> {
+    boundaries
+        .iter()
+        .copied()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .filter_map(|pair| {
+            let start = pair[0];
+            let end = pair[1];
+            if end <= start || end > character_count {
+                return None;
+            }
+            Some(CursorSegmentInfo {
+                cache_id: sync_segment_cache_id(line_id, start, end),
+                start_char: start,
+                end_char: end,
+                start_ratio: mapped[start],
+                width_ratio: (mapped[end] - mapped[start]).max(0.000_1),
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn sync_cursor_segments_for_line(
+    project: &Project,
+    line: &crate::rythmo_line::RythmoLine,
+    drag: Option<&SyllableDrag>,
+    lang: &str,
+    state: &RythmoState,
+) -> Option<Vec<CursorSegmentInfo>> {
+    let (_, mapped, syllable_breaks, anchors) = character_layout(project, line, drag, lang, state)?;
+    if anchors.is_empty() {
+        return None;
+    }
+    let character_count = line.text.chars().count();
+    let mut boundaries = BTreeSet::from([0, character_count]);
+    boundaries.extend(
+        syllable_breaks
+            .into_iter()
+            .filter(|index| *index < character_count),
+    );
+    boundaries.extend(anchors.into_iter().map(|(boundary, _)| boundary));
+    let segments = sync_cursor_segments_from_layout(line.id, character_count, &boundaries, &mapped);
+    (!segments.is_empty()).then_some(segments)
+}
+
 pub(crate) fn render_sync_text_segments(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
@@ -582,23 +717,16 @@ pub(crate) fn render_sync_text_segments(
             .into_iter()
             .filter(|index| *index < character_count),
     );
-    boundaries.extend(
-        anchors
-            .iter()
-            .map(|(boundary, _)| *boundary),
-    );
-    let boundaries = boundaries.into_iter().collect::<Vec<_>>();
+    boundaries.extend(anchors.iter().map(|(boundary, _)| *boundary));
+    let cursor_segments =
+        sync_cursor_segments_from_layout(line.id, character_count, &boundaries, &mapped);
     let characters = line.text.chars().collect::<Vec<_>>();
     let rect = line_rect(project, line, current_frame, zone);
-    let mut cursor_segments = Vec::new();
-    for pair in boundaries.windows(2) {
-        let start = pair[0];
-        let end = pair[1];
-        if end <= start || end > character_count {
-            continue;
-        }
-        let start_ratio = mapped[start];
-        let width_ratio = (mapped[end] - mapped[start]).max(0.000_1);
+    for segment in &cursor_segments {
+        let start = segment.start_char;
+        let end = segment.end_char;
+        let start_ratio = segment.start_ratio;
+        let width_ratio = segment.width_ratio;
         let width = rect.width * width_ratio;
         if width <= 0.5 {
             continue;
@@ -607,7 +735,7 @@ pub(crate) fn render_sync_text_segments(
         if text.is_empty() {
             continue;
         }
-        let cache_id = sync_segment_cache_id(line.id, start, end);
+        let cache_id = segment.cache_id;
         // The implicit line edges and explicit synchronization points split
         // the cue into independent intervals. Each text portion stretches to
         // fill its complete interval, so the line still fills the whole box.
@@ -625,13 +753,6 @@ pub(crate) fn render_sync_text_segments(
             read_highlight_end,
             tint,
         );
-        cursor_segments.push(CursorSegmentInfo {
-            cache_id,
-            start_char: start,
-            end_char: end,
-            start_ratio,
-            width_ratio,
-        });
     }
     (!cursor_segments.is_empty()).then_some(cursor_segments)
 }
@@ -892,7 +1013,10 @@ fn push_line(
 ) {
     let dx = x2 - x1;
     let dy = y2 - y1;
-    let length = (dx * dx + dy * dy).sqrt().max(0.1);
+    // Extend adjoining procedural segments under one another. Without this
+    // small overlap, antialiased rounded caps make a continuous curve look
+    // dotted at normal zoom levels.
+    let length = (dx * dx + dy * dy).sqrt().max(0.1) + thickness;
     quads.push(QuadInstance {
         rect: [
             (x1 + x2) * 0.5 - length / 2.0,
@@ -980,7 +1104,7 @@ pub(crate) fn render_detection_overlay<'a>(
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
     icons: &mut Vec<IconInstance>,
-    detection_uvs: [[f32; 4]; 7],
+    detection_uvs: [[f32; 4]; 18],
 ) {
     let mut detector_quads = Vec::new();
     let mut detector_labels = Vec::new();
@@ -1005,6 +1129,7 @@ pub(crate) fn render_detection_overlay<'a>(
     // Remove the legacy whole-suffix handles; the replacement below follows
     // the same piecewise positions as the text and hit testing.
     detector_quads.retain(|quad| quad.color != [0.95, 0.08, 0.03, 1.0]);
+    detector_quads.retain(|quad| quad.color != [0.20, 0.42, 0.88, 0.24]);
 
     if state.detection_menu.is_none() {
         if let Some(hover) = state.detection_hover {
@@ -1043,12 +1168,6 @@ pub(crate) fn render_detection_overlay<'a>(
             1.5,
             [0.55, 0.73, 1.0, 0.82],
         );
-        push_quad(
-            &mut detector_quads,
-            badge,
-            [0.09, 0.16, 0.29, 0.998],
-            badge.width / 2.0,
-        );
         let icon = sign_icon_rect(drag.target_tick, target_track, current_frame, zone);
         detector_icons.push(IconInstance {
             rect: [icon.x, icon.y, icon.width, icon.height],
@@ -1057,12 +1176,41 @@ pub(crate) fn render_detection_overlay<'a>(
         });
     }
 
+    // Scale bitmap signs horizontally with their semantic duration. Waves are
+    // drawn below; the MouthOpen sign keeps its dedicated arrow icon.
+    for track in 0..rythmo_layout::track_count() {
+        let line_id = track_storage_line_id(track as u8);
+        let Some(data) = project.detections().line(line_id) else {
+            continue;
+        };
+        let rect = track_rect(project, track, current_frame, zone);
+        for cue in data.source_detections() {
+            let original = sign_icon_rect(cue.media_tick, rect, current_frame, zone);
+            if matches!(
+                cue.kind,
+                DetectionKind::OpeningWave | DetectionKind::ForwardWave
+            ) {
+                detector_icons.retain(|icon| {
+                    let (x, y) = rect_center(icon.rect);
+                    !original.contains(x, y)
+                });
+            } else if let Some(icon) = detector_icons.iter_mut().find(|icon| {
+                let (x, y) = rect_center(icon.rect);
+                original.contains(x, y)
+            }) {
+                let width = cue_width(cue);
+                icon.rect[0] = original.x + original.width / 2.0 - width / 2.0;
+                icon.rect[2] = width;
+            }
+        }
+    }
+
     quads.extend(detector_quads);
     labels.extend(detector_labels);
     icons.extend(detector_icons);
 
-    // Opaque masks sit below the later icon pass and hide each vertical guide
-    // inside its circular sign badge.
+    // Detection symbols stay unframed. Selection is shown with two compact
+    // horizontal resize handles instead of the former circular badge.
     let selected = selected_detection(state);
     for track in 0..rythmo_layout::track_count() {
         let line_id = track_storage_line_id(track as u8);
@@ -1075,19 +1223,72 @@ pub(crate) fn render_detection_overlay<'a>(
                 line_id,
                 detection_id: cue.id,
             };
-            if drag_snapshot
-                .as_ref()
-                .is_some_and(|drag| drag.address == address)
-            {
-                continue;
+            let center = tick_x(cue.media_tick, current_frame, zone);
+            let width =
+                (cue.duration.as_frame_position().abs() as f32 * ppf()).max(SIGN_ICON_SIZE + 8.0);
+            let top = rect.y - SIGN_BADGE_SIZE + 2.0;
+
+            if matches!(
+                cue.kind,
+                DetectionKind::OpeningWave | DetectionKind::ForwardWave
+            ) {
+                let color = if selected == Some(address) {
+                    [0.78, 0.88, 1.0, 1.0]
+                } else {
+                    [0.92, 0.92, 0.95, 0.94]
+                };
+                let segments = 20;
+                for index in 0..segments {
+                    let u0 = index as f32 / segments as f32;
+                    let u1 = (index + 1) as f32 / segments as f32;
+                    let curve = |u: f32| {
+                        let arch = (std::f32::consts::PI * u).sin() * 9.0;
+                        if matches!(cue.kind, DetectionKind::ForwardWave) {
+                            top + 13.0 - arch
+                        } else {
+                            top + 4.0 + arch
+                        }
+                    };
+                    push_line(
+                        quads,
+                        center - width / 2.0 + width * u0,
+                        curve(u0),
+                        center - width / 2.0 + width * u1,
+                        curve(u1),
+                        2.0,
+                        color,
+                    );
+                }
             }
-            let badge = sign_badge_rect(cue.media_tick, rect, current_frame, zone);
-            let color = if selected == Some(address) {
-                [0.09, 0.16, 0.29, 0.998]
-            } else {
-                [0.055, 0.059, 0.074, 0.998]
-            };
-            push_quad(quads, badge, color, badge.width / 2.0);
+
+            if matches!(cue.kind, DetectionKind::Pucker) {
+                let color = if selected == Some(address) {
+                    [0.78, 0.88, 1.0, 1.0]
+                } else {
+                    [0.92, 0.92, 0.95, 0.94]
+                };
+                icons.push(IconInstance {
+                    rect: [center - width / 2.0, top, width, SIGN_ICON_SIZE + 4.0],
+                    uv_rect: palette_uv(cue, detection_uvs),
+                    tint: color,
+                });
+            }
+
+            if selected == Some(address) {
+                for x in [center - width / 2.0, center + width / 2.0] {
+                    push_quad(
+                        quads,
+                        Rect {
+                            x: x - 2.0,
+                            y: top + 7.0,
+                            width: 4.0,
+                            height: 12.0,
+                        },
+                        [0.68, 0.82, 1.0, 1.0],
+                        2.0,
+                    );
+                }
+            }
         }
     }
 }
@@ -1119,6 +1320,18 @@ mod tests {
     }
 
     #[test]
+    fn sync_cursor_segments_use_the_same_mapped_geometry_as_rendering() {
+        let boundaries = BTreeSet::from([0, 2, 5, 8]);
+        let mapped = vec![0.0, 0.1, 0.25, 0.35, 0.45, 0.6, 0.72, 0.86, 1.0];
+        let segments = sync_cursor_segments_from_layout(42, 8, &boundaries, &mapped);
+
+        assert_eq!(segments.len(), 3);
+        assert_eq!((segments[1].start_char, segments[1].end_char), (2, 5));
+        assert!((segments[1].start_ratio - 0.25).abs() < 0.000_01);
+        assert!((segments[1].width_ratio - 0.35).abs() < 0.000_01);
+    }
+
+    #[test]
     fn point_on_comma_keeps_comma_with_the_left_text_group() {
         let text = "You two, are our last hope.";
         let graphemes = UnicodeSegmentation::graphemes(text, true).collect::<Vec<_>>();
@@ -1132,41 +1345,28 @@ mod tests {
             .unwrap();
         let spans = grapheme_char_spans(text);
         let base = uniform_grapheme_character_positions(&spans);
-        let comma_boundary = sync_anchor_char_boundary(
-            text,
-            &spans,
-            comma,
-            crate::detection::SyncAffinity::Auto,
-        )
-        .unwrap();
-        let are_boundary = sync_anchor_char_boundary(
-            text,
-            &spans,
-            are,
-            crate::detection::SyncAffinity::Auto,
-        )
-        .unwrap();
-        let comma_inverted = sync_anchor_char_boundary(
-            text,
-            &spans,
-            comma,
-            crate::detection::SyncAffinity::Right,
-        )
-        .unwrap();
-        let are_inverted = sync_anchor_char_boundary(
-            text,
-            &spans,
-            are,
-            crate::detection::SyncAffinity::Left,
-        )
-        .unwrap();
-        let mapped = map_character_positions(
-            &base,
-            &[(comma_boundary, 0.3), (are_boundary, 0.55)],
-        );
+        let comma_boundary =
+            sync_anchor_char_boundary(text, &spans, comma, crate::detection::SyncAffinity::Auto)
+                .unwrap();
+        let are_boundary =
+            sync_anchor_char_boundary(text, &spans, are, crate::detection::SyncAffinity::Auto)
+                .unwrap();
+        let comma_inverted =
+            sync_anchor_char_boundary(text, &spans, comma, crate::detection::SyncAffinity::Right)
+                .unwrap();
+        let are_inverted =
+            sync_anchor_char_boundary(text, &spans, are, crate::detection::SyncAffinity::Left)
+                .unwrap();
+        let mapped = map_character_positions(&base, &[(comma_boundary, 0.3), (are_boundary, 0.55)]);
 
-        assert_eq!(text.chars().take(comma_boundary).collect::<String>(), "You two,");
-        assert_eq!(text.chars().skip(are_boundary).take(3).collect::<String>(), "are");
+        assert_eq!(
+            text.chars().take(comma_boundary).collect::<String>(),
+            "You two,"
+        );
+        assert_eq!(
+            text.chars().skip(are_boundary).take(3).collect::<String>(),
+            "are"
+        );
         assert_eq!(comma_inverted, spans[comma].0);
         assert_eq!(are_inverted, spans[are].1);
         assert!((mapped[comma_boundary] - 0.3).abs() < 0.000_01);

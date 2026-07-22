@@ -79,6 +79,8 @@ impl PaletteSign {
             (DetectionKind::Breath, false) => Some(Self::Breath),
             (DetectionKind::Breath, true) => Some(Self::Neutral),
             (DetectionKind::Reaction, _) => Some(Self::Reaction),
+            (DetectionKind::Pucker, _) => None,
+            (DetectionKind::OpeningWave | DetectionKind::ForwardWave, _) => None,
             (DetectionKind::TextSyncPoint, _) => None,
         }
     }
@@ -268,6 +270,12 @@ fn selected_address(state: &RythmoState) -> Option<DetectionAddress> {
 }
 
 fn next_detection_address(project: &Project, line_id: u64) -> Option<DetectionAddress> {
+    if project
+        .get_line(line_id)
+        .is_some_and(|line| line.kind.is_ambiance())
+    {
+        return None;
+    }
     let detection_id = project
         .detections()
         .line(line_id)
@@ -316,8 +324,7 @@ fn detection_button_rect(hover: &DetectionHover) -> Rect {
 fn source_icon_rect(tick: MediaTick, track_rect: Rect, current_frame: f64, zone: &Rect) -> Rect {
     Rect {
         x: tick_x(tick, current_frame, zone) - DETECTION_HIT_SIZE / 2.0,
-        y: (track_rect.y + track_rect.height - DETECTION_HIT_SIZE - DETECTION_ICON_BOTTOM_MARGIN)
-            .max(track_rect.y),
+        y: track_rect.y - DETECTION_HIT_SIZE - DETECTION_ICON_BOTTOM_MARGIN,
         width: DETECTION_HIT_SIZE,
         height: DETECTION_HIT_SIZE,
     }
@@ -368,27 +375,20 @@ fn menu_item_rect(menu: &DetectionMenu, zone: &Rect, index: usize) -> Rect {
     }
 }
 
-fn palette_uv(sign: PaletteSign, detection_uvs: [[f32; 4]; 7]) -> [f32; 4] {
+fn palette_uv(sign: PaletteSign, detection_uvs: [[f32; 4]; 18]) -> [f32; 4] {
     if let Some(index) = sign.legacy_uv_index() {
         return detection_uvs[index];
     }
 
-    let cell_width = detection_uvs[0][2] - detection_uvs[0][0];
     let extra_index = match sign {
-        PaletteSign::DentalTh => 0.0,
-        PaletteSign::Neutral => 1.0,
+        PaletteSign::DentalTh => 7,
+        PaletteSign::Neutral => 8,
         _ => unreachable!(),
     };
-    let u_min = detection_uvs[6][2] + cell_width * extra_index;
-    [
-        u_min,
-        detection_uvs[6][1],
-        u_min + cell_width,
-        detection_uvs[6][3],
-    ]
+    detection_uvs[extra_index]
 }
 
-fn rhubarb_uv(asset: &str, detection_uvs: [[f32; 4]; 7]) -> [f32; 4] {
+fn rhubarb_uv(asset: &str, detection_uvs: [[f32; 4]; 18]) -> [f32; 4] {
     let index = match asset {
         "detection/rhubarb_lips/AA.png" => 0.0,
         "detection/rhubarb_lips/AO_ER.png" => 1.0,
@@ -400,22 +400,12 @@ fn rhubarb_uv(asset: &str, detection_uvs: [[f32; 4]; 7]) -> [f32; 4] {
         "detection/rhubarb_lips/UW_OW_W.png" => 7.0,
         _ => 0.0,
     };
-    let sign_width = detection_uvs[0][2] - detection_uvs[0][0];
-    let sign_height = detection_uvs[0][3] - detection_uvs[0][1];
-    let image_width = sign_width * 4.0;
-    let image_height = sign_height * 4.0;
-    let first_u = detection_uvs[6][2] + sign_width * 2.0;
-    let u_min = first_u + image_width * index;
-    [
-        u_min,
-        detection_uvs[0][1],
-        u_min + image_width,
-        detection_uvs[0][1] + image_height,
-    ]
+    detection_uvs[10 + index as usize]
 }
 
 fn has_sync_cues(project: &Project, line: &crate::rythmo_line::RythmoLine) -> bool {
-    !line.karaoke
+    line.kind.is_dialogue()
+        && !line.karaoke
         && project
             .detections()
             .line(line.id)
@@ -426,6 +416,9 @@ pub(crate) fn line_has_visible_sync_points(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
 ) -> bool {
+    if line.kind.is_ambiance() {
+        return false;
+    }
     has_sync_cues(project, line)
 }
 
@@ -553,10 +546,7 @@ fn uniform_grapheme_character_positions(spans: &[(usize, usize)]) -> Vec<f32> {
     positions
 }
 
-fn shift_character_ratios(
-    base: &[f32],
-    anchors: &[(usize, f32)],
-) -> Vec<f32> {
+fn shift_character_ratios(base: &[f32], anchors: &[(usize, f32)]) -> Vec<f32> {
     let mut controls = vec![(0.0_f32, 0.0_f32), (1.0_f32, 1.0_f32)];
     controls.extend(anchors.iter().filter_map(|(boundary, target)| {
         Some((base.get(*boundary)?.to_owned(), target.clamp(0.0, 1.0)))
@@ -1577,7 +1567,7 @@ pub(crate) fn render_detection_overlay<'a>(
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
     icons: &mut Vec<IconInstance>,
-    detection_uvs: [[f32; 4]; 7],
+    detection_uvs: [[f32; 4]; 18],
 ) {
     let selected_address = selected_address(state);
     for track in 0..rythmo_layout::track_count() {
@@ -1872,7 +1862,7 @@ mod tests {
     }
 
     #[test]
-    fn source_icon_is_anchored_to_track_bottom() {
+    fn source_icon_is_anchored_above_track() {
         crate::config::init();
         let zone = Rect {
             x: 0.0,
@@ -1889,7 +1879,7 @@ mod tests {
         let hit = source_icon_rect(MediaTick::ZERO, track, 0.0, &zone);
         assert_eq!(
             hit.y,
-            track.y + track.height - DETECTION_HIT_SIZE - DETECTION_ICON_BOTTOM_MARGIN
+            track.y - DETECTION_HIT_SIZE - DETECTION_ICON_BOTTOM_MARGIN
         );
         assert_eq!(hit.x + hit.width / 2.0, tick_x(MediaTick::ZERO, 0.0, &zone));
     }
