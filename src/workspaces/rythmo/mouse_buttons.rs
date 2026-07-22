@@ -165,8 +165,8 @@ pub(crate) fn handle_double_click(
     } else {
         HashSet::new()
     };
-    let collision_targets =
-        crate::workspaces::rythmo::badge_policy::character_badge_collision_targets(
+    let collision_layout =
+        crate::workspaces::rythmo::badge_policy::CharacterBadgeLayoutContext::new(
             ctx.project,
             ctx.current_frame,
             ctx.zone,
@@ -182,14 +182,7 @@ pub(crate) fn handle_double_click(
 
         let base_badge = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone);
         let br = if line.kind.is_dialogue() && (!ctx.karaoke_preview || !line.karaoke) {
-            let (hidden, fitted, _) =
-                crate::workspaces::rythmo::badge_policy::character_badge_layout_with_targets(
-                    ctx.project,
-                    line,
-                    ctx.current_frame,
-                    ctx.zone,
-                    &collision_targets,
-                );
+            let (hidden, fitted, _) = collision_layout.badge_layout(line);
             if hidden {
                 continue;
             }
