@@ -1,9 +1,10 @@
 name: Apply fractional rythmo export fix
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/smooth-fractional-rythmo-export
+      - main
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
