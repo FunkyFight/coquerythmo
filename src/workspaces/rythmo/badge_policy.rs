@@ -7,6 +7,8 @@ use crate::ui::primitives::Rect;
 
 const BADGE_GAP: f32 = 2.0;
 
+pub(crate) type CharacterBadgeCollisionTarget<'a> = (u64, Rect, &'a str);
+
 /// Show a karaoke character label only for the first karaoke line on its track
 /// or when the singer changes from the chronologically previous karaoke line
 /// on that same track.
@@ -33,21 +35,16 @@ pub(crate) fn karaoke_character_label_visible(project: &Project, line: &RythmoLi
         .unwrap_or(true)
 }
 
-/// Compute the ordinary editor badge layout against every line in the project.
+/// Materialize every line body once for a render or interaction pass.
 ///
-/// The legacy renderer normally performs this calculation only against its
-/// current viewport subset. Using the whole project keeps the hidden/fitted
-/// decision stable while a colliding line enters or leaves that subset.
-pub(crate) fn stable_character_badge_layout(
-    project: &Project,
-    line: &RythmoLine,
+/// Keeping off-viewport lines in this collection makes collision decisions
+/// stable while the render index culls and restores individual lines.
+pub(crate) fn character_badge_collision_targets<'a>(
+    project: &'a Project,
     current_frame: f64,
     zone: &Rect,
-) -> (bool, Rect, f32) {
-    let line_body = super::view_implementation::line_rect(project, line, current_frame, zone);
-    let badge =
-        super::view_implementation::badge_rect_for_line(project, line, current_frame, zone);
-    let collision_targets: Vec<(u64, Rect, &str)> = project
+) -> Vec<CharacterBadgeCollisionTarget<'a>> {
+    project
         .lines()
         .map(|candidate| {
             (
@@ -61,14 +58,28 @@ pub(crate) fn stable_character_badge_layout(
                 candidate.character_name.as_str(),
             )
         })
-        .collect();
+        .collect()
+}
+
+/// Compute the ordinary editor badge layout against a precomputed complete
+/// project target list.
+pub(crate) fn character_badge_layout_with_targets(
+    project: &Project,
+    line: &RythmoLine,
+    current_frame: f64,
+    zone: &Rect,
+    collision_targets: &[CharacterBadgeCollisionTarget<'_>],
+) -> (bool, Rect, f32) {
+    let line_body = super::view_implementation::line_rect(project, line, current_frame, zone);
+    let badge =
+        super::view_implementation::badge_rect_for_line(project, line, current_frame, zone);
 
     character_badge_collision_layout(
         line.id,
         &line.character_name,
         &badge,
         line_body.x,
-        &collision_targets,
+        collision_targets,
     )
 }
 
@@ -77,7 +88,7 @@ fn character_badge_collision_layout(
     character_name: &str,
     badge_rect: &Rect,
     line_x: f32,
-    other_lines: &[(u64, Rect, &str)],
+    other_lines: &[CharacterBadgeCollisionTarget<'_>],
 ) -> (bool, Rect, f32) {
     let collides = |candidate: &Rect| {
         other_lines.iter().any(|(other_id, other_rect, _)| {
@@ -130,9 +141,7 @@ fn rects_overlap(a: &Rect, b: &Rect) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        character_badge_collision_layout, karaoke_character_label_visible,
-    };
+    use super::{character_badge_collision_layout, karaoke_character_label_visible};
     use crate::project::Project;
     use crate::ui::primitives::Rect;
 
