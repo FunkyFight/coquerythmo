@@ -6,16 +6,31 @@
 //! clock.
 
 use std::ops::{Deref, DerefMut};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use winit::window::Window;
 
 use crate::accessibility::AccessibilityEvent;
+use crate::application::job_service::SaveContinuation;
+use crate::application::project_service::ProjectSession;
 use crate::application::workspace_service::WorkspaceId;
 
 #[path = "state.rs"]
 mod implementation;
+
+fn ensure_transaction_checkpoint_fps(session: &mut ProjectSession, fps: f64) -> bool {
+    if !fps.is_finite()
+        || fps <= 0.0
+        || session.transaction_journal.checkpoint().source_fps == fps
+    {
+        return false;
+    }
+
+    session.replace_transaction_checkpoint(fps);
+    true
+}
 
 pub struct State(implementation::State);
 
@@ -25,6 +40,43 @@ impl State {
         accessibility_sender: Option<std::sync::mpsc::Sender<AccessibilityEvent>>,
     ) -> Self {
         Self(implementation::State::new(window, accessibility_sender).await)
+    }
+
+    /// Keep a fresh project's durable transaction checkpoint on the source
+    /// video's actual timebase before edits start accumulating in the journal.
+    pub fn load_video(&mut self, path: &Path) -> bool {
+        let loaded = self.0.load_video(path);
+        if loaded {
+            let fps = self.0.fps();
+            ensure_transaction_checkpoint_fps(&mut self.0.project_session, fps);
+        }
+        loaded
+    }
+
+    /// Repair stale checkpoints created before the source FPS was known. This
+    /// also lets older affected projects save again without weakening archive
+    /// integrity checks or trusting a journal expressed in another timebase.
+    pub(crate) fn start_project_save(
+        &mut self,
+        path: PathBuf,
+        source_video: PathBuf,
+        proxy_video: Option<PathBuf>,
+        font_asset: PathBuf,
+        continuation: SaveContinuation,
+    ) -> bool {
+        let fps = self.0.fps();
+        if ensure_transaction_checkpoint_fps(&mut self.0.project_session, fps) {
+            log::warn!(
+                "Rebuilt stale transaction checkpoint at {fps:.6} FPS before project save"
+            );
+        }
+        self.0.start_project_save(
+            path,
+            source_video,
+            proxy_video,
+            font_asset,
+            continuation,
+        )
     }
 
     /// Present the interactive band at the monitor cadence. Its position still
@@ -73,7 +125,9 @@ fn redraw_due_at_display_rate(now: Instant, last_redraw: Instant, interval: Dura
 
 #[cfg(test)]
 mod tests {
-    use super::redraw_due_at_display_rate;
+    use super::{ensure_transaction_checkpoint_fps, redraw_due_at_display_rate};
+    use crate::application::edit_service::EditExecutor;
+    use crate::application::project_service::ProjectSession;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -106,5 +160,40 @@ mod tests {
             start,
             interval,
         ));
+    }
+
+    #[test]
+    fn stale_checkpoint_is_rebuilt_from_the_current_project_at_video_fps() {
+        let mut session = ProjectSession::new();
+        let original_fps = session.transaction_journal.checkpoint().source_fps;
+        let target_fps = if original_fps == 30.0 { 25.0 } else { 30.0 };
+        EditExecutor::create_line(&mut session, 12, 24, 0.0, "Test".to_string());
+        assert_eq!(session.transaction_journal.entries().len(), 1);
+
+        assert!(ensure_transaction_checkpoint_fps(&mut session, target_fps));
+        assert_eq!(
+            session.transaction_journal.checkpoint().source_fps,
+            target_fps
+        );
+        assert!(session.transaction_journal.entries().is_empty());
+        assert_eq!(session.transaction_journal.cursor(), 0);
+        assert_eq!(
+            session
+                .transaction_journal
+                .replay(target_fps)
+                .expect("the repaired checkpoint must replay")
+                .line_count(),
+            session.project.line_count()
+        );
+    }
+
+    #[test]
+    fn matching_checkpoint_is_left_untouched() {
+        let mut session = ProjectSession::new();
+        let fps = session.transaction_journal.checkpoint().source_fps;
+        let hash = session.transaction_journal.checkpoint_hash();
+
+        assert!(!ensure_transaction_checkpoint_fps(&mut session, fps));
+        assert_eq!(session.transaction_journal.checkpoint_hash(), hash);
     }
 }
