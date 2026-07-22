@@ -162,14 +162,15 @@ pub(crate) fn handle_double_click(
         })
         .collect();
     let hidden_karaoke_badges: HashSet<u64> = if ctx.karaoke_preview {
-        let max_gap_frames = karaoke_adjacent_max_gap_frames(ctx.fps);
-        let index = state.cached_karaoke_ui_index(ctx.project, max_gap_frames);
         ctx.project
             .lines()
             .filter(|line| {
                 line.karaoke
                     && line.kind.is_dialogue()
-                    && !index.character_label_visible(line)
+                    && !crate::workspaces::rythmo::badge_policy::karaoke_character_label_visible(
+                        ctx.project,
+                        line,
+                    )
             })
             .map(|line| line.id)
             .collect()
