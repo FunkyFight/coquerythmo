@@ -115,7 +115,9 @@ mod playhead_offset_tests {
     #[test]
     fn zero_is_center_and_minus_fifty_is_left() {
         let width = 800.0;
-        assert_eq!(width * 0.0 / 100.0, 0.0);
-        assert_eq!(width * -50.0 / 100.0, -400.0);
+        let centered_x = width * (0.5 + normalize_playhead_offset(0.0) / 100.0);
+        let left_x = width * (0.5 + normalize_playhead_offset(-50.0) / 100.0);
+        assert_eq!(centered_x, 400.0);
+        assert_eq!(left_x, 0.0);
     }
 }
