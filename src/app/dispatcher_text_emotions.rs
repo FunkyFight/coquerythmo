@@ -8,6 +8,7 @@ mod base;
 use super::event_loop::AppEvent;
 use crate::application::command::UiAction;
 use crate::state::State;
+use crate::ui::primitives::{EventResponse, UiEvent};
 use winit::event_loop::EventLoopWindowTarget;
 
 pub(crate) struct CommandDispatcher;
@@ -49,7 +50,8 @@ fn dispatch_with_text_rebase(
     shortcut: bool,
 ) -> bool {
     let text_edit = match &action {
-        UiAction::UpdateLineText { id, text } => state
+        UiAction::UpdateLineText { id, text }
+        | UiAction::SetClipboardAndUpdateLineText { id, text, .. } => state
             .project_session
             .project
             .get_line(*id)
@@ -104,7 +106,7 @@ fn open_text_emotion_palette(state: &mut State) -> bool {
         state.announce_shortcut_accessibility(
             crate::accessibility::AccessibilityEvent::Focus {
                 label: "Retirer l’émotion".to_string(),
-                role: "bouton de menu".to_string(),
+                role: "menu button".to_string(),
             },
         );
     } else {
@@ -116,6 +118,49 @@ fn open_text_emotion_palette(state: &mut State) -> bool {
         );
     }
     false
+}
+
+pub(crate) fn dispatch(
+    ui_event: UiEvent,
+    state: &mut State,
+    elwt: &EventLoopWindowTarget<AppEvent>,
+) {
+    let response = state.handle_ui_event(&ui_event);
+    let response_changed_ui = !matches!(response, EventResponse::Ignored);
+    let is_pointer_move = matches!(ui_event, UiEvent::MouseMove { .. });
+
+    match response {
+        EventResponse::Action(action) => {
+            if CommandDispatcher::dispatch(action, state, elwt) {
+                elwt.exit();
+            }
+        }
+        EventResponse::Actions(actions) => {
+            for action in actions {
+                if CommandDispatcher::dispatch(action, state, elwt) {
+                    elwt.exit();
+                    break;
+                }
+            }
+        }
+        EventResponse::Ignored | EventResponse::Consumed => {}
+    }
+
+    if should_request_redraw(
+        is_pointer_move,
+        response_changed_ui,
+        state.needs_continuous_redraw(),
+    ) {
+        state.request_redraw();
+    }
+}
+
+fn should_request_redraw(
+    is_pointer_move: bool,
+    _response_changed_ui: bool,
+    continuous_redraw: bool,
+) -> bool {
+    !is_pointer_move || !continuous_redraw
 }
 
 #[cfg(test)]
@@ -130,5 +175,11 @@ mod tests {
             },
         );
         assert!(is_text_emotion_shortcut(&action));
+    }
+
+    #[test]
+    fn pointer_moves_stay_on_the_paced_redraw_loop() {
+        assert!(!should_request_redraw(true, true, true));
+        assert!(should_request_redraw(false, true, true));
     }
 }
