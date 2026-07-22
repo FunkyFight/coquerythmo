@@ -7,7 +7,7 @@ use crate::ui::primitives::Rect;
 
 const BADGE_GAP: f32 = 2.0;
 
-pub(crate) type CharacterBadgeCollisionTarget<'a> = (u64, Rect, &'a str);
+type CharacterBadgeCollisionTarget<'a> = (u64, Rect, &'a str);
 
 /// Show a karaoke character label only for the first karaoke line on its track
 /// or when the singer changes from the chronologically previous karaoke line
@@ -35,52 +35,69 @@ pub(crate) fn karaoke_character_label_visible(project: &Project, line: &RythmoLi
         .unwrap_or(true)
 }
 
-/// Materialize every line body once for a render or interaction pass.
+/// Reusable ordinary-editor badge geometry for one render or interaction pass.
 ///
-/// Keeping off-viewport lines in this collection makes collision decisions
-/// stable while the render index culls and restores individual lines.
-pub(crate) fn character_badge_collision_targets<'a>(
-    project: &'a Project,
+/// Targets cover every line in the project, including lines culled by the
+/// viewport render index. The expensive track layout is built only once.
+pub(crate) struct CharacterBadgeLayoutContext<'a> {
     current_frame: f64,
-    zone: &Rect,
-) -> Vec<CharacterBadgeCollisionTarget<'a>> {
-    project
-        .lines()
-        .map(|candidate| {
-            (
-                candidate.id,
-                super::view_implementation::line_rect(
-                    project,
-                    candidate,
-                    current_frame,
-                    zone,
-                ),
-                candidate.character_name.as_str(),
-            )
-        })
-        .collect()
+    zone: Rect,
+    layout: super::view_implementation::EditorLayoutCtx,
+    collision_targets: Vec<CharacterBadgeCollisionTarget<'a>>,
 }
 
-/// Compute the ordinary editor badge layout against a precomputed complete
-/// project target list.
-pub(crate) fn character_badge_layout_with_targets(
-    project: &Project,
-    line: &RythmoLine,
-    current_frame: f64,
-    zone: &Rect,
-    collision_targets: &[CharacterBadgeCollisionTarget<'_>],
-) -> (bool, Rect, f32) {
-    let line_body = super::view_implementation::line_rect(project, line, current_frame, zone);
-    let badge =
-        super::view_implementation::badge_rect_for_line(project, line, current_frame, zone);
+impl<'a> CharacterBadgeLayoutContext<'a> {
+    pub(crate) fn new(project: &'a Project, current_frame: f64, zone: &Rect) -> Self {
+        let layout =
+            super::view_implementation::EditorLayoutCtx::new_at_frame(project, current_frame, zone);
+        let collision_targets = project
+            .lines()
+            .map(|candidate| {
+                (
+                    candidate.id,
+                    layout.line_rect_with_karaoke_width(
+                        candidate,
+                        current_frame,
+                        zone,
+                        false,
+                        None,
+                    ),
+                    candidate.character_name.as_str(),
+                )
+            })
+            .collect();
 
-    character_badge_collision_layout(
-        line.id,
-        &line.character_name,
-        &badge,
-        line_body.x,
-        collision_targets,
-    )
+        Self {
+            current_frame,
+            zone: *zone,
+            layout,
+            collision_targets,
+        }
+    }
+
+    pub(crate) fn badge_layout(&self, line: &RythmoLine) -> (bool, Rect, f32) {
+        let line_body = self.layout.line_rect_with_karaoke_width(
+            line,
+            self.current_frame,
+            &self.zone,
+            false,
+            None,
+        );
+        let badge = self.layout.badge_rect_for_name(
+            line,
+            &line.character_name,
+            line_body.x,
+            &self.zone,
+        );
+
+        character_badge_collision_layout(
+            line.id,
+            &line.character_name,
+            &badge,
+            line_body.x,
+            &self.collision_targets,
+        )
+    }
 }
 
 fn character_badge_collision_layout(
