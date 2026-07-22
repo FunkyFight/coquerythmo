@@ -24,12 +24,15 @@ pub use base::ModalOutcome;
 const OFFSET_BUTTON_W: f32 = 30.0;
 const OFFSET_VALUE_W: f32 = 76.0;
 const OFFSET_CONTROL_H: f32 = 26.0;
+const SETTINGS_FOCUS_COUNT: usize = 7;
+const OFFSET_FOCUS_SLOT: usize = 4;
 
 pub struct ModalHost {
     base: base::ModalHost,
     playhead_offset_draft: f32,
     playhead_offset_text: String,
     playhead_offset_focused: bool,
+    settings_focus_slot: usize,
 }
 
 impl ModalHost {
@@ -40,6 +43,7 @@ impl ModalHost {
             playhead_offset_draft,
             playhead_offset_text: format_offset(playhead_offset_draft),
             playhead_offset_focused: false,
+            settings_focus_slot: 0,
         }
     }
 
@@ -47,11 +51,13 @@ impl ModalHost {
         self.playhead_offset_draft = crate::config::playhead_offset_percent();
         self.refresh_offset_text();
         self.playhead_offset_focused = false;
+        self.settings_focus_slot = 0;
         self.base.open_settings(fonts);
     }
 
     pub fn close_settings(&mut self) {
         self.playhead_offset_focused = false;
+        self.settings_focus_slot = 0;
         self.base.close_settings();
     }
 
@@ -87,41 +93,56 @@ impl ModalHost {
         screen_h: f32,
     ) -> Option<ModalOutcome> {
         if self.base.settings.is_some() {
+            if let Some(forward) = settings_focus_direction(event) {
+                return Some(self.move_settings_focus(forward, screen_w, screen_h));
+            }
+
             let (_, minus_rect, value_rect, plus_rect) = offset_control_rects(screen_w, screen_h);
             match event {
                 UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                     if minus_rect.contains(*x, *y) {
-                        self.playhead_offset_focused = true;
+                        self.focus_playhead_offset();
                         self.adjust_playhead_offset(-crate::config::PLAYHEAD_OFFSET_STEP_PERCENT);
-                        return Some(ModalOutcome::Consumed);
+                        return Some(self.offset_selection_outcome());
                     }
                     if plus_rect.contains(*x, *y) {
-                        self.playhead_offset_focused = true;
+                        self.focus_playhead_offset();
                         self.adjust_playhead_offset(crate::config::PLAYHEAD_OFFSET_STEP_PERCENT);
-                        return Some(ModalOutcome::Consumed);
+                        return Some(self.offset_selection_outcome());
                     }
                     if value_rect.contains(*x, *y) {
-                        self.playhead_offset_focused = true;
-                        self.set_playhead_offset(0.0);
-                        return Some(ModalOutcome::Consumed);
+                        // Clicking the displayed value only focuses it. Resetting
+                        // to zero here made an ordinary focus click destructive.
+                        self.focus_playhead_offset();
+                        return Some(self.offset_focus_outcome());
                     }
                     self.playhead_offset_focused = false;
+                    self.settings_focus_slot = 0;
                 }
                 UiEvent::CursorLeft | UiEvent::CursorDown if self.playhead_offset_focused => {
                     self.adjust_playhead_offset(-crate::config::PLAYHEAD_OFFSET_STEP_PERCENT);
-                    return Some(ModalOutcome::Consumed);
+                    return Some(self.offset_selection_outcome());
                 }
                 UiEvent::CursorRight | UiEvent::CursorUp if self.playhead_offset_focused => {
                     self.adjust_playhead_offset(crate::config::PLAYHEAD_OFFSET_STEP_PERCENT);
-                    return Some(ModalOutcome::Consumed);
+                    return Some(self.offset_selection_outcome());
                 }
                 UiEvent::Home if self.playhead_offset_focused => {
                     self.set_playhead_offset(crate::config::PLAYHEAD_OFFSET_MIN_PERCENT);
-                    return Some(ModalOutcome::Consumed);
+                    return Some(self.offset_selection_outcome());
                 }
                 UiEvent::End if self.playhead_offset_focused => {
                     self.set_playhead_offset(0.0);
-                    return Some(ModalOutcome::Consumed);
+                    return Some(self.offset_selection_outcome());
+                }
+                UiEvent::Activate
+                | UiEvent::KeyInput { text }
+                    if self.playhead_offset_focused
+                        && matches!(event, UiEvent::Activate)
+                            || self.playhead_offset_focused
+                                && matches!(event, UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " ") =>
+                {
+                    return Some(self.offset_focus_outcome());
                 }
                 _ => {}
             }
@@ -140,6 +161,7 @@ impl ModalHost {
         }
         if self.base.settings.is_none() {
             self.playhead_offset_focused = false;
+            self.settings_focus_slot = 0;
         }
         outcome
     }
@@ -184,6 +206,72 @@ impl ModalHost {
             screen_w,
             screen_h,
         );
+    }
+
+    fn move_settings_focus(
+        &mut self,
+        forward: bool,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> ModalOutcome {
+        let old_slot = self.settings_focus_slot;
+        let new_slot = if forward {
+            (old_slot + 1) % SETTINGS_FOCUS_COUNT
+        } else {
+            (old_slot + SETTINGS_FOCUS_COUNT - 1) % SETTINGS_FOCUS_COUNT
+        };
+        self.settings_focus_slot = new_slot;
+        self.playhead_offset_focused = new_slot == OFFSET_FOCUS_SLOT;
+
+        if new_slot == OFFSET_FOCUS_SLOT {
+            return self.offset_focus_outcome();
+        }
+
+        // The legacy modal has six focus stops. Our extra stop sits between its
+        // scroll-speed field (3) and Save button (4), so crossing that boundary
+        // must not advance the legacy ring twice.
+        let crossing_into_offset = forward && old_slot == 3 && new_slot == OFFSET_FOCUS_SLOT;
+        let crossing_back_into_offset = !forward && old_slot == 5 && new_slot == OFFSET_FOCUS_SLOT;
+        if crossing_into_offset || crossing_back_into_offset {
+            return ModalOutcome::Consumed;
+        }
+
+        let synthetic = UiEvent::KeyInput {
+            text: if forward { "\t" } else { "\u{b}" }.to_string(),
+        };
+        self.base
+            .handle_event(&synthetic, screen_w, screen_h)
+            .unwrap_or(ModalOutcome::Consumed)
+    }
+
+    fn focus_playhead_offset(&mut self) {
+        self.playhead_offset_focused = true;
+        self.settings_focus_slot = OFFSET_FOCUS_SLOT;
+    }
+
+    fn offset_focus_outcome(&self) -> ModalOutcome {
+        ModalOutcome::Action(UiAction::Accessibility(
+            crate::accessibility::AccessibilityEvent::Focus {
+                label: format!(
+                    "{}, {}",
+                    playhead_offset_label(),
+                    self.playhead_offset_text
+                ),
+                role: "Slider".to_string(),
+            },
+        ))
+    }
+
+    fn offset_selection_outcome(&self) -> ModalOutcome {
+        ModalOutcome::Action(UiAction::Accessibility(
+            crate::accessibility::AccessibilityEvent::Selection {
+                label: format!(
+                    "{}, {}",
+                    playhead_offset_label(),
+                    self.playhead_offset_text
+                ),
+            },
+        ))
     }
 
     fn adjust_playhead_offset(&mut self, delta: f32) {
@@ -248,6 +336,16 @@ impl ModalHost {
                 font_family_override: None,
             });
         }
+    }
+}
+
+fn settings_focus_direction(event: &UiEvent) -> Option<bool> {
+    match event {
+        UiEvent::FocusNext => Some(true),
+        UiEvent::FocusPrevious => Some(false),
+        UiEvent::KeyInput { text } if text == "\t" => Some(true),
+        UiEvent::KeyInput { text } if text == "\u{b}" => Some(false),
+        _ => None,
     }
 }
 
