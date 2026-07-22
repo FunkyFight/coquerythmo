@@ -71,37 +71,44 @@ pub fn render_lines<'a>(
         detection_uvs,
     );
 
-    let mut hidden_line_ids: HashSet<u64> = project
-        .lines()
-        .filter(|line| {
+    // Only labels emitted by this render pass need a decision. Their collision
+    // targets still cover the complete project, which keeps the result stable
+    // when another line is culled outside the viewport.
+    let rendered_character_line_ids: HashSet<u64> = stretched[stretched_start..]
+        .iter()
+        .filter_map(|text| character_label_line_id(project, text))
+        .collect();
+    if rendered_character_line_ids.is_empty() {
+        return result;
+    }
+
+    let collision_targets = super::badge_policy::character_badge_collision_targets(
+        project,
+        current_frame,
+        zone,
+    );
+    let mut hidden_line_ids = HashSet::new();
+    for line_id in rendered_character_line_ids {
+        let Some(line) = project.get_line(line_id) else {
+            continue;
+        };
+
+        let hidden = if karaoke_preview && line.karaoke {
+            !super::badge_policy::karaoke_character_label_visible(project, line)
+        } else {
             line.kind.is_dialogue()
-                && !line.character_name.is_empty()
-                // Karaoke playback uses centered stacked rows rather than the
-                // ordinary scrolling badge geometry. Its visibility is handled
-                // below by the per-track singer-continuity rule.
-                && (!karaoke_preview || !line.karaoke)
-                && super::badge_policy::stable_character_badge_layout(
+                && super::badge_policy::character_badge_layout_with_targets(
                     project,
                     line,
                     current_frame,
                     zone,
+                    &collision_targets,
                 )
                 .0
-        })
-        .map(|line| line.id)
-        .collect();
-
-    if karaoke_preview {
-        hidden_line_ids.extend(
-            project
-                .lines()
-                .filter(|line| {
-                    line.karaoke
-                        && line.kind.is_dialogue()
-                        && !super::badge_policy::karaoke_character_label_visible(project, line)
-                })
-                .map(|line| line.id),
-        );
+        };
+        if hidden {
+            hidden_line_ids.insert(line_id);
+        }
     }
 
     if hidden_line_ids.is_empty() {
@@ -141,19 +148,23 @@ pub fn render_lines<'a>(
     result
 }
 
+fn character_label_line_id(project: &Project, text: &StretchedText) -> Option<u64> {
+    if !text.emphasized {
+        return None;
+    }
+    let line_id = text.line_id ^ CHARACTER_LABEL_CACHE_XOR;
+    project
+        .get_line(line_id)
+        .filter(|line| line.kind.is_dialogue() && line.character_name.as_str() == text.text.as_str())
+        .map(|line| line.id)
+}
+
 fn hidden_character_label(
     project: &Project,
     hidden_line_ids: &HashSet<u64>,
     text: &StretchedText,
 ) -> bool {
-    if !text.emphasized {
-        return false;
-    }
-    let line_id = text.line_id ^ CHARACTER_LABEL_CACHE_XOR;
-    hidden_line_ids.contains(&line_id)
-        && project
-            .get_line(line_id)
-            .is_some_and(|line| line.character_name.as_str() == text.text.as_str())
+    character_label_line_id(project, text).is_some_and(|line_id| hidden_line_ids.contains(&line_id))
 }
 
 fn is_badge_underline(quad: &QuadInstance, badge: Rect, tint: [f32; 4]) -> bool {
