@@ -50,7 +50,6 @@ mod state_detection;
 pub mod syllable;
 pub mod text_emotion;
 pub mod text_emotion_foreground;
-#[path = "ui_text_emotions.rs"]
 pub mod ui;
 pub mod update;
 #[path = "vector_text_emotions.rs"]
