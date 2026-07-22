@@ -74,7 +74,7 @@ pub fn render_lines<'a>(
         if line.kind.is_dialogue()
             && !line.karaoke
             && draw.text == line.text
-            && crate::text_emotion::has_line(line.id)
+            && crate::text_emotion::has_line_for_text(line.id, &line.text)
         {
             draw.text = crate::text_emotion::encode_render_text(line.id, &draw.text);
         }
@@ -163,8 +163,9 @@ pub fn handle_context_menu_event(
                     UiAction::Accessibility(crate::accessibility::AccessibilityEvent::Opened {
                         label: "Menu contextuel. Émotion du texte, sous-menu.".to_string(),
                     }),
-                    UiAction::Accessibility(crate::accessibility::AccessibilityEvent::Selection {
+                    UiAction::Accessibility(crate::accessibility::AccessibilityEvent::Focus {
                         label: "Émotion du texte".to_string(),
+                        role: "menu button".to_string(),
                     }),
                 ]);
             }
@@ -197,7 +198,7 @@ mod tests {
             7,
             Some(crate::text_emotion::TextEmotion::Wave),
         );
-        assert!(crate::text_emotion::has_line(dialogue));
+        assert!(crate::text_emotion::has_line_for_text(dialogue, "Bonjour"));
         assert!(project.get_line(dialogue).unwrap().kind.is_dialogue());
     }
 }
