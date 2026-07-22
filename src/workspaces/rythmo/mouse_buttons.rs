@@ -165,6 +165,12 @@ pub(crate) fn handle_double_click(
     } else {
         HashSet::new()
     };
+    let collision_targets =
+        crate::workspaces::rythmo::badge_policy::character_badge_collision_targets(
+            ctx.project,
+            ctx.current_frame,
+            ctx.zone,
+        );
 
     // Badge → character/ambiance-name editing. End markers have no label.
     for line in ctx.project.lines() {
@@ -177,11 +183,12 @@ pub(crate) fn handle_double_click(
         let base_badge = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone);
         let br = if line.kind.is_dialogue() && (!ctx.karaoke_preview || !line.karaoke) {
             let (hidden, fitted, _) =
-                crate::workspaces::rythmo::badge_policy::stable_character_badge_layout(
+                crate::workspaces::rythmo::badge_policy::character_badge_layout_with_targets(
                     ctx.project,
                     line,
                     ctx.current_frame,
                     ctx.zone,
+                    &collision_targets,
                 );
             if hidden {
                 continue;
