@@ -582,16 +582,27 @@ impl CpuRenderer {
         }
     }
 
-    /// Render the bande rythmo for a given frame. All sizes scale with width.
+    /// Render the bande rythmo for a fractional source-frame position.
+    ///
+    /// Integer frame bounds are used only for visibility queries; every visual
+    /// position keeps the fractional component so a 24 fps project can scroll
+    /// smoothly in a 60 fps export.
     pub fn render_br(
         &mut self,
         project: &Project,
-        current_frame: i64,
+        current_frame: f64,
         width: u32,
         source_fps: f64,
         br_scale: f32,
         karaoke_text_scale: f32,
     ) -> Vec<u8> {
+        let current_frame = if current_frame.is_finite() {
+            current_frame
+        } else {
+            0.0
+        };
+        let current_frame_floor = current_frame.floor() as i64;
+        let current_frame_ceil = current_frame.ceil() as i64;
         let s = width as f32 / constants::REF_WIDTH * br_scale; // export BR scale factor
         let normal_slot_h = constants::SLOT_HEIGHT * s;
         let ruler_h = constants::RULER_HEIGHT * s;
@@ -617,14 +628,14 @@ impl CpuRenderer {
             &self.render_index,
             SceneOptions {
                 frame_window: FrameWindow {
-                    first: current_frame
+                    first: current_frame_floor
                         .saturating_sub(visible_frames / 2)
                         .saturating_sub(render_margin_frames),
-                    last: current_frame
+                    last: current_frame_ceil
                         .saturating_add(visible_frames / 2)
                         .saturating_add(render_margin_frames),
                 },
-                current_frame: current_frame as f64,
+                current_frame,
                 source_fps,
                 normal_body_height: normal_slot_h,
                 slot_header_height: slot_header_h,
@@ -644,12 +655,12 @@ impl CpuRenderer {
         let center_x = w / 2.0;
 
         // -- Ruler ticks --
-        let first_tick_frame = current_frame - visible_frames / 2;
+        let first_tick_frame = current_frame_floor - visible_frames / 2;
         let first_tick =
             first_tick_frame.div_euclid(constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
         let mut tf = first_tick;
         loop {
-            let x = center_x + (tf - current_frame) as f32 * ppf;
+            let x = center_x + (tf as f64 - current_frame) as f32 * ppf;
             if x > w {
                 break;
             }
@@ -687,7 +698,7 @@ impl CpuRenderer {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {
-                line.visual_x_width(current_frame as f64, center_x, ppf, w, s)
+                line.visual_x_width(current_frame, center_x, ppf, w, s)
             };
             let badge_w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart)
             {
@@ -759,7 +770,7 @@ impl CpuRenderer {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {
-                line.visual_x_width(current_frame as f64, center_x, ppf, w, s)
+                line.visual_x_width(current_frame, center_x, ppf, w, s)
             };
             let badge_w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart)
             {
@@ -852,7 +863,7 @@ impl CpuRenderer {
             if !line.text.is_empty() && line.text != "↑" && line.text != "↓" {
                 let read_highlight_end = if project.settings().highlight_read_word && !line.karaoke
                 {
-                    let progress = (current_frame as f64 - line.start_frame as f64)
+                    let progress = (current_frame - line.start_frame as f64)
                         / line.duration_frames.max(1) as f64;
                     crate::syllable::read_highlight_end_from_timing(
                         &line.text,
@@ -1173,7 +1184,7 @@ impl CpuRenderer {
                     &mut pixmap,
                     line,
                     scene.syllable_language.code(),
-                    current_frame as f64,
+                    current_frame,
                     x1,
                     line_y,
                     lw,
@@ -1230,7 +1241,7 @@ impl CpuRenderer {
         // Drawings are an overlay in the editor, so composite them last in the
         // exported BR as well (above lines, labels and markers).
         let (first_frame, last_frame) =
-            crate::rythmo_drawing::visible_frame_window(width as f32, current_frame as f64, ppf, 4);
+            crate::rythmo_drawing::visible_frame_window(width as f32, current_frame, ppf, 4);
         let strokes: Vec<_> = scene
             .drawings
             .iter()
@@ -1241,7 +1252,7 @@ impl CpuRenderer {
                 &strokes,
                 width,
                 height,
-                current_frame as f64,
+                current_frame,
                 ppf,
             );
             crate::rythmo_drawing::composite_rgba_over(pixmap.data_mut(), &drawing);
@@ -1686,7 +1697,7 @@ mod tests {
         let br_scale = 0.5;
         let height = br_height(&project, width, br_scale);
         let mut renderer = CpuRenderer::new();
-        let pixels = renderer.render_br(&project, 0, width, 24.0, br_scale, 1.0);
+        let pixels = renderer.render_br(&project, 0.0, width, 24.0, br_scale, 1.0);
 
         assert_eq!(pixels.len(), width as usize * height as usize * 4);
     }
