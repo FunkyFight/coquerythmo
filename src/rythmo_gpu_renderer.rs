@@ -112,18 +112,33 @@ impl GpuRenderer {
         let timeline_scene = legacy::GpuExportScene::new(&prepared.timeline);
         let karaoke_scene = legacy::GpuExportScene::new(&prepared.karaoke);
         let karaoke_mask_scene = legacy::GpuExportScene::new(&prepared.karaoke_mask);
+        let ambiance_line_x: Vec<f32> = scene
+            .project
+            .lines()
+            .filter(|line| {
+                matches!(
+                    line.kind,
+                    crate::rythmo_line::RythmoLineKind::AmbianceStart
+                )
+            })
+            .map(|line| geometry.frame_x(line.start_frame as f64, current_frame))
+            .collect();
 
-        crate::rythmo_layout::with_badge_render_context(false, &[], || {
-            self.timeline.submit_render(
-                &timeline_scene,
-                shifted_frame,
-                width,
-                fps,
-                source_fps,
-                br_scale,
-                karaoke_text_scale,
-            );
-        });
+        crate::rythmo_layout::with_badge_render_context(
+            false,
+            &ambiance_line_x,
+            || {
+                self.timeline.submit_render(
+                    &timeline_scene,
+                    shifted_frame,
+                    width,
+                    fps,
+                    source_fps,
+                    br_scale,
+                    karaoke_text_scale,
+                );
+            },
+        );
         crate::rythmo_layout::with_badge_render_context(true, &[], || {
             self.karaoke.submit_render(
                 &karaoke_scene,
