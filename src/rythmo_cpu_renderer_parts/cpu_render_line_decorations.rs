@@ -121,7 +121,12 @@
                     badge_text.width,
                     badge_text.height,
                     badge_font_size,
-                    [color_channel(cr), color_channel(cg), color_channel(cb)],
+                    [
+                        color_channel(cr),
+                        color_channel(cg),
+                        color_channel(cb),
+                        badge_overlap_alpha,
+                    ],
                 );
                 for y_offset in [2.0, 5.5] {
                     blit_rect(
@@ -226,7 +231,6 @@
                             if a == 0 {
                                 continue;
                             }
-                            // Tint: gray (160, 160, 170)
                             let sr = 160u32 * a / 255;
                             let sg = 160u32 * a / 255;
                             let sb = 170u32 * a / 255;
