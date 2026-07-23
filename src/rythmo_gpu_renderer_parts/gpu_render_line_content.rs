@@ -33,8 +33,6 @@
                 }
             }
 
-            // Overlap detection uses the same prepared collision rectangle that
-            // is later rendered and used for culling.
             let mut badge_hidden = false;
             let mut badge_overlap_alpha = 1.0_f32;
             if show_badge {
@@ -42,7 +40,7 @@
                     if other_id == line.id {
                         continue;
                     }
-                    let other_rect = other.badge_collision_rect.unwrap_or(other.line_rect);
+                    let other_rect = other.line_rect;
                     let overlap = badge_x < other_rect.x + other_rect.width
                         && badge_x + badge_w > other_rect.x
                         && badge_y < other_rect.y + other_rect.height
