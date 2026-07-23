@@ -113,33 +113,39 @@ impl GpuRenderer {
         let karaoke_scene = legacy::GpuExportScene::new(&prepared.karaoke);
         let karaoke_mask_scene = legacy::GpuExportScene::new(&prepared.karaoke_mask);
 
-        self.timeline.submit_render(
-            &timeline_scene,
-            shifted_frame,
-            width,
-            fps,
-            source_fps,
-            br_scale,
-            karaoke_text_scale,
-        );
-        self.karaoke.submit_render(
-            &karaoke_scene,
-            current_frame,
-            width,
-            fps,
-            source_fps,
-            br_scale,
-            karaoke_text_scale,
-        );
-        self.karaoke_mask.submit_render(
-            &karaoke_mask_scene,
-            current_frame,
-            width,
-            fps,
-            source_fps,
-            br_scale,
-            karaoke_text_scale,
-        );
+        crate::rythmo_layout::with_badge_render_context(false, &[], || {
+            self.timeline.submit_render(
+                &timeline_scene,
+                shifted_frame,
+                width,
+                fps,
+                source_fps,
+                br_scale,
+                karaoke_text_scale,
+            );
+        });
+        crate::rythmo_layout::with_badge_render_context(true, &[], || {
+            self.karaoke.submit_render(
+                &karaoke_scene,
+                current_frame,
+                width,
+                fps,
+                source_fps,
+                br_scale,
+                karaoke_text_scale,
+            );
+        });
+        crate::rythmo_layout::with_badge_render_context(true, &[], || {
+            self.karaoke_mask.submit_render(
+                &karaoke_mask_scene,
+                current_frame,
+                width,
+                fps,
+                source_fps,
+                br_scale,
+                karaoke_text_scale,
+            );
+        });
 
         self.pending = Some(PendingRender {
             project: scene.project.snapshot(),
