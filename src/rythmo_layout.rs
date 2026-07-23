@@ -3,6 +3,8 @@
 #[path = "rythmo_layout_legacy.rs"]
 mod legacy;
 
+use std::cell::RefCell;
+
 pub use legacy::{
     active_karaoke_tracks, all_track_indices, build_track_layouts,
     build_track_layouts_at_frame, karaoke_mode_tracks, karaoke_stack_gap,
@@ -12,6 +14,32 @@ pub use legacy::{
     track_has_karaoke, track_index_for_y_slot, used_track_indices,
     y_slot_for_track_index, TrackLayout,
 };
+
+#[derive(Clone, Debug, Default)]
+struct BadgeRenderContext {
+    centered_karaoke_pass: bool,
+    ambiance_line_x: Vec<f32>,
+}
+
+thread_local! {
+    static BADGE_RENDER_CONTEXT: RefCell<BadgeRenderContext> = RefCell::new(BadgeRenderContext::default());
+}
+
+pub fn with_badge_render_context<T>(
+    centered_karaoke_pass: bool,
+    ambiance_line_x: &[f32],
+    render: impl FnOnce() -> T,
+) -> T {
+    BADGE_RENDER_CONTEXT.with(|context| {
+        let previous = context.replace(BadgeRenderContext {
+            centered_karaoke_pass,
+            ambiance_line_x: ambiance_line_x.to_vec(),
+        });
+        let result = render();
+        context.replace(previous);
+        result
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CharacterLabelMetrics {
@@ -58,14 +86,24 @@ pub fn scaled_character_badge_width(character_name: &str, scale: f32) -> f32 {
     character_label_metrics(character_name, row_height, scale, ppf).width
 }
 
-/// Compatibility entry point for normal dialogue labels. The implementation is
-/// intentionally semantic: normal labels always end four frames before the
-/// line, and no longer depend on BADGE_GAP.
 pub fn leading_character_badge_x(line_x: f32, badge_width: f32, scale: f32) -> f32 {
-    let ppf = crate::constants::PIXELS_PER_FRAME
-        * scale.max(0.0)
-        * crate::config::scroll_speed();
-    normal_character_badge_x(line_x, badge_width, ppf)
+    BADGE_RENDER_CONTEXT.with(|context| {
+        let context = context.borrow();
+        if context
+            .ambiance_line_x
+            .iter()
+            .any(|candidate| (*candidate - line_x).abs() <= 0.5)
+        {
+            return ambiance_badge_x(line_x, badge_width);
+        }
+        if context.centered_karaoke_pass {
+            return centered_karaoke_badge_x(line_x, badge_width, scale);
+        }
+        let ppf = crate::constants::PIXELS_PER_FRAME
+            * scale.max(0.0)
+            * crate::config::scroll_speed();
+        normal_character_badge_x(line_x, badge_width, ppf)
+    })
 }
 
 #[inline]
@@ -108,6 +146,21 @@ mod tests {
             let badge_x = normal_character_badge_x(line_x, badge_width, ppf);
             assert_eq!(line_x - (badge_x + badge_width), 4.0 * ppf);
         }
+    }
+
+    #[test]
+    fn semantic_context_distinguishes_gaps() {
+        let normal = with_badge_render_context(false, &[], || {
+            leading_character_badge_x(100.0, 20.0, 1.0)
+        });
+        let karaoke = with_badge_render_context(true, &[], || {
+            leading_character_badge_x(100.0, 20.0, 1.0)
+        });
+        let ambiance = with_badge_render_context(false, &[100.0], || {
+            leading_character_badge_x(100.0, 20.0, 1.0)
+        });
+        assert!(normal < karaoke);
+        assert_eq!(ambiance, 80.0);
     }
 
     #[test]
