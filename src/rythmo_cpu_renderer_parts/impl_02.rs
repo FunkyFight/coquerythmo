@@ -24,10 +24,21 @@
         dest_w: f32,
         dest_h: f32,
         font_size: f32,
-        tint: [u8; 3],
+        tint: [u8; 4],
     ) {
-        self.blit_rythmo_text_tinted_clipped_with_mode(
-            pixmap, text, x, y, dest_w, dest_h, font_size, tint, 1.0, false, true,
+        self.blit_rythmo_text_tinted_clipped_with_mode_alpha(
+            pixmap,
+            text,
+            x,
+            y,
+            dest_w,
+            dest_h,
+            font_size,
+            [tint[0], tint[1], tint[2]],
+            1.0,
+            false,
+            true,
+            tint[3] as f32 / 255.0,
         );
     }
 
@@ -44,6 +55,27 @@
         clip_ratio: f32,
         stretch: bool,
         emphasized: bool,
+    ) {
+        self.blit_rythmo_text_tinted_clipped_with_mode_alpha(
+            pixmap, text, x, y, dest_w, dest_h, font_size, tint, clip_ratio, stretch,
+            emphasized, 1.0,
+        );
+    }
+
+    fn blit_rythmo_text_tinted_clipped_with_mode_alpha(
+        &mut self,
+        pixmap: &mut Pixmap,
+        text: &str,
+        x: f32,
+        y: f32,
+        dest_w: f32,
+        dest_h: f32,
+        font_size: f32,
+        tint: [u8; 3],
+        clip_ratio: f32,
+        stretch: bool,
+        emphasized: bool,
+        opacity: f32,
     ) {
         let tex_w = dest_w.max(1.0).ceil() as u32;
         let tex_h = dest_h.max(1.0).ceil() as u32;
@@ -99,7 +131,7 @@
                     continue;
                 }
 
-                let sa = rendered.pixels[src_idx + 3] as u32;
+                let sa = (rendered.pixels[src_idx + 3] as f32 * opacity.clamp(0.0, 1.0)).round() as u32;
                 if sa == 0 {
                     continue;
                 }
