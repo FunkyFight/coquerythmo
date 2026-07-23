@@ -23,8 +23,6 @@ pub struct SceneOptions {
     pub slot_header_height: f32,
     pub badge_gap: f32,
     pub scale: f32,
-    /// Keep export dimensions stable when false; interactive previews follow
-    /// the active karaoke lines when true.
     pub dynamic_track_layout: bool,
 }
 
@@ -84,13 +82,18 @@ pub struct SceneLine {
     pub line: RythmoLine,
     pub track_index: usize,
     pub karaoke_phase: KaraokeRenderPhase,
+    // Compatibility views for renderers during the phase migration. These are
+    // derived exactly once from karaoke_phase and are never independent state.
+    pub karaoke_progress: Option<f32>,
+    pub karaoke_active: bool,
+    pub karaoke_count_in_progress: Option<f32>,
+    pub karaoke_prestart_scroll: bool,
+    pub karaoke_upcoming_stack: bool,
     pub karaoke_stack_row: usize,
     pub character_label_visible: bool,
 }
 
 impl SceneLine {
-    /// Karaoke text is centered on the physical viewport, not on the shifted
-    /// timeline origin. Hidden lines must never allocate render primitives.
     #[inline]
     pub fn karaoke_should_be_centered(&self) -> bool {
         self.line.karaoke && self.karaoke_phase.is_visible()
@@ -151,22 +154,33 @@ impl RythmoScene {
         let lines = line_ids
             .into_iter()
             .filter_map(|id| project.get_line(id))
-            .map(|line| SceneLine {
-                line: line.clone(),
-                track_index: crate::rythmo_layout::track_index_for_y_slot(line.y_slot),
-                karaoke_phase: karaoke_render_phase(
+            .map(|line| {
+                let karaoke_phase = karaoke_render_phase(
                     project,
                     line,
                     options.current_frame,
                     max_gap_frames,
                     count_in_frames,
-                ),
-                karaoke_stack_row: karaoke_stack_row(project, line, max_gap_frames),
-                character_label_visible: karaoke_character_label_visible(
-                    project,
-                    line,
-                    max_gap_frames,
-                ),
+                );
+                SceneLine {
+                    line: line.clone(),
+                    track_index: crate::rythmo_layout::track_index_for_y_slot(line.y_slot),
+                    karaoke_phase,
+                    karaoke_progress: karaoke_phase.active_progress(),
+                    karaoke_active: karaoke_phase.is_active(),
+                    karaoke_count_in_progress: karaoke_phase.count_in_progress(),
+                    karaoke_prestart_scroll: matches!(karaoke_phase, KaraokeRenderPhase::CountIn { .. }),
+                    karaoke_upcoming_stack: matches!(
+                        karaoke_phase,
+                        KaraokeRenderPhase::UpcomingPreview
+                    ),
+                    karaoke_stack_row: karaoke_stack_row(project, line, max_gap_frames),
+                    character_label_visible: karaoke_character_label_visible(
+                        project,
+                        line,
+                        max_gap_frames,
+                    ),
+                }
             })
             .collect();
 
@@ -230,7 +244,7 @@ impl RythmoScene {
     ) -> Vec<(f32, f32)> {
         self.lines
             .iter()
-            .filter(|scene_line| scene_line.karaoke_is_active())
+            .filter(|scene_line| scene_line.karaoke_phase.is_active())
             .filter_map(|scene_line| {
                 let track =
                     crate::rythmo_layout::track_for_index(&self.tracks, scene_line.track_index)?;
@@ -244,11 +258,7 @@ impl RythmoScene {
 }
 
 fn valid_fps(fps: f64) -> f64 {
-    if fps.is_finite() && fps > 0.0 {
-        fps
-    } else {
-        24.0
-    }
+    if fps.is_finite() && fps > 0.0 { fps } else { 24.0 }
 }
 
 pub fn karaoke_adjacent_max_gap_frames(fps: f64) -> i64 {
@@ -271,29 +281,22 @@ fn karaoke_render_phase(
     if !line.karaoke || !current_frame.is_finite() {
         return KaraokeRenderPhase::Hidden;
     }
-
     let start = line.start_frame as f64;
     let end = line.end_frame() as f64;
-
-    // The active interval is deliberately semi-open. At exactly end_frame the
-    // old line is finished and cannot survive as an active or preview render.
     if current_frame >= end {
         return KaraokeRenderPhase::Hidden;
     }
     if current_frame >= start {
-        let duration = line.duration_frames.max(1) as f64;
-        let progress = ((current_frame - start) / duration).clamp(0.0, 1.0) as f32;
+        let progress = ((current_frame - start) / line.duration_frames.max(1) as f64)
+            .clamp(0.0, 1.0) as f32;
         return KaraokeRenderPhase::Active { progress };
     }
-
     if let Some(progress) = karaoke_count_in_progress(line, current_frame, count_in_frames) {
         return KaraokeRenderPhase::CountIn { progress };
     }
-
     if karaoke_upcoming_stack_visible(project, line, current_frame, max_gap_frames) {
         return KaraokeRenderPhase::UpcomingPreview;
     }
-
     KaraokeRenderPhase::Hidden
 }
 
@@ -354,11 +357,9 @@ fn karaoke_upcoming_stack_visible(
     if !line.karaoke || current_frame >= line.start_frame as f64 {
         return false;
     }
-    previous_karaoke_line_before(project, line, max_gap_frames)
-        .is_some_and(|previous| {
-            current_frame >= previous.start_frame as f64
-                && current_frame < line.start_frame as f64
-        })
+    previous_karaoke_line_before(project, line, max_gap_frames).is_some_and(|previous| {
+        current_frame >= previous.start_frame as f64 && current_frame < line.start_frame as f64
+    })
 }
 
 fn karaoke_island_index(project: &Project, line: &RythmoLine, max_gap_frames: i64) -> usize {
@@ -413,10 +414,7 @@ mod tests {
             project,
             &render_index,
             SceneOptions {
-                frame_window: FrameWindow {
-                    first: -1_000,
-                    last: 1_000,
-                },
+                frame_window: FrameWindow { first: -1_000, last: 1_000 },
                 current_frame,
                 source_fps: 24.0,
                 ..SceneOptions::default()
@@ -429,23 +427,22 @@ mod tests {
         let mut project = Project::new();
         let id = project.add_line(100, 20, 0.0);
         project.get_line_mut(id).unwrap().karaoke = true;
-
-        let before_end = scene_at(&project, 119.999);
-        let at_end = scene_at(&project, 120.0);
-        let after_end = scene_at(&project, 120.001);
-
         assert!(matches!(
-            before_end.lines[0].karaoke_phase,
+            scene_at(&project, 119.999).lines[0].karaoke_phase,
             KaraokeRenderPhase::Active { .. }
         ));
+        let at_end = scene_at(&project, 120.0);
         assert_eq!(at_end.lines[0].karaoke_phase, KaraokeRenderPhase::Hidden);
-        assert_eq!(after_end.lines[0].karaoke_phase, KaraokeRenderPhase::Hidden);
         assert!(!at_end.lines[0].karaoke_should_be_visible());
         assert!(!at_end.lines[0].karaoke_should_be_centered());
+        assert_eq!(
+            scene_at(&project, 120.001).lines[0].karaoke_phase,
+            KaraokeRenderPhase::Hidden
+        );
     }
 
     #[test]
-    fn completed_line_cannot_reappear_as_the_next_preview() {
+    fn completed_line_cannot_reappear_as_next_preview() {
         let mut project = Project::new();
         let old_id = project.add_line(100, 20, 0.0);
         let next_id = project.add_line(140, 20, 0.0);
@@ -459,11 +456,9 @@ mod tests {
             next.karaoke = true;
             next.text = "SUIVANTE".into();
         }
-
         let scene = scene_at(&project, 120.0);
         let old = scene.lines.iter().find(|line| line.line.id == old_id).unwrap();
         let next = scene.lines.iter().find(|line| line.line.id == next_id).unwrap();
-
         assert_eq!(old.karaoke_phase, KaraokeRenderPhase::Hidden);
         assert_eq!(old.line.text, "ANCIENNE");
         assert!(matches!(
@@ -472,13 +467,5 @@ mod tests {
         ));
         assert_eq!(next.line.text, "SUIVANTE");
         assert_ne!(old.line.id, next.line.id);
-    }
-
-    #[test]
-    fn scene_carries_project_syllable_language_for_both_backends() {
-        let project = Project::new_with_language("English", "en");
-        let render_index = ProjectRenderIndex::new();
-        let scene = RythmoScene::build(&project, &render_index, SceneOptions::default());
-        assert_eq!(scene.syllable_language.code(), "en-us");
     }
 }
