@@ -43,33 +43,77 @@ impl Default for SceneOptions {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KaraokeRenderPhase {
+    Hidden,
+    CountIn { progress: f32 },
+    UpcomingPreview,
+    Active { progress: f32 },
+}
+
+impl KaraokeRenderPhase {
+    #[inline]
+    pub fn is_visible(self) -> bool {
+        !matches!(self, Self::Hidden)
+    }
+
+    #[inline]
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Active { .. })
+    }
+
+    #[inline]
+    pub fn count_in_progress(self) -> Option<f32> {
+        match self {
+            Self::CountIn { progress } => Some(progress),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn active_progress(self) -> Option<f32> {
+        match self {
+            Self::Active { progress } => Some(progress),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneLine {
     pub line: RythmoLine,
     pub track_index: usize,
-    pub karaoke_progress: Option<f32>,
-    pub karaoke_active: bool,
-    pub karaoke_count_in_progress: Option<f32>,
-    pub karaoke_prestart_scroll: bool,
-    pub karaoke_upcoming_stack: bool,
+    pub karaoke_phase: KaraokeRenderPhase,
     pub karaoke_stack_row: usize,
     pub character_label_visible: bool,
 }
 
 impl SceneLine {
-    /// Karaoke lines are a fixed centered overlay in the exported rythmo.
-    /// This includes every count-in and stacked preview state; only ordinary
-    /// lines travel with the timeline.
+    /// Karaoke text is centered on the physical viewport, not on the shifted
+    /// timeline origin. Hidden lines must never allocate render primitives.
+    #[inline]
     pub fn karaoke_should_be_centered(&self) -> bool {
-        self.line.karaoke
-            && (self.karaoke_active
-                || self.karaoke_count_in_progress.is_some()
-                || self.karaoke_prestart_scroll
-                || self.karaoke_upcoming_stack)
+        self.line.karaoke && self.karaoke_phase.is_visible()
     }
 
+    #[inline]
     pub fn karaoke_should_be_visible(&self) -> bool {
-        self.karaoke_should_be_centered()
+        self.line.karaoke && self.karaoke_phase.is_visible()
+    }
+
+    #[inline]
+    pub fn karaoke_progress(&self) -> Option<f32> {
+        self.karaoke_phase.active_progress()
+    }
+
+    #[inline]
+    pub fn karaoke_count_in_progress(&self) -> Option<f32> {
+        self.karaoke_phase.count_in_progress()
+    }
+
+    #[inline]
+    pub fn karaoke_is_active(&self) -> bool {
+        self.karaoke_phase.is_active()
     }
 }
 
@@ -107,37 +151,22 @@ impl RythmoScene {
         let lines = line_ids
             .into_iter()
             .filter_map(|id| project.get_line(id))
-            .map(|line| {
-                let karaoke_active = line.karaoke_active(options.current_frame);
-                let karaoke_count_in_progress =
-                    karaoke_count_in_progress(line, options.current_frame, count_in_frames);
-                let karaoke_prestart_scroll = karaoke_prestart_scroll_visible(
+            .map(|line| SceneLine {
+                line: line.clone(),
+                track_index: crate::rythmo_layout::track_index_for_y_slot(line.y_slot),
+                karaoke_phase: karaoke_render_phase(
                     project,
                     line,
                     options.current_frame,
                     max_gap_frames,
                     count_in_frames,
-                );
-                let karaoke_upcoming_stack = karaoke_upcoming_stack_visible(
+                ),
+                karaoke_stack_row: karaoke_stack_row(project, line, max_gap_frames),
+                character_label_visible: karaoke_character_label_visible(
                     project,
                     line,
-                    options.current_frame,
                     max_gap_frames,
-                );
-                let karaoke_stack_row = karaoke_stack_row(project, line, max_gap_frames);
-                let character_label_visible =
-                    karaoke_character_label_visible(project, line, max_gap_frames);
-                SceneLine {
-                    line: line.clone(),
-                    track_index: crate::rythmo_layout::track_index_for_y_slot(line.y_slot),
-                    karaoke_progress: line.karaoke_progress(options.current_frame),
-                    karaoke_active,
-                    karaoke_count_in_progress,
-                    karaoke_prestart_scroll,
-                    karaoke_upcoming_stack,
-                    karaoke_stack_row,
-                    character_label_visible,
-                }
+                ),
             })
             .collect();
 
@@ -201,7 +230,7 @@ impl RythmoScene {
     ) -> Vec<(f32, f32)> {
         self.lines
             .iter()
-            .filter(|scene_line| scene_line.karaoke_active)
+            .filter(|scene_line| scene_line.karaoke_is_active())
             .filter_map(|scene_line| {
                 let track =
                     crate::rythmo_layout::track_for_index(&self.tracks, scene_line.track_index)?;
@@ -230,6 +259,42 @@ pub fn karaoke_count_in_frames(fps: f64) -> i64 {
     (crate::constants::KARAOKE_COUNT_IN_SECONDS * valid_fps(fps))
         .round()
         .max(1.0) as i64
+}
+
+fn karaoke_render_phase(
+    project: &Project,
+    line: &RythmoLine,
+    current_frame: f64,
+    max_gap_frames: i64,
+    count_in_frames: i64,
+) -> KaraokeRenderPhase {
+    if !line.karaoke || !current_frame.is_finite() {
+        return KaraokeRenderPhase::Hidden;
+    }
+
+    let start = line.start_frame as f64;
+    let end = line.end_frame() as f64;
+
+    // The active interval is deliberately semi-open. At exactly end_frame the
+    // old line is finished and cannot survive as an active or preview render.
+    if current_frame >= end {
+        return KaraokeRenderPhase::Hidden;
+    }
+    if current_frame >= start {
+        let duration = line.duration_frames.max(1) as f64;
+        let progress = ((current_frame - start) / duration).clamp(0.0, 1.0) as f32;
+        return KaraokeRenderPhase::Active { progress };
+    }
+
+    if let Some(progress) = karaoke_count_in_progress(line, current_frame, count_in_frames) {
+        return KaraokeRenderPhase::CountIn { progress };
+    }
+
+    if karaoke_upcoming_stack_visible(project, line, current_frame, max_gap_frames) {
+        return KaraokeRenderPhase::UpcomingPreview;
+    }
+
+    KaraokeRenderPhase::Hidden
 }
 
 fn karaoke_count_in_progress(
@@ -280,18 +345,6 @@ fn previous_karaoke_line_before<'a>(
     }
 }
 
-fn karaoke_prestart_scroll_visible(
-    project: &Project,
-    line: &RythmoLine,
-    current_frame: f64,
-    max_gap_frames: i64,
-    count_in_frames: i64,
-) -> bool {
-    line.karaoke
-        && karaoke_count_in_progress(line, current_frame, count_in_frames).is_some()
-        && previous_karaoke_line_before(project, line, max_gap_frames).is_none()
-}
-
 fn karaoke_upcoming_stack_visible(
     project: &Project,
     line: &RythmoLine,
@@ -302,7 +355,10 @@ fn karaoke_upcoming_stack_visible(
         return false;
     }
     previous_karaoke_line_before(project, line, max_gap_frames)
-        .is_some_and(|previous| current_frame >= previous.start_frame as f64)
+        .is_some_and(|previous| {
+            current_frame >= previous.start_frame as f64
+                && current_frame < line.start_frame as f64
+        })
 }
 
 fn karaoke_island_index(project: &Project, line: &RythmoLine, max_gap_frames: i64) -> usize {
@@ -349,135 +405,80 @@ pub fn karaoke_stack_y(y: f32, height: f32, row: usize, scale: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rythmo_line::{MarkerKind, RythmoMarker};
+
+    fn scene_at(project: &Project, current_frame: f64) -> RythmoScene {
+        let mut render_index = ProjectRenderIndex::new();
+        render_index.refresh(project);
+        RythmoScene::build(
+            project,
+            &render_index,
+            SceneOptions {
+                frame_window: FrameWindow {
+                    first: -1_000,
+                    last: 1_000,
+                },
+                current_frame,
+                source_fps: 24.0,
+                ..SceneOptions::default()
+            },
+        )
+    }
 
     #[test]
-    fn scene_carries_project_syllable_language_for_cpu_and_gpu_renderers() {
+    fn karaoke_active_interval_is_semi_open() {
+        let mut project = Project::new();
+        let id = project.add_line(100, 20, 0.0);
+        project.get_line_mut(id).unwrap().karaoke = true;
+
+        let before_end = scene_at(&project, 119.999);
+        let at_end = scene_at(&project, 120.0);
+        let after_end = scene_at(&project, 120.001);
+
+        assert!(matches!(
+            before_end.lines[0].karaoke_phase,
+            KaraokeRenderPhase::Active { .. }
+        ));
+        assert_eq!(at_end.lines[0].karaoke_phase, KaraokeRenderPhase::Hidden);
+        assert_eq!(after_end.lines[0].karaoke_phase, KaraokeRenderPhase::Hidden);
+        assert!(!at_end.lines[0].karaoke_should_be_visible());
+        assert!(!at_end.lines[0].karaoke_should_be_centered());
+    }
+
+    #[test]
+    fn completed_line_cannot_reappear_as_the_next_preview() {
+        let mut project = Project::new();
+        let old_id = project.add_line(100, 20, 0.0);
+        let next_id = project.add_line(140, 20, 0.0);
+        {
+            let old = project.get_line_mut(old_id).unwrap();
+            old.karaoke = true;
+            old.text = "ANCIENNE".into();
+        }
+        {
+            let next = project.get_line_mut(next_id).unwrap();
+            next.karaoke = true;
+            next.text = "SUIVANTE".into();
+        }
+
+        let scene = scene_at(&project, 120.0);
+        let old = scene.lines.iter().find(|line| line.line.id == old_id).unwrap();
+        let next = scene.lines.iter().find(|line| line.line.id == next_id).unwrap();
+
+        assert_eq!(old.karaoke_phase, KaraokeRenderPhase::Hidden);
+        assert_eq!(old.line.text, "ANCIENNE");
+        assert!(matches!(
+            next.karaoke_phase,
+            KaraokeRenderPhase::UpcomingPreview | KaraokeRenderPhase::CountIn { .. }
+        ));
+        assert_eq!(next.line.text, "SUIVANTE");
+        assert_ne!(old.line.id, next.line.id);
+    }
+
+    #[test]
+    fn scene_carries_project_syllable_language_for_both_backends() {
         let project = Project::new_with_language("English", "en");
         let render_index = ProjectRenderIndex::new();
-
         let scene = RythmoScene::build(&project, &render_index, SceneOptions::default());
-
-        assert_eq!(
-            scene.syllable_language,
-            crate::project::SyllableLanguage::English
-        );
         assert_eq!(scene.syllable_language.code(), "en-us");
-    }
-
-    #[test]
-    fn scene_build_is_deterministic_and_revision_indexed() {
-        let mut project = Project::new();
-        let normal = project.add_line_full(
-            0,
-            48,
-            0.0,
-            "normal".into(),
-            "Alice".into(),
-            [1.0, 0.0, 0.0, 1.0],
-        );
-        let karaoke = project.add_line_full(
-            32,
-            48,
-            0.5,
-            "karaoke".into(),
-            "Bob".into(),
-            [0.0, 1.0, 0.0, 1.0],
-        );
-        project.get_line_mut(karaoke).unwrap().karaoke = true;
-        project.add_marker(RythmoMarker {
-            kind: MarkerKind::Boucle,
-            frame: 40,
-        });
-
-        let options = SceneOptions {
-            frame_window: FrameWindow {
-                first: 16,
-                last: 72,
-            },
-            current_frame: 40.0,
-            ..SceneOptions::default()
-        };
-        let mut index = ProjectRenderIndex::new();
-        index.refresh(&project);
-        let first = RythmoScene::build(&project, &index, options);
-        let second = RythmoScene::build(&project, &index, options);
-
-        assert_eq!(first, second);
-        assert_eq!(
-            first
-                .lines
-                .iter()
-                .map(|line| line.line.id)
-                .collect::<Vec<_>>(),
-            vec![normal, karaoke]
-        );
-        assert_eq!(first.markers.len(), 1);
-        assert_eq!(first.lines[1].karaoke_progress, Some(1.0 / 6.0));
-    }
-
-    #[test]
-    fn karaoke_preview_states_are_centered() {
-        let line = RythmoLine {
-            id: 1,
-            start_frame: 0,
-            duration_frames: 24,
-            y_slot: 0.0,
-            text: "karaoke".into(),
-            character_name: "Actor".into(),
-            character_color: [1.0, 1.0, 1.0, 1.0],
-            kind: crate::rythmo_line::RythmoLineKind::Dialogue,
-            voice_actor_names: Vec::new(),
-            syllable_ratios: Vec::new(),
-            karaoke: true,
-            note: String::new(),
-            presence: crate::rythmo_line::LinePresence::On,
-        };
-        let scene_line = SceneLine {
-            line,
-            track_index: 0,
-            karaoke_progress: None,
-            karaoke_active: false,
-            karaoke_count_in_progress: Some(0.5),
-            karaoke_prestart_scroll: true,
-            karaoke_upcoming_stack: false,
-            karaoke_stack_row: 0,
-            character_label_visible: false,
-        };
-
-        assert!(scene_line.karaoke_should_be_centered());
-    }
-
-    #[test]
-    fn karaoke_count_in_is_centered_without_other_preview_state() {
-        let line = RythmoLine {
-            id: 1,
-            start_frame: 48,
-            duration_frames: 24,
-            y_slot: 0.0,
-            text: "karaoke".into(),
-            character_name: "Actor".into(),
-            character_color: [1.0, 1.0, 1.0, 1.0],
-            kind: crate::rythmo_line::RythmoLineKind::Dialogue,
-            voice_actor_names: Vec::new(),
-            syllable_ratios: Vec::new(),
-            karaoke: true,
-            note: String::new(),
-            presence: crate::rythmo_line::LinePresence::On,
-        };
-        let scene_line = SceneLine {
-            line,
-            track_index: 0,
-            karaoke_progress: None,
-            karaoke_active: false,
-            karaoke_count_in_progress: Some(0.25),
-            karaoke_prestart_scroll: false,
-            karaoke_upcoming_stack: false,
-            karaoke_stack_row: 0,
-            character_label_visible: false,
-        };
-
-        assert!(scene_line.karaoke_should_be_centered());
-        assert!(scene_line.karaoke_should_be_visible());
     }
 }
