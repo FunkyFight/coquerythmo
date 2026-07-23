@@ -41,30 +41,36 @@ impl CpuRenderer {
         let shifted_frame = export_adapter::timeline_current_frame(&geometry, current_frame);
         let prepared = export_adapter::prepare_projects(project, current_frame);
 
-        let mut output = self.timeline.render_br(
-            &prepared.timeline,
-            shifted_frame,
-            width,
-            source_fps,
-            br_scale,
-            karaoke_text_scale,
-        );
-        let karaoke = self.karaoke.render_br(
-            &prepared.karaoke,
-            current_frame,
-            width,
-            source_fps,
-            br_scale,
-            karaoke_text_scale,
-        );
-        let karaoke_mask = self.karaoke_mask.render_br(
-            &prepared.karaoke_mask,
-            current_frame,
-            width,
-            source_fps,
-            br_scale,
-            karaoke_text_scale,
-        );
+        let mut output = crate::rythmo_layout::with_badge_render_context(false, &[], || {
+            self.timeline.render_br(
+                &prepared.timeline,
+                shifted_frame,
+                width,
+                source_fps,
+                br_scale,
+                karaoke_text_scale,
+            )
+        });
+        let karaoke = crate::rythmo_layout::with_badge_render_context(true, &[], || {
+            self.karaoke.render_br(
+                &prepared.karaoke,
+                current_frame,
+                width,
+                source_fps,
+                br_scale,
+                karaoke_text_scale,
+            )
+        });
+        let karaoke_mask = crate::rythmo_layout::with_badge_render_context(true, &[], || {
+            self.karaoke_mask.render_br(
+                &prepared.karaoke_mask,
+                current_frame,
+                width,
+                source_fps,
+                br_scale,
+                karaoke_text_scale,
+            )
+        });
 
         export_adapter::replace_changed_pixels(&mut output, &karaoke, &karaoke_mask);
         let height = output.len() / (width.max(1) as usize * 4);
