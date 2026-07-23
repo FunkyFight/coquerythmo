@@ -16,7 +16,7 @@ use crate::rendering::rythmo::labels::{
 };
 use crate::rendering::rythmo::scene::{
     karaoke_adjacent_max_gap_frames, karaoke_count_in_frames, karaoke_stack_height,
-    karaoke_stack_y, FrameWindow, RythmoScene, SceneOptions,
+    karaoke_stack_y, RythmoScene, SceneOptions,
 };
 use crate::rythmo_layout;
 use crate::ui::primitives::Rect;
