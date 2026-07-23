@@ -138,6 +138,3 @@
         let drawing_icon_index: Option<u32> = include!("gpu_render_drawing.rs");
         include!("gpu_render_submit.rs");
     }
-
-    /// Wait for a previously submitted RGBA render and copy pixels into `out`.
-    /// Caller must have called `submit_render` first.
