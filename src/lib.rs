@@ -49,6 +49,7 @@ mod state_detection;
 pub mod syllable;
 pub mod ui;
 pub mod update;
+#[path = "vector_text_metrics.rs"]
 pub mod vector_text;
 #[path = "video_timing.rs"]
 pub mod video;
