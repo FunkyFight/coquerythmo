@@ -16,7 +16,7 @@
                     badge_text.width,
                     badge_text.height,
                     badge_font_size,
-                    [51, 140, 255],
+                    [51, 140, 255, 255],
                 );
                 blit_rect(
                     &mut pixmap,
