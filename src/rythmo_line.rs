@@ -93,7 +93,7 @@ impl RythmoLine {
 
         let start = self.start_frame as f64;
         let end = self.end_frame() as f64;
-        if current_frame < start || current_frame > end {
+        if current_frame < start || current_frame >= end {
             return None;
         }
 
@@ -187,5 +187,28 @@ mod tests {
         assert_eq!(ambiance_label("Amb. bureaux"), "amb.bureaux");
         assert_eq!(ambiance_name("amb.pluie"), "pluie");
         assert_eq!(ambiance_label("bruit de "), "amb.bruit de ");
+    }
+
+    #[test]
+    fn karaoke_active_interval_is_end_exclusive() {
+        let line = RythmoLine {
+            id: 1,
+            start_frame: 100,
+            duration_frames: 20,
+            y_slot: 0.0,
+            text: "ANCIENNE".into(),
+            character_name: "Actor".into(),
+            character_color: [1.0; 4],
+            kind: RythmoLineKind::Dialogue,
+            voice_actor_names: Vec::new(),
+            syllable_ratios: Vec::new(),
+            karaoke: true,
+            note: String::new(),
+            presence: LinePresence::On,
+        };
+
+        assert!(line.karaoke_active(119.999));
+        assert!(!line.karaoke_active(120.0));
+        assert!(!line.karaoke_active(120.001));
     }
 }
