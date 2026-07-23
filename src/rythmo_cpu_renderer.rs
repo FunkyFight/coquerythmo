@@ -40,17 +40,31 @@ impl CpuRenderer {
         let geometry = export_adapter::export_geometry(width, br_scale);
         let shifted_frame = export_adapter::timeline_current_frame(&geometry, current_frame);
         let prepared = export_adapter::prepare_projects(project, current_frame);
+        let ambiance_line_x: Vec<f32> = project
+            .lines()
+            .filter(|line| {
+                matches!(
+                    line.kind,
+                    crate::rythmo_line::RythmoLineKind::AmbianceStart
+                )
+            })
+            .map(|line| geometry.frame_x(line.start_frame as f64, current_frame))
+            .collect();
 
-        let mut output = crate::rythmo_layout::with_badge_render_context(false, &[], || {
-            self.timeline.render_br(
-                &prepared.timeline,
-                shifted_frame,
-                width,
-                source_fps,
-                br_scale,
-                karaoke_text_scale,
-            )
-        });
+        let mut output = crate::rythmo_layout::with_badge_render_context(
+            false,
+            &ambiance_line_x,
+            || {
+                self.timeline.render_br(
+                    &prepared.timeline,
+                    shifted_frame,
+                    width,
+                    source_fps,
+                    br_scale,
+                    karaoke_text_scale,
+                )
+            },
+        );
         let karaoke = crate::rythmo_layout::with_badge_render_context(true, &[], || {
             self.karaoke.render_br(
                 &prepared.karaoke,
