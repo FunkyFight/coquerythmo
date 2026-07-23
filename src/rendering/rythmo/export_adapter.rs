@@ -9,6 +9,13 @@ pub struct PreparedExportProjects {
     pub karaoke_mask: Project,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TimelineViewport {
+    pub render_width: u32,
+    pub render_br_scale: f32,
+    pub crop_x: u32,
+}
+
 pub fn export_geometry(width: u32, br_scale: f32) -> HorizontalRythmoGeometry {
     let scale = width as f32 / crate::constants::REF_WIDTH * br_scale;
     let ppf = crate::constants::PIXELS_PER_FRAME
@@ -17,13 +24,24 @@ pub fn export_geometry(width: u32, br_scale: f32) -> HorizontalRythmoGeometry {
     HorizontalRythmoGeometry::new(0.0, width as f32, 3.0 * scale, ppf)
 }
 
-pub fn timeline_current_frame(
+/// Render the scrolling timeline in a wider physical surface while preserving
+/// its exact scale and current frame. Cropping that surface maps its center to
+/// the configured timeline origin without shifting karaoke or media time.
+pub fn timeline_viewport(
+    width: u32,
+    br_scale: f32,
     geometry: &HorizontalRythmoGeometry,
-    current_frame: f64,
-) -> f64 {
-    finite_frame(current_frame)
-        - (geometry.timeline_origin_x - geometry.viewport_center_x) as f64
-            / geometry.pixels_per_frame as f64
+) -> TimelineViewport {
+    let render_width = width.saturating_mul(2).max(width).max(1);
+    let render_br_scale = br_scale * width.max(1) as f32 / render_width as f32;
+    let crop_x = (render_width as f32 * 0.5 - geometry.timeline_origin_x)
+        .round()
+        .clamp(0.0, render_width.saturating_sub(width) as f32) as u32;
+    TimelineViewport {
+        render_width,
+        render_br_scale,
+        crop_x,
+    }
 }
 
 pub fn prepare_projects(project: &Project, current_frame: f64) -> PreparedExportProjects {
@@ -44,6 +62,30 @@ pub fn prepare_projects(project: &Project, current_frame: f64) -> PreparedExport
         karaoke,
         karaoke_mask,
     }
+}
+
+pub fn crop_rgba(
+    source: &[u8],
+    source_width: u32,
+    height: u32,
+    crop_x: u32,
+    output_width: u32,
+) -> Vec<u8> {
+    let row_bytes = output_width as usize * 4;
+    let source_row_bytes = source_width as usize * 4;
+    let start_bytes = crop_x as usize * 4;
+    let mut output = vec![0; row_bytes * height as usize];
+    for row in 0..height as usize {
+        let source_start = row * source_row_bytes + start_bytes;
+        let source_end = source_start.saturating_add(row_bytes);
+        if source_end > source.len() {
+            break;
+        }
+        let destination_start = row * row_bytes;
+        output[destination_start..destination_start + row_bytes]
+            .copy_from_slice(&source[source_start..source_end]);
+    }
+    output
 }
 
 pub fn replace_changed_pixels(output: &mut [u8], foreground: &[u8], mask: &[u8]) {
@@ -211,6 +253,23 @@ fn suppress_karaoke_visuals(project: &mut Project, current_frame: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timeline_crop_preserves_scale_and_maps_center_to_origin() {
+        let geometry = HorizontalRythmoGeometry {
+            viewport_left: 0.0,
+            viewport_width: 800.0,
+            viewport_center_x: 400.0,
+            timeline_origin_x: 200.0,
+            playhead_left_x: 198.0,
+            pixels_per_frame: 4.0,
+        };
+        let viewport = timeline_viewport(800, 1.0, &geometry);
+        assert_eq!(viewport.render_width, 1600);
+        assert_eq!(viewport.crop_x, 600);
+        assert_eq!(800.0 - viewport.crop_x as f32, geometry.timeline_origin_x);
+        assert_eq!(viewport.render_br_scale, 0.5);
+    }
 
     #[test]
     fn changed_pixels_replace_only_foreground_delta() {
