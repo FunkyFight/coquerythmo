@@ -1,7 +1,10 @@
 #[path = "rythmo_drawing.rs"]
 mod implementation;
 
-pub use implementation::*;
+pub use implementation::{
+    composite_rgba_over, get_strokes_mut, ppf_for_scale, strokes_bbox, transform_strokes,
+    transformed_points, transformed_points_in_screen_space, DrawingStroke, RythmoDrawing,
+};
 
 #[inline]
 fn configured_origin(zone_width: f32) -> f32 {
@@ -161,14 +164,7 @@ mod tests {
     #[test]
     fn drawing_at_current_frame_is_under_explicit_origin() {
         let (x, _) = drawing_to_screen_with_origin(
-            120.0,
-            0.5,
-            0.0,
-            0.0,
-            200.0,
-            175.0,
-            120.0,
-            4.0,
+            120.0, 0.5, 0.0, 0.0, 200.0, 175.0, 120.0, 4.0,
         );
         assert_eq!(x, 175.0);
     }
