@@ -6,7 +6,9 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use glyphon::{Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping};
+use glyphon::{
+    Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, Style, Weight,
+};
 use resvg::tiny_skia::{Pixmap, Transform};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -310,6 +312,74 @@ pub fn measure_rythmo_text_width_standalone(text: &str, font_size: f32) -> Optio
     MEASURE_FONT_SYSTEM.with(|font_system| {
         measure_rythmo_text_width(&mut font_system.borrow_mut(), text, font_size)
     })
+}
+
+pub fn measure_rythmo_text_width_emphasized_standalone(text: &str, font_size: f32) -> Option<f32> {
+    MEASURE_FONT_SYSTEM.with(|font_system| {
+        measure_rythmo_text_width_emphasized(&mut font_system.borrow_mut(), text, font_size)
+    })
+}
+
+fn measure_rythmo_text_width_emphasized(
+    font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+) -> Option<f32> {
+    if text.is_empty() {
+        return None;
+    }
+
+    let font_family = rythmo_font_family_name();
+    let line_height = (font_size * 1.4).ceil().max(1.0);
+    Some(measure_text_emphasized(
+        font_system,
+        text,
+        font_size,
+        line_height,
+        &font_family,
+    ))
+}
+
+fn measure_text_emphasized(
+    font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+    line_height: f32,
+    font_family: &str,
+) -> f32 {
+    prepare_font_system(font_system);
+    let mut buffer = GlyphonBuffer::new(font_system, Metrics::new(font_size, line_height));
+    buffer.set_size(font_system, Some(10000.0), Some(line_height));
+    let family = if font_family == "sans-serif" {
+        Family::SansSerif
+    } else {
+        Family::Name(font_family)
+    };
+    buffer.set_text(
+        font_system,
+        text,
+        &Attrs::new()
+            .family(family)
+            .style(Style::Italic)
+            .weight(Weight::BOLD),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(font_system, false);
+
+    let mut width = 0.0_f32;
+    for run in buffer.layout_runs() {
+        let mut left = f32::INFINITY;
+        let mut right = f32::NEG_INFINITY;
+        for glyph in run.glyphs.iter() {
+            left = left.min(glyph.x);
+            right = right.max(glyph.x + glyph.w);
+        }
+        if left.is_finite() && right.is_finite() {
+            width = width.max((right - left).max(0.0));
+        }
+    }
+    width.max(1.0)
 }
 
 /// Measure every character boundary using the same shaping configuration as
@@ -677,4 +747,20 @@ fn escape_xml(value: &str) -> String {
         }
     }
     escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emphasized_width_is_not_smaller_than_empty() {
+        crate::config::init();
+        let cases = ["AL"];
+        for name in cases.iter() {
+            let w = measure_rythmo_text_width_emphasized_standalone(name, 16.0);
+            assert!(w.is_some());
+            assert!(w.unwrap() > 0.0);
+        }
+    }
 }

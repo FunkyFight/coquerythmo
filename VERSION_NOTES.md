@@ -1,8 +1,5 @@
-# 3.6.1
-- Correction du déchirement temporel
-- Correction affichage étiquettes karaoké
-- Correction affichage tardif étiquette quand ligne juste avant despawn
-- Possibilité de déplacer la barre verticale de lecture
+# 3.6.3
+- Correction du stacking de lignes karaokés dans l'export
 
 
 # To do :

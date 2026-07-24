@@ -18,12 +18,19 @@ impl From<&SceneLine> for KaraokeRowPriority {
     }
 }
 
-pub fn karaoke_row_candidate_wins(candidate: KaraokeRowPriority, current: KaraokeRowPriority) -> bool {
+pub fn karaoke_row_candidate_wins(
+    candidate: KaraokeRowPriority,
+    current: KaraokeRowPriority,
+) -> bool {
     match (candidate.active, current.active) {
         (true, false) => true,
         (false, true) => false,
-        (true, true) => (candidate.start_frame, candidate.line_id) > (current.start_frame, current.line_id),
-        (false, false) => (candidate.start_frame, candidate.line_id) < (current.start_frame, current.line_id),
+        (true, true) => {
+            (candidate.start_frame, candidate.line_id) > (current.start_frame, current.line_id)
+        }
+        (false, false) => {
+            (candidate.start_frame, candidate.line_id) < (current.start_frame, current.line_id)
+        }
     }
 }
 

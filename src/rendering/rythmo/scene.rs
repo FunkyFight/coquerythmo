@@ -142,16 +142,14 @@ impl RythmoScene {
             })
             .collect();
 
-        let karaoke_winners = placement::select_karaoke_winners(
-            lines.iter().filter_map(|line| {
-                if !line.karaoke_should_be_centered() {
-                    return None;
-                }
-                let key = (line.track_index, line.karaoke_stack_row);
-                let priority = KaraokeRowPriority::from(line);
-                Some((key, priority, line.line.id))
-            }),
-        );
+        let karaoke_winners = placement::select_karaoke_winners(lines.iter().filter_map(|line| {
+            if !line.karaoke_should_be_centered() {
+                return None;
+            }
+            let key = (line.track_index, line.karaoke_stack_row);
+            let priority = KaraokeRowPriority::from(line);
+            Some((key, priority, line.line.id))
+        }));
 
         lines.retain(|line| {
             !line.karaoke_should_be_centered() || karaoke_winners.contains(&line.line.id)
@@ -524,7 +522,10 @@ mod tests {
             project,
             &index,
             SceneOptions {
-                frame_window: FrameWindow { first: 0, last: 200 },
+                frame_window: FrameWindow {
+                    first: 0,
+                    last: 200,
+                },
                 current_frame,
                 ..SceneOptions::default()
             },

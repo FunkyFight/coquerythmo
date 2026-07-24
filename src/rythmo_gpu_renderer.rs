@@ -2055,6 +2055,7 @@ impl GpuRenderer {
         let playhead_w = BASE_PLAYHEAD_WIDTH * s;
         let badge_h = constants::BADGE_HEIGHT * s;
         let badge_gap = constants::BADGE_GAP * s;
+        let export_badge_lead_gap = 16.0 * s;
         let actor_icon_size = constants::VOICE_ACTOR_DISPLAY_ICON_SIZE * s;
         let slot_header_h = badge_h.max(actor_icon_size);
         let font_size = constants::RYTHMO_FONT_SIZE * s;
@@ -2172,11 +2173,7 @@ impl GpuRenderer {
             } else {
                 rythmo_layout::scaled_character_badge_width(&line.character_name, s)
             };
-            let label_gap = if scene_line.karaoke_should_be_centered() {
-                constants::BADGE_GAP * s
-            } else {
-                4.0 * ppf
-            };
+            let label_gap = export_badge_lead_gap;
             let badge_x = x1 - badge_w - label_gap;
             let show_badge =
                 line.kind.is_dialogue() && (!line.karaoke || scene_line.character_label_visible);
@@ -2244,7 +2241,12 @@ impl GpuRenderer {
             } else {
                 rythmo_layout::scaled_character_badge_width(&line.character_name, s)
             };
-            let badge_x = rythmo_layout::leading_character_badge_x(x1, badge_w, s);
+            let badge_x = rythmo_layout::leading_character_badge_x(
+                x1,
+                badge_w,
+                s,
+                Some(export_badge_lead_gap),
+            );
             let show_badge =
                 line.kind.is_dialogue() && (!line.karaoke || scene_line.character_label_visible);
             let has_leading_label = show_badge

@@ -139,24 +139,56 @@ mod tests {
     #[test]
     fn active_karaoke_candidate_beats_future_preview() {
         assert!(placement::karaoke_row_candidate_wins(
-            KaraokeRowPriority { active: true, start_frame: 0, line_id: 1 },
-            KaraokeRowPriority { active: false, start_frame: 24, line_id: 2 }
+            KaraokeRowPriority {
+                active: true,
+                start_frame: 0,
+                line_id: 1
+            },
+            KaraokeRowPriority {
+                active: false,
+                start_frame: 24,
+                line_id: 2
+            }
         ));
         assert!(!placement::karaoke_row_candidate_wins(
-            KaraokeRowPriority { active: false, start_frame: 24, line_id: 2 },
-            KaraokeRowPriority { active: true, start_frame: 0, line_id: 1 }
+            KaraokeRowPriority {
+                active: false,
+                start_frame: 24,
+                line_id: 2
+            },
+            KaraokeRowPriority {
+                active: true,
+                start_frame: 0,
+                line_id: 1
+            }
         ));
     }
 
     #[test]
     fn nearest_future_karaoke_candidate_wins() {
         assert!(placement::karaoke_row_candidate_wins(
-            KaraokeRowPriority { active: false, start_frame: 12, line_id: 1 },
-            KaraokeRowPriority { active: false, start_frame: 24, line_id: 2 }
+            KaraokeRowPriority {
+                active: false,
+                start_frame: 12,
+                line_id: 1
+            },
+            KaraokeRowPriority {
+                active: false,
+                start_frame: 24,
+                line_id: 2
+            }
         ));
         assert!(!placement::karaoke_row_candidate_wins(
-            KaraokeRowPriority { active: false, start_frame: 24, line_id: 2 },
-            KaraokeRowPriority { active: false, start_frame: 12, line_id: 1 }
+            KaraokeRowPriority {
+                active: false,
+                start_frame: 24,
+                line_id: 2
+            },
+            KaraokeRowPriority {
+                active: false,
+                start_frame: 12,
+                line_id: 1
+            }
         ));
     }
 
@@ -2647,15 +2679,16 @@ pub fn render_lines<'a>(
         ));
     }
 
-    let karaoke_winners = placement::select_karaoke_winners(line_data.iter().filter_map(|(lid, data)| {
-        let key = data.karaoke_row_key?;
-        let priority = KaraokeRowPriority {
-            active: data.karaoke_priority.0,
-            start_frame: data.karaoke_priority.1,
-            line_id: *lid,
-        };
-        Some((key, priority, *lid))
-    }));
+    let karaoke_winners =
+        placement::select_karaoke_winners(line_data.iter().filter_map(|(lid, data)| {
+            let key = data.karaoke_row_key?;
+            let priority = KaraokeRowPriority {
+                active: data.karaoke_priority.0,
+                start_frame: data.karaoke_priority.1,
+                line_id: *lid,
+            };
+            Some((key, priority, *lid))
+        }));
     line_data.retain(|(lid, data)| {
         if data.karaoke_row_key.is_none() {
             return true;

@@ -562,24 +562,27 @@ pub(crate) fn line_rect_with_karaoke_preview(
 
 pub(crate) fn badge_width(name: &str) -> f32 {
     let rendered_font_size = crate::config::get().ui.font_size * 2.0;
-    let measured =
-        crate::vector_text::measure_rythmo_text_width_standalone(name, rendered_font_size)
-            .unwrap_or_else(|| text_input::text_width(name, rendered_font_size));
-    // Character labels now use the same emphasized rythmo glyphs as ambiance
-    // labels. Account for their italic overhang and grow entirely to the left.
-    (measured * 1.25 + BADGE_PADDING_H * 2.0 + 12.0).max(BADGE_MIN_W)
+    let measured = crate::vector_text::measure_rythmo_text_width_emphasized_standalone(
+        name,
+        rendered_font_size,
+    )
+    .unwrap_or_else(|| text_input::text_width(name, rendered_font_size));
+    let italic_left_overhang = rendered_font_size * 0.25;
+    let horizontal_padding = BADGE_PADDING_H * 2.0;
+    (italic_left_overhang + measured + horizontal_padding).max(BADGE_MIN_W)
 }
 
 fn ambiance_badge_width(name: &str) -> f32 {
     let display = crate::rythmo_line::ambiance_label(name);
     let rendered_font_size = crate::config::get().ui.font_size * 2.0;
-    let measured =
-        crate::vector_text::measure_rythmo_text_width_standalone(&display, rendered_font_size)
-            .unwrap_or_else(|| text_input::text_width(&display, rendered_font_size));
-    // Bold italic glyphs can overhang their regular advance substantially.
-    // Keep the right edge attached to the line and give the label enough
-    // width on its left side so the emphasized bitmap is never clipped.
-    (measured * 1.25 + BADGE_PADDING_H * 2.0 + 12.0).max(150.0)
+    let measured = crate::vector_text::measure_rythmo_text_width_emphasized_standalone(
+        &display,
+        rendered_font_size,
+    )
+    .unwrap_or_else(|| text_input::text_width(&display, rendered_font_size));
+    let italic_left_overhang = rendered_font_size * 0.25;
+    let horizontal_padding = BADGE_PADDING_H * 2.0;
+    (italic_left_overhang + measured + horizontal_padding).max(150.0)
 }
 
 pub(crate) fn rects_overlap(a: &Rect, b: &Rect) -> bool {
