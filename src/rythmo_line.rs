@@ -113,15 +113,15 @@ impl RythmoLine {
         scale: f32,
         reading_bar_offset_frames: f64,
     ) -> (f32, f32) {
-        let x1 = center_x
-            + (self.start_frame as f64 - current_frame - reading_bar_offset_frames) as f32
-                * pixels_per_frame;
+        let reading_bar_x = center_x - reading_bar_offset_frames as f32 * pixels_per_frame;
+        let x1 = reading_bar_x
+            + (self.start_frame as f64 - current_frame) as f32 * pixels_per_frame;
         let width = (self.duration_frames as f32 * pixels_per_frame).max(2.0);
 
         if self.karaoke_active(current_frame) {
             let width =
                 karaoke_text_visual_width_for_font(&self.text, constants::RYTHMO_FONT_SIZE * scale);
-            (center_x - width / 2.0, width)
+            (reading_bar_x - width / 2.0, width)
         } else {
             (x1, width)
         }
@@ -186,5 +186,38 @@ mod tests {
         assert_eq!(ambiance_label("Amb. bureaux"), "amb.bureaux");
         assert_eq!(ambiance_name("amb.pluie"), "pluie");
         assert_eq!(ambiance_label("bruit de "), "amb.bruit de ");
+    }
+
+    #[test]
+    fn active_karaoke_is_centered_on_the_offset_reading_bar() {
+        let line = RythmoLine {
+            id: 1,
+            start_frame: 100,
+            duration_frames: 48,
+            y_slot: 0.0,
+            text: "karaoke".to_string(),
+            character_name: String::new(),
+            character_color: [1.0; 4],
+            kind: RythmoLineKind::Dialogue,
+            voice_actor_names: Vec::new(),
+            syllable_ratios: Vec::new(),
+            karaoke: true,
+            note: String::new(),
+            presence: LinePresence::On,
+        };
+        let center_x = 500.0;
+        let pixels_per_frame = 2.0;
+        let offset_frames = 12.0;
+        let (x, width) = line.visual_x_width(
+            110.0,
+            center_x,
+            pixels_per_frame,
+            1000.0,
+            1.0,
+            offset_frames,
+        );
+
+        let reading_bar_x = center_x - offset_frames as f32 * pixels_per_frame;
+        assert!((x + width / 2.0 - reading_bar_x).abs() < f32::EPSILON);
     }
 }
