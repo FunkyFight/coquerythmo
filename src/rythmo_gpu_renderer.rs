@@ -2139,12 +2139,35 @@ impl GpuRenderer {
             tf += constants::TICK_GAP_FRAMES;
         }
 
-        // ── Playhead, split around active karaoke lines ──
-        let playhead_gaps =
-            common_scene.active_karaoke_skip_ranges(ruler_h, slot_header_h, badge_gap, s);
+        // ── Playhead, split around active karaoke lines (only when overlapping) ──
+        let playhead_x = center_x - playhead_w / 2.0 - offset_frames as f32 * ppf;
+        let playhead_gaps: Vec<(f32, f32)> = common_scene
+            .lines
+            .iter()
+            .filter(|scene_line| scene_line.karaoke_active)
+            .filter_map(|scene_line| {
+                let track =
+                    crate::rythmo_layout::track_for_index(&common_scene.tracks, scene_line.track_index)?;
+                let body_y = ruler_h + track.top + slot_header_h + badge_gap;
+                let line_y =
+                    karaoke_stack_y(body_y, track.body_h, scene_line.karaoke_stack_row, s);
+                let y_range = (line_y, line_y + karaoke_stack_height(track.body_h, s));
+
+                let karaoke_width =
+                    self.karaoke_text_width(&scene_line.line.text, font_size, karaoke_text_scale);
+                let karaoke_left = center_x - karaoke_width / 2.0;
+                let karaoke_right = center_x + karaoke_width / 2.0;
+
+                if playhead_x + playhead_w > karaoke_left && playhead_x < karaoke_right {
+                    Some(y_range)
+                } else {
+                    None
+                }
+            })
+            .collect();
         push_playhead_segments(
             &mut quads,
-            center_x - playhead_w / 2.0 - offset_frames as f32 * ppf,
+            playhead_x,
             playhead_w,
             h,
             &playhead_gaps,
