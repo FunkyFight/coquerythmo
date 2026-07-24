@@ -2,7 +2,7 @@
 - Correction du stacking de lignes karaokés dans l'export
 - Déplacement de la barre de lecture possible.
 - Quelques ajustements d'échelle dans l'export.
-
+- Déplacement de la barre de lecture totalement fonctionnelle
 
 # To do :
 Poignées karaoké font toute la hauteur de leur ligne

@@ -2599,6 +2599,7 @@ pub fn render_lines<'a>(
     struct LineRenderData {
         rect: Rect,
         badge_rect: Rect,
+        show_badge: bool,
         karaoke_playback: bool,
         karaoke_count_in: bool,
         karaoke_progress_info: Option<KaraokeProgressRenderInfo>,
@@ -2720,6 +2721,7 @@ pub fn render_lines<'a>(
             LineRenderData {
                 rect: r,
                 badge_rect,
+                show_badge,
                 karaoke_playback,
                 karaoke_count_in,
                 karaoke_progress_info,
@@ -3165,7 +3167,7 @@ pub fn render_lines<'a>(
         // Overlap detection vs OTHER lines: use precomputed HashMaps
         let badge_hidden = *badge_hidden.get(&line_id).unwrap_or(&false);
 
-        if !badge_hidden {
+        if data.show_badge && !badge_hidden {
             let badge_color = line.character_color;
             let is_editing_char = state.editing_character == Some(line.id);
             // Same emphasized typography as ambiance labels, tinted with the
