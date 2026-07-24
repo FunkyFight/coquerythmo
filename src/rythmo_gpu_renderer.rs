@@ -2380,7 +2380,7 @@ impl GpuRenderer {
                 } else {
                     (224.0 / 255.0, 224.0 / 255.0, 230.0 / 255.0)
                 };
-                let hash = self.get_or_upload_text(&line.character_name, badge_font);
+                let hash = self.get_or_upload_text(&line.character_name, font_size);
                 Some((
                     badge_x,
                     badge_y,
