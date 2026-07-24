@@ -2,6 +2,7 @@
 
 use crate::project::Project;
 use crate::render_index::ProjectRenderIndex;
+use crate::rendering::rythmo::placement::{self, KaraokeRowPriority};
 use crate::rythmo_drawing::DrawingStroke;
 use crate::rythmo_layout::{
     build_track_layouts, build_track_layouts_at_frame, used_track_indices, TrackLayout,
@@ -104,7 +105,7 @@ impl RythmoScene {
         let source_fps = valid_fps(options.source_fps);
         let max_gap_frames = karaoke_adjacent_max_gap_frames(source_fps);
         let count_in_frames = karaoke_count_in_frames(source_fps);
-        let lines = line_ids
+        let mut lines: Vec<SceneLine> = line_ids
             .into_iter()
             .filter_map(|id| project.get_line(id))
             .map(|line| {
@@ -140,6 +141,21 @@ impl RythmoScene {
                 }
             })
             .collect();
+
+        let karaoke_winners = placement::select_karaoke_winners(
+            lines.iter().filter_map(|line| {
+                if !line.karaoke_should_be_centered() {
+                    return None;
+                }
+                let key = (line.track_index, line.karaoke_stack_row);
+                let priority = KaraokeRowPriority::from(line);
+                Some((key, priority, line.line.id))
+            }),
+        );
+
+        lines.retain(|line| {
+            !line.karaoke_should_be_centered() || karaoke_winners.contains(&line.line.id)
+        });
 
         let markers = render_index
             .visible_marker_indices(options.frame_window.first, options.frame_window.last)
@@ -479,5 +495,258 @@ mod tests {
 
         assert!(scene_line.karaoke_should_be_centered());
         assert!(scene_line.karaoke_should_be_visible());
+    }
+
+    fn add_karaoke(project: &mut Project, id: u64, start: i64, dur: i64, y_slot: f32) -> u64 {
+        let line = RythmoLine {
+            id,
+            start_frame: start,
+            duration_frames: dur,
+            y_slot,
+            text: "karaoke".into(),
+            character_name: "Actor".into(),
+            character_color: [1.0, 1.0, 1.0, 1.0],
+            kind: crate::rythmo_line::RythmoLineKind::Dialogue,
+            voice_actor_names: Vec::new(),
+            syllable_ratios: Vec::new(),
+            karaoke: true,
+            note: String::new(),
+            presence: crate::rythmo_line::LinePresence::On,
+        };
+        project.insert_line(line);
+        id
+    }
+
+    fn build_scene(project: &mut Project, current_frame: f64) -> RythmoScene {
+        let mut index = ProjectRenderIndex::new();
+        index.refresh(project);
+        RythmoScene::build(
+            project,
+            &index,
+            SceneOptions {
+                frame_window: FrameWindow { first: 0, last: 200 },
+                current_frame,
+                ..SceneOptions::default()
+            },
+        )
+    }
+
+    fn make_karaoke_scene_line(active: bool, row: usize) -> SceneLine {
+        SceneLine {
+            line: RythmoLine {
+                id: 0,
+                start_frame: if active { 0 } else { 48 },
+                duration_frames: 24,
+                y_slot: 0.0,
+                text: String::new(),
+                character_name: String::new(),
+                character_color: [1.0; 4],
+                kind: crate::rythmo_line::RythmoLineKind::Dialogue,
+                voice_actor_names: Vec::new(),
+                syllable_ratios: Vec::new(),
+                karaoke: true,
+                note: String::new(),
+                presence: crate::rythmo_line::LinePresence::On,
+            },
+            track_index: 0,
+            karaoke_progress: if active { Some(0.5) } else { None },
+            karaoke_active: active,
+            karaoke_count_in_progress: None,
+            karaoke_prestart_scroll: false,
+            karaoke_upcoming_stack: !active,
+            karaoke_stack_row: row,
+            character_label_visible: false,
+        }
+    }
+
+    #[test]
+    fn three_karaoke_lines_two_rows_only_two_visible() {
+        let mut project = Project::new();
+        let a = add_karaoke(&mut project, 1, 0, 24, 0.0);
+        let b = add_karaoke(&mut project, 2, 24, 24, 0.0);
+        let c = add_karaoke(&mut project, 3, 48, 24, 0.0);
+        let mut index = ProjectRenderIndex::new();
+        index.refresh(&project);
+        let scene = RythmoScene::build(
+            &project,
+            &index,
+            SceneOptions {
+                frame_window: FrameWindow { first: 0, last: 72 },
+                current_frame: 24.0,
+                ..SceneOptions::default()
+            },
+        );
+        let visible_centered: Vec<_> = scene
+            .lines
+            .iter()
+            .filter(|l| l.karaoke_should_be_centered())
+            .collect();
+        assert_eq!(visible_centered.len(), 2);
+        let rows: Vec<_> = visible_centered
+            .iter()
+            .map(|l| (l.track_index, l.karaoke_stack_row))
+            .collect();
+        assert!(rows.contains(&(0, 0)));
+        assert!(rows.contains(&(0, 1)));
+        assert!(visible_centered.iter().any(|l| l.line.id == a));
+        assert!(visible_centered.iter().any(|l| l.line.id == b));
+        assert!(visible_centered.iter().all(|l| l.line.id != c));
+    }
+
+    #[test]
+    fn karaoke_row_available_after_release() {
+        let mut project = Project::new();
+        let a = add_karaoke(&mut project, 1, 0, 24, 0.0);
+        let b = add_karaoke(&mut project, 2, 24, 24, 0.0);
+        let c = add_karaoke(&mut project, 3, 48, 24, 0.0);
+        let mut index = ProjectRenderIndex::new();
+        index.refresh(&project);
+        let scene = RythmoScene::build(
+            &project,
+            &index,
+            SceneOptions {
+                frame_window: FrameWindow { first: 0, last: 72 },
+                current_frame: 25.0,
+                ..SceneOptions::default()
+            },
+        );
+        let visible_centered: Vec<_> = scene
+            .lines
+            .iter()
+            .filter(|l| l.karaoke_should_be_centered())
+            .collect();
+        assert_eq!(visible_centered.len(), 2);
+        let ids: Vec<_> = visible_centered.iter().map(|l| l.line.id).collect();
+        assert!(ids.contains(&b));
+        assert!(ids.contains(&c));
+        assert!(ids.iter().all(|id| *id != a));
+    }
+
+    #[test]
+    fn active_beats_future_on_same_row() {
+        let mut project = Project::new();
+        let a = add_karaoke(&mut project, 1, 0, 24, 0.0);
+        let b = add_karaoke(&mut project, 2, 24, 48, 0.0);
+        let c = add_karaoke(&mut project, 3, 48, 24, 0.0);
+        let scene = build_scene(&mut project, 24.0);
+        let visible_centered: Vec<_> = scene
+            .lines
+            .iter()
+            .filter(|l| l.karaoke_should_be_centered())
+            .collect();
+        assert_eq!(visible_centered.len(), 2);
+        assert!(visible_centered.iter().any(|l| l.line.id == a));
+        assert!(visible_centered.iter().any(|l| l.line.id == b));
+        assert!(visible_centered.iter().all(|l| l.line.id != c));
+    }
+
+    #[test]
+    fn future_preview_closest_wins() {
+        let near = make_karaoke_scene_line(false, 0);
+        let far_line_id = near.line.id + 1;
+        let far = SceneLine {
+            line: RythmoLine {
+                id: far_line_id,
+                start_frame: 96,
+                ..near.line.clone()
+            },
+            ..near
+        };
+        let winners = placement::select_karaoke_winners(vec![
+            ((0, 0), KaraokeRowPriority::from(&near), near.line.id),
+            ((0, 0), KaraokeRowPriority::from(&far), far.line.id),
+        ]);
+        assert!(winners.contains(&near.line.id));
+        assert!(!winners.contains(&far_line_id));
+    }
+
+    #[test]
+    fn at_most_two_karaoke_lines_per_track() {
+        let mut project = Project::new();
+        add_karaoke(&mut project, 1, 0, 24, 0.0);
+        add_karaoke(&mut project, 2, 24, 24, 0.0);
+        add_karaoke(&mut project, 3, 48, 24, 0.0);
+        add_karaoke(&mut project, 4, 72, 24, 0.0);
+        add_karaoke(&mut project, 5, 96, 24, 0.0);
+        let scene = build_scene(&mut project, 24.0);
+        let visible_centered: Vec<_> = scene
+            .lines
+            .iter()
+            .filter(|l| l.karaoke_should_be_centered())
+            .collect();
+        assert!(visible_centered.len() <= 2);
+        for track in 0..=0 {
+            let count = visible_centered
+                .iter()
+                .filter(|l| l.track_index == track)
+                .count();
+            assert!(count <= 2);
+        }
+    }
+
+    #[test]
+    fn end_frame_boundary_no_flicker() {
+        let mut project = Project::new();
+        let a = add_karaoke(&mut project, 1, 0, 24, 0.0);
+        let b = add_karaoke(&mut project, 2, 24, 24, 0.0);
+        let c = add_karaoke(&mut project, 3, 48, 24, 0.0);
+        let mut index = ProjectRenderIndex::new();
+        index.refresh(&project);
+        let options = SceneOptions {
+            frame_window: FrameWindow { first: 0, last: 72 },
+            current_frame: 24.0,
+            ..SceneOptions::default()
+        };
+        let scene_at_end = RythmoScene::build(&project, &index, options);
+        let visible_at_end: Vec<_> = scene_at_end
+            .lines
+            .iter()
+            .filter(|l| l.karaoke_should_be_centered())
+            .collect();
+        assert_eq!(visible_at_end.len(), 2);
+        assert!(visible_at_end.iter().any(|l| l.line.id == a));
+        assert!(visible_at_end.iter().any(|l| l.line.id == b));
+        assert!(visible_at_end.iter().all(|l| l.line.id != c));
+
+        let options_next = SceneOptions {
+            frame_window: FrameWindow { first: 0, last: 72 },
+            current_frame: 25.0,
+            ..SceneOptions::default()
+        };
+        let scene_next = RythmoScene::build(&project, &index, options_next);
+        let visible_next: Vec<_> = scene_next
+            .lines
+            .iter()
+            .filter(|l| l.karaoke_should_be_centered())
+            .collect();
+        assert_eq!(visible_next.len(), 2);
+        assert!(visible_next.iter().all(|l| l.line.id != a));
+        assert!(visible_next.iter().any(|l| l.line.id == b));
+        assert!(visible_next.iter().any(|l| l.line.id == c));
+    }
+
+    #[test]
+    fn independent_tracks_do_not_mask_each_other() {
+        let mut project = Project::new();
+        add_karaoke(&mut project, 1, 0, 48, 0.0);
+        add_karaoke(&mut project, 2, 24, 24, 0.0);
+        add_karaoke(&mut project, 3, 0, 48, 0.25);
+        add_karaoke(&mut project, 4, 24, 24, 0.25);
+        let scene = build_scene(&mut project, 24.0);
+        let visible_centered: Vec<_> = scene
+            .lines
+            .iter()
+            .filter(|l| l.karaoke_should_be_centered())
+            .collect();
+        assert_eq!(visible_centered.len(), 4);
+        for track in [0usize, 1] {
+            let rows: Vec<_> = visible_centered
+                .iter()
+                .filter(|l| l.track_index == track)
+                .map(|l| l.karaoke_stack_row)
+                .collect();
+            assert!(rows.contains(&0), "track {track} missing row 0");
+            assert!(rows.contains(&1), "track {track} missing row 1");
+        }
     }
 }

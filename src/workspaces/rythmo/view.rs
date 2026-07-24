@@ -14,6 +14,7 @@ use crate::constants;
 use crate::i18n::t;
 use crate::project::Project;
 use crate::render_index::ProjectRenderIndex;
+use crate::rendering::rythmo::placement::{self, KaraokeRowPriority};
 use crate::rythmo_drawing::{strokes_bbox, DrawingStroke};
 use crate::rythmo_layout;
 use crate::rythmo_line::MarkerKind;
@@ -87,15 +88,6 @@ fn character_badge_collision_layout(
     (false, fitted, 0.05)
 }
 
-fn karaoke_row_candidate_wins(candidate: (bool, i64, u64), current: (bool, i64, u64)) -> bool {
-    match (candidate.0, current.0) {
-        (true, false) => true,
-        (false, true) => false,
-        (true, true) => (candidate.1, candidate.2) > (current.1, current.2),
-        (false, false) => (candidate.1, candidate.2) < (current.1, current.2),
-    }
-}
-
 #[path = "detection_ui.rs"]
 mod detection_ui;
 pub(crate) use detection_ui::*;
@@ -146,14 +138,26 @@ mod tests {
 
     #[test]
     fn active_karaoke_candidate_beats_future_preview() {
-        assert!(karaoke_row_candidate_wins((true, 0, 1), (false, 24, 2)));
-        assert!(!karaoke_row_candidate_wins((false, 24, 2), (true, 0, 1)));
+        assert!(placement::karaoke_row_candidate_wins(
+            KaraokeRowPriority { active: true, start_frame: 0, line_id: 1 },
+            KaraokeRowPriority { active: false, start_frame: 24, line_id: 2 }
+        ));
+        assert!(!placement::karaoke_row_candidate_wins(
+            KaraokeRowPriority { active: false, start_frame: 24, line_id: 2 },
+            KaraokeRowPriority { active: true, start_frame: 0, line_id: 1 }
+        ));
     }
 
     #[test]
     fn nearest_future_karaoke_candidate_wins() {
-        assert!(karaoke_row_candidate_wins((false, 12, 1), (false, 24, 2)));
-        assert!(!karaoke_row_candidate_wins((false, 24, 2), (false, 12, 1)));
+        assert!(placement::karaoke_row_candidate_wins(
+            KaraokeRowPriority { active: false, start_frame: 12, line_id: 1 },
+            KaraokeRowPriority { active: false, start_frame: 24, line_id: 2 }
+        ));
+        assert!(!placement::karaoke_row_candidate_wins(
+            KaraokeRowPriority { active: false, start_frame: 24, line_id: 2 },
+            KaraokeRowPriority { active: false, start_frame: 12, line_id: 1 }
+        ));
     }
 
     fn assert_rect_approx_eq(left: Rect, right: Rect) {
@@ -2643,26 +2647,20 @@ pub fn render_lines<'a>(
         ));
     }
 
-    let mut karaoke_winner_by_row: HashMap<(usize, usize), (bool, i64, u64)> = HashMap::new();
-    for (_, data) in &line_data {
-        let Some(key) = data.karaoke_row_key else {
-            continue;
+    let karaoke_winners = placement::select_karaoke_winners(line_data.iter().filter_map(|(lid, data)| {
+        let key = data.karaoke_row_key?;
+        let priority = KaraokeRowPriority {
+            active: data.karaoke_priority.0,
+            start_frame: data.karaoke_priority.1,
+            line_id: *lid,
         };
-        let candidate = data.karaoke_priority;
-        karaoke_winner_by_row
-            .entry(key)
-            .and_modify(|current| {
-                if karaoke_row_candidate_wins(candidate, *current) {
-                    *current = candidate;
-                }
-            })
-            .or_insert(candidate);
-    }
-    line_data.retain(|(_, data)| {
-        let Some(key) = data.karaoke_row_key else {
+        Some((key, priority, *lid))
+    }));
+    line_data.retain(|(lid, data)| {
+        if data.karaoke_row_key.is_none() {
             return true;
-        };
-        karaoke_winner_by_row.get(&key).copied() == Some(data.karaoke_priority)
+        }
+        karaoke_winners.contains(lid)
     });
 
     // Keep a stable vertical draw order, then compare every badge with the
