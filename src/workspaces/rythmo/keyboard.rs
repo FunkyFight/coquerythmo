@@ -60,7 +60,7 @@ pub(crate) fn handle_key_input(
                 Some(TextInputAction::Changed(name)) => {
                     state.autocomplete_index = None;
                     let br =
-                        badge_rect_for_name(ctx.project, line, &name, ctx.current_frame, ctx.zone);
+                        badge_rect_for_name(ctx.project, line, &name, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
                     let (picker_x, picker_y) = color_picker_origin_for_badge(&br, ctx.zone);
                     state.color_picker.move_to(picker_x, picker_y);
                     return EventResponse::Action(UiAction::UpdateCharacterName { line_id, name });

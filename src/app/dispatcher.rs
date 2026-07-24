@@ -1190,9 +1190,15 @@ impl CommandDispatcher {
                 lang,
                 rythmo_font,
                 scroll_speed,
+                reading_bar_offset_seconds,
             } => {
                 let font_changed = crate::config::get().ui.rythmo_font != rythmo_font;
-                crate::config::save_settings(lang, rythmo_font, scroll_speed);
+                crate::config::save_settings(
+                    lang,
+                    rythmo_font,
+                    scroll_speed,
+                    reading_bar_offset_seconds,
+                );
                 if font_changed {
                     crate::vector_text::clear_project_font();
                     state.render.ui_renderer.clear_text_cache();

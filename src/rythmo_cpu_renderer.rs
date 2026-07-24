@@ -643,6 +643,7 @@ impl CpuRenderer {
         let w = width as f32;
         let h = height as f32;
         let center_x = w / 2.0;
+        let offset_frames = crate::config::reading_bar_offset_seconds() * source_fps;
 
         // -- Ruler ticks --
         let first_tick_frame = current_frame - visible_frames / 2;
@@ -670,7 +671,7 @@ impl CpuRenderer {
         let playhead_gaps = scene.active_karaoke_skip_ranges(ruler_h, slot_header_h, badge_gap, s);
         blit_playhead_segments(
             &mut pixmap,
-            center_x - playhead_w / 2.0,
+            center_x - playhead_w / 2.0 - offset_frames as f32 * ppf,
             playhead_w,
             h,
             &playhead_gaps,
@@ -688,7 +689,7 @@ impl CpuRenderer {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {
-                line.visual_x_width(current_frame as f64, center_x, ppf, w, s)
+                line.visual_x_width(current_frame as f64, center_x, ppf, w, s, offset_frames)
             };
             let badge_w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart)
             {
@@ -760,7 +761,7 @@ impl CpuRenderer {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {
-                line.visual_x_width(current_frame as f64, center_x, ppf, w, s)
+                line.visual_x_width(current_frame as f64, center_x, ppf, w, s, offset_frames)
             };
             let badge_w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart)
             {

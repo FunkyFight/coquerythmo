@@ -152,8 +152,18 @@ pub(crate) fn line_visual_x_width(
     current_frame: f64,
     zone: &Rect,
     karaoke_preview: bool,
+    reading_bar_offset_seconds: f64,
+    fps: f64,
 ) -> (f32, f32) {
-    line_visual_x_width_with_karaoke_width(line, current_frame, zone, karaoke_preview, None)
+    line_visual_x_width_with_karaoke_width(
+        line,
+        current_frame,
+        zone,
+        karaoke_preview,
+        None,
+        reading_bar_offset_seconds,
+        fps,
+    )
 }
 
 pub(crate) fn line_visual_x_width_with_karaoke_width(
@@ -162,19 +172,26 @@ pub(crate) fn line_visual_x_width_with_karaoke_width(
     zone: &Rect,
     karaoke_preview: bool,
     active_karaoke_width: Option<f32>,
+    reading_bar_offset_seconds: f64,
+    fps: f64,
 ) -> (f32, f32) {
     let center_x = zone.x + zone.width / 2.0;
+    let offset_frames = reading_bar_offset_seconds * fps;
     if karaoke_preview && line.karaoke_active(current_frame) {
         let width = active_karaoke_width.unwrap_or_else(|| karaoke_ui_text_width(&line.text));
         return (center_x - width / 2.0, width);
     } else if karaoke_preview {
-        return line.visual_x_width(current_frame, center_x, ppf(), zone.width, 1.0);
+        return line.visual_x_width(
+            current_frame,
+            center_x,
+            ppf(),
+            zone.width,
+            1.0,
+            offset_frames,
+        );
     }
 
-    let x1 = frame_to_x(line.start_frame, current_frame, zone);
-    // Keep the extent independent from the scrolling origin. Subtracting two
-    // moving f32 positions makes an otherwise integral width jitter across a
-    // pixel boundary, which invalidates the stretched-text texture cache.
+    let x1 = frame_to_x(line.start_frame, current_frame, zone) - offset_frames as f32 * ppf();
     let width = (line.duration_frames as f32 * ppf()).max(2.0);
     (x1, width)
 }
@@ -184,8 +201,18 @@ pub(crate) fn badge_rect_for_line(
     line: &crate::rythmo_line::RythmoLine,
     current_frame: f64,
     zone: &Rect,
+    reading_bar_offset_seconds: f64,
+    fps: f64,
 ) -> Rect {
-    badge_rect_for_line_with_karaoke_preview(project, line, current_frame, zone, false)
+    badge_rect_for_line_with_karaoke_preview(
+        project,
+        line,
+        current_frame,
+        zone,
+        false,
+        reading_bar_offset_seconds,
+        fps,
+    )
 }
 
 pub(crate) fn badge_rect_for_line_with_karaoke_preview(
@@ -194,6 +221,8 @@ pub(crate) fn badge_rect_for_line_with_karaoke_preview(
     current_frame: f64,
     zone: &Rect,
     karaoke_preview: bool,
+    reading_bar_offset_seconds: f64,
+    fps: f64,
 ) -> Rect {
     badge_rect_for_name_with_karaoke_preview(
         project,
@@ -202,6 +231,8 @@ pub(crate) fn badge_rect_for_line_with_karaoke_preview(
         current_frame,
         zone,
         karaoke_preview,
+        reading_bar_offset_seconds,
+        fps,
     )
 }
 
@@ -211,8 +242,19 @@ pub(crate) fn badge_rect_for_name(
     name: &str,
     current_frame: f64,
     zone: &Rect,
+    reading_bar_offset_seconds: f64,
+    fps: f64,
 ) -> Rect {
-    badge_rect_for_name_with_karaoke_preview(project, line, name, current_frame, zone, false)
+    badge_rect_for_name_with_karaoke_preview(
+        project,
+        line,
+        name,
+        current_frame,
+        zone,
+        false,
+        reading_bar_offset_seconds,
+        fps,
+    )
 }
 
 pub(crate) fn badge_rect_for_name_with_karaoke_preview(
@@ -222,8 +264,17 @@ pub(crate) fn badge_rect_for_name_with_karaoke_preview(
     current_frame: f64,
     zone: &Rect,
     karaoke_preview: bool,
+    reading_bar_offset_seconds: f64,
+    fps: f64,
 ) -> Rect {
-    let (x1, _) = line_visual_x_width(line, current_frame, zone, karaoke_preview);
+    let (x1, _) = line_visual_x_width(
+        line,
+        current_frame,
+        zone,
+        karaoke_preview,
+        reading_bar_offset_seconds,
+        fps,
+    );
     let body_rect = editor_track_body_rect_at_frame(project, line.y_slot, current_frame, zone);
     let w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
         ambiance_badge_width(name)
@@ -465,6 +516,8 @@ impl EditorLayoutCtx {
         zone: &Rect,
         karaoke_preview: bool,
         active_karaoke_width: Option<f32>,
+        reading_bar_offset_seconds: f64,
+        fps: f64,
     ) -> Rect {
         let (x1, width) = line_visual_x_width_with_karaoke_width(
             line,
@@ -472,6 +525,8 @@ impl EditorLayoutCtx {
             zone,
             karaoke_preview,
             active_karaoke_width,
+            reading_bar_offset_seconds,
+            fps,
         );
         let body_rect = self.track_body_rect(line.y_slot, zone);
         Rect {
@@ -488,6 +543,8 @@ impl EditorLayoutCtx {
         name: &str,
         x: f32,
         zone: &Rect,
+        reading_bar_offset_seconds: f64,
+        fps: f64,
     ) -> Rect {
         let body_rect = self.track_body_rect(line.y_slot, zone);
         let badge_h = body_rect.height;
@@ -540,8 +597,18 @@ pub(crate) fn line_rect(
     line: &crate::rythmo_line::RythmoLine,
     current_frame: f64,
     zone: &Rect,
+    reading_bar_offset_seconds: f64,
+    fps: f64,
 ) -> Rect {
-    line_rect_with_karaoke_preview(project, line, current_frame, zone, false)
+    line_rect_with_karaoke_preview(
+        project,
+        line,
+        current_frame,
+        zone,
+        false,
+        reading_bar_offset_seconds,
+        fps,
+    )
 }
 
 pub(crate) fn line_rect_with_karaoke_preview(
@@ -550,13 +617,17 @@ pub(crate) fn line_rect_with_karaoke_preview(
     current_frame: f64,
     zone: &Rect,
     karaoke_preview: bool,
+    reading_bar_offset_seconds: f64,
+    fps: f64,
 ) -> Rect {
-    EditorLayoutCtx::new_at_frame(project, current_frame, zone).line_rect_with_karaoke_width(
+    EditorLayoutCtx::new_at_frame_with_fps(project, current_frame, fps, zone).line_rect_with_karaoke_width(
         line,
         current_frame,
         zone,
         karaoke_preview,
         None,
+        reading_bar_offset_seconds,
+        fps,
     )
 }
 

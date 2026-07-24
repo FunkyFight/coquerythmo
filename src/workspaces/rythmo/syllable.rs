@@ -23,7 +23,7 @@ pub(crate) fn syllable_mouse_press(
             continue;
         }
 
-        let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
+        let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
         let top_y = r.y + 1.0;
         if y < top_y - 6.0 || y > top_y + 14.0 {
             continue;

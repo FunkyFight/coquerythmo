@@ -80,6 +80,10 @@ pub struct UiConfig {
     /// Fraction of the free area (screen height minus topbar and toolbar)
     /// allocated to the video preview. The bande rythmo gets the remainder.
     pub video_split: f32,
+    /// Reading bar position offset in seconds relative to center.
+    /// Positive = bar moved to the start/text arrives earlier.
+    /// Negative = bar moved to the end/text arrives later.
+    pub reading_bar_offset_seconds: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +158,7 @@ impl Default for UiConfig {
             rythmo_font: None,
             scroll_speed: 1.0,
             video_split: 0.48,
+            reading_bar_offset_seconds: 0.0,
         }
     }
 }
@@ -328,12 +333,29 @@ pub fn language_or_default() -> String {
         .unwrap_or_else(|| Config::default().lang)
 }
 
-pub fn save_settings(lang: String, rythmo_font: Option<String>, scroll_speed: f32) {
+pub fn save_settings(
+    lang: String,
+    rythmo_font: Option<String>,
+    scroll_speed: f32,
+    reading_bar_offset_seconds: f64,
+) {
     let lock = INSTANCE.get().expect("config not initialized");
     let mut cfg = lock.write().unwrap();
     cfg.lang = lang;
     cfg.ui.rythmo_font = rythmo_font;
     cfg.ui.scroll_speed = scroll_speed;
+    cfg.ui.reading_bar_offset_seconds = reading_bar_offset_seconds;
+    cfg.save();
+}
+
+pub fn reading_bar_offset_seconds() -> f64 {
+    get().ui.reading_bar_offset_seconds
+}
+
+pub fn set_reading_bar_offset_seconds(offset: f64) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    cfg.ui.reading_bar_offset_seconds = offset;
     cfg.save();
 }
 

@@ -357,6 +357,7 @@ pub enum UiAction {
         lang: String,
         rythmo_font: Option<String>,
         scroll_speed: f32,
+        reading_bar_offset_seconds: f64,
     },
     SaveProjectSettings {
         instrumental_audio_path: Option<String>,

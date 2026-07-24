@@ -308,7 +308,7 @@ pub(crate) fn finalize_marquee_selection(ctx: &RythmoCtx, state: &mut RythmoStat
             .lines()
             .filter(|line| {
                 rects_overlap(
-                    &line_rect(ctx.project, line, ctx.current_frame, ctx.zone),
+                    &line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps),
                     &selection_rect,
                 )
             })
@@ -401,6 +401,7 @@ mod tests {
     #[test]
     fn marquee_selects_multiple_lines() {
         crate::config::init();
+        let offset = crate::config::reading_bar_offset_seconds();
         let mut project = Project::new();
         let first = project.add_line_full(
             0,
@@ -424,8 +425,8 @@ mod tests {
             width: 1000.0,
             height: 600.0,
         };
-        let first_rect = line_rect(&project, project.get_line(first).unwrap(), 0.0, &zone);
-        let second_rect = line_rect(&project, project.get_line(second).unwrap(), 0.0, &zone);
+        let first_rect = line_rect(&project, project.get_line(first).unwrap(), 0.0, &zone, offset, 24.0);
+        let second_rect = line_rect(&project, project.get_line(second).unwrap(), 0.0, &zone, offset, 24.0);
         let min_x = first_rect.x.min(second_rect.x) - 2.0;
         let min_y = first_rect.y.min(second_rect.y) - 2.0;
         let max_x = (first_rect.x + first_rect.width).max(second_rect.x + second_rect.width) + 2.0;

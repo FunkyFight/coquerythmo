@@ -943,6 +943,7 @@ impl Ui {
                 &self.layout.rythmo,
                 self.screen_w,
                 self.screen_h,
+                fps,
                 &mut self.rythmo_state,
             );
             if response != EventResponse::Ignored {
@@ -2197,6 +2198,7 @@ impl Ui {
                 project,
                 render_index,
                 render_frame,
+                fps,
                 &mut liaison_icons,
                 self.uv("liaison_left"),
                 self.uv("liaison_right"),
@@ -2330,6 +2332,7 @@ impl Ui {
                 &self.rythmo_state,
                 &mut overlay_quads,
                 &mut overlay_labels,
+                fps,
             );
         }
 

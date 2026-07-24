@@ -10,11 +10,16 @@ pub(crate) fn hit_test_line_and_track(
 ) -> (Option<u64>, Option<usize>) {
     let layout_ctx =
         state.get_or_create_layout_ctx(ctx.project, ctx.current_frame, ctx.fps, ctx.zone);
+    let offset_frames = crate::config::reading_bar_offset_seconds() * ctx.fps;
 
     // A line can only contain the pointer if its timeline interval contains
     // the frame under the pointer. Querying that frame avoids scanning every
     // line for each raw mouse event.
-    let pointer_frame = x_to_frame(x, ctx.current_frame, ctx.zone);
+    let pointer_frame = x_to_frame(
+        x + offset_frames as f32 * ppf(),
+        ctx.current_frame,
+        ctx.zone,
+    );
     let mut candidate_ids =
         ctx.render_index
             .visible_line_ids(ctx.project, pointer_frame, pointer_frame);
@@ -23,7 +28,15 @@ pub(crate) fn hit_test_line_and_track(
     let found = candidate_ids.into_iter().find(|line_id| {
         ctx.project.get_line(*line_id).is_some_and(|line| {
             layout_ctx
-                .line_rect_with_karaoke_width(line, ctx.current_frame, ctx.zone, false, None)
+                .line_rect_with_karaoke_width(
+                    line,
+                    ctx.current_frame,
+                    ctx.zone,
+                    false,
+                    None,
+                    crate::config::reading_bar_offset_seconds(),
+                    ctx.fps,
+                )
                 .contains(x, y)
         })
     });
@@ -104,7 +117,7 @@ pub(crate) fn handle_mouse_move(
                     }),
                     DragHandle::Selection => {
                         if let Some(line) = ctx.project.get_line(line_id) {
-                            let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
+                            let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
                             let ratio = ((x - r.x) / r.width).clamp(0.0, 1.0);
                             state.pending_cursor_click = Some((ratio, true));
 

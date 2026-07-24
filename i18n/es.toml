@@ -475,6 +475,7 @@
 "settings.preview" = "Vista previa"
 "settings.restart_required" = "(reinicio requerido)"
 "settings.scroll_speed" = "Velocidad de desplazamiento"
+"settings.reading_bar_offset" = "Desplazamiento de la barra de lectura"
 "settings.tooltip" = "Ajustes"
 "project_settings.title" = "Ajustes del proyecto"
 "project_settings.tooltip" = "Ajustes del proyecto"

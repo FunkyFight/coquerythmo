@@ -694,6 +694,7 @@ pub(crate) fn render_sync_text_segments(
     line: &crate::rythmo_line::RythmoLine,
     current_frame: f64,
     zone: &Rect,
+    fps: f64,
     drag: Option<&SyllableDrag>,
     lang: &str,
     state: &RythmoState,
@@ -721,7 +722,7 @@ pub(crate) fn render_sync_text_segments(
     let cursor_segments =
         sync_cursor_segments_from_layout(line.id, character_count, &boundaries, &mapped);
     let characters = line.text.chars().collect::<Vec<_>>();
-    let rect = line_rect(project, line, current_frame, zone);
+    let rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
     for segment in &cursor_segments {
         let start = segment.start_char;
         let end = segment.end_char;
@@ -1042,6 +1043,7 @@ fn render_sync_handles(
     line: &crate::rythmo_line::RythmoLine,
     current_frame: f64,
     zone: &Rect,
+    fps: f64,
     state: &RythmoState,
     quads: &mut Vec<QuadInstance>,
 ) {
@@ -1057,7 +1059,7 @@ fn render_sync_handles(
     if boundaries.len() <= 2 {
         return;
     }
-    let rect = line_rect(project, line, current_frame, zone);
+    let rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
     let points = boundaries
         .into_iter()
         .map(|ratio| rect.x + rect.width * ratio)

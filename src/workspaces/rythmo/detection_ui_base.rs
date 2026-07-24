@@ -637,11 +637,12 @@ fn sync_point_x(
     current_frame: f64,
     zone: &Rect,
     _state: &RythmoState,
+    fps: f64,
 ) -> Option<f32> {
     if line.karaoke {
         return None;
     }
-    let rect = line_rect(project, line, current_frame, zone);
+    let rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
     let ratio = ((point.line_tick.as_frame_position() - line.start_frame as f64)
         / line.duration_frames.max(1) as f64) as f32;
     Some(rect.x + rect.width * ratio.clamp(0.0, 1.0))
@@ -656,14 +657,14 @@ fn existing_sync_at(project: &Project, line_id: u64, character_index: usize) -> 
 }
 
 fn sync_retarget_boundary_at(
-    ctx: &RythmoCtx<'_>,
+    ctx: &RythmoCtx,
     state: &RythmoState,
     address: DetectionAddress,
     x: f32,
     y: f32,
 ) -> Option<u32> {
     let line = ctx.project.get_line(address.line_id)?;
-    let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
+    let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
     if y < rect.y - 10.0 || y > rect.y + rect.height + 10.0 || rect.width <= 0.0 {
         return None;
     }
@@ -712,13 +713,14 @@ fn sync_placeholder_for_line(
     y: f32,
     current_frame: f64,
     zone: &Rect,
+    fps: f64,
 ) -> Option<SyncPlaceholder> {
     let graphemes = UnicodeSegmentation::graphemes(line.text.as_str(), true).collect::<Vec<_>>();
     if line.karaoke || graphemes.is_empty() || line.duration_frames <= 0 {
         return None;
     }
 
-    let line_rect = line_rect(project, line, current_frame, zone);
+    let line_rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
     if !line_rect.contains(x, y) || line_rect.width <= 0.0 {
         return None;
     }
@@ -770,10 +772,11 @@ fn line_under_pointer<'a>(
     y: f32,
     current_frame: f64,
     zone: &Rect,
+    fps: f64,
 ) -> Option<&'a crate::rythmo_line::RythmoLine> {
     project.lines().find(|line| {
         !line.karaoke
-            && line_rect(project, line, current_frame, zone).contains(x, y)
+            && line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps).contains(x, y)
             && (!line.text.is_empty() || has_sync_cues(project, line))
             && state.editing_character != Some(line.id)
     })
@@ -787,7 +790,7 @@ fn hit_sync_placeholder(
 ) -> Option<(u64, usize, MediaTick)> {
     ctx.project.lines().find_map(|line| {
         let placeholder =
-            sync_placeholder_for_line(ctx.project, line, state, x, y, ctx.current_frame, ctx.zone)?;
+            sync_placeholder_for_line(ctx.project, line, state, x, y, ctx.current_frame, ctx.zone, ctx.fps)?;
         let hit = expanded_rect(
             sync_dot_rect(placeholder.x, placeholder.line_rect),
             SYNC_DOT_HIT_PADDING,
@@ -829,10 +832,10 @@ fn hit_existing_detection(
         let Some(data) = ctx.project.detections().line(line.id) else {
             continue;
         };
-        let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
+        let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
         for point in data.sync_points() {
             let Some(cue_x) =
-                sync_point_x(ctx.project, line, point, ctx.current_frame, ctx.zone, state)
+                sync_point_x(ctx.project, line, point, ctx.current_frame, ctx.zone, state, ctx.fps)
             else {
                 continue;
             };
@@ -900,6 +903,7 @@ pub(crate) fn render_sync_text_segments(
     line: &crate::rythmo_line::RythmoLine,
     current_frame: f64,
     zone: &Rect,
+    fps: f64,
     drag: Option<&SyllableDrag>,
     lang: &str,
     state: &RythmoState,
@@ -933,7 +937,7 @@ pub(crate) fn render_sync_text_segments(
     let boundaries = boundaries.into_iter().collect::<Vec<_>>();
 
     let characters = line.text.chars().collect::<Vec<_>>();
-    let rect = line_rect(project, line, current_frame, zone);
+    let rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
     let mut cursor_segments = Vec::new();
 
     for pair in boundaries.windows(2) {
@@ -1332,6 +1336,7 @@ fn render_shifted_syllable_handles(
     line: &crate::rythmo_line::RythmoLine,
     current_frame: f64,
     zone: &Rect,
+    fps: f64,
     state: &RythmoState,
     quads: &mut Vec<QuadInstance>,
 ) {
@@ -1345,7 +1350,7 @@ fn render_shifted_syllable_handles(
         return;
     }
 
-    let rect = line_rect(project, line, current_frame, zone);
+    let rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
     let color = [0.95, 0.08, 0.03, 1.0];
     let stroke = 3.0;
     let tick_h = 9.0;
@@ -1644,9 +1649,9 @@ pub(crate) fn render_detection_overlay<'a>(
         let Some(data) = project.detections().line(line.id) else {
             continue;
         };
-        let rect = line_rect(project, line, current_frame, zone);
+        let rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
         for point in data.sync_points() {
-            let Some(cue_x) = sync_point_x(project, line, point, current_frame, zone, state) else {
+            let Some(cue_x) = sync_point_x(project, line, point, current_frame, zone, state, fps) else {
                 continue;
             };
             let address = DetectionAddress {
@@ -1678,14 +1683,15 @@ pub(crate) fn render_detection_overlay<'a>(
     }
 
     let hovered_sync_line = state.detection_hover.and_then(|hover| {
-        line_under_pointer(
-            project,
-            state,
-            hover.screen_x,
-            hover.screen_y,
-            current_frame,
-            zone,
-        )
+            line_under_pointer(
+                project,
+                state,
+                hover.screen_x,
+                hover.screen_y,
+                current_frame,
+                zone,
+                fps,
+            )
         .filter(|line| has_sync_cues(project, line))
         .map(|line| line.id)
     });
@@ -1698,7 +1704,7 @@ pub(crate) fn render_detection_overlay<'a>(
     handle_lines.extend(dragged_sync_line);
     for line_id in handle_lines {
         if let Some(line) = project.get_line(line_id) {
-            render_shifted_syllable_handles(project, line, current_frame, zone, state, quads);
+            render_shifted_syllable_handles(project, line, current_frame, zone, fps, state, quads);
         }
     }
 
@@ -1711,6 +1717,7 @@ pub(crate) fn render_detection_overlay<'a>(
                 hover.screen_y,
                 current_frame,
                 zone,
+                fps,
             ) {
                 if let Some(placeholder) = sync_placeholder_for_line(
                     project,
@@ -1720,6 +1727,7 @@ pub(crate) fn render_detection_overlay<'a>(
                     hover.screen_y,
                     current_frame,
                     zone,
+                    fps,
                 ) {
                     push_quad(
                         quads,

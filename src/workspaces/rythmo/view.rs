@@ -554,7 +554,7 @@ mod tests {
         };
 
         let normal_body_h = editor_normal_body_height_for_karaoke_tracks(1, &zone);
-        let normal_rect = line_rect(&project, project.get_line(normal_id).unwrap(), 0.0, &zone);
+        let normal_rect = line_rect(&project, project.get_line(normal_id).unwrap(), 0.0, &zone, 0.0, 24.0);
         let karaoke_body = editor_track_body_rect_at_frame(&project, 0.5, 24.0, &zone);
         let karaoke_rect = karaoke_preview_line_rect(
             &project,
@@ -562,6 +562,8 @@ mod tests {
             24.0,
             &zone,
             karaoke_adjacent_max_gap_frames(24.0),
+            0.0,
+            24.0,
         );
 
         assert!((normal_rect.height - normal_body_h).abs() < f32::EPSILON);
@@ -691,6 +693,8 @@ mod tests {
             false,
             0,
             None,
+            0.0,
+            24.0,
         );
         let expected_width = karaoke_ui_text_width(&line.text);
         let expected_x = zone.x + (zone.width - expected_width) / 2.0;
@@ -918,8 +922,10 @@ mod tests {
                 &zone,
                 false,
                 None,
+                0.0,
+                24.0,
             ),
-            line_rect(&project, project.get_line(normal_id).unwrap(), 0.0, &zone),
+            line_rect(&project, project.get_line(normal_id).unwrap(), 0.0, &zone, 0.0, 24.0),
         );
 
         let max_gap_frames = karaoke_adjacent_max_gap_frames(24.0);
@@ -936,8 +942,10 @@ mod tests {
                 index.upcoming_stack_visible(karaoke, 24.0),
                 index.stack_row(karaoke),
                 None,
+                0.0,
+                24.0,
             ),
-            karaoke_preview_line_rect(&project, karaoke, 24.0, &zone, max_gap_frames),
+            karaoke_preview_line_rect(&project, karaoke, 24.0, &zone, max_gap_frames, 0.0, 24.0),
         );
     }
 
@@ -1010,8 +1018,10 @@ mod tests {
 
         for step in 0..=240 {
             let current_frame = 1_000.0 + step as f64 / 240.0;
-            let (_, editor_width) = line_visual_x_width(line, current_frame, &zone, false);
-            let (_, playback_width) = line_visual_x_width(line, current_frame, &zone, true);
+            let (_, editor_width) =
+                line_visual_x_width(line, current_frame, &zone, false, 0.0, 24.0);
+            let (_, playback_width) =
+                line_visual_x_width(line, current_frame, &zone, true, 0.0, 24.0);
 
             assert_eq!(editor_width.to_bits(), expected_width.to_bits());
             assert_eq!(playback_width.to_bits(), expected_width.to_bits());
@@ -1040,6 +1050,8 @@ mod tests {
             &zone,
             false,
             None,
+            0.0,
+            24.0,
         );
         let mut state = RythmoState::new();
 
@@ -1087,6 +1099,8 @@ mod tests {
             &zone,
             false,
             None,
+            0.0,
+            24.0,
         );
         let mut state = RythmoState::new();
 
@@ -1247,6 +1261,7 @@ fn active_karaoke_skip_ranges(
     karaoke_preview: bool,
     fps: f64,
     state: &RythmoState,
+    playhead_x: f32,
 ) -> Vec<(f32, f32)> {
     if !karaoke_preview {
         return Vec::new();
@@ -1257,7 +1272,7 @@ fn active_karaoke_skip_ranges(
         .lines
         .iter()
         .filter(|scene_line| scene_line.karaoke_active)
-        .map(|line| {
+        .filter_map(|line| {
             let body_rect = layout_ctx.track_body_rect(line.line.y_slot, zone);
             let rect = karaoke_stack_rect(
                 Rect {
@@ -1269,7 +1284,17 @@ fn active_karaoke_skip_ranges(
                 line.karaoke_stack_row,
                 1.0,
             );
-            (rect.y, rect.y + rect.height)
+
+            let karaoke_width = karaoke_ui_text_width(&line.line.text);
+            let center_x = zone.x + zone.width / 2.0;
+            let karaoke_left = center_x - karaoke_width / 2.0;
+            let karaoke_right = center_x + karaoke_width / 2.0;
+
+            if playhead_x + PLAYHEAD_WIDTH > karaoke_left && playhead_x < karaoke_right {
+                Some((rect.y, rect.y + rect.height))
+            } else {
+                None
+            }
         })
         .collect()
 }
@@ -1388,8 +1413,9 @@ pub fn render_rythmo_base(
 
     // Ticks removed from UI (kept in CPU/GPU export renderers)
 
-    let playhead_x = zone.x + (zone.width - PLAYHEAD_WIDTH) / 2.0;
-    let skip_ranges = active_karaoke_skip_ranges(project, scene, zone, karaoke_preview, fps, state);
+    let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+    let playhead_x = zone.x + (zone.width - PLAYHEAD_WIDTH) / 2.0 - offset_frames as f32 * ppf();
+    let skip_ranges = active_karaoke_skip_ranges(project, scene, zone, karaoke_preview, fps, state, playhead_x);
     push_playhead_segments(
         &mut quads,
         playhead_x,
@@ -2058,12 +2084,21 @@ fn karaoke_preview_line_rect_with_state(
     upcoming_stack: bool,
     stack_row: usize,
     centered_karaoke_width: Option<f32>,
+    reading_bar_offset_seconds: f64,
+    fps: f64,
 ) -> Rect {
     let (x1, width) = if line.karaoke_active(current_frame) || count_in || upcoming_stack {
         let width = centered_karaoke_width.unwrap_or_else(|| karaoke_ui_text_width(&line.text));
         karaoke_centered_x_width_with_width(zone, width)
     } else {
-        line_visual_x_width(line, current_frame, zone, true)
+        geometry::line_visual_x_width(
+            line,
+            current_frame,
+            zone,
+            true,
+            reading_bar_offset_seconds,
+            fps,
+        )
     };
     let body_rect = layout_ctx.track_body_rect(line.y_slot, zone);
     let rect = Rect {
@@ -2094,6 +2129,8 @@ fn karaoke_preview_line_rect(
     current_frame: f64,
     zone: &Rect,
     max_gap_frames: i64,
+    reading_bar_offset_seconds: f64,
+    fps: f64,
 ) -> Rect {
     let upcoming_stack =
         karaoke_upcoming_stack_visible(project, line, current_frame, max_gap_frames);
@@ -2107,6 +2144,8 @@ fn karaoke_preview_line_rect(
         upcoming_stack,
         karaoke_stack_row(project, line, max_gap_frames),
         None,
+        reading_bar_offset_seconds,
+        fps,
     )
 }
 
@@ -2609,6 +2648,8 @@ pub fn render_lines<'a>(
                 karaoke_upcoming_stack,
                 karaoke_stack_row,
                 centered_karaoke_width,
+                crate::config::reading_bar_offset_seconds(),
+                fps,
             )
         } else {
             layout_ctx.line_rect_with_karaoke_width(
@@ -2617,13 +2658,22 @@ pub fn render_lines<'a>(
                 zone,
                 karaoke_preview,
                 None,
+                crate::config::reading_bar_offset_seconds(),
+                fps,
             )
         };
 
         let mut badge_rect = if karaoke_playback {
             badge_rect_for_karaoke_rect(line, &r)
         } else {
-            layout_ctx.badge_rect_for_name(line, &line.character_name, r.x, zone)
+            layout_ctx.badge_rect_for_name(
+                line,
+                &line.character_name,
+                r.x,
+                zone,
+                crate::config::reading_bar_offset_seconds(),
+                fps,
+            )
         };
         // A karaoke track can contain several stacked dialogue rows. The
         // label belongs to the actual row, never to the full track body.
@@ -2883,6 +2933,7 @@ pub fn render_lines<'a>(
                     line,
                     current_frame,
                     zone,
+                    fps,
                     drag_ratios,
                     karaoke_lang,
                     state,
@@ -3588,6 +3639,7 @@ pub fn render_autocomplete<'a>(
     state: &RythmoState,
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
+    fps: f64,
 ) {
     let line_id = match state.editing_character {
         Some(id) => id,
@@ -3602,8 +3654,8 @@ pub fn render_autocomplete<'a>(
         return;
     }
 
-    let r = line_rect(project, line, current_frame, zone);
-    let br = badge_rect_for_line(project, line, current_frame, zone);
+    let r = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
+    let br = badge_rect_for_line(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
     let dropdown_x = br.x;
     let mut dropdown_y = r.y + r.height + 2.0;
     let item_h = 20.0;
@@ -3924,6 +3976,7 @@ pub fn render_ambiance_liaison_icons(
     project: &Project,
     render_index: &ProjectRenderIndex,
     current_frame: f64,
+    fps: f64,
     icons: &mut Vec<IconInstance>,
     liaison_left_uv: [f32; 4],
     liaison_right_uv: [f32; 4],
@@ -3936,7 +3989,7 @@ pub fn render_ambiance_liaison_icons(
         else {
             continue;
         };
-        let rect = line_rect(project, line, current_frame, zone);
+        let rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
         if rect.x + rect.width < zone.x || rect.x > zone.x + zone.width {
             continue;
         }
@@ -4035,11 +4088,12 @@ pub fn autocomplete_hit(
     state: &RythmoState,
     click_x: f32,
     click_y: f32,
+    fps: f64,
 ) -> Option<(String, [f32; 4])> {
     if let Some(line_id) = state.editing_character {
         if let Some(line) = project.lines().find(|l| l.id == line_id) {
-            let br = badge_rect_for_line(project, line, current_frame, zone);
-            let lr = line_rect(project, line, current_frame, zone);
+            let br = badge_rect_for_line(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
+            let lr = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
             let suggestions = project.autocomplete_entries_for_line(line);
             if !suggestions.is_empty() {
                 let dropdown_x = br.x;
@@ -4085,6 +4139,7 @@ pub fn handle_context_menu_event(
     zone: &Rect,
     screen_w: f32,
     screen_h: f32,
+    fps: f64,
     state: &mut RythmoState,
 ) -> EventResponse {
     match event {
@@ -4092,8 +4147,8 @@ pub fn handle_context_menu_event(
             let line_id = project
                 .lines()
                 .find(|line| {
-                    line_rect(project, line, current_frame, zone).contains(*x, *y)
-                        || badge_rect_for_line(project, line, current_frame, zone).contains(*x, *y)
+                    line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps).contains(*x, *y)
+                        || badge_rect_for_line(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps).contains(*x, *y)
                 })
                 .map(|line| line.id);
             if let Some(line_id) = line_id {
@@ -4700,8 +4755,8 @@ fn autocomplete_hover_index(ctx: &RythmoCtx, state: &RythmoState, x: f32, y: f32
         return None;
     }
 
-    let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone);
-    let br = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone);
+    let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
+    let br = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
     let dropdown_x = br.x;
     let dropdown_y = r.y + r.height + 2.0;
     let item_h = 20.0;

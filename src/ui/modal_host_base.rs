@@ -373,12 +373,14 @@ impl ModalHost {
                 lang,
                 rythmo_font,
                 scroll_speed,
+                reading_bar_offset_seconds,
             } => {
                 self.settings = None;
                 ModalOutcome::Action(UiAction::SaveSettings {
                     lang,
                     rythmo_font,
                     scroll_speed,
+                    reading_bar_offset_seconds,
                 })
             }
         }
