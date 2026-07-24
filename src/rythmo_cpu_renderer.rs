@@ -748,9 +748,6 @@ impl CpuRenderer {
                     3.0 * s,
                 )
             });
-            if !rythmo_layout::line_or_badge_intersects_viewport(x1, lw, leading_visual, 0.0, w) {
-                return None;
-            }
             let track = rythmo_layout::track_for_y_slot(track_layouts, line.y_slot)?;
             let y_base = ruler_h + track.top;
             let body_y = y_base + slot_header_h + badge_gap;

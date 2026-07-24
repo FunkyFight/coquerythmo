@@ -2607,6 +2607,7 @@ pub fn render_lines<'a>(
     }
 
     let mut line_data: Vec<(u64, LineRenderData)> = Vec::with_capacity(visible_line_ids.len());
+    let mut collision_line_rects: HashMap<u64, Rect> = HashMap::new();
     for &lid in &visible_line_ids {
         let Some(line) = project.get_line(lid) else {
             continue;
@@ -2662,6 +2663,8 @@ pub fn render_lines<'a>(
                 fps,
             )
         };
+
+        collision_line_rects.insert(lid, r);
 
         let mut badge_rect = if karaoke_playback {
             badge_rect_for_karaoke_rect(line, &r)
@@ -2756,12 +2759,12 @@ pub fn render_lines<'a>(
     });
     let mut badge_hidden: HashMap<u64, bool> = HashMap::new();
     let mut fitted_badges: HashMap<u64, (Rect, f32)> = HashMap::new();
-    let collision_targets: Vec<(u64, Rect, &str)> = line_data
+    let collision_targets: Vec<(u64, Rect, &str)> = collision_line_rects
         .iter()
-        .filter_map(|(line_id, data)| {
+        .filter_map(|(&line_id, &rect)| {
             project
-                .get_line(*line_id)
-                .map(|line| (*line_id, data.rect, line.character_name.as_str()))
+                .get_line(line_id)
+                .map(|line| (line_id, rect, line.character_name.as_str()))
         })
         .collect();
 
