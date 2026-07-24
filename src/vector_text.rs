@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use glyphon::{
-    Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, Style, Weight,
+    Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight,
 };
 use resvg::tiny_skia::{Pixmap, Transform};
 
@@ -27,7 +27,11 @@ static SYSTEM_FONT_DB: OnceLock<RwLock<Option<FontDbCache>>> = OnceLock::new();
 
 thread_local! {
     static MEASURE_FONT_SYSTEM: RefCell<FontSystem> = RefCell::new(FontSystem::new());
+    static EMPHASIZED_HEIGHT_SCALE_CACHE: RefCell<Option<(String, u32, f32)>> = RefCell::new(None);
 }
+
+const EMPHASIZED_HEIGHT_CALIBRATION_TEXT: &str = "HgxÉÀjy";
+const MAX_EMPHASIZED_HEIGHT_SCALE: f32 = 1.35;
 
 pub struct VectorTextPixmap {
     pub pixels: Vec<u8>,
@@ -55,6 +59,12 @@ fn project_font() -> Option<ProjectFont> {
         .and_then(|font| font.clone())
 }
 
+fn clear_emphasized_height_scale_cache() {
+    EMPHASIZED_HEIGHT_SCALE_CACHE.with(|cache| {
+        *cache.borrow_mut() = None;
+    });
+}
+
 /// Register a font extracted from a `.coquerythmo` bundle. The registration is
 /// process-local: it overrides the global preference while this project is open
 /// without modifying the user's application settings.
@@ -66,6 +76,7 @@ pub fn register_project_font(family: impl Into<String>, path: impl Into<PathBuf>
     if let Ok(mut current) = PROJECT_FONT.get_or_init(|| RwLock::new(None)).write() {
         *current = Some(font);
     }
+    clear_emphasized_height_scale_cache();
 }
 
 /// Register an extracted font by reading its family metadata. Returns the
@@ -84,6 +95,7 @@ pub fn clear_project_font() {
     if let Ok(mut current) = PROJECT_FONT.get_or_init(|| RwLock::new(None)).write() {
         *current = None;
     }
+    clear_emphasized_height_scale_cache();
 }
 
 /// Return the exact font file that should be embedded when saving a project.
@@ -382,6 +394,121 @@ fn measure_text_emphasized(
     width.max(1.0)
 }
 
+fn uses_export_rythmo_metrics(font_size: f32, dest_h: u32) -> bool {
+    font_size.is_finite()
+        && font_size > 0.0
+        && dest_h > 0
+        && dest_h as f32 >= font_size * 2.0
+}
+
+fn measure_text_ink_height(
+    font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+    line_height: f32,
+    font_family: &str,
+    emphasized: bool,
+) -> f32 {
+    prepare_font_system(font_system);
+    let mut buffer = GlyphonBuffer::new(font_system, Metrics::new(font_size, line_height));
+    buffer.set_size(font_system, Some(10000.0), Some(line_height));
+    let family = if font_family == "sans-serif" {
+        Family::SansSerif
+    } else {
+        Family::Name(font_family)
+    };
+    let attrs = if emphasized {
+        Attrs::new()
+            .family(family)
+            .style(Style::Italic)
+            .weight(Weight::BOLD)
+    } else {
+        Attrs::new().family(family)
+    };
+    buffer.set_text(font_system, text, &attrs, Shaping::Advanced, None);
+    buffer.shape_until_scroll(font_system, false);
+
+    let mut cache = SwashCache::new();
+    let mut top = i32::MAX;
+    let mut bottom = i32::MIN;
+    for run in buffer.layout_runs() {
+        let line_y = run.line_y;
+        for glyph in run.glyphs.iter() {
+            let physical = glyph.physical((0.0, 0.0), 1.0);
+            let Some(image) = cache.get_image_uncached(font_system, physical.cache_key) else {
+                continue;
+            };
+            if image.placement.height == 0 {
+                continue;
+            }
+            let glyph_top = line_y as i32 + physical.y - image.placement.top;
+            let glyph_bottom = glyph_top + image.placement.height as i32;
+            top = top.min(glyph_top);
+            bottom = bottom.max(glyph_bottom);
+        }
+    }
+
+    if top < bottom {
+        (bottom - top) as f32
+    } else {
+        0.0
+    }
+}
+
+fn export_emphasized_height_scale(
+    font_system: &mut FontSystem,
+    font_family: &str,
+    font_size: f32,
+    dest_h: u32,
+) -> f32 {
+    // The interactive renderer rasterizes text at a high-DPI font size close to
+    // the row height. Export instead supplies the 16 px reference font inside a
+    // 40 px reference row and lets the SVG viewBox enlarge it. Only that export
+    // metric relationship needs the visual-height compensation.
+    if !uses_export_rythmo_metrics(font_size, dest_h) {
+        return 1.0;
+    }
+
+    let cache_key = (font_family.to_owned(), font_size.to_bits());
+    if let Some(scale) = EMPHASIZED_HEIGHT_SCALE_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .as_ref()
+            .filter(|(family, size, _)| family == &cache_key.0 && *size == cache_key.1)
+            .map(|(_, _, scale)| *scale)
+    }) {
+        return scale;
+    }
+
+    let line_height = (font_size * 1.4).ceil().max(1.0);
+    let regular_height = measure_text_ink_height(
+        font_system,
+        EMPHASIZED_HEIGHT_CALIBRATION_TEXT,
+        font_size,
+        line_height,
+        font_family,
+        false,
+    );
+    let emphasized_height = measure_text_ink_height(
+        font_system,
+        EMPHASIZED_HEIGHT_CALIBRATION_TEXT,
+        font_size,
+        line_height,
+        font_family,
+        true,
+    );
+    let scale = if regular_height > 0.0 && emphasized_height > 0.0 {
+        (regular_height / emphasized_height).clamp(1.0, MAX_EMPHASIZED_HEIGHT_SCALE)
+    } else {
+        1.0
+    };
+
+    EMPHASIZED_HEIGHT_SCALE_CACHE.with(|cache| {
+        *cache.borrow_mut() = Some((cache_key.0, cache_key.1, scale));
+    });
+    scale
+}
+
 /// Measure every character boundary using the same shaping configuration as
 /// the bande rythmo text renderer. Ratios are relative to the full text width.
 pub fn measure_rythmo_text_char_ratios_standalone(text: &str, font_size: f32) -> Option<Vec<f32>> {
@@ -490,6 +617,11 @@ fn render_rythmo_text_impl(
     } else {
         Vec::new()
     };
+    let emphasized_height_scale = if emphasized {
+        export_emphasized_height_scale(font_system, &font_family, font_size, dest_h)
+    } else {
+        1.0
+    };
 
     let svg = build_svg_styled(
         text,
@@ -500,6 +632,7 @@ fn render_rythmo_text_impl(
         dest_h,
         stretch,
         emphasized,
+        emphasized_height_scale,
     );
     let mut options = resvg::usvg::Options::default();
     options.font_family = font_family;
@@ -669,6 +802,7 @@ fn build_svg(
         dest_h,
         stretch,
         false,
+        1.0,
     )
 }
 
@@ -681,6 +815,7 @@ fn build_svg_styled(
     dest_h: u32,
     stretch: bool,
     emphasized: bool,
+    emphasized_height_scale: f32,
 ) -> String {
     let escaped_text = escape_xml(text);
     let escaped_family = escape_xml(font_family);
@@ -695,6 +830,13 @@ fn build_svg_styled(
     } else {
         ""
     };
+    let emphasis_transform = if emphasized && emphasized_height_scale > 1.001 {
+        format!(
+            r#" transform="translate(0 {baseline:.3}) scale(1 {emphasized_height_scale:.5}) translate(0 -{baseline:.3})""#
+        )
+    } else {
+        String::new()
+    };
     // Bold italic glyphs commonly overhang to the left of their advance.
     // Starting at x=0 clips the first grapheme regardless of destination
     // width, so reserve explicit ink space inside emphasized label textures.
@@ -702,7 +844,7 @@ fn build_svg_styled(
 
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{dest_w}" height="{dest_h}" viewBox="0 0 {dest_w} {line_height:.3}" preserveAspectRatio="none">
-<text x="{text_x:.3}" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white"{emphasis}{stretch_attrs} xml:space="preserve">{escaped_text}</text>
+<text x="{text_x:.3}" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white"{emphasis}{emphasis_transform}{stretch_attrs} xml:space="preserve">{escaped_text}</text>
 </svg>"#
     )
 }
@@ -762,5 +904,29 @@ mod tests {
             assert!(w.is_some());
             assert!(w.unwrap() > 0.0);
         }
+    }
+
+    #[test]
+    fn export_metrics_are_detected_without_touching_ui_metrics() {
+        assert!(uses_export_rythmo_metrics(16.0, 40));
+        assert!(uses_export_rythmo_metrics(32.0, 80));
+        assert!(!uses_export_rythmo_metrics(36.0, 40));
+    }
+
+    #[test]
+    fn emphasized_svg_scales_around_the_existing_baseline() {
+        let svg = build_svg_styled(
+            "AL",
+            "sans-serif",
+            16.0,
+            23.0,
+            100,
+            40,
+            false,
+            true,
+            1.125,
+        );
+        assert!(svg.contains("translate(0 16.000)"));
+        assert!(svg.contains("scale(1 1.12500)"));
     }
 }
