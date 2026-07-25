@@ -42,9 +42,20 @@ pub(crate) fn handle_mouse_press(
         }
     }
 
-    // Check markers first (smaller hit targets, on top visually)
+    // Check markers first (smaller hit targets, on top visually). Query only
+    // the temporal range covered by the marker hit slop.
     let marker_hit_w = 12.0;
-    for (i, marker) in ctx.project.markers().iter().enumerate() {
+    let marker_frame_a = x_to_frame(x - marker_hit_w, ctx.current_frame, ctx.zone, ctx.fps);
+    let marker_frame_b = x_to_frame(x + marker_hit_w, ctx.current_frame, ctx.zone, ctx.fps);
+    let marker_first = marker_frame_a.min(marker_frame_b);
+    let marker_last = marker_frame_a.max(marker_frame_b);
+    for i in ctx
+        .render_index
+        .visible_marker_indices(marker_first, marker_last)
+    {
+        let Some(marker) = ctx.project.marker(i) else {
+            continue;
+        };
         let mx = frame_to_x(marker.frame, ctx.current_frame, ctx.zone, ctx.fps);
         if (x - mx).abs() < marker_hit_w {
             state.selected = Some(Selection::Marker(i));
@@ -62,19 +73,24 @@ pub(crate) fn handle_mouse_press(
         }
     }
 
-    // Check lines
-    for line in ctx.project.lines() {
-        let r = line_rect(
-            ctx.project,
-            line,
-            ctx.current_frame,
-            ctx.zone,
-            crate::config::reading_bar_offset_seconds(),
-            ctx.fps,
-        );
-        if !r.contains(x, y) {
-            continue;
-        }
+    // Reuse the indexed hover hit-test instead of walking every project line.
+    if let Some(line_id) = hit_test_line_and_track(ctx, state, x, y).0 {
+        let Some(line) = ctx.project.get_line(line_id) else {
+            return EventResponse::Ignored;
+        };
+        let r = {
+            let layout_ctx =
+                state.get_or_create_layout_ctx(ctx.project, ctx.current_frame, ctx.fps, ctx.zone);
+            layout_ctx.line_rect_with_karaoke_width(
+                line,
+                ctx.current_frame,
+                ctx.zone,
+                false,
+                None,
+                crate::config::reading_bar_offset_seconds(),
+                ctx.fps,
+            )
+        };
 
         // If editing this line, single click positions cursor instead of starting a generic drag
         // Only exceptions are the resize handles which should still resize the line

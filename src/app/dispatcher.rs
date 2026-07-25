@@ -1409,7 +1409,6 @@ pub(crate) fn dispatch(
 ) {
     let response = state.handle_ui_event(&ui_event);
     let response_changed_ui = !matches!(response, EventResponse::Ignored);
-    let is_pointer_move = matches!(ui_event, UiEvent::MouseMove { .. });
 
     match response {
         EventResponse::Action(action) => {
@@ -1429,7 +1428,7 @@ pub(crate) fn dispatch(
     }
 
     if should_request_redraw(
-        is_pointer_move,
+        &ui_event,
         response_changed_ui,
         state.needs_continuous_redraw(),
     ) {
@@ -1438,25 +1437,60 @@ pub(crate) fn dispatch(
 }
 
 fn should_request_redraw(
-    is_pointer_move: bool,
+    ui_event: &UiEvent,
     _response_changed_ui: bool,
     continuous_redraw: bool,
 ) -> bool {
-    // During playback/animation the paced redraw loop is already active.
-    // No raw mouse event, including a hover change or a scrub seek, may bypass
-    // that pacing and create a render storm at the mouse polling rate.
-    !is_pointer_move || !continuous_redraw
+    if continuous_redraw {
+        return !matches!(
+            ui_event,
+            UiEvent::MouseMove { .. } | UiEvent::ContextMenu { .. }
+        );
+    }
+    true
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::ui::primitives::UiEvent;
     use super::should_request_redraw;
 
     #[test]
     fn ignored_pointer_moves_use_the_paced_redraw_loop() {
-        assert!(!should_request_redraw(true, false, true));
-        assert!(!should_request_redraw(true, true, true));
-        assert!(should_request_redraw(true, false, false));
-        assert!(should_request_redraw(false, false, true));
+        assert!(!should_request_redraw(
+            &UiEvent::MouseMove { x: 0.0, y: 0.0 },
+            false,
+            true
+        ));
+        assert!(!should_request_redraw(
+            &UiEvent::MouseMove { x: 0.0, y: 0.0 },
+            true,
+            true
+        ));
+        assert!(should_request_redraw(
+            &UiEvent::MouseMove { x: 0.0, y: 0.0 },
+            false,
+            false
+        ));
+        assert!(!should_request_redraw(
+            &UiEvent::MouseMove { x: 0.0, y: 0.0 },
+            false,
+            true
+        ));
+        assert!(!should_request_redraw(
+            &UiEvent::ContextMenu { x: 0.0, y: 0.0 },
+            false,
+            true
+        ));
+        assert!(!should_request_redraw(
+            &UiEvent::ContextMenu { x: 0.0, y: 0.0 },
+            true,
+            true
+        ));
+        assert!(should_request_redraw(
+            &UiEvent::ContextMenu { x: 0.0, y: 0.0 },
+            false,
+            false
+        ));
     }
 }

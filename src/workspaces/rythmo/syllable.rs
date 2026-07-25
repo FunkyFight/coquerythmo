@@ -17,20 +17,41 @@ pub(crate) fn syllable_mouse_press(
 
     let lang = ctx.project.syllable_language_code();
     let hit_w = 7.0;
+    let pointer_frame = x_to_frame(x, ctx.current_frame, ctx.zone, ctx.fps);
+    let mut candidate_ids =
+        ctx.render_index
+            .visible_line_ids(ctx.project, pointer_frame, pointer_frame);
+    candidate_ids.sort_by_key(|line_id| ctx.render_index.line_order_index(*line_id));
 
-    for line in ctx.project.lines() {
-        if !line.karaoke || (ctx.karaoke_preview && line.karaoke) {
+    let candidates: Vec<(u64, Rect)> = {
+        let layout_ctx =
+            state.get_or_create_layout_ctx(ctx.project, ctx.current_frame, ctx.fps, ctx.zone);
+        candidate_ids
+            .into_iter()
+            .filter_map(|line_id| {
+                let line = ctx.project.get_line(line_id)?;
+                if !line.karaoke || ctx.karaoke_preview {
+                    return None;
+                }
+                let rect = layout_ctx.line_rect_with_karaoke_width(
+                    line,
+                    ctx.current_frame,
+                    ctx.zone,
+                    false,
+                    None,
+                    crate::config::reading_bar_offset_seconds(),
+                    ctx.fps,
+                );
+                Some((line_id, rect))
+            })
+            .collect()
+    };
+
+    for (line_id, r) in candidates {
+        let Some(line) = ctx.project.get_line(line_id) else {
             continue;
-        }
+        };
 
-        let r = line_rect(
-            ctx.project,
-            line,
-            ctx.current_frame,
-            ctx.zone,
-            crate::config::reading_bar_offset_seconds(),
-            ctx.fps,
-        );
         let top_y = r.y + 1.0;
         if y < top_y - 6.0 || y > top_y + 14.0 {
             continue;

@@ -12,6 +12,14 @@ use crate::{rythmo_cpu_renderer, rythmo_gpu_renderer};
 use super::progress::{check_stdin_cancel, report_baked_progress, ProgressCallback};
 use super::types::{BrFrameWriteStats, BrInputFormat, BrRenderBackend, StdinWriteError};
 
+fn source_frame_at_export_frame(
+    timeline_start_source_frame: f64,
+    export_frame: i64,
+    source_frames_per_export_frame: f64,
+) -> f64 {
+    timeline_start_source_frame + export_frame as f64 * source_frames_per_export_frame
+}
+
 pub(super) fn write_br_frames(
     project: &Project,
     writer: &mut impl Write,
@@ -76,7 +84,11 @@ pub(super) fn write_br_frames(
                 BrInputFormat::Nv12 => {
                     gpu.submit_render_nv12(
                         &scene,
-                        timeline_start_source_frame,
+                        source_frame_at_export_frame(
+                            timeline_start_source_frame,
+                            0,
+                            frame_ratio,
+                        ),
                         out_w,
                         fps,
                         source_fps,
@@ -87,7 +99,11 @@ pub(super) fn write_br_frames(
                 }
                 BrInputFormat::Rgba => gpu.submit_render(
                     &scene,
-                    timeline_start_source_frame,
+                    source_frame_at_export_frame(
+                        timeline_start_source_frame,
+                        0,
+                        frame_ratio,
+                    ),
                     out_w,
                     fps,
                     source_fps,
@@ -105,7 +121,11 @@ pub(super) fn write_br_frames(
                     stats.finish_readback += finish_start.elapsed();
 
                     check_stdin_cancel(cancel)?;
-                    let video_pos = timeline_start_source_frame + frame as f64 * frame_ratio;
+                    let video_pos = source_frame_at_export_frame(
+                        timeline_start_source_frame,
+                        frame,
+                        frame_ratio,
+                    );
                     let submit_start = Instant::now();
                     gpu.submit_render_nv12(
                         &scene,
@@ -142,7 +162,11 @@ pub(super) fn write_br_frames(
                 gpu.finish_render_into(out_w, br_h, &mut rgba_buf);
                 stats.finish_readback += finish_start.elapsed();
                 check_stdin_cancel(cancel)?;
-                let video_pos = timeline_start_source_frame + frame as f64 * frame_ratio;
+                let video_pos = source_frame_at_export_frame(
+                    timeline_start_source_frame,
+                    frame,
+                    frame_ratio,
+                );
                 let submit_start = Instant::now();
                 gpu.submit_render(
                     &scene,
@@ -227,12 +251,15 @@ pub(super) fn write_br_frames(
                         .iter()
                         .zip(renderers.iter_mut())
                         .map(|(&frame, renderer)| {
-                            let vf = (timeline_start_source_frame + frame as f64 * frame_ratio)
-                                .round() as i64;
+                            let source_frame = source_frame_at_export_frame(
+                                timeline_start_source_frame,
+                                frame,
+                                frame_ratio,
+                            );
                             scope.spawn(move || {
                                 renderer.render_br(
                                     project,
-                                    vf,
+                                    source_frame,
                                     out_w,
                                     source_fps,
                                     br_scale,
@@ -349,5 +376,31 @@ fn rgba_to_nv12(rgba: &[u8], nv12_buf: &mut [u8], w: usize, h: usize, br_h: usiz
             nv12_buf[uv_i + 1] =
                 (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(16, 240) as u8;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_frame_at_export_frame;
+
+    #[test]
+    fn higher_export_fps_keeps_fractional_source_positions() {
+        let ratio = 24.0 / 60.0;
+        let expected = [0.0, 0.4, 0.8, 1.2, 1.6, 2.0];
+
+        for (frame, expected_position) in expected.into_iter().enumerate() {
+            let actual = source_frame_at_export_frame(0.0, frame as i64, ratio);
+            assert!((actual - expected_position).abs() < 1.0e-9);
+        }
+    }
+
+    #[test]
+    fn preroll_offset_does_not_remove_fractional_motion() {
+        let ratio = 25.0 / 60.0;
+        let first = source_frame_at_export_frame(-50.0, 1, ratio);
+        let second = source_frame_at_export_frame(-50.0, 2, ratio);
+
+        assert!((first + 50.0 - 25.0 / 60.0).abs() < 1.0e-9);
+        assert!((second - first - ratio).abs() < 1.0e-9);
     }
 }
