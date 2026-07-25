@@ -1,25 +1,26 @@
-//! Central frame timing and display-refresh authority.
+//! Central frame sampling and display-refresh metadata.
 //!
 //! # Architecture contract
 //!
-//! This module is the single source of truth for Coquerythmo's interactive
-//! rendering cadence.
+//! This module does not schedule, pace or request rendered frames.
 //!
-//! Do not introduce any of the following outside this file:
+//! Actual interactive presentation cadence belongs exclusively to the GPU
+//! swapchain through FIFO VSync. Do not attempt to predict display VBlank
+//! deadlines with `Instant`, `WaitUntil` or a fixed rendering frequency.
 //!
-//! - a hard-coded interactive rendering frequency;
-//! - an independent bande-rythmo rendering clock;
-//! - monitor refresh-rate calculations;
-//! - frame-deadline catch-up loops;
-//! - a hot `ControlFlow::Poll` loop intended to pace rendering;
-//! - duplicated `last_redraw` or `refresh_interval` state.
+//! This module is responsible only for:
 //!
-//! Video decoding cadence and display rendering cadence are deliberately
-//! separate. A 24 fps video may keep the same decoded texture across several
-//! display refreshes while the bande rythmo continues moving once per display
-//! frame.
+//! - detecting the monitor refresh rate as useful metadata;
+//! - producing one shared monotonic time sample per rendered frame;
+//! - measuring the elapsed time between rendered frames;
+//! - recording passive rendering diagnostics.
 //!
-//! All visual consumers of one rendered frame must use the same
+//! Video decoding cadence and display rendering cadence remain separate. A
+//! 24 fps video may keep the same decoded texture across several display
+//! refreshes while the bande rythmo is resampled from the continuous playback
+//! clock for every rendered frame.
+//!
+//! Every time-dependent visual consumer in one rendered frame must use the same
 //! [`FrameSample::instant`].
 
 use std::time::{Duration, Instant};
@@ -34,38 +35,47 @@ const MAX_REFRESH_RATE_MILLIHERTZ: u32 = 360_000;
 /// frame.
 ///
 /// Video playback, bande-rythmo positioning and UI animations must all derive
-/// their state from `instant` instead of calling `Instant::now()` separately.
+/// their state from `instant` instead of independently calling
+/// `Instant::now()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameSample {
-    /// The unique monotonic time sampled at the beginning of this frame.
+    /// Unique monotonic time sampled at the beginning of this frame's visual
+    /// work.
     pub instant: Instant,
 
     /// Time elapsed since the preceding rendered frame began.
+    ///
+    /// This is zero for the first rendered frame.
     pub delta: Duration,
 
     /// Monotonically increasing interactive frame identifier.
     pub frame_number: u64,
 }
 
-/// Lightweight diagnostics for the central frame clock.
+/// Passive diagnostics collected from observed rendered frames.
 ///
-/// These values are intentionally observational. They must never become a
-/// second source of frame-pacing decisions.
+/// None of these values may be used to decide when the next frame should be
+/// rendered.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrameTimingStats {
     pub frames_started: u64,
     pub frames_presented: u64,
-    pub missed_deadlines: u64,
+
+    /// Approximate number of display refreshes skipped between observed frame
+    /// starts.
+    ///
+    /// This is diagnostic only. It is not a scheduling deadline counter.
+    pub estimated_missed_refreshes: u64,
+
     pub last_render_duration: Duration,
     pub longest_render_duration: Duration,
     pub monitor_rate_changes: u64,
 }
 
-/// The sole owner of interactive frame cadence.
+/// Shared frame clock and display metadata.
 ///
-/// The scheduler never accumulates a debt of frames. When rendering is late,
-/// the obsolete deadlines are counted for diagnostics and the next deadline is
-/// scheduled exactly one display interval after the new frame begins.
+/// This type deliberately owns no next-frame deadline. FIFO presentation is
+/// the only authority controlling when frames reach the display.
 #[derive(Debug)]
 pub struct FrameTiming {
     refresh_rate_millihertz: u32,
@@ -73,25 +83,29 @@ pub struct FrameTiming {
 
     last_frame_started_at: Instant,
     last_presented_at: Instant,
-    next_frame_at: Instant,
 
     frame_number: u64,
     stats: FrameTimingStats,
 }
 
 impl FrameTiming {
-    /// Builds a frame clock using the refresh rate of the monitor currently
-    /// containing the window.
+    /// Builds frame timing metadata using the refresh rate of the monitor
+    /// currently containing the window.
     pub fn new(window: &Window) -> Self {
         let now = Instant::now();
-        Self::from_refresh_rate_millihertz(window_refresh_rate_millihertz(window), now)
+
+        Self::from_refresh_rate_millihertz(
+            window_refresh_rate_millihertz(window),
+            now,
+        )
     }
 
-    /// Refreshes the display cadence after the window changes monitor or scale
+    /// Refreshes display metadata after the window changes monitor or scale
     /// factor.
     ///
-    /// Returns `true` only when the normalized monitor refresh rate actually
-    /// changed.
+    /// This does not alter rendering phase or create a future frame deadline.
+    ///
+    /// Returns `true` only when the normalized refresh rate changed.
     pub fn update_monitor(&mut self, window: &Window) -> bool {
         let refresh_rate =
             normalize_refresh_rate_millihertz(window_refresh_rate_millihertz(window));
@@ -100,34 +114,37 @@ impl FrameTiming {
             return false;
         }
 
-        let now = Instant::now();
-
         self.refresh_rate_millihertz = refresh_rate;
-        self.refresh_interval = refresh_interval_from_millihertz(refresh_rate);
-        self.next_frame_at = add_duration(now, self.refresh_interval);
-        self.stats.monitor_rate_changes = self.stats.monitor_rate_changes.saturating_add(1);
+        self.refresh_interval =
+            refresh_interval_from_millihertz(refresh_rate);
+
+        self.stats.monitor_rate_changes =
+            self.stats.monitor_rate_changes.saturating_add(1);
 
         true
     }
 
-    /// The normalized monitor refresh rate in millihertz.
+    /// Normalized monitor refresh rate in millihertz.
     ///
     /// For example, a 144 Hz display reports `144_000`.
     pub fn refresh_rate_millihertz(&self) -> u32 {
         self.refresh_rate_millihertz
     }
 
-    /// The normalized monitor refresh rate in hertz.
+    /// Normalized monitor refresh rate in hertz.
     pub fn refresh_rate_hz(&self) -> f64 {
         self.refresh_rate_millihertz as f64 / 1_000.0
     }
 
-    /// Duration of one physical display refresh.
+    /// Approximate duration of one physical display refresh.
+    ///
+    /// This value is metadata for diagnostics and input throttling. It must not
+    /// be used to predict a swapchain presentation deadline.
     pub fn refresh_interval(&self) -> Duration {
         self.refresh_interval
     }
 
-    /// Beginning of the most recently rendered interactive frame.
+    /// Beginning of the most recently sampled rendered frame.
     pub fn last_frame_started_at(&self) -> Instant {
         self.last_frame_started_at
     }
@@ -137,35 +154,33 @@ impl FrameTiming {
         self.last_presented_at
     }
 
-    /// Deadline at which the next continuous visual frame becomes due.
-    pub fn next_frame_deadline(&self) -> Instant {
-        self.next_frame_at
-    }
-
-    /// Whether a continuously animated scene should render at `now`.
-    pub fn is_frame_due(&self, now: Instant) -> bool {
-        now >= self.next_frame_at
-    }
-
     /// Starts a new visual frame and produces its unique shared time sample.
     ///
-    /// Calling this method also schedules the next frame relative to `now`.
-    /// That deliberately discards obsolete deadlines instead of attempting a
-    /// burst of catch-up renders.
+    /// This method records observed timing only. It does not calculate or store
+    /// the time at which another frame should begin.
     #[must_use]
     pub fn begin_frame(&mut self, now: Instant) -> FrameSample {
-        let delta = now.saturating_duration_since(self.last_frame_started_at);
-        let missed_deadlines = self.missed_deadlines_before(now);
+        let delta = if self.frame_number == 0 {
+            Duration::ZERO
+        } else {
+            now.saturating_duration_since(self.last_frame_started_at)
+        };
 
-        self.stats.missed_deadlines = self.stats.missed_deadlines.saturating_add(missed_deadlines);
+        if self.frame_number > 0 {
+            let missed_refreshes =
+                estimate_missed_refreshes(delta, self.refresh_interval);
+
+            self.stats.estimated_missed_refreshes = self
+                .stats
+                .estimated_missed_refreshes
+                .saturating_add(missed_refreshes);
+        }
 
         self.frame_number = self.frame_number.saturating_add(1);
-        self.stats.frames_started = self.stats.frames_started.saturating_add(1);
+        self.stats.frames_started =
+            self.stats.frames_started.saturating_add(1);
 
         self.last_frame_started_at = now;
-
-        // Never retain old frame debt. A late frame establishes a fresh phase.
-        self.next_frame_at = add_duration(now, self.refresh_interval);
 
         FrameSample {
             instant: now,
@@ -174,56 +189,44 @@ impl FrameTiming {
         }
     }
 
-    /// Records the completion of a successful `surface_texture.present()`.
+    /// Records completion of a successful `surface_texture.present()`.
     pub fn finish_present(&mut self, presented_at: Instant) {
-        let render_duration = presented_at.saturating_duration_since(self.last_frame_started_at);
+        let render_duration =
+            presented_at.saturating_duration_since(self.last_frame_started_at);
 
         self.last_presented_at = presented_at;
-        self.stats.frames_presented = self.stats.frames_presented.saturating_add(1);
+        self.stats.frames_presented =
+            self.stats.frames_presented.saturating_add(1);
         self.stats.last_render_duration = render_duration;
-        self.stats.longest_render_duration =
-            self.stats.longest_render_duration.max(render_duration);
+        self.stats.longest_render_duration = self
+            .stats
+            .longest_render_duration
+            .max(render_duration);
     }
 
-    /// Current diagnostic counters.
+    /// Current passive diagnostic counters.
     pub fn stats(&self) -> FrameTimingStats {
         self.stats
     }
 
-    fn from_refresh_rate_millihertz(refresh_rate_millihertz: Option<u32>, now: Instant) -> Self {
-        let refresh_rate = normalize_refresh_rate_millihertz(refresh_rate_millihertz);
-        let refresh_interval = refresh_interval_from_millihertz(refresh_rate);
+    fn from_refresh_rate_millihertz(
+        refresh_rate_millihertz: Option<u32>,
+        now: Instant,
+    ) -> Self {
+        let refresh_rate =
+            normalize_refresh_rate_millihertz(refresh_rate_millihertz);
 
         Self {
             refresh_rate_millihertz: refresh_rate,
-            refresh_interval,
+            refresh_interval:
+                refresh_interval_from_millihertz(refresh_rate),
+
             last_frame_started_at: now,
             last_presented_at: now,
-
-            // The first frame is immediately eligible.
-            next_frame_at: now,
 
             frame_number: 0,
             stats: FrameTimingStats::default(),
         }
-    }
-
-    fn missed_deadlines_before(&self, now: Instant) -> u64 {
-        if now <= self.next_frame_at {
-            return 0;
-        }
-
-        let interval_nanos = self.refresh_interval.as_nanos();
-        if interval_nanos == 0 {
-            return 0;
-        }
-
-        let lateness_nanos = now.saturating_duration_since(self.next_frame_at).as_nanos();
-
-        // Being even slightly past a deadline means that deadline was missed.
-        let missed = lateness_nanos / interval_nanos + 1;
-
-        missed.min(u64::MAX as u128) as u64
     }
 }
 
@@ -233,18 +236,48 @@ fn window_refresh_rate_millihertz(window: &Window) -> Option<u32> {
         .and_then(|monitor| monitor.refresh_rate_millihertz())
 }
 
-fn normalize_refresh_rate_millihertz(refresh_rate_millihertz: Option<u32>) -> u32 {
+fn normalize_refresh_rate_millihertz(
+    refresh_rate_millihertz: Option<u32>,
+) -> u32 {
     refresh_rate_millihertz
         .unwrap_or(DEFAULT_REFRESH_RATE_MILLIHERTZ)
-        .clamp(MIN_REFRESH_RATE_MILLIHERTZ, MAX_REFRESH_RATE_MILLIHERTZ)
+        .clamp(
+            MIN_REFRESH_RATE_MILLIHERTZ,
+            MAX_REFRESH_RATE_MILLIHERTZ,
+        )
 }
 
-fn refresh_interval_from_millihertz(refresh_rate_millihertz: u32) -> Duration {
-    Duration::from_secs_f64(1_000.0 / refresh_rate_millihertz as f64)
+fn refresh_interval_from_millihertz(
+    refresh_rate_millihertz: u32,
+) -> Duration {
+    Duration::from_secs_f64(
+        1_000.0 / refresh_rate_millihertz as f64,
+    )
 }
 
-fn add_duration(instant: Instant, duration: Duration) -> Instant {
-    instant.checked_add(duration).unwrap_or(instant)
+/// Estimates skipped display refreshes from the observed distance between two
+/// rendered frame starts.
+///
+/// Rounding to the nearest refresh prevents tiny scheduler jitter from being
+/// reported as a skipped display frame.
+fn estimate_missed_refreshes(
+    frame_delta: Duration,
+    refresh_interval: Duration,
+) -> u64 {
+    let interval_nanos = refresh_interval.as_nanos();
+
+    if interval_nanos == 0 {
+        return 0;
+    }
+
+    let rounded_intervals = frame_delta
+        .as_nanos()
+        .saturating_add(interval_nanos / 2)
+        / interval_nanos;
+
+    rounded_intervals
+        .saturating_sub(1)
+        .min(u64::MAX as u128) as u64
 }
 
 #[cfg(test)]
@@ -296,36 +329,44 @@ mod tests {
     }
 
     #[test]
-    fn first_frame_is_immediately_due() {
+    fn first_frame_has_zero_delta() {
         let start = Instant::now();
-        let timing = FrameTiming::from_refresh_rate_millihertz(Some(60_000), start);
+        let mut timing =
+            FrameTiming::from_refresh_rate_millihertz(Some(60_000), start);
 
-        assert!(timing.is_frame_due(start));
+        let sample = timing.begin_frame(start);
+
+        assert_eq!(sample.instant, start);
+        assert_eq!(sample.delta, Duration::ZERO);
+        assert_eq!(sample.frame_number, 1);
     }
 
     #[test]
-    fn frame_becomes_due_only_at_its_display_deadline() {
+    fn frame_delta_is_measured_between_observed_frame_starts() {
         let start = Instant::now();
-        let mut timing = FrameTiming::from_refresh_rate_millihertz(Some(144_000), start);
+        let mut timing =
+            FrameTiming::from_refresh_rate_millihertz(Some(144_000), start);
 
-        let sample = timing.begin_frame(start);
-        let deadline = timing.next_frame_deadline();
-        let just_before = deadline
-            .checked_sub(Duration::from_nanos(1))
-            .expect("deadline should be after the start instant");
+        timing.begin_frame(start);
 
-        assert_eq!(sample.instant, start);
-        assert!(!timing.is_frame_due(just_before));
-        assert!(timing.is_frame_due(deadline));
+        let second_start = start
+            .checked_add(Duration::from_millis(7))
+            .expect("test instant should be representable");
+
+        let sample = timing.begin_frame(second_start);
+
+        assert_eq!(sample.instant, second_start);
+        assert_eq!(sample.delta, Duration::from_millis(7));
+        assert_eq!(sample.frame_number, 2);
     }
 
     #[test]
     fn every_visual_consumer_receives_the_same_frame_instant() {
         let start = Instant::now();
-        let mut timing = FrameTiming::from_refresh_rate_millihertz(Some(165_000), start);
+        let mut timing =
+            FrameTiming::from_refresh_rate_millihertz(Some(165_000), start);
 
-        let render_time = add_duration(start, Duration::from_millis(10));
-        let sample = timing.begin_frame(render_time);
+        let sample = timing.begin_frame(start);
 
         let video_time = sample.instant;
         let rythmo_time = sample.instant;
@@ -336,30 +377,50 @@ mod tests {
     }
 
     #[test]
-    fn a_late_frame_does_not_create_catch_up_debt() {
+    fn tiny_scheduler_jitter_is_not_counted_as_a_missed_refresh() {
+        let interval = refresh_interval_from_millihertz(60_000);
+
+        assert_eq!(
+            estimate_missed_refreshes(
+                Duration::from_millis(17),
+                interval,
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn long_frame_gap_is_recorded_without_creating_a_deadline() {
         let start = Instant::now();
-        let mut timing = FrameTiming::from_refresh_rate_millihertz(Some(60_000), start);
+        let mut timing =
+            FrameTiming::from_refresh_rate_millihertz(Some(60_000), start);
 
         timing.begin_frame(start);
 
-        let late_start = add_duration(start, Duration::from_millis(100));
+        let late_start = start
+            .checked_add(Duration::from_millis(100))
+            .expect("test instant should be representable");
+
         timing.begin_frame(late_start);
 
         assert_eq!(
-            timing.next_frame_deadline(),
-            add_duration(late_start, timing.refresh_interval())
+            timing.stats().estimated_missed_refreshes,
+            5
         );
-        assert!(timing.stats().missed_deadlines > 0);
     }
 
     #[test]
     fn presentation_duration_is_measured_from_frame_start() {
         let start = Instant::now();
-        let mut timing = FrameTiming::from_refresh_rate_millihertz(Some(60_000), start);
+        let mut timing =
+            FrameTiming::from_refresh_rate_millihertz(Some(60_000), start);
 
         timing.begin_frame(start);
 
-        let presented_at = add_duration(start, Duration::from_millis(5));
+        let presented_at = start
+            .checked_add(Duration::from_millis(5))
+            .expect("test instant should be representable");
+
         timing.finish_present(presented_at);
 
         assert_eq!(

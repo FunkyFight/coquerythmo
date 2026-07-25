@@ -4,8 +4,8 @@ use winit::window::Window;
 
 /// Coquerythmo always presents through strict FIFO VSync.
 ///
-/// Interactive rendering cadence is controlled by `frame_timing`; presentation
-/// itself remains synchronized with the display on every supported backend.
+/// Frame pacing belongs to the swapchain itself. CPU-side code must not try to
+/// predict VBlank with timers or fixed redraw intervals.
 fn present_mode() -> wgpu::PresentMode {
     wgpu::PresentMode::Fifo
 }
@@ -95,9 +95,10 @@ impl GraphicsContext {
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
 
-            // Keep no more than one frame queued so the image presented by
-            // FIFO remains as close as possible to the shared frame sample.
-            desired_maximum_frame_latency: 1,
+            // Allow the CPU and GPU to overlap enough work to absorb a small
+            // scheduling or rendering spike without immediately missing the
+            // next FIFO presentation slot. FIFO still controls presentation.
+            desired_maximum_frame_latency: 2,
         };
 
         surface.configure(&device, &config);

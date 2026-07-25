@@ -5313,7 +5313,8 @@ impl State {
             || self.jobs.pending_import_job.is_some()
             || self.jobs.pending_save_job.is_some()
         {
-            return now.saturating_duration_since(self.render.last_redraw())
+            return now
+                .saturating_duration_since(self.render.last_redraw())
                 >= Duration::from_millis(100);
         }
 
@@ -5323,16 +5324,12 @@ impl State {
                 .ui
                 .next_cursor_blink_deadline()
                 .is_some_and(|deadline| deadline <= now)
-                || now.saturating_duration_since(self.render.last_redraw())
+                || now
+                    .saturating_duration_since(self.render.last_redraw())
                     >= Duration::from_millis(500);
         }
 
         false
-    }
-
-    fn continuous_redraw_due(&self, now: Instant) -> bool {
-        (self.needs_continuous_redraw() || self.secondary_needs_continuous_redraw())
-            && self.render.is_frame_due(now)
     }
 
     pub fn needs_redraw_now(&self) -> bool {
@@ -5340,7 +5337,8 @@ impl State {
         self.scroll_decode_due(now)
             || self.periodic_redraw_due(now)
             || self.waveform_redraw_pending()
-            || self.continuous_redraw_due(now)
+            || self.needs_continuous_redraw()
+            || self.secondary_needs_continuous_redraw()
     }
 
     pub fn needs_continuous_redraw(&self) -> bool {
@@ -5364,10 +5362,6 @@ impl State {
         let mut push_deadline = |candidate: Instant| {
             deadline = Some(deadline.map_or(candidate, |current| current.min(candidate)));
         };
-
-        if self.needs_continuous_redraw() || self.secondary_needs_continuous_redraw() {
-            push_deadline(self.render.next_frame_deadline());
-        }
 
         if self.ui_shell.ui.has_active_progress()
             || self.jobs.pending_proxy_job.is_some()
@@ -5411,15 +5405,9 @@ impl State {
     }
 
     pub fn render(&mut self) {
-        // One monotonic sample drives every time-dependent visual decision in
-        // this frame. FrameTiming also discards obsolete deadlines instead of
-        // accumulating catch-up work after a late frame.
-        let frame_sample = self.render.begin_frame(Instant::now());
-        self.tick_video_at(frame_sample.instant);
-
-        if self.active_workspace() == WorkspaceId::Recording {
-            self.sync_recording_workspace_ui();
-        }
+        // FIFO may block while acquiring an available swapchain texture. Do
+        // that before sampling visual time so the bande rythmo and video are
+        // not rendered from a timestamp that became stale during acquisition.
         let surface_texture = match self.render.gfx.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(tex) | CurrentSurfaceTexture::Suboptimal(tex) => tex,
             CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
@@ -5432,6 +5420,15 @@ impl State {
             CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => return,
             _ => return,
         };
+
+        // One monotonic sample drives every time-dependent visual decision in
+        // this frame. FrameTiming observes the frame but never schedules it.
+        let frame_sample = self.render.begin_frame(Instant::now());
+        self.tick_video_at(frame_sample.instant);
+
+        if self.active_workspace() == WorkspaceId::Recording {
+            self.sync_recording_workspace_ui();
+        }
 
         let view = surface_texture
             .texture

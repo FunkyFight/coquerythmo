@@ -1,8 +1,10 @@
 //! Composition of the graphics context and the generic UI renderer.
 //!
-//! Interactive frame cadence is intentionally not implemented here.
-//! [`FrameTiming`] is the sole authority for monitor refresh detection,
-//! redraw deadlines and shared visual frame samples.
+//! Interactive frame pacing is not implemented here.
+//!
+//! FIFO presentation is the only authority controlling display cadence.
+//! [`FrameTiming`] provides shared frame timestamps and passive refresh-rate
+//! metadata, but never schedules redraws.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,14 +19,17 @@ pub struct RenderCoordinator {
     pub gfx: GraphicsContext,
     pub ui_renderer: UiRenderer,
 
-    /// Single source of truth for interactive rendering cadence.
+    /// Shared frame timestamps, refresh metadata and passive diagnostics.
+    ///
+    /// This object does not decide when another frame should be rendered.
     pub frame_timing: FrameTiming,
 }
 
 impl RenderCoordinator {
     pub async fn new(window: Arc<Window>) -> Self {
         let gfx = GraphicsContext::new(window).await;
-        let ui_renderer = UiRenderer::new(&gfx.device, &gfx.queue, gfx.surface_format());
+        let ui_renderer =
+            UiRenderer::new(&gfx.device, &gfx.queue, gfx.surface_format());
         let frame_timing = FrameTiming::new(&gfx.window);
 
         Self {
@@ -37,36 +42,25 @@ impl RenderCoordinator {
     /// Re-reads the refresh rate of the monitor currently containing the main
     /// window.
     ///
-    /// All refresh-rate calculations remain inside `frame_timing.rs`.
+    /// The result is metadata only and is never used to predict VBlank.
     pub fn update_refresh_interval(&mut self) {
         self.frame_timing.update_monitor(&self.gfx.window);
     }
 
-    /// Compatibility façade for callers that need the physical display
-    /// interval.
+    /// Approximate duration of one physical display refresh.
     ///
-    /// This method contains no independent timing state or calculation.
+    /// Intended for diagnostics and input throttling, not frame scheduling.
     pub fn refresh_interval(&self) -> Duration {
         self.frame_timing.refresh_interval()
     }
 
-    /// Compatibility façade for the beginning of the latest rendered frame.
+    /// Beginning of the latest sampled rendered frame.
     pub fn last_redraw(&self) -> Instant {
         self.frame_timing.last_frame_started_at()
     }
 
-    /// Whether the next continuously animated display frame is due.
-    pub fn is_frame_due(&self, now: Instant) -> bool {
-        self.frame_timing.is_frame_due(now)
-    }
-
-    /// Deadline for the next continuously animated display frame.
-    pub fn next_frame_deadline(&self) -> Instant {
-        self.frame_timing.next_frame_deadline()
-    }
-
-    /// Creates the one time sample that must be shared by every visual
-    /// component rendered during this frame.
+    /// Creates the unique time sample shared by every visual component in the
+    /// current rendered frame.
     #[must_use]
     pub fn begin_frame(&mut self, now: Instant) -> FrameSample {
         self.frame_timing.begin_frame(now)
