@@ -2,6 +2,7 @@
 
 use crate::application::workspace_service::{Workspace, WorkspaceCommand, WorkspaceId};
 
+#[path = "view_context_optimized.rs"]
 pub mod view;
 
 /// Narrow bridge for sibling controller modules that need the synchronization
