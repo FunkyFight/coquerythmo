@@ -31,6 +31,45 @@ pub(crate) fn handle_mouse_release(state: &mut RythmoState, ctx: &RythmoCtx) -> 
     }
 }
 
+fn visible_interaction_geometry(
+    ctx: &RythmoCtx,
+    state: &RythmoState,
+) -> Vec<(u64, Rect, Rect)> {
+    let margin_frames = interactive_render_margin_frames(ctx.fps, ctx.render_index);
+    let (first_frame, last_frame) = render_window(ctx.zone, ctx.current_frame, margin_frames);
+    let mut line_ids =
+        ctx.render_index
+            .visible_line_ids(ctx.project, first_frame, last_frame);
+    line_ids.sort_by_key(|line_id| ctx.render_index.line_order_index(*line_id));
+
+    let layout_ctx =
+        state.get_or_create_layout_ctx(ctx.project, ctx.current_frame, ctx.fps, ctx.zone);
+    line_ids
+        .into_iter()
+        .filter_map(|line_id| {
+            let line = ctx.project.get_line(line_id)?;
+            let line_rect = layout_ctx.line_rect_with_karaoke_width(
+                line,
+                ctx.current_frame,
+                ctx.zone,
+                false,
+                None,
+                crate::config::reading_bar_offset_seconds(),
+                ctx.fps,
+            );
+            let badge_rect = layout_ctx.badge_rect_for_name(
+                line,
+                &line.character_name,
+                line_rect.x,
+                ctx.zone,
+                crate::config::reading_bar_offset_seconds(),
+                ctx.fps,
+            );
+            Some((line_id, badge_rect, line_rect))
+        })
+        .collect()
+}
+
 pub(crate) fn handle_ctrl_click(
     ctx: &RythmoCtx,
     state: &mut RythmoState,
@@ -69,14 +108,23 @@ pub(crate) fn handle_shift_mouse_press(
     // Line text editing selection
     if let Some(line_id) = state.editing_line {
         if let Some(line) = ctx.project.get_line(line_id) {
-            let r = line_rect(
-                ctx.project,
-                line,
-                ctx.current_frame,
-                ctx.zone,
-                crate::config::reading_bar_offset_seconds(),
-                ctx.fps,
-            );
+            let r = {
+                let layout_ctx = state.get_or_create_layout_ctx(
+                    ctx.project,
+                    ctx.current_frame,
+                    ctx.fps,
+                    ctx.zone,
+                );
+                layout_ctx.line_rect_with_karaoke_width(
+                    line,
+                    ctx.current_frame,
+                    ctx.zone,
+                    false,
+                    None,
+                    crate::config::reading_bar_offset_seconds(),
+                    ctx.fps,
+                )
+            };
             if r.contains(x, y) && !line.text.is_empty() {
                 let text_rect = ambiance_description_rect(r, line.kind);
                 let ratio = ((x - text_rect.x) / text_rect.width).clamp(0.0, 1.0);
@@ -107,18 +155,10 @@ pub(crate) fn handle_shift_mouse_press(
     // Outside text editing, Shift+drag on a line locks timing and changes
     // only its vertical track. Preserve an existing multi-line selection so
     // the whole group can move vertically together.
-    for line in ctx.project.lines() {
-        let rect = line_rect(
-            ctx.project,
-            line,
-            ctx.current_frame,
-            ctx.zone,
-            crate::config::reading_bar_offset_seconds(),
-            ctx.fps,
-        );
-        if !rect.contains(x, y) {
-            continue;
-        }
+    if let Some(line_id) = hit_test_line_and_track(ctx, state, x, y).0 {
+        let Some(line) = ctx.project.get_line(line_id) else {
+            return EventResponse::Ignored;
+        };
         let group_origins = if let Some(selection) = state.selected.clone() {
             let origins = selected_line_origins(ctx.project, &selection);
             if !origins.is_empty() && origins.iter().any(|origin| origin.line_id == line.id) {
@@ -159,20 +199,16 @@ pub(crate) fn handle_double_click(
 ) -> EventResponse {
     // Save current character edit before switching
     let finalize_line_id = state.editing_character;
+    let candidates = visible_interaction_geometry(ctx, state);
 
     // Badge → character/ambiance-name editing. End markers have no label.
-    for line in ctx.project.lines() {
+    for &(line_id, br, _) in &candidates {
+        let Some(line) = ctx.project.get_line(line_id) else {
+            continue;
+        };
         if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceEnd) {
             continue;
         }
-        let br = badge_rect_for_line(
-            ctx.project,
-            line,
-            ctx.current_frame,
-            ctx.zone,
-            crate::config::reading_bar_offset_seconds(),
-            ctx.fps,
-        );
         if br.contains(x, y) {
             if let Some(old_id) = finalize_line_id {
                 if old_id != line.id {
@@ -207,16 +243,12 @@ pub(crate) fn handle_double_click(
             };
         }
     }
+
     // Line body → note editing (if has note and click is in note area) or text editing
-    for line in ctx.project.lines() {
-        let r = line_rect(
-            ctx.project,
-            line,
-            ctx.current_frame,
-            ctx.zone,
-            crate::config::reading_bar_offset_seconds(),
-            ctx.fps,
-        );
+    for &(line_id, _, r) in &candidates {
+        let Some(line) = ctx.project.get_line(line_id) else {
+            continue;
+        };
         if r.contains(x, y) {
             // If the line has a note and click is in the bottom part, edit note
             if !line.note.is_empty() {
@@ -261,6 +293,7 @@ pub(crate) fn handle_double_click(
             };
         }
     }
+
     // Click empty → stop editing
     if let Some(old_id) = finalize_line_id {
         state.stop_char_editing();
