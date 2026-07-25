@@ -1,7 +1,14 @@
 # coquerythmo-releases
 Bande rythmo simple, épurée et optimisée. Tout ça, gratuitement.
 
-## Version 3.5.4
+## Licence
+
+Copyright © 2026 FunkyFight.
+
+Coquerythmo est distribué sous la licence GNU General Public License,
+version 3 uniquement. Consultez le fichier [LICENSE](LICENSE).
+
+## À partir de la version 3.5.4
 
 Cette version améliore fortement l’accessibilité clavier et la lecture vocale.
 Sous Windows, les annonces sont transmises au système d’accessibilité via

@@ -2,6 +2,7 @@
 name = "coquerythmo"
 version = "3.6.3"
 edition = "2021"
+license = "GPL-3.0-only"
 
 [dependencies]
 winit = "0.29"
@@ -42,3 +43,4 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
