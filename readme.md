@@ -1,5 +1,5 @@
-# coquerythmo-releases
-Bande rythmo simple, épurée et optimisée. Tout ça, gratuitement.
+# coquerythmo
+Bande rythmo simple, épurée, optimisée et accessible aux personnes malvoyantes. Tout ça, gratuitement.
 
 ## Licence
 
