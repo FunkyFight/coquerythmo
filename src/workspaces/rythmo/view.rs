@@ -994,12 +994,12 @@ mod tests {
             height: 240.0,
         };
 
-        let whole_frame_x = frame_to_x(100, 100.0, &zone);
-        let half_frame_x = frame_to_x(100, 100.5, &zone);
+        let whole_frame_x = frame_to_x(100, 100.0, &zone, 24.0);
+        let half_frame_x = frame_to_x(100, 100.5, &zone, 24.0);
 
         assert!((half_frame_x - (whole_frame_x - ppf() * 0.5)).abs() < 0.01);
-        assert_eq!(x_to_frame(half_frame_x, 100.5, &zone), 100);
-        assert_eq!(x_to_frame(frame_to_x(101, 100.5, &zone), 100.5, &zone), 101);
+        assert_eq!(x_to_frame(half_frame_x, 100.5, &zone, 24.0), 100);
+        assert_eq!(x_to_frame(frame_to_x(101, 100.5, &zone, 24.0), 100.5, &zone, 24.0), 101);
     }
 
     #[test]
@@ -1033,6 +1033,7 @@ mod tests {
     #[test]
     fn pointer_hover_finds_line_through_render_index() {
         crate::config::init();
+        crate::config::set_reading_bar_offset_seconds(0.0);
         let mut project = Project::new();
         let line_id = project.add_line(40, 20, 0.0);
         let mut render_index = ProjectRenderIndex::new();
@@ -1327,8 +1328,9 @@ pub fn render_rythmo_base(
         let bar_w = sub_ppf.max(1.0);
         let visible_frames = (zone.width / ppf()) as i64 + 4;
         let half_visible_frames = visible_frames as f64 / 2.0;
-        let first_frame = f64_floor_to_i64(current_frame - half_visible_frames);
-        let last_frame = f64_ceil_to_i64(current_frame + half_visible_frames);
+        let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+        let first_frame = f64_floor_to_i64(current_frame - half_visible_frames + offset_frames);
+        let last_frame = f64_ceil_to_i64(current_frame + half_visible_frames + offset_frames);
         let first_wave_frame = first_frame.saturating_sub(waveform_offset_frames);
         let last_wave_frame = last_frame.saturating_sub(waveform_offset_frames);
         let first_sub = first_wave_frame
@@ -1349,7 +1351,7 @@ pub fn render_rythmo_base(
             // Position: which video frame + sub offset
             let frame = (si / subs as i64).saturating_add(waveform_offset_frames);
             let sub_offset = (si % subs as i64) as f32;
-            let x = frame_to_x(frame, current_frame, zone) + sub_offset * sub_ppf;
+            let x = frame_to_x(frame, current_frame, zone, fps) + sub_offset * sub_ppf;
             if x < zone.x || x > zone.x + zone.width {
                 continue;
             }
@@ -2536,7 +2538,7 @@ pub fn render_lines<'a>(
     }) {
         if let DragTarget::Line(line_id) = drag.target {
             if project.get_line(line_id).is_some() {
-                let guide_x = frame_to_x(drag.original_frame, current_frame, zone);
+                let guide_x = frame_to_x(drag.original_frame, current_frame, zone, fps);
                 syllable_quads.push(QuadInstance {
                     rect: [guide_x - 1.0, zone.y, 2.0, zone.height],
                     color: [0.68, 0.68, 0.72, 0.9],
@@ -3311,7 +3313,7 @@ pub fn render_lines<'a>(
     // Ghost preview line when holding click on empty space
     if let Some(ghost) = &state.ghost_preview {
         let body_rect = layout_ctx.track_body_rect(ghost.y_slot, zone);
-        let ghost_rect_x = frame_to_x(ghost.frame, current_frame, zone);
+        let ghost_rect_x = frame_to_x(ghost.frame, current_frame, zone, fps);
         let ghost_w = (ghost.duration_frames as f32 * ppf()).max(2.0);
 
         let ghost_bg = [0.25, 0.25, 0.35, 0.2];
@@ -3801,8 +3803,8 @@ pub fn render_markers<'a>(
             end_frame,
         } = diagnostic.scope
         {
-            let left = frame_to_x(start_frame, current_frame, zone).max(zone.x);
-            let right = frame_to_x(end_frame, current_frame, zone).min(zone.x + zone.width);
+            let left = frame_to_x(start_frame, current_frame, zone, fps).max(zone.x);
+            let right = frame_to_x(end_frame, current_frame, zone, fps).min(zone.x + zone.width);
             if right > left {
                 // Zone diagnostics sit outside the dialogue rows, directly
                 // under the ruler, and therefore remain visible on empty parts.
@@ -3822,7 +3824,7 @@ pub fn render_markers<'a>(
         let Some(marker) = project.marker(marker_index) else {
             continue;
         };
-        let x = frame_to_x(marker.frame, current_frame, zone);
+        let x = frame_to_x(marker.frame, current_frame, zone, fps);
         if x < zone.x - 20.0 || x > zone.x + zone.width + 20.0 {
             continue;
         }
@@ -4058,6 +4060,7 @@ pub fn lint_zone_diagnostics(
     zone: &Rect,
     _project: &Project,
     current_frame: f64,
+    fps: f64,
     diagnostics: &[crate::lint::Diagnostic],
     cursor_x: f32,
     cursor_y: f32,
@@ -4075,8 +4078,8 @@ pub fn lint_zone_diagnostics(
                 end_frame,
             } = diagnostic.scope
             {
-                let left = frame_to_x(start_frame, current_frame, zone).max(zone.x);
-                let right = frame_to_x(end_frame, current_frame, zone).min(zone.x + zone.width);
+                let left = frame_to_x(start_frame, current_frame, zone, fps).max(zone.x);
+                let right = frame_to_x(end_frame, current_frame, zone, fps).min(zone.x + zone.width);
                 cursor_x >= left && cursor_x <= right
             } else {
                 false

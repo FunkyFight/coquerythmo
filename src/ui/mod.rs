@@ -2091,6 +2091,7 @@ impl Ui {
                         &rythmo_zone,
                         project,
                         render_frame,
+                        fps,
                         &lint_zones,
                         self.cursor_pos.0,
                         self.cursor_pos.1,
@@ -3278,7 +3279,7 @@ impl Ui {
         renderer: &mut UiRenderer,
         project: &Project,
         current_frame: f64,
-        _fps: f64,
+        fps: f64,
         zone: Rect,
     ) {
         use crate::rythmo_drawing::{rasterize_window, visible_frame_window, DrawingStroke};
@@ -3318,7 +3319,7 @@ impl Ui {
 
         if needs_update {
             // Collect visible strokes
-            let (first_frame, last_frame) = visible_frame_window(zone.width, cf, ppf, 4);
+            let (first_frame, last_frame) = visible_frame_window(zone.width, cf, ppf, 4, fps);
             let mut strokes: Vec<&DrawingStroke> =
                 project.drawing().query_window(first_frame, last_frame);
 
@@ -3330,7 +3331,7 @@ impl Ui {
             }
 
             if !strokes.is_empty() {
-                let rgba = rasterize_window(&strokes, zw, zh, cf, ppf);
+                let rgba = rasterize_window(&strokes, zw, zh, cf, ppf, fps);
 
                 // Reuse the existing GPU texture when the zone size is unchanged so
                 // scrolling/playback doesn't reallocate a texture every frame (which

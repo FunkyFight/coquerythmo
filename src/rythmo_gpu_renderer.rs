@@ -978,9 +978,10 @@ impl GpuRenderer {
         width: u32,
         height: u32,
         ppf: f32,
+        fps: f64,
     ) -> bool {
         let (first_frame, last_frame) =
-            crate::rythmo_drawing::visible_frame_window(width as f32, current_frame, ppf, 4);
+            crate::rythmo_drawing::visible_frame_window(width as f32, current_frame, ppf, 4, fps);
         let strokes: Vec<_> = scene
             .drawings
             .iter()
@@ -991,7 +992,7 @@ impl GpuRenderer {
         }
 
         let rgba =
-            crate::rythmo_drawing::rasterize_window(&strokes, width, height, current_frame, ppf);
+            crate::rythmo_drawing::rasterize_window(&strokes, width, height, current_frame, ppf, fps);
         let needs_create = self
             .drawing_overlay
             .as_ref()
@@ -2870,7 +2871,7 @@ impl GpuRenderer {
         // Match the editor's layer order: drawings cover the rendered BR and
         // are themselves free of editing handles or selection UI.
         let drawing_icon_index =
-            if self.prepare_drawing_overlay(&common_scene, current_frame, width, height, ppf) {
+            if self.prepare_drawing_overlay(&common_scene, current_frame, width, height, ppf, source_fps) {
                 let index = all_icons.len() as u32;
                 all_icons.push(IconInstance {
                     rect: [0.0, 0.0, width as f32, height as f32],

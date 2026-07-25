@@ -196,10 +196,12 @@ pub fn visible_frame_window(
     current_frame: f64,
     ppf: f32,
     margin_frames: i64,
+    fps: f64,
 ) -> (i64, i64) {
     let half = zone_w as f64 / ppf as f64 / 2.0;
-    let first = (current_frame - half).floor() as i64 - margin_frames;
-    let last = (current_frame + half).ceil() as i64 + margin_frames;
+    let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+    let first = (current_frame - half + offset_frames).floor() as i64 - margin_frames;
+    let last = (current_frame + half + offset_frames).ceil() as i64 + margin_frames;
     (first, last.max(first))
 }
 
@@ -286,10 +288,13 @@ pub fn rasterize_window(
     zone_h: u32,
     current_frame: f64,
     ppf: f32,
+    fps: f64,
 ) -> Vec<u8> {
     let n = (zone_w as usize) * (zone_h as usize) * 4;
     let mut buf = vec![0u8; n];
     let center_x = zone_w as f32 / 2.0;
+    let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+    let origin_x = center_x - offset_frames as f32 * ppf;
     let zw = zone_w as f32;
     let zh = zone_h as f32;
     for stroke in strokes {
@@ -298,7 +303,7 @@ pub fn rasterize_window(
             .points
             .iter()
             .map(|(f, yf)| {
-                let x = center_x + (f - current_frame) as f32 * ppf;
+                let x = origin_x + (f - current_frame) as f32 * ppf;
                 let y = yf * zh;
                 (x, y)
             })

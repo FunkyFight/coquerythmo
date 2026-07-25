@@ -287,12 +287,17 @@ fn next_detection_address(project: &Project, line_id: u64) -> Option<DetectionAd
     })
 }
 
-fn tick_x(tick: MediaTick, current_frame: f64, zone: &Rect) -> f32 {
-    zone.x + zone.width / 2.0 + (tick.as_frame_position() - current_frame) as f32 * ppf()
+fn tick_x(tick: MediaTick, current_frame: f64, zone: &Rect, fps: f64) -> f32 {
+    let center_x = zone.x + zone.width / 2.0;
+    let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+    center_x - offset_frames as f32 * ppf() + (tick.as_frame_position() - current_frame) as f32 * ppf()
 }
 
-fn pointer_tick(x: f32, current_frame: f64, zone: &Rect) -> MediaTick {
-    let frame = current_frame + ((x - (zone.x + zone.width / 2.0)) / ppf()) as f64;
+fn pointer_tick(x: f32, current_frame: f64, zone: &Rect, fps: f64) -> MediaTick {
+    let center_x = zone.x + zone.width / 2.0;
+    let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+    let origin = center_x - offset_frames as f32 * ppf();
+    let frame = current_frame + (x - origin) as f64 / ppf().max(0.001) as f64;
     MediaTick::from_frame_position(frame).clamp(MediaTick::ZERO, MediaTick(i64::MAX))
 }
 
@@ -321,9 +326,9 @@ fn detection_button_rect(hover: &DetectionHover) -> Rect {
     }
 }
 
-fn source_icon_rect(tick: MediaTick, track_rect: Rect, current_frame: f64, zone: &Rect) -> Rect {
+fn source_icon_rect(tick: MediaTick, track_rect: Rect, current_frame: f64, zone: &Rect, fps: f64) -> Rect {
     Rect {
-        x: tick_x(tick, current_frame, zone) - DETECTION_HIT_SIZE / 2.0,
+        x: tick_x(tick, current_frame, zone, fps) - DETECTION_HIT_SIZE / 2.0,
         y: track_rect.y - DETECTION_HIT_SIZE - DETECTION_ICON_BOTTOM_MARGIN,
         width: DETECTION_HIT_SIZE,
         height: DETECTION_HIT_SIZE,
@@ -816,7 +821,7 @@ fn hit_existing_detection(
         };
         let rect = track_body_rect(ctx, track);
         for cue in data.source_detections() {
-            if source_icon_rect(cue.media_tick, rect, ctx.current_frame, ctx.zone).contains(x, y) {
+            if source_icon_rect(cue.media_tick, rect, ctx.current_frame, ctx.zone, ctx.fps).contains(x, y) {
                 return Some(DetectionAddress {
                     line_id,
                     detection_id: cue.id,
@@ -1081,7 +1086,7 @@ pub(crate) fn handle_detection_event(
                     }
                     return Some(EventResponse::Consumed);
                 }
-                let mut tick = pointer_tick(*x, ctx.current_frame, ctx.zone);
+                let mut tick = pointer_tick(*x, ctx.current_frame, ctx.zone, ctx.fps);
                 if drag.address.track().is_none() {
                     tick = clamp_sync_drag_tick(ctx.project, drag.address, tick);
                 }
@@ -1121,7 +1126,7 @@ pub(crate) fn handle_detection_event(
             state.detection_hover =
                 track_under_pointer(ctx, *y).map(|(track, rect)| DetectionHover {
                     track,
-                    media_tick: pointer_tick(*x, ctx.current_frame, ctx.zone),
+                    media_tick: pointer_tick(*x, ctx.current_frame, ctx.zone, ctx.fps),
                     screen_x: *x,
                     screen_y: *y,
                     track_rect: rect,
@@ -1587,7 +1592,7 @@ pub(crate) fn render_detection_overlay<'a>(
             zone,
         );
         for cue in data.source_detections() {
-            let x = tick_x(cue.media_tick, current_frame, zone);
+            let x = tick_x(cue.media_tick, current_frame, zone, fps);
             if x < zone.x - DETECTION_HIT_SIZE || x > zone.x + zone.width + DETECTION_HIT_SIZE {
                 continue;
             }
@@ -1596,7 +1601,7 @@ pub(crate) fn render_detection_overlay<'a>(
                 detection_id: cue.id,
             };
             let selected = selected_address == Some(address);
-            let hit = source_icon_rect(cue.media_tick, rect, current_frame, zone);
+            let hit = source_icon_rect(cue.media_tick, rect, current_frame, zone, fps);
             if selected {
                 push_quad(
                     quads,
@@ -1742,7 +1747,7 @@ pub(crate) fn render_detection_overlay<'a>(
 
     if state.detection_menu.is_none() {
         if let Some(hover) = state.detection_hover {
-            let x = tick_x(hover.media_tick, current_frame, zone);
+            let x = tick_x(hover.media_tick, current_frame, zone, fps);
             let mut y = hover.track_rect.y + 2.0;
             while y < hover.track_rect.y + hover.track_rect.height - 2.0 {
                 push_quad(
@@ -1822,6 +1827,7 @@ mod tests {
     #[test]
     fn pointer_time_rounds_to_a_tenth_frame() {
         crate::config::init();
+        crate::config::set_reading_bar_offset_seconds(0.0);
         let zone = Rect {
             x: 0.0,
             y: 0.0,
@@ -1830,11 +1836,11 @@ mod tests {
         };
         let center = zone.x + zone.width / 2.0;
         assert_eq!(
-            pointer_tick(center + ppf() * 0.34, 100.0, &zone),
+            pointer_tick(center + ppf() * 0.34, 100.0, &zone, 24.0),
             MediaTick(1003)
         );
         assert_eq!(
-            pointer_tick(center + ppf() * 0.36, 100.0, &zone),
+            pointer_tick(center + ppf() * 0.36, 100.0, &zone, 24.0),
             MediaTick(1004)
         );
     }
@@ -1884,12 +1890,12 @@ mod tests {
             width: 800.0,
             height: 50.0,
         };
-        let hit = source_icon_rect(MediaTick::ZERO, track, 0.0, &zone);
+        let hit = source_icon_rect(MediaTick::ZERO, track, 0.0, &zone, 24.0);
         assert_eq!(
             hit.y,
             track.y - DETECTION_HIT_SIZE - DETECTION_ICON_BOTTOM_MARGIN
         );
-        assert_eq!(hit.x + hit.width / 2.0, tick_x(MediaTick::ZERO, 0.0, &zone));
+        assert_eq!(hit.x + hit.width / 2.0, tick_x(MediaTick::ZERO, 0.0, &zone, 24.0));
     }
 
     #[test]

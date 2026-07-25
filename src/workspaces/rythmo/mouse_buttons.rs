@@ -51,7 +51,7 @@ pub(crate) fn handle_ctrl_click(
     state.stop_char_editing();
     state.stop_note_editing();
     EventResponse::Action(UiAction::CreateLine {
-        frame: x_to_frame(x, ctx.current_frame, ctx.zone),
+        frame: x_to_frame(x, ctx.current_frame, ctx.zone, ctx.fps),
         y_slot: y_to_slot_at_frame(ctx.project, y, ctx.current_frame, ctx.zone),
     })
 }

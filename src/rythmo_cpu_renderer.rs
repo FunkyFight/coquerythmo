@@ -1258,7 +1258,7 @@ impl CpuRenderer {
         // Drawings are an overlay in the editor, so composite them last in the
         // exported BR as well (above lines, labels and markers).
         let (first_frame, last_frame) =
-            crate::rythmo_drawing::visible_frame_window(width as f32, current_frame as f64, ppf, 4);
+            crate::rythmo_drawing::visible_frame_window(width as f32, current_frame as f64, ppf, 4, source_fps);
         let strokes: Vec<_> = scene
             .drawings
             .iter()
@@ -1271,6 +1271,7 @@ impl CpuRenderer {
                 height,
                 current_frame as f64,
                 ppf,
+                source_fps,
             );
             crate::rythmo_drawing::composite_rgba_over(pixmap.data_mut(), &drawing);
         }

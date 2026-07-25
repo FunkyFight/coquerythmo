@@ -45,7 +45,7 @@ pub(crate) fn handle_mouse_press(
     // Check markers first (smaller hit targets, on top visually)
     let marker_hit_w = 12.0;
     for (i, marker) in ctx.project.markers().iter().enumerate() {
-        let mx = frame_to_x(marker.frame, ctx.current_frame, ctx.zone);
+        let mx = frame_to_x(marker.frame, ctx.current_frame, ctx.zone, ctx.fps);
         if (x - mx).abs() < marker_hit_w {
             state.selected = Some(Selection::Marker(i));
             state.dragging = Some(DragState {

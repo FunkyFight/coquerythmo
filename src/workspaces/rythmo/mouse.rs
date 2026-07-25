@@ -15,11 +15,7 @@ pub(crate) fn hit_test_line_and_track(
     // A line can only contain the pointer if its timeline interval contains
     // the frame under the pointer. Querying that frame avoids scanning every
     // line for each raw mouse event.
-    let pointer_frame = x_to_frame(
-        x + offset_frames as f32 * ppf(),
-        ctx.current_frame,
-        ctx.zone,
-    );
+    let pointer_frame = x_to_frame(x, ctx.current_frame, ctx.zone, ctx.fps);
     let mut candidate_ids =
         ctx.render_index
             .visible_line_ids(ctx.project, pointer_frame, pointer_frame);
@@ -225,7 +221,7 @@ pub(crate) fn handle_mouse_move(
     if state.ctrl_held && ctx.zone.contains(x, y) {
         let on_line = hit_test_line_and_track(ctx, state, x, y).0.is_some();
         if !on_line {
-            let frame = x_to_frame(x, ctx.current_frame, ctx.zone);
+            let frame = x_to_frame(x, ctx.current_frame, ctx.zone, ctx.fps);
             let y_slot = y_to_slot_at_frame(ctx.project, y, ctx.current_frame, ctx.zone);
             state.ghost_preview = Some(GhostPreview {
                 frame,

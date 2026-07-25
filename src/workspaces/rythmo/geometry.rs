@@ -70,14 +70,17 @@ pub(crate) fn interactive_render_margin_frames(
         .max((fps * 10.0).round() as i64)
 }
 
-pub(crate) fn frame_to_x(frame: i64, current_frame: f64, zone: &Rect) -> f32 {
+pub(crate) fn frame_to_x(frame: i64, current_frame: f64, zone: &Rect, fps: f64) -> f32 {
     let center_x = zone.x + zone.width / 2.0;
-    center_x + (frame as f64 - current_frame) as f32 * ppf()
+    let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+    center_x - offset_frames as f32 * ppf() + (frame as f64 - current_frame) as f32 * ppf()
 }
 
-pub(crate) fn x_to_frame(x: f32, current_frame: f64, zone: &Rect) -> i64 {
+pub(crate) fn x_to_frame(x: f32, current_frame: f64, zone: &Rect, fps: f64) -> i64 {
     let center_x = zone.x + zone.width / 2.0;
-    f64_round_to_i64(current_frame + (x - center_x) as f64 / ppf().max(0.001) as f64)
+    let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+    let origin = center_x - offset_frames as f32 * ppf();
+    f64_round_to_i64(current_frame + (x - origin) as f64 / ppf().max(0.001) as f64)
 }
 
 pub(crate) fn clamped_new_line_duration(
@@ -191,7 +194,7 @@ pub(crate) fn line_visual_x_width_with_karaoke_width(
         );
     }
 
-    let x1 = frame_to_x(line.start_frame, current_frame, zone) - offset_frames as f32 * ppf();
+    let x1 = frame_to_x(line.start_frame, current_frame, zone, fps);
     let width = (line.duration_frames as f32 * ppf()).max(2.0);
     (x1, width)
 }
