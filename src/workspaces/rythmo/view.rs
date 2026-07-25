@@ -554,7 +554,14 @@ mod tests {
         };
 
         let normal_body_h = editor_normal_body_height_for_karaoke_tracks(1, &zone);
-        let normal_rect = line_rect(&project, project.get_line(normal_id).unwrap(), 0.0, &zone, 0.0, 24.0);
+        let normal_rect = line_rect(
+            &project,
+            project.get_line(normal_id).unwrap(),
+            0.0,
+            &zone,
+            0.0,
+            24.0,
+        );
         let karaoke_body = editor_track_body_rect_at_frame(&project, 0.5, 24.0, &zone);
         let karaoke_rect = karaoke_preview_line_rect(
             &project,
@@ -925,7 +932,14 @@ mod tests {
                 0.0,
                 24.0,
             ),
-            line_rect(&project, project.get_line(normal_id).unwrap(), 0.0, &zone, 0.0, 24.0),
+            line_rect(
+                &project,
+                project.get_line(normal_id).unwrap(),
+                0.0,
+                &zone,
+                0.0,
+                24.0,
+            ),
         );
 
         let max_gap_frames = karaoke_adjacent_max_gap_frames(24.0);
@@ -999,7 +1013,10 @@ mod tests {
 
         assert!((half_frame_x - (whole_frame_x - ppf() * 0.5)).abs() < 0.01);
         assert_eq!(x_to_frame(half_frame_x, 100.5, &zone, 24.0), 100);
-        assert_eq!(x_to_frame(frame_to_x(101, 100.5, &zone, 24.0), 100.5, &zone, 24.0), 101);
+        assert_eq!(
+            x_to_frame(frame_to_x(101, 100.5, &zone, 24.0), 100.5, &zone, 24.0),
+            101
+        );
     }
 
     #[test]
@@ -1417,7 +1434,15 @@ pub fn render_rythmo_base(
 
     let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
     let playhead_x = zone.x + (zone.width - PLAYHEAD_WIDTH) / 2.0 - offset_frames as f32 * ppf();
-    let skip_ranges = active_karaoke_skip_ranges(project, scene, zone, karaoke_preview, fps, state, playhead_x);
+    let skip_ranges = active_karaoke_skip_ranges(
+        project,
+        scene,
+        zone,
+        karaoke_preview,
+        fps,
+        state,
+        playhead_x,
+    );
     push_playhead_segments(
         &mut quads,
         playhead_x,
@@ -3661,8 +3686,22 @@ pub fn render_autocomplete<'a>(
         return;
     }
 
-    let r = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
-    let br = badge_rect_for_line(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
+    let r = line_rect(
+        project,
+        line,
+        current_frame,
+        zone,
+        crate::config::reading_bar_offset_seconds(),
+        fps,
+    );
+    let br = badge_rect_for_line(
+        project,
+        line,
+        current_frame,
+        zone,
+        crate::config::reading_bar_offset_seconds(),
+        fps,
+    );
     let dropdown_x = br.x;
     let mut dropdown_y = r.y + r.height + 2.0;
     let item_h = 20.0;
@@ -3996,7 +4035,14 @@ pub fn render_ambiance_liaison_icons(
         else {
             continue;
         };
-        let rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
+        let rect = line_rect(
+            project,
+            line,
+            current_frame,
+            zone,
+            crate::config::reading_bar_offset_seconds(),
+            fps,
+        );
         if rect.x + rect.width < zone.x || rect.x > zone.x + zone.width {
             continue;
         }
@@ -4079,7 +4125,8 @@ pub fn lint_zone_diagnostics(
             } = diagnostic.scope
             {
                 let left = frame_to_x(start_frame, current_frame, zone, fps).max(zone.x);
-                let right = frame_to_x(end_frame, current_frame, zone, fps).min(zone.x + zone.width);
+                let right =
+                    frame_to_x(end_frame, current_frame, zone, fps).min(zone.x + zone.width);
                 cursor_x >= left && cursor_x <= right
             } else {
                 false
@@ -4100,8 +4147,22 @@ pub fn autocomplete_hit(
 ) -> Option<(String, [f32; 4])> {
     if let Some(line_id) = state.editing_character {
         if let Some(line) = project.lines().find(|l| l.id == line_id) {
-            let br = badge_rect_for_line(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
-            let lr = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
+            let br = badge_rect_for_line(
+                project,
+                line,
+                current_frame,
+                zone,
+                crate::config::reading_bar_offset_seconds(),
+                fps,
+            );
+            let lr = line_rect(
+                project,
+                line,
+                current_frame,
+                zone,
+                crate::config::reading_bar_offset_seconds(),
+                fps,
+            );
             let suggestions = project.autocomplete_entries_for_line(line);
             if !suggestions.is_empty() {
                 let dropdown_x = br.x;
@@ -4155,8 +4216,24 @@ pub fn handle_context_menu_event(
             let line_id = project
                 .lines()
                 .find(|line| {
-                    line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps).contains(*x, *y)
-                        || badge_rect_for_line(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps).contains(*x, *y)
+                    line_rect(
+                        project,
+                        line,
+                        current_frame,
+                        zone,
+                        crate::config::reading_bar_offset_seconds(),
+                        fps,
+                    )
+                    .contains(*x, *y)
+                        || badge_rect_for_line(
+                            project,
+                            line,
+                            current_frame,
+                            zone,
+                            crate::config::reading_bar_offset_seconds(),
+                            fps,
+                        )
+                        .contains(*x, *y)
                 })
                 .map(|line| line.id);
             if let Some(line_id) = line_id {
@@ -4763,8 +4840,22 @@ fn autocomplete_hover_index(ctx: &RythmoCtx, state: &RythmoState, x: f32, y: f32
         return None;
     }
 
-    let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
-    let br = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
+    let r = line_rect(
+        ctx.project,
+        line,
+        ctx.current_frame,
+        ctx.zone,
+        crate::config::reading_bar_offset_seconds(),
+        ctx.fps,
+    );
+    let br = badge_rect_for_line(
+        ctx.project,
+        line,
+        ctx.current_frame,
+        ctx.zone,
+        crate::config::reading_bar_offset_seconds(),
+        ctx.fps,
+    );
     let dropdown_x = br.x;
     let dropdown_y = r.y + r.height + 2.0;
     let item_h = 20.0;

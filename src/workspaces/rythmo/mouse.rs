@@ -113,7 +113,14 @@ pub(crate) fn handle_mouse_move(
                     }),
                     DragHandle::Selection => {
                         if let Some(line) = ctx.project.get_line(line_id) {
-                            let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
+                            let r = line_rect(
+                                ctx.project,
+                                line,
+                                ctx.current_frame,
+                                ctx.zone,
+                                crate::config::reading_bar_offset_seconds(),
+                                ctx.fps,
+                            );
                             let ratio = ((x - r.x) / r.width).clamp(0.0, 1.0);
                             state.pending_cursor_click = Some((ratio, true));
 

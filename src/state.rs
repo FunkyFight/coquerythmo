@@ -1646,6 +1646,15 @@ impl State {
             })
     }
 
+    fn render_frame_at(&self, now: Instant) -> f64 {
+        self.playback
+            .video_player
+            .as_ref()
+            .map_or(self.current_frame() as f64, |player| {
+                player.current_frame_for_render_at(now)
+            })
+    }
+
     pub fn fps(&self) -> f64 {
         self.playback
             .video_player
@@ -4765,14 +4774,15 @@ impl State {
 
     // -- Render --
 
-    fn tick_video(&mut self) {
+    fn tick_video_at(&mut self, now: Instant) {
         if let Some(player) = &mut self.playback.video_player {
             let prev_frame = player.current_frame();
             let (bgl, sampler) = (
                 self.render.ui_renderer.texture_bind_group_layout(),
                 self.render.ui_renderer.texture_sampler(),
             );
-            player.tick(
+            player.tick_at(
+                now,
                 &self.render.gfx.device,
                 &self.render.gfx.queue,
                 bgl,
@@ -5287,22 +5297,9 @@ impl State {
     }
 
     pub fn display_refresh_interval(&self) -> Duration {
-        self.render.refresh_interval
+        self.render.refresh_interval()
     }
 
-    /// The scrolling bande rythmo owns a 240 Hz animation clock.  Do not tie
-    /// this cadence to decoded video frames or to the monitor refresh rate.
-    pub fn rythmo_refresh_interval(&self) -> Duration {
-        constants::RYTHMO_RENDER_INTERVAL
-    }
-
-    fn active_animation_interval(&self) -> Duration {
-        if self.is_video_playing() && self.active_workspace() == WorkspaceId::Rythmo {
-            self.rythmo_refresh_interval()
-        } else {
-            self.display_refresh_interval()
-        }
-    }
     fn scroll_decode_due(&self, now: Instant) -> bool {
         self.playback.scroll_needs_decode
             && self.playback.last_scroll_time.is_some_and(|last| {
@@ -5316,7 +5313,8 @@ impl State {
             || self.jobs.pending_import_job.is_some()
             || self.jobs.pending_save_job.is_some()
         {
-            return now.duration_since(self.render.last_redraw) >= Duration::from_millis(100);
+            return now.saturating_duration_since(self.render.last_redraw())
+                >= Duration::from_millis(100);
         }
 
         if self.ui_shell.ui.is_editing_text() {
@@ -5325,7 +5323,8 @@ impl State {
                 .ui
                 .next_cursor_blink_deadline()
                 .is_some_and(|deadline| deadline <= now)
-                || now.duration_since(self.render.last_redraw) >= Duration::from_millis(500);
+                || now.saturating_duration_since(self.render.last_redraw())
+                    >= Duration::from_millis(500);
         }
 
         false
@@ -5333,9 +5332,9 @@ impl State {
 
     fn continuous_redraw_due(&self, now: Instant) -> bool {
         (self.needs_continuous_redraw() || self.secondary_needs_continuous_redraw())
-            && now.saturating_duration_since(self.render.last_redraw)
-                >= self.active_animation_interval()
+            && self.render.is_frame_due(now)
     }
+
     pub fn needs_redraw_now(&self) -> bool {
         let now = Instant::now();
         self.scroll_decode_due(now)
@@ -5367,7 +5366,7 @@ impl State {
         };
 
         if self.needs_continuous_redraw() || self.secondary_needs_continuous_redraw() {
-            push_deadline(self.render.last_redraw + self.active_animation_interval());
+            push_deadline(self.render.next_frame_deadline());
         }
 
         if self.ui_shell.ui.has_active_progress()
@@ -5375,14 +5374,14 @@ impl State {
             || self.jobs.pending_import_job.is_some()
             || self.jobs.pending_save_job.is_some()
         {
-            push_deadline(self.render.last_redraw + Duration::from_millis(100));
+            push_deadline(self.render.last_redraw() + Duration::from_millis(100));
         }
 
         if self.ui_shell.ui.is_editing_text() {
             if let Some(cursor_deadline) = self.ui_shell.ui.next_cursor_blink_deadline() {
                 push_deadline(cursor_deadline);
             } else {
-                push_deadline(self.render.last_redraw + Duration::from_millis(500));
+                push_deadline(self.render.last_redraw() + Duration::from_millis(500));
             }
         }
 
@@ -5412,10 +5411,12 @@ impl State {
     }
 
     pub fn render(&mut self) {
-        // Pace from frame start, so CPU/GPU preparation is part of the display
-        // budget. Pacing from the end added a full refresh interval after the
-        // render cost and produced severe judder on large projects.
-        self.render.last_redraw = Instant::now();
+        // One monotonic sample drives every time-dependent visual decision in
+        // this frame. FrameTiming also discards obsolete deadlines instead of
+        // accumulating catch-up work after a late frame.
+        let frame_sample = self.render.begin_frame(Instant::now());
+        self.tick_video_at(frame_sample.instant);
+
         if self.active_workspace() == WorkspaceId::Recording {
             self.sync_recording_workspace_ui();
         }
@@ -5466,7 +5467,6 @@ impl State {
         // Drain timeline events
         let _events = self.playback.timeline.drain();
 
-        self.tick_video();
         self.apply_automation_if_needed();
 
         // Video quad ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â skip when export modal is showing (it would cover the modal)
@@ -5479,7 +5479,7 @@ impl State {
             build_video_quad(&self.playback.video_player, &self.ui_shell.ui)
         };
         let current_frame = self.current_frame();
-        let render_frame = self.render_frame();
+        let render_frame = self.render_frame_at(frame_sample.instant);
 
         // UI render. Keep a read guard instead of cloning the waveform every frame.
         let waveform_arc = self
@@ -5526,12 +5526,13 @@ impl State {
             .queue
             .submit(std::iter::once(encoder.finish()));
         surface_texture.present();
+        self.render.finish_present(Instant::now());
     }
 
     pub fn render_secondary_display(&mut self, window_id: WindowId) {
-        self.render.last_redraw = Instant::now();
-        self.tick_video();
-
+        // The main frame owns playback advancement and display cadence.
+        // Rendering the secondary surface must not create a second clock or
+        // consume decoded frames twice.
         let Some(display) = &mut self.window_manager.secondary_display else {
             return;
         };

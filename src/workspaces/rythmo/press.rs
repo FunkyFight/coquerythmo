@@ -64,7 +64,14 @@ pub(crate) fn handle_mouse_press(
 
     // Check lines
     for line in ctx.project.lines() {
-        let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
+        let r = line_rect(
+            ctx.project,
+            line,
+            ctx.current_frame,
+            ctx.zone,
+            crate::config::reading_bar_offset_seconds(),
+            ctx.fps,
+        );
         if !r.contains(x, y) {
             continue;
         }

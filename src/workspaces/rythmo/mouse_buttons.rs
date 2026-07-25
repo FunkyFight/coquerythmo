@@ -69,7 +69,14 @@ pub(crate) fn handle_shift_mouse_press(
     // Line text editing selection
     if let Some(line_id) = state.editing_line {
         if let Some(line) = ctx.project.get_line(line_id) {
-            let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
+            let r = line_rect(
+                ctx.project,
+                line,
+                ctx.current_frame,
+                ctx.zone,
+                crate::config::reading_bar_offset_seconds(),
+                ctx.fps,
+            );
             if r.contains(x, y) && !line.text.is_empty() {
                 let text_rect = ambiance_description_rect(r, line.kind);
                 let ratio = ((x - text_rect.x) / text_rect.width).clamp(0.0, 1.0);
@@ -101,7 +108,14 @@ pub(crate) fn handle_shift_mouse_press(
     // only its vertical track. Preserve an existing multi-line selection so
     // the whole group can move vertically together.
     for line in ctx.project.lines() {
-        let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
+        let rect = line_rect(
+            ctx.project,
+            line,
+            ctx.current_frame,
+            ctx.zone,
+            crate::config::reading_bar_offset_seconds(),
+            ctx.fps,
+        );
         if !rect.contains(x, y) {
             continue;
         }
@@ -151,7 +165,14 @@ pub(crate) fn handle_double_click(
         if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceEnd) {
             continue;
         }
-        let br = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
+        let br = badge_rect_for_line(
+            ctx.project,
+            line,
+            ctx.current_frame,
+            ctx.zone,
+            crate::config::reading_bar_offset_seconds(),
+            ctx.fps,
+        );
         if br.contains(x, y) {
             if let Some(old_id) = finalize_line_id {
                 if old_id != line.id {
@@ -188,7 +209,14 @@ pub(crate) fn handle_double_click(
     }
     // Line body → note editing (if has note and click is in note area) or text editing
     for line in ctx.project.lines() {
-        let r = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
+        let r = line_rect(
+            ctx.project,
+            line,
+            ctx.current_frame,
+            ctx.zone,
+            crate::config::reading_bar_offset_seconds(),
+            ctx.fps,
+        );
         if r.contains(x, y) {
             // If the line has a note and click is in the bottom part, edit note
             if !line.note.is_empty() {

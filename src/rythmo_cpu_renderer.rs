@@ -677,8 +677,7 @@ impl CpuRenderer {
                 let track =
                     crate::rythmo_layout::track_for_index(&scene.tracks, scene_line.track_index)?;
                 let body_y = ruler_h + track.top + slot_header_h + badge_gap;
-                let line_y =
-                    karaoke_stack_y(body_y, track.body_h, scene_line.karaoke_stack_row, s);
+                let line_y = karaoke_stack_y(body_y, track.body_h, scene_line.karaoke_stack_row, s);
                 let y_range = (line_y, line_y + karaoke_stack_height(track.body_h, s));
 
                 let karaoke_width =
@@ -693,13 +692,7 @@ impl CpuRenderer {
                 }
             })
             .collect();
-        blit_playhead_segments(
-            &mut pixmap,
-            playhead_x,
-            playhead_w,
-            h,
-            &playhead_gaps,
-        );
+        blit_playhead_segments(&mut pixmap, playhead_x, playhead_w, h, &playhead_gaps);
 
         // -- Lines (no handles, no border -- clean export) --
         // Precompute every visible line's rect + character name so a badge can be tested
@@ -1257,8 +1250,13 @@ impl CpuRenderer {
 
         // Drawings are an overlay in the editor, so composite them last in the
         // exported BR as well (above lines, labels and markers).
-        let (first_frame, last_frame) =
-            crate::rythmo_drawing::visible_frame_window(width as f32, current_frame as f64, ppf, 4, source_fps);
+        let (first_frame, last_frame) = crate::rythmo_drawing::visible_frame_window(
+            width as f32,
+            current_frame as f64,
+            ppf,
+            4,
+            source_fps,
+        );
         let strokes: Vec<_> = scene
             .drawings
             .iter()

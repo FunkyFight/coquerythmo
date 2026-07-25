@@ -623,15 +623,16 @@ pub(crate) fn line_rect_with_karaoke_preview(
     reading_bar_offset_seconds: f64,
     fps: f64,
 ) -> Rect {
-    EditorLayoutCtx::new_at_frame_with_fps(project, current_frame, fps, zone).line_rect_with_karaoke_width(
-        line,
-        current_frame,
-        zone,
-        karaoke_preview,
-        None,
-        reading_bar_offset_seconds,
-        fps,
-    )
+    EditorLayoutCtx::new_at_frame_with_fps(project, current_frame, fps, zone)
+        .line_rect_with_karaoke_width(
+            line,
+            current_frame,
+            zone,
+            karaoke_preview,
+            None,
+            reading_bar_offset_seconds,
+            fps,
+        )
 }
 
 pub(crate) fn badge_width(name: &str) -> f32 {

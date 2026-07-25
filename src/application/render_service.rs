@@ -1,69 +1,79 @@
 //! Composition of the graphics context and the generic UI renderer.
+//!
+//! Interactive frame cadence is intentionally not implemented here.
+//! [`FrameTiming`] is the sole authority for monitor refresh detection,
+//! redraw deadlines and shared visual frame samples.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use winit::window::Window;
 
+use crate::frame_timing::{FrameSample, FrameTiming};
 use crate::graphics::GraphicsContext;
 use crate::ui::renderer::UiRenderer;
 
 pub struct RenderCoordinator {
     pub gfx: GraphicsContext,
     pub ui_renderer: UiRenderer,
-    pub last_redraw: Instant,
-    pub refresh_interval: Duration,
-}
 
-fn refresh_interval_from_millihertz(refresh_rate_millihertz: Option<u32>) -> Duration {
-    let millihertz = refresh_rate_millihertz
-        .unwrap_or(60_000)
-        .clamp(30_000, 360_000) as f64;
-    Duration::from_secs_f64(1_000.0 / millihertz)
-}
-
-fn window_refresh_interval(window: &Window) -> Duration {
-    refresh_interval_from_millihertz(
-        window
-            .current_monitor()
-            .and_then(|monitor| monitor.refresh_rate_millihertz()),
-    )
+    /// Single source of truth for interactive rendering cadence.
+    pub frame_timing: FrameTiming,
 }
 
 impl RenderCoordinator {
     pub async fn new(window: Arc<Window>) -> Self {
-        let gfx = GraphicsContext::new(window.clone()).await;
+        let gfx = GraphicsContext::new(window).await;
         let ui_renderer = UiRenderer::new(&gfx.device, &gfx.queue, gfx.surface_format());
+        let frame_timing = FrameTiming::new(&gfx.window);
+
         Self {
             gfx,
             ui_renderer,
-            last_redraw: Instant::now(),
-            refresh_interval: window_refresh_interval(&window),
+            frame_timing,
         }
     }
 
+    /// Re-reads the refresh rate of the monitor currently containing the main
+    /// window.
+    ///
+    /// All refresh-rate calculations remain inside `frame_timing.rs`.
     pub fn update_refresh_interval(&mut self) {
-        self.refresh_interval = window_refresh_interval(&self.gfx.window);
+        self.frame_timing.update_monitor(&self.gfx.window);
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::refresh_interval_from_millihertz;
+    /// Compatibility façade for callers that need the physical display
+    /// interval.
+    ///
+    /// This method contains no independent timing state or calculation.
+    pub fn refresh_interval(&self) -> Duration {
+        self.frame_timing.refresh_interval()
+    }
 
-    #[test]
-    fn refresh_interval_tracks_the_real_monitor_rate() {
-        assert_eq!(
-            refresh_interval_from_millihertz(Some(60_000)).as_nanos(),
-            16_666_667
-        );
-        assert_eq!(
-            refresh_interval_from_millihertz(Some(144_000)).as_nanos(),
-            6_944_444
-        );
-        assert_eq!(
-            refresh_interval_from_millihertz(None).as_nanos(),
-            16_666_667
-        );
+    /// Compatibility façade for the beginning of the latest rendered frame.
+    pub fn last_redraw(&self) -> Instant {
+        self.frame_timing.last_frame_started_at()
+    }
+
+    /// Whether the next continuously animated display frame is due.
+    pub fn is_frame_due(&self, now: Instant) -> bool {
+        self.frame_timing.is_frame_due(now)
+    }
+
+    /// Deadline for the next continuously animated display frame.
+    pub fn next_frame_deadline(&self) -> Instant {
+        self.frame_timing.next_frame_deadline()
+    }
+
+    /// Creates the one time sample that must be shared by every visual
+    /// component rendered during this frame.
+    #[must_use]
+    pub fn begin_frame(&mut self, now: Instant) -> FrameSample {
+        self.frame_timing.begin_frame(now)
+    }
+
+    /// Records completion of a successful surface presentation.
+    pub fn finish_present(&mut self, presented_at: Instant) {
+        self.frame_timing.finish_present(presented_at);
     }
 }

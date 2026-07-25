@@ -295,8 +295,7 @@ impl SettingsModal {
                 // list_y=card.y+126, default_btn_y=list_y+FONT_LIST_H+6, preview_y=default_btn_y+32
                 // controls_label_y=preview_y+preview_h+8, controls_y=controls_label_y+20
                 let preview_h = self.preview_h.get();
-                let controls_y =
-                    card.y + 126.0 + FONT_LIST_H + 6.0 + 32.0 + preview_h + 8.0 + 20.0;
+                let controls_y = card.y + 126.0 + FONT_LIST_H + 6.0 + 32.0 + preview_h + 8.0 + 20.0;
                 let speed_group_x = card.x + 20.0;
                 let offset_group_x = speed_group_x + 30.0 + 80.0 + 30.0 + 40.0;
 
@@ -888,7 +887,12 @@ impl SettingsModal {
 
         // Speed plus button
         overlay_quads.push(QuadInstance {
-            rect: [speed_group_x + btn_size + value_w, controls_y, btn_size, 26.0],
+            rect: [
+                speed_group_x + btn_size + value_w,
+                controls_y,
+                btn_size,
+                26.0,
+            ],
             color: [0.15, 0.15, 0.18, 1.0],
             color_bottom: [0.15, 0.15, 0.18, 1.0],
             border_color: [0.30, 0.30, 0.36, 0.5],
@@ -999,7 +1003,12 @@ impl SettingsModal {
 
         // Offset plus button
         overlay_quads.push(QuadInstance {
-            rect: [offset_group_x + btn_size + value_w, controls_y, btn_size, 26.0],
+            rect: [
+                offset_group_x + btn_size + value_w,
+                controls_y,
+                btn_size,
+                26.0,
+            ],
             color: [0.15, 0.15, 0.18, 1.0],
             color_bottom: [0.15, 0.15, 0.18, 1.0],
             border_color: [0.30, 0.30, 0.36, 0.5],

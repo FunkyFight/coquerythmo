@@ -290,7 +290,8 @@ fn next_detection_address(project: &Project, line_id: u64) -> Option<DetectionAd
 fn tick_x(tick: MediaTick, current_frame: f64, zone: &Rect, fps: f64) -> f32 {
     let center_x = zone.x + zone.width / 2.0;
     let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
-    center_x - offset_frames as f32 * ppf() + (tick.as_frame_position() - current_frame) as f32 * ppf()
+    center_x - offset_frames as f32 * ppf()
+        + (tick.as_frame_position() - current_frame) as f32 * ppf()
 }
 
 fn pointer_tick(x: f32, current_frame: f64, zone: &Rect, fps: f64) -> MediaTick {
@@ -326,7 +327,13 @@ fn detection_button_rect(hover: &DetectionHover) -> Rect {
     }
 }
 
-fn source_icon_rect(tick: MediaTick, track_rect: Rect, current_frame: f64, zone: &Rect, fps: f64) -> Rect {
+fn source_icon_rect(
+    tick: MediaTick,
+    track_rect: Rect,
+    current_frame: f64,
+    zone: &Rect,
+    fps: f64,
+) -> Rect {
     Rect {
         x: tick_x(tick, current_frame, zone, fps) - DETECTION_HIT_SIZE / 2.0,
         y: track_rect.y - DETECTION_HIT_SIZE - DETECTION_ICON_BOTTOM_MARGIN,
@@ -647,7 +654,14 @@ fn sync_point_x(
     if line.karaoke {
         return None;
     }
-    let rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
+    let rect = line_rect(
+        project,
+        line,
+        current_frame,
+        zone,
+        crate::config::reading_bar_offset_seconds(),
+        fps,
+    );
     let ratio = ((point.line_tick.as_frame_position() - line.start_frame as f64)
         / line.duration_frames.max(1) as f64) as f32;
     Some(rect.x + rect.width * ratio.clamp(0.0, 1.0))
@@ -669,7 +683,14 @@ fn sync_retarget_boundary_at(
     y: f32,
 ) -> Option<u32> {
     let line = ctx.project.get_line(address.line_id)?;
-    let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
+    let rect = line_rect(
+        ctx.project,
+        line,
+        ctx.current_frame,
+        ctx.zone,
+        crate::config::reading_bar_offset_seconds(),
+        ctx.fps,
+    );
     if y < rect.y - 10.0 || y > rect.y + rect.height + 10.0 || rect.width <= 0.0 {
         return None;
     }
@@ -725,7 +746,14 @@ fn sync_placeholder_for_line(
         return None;
     }
 
-    let line_rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
+    let line_rect = line_rect(
+        project,
+        line,
+        current_frame,
+        zone,
+        crate::config::reading_bar_offset_seconds(),
+        fps,
+    );
     if !line_rect.contains(x, y) || line_rect.width <= 0.0 {
         return None;
     }
@@ -781,7 +809,15 @@ fn line_under_pointer<'a>(
 ) -> Option<&'a crate::rythmo_line::RythmoLine> {
     project.lines().find(|line| {
         !line.karaoke
-            && line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps).contains(x, y)
+            && line_rect(
+                project,
+                line,
+                current_frame,
+                zone,
+                crate::config::reading_bar_offset_seconds(),
+                fps,
+            )
+            .contains(x, y)
             && (!line.text.is_empty() || has_sync_cues(project, line))
             && state.editing_character != Some(line.id)
     })
@@ -794,8 +830,16 @@ fn hit_sync_placeholder(
     y: f32,
 ) -> Option<(u64, usize, MediaTick)> {
     ctx.project.lines().find_map(|line| {
-        let placeholder =
-            sync_placeholder_for_line(ctx.project, line, state, x, y, ctx.current_frame, ctx.zone, ctx.fps)?;
+        let placeholder = sync_placeholder_for_line(
+            ctx.project,
+            line,
+            state,
+            x,
+            y,
+            ctx.current_frame,
+            ctx.zone,
+            ctx.fps,
+        )?;
         let hit = expanded_rect(
             sync_dot_rect(placeholder.x, placeholder.line_rect),
             SYNC_DOT_HIT_PADDING,
@@ -821,7 +865,9 @@ fn hit_existing_detection(
         };
         let rect = track_body_rect(ctx, track);
         for cue in data.source_detections() {
-            if source_icon_rect(cue.media_tick, rect, ctx.current_frame, ctx.zone, ctx.fps).contains(x, y) {
+            if source_icon_rect(cue.media_tick, rect, ctx.current_frame, ctx.zone, ctx.fps)
+                .contains(x, y)
+            {
                 return Some(DetectionAddress {
                     line_id,
                     detection_id: cue.id,
@@ -837,11 +883,24 @@ fn hit_existing_detection(
         let Some(data) = ctx.project.detections().line(line.id) else {
             continue;
         };
-        let rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
+        let rect = line_rect(
+            ctx.project,
+            line,
+            ctx.current_frame,
+            ctx.zone,
+            crate::config::reading_bar_offset_seconds(),
+            ctx.fps,
+        );
         for point in data.sync_points() {
-            let Some(cue_x) =
-                sync_point_x(ctx.project, line, point, ctx.current_frame, ctx.zone, state, ctx.fps)
-            else {
+            let Some(cue_x) = sync_point_x(
+                ctx.project,
+                line,
+                point,
+                ctx.current_frame,
+                ctx.zone,
+                state,
+                ctx.fps,
+            ) else {
                 continue;
             };
             if expanded_rect(sync_dot_rect(cue_x, rect), SYNC_DOT_HIT_PADDING).contains(x, y) {
@@ -942,7 +1001,14 @@ pub(crate) fn render_sync_text_segments(
     let boundaries = boundaries.into_iter().collect::<Vec<_>>();
 
     let characters = line.text.chars().collect::<Vec<_>>();
-    let rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
+    let rect = line_rect(
+        project,
+        line,
+        current_frame,
+        zone,
+        crate::config::reading_bar_offset_seconds(),
+        fps,
+    );
     let mut cursor_segments = Vec::new();
 
     for pair in boundaries.windows(2) {
@@ -1355,7 +1421,14 @@ fn render_shifted_syllable_handles(
         return;
     }
 
-    let rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
+    let rect = line_rect(
+        project,
+        line,
+        current_frame,
+        zone,
+        crate::config::reading_bar_offset_seconds(),
+        fps,
+    );
     let color = [0.95, 0.08, 0.03, 1.0];
     let stroke = 3.0;
     let tick_h = 9.0;
@@ -1654,9 +1727,17 @@ pub(crate) fn render_detection_overlay<'a>(
         let Some(data) = project.detections().line(line.id) else {
             continue;
         };
-        let rect = line_rect(project, line, current_frame, zone, crate::config::reading_bar_offset_seconds(), fps);
+        let rect = line_rect(
+            project,
+            line,
+            current_frame,
+            zone,
+            crate::config::reading_bar_offset_seconds(),
+            fps,
+        );
         for point in data.sync_points() {
-            let Some(cue_x) = sync_point_x(project, line, point, current_frame, zone, state, fps) else {
+            let Some(cue_x) = sync_point_x(project, line, point, current_frame, zone, state, fps)
+            else {
                 continue;
             };
             let address = DetectionAddress {
@@ -1688,15 +1769,15 @@ pub(crate) fn render_detection_overlay<'a>(
     }
 
     let hovered_sync_line = state.detection_hover.and_then(|hover| {
-            line_under_pointer(
-                project,
-                state,
-                hover.screen_x,
-                hover.screen_y,
-                current_frame,
-                zone,
-                fps,
-            )
+        line_under_pointer(
+            project,
+            state,
+            hover.screen_x,
+            hover.screen_y,
+            current_frame,
+            zone,
+            fps,
+        )
         .filter(|line| has_sync_cues(project, line))
         .map(|line| line.id)
     });
@@ -1895,7 +1976,10 @@ mod tests {
             hit.y,
             track.y - DETECTION_HIT_SIZE - DETECTION_ICON_BOTTOM_MARGIN
         );
-        assert_eq!(hit.x + hit.width / 2.0, tick_x(MediaTick::ZERO, 0.0, &zone, 24.0));
+        assert_eq!(
+            hit.x + hit.width / 2.0,
+            tick_x(MediaTick::ZERO, 0.0, &zone, 24.0)
+        );
     }
 
     #[test]

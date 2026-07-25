@@ -480,6 +480,11 @@ impl VideoPlayer {
         self.seek_relative(-1, device, queue, bind_group_layout, sampler);
     }
 
+    /// Advances decoded video state using a caller-provided monotonic sample.
+    ///
+    /// Interactive rendering must call [`Self::tick_at`] so video frame
+    /// selection, timeline positioning and UI animation all observe the same
+    /// instant. This wrapper remains available for non-rendering callers.
     pub fn tick(
         &mut self,
         device: &wgpu::Device,
@@ -487,7 +492,19 @@ impl VideoPlayer {
         bind_group_layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
     ) {
-        if !self.consume_current_decoder_frame(device, queue, bind_group_layout, sampler) {
+        self.tick_at(Instant::now(), device, queue, bind_group_layout, sampler);
+    }
+
+    /// Advances decoded video state at the shared visual-frame instant.
+    pub fn tick_at(
+        &mut self,
+        now: Instant,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+    ) {
+        if !self.consume_current_decoder_frame_at(now, device, queue, bind_group_layout, sampler) {
             return;
         }
 
@@ -495,7 +512,6 @@ impl VideoPlayer {
             return;
         }
 
-        let now = Instant::now();
         let Some(target_playback_frame) = self.playback_frame_at(now) else {
             return;
         };
@@ -504,7 +520,8 @@ impl VideoPlayer {
         let target_frame = target_render_frame.floor() as i64;
 
         let wall_clock_frame = self.playback_start_time.map(|start| {
-            self.playback_start_frame as f64 + start.elapsed().as_secs_f64() * self.fps
+            self.playback_start_frame as f64
+                + now.saturating_duration_since(start).as_secs_f64() * self.fps
         });
         if self.total_frames > 0
             && (target_playback_frame >= self.total_frames as f64
@@ -556,8 +573,9 @@ impl VideoPlayer {
         }
     }
 
-    fn consume_current_decoder_frame(
+    fn consume_current_decoder_frame_at(
         &mut self,
+        now: Instant,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bind_group_layout: &wgpu::BindGroupLayout,
@@ -575,7 +593,7 @@ impl VideoPlayer {
                 self.receiver_has_current_frame = false;
                 if self.playing && self.waiting_for_first_frame {
                     self.waiting_for_first_frame = false;
-                    self.start_playback_clock(Instant::now());
+                    self.start_playback_clock(now);
                 }
                 true
             }
@@ -634,12 +652,22 @@ impl VideoPlayer {
         Some(self.clamp_render_frame(self.playback_frame_at(now)?))
     }
 
-    /// Visual frame for UI rendering. Decoded-frame and timeline state remain integer-based.
+    /// Visual frame for UI rendering. Decoded-frame and timeline state remain
+    /// integer-based.
+    ///
+    /// Interactive rendering must use [`Self::current_frame_for_render_at`] so
+    /// every visual component observes the same monotonic sample.
     pub fn current_frame_for_render(&self) -> f64 {
+        self.current_frame_for_render_at(Instant::now())
+    }
+
+    /// Visual frame evaluated at the shared visual-frame instant.
+    pub fn current_frame_for_render_at(&self, now: Instant) -> f64 {
         if !self.playing {
             return self.current_frame as f64;
         }
-        self.playback_render_frame_at(Instant::now())
+
+        self.playback_render_frame_at(now)
             .unwrap_or(self.current_frame as f64)
     }
 
@@ -1587,7 +1615,7 @@ mod tests {
     }
 
     #[test]
-    fn rythmo_clock_interpolates_ten_steps_between_24_fps_video_frames() {
+    fn visual_clock_interpolates_from_the_supplied_instant() {
         let mut player = VideoPlayer::new();
         let start = Instant::now();
         player.playing = true;
@@ -1596,13 +1624,16 @@ mod tests {
         player.playback_start_frame = 100;
         player.playback_start_time = Some(start);
 
-        for tick in 0..=10 {
-            let now = start + Duration::from_secs_f64(tick as f64 / 240.0);
-            let frame = player.playback_render_frame_at(now).unwrap();
-            let expected = 100.0 + tick as f64 / 10.0;
-            // Duration stores integer nanoseconds, so a 1/240 s sample has a
-            // tiny representation error once converted back to video frames.
-            assert!((frame - expected).abs() < 1.0e-6);
+        let samples = [
+            (Duration::ZERO, 100.0),
+            (Duration::from_millis(125), 103.0),
+            (Duration::from_millis(250), 106.0),
+            (Duration::from_millis(500), 112.0),
+        ];
+
+        for (elapsed, expected) in samples {
+            let frame = player.current_frame_for_render_at(start + elapsed);
+            assert!((frame - expected).abs() < 1.0e-9);
         }
     }
 }

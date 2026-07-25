@@ -1421,14 +1421,10 @@ pub fn run(startup_path: Option<PathBuf>) {
                     }
                 }
 
-                // WaitUntil on Windows is not reliably granular enough for a
-                // 4.166 ms bande-rythmo tick. During rythmo playback keep the
-                // loop hot; State still gates actual redraws to exactly 240 Hz.
-                if state.is_video_playing()
-                    && state.active_workspace() == WorkspaceId::Rythmo
-                {
-                    elwt.set_control_flow(ControlFlow::Poll);
-                } else if let Some(deadline) = state.next_wake_deadline() {
+                // The event loop never spins continuously to pace rendering.
+                // State exposes the next useful wake-up deadline, ultimately
+                // derived from the monitor cadence owned by `frame_timing`.
+                if let Some(deadline) = state.next_wake_deadline() {
                     let now = Instant::now();
                     elwt.set_control_flow(ControlFlow::WaitUntil(deadline.max(now)));
                 } else {

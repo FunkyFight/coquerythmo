@@ -118,8 +118,22 @@ pub fn handle_rythmo_event(
                 let characters = ctx.project.autocomplete_entries_for_line(line);
                 let visible_rows = characters.len().min(8);
                 let max_scroll = characters.len().saturating_sub(visible_rows);
-                let badge = badge_rect_for_line(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
-                let line_rect = line_rect(ctx.project, line, ctx.current_frame, ctx.zone, crate::config::reading_bar_offset_seconds(), ctx.fps);
+                let badge = badge_rect_for_line(
+                    ctx.project,
+                    line,
+                    ctx.current_frame,
+                    ctx.zone,
+                    crate::config::reading_bar_offset_seconds(),
+                    ctx.fps,
+                );
+                let line_rect = line_rect(
+                    ctx.project,
+                    line,
+                    ctx.current_frame,
+                    ctx.zone,
+                    crate::config::reading_bar_offset_seconds(),
+                    ctx.fps,
+                );
                 let list = Rect {
                     x: badge.x,
                     y: line_rect.y + line_rect.height + 2.0,
@@ -140,9 +154,15 @@ pub fn handle_rythmo_event(
 
     // Autocomplete click has highest priority (before color picker eats it)
     if let UiEvent::MousePress { x, y } = event {
-        if let Some((name, color)) =
-            autocomplete_hit(ctx.zone, ctx.project, ctx.current_frame, state, *x, *y, ctx.fps)
-        {
+        if let Some((name, color)) = autocomplete_hit(
+            ctx.zone,
+            ctx.project,
+            ctx.current_frame,
+            state,
+            *x,
+            *y,
+            ctx.fps,
+        ) {
             if let Some(line_id) = state.editing_character {
                 state.stop_char_editing();
                 return EventResponse::Action(UiAction::SetCharacter {

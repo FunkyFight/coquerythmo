@@ -1,6 +1,6 @@
 //! Testable product modules for Coquerythmo.
 //!
-//! The binary is intentionally kept as a thin process entry point.  Runtime
+//! The binary is intentionally kept as a thin process entry point. Runtime
 //! composition belongs to [`app`]; the existing product modules remain
 //! private to the crate while their unit tests run through this library target.
 
@@ -17,6 +17,7 @@ pub mod delivery_export;
 pub mod detection;
 pub mod detection_foreground;
 pub mod export;
+pub mod frame_timing;
 pub mod graphics;
 pub mod i18n;
 pub mod input;

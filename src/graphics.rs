@@ -1,11 +1,12 @@
 use std::sync::Arc;
+
 use winit::window::Window;
 
-fn present_mode(_vsync: bool) -> wgpu::PresentMode {
-    // FIFO is the only presentation path that consistently keeps the complete
-    // rythmo band on the same display refresh across supported backends. Keep
-    // it mandatory: an old `vsync = false` preference must never make moving
-    // text tear across two display refreshes.
+/// Coquerythmo always presents through strict FIFO VSync.
+///
+/// Interactive rendering cadence is controlled by `frame_timing`; presentation
+/// itself remains synchronized with the display on every supported backend.
+fn present_mode() -> wgpu::PresentMode {
     wgpu::PresentMode::Fifo
 }
 
@@ -81,7 +82,7 @@ impl GraphicsContext {
         let surface_format = surface_caps
             .formats
             .iter()
-            .find(|f| f.is_srgb())
+            .find(|format| format.is_srgb())
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
@@ -90,13 +91,15 @@ impl GraphicsContext {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: present_mode(crate::config::get().window.vsync),
+            present_mode: present_mode(),
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
-            // Avoid presenting a stale 240 Hz interpolation sample one extra
-            // frame later. One queued frame is enough with FIFO VSync.
+
+            // Keep no more than one frame queued so the image presented by
+            // FIFO remains as close as possible to the shared frame sample.
             desired_maximum_frame_latency: 1,
         };
+
         surface.configure(&device, &config);
 
         Self {
@@ -130,17 +133,18 @@ impl GraphicsContext {
 
     pub fn create_window_surface(&self, window: Arc<Window>) -> Result<WindowSurface, String> {
         let size = window.inner_size();
+
         let surface = self
             .instance
             .create_surface(window.clone())
-            .map_err(|e| format!("Failed to create GPU surface: {e}"))?;
+            .map_err(|error| format!("Failed to create GPU surface: {error}"))?;
 
         let surface_caps = surface.get_capabilities(&self.adapter);
+
         if !surface_caps.formats.contains(&self.config.format) {
             return Err("Secondary display does not support the main surface format".into());
         }
 
-        let present_mode = present_mode(crate::config::get().window.vsync);
         let alpha_mode = if surface_caps.alpha_modes.contains(&self.config.alpha_mode) {
             self.config.alpha_mode
         } else {
@@ -152,11 +156,12 @@ impl GraphicsContext {
             format: self.config.format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode,
+            present_mode: present_mode(),
             alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: self.config.desired_maximum_frame_latency,
         };
+
         surface.configure(&self.device, &config);
 
         Ok(WindowSurface {
@@ -173,8 +178,7 @@ mod tests {
     use super::present_mode;
 
     #[test]
-    fn present_mode_always_uses_strict_vsync() {
-        assert_eq!(present_mode(true), wgpu::PresentMode::Fifo);
-        assert_eq!(present_mode(false), wgpu::PresentMode::Fifo);
+    fn presentation_always_uses_strict_vsync() {
+        assert_eq!(present_mode(), wgpu::PresentMode::Fifo);
     }
 }

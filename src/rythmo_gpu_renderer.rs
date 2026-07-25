@@ -991,8 +991,14 @@ impl GpuRenderer {
             return false;
         }
 
-        let rgba =
-            crate::rythmo_drawing::rasterize_window(&strokes, width, height, current_frame, ppf, fps);
+        let rgba = crate::rythmo_drawing::rasterize_window(
+            &strokes,
+            width,
+            height,
+            current_frame,
+            ppf,
+            fps,
+        );
         let needs_create = self
             .drawing_overlay
             .as_ref()
@@ -2147,11 +2153,12 @@ impl GpuRenderer {
             .iter()
             .filter(|scene_line| scene_line.karaoke_active)
             .filter_map(|scene_line| {
-                let track =
-                    crate::rythmo_layout::track_for_index(&common_scene.tracks, scene_line.track_index)?;
+                let track = crate::rythmo_layout::track_for_index(
+                    &common_scene.tracks,
+                    scene_line.track_index,
+                )?;
                 let body_y = ruler_h + track.top + slot_header_h + badge_gap;
-                let line_y =
-                    karaoke_stack_y(body_y, track.body_h, scene_line.karaoke_stack_row, s);
+                let line_y = karaoke_stack_y(body_y, track.body_h, scene_line.karaoke_stack_row, s);
                 let y_range = (line_y, line_y + karaoke_stack_height(track.body_h, s));
 
                 let karaoke_width =
@@ -2166,13 +2173,7 @@ impl GpuRenderer {
                 }
             })
             .collect();
-        push_playhead_segments(
-            &mut quads,
-            playhead_x,
-            playhead_w,
-            h,
-            &playhead_gaps,
-        );
+        push_playhead_segments(&mut quads, playhead_x, playhead_w, h, &playhead_gaps);
 
         // ── Lines ──
         // Precompute every visible line's rect + character name so a badge can be tested
@@ -2870,18 +2871,24 @@ impl GpuRenderer {
 
         // Match the editor's layer order: drawings cover the rendered BR and
         // are themselves free of editing handles or selection UI.
-        let drawing_icon_index =
-            if self.prepare_drawing_overlay(&common_scene, current_frame, width, height, ppf, source_fps) {
-                let index = all_icons.len() as u32;
-                all_icons.push(IconInstance {
-                    rect: [0.0, 0.0, width as f32, height as f32],
-                    uv_rect: [0.0, 0.0, 1.0, 1.0],
-                    tint: [1.0, 1.0, 1.0, 1.0],
-                });
-                Some(index)
-            } else {
-                None
-            };
+        let drawing_icon_index = if self.prepare_drawing_overlay(
+            &common_scene,
+            current_frame,
+            width,
+            height,
+            ppf,
+            source_fps,
+        ) {
+            let index = all_icons.len() as u32;
+            all_icons.push(IconInstance {
+                rect: [0.0, 0.0, width as f32, height as f32],
+                uv_rect: [0.0, 0.0, 1.0, 1.0],
+                tint: [1.0, 1.0, 1.0, 1.0],
+            });
+            Some(index)
+        } else {
+            None
+        };
 
         Self::coalesce_icon_batches(&mut icon_batches);
 
