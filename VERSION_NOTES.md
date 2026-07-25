@@ -1,8 +1,8 @@
-# 3.6.3
-- Correction du stacking de lignes karaokés dans l'export
-- Déplacement de la barre de lecture possible.
-- Quelques ajustements d'échelle dans l'export.
-- Déplacement de la barre de lecture totalement fonctionnelle
+# 3.6.4
+Reading bar offset is now applied in the core coordinate math (frame_to_x/x_to_frame)
+All overlays, markers, waveform, drawings, detection UI, ghost preview, kbd CTRL+click, etc. now respect the offset
+Settings persistence already works via config
+CPU renderer now also draws markers with the offset
 
 # To do :
 Poignées karaoké font toute la hauteur de leur ligne
@@ -33,6 +33,8 @@ Une ligne sélectionnée applique l’effet à toute la réplique.
 En édition, une sélection non vide limite l’effet à cette plage.
 Les bornes sont exprimées en graphèmes étendus pour ne pas découper les accents, ligatures ou emoji composés.
 L’option est absente pour les ambiances et les lignes karaoké.
+
+L'effet est instantanément visible dans l'ui et dans les exports.
 
 Accessibilité
 La palette est une surface modale qui capture ses propres commandes clavier.

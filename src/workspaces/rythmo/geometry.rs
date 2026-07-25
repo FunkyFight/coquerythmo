@@ -46,13 +46,14 @@ pub(crate) fn visual_frame_to_i64(current_frame: f64) -> i64 {
     f64_floor_to_i64(current_frame)
 }
 
-pub(crate) fn render_window(zone: &Rect, current_frame: f64, margin_frames: i64) -> (i64, i64) {
+pub(crate) fn render_window(zone: &Rect, current_frame: f64, margin_frames: i64, fps: f64) -> (i64, i64) {
     let half_visible_frames = zone.width as f64 / ppf().max(0.001) as f64 / 2.0;
+    let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
     let margin_frames = margin_frames.max(0);
     let first_frame =
-        f64_floor_to_i64(current_frame - half_visible_frames).saturating_sub(margin_frames);
+        f64_floor_to_i64(current_frame - half_visible_frames + offset_frames).saturating_sub(margin_frames);
     let last_frame =
-        f64_ceil_to_i64(current_frame + half_visible_frames).saturating_add(margin_frames);
+        f64_ceil_to_i64(current_frame + half_visible_frames + offset_frames).saturating_add(margin_frames);
     (first_frame, last_frame.max(first_frame))
 }
 

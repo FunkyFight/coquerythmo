@@ -582,16 +582,27 @@ impl CpuRenderer {
         }
     }
 
-    /// Render the bande rythmo for a given frame. All sizes scale with width.
+    /// Render the bande rythmo for a fractional source-frame position.
+    ///
+    /// Integer frame bounds are used only for visibility queries; every visual
+    /// position keeps the fractional component so a 24 fps project can scroll
+    /// smoothly in a 60 fps export.
     pub fn render_br(
         &mut self,
         project: &Project,
-        current_frame: i64,
+        current_frame: f64,
         width: u32,
         source_fps: f64,
         br_scale: f32,
         karaoke_text_scale: f32,
     ) -> Vec<u8> {
+        let current_frame = if current_frame.is_finite() {
+            current_frame
+        } else {
+            0.0
+        };
+        let current_frame_floor = current_frame.floor() as i64;
+        let current_frame_ceil = current_frame.ceil() as i64;
         let s = width as f32 / constants::REF_WIDTH * br_scale; // export BR scale factor
         let normal_slot_h = constants::SLOT_HEIGHT * s;
         let ruler_h = constants::RULER_HEIGHT * s;
@@ -618,14 +629,14 @@ impl CpuRenderer {
             &self.render_index,
             SceneOptions {
                 frame_window: FrameWindow {
-                    first: current_frame
+                    first: current_frame_floor
                         .saturating_sub(visible_frames / 2)
                         .saturating_sub(render_margin_frames),
-                    last: current_frame
+                    last: current_frame_ceil
                         .saturating_add(visible_frames / 2)
                         .saturating_add(render_margin_frames),
                 },
-                current_frame: current_frame as f64,
+                current_frame,
                 source_fps,
                 normal_body_height: normal_slot_h,
                 slot_header_height: slot_header_h,
@@ -646,12 +657,12 @@ impl CpuRenderer {
         let offset_frames = crate::config::reading_bar_offset_seconds() * source_fps;
 
         // -- Ruler ticks --
-        let first_tick_frame = current_frame - visible_frames / 2;
+        let first_tick_frame = current_frame_floor - visible_frames / 2;
         let first_tick =
             first_tick_frame.div_euclid(constants::TICK_GAP_FRAMES) * constants::TICK_GAP_FRAMES;
         let mut tf = first_tick;
         loop {
-            let x = center_x + (tf - current_frame) as f32 * ppf;
+            let x = center_x + (tf as f64 - current_frame) as f32 * ppf;
             if x > w {
                 break;
             }
@@ -706,7 +717,7 @@ impl CpuRenderer {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {
-                line.visual_x_width(current_frame as f64, center_x, ppf, w, s, offset_frames)
+                line.visual_x_width(current_frame, center_x, ppf, w, s, offset_frames)
             };
             let badge_w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart)
             {
@@ -775,7 +786,7 @@ impl CpuRenderer {
                 let width = self.karaoke_text_width(&line.text, font_size, karaoke_text_scale);
                 (center_x - width / 2.0, width)
             } else {
-                line.visual_x_width(current_frame as f64, center_x, ppf, w, s, offset_frames)
+                line.visual_x_width(current_frame, center_x, ppf, w, s, offset_frames)
             };
             let badge_w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart)
             {
@@ -873,7 +884,7 @@ impl CpuRenderer {
             if !line.text.is_empty() && line.text != "↑" && line.text != "↓" {
                 let read_highlight_end = if project.settings().highlight_read_word && !line.karaoke
                 {
-                    let progress = (current_frame as f64 - line.start_frame as f64)
+                    let progress = (current_frame - line.start_frame as f64)
                         / line.duration_frames.max(1) as f64;
                     crate::syllable::read_highlight_end_from_timing(
                         &line.text,
@@ -1194,7 +1205,7 @@ impl CpuRenderer {
                     &mut pixmap,
                     line,
                     scene.syllable_language.code(),
-                    current_frame as f64,
+                    current_frame,
                     x1,
                     line_y,
                     lw,
@@ -1252,7 +1263,7 @@ impl CpuRenderer {
         // exported BR as well (above lines, labels and markers).
         let (first_frame, last_frame) = crate::rythmo_drawing::visible_frame_window(
             width as f32,
-            current_frame as f64,
+            current_frame,
             ppf,
             4,
             source_fps,
@@ -1267,7 +1278,7 @@ impl CpuRenderer {
                 &strokes,
                 width,
                 height,
-                current_frame as f64,
+                current_frame,
                 ppf,
                 source_fps,
             );
@@ -1275,6 +1286,106 @@ impl CpuRenderer {
         }
 
         pixmap.data().to_vec()
+    }
+
+    fn render_markers(
+        &mut self,
+        pixmap: &mut Pixmap,
+        markers: &[crate::rendering::rythmo::scene::SceneMarker],
+        current_frame: f64,
+        center_x: f32,
+        ppf: f32,
+        offset_x: f32,
+        w: f32,
+        h: f32,
+        s: f32,
+    ) {
+        use crate::rythmo_line::MarkerKind;
+        let margin_frames = (10.0 * s / ppf).ceil() as i64 + 1;
+        let offset_frames = (offset_x / ppf).round() as i64;
+        let cf_i64 = current_frame.floor() as i64;
+        let first_marker_frame =
+            cf_i64.saturating_sub((w / ppf / 2.0).ceil() as i64 + margin_frames - offset_frames);
+        let last_marker_frame =
+            cf_i64.saturating_add((w / ppf / 2.0).ceil() as i64 + margin_frames + offset_frames);
+        for marker in markers {
+            if marker.frame < first_marker_frame || marker.frame > last_marker_frame {
+                continue;
+            }
+            let mx = center_x + (marker.frame as f64 - current_frame) as f32 * ppf + offset_x;
+            if mx < -10.0 * s || mx > w + 10.0 * s {
+                continue;
+            }
+            match &marker.kind {
+                MarkerKind::Boucle => {
+                    blit_rect(pixmap, mx - 1.0 * s, 0.0, 2.0 * s, h, [230, 38, 38, 230]);
+                    let cy = h / 2.0;
+                    let arm = 10.0 * s;
+                    blit_thick_line(
+                        pixmap,
+                        mx - arm / 2.0,
+                        cy - arm / 2.0,
+                        mx + arm / 2.0,
+                        cy + arm / 2.0,
+                        2.5 * s,
+                        [230, 38, 38, 230],
+                    );
+                    blit_thick_line(
+                        pixmap,
+                        mx - arm / 2.0,
+                        cy + arm / 2.0,
+                        mx + arm / 2.0,
+                        cy - arm / 2.0,
+                        2.5 * s,
+                        [217, 38, 38, 230],
+                    );
+                }
+                MarkerKind::Out => {
+                    blit_rect(pixmap, mx - 1.0 * s, 0.0, 2.0 * s, h, [217, 115, 115, 180]);
+                    let cy = h / 2.0;
+                    let bh = h * 0.15;
+                    for &offset in &[-5.0_f32, 5.0] {
+                        let dx = bh * 0.3;
+                        let length = (dx * 2.0_f32).hypot(bh * 2.0);
+                        let angle = (bh * 2.0).atan2(dx * 2.0);
+                        let cx = mx + offset * s;
+                        blit_thick_line(
+                            pixmap,
+                            cx - angle.cos() * length / 2.0,
+                            cy - angle.sin() * length / 2.0,
+                            cx + angle.cos() * length / 2.0,
+                            cy + angle.sin() * length / 2.0,
+                            2.0 * s,
+                            [217, 115, 115, 180],
+                        );
+                    }
+                }
+                MarkerKind::SceneChange => {
+                    blit_rect(pixmap, mx - 1.0 * s, 0.0, 2.0 * s, h, [230, 230, 240, 200]);
+                }
+                MarkerKind::LiaisonLeft | MarkerKind::LiaisonRight => {
+                    let is_left = matches!(marker.kind, MarkerKind::LiaisonLeft);
+                    let ay = constants::RULER_HEIGHT * s / 2.0;
+                    let arm_x = if is_left { -3.0 } else { 3.0 } * s;
+                    let arm_y = 4.0 * s;
+                    let tip_x = mx + arm_x;
+                    for &dy in &[-arm_y, arm_y] {
+                        let sx = mx - arm_x;
+                        let length = ((tip_x - sx).powi(2) + dy.powi(2)).sqrt();
+                        let angle = dy.atan2(tip_x - sx);
+                        blit_thick_line(
+                            pixmap,
+                            (sx + tip_x) / 2.0,
+                            ay + dy / 2.0,
+                            (sx + tip_x) / 2.0 + angle.cos() * length / 2.0,
+                            ay + dy / 2.0 + angle.sin() * length / 2.0,
+                            1.5 * s,
+                            [180, 180, 190, 200],
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1713,7 +1824,7 @@ mod tests {
         let br_scale = 0.5;
         let height = br_height(&project, width, br_scale);
         let mut renderer = CpuRenderer::new();
-        let pixels = renderer.render_br(&project, 0, width, 24.0, br_scale, 1.0);
+        let pixels = renderer.render_br(&project, 0.0, width, 24.0, br_scale, 1.0);
 
         assert_eq!(pixels.len(), width as usize * height as usize * 4);
     }

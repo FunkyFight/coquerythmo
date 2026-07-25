@@ -36,7 +36,7 @@ fn visible_interaction_geometry(
     state: &RythmoState,
 ) -> Vec<(u64, Rect, Rect)> {
     let margin_frames = interactive_render_margin_frames(ctx.fps, ctx.render_index);
-    let (first_frame, last_frame) = render_window(ctx.zone, ctx.current_frame, margin_frames);
+    let (first_frame, last_frame) = render_window(ctx.zone, ctx.current_frame, margin_frames, ctx.fps);
     let mut line_ids =
         ctx.render_index
             .visible_line_ids(ctx.project, first_frame, last_frame);

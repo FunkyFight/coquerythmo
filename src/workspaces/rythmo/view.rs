@@ -2617,7 +2617,7 @@ pub fn render_lines<'a>(
     let mut cursor_info = None;
     let karaoke_lang = project.syllable_language_code();
     let margin_frames = interactive_render_margin_frames(fps, render_index);
-    let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames);
+    let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames, fps);
     let mut visible_line_ids = render_index.visible_line_ids(project, first_frame, last_frame);
     visible_line_ids.sort_by_key(|id| render_index.line_order_index(*id));
 
@@ -3858,7 +3858,7 @@ pub fn render_markers<'a>(
         }
     }
     let margin_frames = f64_ceil_to_i64(20.0 / ppf().max(0.001) as f64).saturating_add(1);
-    let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames);
+    let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames, fps);
     for marker_index in render_index.visible_marker_indices(first_frame, last_frame) {
         let Some(marker) = project.marker(marker_index) else {
             continue;
@@ -4027,7 +4027,7 @@ pub fn render_ambiance_liaison_icons(
     liaison_left_uv: [f32; 4],
     liaison_right_uv: [f32; 4],
 ) {
-    let (first_frame, last_frame) = render_window(zone, current_frame, 4);
+    let (first_frame, last_frame) = render_window(zone, current_frame, 4, fps);
     for line_id in render_index.visible_line_ids(project, first_frame, last_frame) {
         let Some(line) = project
             .get_line(line_id)

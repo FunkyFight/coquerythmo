@@ -2752,14 +2752,14 @@ impl GpuRenderer {
         // ── Markers ──
         let marker_margin_frames = (10.0 * s / ppf).ceil() as i64 + 1;
         let first_marker_frame =
-            cf_i64.saturating_sub((w / ppf / 2.0).ceil() as i64 + marker_margin_frames);
+            cf_i64.saturating_sub((w / ppf / 2.0).ceil() as i64 + marker_margin_frames - offset_frames.round() as i64);
         let last_marker_frame =
-            cf_i64.saturating_add((w / ppf / 2.0).ceil() as i64 + marker_margin_frames);
+            cf_i64.saturating_add((w / ppf / 2.0).ceil() as i64 + marker_margin_frames + offset_frames.round() as i64);
         for marker in &common_scene.markers {
             if marker.frame < first_marker_frame || marker.frame > last_marker_frame {
                 continue;
             }
-            let mx = center_x + (marker.frame as f64 - current_frame) as f32 * ppf;
+            let mx = center_x + (marker.frame as f64 - current_frame) as f32 * ppf + offset_frames as f32 * ppf;
             if mx < -10.0 * s || mx > w + 10.0 * s {
                 continue;
             }
