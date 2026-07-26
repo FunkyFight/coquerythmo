@@ -531,6 +531,8 @@ pub fn run(startup_path: Option<PathBuf>) {
                             let text_navigation = match &event.logical_key {
                                 Key::Named(NamedKey::ArrowLeft) => Some(if ctrl_held && shift_held {
                                     UiEvent::SelectWordLeft
+                                } else if ctrl_held {
+                                    UiEvent::MoveWordLeft
                                 } else if shift_held {
                                     UiEvent::ShiftCursorLeft
                                 } else {
@@ -538,6 +540,8 @@ pub fn run(startup_path: Option<PathBuf>) {
                                 }),
                                 Key::Named(NamedKey::ArrowRight) => Some(if ctrl_held && shift_held {
                                     UiEvent::SelectWordRight
+                                } else if ctrl_held {
+                                    UiEvent::MoveWordRight
                                 } else if shift_held {
                                     UiEvent::ShiftCursorRight
                                 } else {
@@ -630,6 +634,8 @@ pub fn run(startup_path: Option<PathBuf>) {
                                 Key::Named(NamedKey::ArrowLeft) => Some(
                                     if ctrl_held && shift_held {
                                         UiEvent::SelectWordLeft
+                                    } else if ctrl_held {
+                                        UiEvent::MoveWordLeft
                                     } else if shift_held {
                                         UiEvent::ShiftCursorLeft
                                     } else {
@@ -639,6 +645,8 @@ pub fn run(startup_path: Option<PathBuf>) {
                                 Key::Named(NamedKey::ArrowRight) => Some(
                                     if ctrl_held && shift_held {
                                         UiEvent::SelectWordRight
+                                    } else if ctrl_held {
+                                        UiEvent::MoveWordRight
                                     } else if shift_held {
                                         UiEvent::ShiftCursorRight
                                     } else {
@@ -659,6 +667,24 @@ pub fn run(startup_path: Option<PathBuf>) {
                             };
                             if let Some(modal_event) = modal_event {
                                 dispatch(modal_event, &mut state, elwt);
+                                state.request_redraw();
+                                return;
+                            }
+                        }
+                        if state.has_line_context_menu() {
+                            let menu_event = match &event.logical_key {
+                                Key::Named(NamedKey::Escape) => Some(UiEvent::KeyInput {
+                                    text: "\x1b".into(),
+                                }),
+                                Key::Named(NamedKey::ArrowLeft) => Some(UiEvent::CursorLeft),
+                                Key::Named(NamedKey::ArrowRight) => Some(UiEvent::CursorRight),
+                                Key::Named(NamedKey::ArrowUp) => Some(UiEvent::CursorUp),
+                                Key::Named(NamedKey::ArrowDown) => Some(UiEvent::CursorDown),
+                                Key::Named(NamedKey::Enter) => Some(UiEvent::Activate),
+                                _ => None,
+                            };
+                            if let Some(menu_event) = menu_event {
+                                dispatch(menu_event, &mut state, elwt);
                                 state.request_redraw();
                                 return;
                             }

@@ -457,16 +457,24 @@ pub fn save_bundle_with_instrumentals_and_recording_data(
     transaction_journal: Option<&TransactionJournal>,
     recording: Option<RecordingBundleInput<'_>>,
 ) -> Result<SavedProjectMetadata, ProjectArchiveError> {
-    if let Some(journal) = transaction_journal {
+    let transaction_journal = if let Some(journal) = transaction_journal {
         journal
             .validate_integrity()
             .map_err(|error| ProjectArchiveError::InvalidTransactionJournal(error.to_string()))?;
-        if journal.checkpoint().source_fps != fps {
-            return Err(ProjectArchiveError::InvalidTransactionJournal(
-                "checkpoint FPS does not match the saved project FPS".into(),
-            ));
+        if !crate::project_metadata::fps_matches(journal.checkpoint().source_fps, fps) {
+            // A fresh session may have created its journal before the video
+            // FPS was known. The project snapshot is authoritative at save.
+            Some(
+                crate::project_metadata::TransactionJournal::from_project(project, fps).map_err(
+                    |error| ProjectArchiveError::InvalidTransactionJournal(error.to_string()),
+                )?,
+            )
+        } else {
+            Some(journal.clone())
         }
-    }
+    } else {
+        None
+    };
     ensure_destination_is_not_asset(bundle_path, source_video)?;
     if let Some(path) = proxy_video {
         ensure_destination_is_not_asset(bundle_path, path)?;
@@ -522,7 +530,7 @@ pub fn save_bundle_with_instrumentals_and_recording_data(
     let mut project_data = ProjectData::from_project(project, fps);
     // Never leave a machine-specific path in a portable manifest.
     rewrite_project_instrumental_paths_for_bundle(&mut project_data, &instrumental_manifest);
-    let mut stored_journal = transaction_journal.cloned();
+    let mut stored_journal = transaction_journal;
     if let Some(journal) = &mut stored_journal {
         journal
             .rewrite_checkpoint(|checkpoint| {
@@ -714,14 +722,20 @@ fn load_bundle(file: File) -> Result<LoadedProject, ProjectArchiveError> {
         journal
             .validate_integrity()
             .map_err(|error| ProjectArchiveError::InvalidTransactionJournal(error.to_string()))?;
-        if journal.checkpoint().source_fps != manifest.project.source_fps {
+        if !crate::project_metadata::fps_matches(
+            journal.checkpoint().source_fps,
+            manifest.project.source_fps,
+        ) {
             return Err(ProjectArchiveError::InvalidTransactionJournal(
                 "checkpoint FPS does not match the project manifest".into(),
             ));
         }
     }
     if let Some(recording) = &manifest.recording {
-        if recording.project.timeline_fps() != manifest.project.source_fps {
+        if !crate::project_metadata::fps_matches(
+            recording.project.timeline_fps(),
+            manifest.project.source_fps,
+        ) {
             return Err(ProjectArchiveError::InvalidRecordingProject(
                 "timeline FPS does not match the project manifest".into(),
             ));
@@ -1176,7 +1190,7 @@ fn prepare_recording_bundle(
     bundle_path: &Path,
     project_fps: f64,
 ) -> Result<(BundleRecordingManifest, Vec<FileEntryToWrite>), ProjectArchiveError> {
-    if recording.project.timeline_fps() != project_fps {
+    if !crate::project_metadata::fps_matches(recording.project.timeline_fps(), project_fps) {
         return Err(ProjectArchiveError::InvalidRecordingProject(
             "timeline FPS does not match the saved project FPS".into(),
         ));
@@ -1726,6 +1740,8 @@ mod tests {
             line_id,
             old_text: "Bonjour".into(),
             new_text: "Bonsoir".into(),
+            old_emotions: Vec::new(),
+            new_emotions: Vec::new(),
         };
         journal.append(language_id, command.clone()).unwrap();
         command.apply(&mut project);

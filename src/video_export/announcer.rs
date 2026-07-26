@@ -244,6 +244,7 @@ mod tests {
             karaoke,
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
+            text_emotions: Vec::new(),
         }
     }
 

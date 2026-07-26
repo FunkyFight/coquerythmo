@@ -857,6 +857,7 @@ impl State {
             settings.instrumental_audio_path.clone(),
             settings.highlight_read_word,
             settings.scrolling_text_uses_character_color,
+            settings.show_text_emotion_lanes,
         );
         if let Some(first_label) = self.project_settings_modal_focus_label() {
             self.announce_open_container(crate::i18n::t("project_settings.title"), first_label);
@@ -1013,16 +1014,22 @@ impl State {
         });
     }
 
+    pub fn has_line_context_menu(&self) -> bool {
+        self.ui_shell.ui.rythmo_state().context_menu.is_some()
+    }
+
     pub fn save_project_settings(
         &mut self,
         instrumental_audio_path: Option<String>,
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
+        show_text_emotion_lanes: bool,
     ) {
         let mut settings = self.project_session.project.settings().clone();
         settings.instrumental_audio_path = instrumental_audio_path;
         settings.highlight_read_word = highlight_read_word;
         settings.scrolling_text_uses_character_color = scrolling_text_uses_character_color;
+        settings.show_text_emotion_lanes = show_text_emotion_lanes;
         EditExecutor::apply_domain_change(
             &mut self.project_session,
             EditOrigin::Local,
@@ -1112,15 +1119,25 @@ impl State {
                     } else {
                         old_ratios.clone()
                     };
-                    Command::SetLineKaraoke {
+                    let mut commands = Vec::new();
+                    if new_karaoke && !line.text_emotions.is_empty() {
+                        commands.push(Command::SetTextEmotions {
+                            line_id,
+                            old_emotions: line.text_emotions.clone(),
+                            new_emotions: Vec::new(),
+                        });
+                    }
+                    commands.push(Command::SetLineKaraoke {
                         line_id,
                         old_karaoke,
                         old_ratios,
                         new_karaoke,
                         new_ratios,
-                    }
+                    });
+                    commands
                 })
             })
+            .flatten()
             .collect();
         for command in commands {
             self.execute_and_broadcast(command);
@@ -3181,7 +3198,12 @@ impl State {
             .rythmo_state
             .hovered_track
             .unwrap_or(self.ui_shell.ui.rythmo_state.keyboard_track);
-        let target_anchor_frame = self.current_frame();
+        let target_anchor_frame = self
+            .ui_shell
+            .ui
+            .rythmo_state
+            .hovered_frame
+            .unwrap_or_else(|| self.current_frame());
         let source_anchor_frame = snapshots
             .iter()
             .map(|entry| entry.line.start_frame)
@@ -4284,40 +4306,117 @@ impl State {
             .history
             .last_matches(id, CommandKind::UpdateLineText)
         {
-            let old_text = self
+            let (old_text, old_emotions) = self
                 .project_session
                 .project
                 .get_line(id)
-                .map(|line| line.text.clone())
+                .map(|line| (line.text.clone(), line.text_emotions.clone()))
                 .unwrap_or_default();
+            let new_emotions =
+                crate::rythmo_line::rebase_text_emotions(&old_emotions, &old_text, &text);
             let command = Command::UpdateLineText {
                 line_id: id,
                 old_text,
                 new_text: text.clone(),
+                old_emotions,
+                new_emotions: new_emotions.clone(),
             };
             EditExecutor::coalesce(
                 &mut self.project_session,
                 command,
                 |cmd| {
-                    if let Command::UpdateLineText { new_text, .. } = cmd {
+                    if let Command::UpdateLineText {
+                        new_text,
+                        new_emotions: emotions,
+                        ..
+                    } = cmd
+                    {
                         *new_text = text;
+                        *emotions = new_emotions;
                     }
                 },
                 EditOrigin::Local,
             );
         } else {
-            let old_text = self
+            let (old_text, old_emotions) = self
                 .project_session
                 .project
                 .get_line(id)
-                .map(|l| l.text.clone())
+                .map(|line| (line.text.clone(), line.text_emotions.clone()))
                 .unwrap_or_default();
+            let new_emotions =
+                crate::rythmo_line::rebase_text_emotions(&old_emotions, &old_text, &text);
             self.execute_and_broadcast(Command::UpdateLineText {
                 line_id: id,
                 old_text,
                 new_text: text,
+                old_emotions,
+                new_emotions,
             });
         }
+    }
+
+    pub fn set_text_emotion(
+        &mut self,
+        line_id: u64,
+        range: Option<(usize, usize)>,
+        emotion: Option<crate::rythmo_line::TextEmotion>,
+    ) {
+        let Some(line) = self.project_session.project.get_line(line_id) else {
+            return;
+        };
+        if !line.can_have_text_emotions() {
+            return;
+        }
+        let old_emotions = line.text_emotions.clone();
+        let mut changed = line.clone();
+        let (start, end) = range.unwrap_or((0, changed.text.chars().count()));
+        changed.set_text_emotion(start, end, emotion);
+        if old_emotions == changed.text_emotions {
+            return;
+        }
+        self.execute_and_broadcast(Command::SetTextEmotions {
+            line_id,
+            old_emotions,
+            new_emotions: changed.text_emotions,
+        });
+    }
+
+    pub fn open_text_emotion_menu(&mut self) {
+        let line_id = self
+            .ui_shell
+            .ui
+            .rythmo_state
+            .editing_line
+            .or_else(|| self.selected_line_ids().first().copied());
+        let Some(line_id) = line_id else {
+            return;
+        };
+        let Some(line) = self.project_session.project.get_line(line_id) else {
+            return;
+        };
+        if !line.can_have_text_emotions() {
+            return;
+        }
+        let range = (self.ui_shell.ui.rythmo_state.editing_line == Some(line_id))
+            .then(|| self.ui_shell.ui.rythmo_state.line_input.selection_range())
+            .flatten();
+        let (x, y) = self.ui_shell.ui.cursor_pos;
+        self.ui_shell.ui.rythmo_state.context_menu =
+            Some(crate::workspaces::rythmo::view::LineContextMenu {
+                line_id,
+                x,
+                y,
+                hover_main: false,
+                hover_change_character: false,
+                hover_text_emotion: true,
+                hover_emotion_index: Some(0),
+                hover_emotion_variant: None,
+                text_range: range,
+                hover_actor_index: None,
+                hover_action_index: None,
+                actor_scroll: 0.0,
+            });
     }
 
     pub fn set_syllable_ratios(&mut self, line_id: u64, ratios: Vec<f32>) {
@@ -5313,8 +5412,7 @@ impl State {
             || self.jobs.pending_import_job.is_some()
             || self.jobs.pending_save_job.is_some()
         {
-            return now
-                .saturating_duration_since(self.render.last_redraw())
+            return now.saturating_duration_since(self.render.last_redraw())
                 >= Duration::from_millis(100);
         }
 
@@ -5324,8 +5422,7 @@ impl State {
                 .ui
                 .next_cursor_blink_deadline()
                 .is_some_and(|deadline| deadline <= now)
-                || now
-                    .saturating_duration_since(self.render.last_redraw())
+                || now.saturating_duration_since(self.render.last_redraw())
                     >= Duration::from_millis(500);
         }
 
@@ -5645,6 +5742,7 @@ fn build_video_quad<'a>(
             ],
             uv_rect: [0.0, 0.0, 1.0, 1.0],
             tint: [1.0, 1.0, 1.0, 1.0],
+            transform: [0.0, 0.0, 0.5, 0.5],
         },
     ))
 }
@@ -5677,6 +5775,7 @@ fn build_full_window_video_quad(
             ],
             uv_rect: [0.0, 0.0, 1.0, 1.0],
             tint: [1.0, 1.0, 1.0, 1.0],
+            transform: [0.0, 0.0, 0.5, 0.5],
         },
     ))
 }

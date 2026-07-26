@@ -4,7 +4,7 @@ use super::*;
 
 pub(crate) fn hit_test_line_and_track(
     ctx: &RythmoCtx,
-    state: &RythmoState,
+    state: &mut RythmoState,
     x: f32,
     y: f32,
 ) -> (Option<u64>, Option<usize>) {
@@ -43,6 +43,9 @@ pub(crate) fn hit_test_line_and_track(
         .iter()
         .find(|layout| relative_y >= layout.top && relative_y < layout.top + layout.reserved_h)
         .map(|layout| layout.track_index);
+
+    drop(layout_ctx);
+    state.hovered_frame = Some(pointer_frame);
 
     (found, hovered_track)
 }
@@ -126,6 +129,7 @@ pub(crate) fn handle_mouse_move(
 
                             let lang = ctx.project.syllable_language_code();
                             let char_pos = cursor_index_for_line_at_ratio(
+                                ctx.project,
                                 line,
                                 state.syllable_drag.as_ref(),
                                 lang,
@@ -251,6 +255,7 @@ pub(crate) fn handle_mouse_move(
         if state.hovered_track.take().is_some() {
             consumed = true;
         }
+        state.hovered_frame = None;
         return if consumed {
             EventResponse::Consumed
         } else {

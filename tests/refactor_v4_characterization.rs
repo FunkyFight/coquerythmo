@@ -91,6 +91,7 @@ fn packet_and_command_payload_match_legacy_goldens() {
             karaoke: false,
             note: String::new(),
             presence: coquerythmo::rythmo_line::LinePresence::On,
+            text_emotions: Vec::new(),
         },
     };
     assert_eq!(
@@ -117,6 +118,8 @@ fn local_edit_undo_redo_preserves_revision_and_values() {
             line_id,
             old_text: "before".into(),
             new_text: "after".into(),
+            old_emotions: Vec::new(),
+            new_emotions: Vec::new(),
         },
         EditOrigin::Local,
     );

@@ -28,6 +28,16 @@ pub fn y_slot_for_track_index(track_index: usize) -> f32 {
         .clamp(0.0, 0.75)
 }
 
+pub fn export_timeline_x(
+    frame: i64,
+    current_frame: f64,
+    center_x: f32,
+    pixels_per_frame: f32,
+    reading_bar_offset_frames: f64,
+) -> f32 {
+    center_x + (frame as f64 - current_frame - reading_bar_offset_frames) as f32 * pixels_per_frame
+}
+
 /// Returns whether either a line body or the envelope of its leading
 /// decorations touches the horizontal viewport.
 ///
@@ -248,12 +258,35 @@ pub fn karaoke_tracks(project: &Project) -> Vec<bool> {
     tracks
 }
 
+pub fn text_emotion_tracks(project: &Project) -> Vec<bool> {
+    let mut tracks = vec![false; track_count()];
+    if !project.settings().show_text_emotion_lanes {
+        return tracks;
+    }
+    for line in project.lines() {
+        if !line.text_emotions.is_empty() {
+            tracks[track_index_for_y_slot(line.y_slot)] = true;
+        }
+    }
+    tracks
+}
+
 pub fn karaoke_stack_gap(height: f32, scale: f32) -> f32 {
     (2.0 * scale.max(0.5)).min((height * 0.2).max(0.0))
 }
 
 pub fn karaoke_track_body_height(row_height: f32, scale: f32) -> f32 {
     row_height * 2.0 + karaoke_stack_gap(row_height * 2.0, scale)
+}
+
+pub fn text_emotion_copy_rect(line_y: f32, row_height: f32, scale: f32) -> (f32, f32) {
+    let gap = karaoke_stack_gap(row_height, scale);
+    (line_y + row_height + gap, row_height)
+}
+
+pub fn text_emotion_track_body_height(row_height: f32, scale: f32) -> f32 {
+    let (copy_y, copy_height) = text_emotion_copy_rect(0.0, row_height, scale);
+    copy_y + copy_height
 }
 
 pub fn build_track_layouts(
@@ -265,12 +298,16 @@ pub fn build_track_layouts(
     scale: f32,
 ) -> Vec<TrackLayout> {
     let mut top = 0.0;
+    let emotion_tracks = text_emotion_tracks(project);
     track_indices
         .iter()
         .map(|&track_index| {
             let has_karaoke = track_has_karaoke(project, track_index);
+            let has_text_emotion = emotion_tracks.get(track_index).copied().unwrap_or(false);
             let body_h = if has_karaoke {
                 karaoke_track_body_height(normal_body_h, scale)
+            } else if has_text_emotion {
+                text_emotion_track_body_height(normal_body_h, scale)
             } else {
                 normal_body_h
             };
@@ -302,6 +339,7 @@ pub fn build_track_layouts_at_frame(
     let mut top = 0.0;
     let karaoke_mode_tracks = karaoke_mode_tracks(project, current_frame, count_in_frames);
     let reserved_karaoke_tracks = karaoke_tracks(project);
+    let emotion_tracks = text_emotion_tracks(project);
     track_indices
         .iter()
         .map(|&track_index| {
@@ -311,6 +349,8 @@ pub fn build_track_layouts_at_frame(
                 .unwrap_or(false);
             let body_h = if has_karaoke {
                 karaoke_track_body_height(normal_body_h, scale)
+            } else if emotion_tracks.get(track_index).copied().unwrap_or(false) {
+                text_emotion_track_body_height(normal_body_h, scale)
             } else {
                 normal_body_h
             };
@@ -321,6 +361,8 @@ pub fn build_track_layouts_at_frame(
                 .unwrap_or(false)
             {
                 karaoke_track_body_height(normal_body_h, scale)
+            } else if emotion_tracks.get(track_index).copied().unwrap_or(false) {
+                text_emotion_track_body_height(normal_body_h, scale)
             } else {
                 normal_body_h
             };
@@ -361,6 +403,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn export_timeline_offset_moves_markers_with_the_lines() {
+        let center_x = 500.0;
+        let pixels_per_frame = 4.0;
+
+        assert_eq!(
+            export_timeline_x(124, 100.0, center_x, pixels_per_frame, 24.0),
+            center_x
+        );
+        assert_eq!(
+            export_timeline_x(100, 100.0, center_x, pixels_per_frame, 24.0),
+            center_x - 96.0
+        );
+    }
+
+    #[test]
     fn only_tracks_with_karaoke_get_double_body_height() {
         let mut project = Project::new();
         let normal_id = project.add_line(0, 24, 0.0);
@@ -385,6 +442,23 @@ mod tests {
             total_tracks_height(&layouts),
             normal.total_h + karaoke.total_h
         );
+    }
+
+    #[test]
+    fn text_emotion_lanes_are_enabled_by_default_and_can_be_hidden() {
+        let mut project = Project::new();
+        let line_id = project.add_line_full(0, 24, 0.0, "Colère".into(), "Alice".into(), [1.0; 4]);
+        project.get_line_mut(line_id).unwrap().set_text_emotion(
+            0,
+            6,
+            Some(crate::rythmo_line::TextEmotion::AngerContained),
+        );
+
+        assert!(text_emotion_tracks(&project)[0]);
+        let mut settings = project.settings().clone();
+        settings.show_text_emotion_lanes = false;
+        project.set_settings(settings);
+        assert!(!text_emotion_tracks(&project)[0]);
     }
 
     #[test]

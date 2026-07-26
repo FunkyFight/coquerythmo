@@ -334,7 +334,11 @@ impl ModalHost {
                 | UiEvent::CursorRight
         ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
         let activation = matches!(event, UiEvent::Activate)
-            || matches!(event, UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " ");
+            || matches!(event, UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " ")
+            || matches!(
+                event,
+                UiEvent::MousePress { .. } | UiEvent::DoubleClick { .. }
+            );
         let result = self
             .settings
             .as_mut()
@@ -446,6 +450,7 @@ impl ModalHost {
                 instrumental_audio_path,
                 highlight_read_word,
                 scrolling_text_uses_character_color,
+                show_text_emotion_lanes,
             } => {
                 self.project_settings = None;
                 action_closed_modal(
@@ -453,6 +458,7 @@ impl ModalHost {
                         instrumental_audio_path,
                         highlight_read_word,
                         scrolling_text_uses_character_color,
+                        show_text_emotion_lanes,
                     },
                     crate::i18n::t("project_settings.title"),
                 )
@@ -1310,11 +1316,13 @@ impl ModalHost {
         instrumental_audio_path: Option<String>,
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
+        show_text_emotion_lanes: bool,
     ) {
         self.project_settings = Some(super::project_settings_modal::ProjectSettingsModal::new(
             instrumental_audio_path,
             highlight_read_word,
             scrolling_text_uses_character_color,
+            show_text_emotion_lanes,
         ));
     }
 

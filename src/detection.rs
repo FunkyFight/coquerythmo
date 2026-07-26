@@ -1010,6 +1010,89 @@ impl DetectionDocument {
         Ok(())
     }
 
+    /// Adds synchronization boundaries to the export segments before warping
+    /// them, including points that fall inside a syllable.
+    pub fn warped_segments(
+        &self,
+        line_id: u64,
+        text: &str,
+        breaks: &[usize],
+        base_ratios: &[f32],
+        line_start_frame: i64,
+        duration_frames: i64,
+    ) -> (Vec<usize>, Vec<f32>) {
+        let Some(data) = self
+            .line(line_id)
+            .filter(|data| !data.sync_points().is_empty())
+        else {
+            return (breaks.to_vec(), base_ratios.to_vec());
+        };
+        let mut char_start = 0usize;
+        let grapheme_spans = UnicodeSegmentation::graphemes(text, true)
+            .map(|grapheme| {
+                let char_end = char_start + grapheme.chars().count();
+                let span = (char_start, char_end);
+                char_start = char_end;
+                span
+            })
+            .collect::<Vec<_>>();
+        let characters = text.chars().collect::<Vec<_>>();
+        let mut segment_breaks = breaks.to_vec();
+        segment_breaks.extend(data.sync_points().iter().filter_map(|point| {
+            let &(start, end) = grapheme_spans.get(point.grapheme_boundary as usize)?;
+            let punctuation = characters[start..end]
+                .iter()
+                .all(|character| is_sync_punctuation(*character));
+            Some(match point.affinity {
+                SyncAffinity::Left => end,
+                SyncAffinity::Right => start,
+                SyncAffinity::Auto if punctuation => end,
+                SyncAffinity::Auto => start,
+            })
+        }));
+        segment_breaks.retain(|boundary| *boundary > 0 && *boundary < char_start);
+        segment_breaks.sort_unstable();
+        segment_breaks.dedup();
+        let seed_ratios = vec![1.0; segment_breaks.len() + 1];
+        let ratios = self.warped_ratios(
+            line_id,
+            text,
+            &segment_breaks,
+            &seed_ratios,
+            line_start_frame,
+            duration_frames,
+        );
+        (segment_breaks, ratios)
+    }
+
+    pub fn warped_character_positions(
+        &self,
+        line_id: u64,
+        text: &str,
+        line_start_frame: i64,
+        duration_frames: i64,
+    ) -> Option<Vec<f32>> {
+        self.line(line_id)
+            .filter(|data| !data.sync_points().is_empty())?;
+        let character_count = text.chars().count();
+        let breaks = (1..character_count).collect::<Vec<_>>();
+        let seed_ratios = vec![1.0; character_count];
+        let ratios = self.warped_ratios(
+            line_id,
+            text,
+            &breaks,
+            &seed_ratios,
+            line_start_frame,
+            duration_frames,
+        );
+        let mut positions = Vec::with_capacity(ratios.len() + 1);
+        positions.push(0.0);
+        for ratio in ratios {
+            positions.push(positions.last().copied().unwrap_or(0.0) + ratio);
+        }
+        Some(positions)
+    }
+
     /// Applies explicit letter synchronization points to existing syllable
     /// ratios. Points are piecewise-linear control points; segment count and
     /// normalization are preserved.
@@ -1579,6 +1662,50 @@ mod tests {
         // A letter opens the interval on its right.
         assert!((ratios[0] - 0.75).abs() < 0.0001);
         assert!((ratios[1] - 0.25).abs() < 0.0001);
+    }
+
+    #[test]
+    fn export_segments_split_at_sync_points_inside_a_syllable() {
+        let mut document = DetectionDocument::default();
+        document
+            .add_sync_point(
+                14,
+                4,
+                MediaTick::ZERO,
+                MediaTick::from_frame(100),
+                2,
+                MediaTick::from_frame(75),
+            )
+            .unwrap();
+
+        let (breaks, ratios) = document.warped_segments(14, "abcd", &[], &[1.0], 0, 100);
+
+        assert_eq!(breaks, vec![2]);
+        assert_eq!(ratios.len(), 2);
+        assert!((ratios[0] - 0.75).abs() < 0.0001);
+        assert!((ratios[1] - 0.25).abs() < 0.0001);
+    }
+
+    #[test]
+    fn export_character_positions_apply_sync_points_to_emotional_text() {
+        let mut document = DetectionDocument::default();
+        document
+            .add_sync_point(
+                15,
+                4,
+                MediaTick::ZERO,
+                MediaTick::from_frame(100),
+                2,
+                MediaTick::from_frame(75),
+            )
+            .unwrap();
+
+        let positions = document
+            .warped_character_positions(15, "abcd", 0, 100)
+            .unwrap();
+
+        assert_eq!(positions.len(), 5);
+        assert!((positions[2] - 0.75).abs() < 0.0001);
     }
 
     #[test]

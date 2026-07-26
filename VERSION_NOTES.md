@@ -1,53 +1,34 @@
-# 3.6.4
-Reading bar offset is now applied in the core coordinate math (frame_to_x/x_to_frame)
-All overlays, markers, waveform, drawings, detection UI, ghost preview, kbd CTRL+click, etc. now respect the offset
-Settings persistence already works via config
-CPU renderer now also draws markers with the offset
+# 3.7.0
 
-# To do :
-Poignées karaoké font toute la hauteur de leur ligne
-Exporter / Importer les nodes
+## Système d’émotion de texte
 
-## Text Emotions
+- Ajout d’un système permettant d’appliquer une émotion à une ligne entière ou à une sélection de texte depuis le menu contextuel.
+- Les émotions sont organisées par catégories et proposent plusieurs intensités, notamment pour la colère, la joie, la peur, la tristesse et la tendresse.
+- Le texte émotionnel est animé dans la bande rythmo et accompagné d’un couloir de lecture, affichable ou masquable dans les paramètres du projet.
+- Le menu contextuel et le réglage des couloirs sont entièrement navigables au clavier et vocalisés par les lecteurs d’écran.
+- Ajout des effets Pendulum, Swing, Yay, Bounce, Slide, Oscillation, Wave, Shake et Wiggle.
+- Les Text Emotions sont conservées dans les sauvegardes JSON et `.coquerythmo`.
 
-Résumé
-Ajoute les Émotions du texte aux lignes de dialogue de la bande rythmo, avec rendu animé partagé entre l’interface, le renderer GPU et le fallback CPU.
+## Bande rythmo
 
-Effets inclus :
+- Le décalage de la barre de lecture est appliqué dans le calcul central des coordonnées.
+- Les lignes, overlays, marqueurs, formes d’onde, dessins, détections, aperçus fantômes et raccourcis respectent désormais ce décalage.
+- Les marqueurs restent visibles et alignés avec les lignes dans les exports CPU et GPU, même lorsque la barre de lecture est décalée.
+- Les badges de personnages entrent à l’écran sans délai, nom compris.
+- Un badge masqué par une ligne proche reste masqué lorsque cette ligne quitte l’écran.
+- Le réglage du décalage est persisté dans la configuration.
+- Le déplacement des points de synchronisation conserve désormais l’alignement avec leur position affichée, sans téléportation au début du drag.
 
-Pendule
-Balancement
-YAY!!!
-Bounce
-Glissade
-Oscillation
-Vague
-Tremblement
-Wiggle
-Interaction
-Alt+E ouvre la palette sur la ligne sélectionnée ou la sélection de texte active.
-Navigation complète au clavier : flèches haut/bas, Début/Fin, Entrée et Échap.
-La première option est toujours Retirer l’émotion.
-Le clic droit sur une ligne éligible expose Émotion du texte.
-Une ligne sélectionnée applique l’effet à toute la réplique.
-En édition, une sélection non vide limite l’effet à cette plage.
-Les bornes sont exprimées en graphèmes étendus pour ne pas découper les accents, ligatures ou emoji composés.
-L’option est absente pour les ambiances et les lignes karaoké.
+## Sauvegarde
 
-L'effet est instantanément visible dans l'ui et dans les exports.
+- Correction des erreurs de sauvegarde causées par un FPS de journal différent du FPS du projet.
+- Le checkpoint du journal est reconstruit depuis le projet courant lorsque son FPS est obsolète.
 
-Accessibilité
-La palette est une surface modale qui capture ses propres commandes clavier.
-Ouverture, focus, changement de sélection, validation, erreur et fermeture publient des événements sémantiques vers AccessKit/NVDA.
-Le lint de la ligne reste inclus dans sa description accessible.
+## Accessibilité
 
-Lint
-Toute ligne contenant au moins une émotion reçoit l’avertissement :
+- Nombreuses améliorations de navigation, d’annonces et de cohérence des contrôles.
 
-N'utilisez pas d'émotions du texte dans un milieu professionnel qui ne l'autorise pas !
+# À faire
 
-# Bugs
-Dans l'export : une fois ligne karaokée finie, elle se tp sur la ligne verticale au lieu de disparaître
-Impossible de mettre une couleur à une étiquette, ça despawn et annule le clic
-Caret mal placé encore dans les dialogues.
-Points de synchro ne correspondent pas à là où j'ai cliqué
+- Poignées karaoké sur toute la hauteur de leur ligne.
+- Exporter et importer les nodes.

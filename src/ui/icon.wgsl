@@ -20,6 +20,7 @@ struct IconInstance {
     @location(0) rect: vec4<f32>,     // x, y, w, h in pixels
     @location(1) uv_rect: vec4<f32>,  // u_min, v_min, u_max, v_max
     @location(2) tint: vec4<f32>,     // color tint
+    @location(3) transform: vec4<f32>, // rotation, skew x, pivot x/y
 };
 
 @vertex
@@ -36,7 +37,13 @@ fn vs_main(
     let indices = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
     let corner = corners[indices[vertex_index]];
 
-    let pos_px = instance.rect.xy + corner * instance.rect.zw;
+    let pivot = instance.transform.zw * instance.rect.zw;
+    var local = corner * instance.rect.zw - pivot;
+    local.x += instance.transform.y * local.y;
+    let cs = cos(instance.transform.x);
+    let sn = sin(instance.transform.x);
+    local = vec2<f32>(local.x * cs - local.y * sn, local.x * sn + local.y * cs);
+    let pos_px = instance.rect.xy + pivot + local;
     let ndc = vec2<f32>(
         (pos_px.x / uniforms.screen_size.x) * 2.0 - 1.0,
         1.0 - (pos_px.y / uniforms.screen_size.y) * 2.0,

@@ -194,6 +194,12 @@ pub enum UiAction {
     SetSelectedLineEndAtPlayhead,
     StartEditingSelectedLine,
     StartEditingSelectedCharacter,
+    OpenTextEmotionMenu,
+    SetTextEmotion {
+        line_id: u64,
+        range: Option<(usize, usize)>,
+        emotion: Option<crate::rythmo_line::TextEmotion>,
+    },
     BeginKeyboardPan {
         direction: i32,
     },
@@ -363,6 +369,7 @@ pub enum UiAction {
         instrumental_audio_path: Option<String>,
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
+        show_text_emotion_lanes: bool,
     },
     ToggleActiveAudio,
     OffsetActiveAudioBy(i64),
@@ -489,6 +496,7 @@ impl UiAction {
                 | Self::MoveSyncAnchor { .. }
                 | Self::AddSyncPointAtPlayhead
                 | Self::UpdateLineText { .. }
+                | Self::SetTextEmotion { .. }
                 | Self::SetCharacter { .. }
                 | Self::SetCharacterColor { .. }
                 | Self::UpdateCharacterName { .. }

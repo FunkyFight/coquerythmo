@@ -63,6 +63,11 @@ pub(crate) fn handle_file_picker_selected(
                 Some(path),
                 highlight_read_word,
                 scrolling_text_uses_character_color,
+                state
+                    .project_session
+                    .project
+                    .settings()
+                    .show_text_emotion_lanes,
             );
             state.close_project_settings_modal();
         }
@@ -546,6 +551,33 @@ impl CommandDispatcher {
             }
             UiAction::UpdateLineText { id, text } => {
                 state.update_line_text(id, text);
+            }
+            UiAction::OpenTextEmotionMenu => {
+                state.open_text_emotion_menu();
+                state.announce_accessibility(
+                    crate::accessibility::AccessibilityEvent::Activation {
+                        label: format!(
+                            "{} : {}",
+                            crate::i18n::t("text_emotion.menu"),
+                            crate::i18n::t("text_emotion.remove")
+                        ),
+                    },
+                );
+            }
+            UiAction::SetTextEmotion {
+                line_id,
+                range,
+                emotion,
+            } => {
+                state.set_text_emotion(line_id, range, emotion);
+                let label = emotion
+                    .map(|emotion| crate::i18n::t(emotion.i18n_key()))
+                    .unwrap_or_else(|| crate::i18n::t("text_emotion.remove"));
+                state.announce_accessibility(
+                    crate::accessibility::AccessibilityEvent::Activation {
+                        label: label.to_string(),
+                    },
+                );
             }
             UiAction::SetCharacter {
                 line_id,
@@ -1210,11 +1242,13 @@ impl CommandDispatcher {
                 instrumental_audio_path,
                 highlight_read_word,
                 scrolling_text_uses_character_color,
+                show_text_emotion_lanes,
             } => {
                 state.save_project_settings(
                     instrumental_audio_path,
                     highlight_read_word,
                     scrolling_text_uses_character_color,
+                    show_text_emotion_lanes,
                 );
             }
             UiAction::ToggleActiveAudio => {
@@ -1452,8 +1486,8 @@ fn should_request_redraw(
 
 #[cfg(test)]
 mod tests {
-    use crate::ui::primitives::UiEvent;
     use super::should_request_redraw;
+    use crate::ui::primitives::UiEvent;
 
     #[test]
     fn ignored_pointer_moves_use_the_paced_redraw_loop() {

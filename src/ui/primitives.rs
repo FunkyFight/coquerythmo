@@ -82,6 +82,8 @@ pub enum UiEvent {
     },
     CursorLeft,
     CursorRight,
+    MoveWordLeft,
+    MoveWordRight,
     ShiftCursorLeft,
     ShiftCursorRight,
     CursorUp,
@@ -176,6 +178,8 @@ pub struct IconInstance {
     pub rect: [f32; 4],
     pub uv_rect: [f32; 4],
     pub tint: [f32; 4],
+    /// Rotation, horizontal skew and normalized pivot x/y.
+    pub transform: [f32; 4],
 }
 
 #[repr(C)]

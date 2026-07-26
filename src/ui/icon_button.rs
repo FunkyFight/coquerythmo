@@ -121,6 +121,7 @@ impl Widget for IconButton {
             rect: [x, y, icon_size, icon_size],
             uv_rect: self.icon_uv,
             tint,
+            transform: [0.0, 0.0, 0.5, 0.5],
         }]
     }
 

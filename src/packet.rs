@@ -107,6 +107,12 @@ pub enum CommandPayload {
     UpdateLineText {
         line_id: u64,
         text: String,
+        #[serde(default)]
+        text_emotions: Vec<crate::rythmo_line::TextEmotionSpan>,
+    },
+    SetTextEmotions {
+        line_id: u64,
+        text_emotions: Vec<crate::rythmo_line::TextEmotionSpan>,
     },
     UpdateLineNote {
         line_id: u64,
@@ -275,10 +281,22 @@ impl Packetable for Command {
                 duration_frames: *new_dur,
             },
             Command::UpdateLineText {
-                line_id, new_text, ..
+                line_id,
+                new_text,
+                new_emotions,
+                ..
             } => CommandPayload::UpdateLineText {
                 line_id: *line_id,
                 text: new_text.clone(),
+                text_emotions: new_emotions.clone(),
+            },
+            Command::SetTextEmotions {
+                line_id,
+                new_emotions,
+                ..
+            } => CommandPayload::SetTextEmotions {
+                line_id: *line_id,
+                text_emotions: new_emotions.clone(),
             },
             Command::UpdateLineNote {
                 line_id, new_note, ..
@@ -425,6 +443,7 @@ mod tests {
                 karaoke: false,
                 note: String::new(),
                 presence: crate::rythmo_line::LinePresence::On,
+                text_emotions: Vec::new(),
             },
         };
         let json = serde_json::to_string(&payload).unwrap();

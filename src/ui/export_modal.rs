@@ -318,22 +318,42 @@ impl ExportModal {
                 self.keyboard_focus_label(),
                 state(self.configuration.video_enabled)
             )),
-            ExportFocus::VideoAspect(index) => Some(format!(
-                "{} {}",
-                t("export_hub.aspect"),
-                [t("export_hub.source_aspect"), "16:9", "9:16"]
-                    .get(index)
-                    .copied()
-                    .unwrap_or_default()
-            )),
-            ExportFocus::VideoQuality(index) => Some(format!(
-                "{} {}",
-                t("export_hub.quality"),
-                ["720p", "1080p", "1440p", "8K", t("export_hub.custom")]
-                    .get(index)
-                    .copied()
-                    .unwrap_or_default()
-            )),
+            ExportFocus::VideoAspect(index) => {
+                let selected = match index {
+                    0 => self.configuration.video_aspect == VideoExportAspect::Source,
+                    1 => self.configuration.video_aspect == VideoExportAspect::Landscape16x9,
+                    2 => self.configuration.video_aspect == VideoExportAspect::Portrait9x16,
+                    _ => false,
+                };
+                Some(format!(
+                    "{}, {}, {}",
+                    t("export_hub.aspect"),
+                    [t("export_hub.source_aspect"), "16:9", "9:16"]
+                        .get(index)
+                        .copied()
+                        .unwrap_or_default(),
+                    state(selected)
+                ))
+            }
+            ExportFocus::VideoQuality(index) => {
+                let selected = match index {
+                    0 => self.configuration.video_quality == VideoExportQuality::P720,
+                    1 => self.configuration.video_quality == VideoExportQuality::P1080,
+                    2 => self.configuration.video_quality == VideoExportQuality::P1440,
+                    3 => self.configuration.video_quality == VideoExportQuality::P8k,
+                    4 => self.configuration.video_quality == VideoExportQuality::Custom,
+                    _ => false,
+                };
+                Some(format!(
+                    "{}, {}, {}",
+                    t("export_hub.quality"),
+                    ["720p", "1080p", "1440p", "8K", t("export_hub.custom")]
+                        .get(index)
+                        .copied()
+                        .unwrap_or_default(),
+                    state(selected)
+                ))
+            }
             ExportFocus::VideoWidth => Some(format!(
                 "{} {}",
                 self.keyboard_focus_label(),
@@ -2329,5 +2349,37 @@ mod tests {
         assert!(english.instrumental);
         assert!(english.original_with_announcer);
         assert!(english.instrumental_with_announcer);
+    }
+
+    #[test]
+    fn aspect_and_quality_announce_selection_without_moving_focus() {
+        let mut modal = ExportModal::new(1920, 1080, Vec::new(), ExportConfiguration::default());
+        modal.set_focus(ExportFocus::VideoAspect(1));
+        assert!(modal
+            .keyboard_selection_label()
+            .unwrap()
+            .contains(t("accessibility.unchecked")));
+        modal.handle_event(&UiEvent::CursorRight, 1280.0, 720.0);
+        assert_eq!(modal.current_focus(), ExportFocus::VideoAspect(1));
+
+        modal.set_focus(ExportFocus::VideoQuality(1));
+        assert!(modal
+            .keyboard_selection_label()
+            .unwrap()
+            .contains(t("accessibility.checked")));
+        modal.handle_event(&UiEvent::CursorLeft, 1280.0, 720.0);
+        assert_eq!(modal.current_focus(), ExportFocus::VideoQuality(1));
+    }
+
+    #[test]
+    fn video_toggle_exposes_its_enabled_state() {
+        let mut modal = ExportModal::new(1920, 1080, Vec::new(), ExportConfiguration::default());
+        modal.handle_event(&UiEvent::KeyInput { text: "\r".into() }, 1280.0, 720.0);
+        assert!(modal.keyboard_selection_label().unwrap().contains("activé"));
+        modal.handle_event(&UiEvent::KeyInput { text: "\r".into() }, 1280.0, 720.0);
+        assert!(modal
+            .keyboard_selection_label()
+            .unwrap()
+            .contains("désactivé"));
     }
 }

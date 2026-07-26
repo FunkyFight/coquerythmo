@@ -355,6 +355,23 @@ impl SidePanel {
                 self.input.move_right(&self.edit_buffer);
                 Some(EventResponse::Consumed)
             }
+            UiEvent::MoveWordLeft | UiEvent::MoveWordRight => {
+                if matches!(event, UiEvent::MoveWordLeft) {
+                    self.input.move_word_left(&self.edit_buffer);
+                } else {
+                    self.input.move_word_right(&self.edit_buffer);
+                }
+                Some(
+                    self.input
+                        .word_at_cursor(&self.edit_buffer)
+                        .map(|word| {
+                            EventResponse::Action(UiAction::Accessibility(
+                                crate::accessibility::AccessibilityEvent::Selection { label: word },
+                            ))
+                        })
+                        .unwrap_or(EventResponse::Consumed),
+                )
+            }
             UiEvent::ShiftCursorLeft => {
                 self.input.move_left_shift();
                 Some(

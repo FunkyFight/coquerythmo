@@ -46,14 +46,19 @@ pub(crate) fn visual_frame_to_i64(current_frame: f64) -> i64 {
     f64_floor_to_i64(current_frame)
 }
 
-pub(crate) fn render_window(zone: &Rect, current_frame: f64, margin_frames: i64, fps: f64) -> (i64, i64) {
+pub(crate) fn render_window(
+    zone: &Rect,
+    current_frame: f64,
+    margin_frames: i64,
+    fps: f64,
+) -> (i64, i64) {
     let half_visible_frames = zone.width as f64 / ppf().max(0.001) as f64 / 2.0;
     let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
     let margin_frames = margin_frames.max(0);
-    let first_frame =
-        f64_floor_to_i64(current_frame - half_visible_frames + offset_frames).saturating_sub(margin_frames);
-    let last_frame =
-        f64_ceil_to_i64(current_frame + half_visible_frames + offset_frames).saturating_add(margin_frames);
+    let first_frame = f64_floor_to_i64(current_frame - half_visible_frames + offset_frames)
+        .saturating_sub(margin_frames);
+    let last_frame = f64_ceil_to_i64(current_frame + half_visible_frames + offset_frames)
+        .saturating_add(margin_frames);
     (first_frame, last_frame.max(first_frame))
 }
 
@@ -271,7 +276,8 @@ pub(crate) fn badge_rect_for_name_with_karaoke_preview(
     reading_bar_offset_seconds: f64,
     fps: f64,
 ) -> Rect {
-    let (x1, _) = line_visual_x_width(
+    let line_rect = line_rect_with_karaoke_preview(
+        project,
         line,
         current_frame,
         zone,
@@ -279,7 +285,6 @@ pub(crate) fn badge_rect_for_name_with_karaoke_preview(
         reading_bar_offset_seconds,
         fps,
     );
-    let body_rect = editor_track_body_rect_at_frame(project, line.y_slot, current_frame, zone);
     let w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
         ambiance_badge_width(name)
     } else {
@@ -288,15 +293,15 @@ pub(crate) fn badge_rect_for_name_with_karaoke_preview(
     // Dialogue badges keep the traditional four-frame breathing room. An
     // ambiance name belongs directly to the liaison at the start of its line.
     let right = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
-        x1
+        line_rect.x
     } else {
-        x1 - 4.0 * ppf()
+        line_rect.x - 4.0 * ppf()
     };
     Rect {
         x: right - w,
-        y: body_rect.y,
+        y: line_rect.y,
         width: w,
-        height: body_rect.height,
+        height: line_rect.height,
     }
 }
 
@@ -341,6 +346,7 @@ pub(crate) fn build_track_layouts_from_karaoke_flags(
     track_indices: &[usize],
     karaoke_tracks: &[bool],
     reserved_karaoke_tracks: &[bool],
+    emotion_tracks: &[bool],
     normal_body_h: f32,
     slot_header_h: f32,
     badge_gap: f32,
@@ -353,6 +359,8 @@ pub(crate) fn build_track_layouts_from_karaoke_flags(
             let has_karaoke = karaoke_tracks.get(track_index).copied().unwrap_or(false);
             let body_h = if has_karaoke {
                 rythmo_layout::karaoke_track_body_height(normal_body_h, scale)
+            } else if emotion_tracks.get(track_index).copied().unwrap_or(false) {
+                rythmo_layout::text_emotion_track_body_height(normal_body_h, scale)
             } else {
                 normal_body_h
             };
@@ -363,6 +371,8 @@ pub(crate) fn build_track_layouts_from_karaoke_flags(
                 .unwrap_or(false)
             {
                 rythmo_layout::karaoke_track_body_height(normal_body_h, scale)
+            } else if emotion_tracks.get(track_index).copied().unwrap_or(false) {
+                rythmo_layout::text_emotion_track_body_height(normal_body_h, scale)
             } else {
                 normal_body_h
             };
@@ -381,18 +391,28 @@ pub(crate) fn build_track_layouts_from_karaoke_flags(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn editor_normal_body_height_for_karaoke_tracks(
     karaoke_track_count: usize,
+    zone: &Rect,
+) -> f32 {
+    editor_normal_body_height(karaoke_track_count, 0, zone)
+}
+
+fn editor_normal_body_height(
+    karaoke_track_count: usize,
+    emotion_track_count: usize,
     zone: &Rect,
 ) -> f32 {
     let track_count = rythmo_layout::track_count();
     let usable_h = (zone.height - constants::RULER_HEIGHT).max(1.0);
     let header_total = track_count as f32 * (slot_header_height() + BADGE_GAP);
-    let weighted_rows = (track_count + karaoke_track_count).max(1) as f32;
+    let weighted_rows = (track_count + karaoke_track_count + emotion_track_count) as f32;
     let mut body_h = ((usable_h - header_total) / weighted_rows).max(8.0);
     for _ in 0..4 {
-        let stack_gaps =
-            karaoke_track_count as f32 * rythmo_layout::karaoke_stack_gap(body_h * 2.0, 1.0);
+        let stack_gaps = karaoke_track_count as f32
+            * rythmo_layout::karaoke_stack_gap(body_h * 2.0, 1.0)
+            + emotion_track_count as f32 * rythmo_layout::karaoke_stack_gap(body_h, 1.0);
         body_h = ((usable_h - header_total - stack_gaps) / weighted_rows).max(8.0);
     }
     body_h
@@ -427,15 +447,29 @@ impl EditorLayoutCtx {
             karaoke_count_in_frames(fps),
         );
         let reserved_karaoke_tracks = rythmo_layout::karaoke_tracks(project);
+        let emotion_tracks = rythmo_layout::text_emotion_tracks(project);
         let karaoke_track_count = reserved_karaoke_tracks
             .iter()
             .filter(|has_karaoke| **has_karaoke)
             .count();
-        let normal_body_h = editor_normal_body_height_for_karaoke_tracks(karaoke_track_count, zone);
+        let emotion_track_count = emotion_tracks
+            .iter()
+            .enumerate()
+            .filter(|(index, has_emotion)| {
+                **has_emotion
+                    && !reserved_karaoke_tracks
+                        .get(*index)
+                        .copied()
+                        .unwrap_or(false)
+            })
+            .count();
+        let normal_body_h =
+            editor_normal_body_height(karaoke_track_count, emotion_track_count, zone);
         let track_layouts = build_track_layouts_from_karaoke_flags(
             &rythmo_layout::all_track_indices(),
             &karaoke_mode_tracks,
             &reserved_karaoke_tracks,
+            &emotion_tracks,
             normal_body_h,
             slot_header_height(),
             BADGE_GAP,
@@ -455,6 +489,7 @@ impl EditorLayoutCtx {
             &rythmo_layout::all_track_indices(),
             karaoke_tracks,
             karaoke_tracks,
+            &vec![false; rythmo_layout::track_count()],
             normal_body_h,
             slot_header_height(),
             BADGE_GAP,
@@ -551,7 +586,7 @@ impl EditorLayoutCtx {
         fps: f64,
     ) -> Rect {
         let body_rect = self.track_body_rect(line.y_slot, zone);
-        let badge_h = body_rect.height;
+        let badge_h = self.normal_body_h;
         let w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
             ambiance_badge_width(name)
         } else {

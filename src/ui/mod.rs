@@ -737,6 +737,28 @@ impl Ui {
             return EventResponse::Consumed;
         }
 
+        if self.rythmo_state.context_menu.is_some()
+            && (matches!(
+                event,
+                UiEvent::CursorLeft
+                    | UiEvent::CursorRight
+                    | UiEvent::CursorUp
+                    | UiEvent::CursorDown
+                    | UiEvent::Activate
+            ) || matches!(event, UiEvent::KeyInput { text } if text == "\x1b"))
+        {
+            return rythmo::handle_context_menu_event(
+                event,
+                project,
+                render_frame,
+                &self.layout.rythmo,
+                self.screen_w,
+                self.screen_h,
+                fps,
+                &mut self.rythmo_state,
+            );
+        }
+
         if let Some(outcome) = self
             .modal_host
             .handle_event(event, self.screen_w, self.screen_h)
@@ -926,10 +948,22 @@ impl Ui {
                     y: zone.y + zone.height * 0.5,
                     hover_main: true,
                     hover_change_character: false,
+                    hover_text_emotion: false,
+                    hover_emotion_index: None,
+                    hover_emotion_variant: None,
+                    text_range: (self.rythmo_state.editing_line == Some(line_id))
+                        .then(|| self.rythmo_state.line_input.selection_range())
+                        .flatten(),
                     hover_actor_index: None,
                     hover_action_index: None,
                     actor_scroll: 0.0,
                 });
+                return EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: rythmo::context_menu_accessibility_label(project, line_id),
+                        role: "menu".to_string(),
+                    },
+                ));
             }
             return EventResponse::Consumed;
         }
@@ -1112,9 +1146,10 @@ impl Ui {
         let rythmo_response = if passive_playback_move {
             EventResponse::Ignored
         } else {
+            let rythmo_zone = self.active_rythmo_rect();
             rythmo::handle_rythmo_event(
                 event,
-                &self.active_rythmo_rect(),
+                &rythmo_zone,
                 project,
                 render_index,
                 render_frame,
@@ -1723,11 +1758,13 @@ impl Ui {
         instrumental_audio_path: Option<String>,
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
+        show_text_emotion_lanes: bool,
     ) {
         self.modal_host.open_project_settings(
             instrumental_audio_path,
             highlight_read_word,
             scrolling_text_uses_character_color,
+            show_text_emotion_lanes,
         );
     }
 
@@ -2073,6 +2110,7 @@ impl Ui {
             })
             .flatten();
         let lint_tooltip = if show_rythmo
+            && self.rythmo_state.context_menu.is_none()
             && rythmo_zone.contains(self.cursor_pos.0, self.cursor_pos.1)
         {
             self.rythmo_state
@@ -2112,6 +2150,7 @@ impl Ui {
                             rect: [draw.rect.x, draw.rect.y, draw.rect.width, draw.rect.height],
                             uv_rect: [0.0, 0.0, 1.0, 1.0],
                             tint: [1.0, 1.0, 1.0, 1.0],
+                            transform: [0.0, 0.0, 0.5, 0.5],
                         },
                         bind_group,
                     ));
@@ -2128,6 +2167,7 @@ impl Ui {
                         rect: [zone.x, zone.y, zone.width, zone.height],
                         uv_rect: [0.0, 0.0, 1.0, 1.0],
                         tint: [1.0, 1.0, 1.0, 1.0],
+                        transform: [0.0, 0.0, 0.5, 0.5],
                     },
                     &cache.bind_group,
                 ));
@@ -2750,6 +2790,7 @@ impl Ui {
                         rect: [rect.x, rect.y, rect.width, rect.height],
                         uv_rect: [0.0, 0.0, 1.0, 1.0],
                         tint: [1.0; 4],
+                        transform: [0.0, 0.0, 0.5, 0.5],
                     },
                     &texture.bind_group,
                 ));
@@ -3220,7 +3261,7 @@ impl Ui {
 
         self.push_rythmo_base(
             quads,
-            &l.rythmo,
+            &rythmo_zone,
             project,
             render_index,
             render_frame,

@@ -29,6 +29,7 @@ use crate::ui::ToolMode;
 use std::cell::{Ref, RefCell};
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
+use unicode_segmentation::UnicodeSegmentation;
 
 const PLAYHEAD_WIDTH: f32 = 3.0;
 const PLAYHEAD_COLOR: [f32; 4] = [1.0, 0.02, 0.05, 1.0];
@@ -585,6 +586,116 @@ mod tests {
     }
 
     #[test]
+    fn text_emotion_copy_uses_space_outside_the_line_hitbox() {
+        crate::config::init();
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 24, 0.0);
+        let line = project.get_line_mut(line_id).unwrap();
+        line.text = "Bonjour".into();
+        line.set_text_emotion(0, 7, Some(crate::rythmo_line::TextEmotion::Wave));
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 300.0,
+        };
+
+        let layout = EditorLayoutCtx::new_at_frame(&project, 0.0, &zone);
+        let line = project.get_line(line_id).unwrap();
+        let hitbox = layout.line_rect_with_karaoke_width(line, 0.0, &zone, false, None, 0.0, 24.0);
+        let track = layout.track_body_rect(line.y_slot, &zone);
+        let badge = layout.badge_rect_for_name(line, "A", hitbox.x, &zone, 0.0, 24.0);
+        let (copy_y, copy_height) =
+            rythmo_layout::text_emotion_copy_rect(hitbox.y, hitbox.height, 1.0);
+
+        assert!(copy_y >= hitbox.y + hitbox.height);
+        assert!(copy_y + copy_height <= track.y + track.height + 0.01);
+        assert!(track.height > hitbox.height);
+        assert_eq!(badge.height, hitbox.height);
+    }
+
+    #[test]
+    fn caret_hit_test_uses_the_rendered_character_widths() {
+        crate::config::init();
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 24, 0.0);
+        project.get_line_mut(line_id).unwrap().text = "cataclysme".into();
+        let line = project.get_line(line_id).unwrap();
+        let state = RythmoState::new();
+        let ratios = crate::rythmo_line::text_emotion_char_ratios(
+            &line.text,
+            crate::config::get().ui.font_size * 2.0,
+        )
+        .unwrap();
+
+        for (expected, ratio) in ratios.into_iter().enumerate() {
+            assert_eq!(
+                cursor_index_for_line_at_ratio(&project, line, None, "fr", false, &state, ratio,),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn first_text_emotion_reflows_the_cached_layout_inside_the_br() {
+        crate::config::init();
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 24, 0.0);
+        project.get_line_mut(line_id).unwrap().text = "Bonjour".into();
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 300.0,
+        };
+        let mut state = RythmoState::new();
+
+        let before = state
+            .get_or_create_layout_ctx(&project, 0.0, 24.0, &zone)
+            .normal_body_h;
+        project.get_line_mut(line_id).unwrap().set_text_emotion(
+            0,
+            7,
+            Some(crate::rythmo_line::TextEmotion::Wave),
+        );
+        let layout = state.get_or_create_layout_ctx(&project, 0.0, 24.0, &zone);
+
+        assert!(layout.normal_body_h < before);
+        let bottom = layout
+            .track_layouts()
+            .last()
+            .map(|track| track.top + track.reserved_h)
+            .unwrap_or(0.0);
+        assert!(bottom <= zone.height - constants::RULER_HEIGHT + 0.01);
+        let line = project.get_line(line_id).unwrap();
+        let hitbox = layout.line_rect_with_karaoke_width(line, 0.0, &zone, false, None, 0.0, 24.0);
+        drop(layout);
+
+        let mut render_index = ProjectRenderIndex::new();
+        render_index.refresh(&project);
+        let response = handle_rythmo_event(
+            &UiEvent::MouseMove {
+                x: hitbox.x + hitbox.width / 2.0,
+                y: hitbox.y + hitbox.height / 2.0,
+            },
+            &zone,
+            &project,
+            &render_index,
+            0.0,
+            false,
+            24.0,
+            &mut state,
+            ToolMode::Select,
+            [1.0; 4],
+            0.012,
+            false,
+            RythmoInteractionMode::Editable,
+        );
+        assert_eq!(response, EventResponse::Consumed);
+        assert_eq!(state.hovered_line, Some(line_id));
+    }
+
+    #[test]
     fn first_karaoke_line_enters_playback_mode_during_count_in() {
         crate::config::init();
         let mut project = Project::new();
@@ -664,6 +775,32 @@ mod tests {
             karaoke_text_cache_id(line_id),
             syllable_segment_cache_id(line_id, 0)
         );
+    }
+
+    #[test]
+    fn character_badge_prewarm_matches_visible_raster_inputs() {
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 24, 0.0);
+        project.get_line_mut(line_id).unwrap().character_name = "Alice".into();
+        let line = project.get_line(line_id).unwrap();
+        let rect = Rect {
+            x: 100.0,
+            y: 20.0,
+            width: 60.0,
+            height: 18.0,
+        };
+
+        let prewarm = character_badge_text(line, rect, 0.8, true);
+        let visible = character_badge_text(line, rect, 0.8, false);
+
+        assert!(prewarm.prewarm);
+        assert!(!visible.prewarm);
+        assert!(prewarm.emphasized);
+        assert_eq!(prewarm.line_id, visible.line_id);
+        assert_eq!(prewarm.text, visible.text);
+        assert_eq!(prewarm.dest_rect, visible.dest_rect);
+        assert_eq!(prewarm.font_scale, visible.font_scale);
+        assert_eq!(prewarm.stretch, visible.stretch);
     }
 
     #[test]
@@ -1214,6 +1351,104 @@ mod tests {
                 && (quad.rect[3] - constants::RULER_HEIGHT).abs() < 0.01
         }));
     }
+
+    #[test]
+    fn hidden_voice_actor_menu_cannot_open_the_create_actor_action() {
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 24, 0.0);
+        let mut state = RythmoState::new();
+        state.context_menu = Some(LineContextMenu {
+            line_id,
+            x: 100.0,
+            y: 100.0,
+            hover_main: false,
+            hover_change_character: false,
+            hover_text_emotion: true,
+            hover_emotion_index: None,
+            hover_emotion_variant: None,
+            text_range: None,
+            hover_actor_index: None,
+            hover_action_index: None,
+            actor_scroll: 0.0,
+        });
+        let (_, actor_rect, _, _, _, _) = context_menu_layout(
+            &project,
+            1200.0,
+            800.0,
+            state.context_menu.as_ref().unwrap(),
+        );
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1200.0,
+            height: 800.0,
+        };
+
+        let response = handle_context_menu_event(
+            &UiEvent::MousePress {
+                x: actor_rect.x + actor_rect.width / 2.0,
+                y: actor_rect.y + actor_rect.height / 2.0,
+            },
+            &project,
+            0.0,
+            &zone,
+            1200.0,
+            800.0,
+            24.0,
+            &mut state,
+        );
+
+        assert_eq!(response, EventResponse::Consumed);
+    }
+
+    #[test]
+    fn context_menu_keyboard_navigation_announces_every_level() {
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 24, 0.0);
+        let mut state = RythmoState::new();
+        state.context_menu = Some(LineContextMenu {
+            line_id,
+            x: 100.0,
+            y: 100.0,
+            hover_main: false,
+            hover_change_character: false,
+            hover_text_emotion: true,
+            hover_emotion_index: Some(0),
+            hover_emotion_variant: None,
+            text_range: None,
+            hover_actor_index: None,
+            hover_action_index: None,
+            actor_scroll: 0.0,
+        });
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1200.0,
+            height: 800.0,
+        };
+
+        let response = handle_context_menu_event(
+            &UiEvent::CursorUp,
+            &project,
+            0.0,
+            &zone,
+            1200.0,
+            800.0,
+            24.0,
+            &mut state,
+        );
+
+        assert!(matches!(
+            response,
+            EventResponse::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Selection { .. }
+            ))
+        ));
+        assert_eq!(
+            state.context_menu.as_ref().unwrap().hover_emotion_index,
+            Some(EMOTION_CATEGORIES.len())
+        );
+    }
 }
 
 fn push_playhead_segments(
@@ -1699,8 +1934,130 @@ fn syllable_segment_cache_id(line_id: u64, segment_index: usize) -> u64 {
     (1_u64 << 63) ^ line_id.wrapping_mul(1_000_003) ^ (segment_index as u64).wrapping_add(1)
 }
 
+fn emotion_grapheme_cache_id(line_id: u64, grapheme_index: usize, static_copy: bool) -> u64 {
+    (1_u64 << 60)
+        ^ line_id.rotate_left(17)
+        ^ ((grapheme_index as u64) << 1)
+        ^ u64::from(static_copy)
+}
+
+fn push_emotional_text(
+    stretched: &mut Vec<StretchedText>,
+    line: &crate::rythmo_line::RythmoLine,
+    rect: Rect,
+    seconds: f32,
+    base_tint: [f32; 4],
+    character_positions: Option<&[f32]>,
+    show_lane: bool,
+) -> Vec<CursorSegmentInfo> {
+    let graphemes: Vec<&str> = line.text.graphemes(true).collect();
+    let char_count = line.text.chars().count().max(1);
+    let ratios = if character_positions.is_some() {
+        None
+    } else {
+        crate::rythmo_line::text_emotion_char_ratios(
+            &line.text,
+            crate::config::get().ui.font_size * 2.0,
+        )
+        .filter(|ratios| ratios.len() == char_count + 1)
+    };
+    let mut char_start = 0usize;
+    let mut segments = Vec::with_capacity(graphemes.len());
+    for (index, grapheme) in graphemes.iter().enumerate() {
+        let char_end = char_start + grapheme.chars().count();
+        let start_ratio = character_positions
+            .and_then(|positions| positions.get(char_start).copied())
+            .or_else(|| ratios.as_ref().map(|ratios| ratios[char_start]))
+            .unwrap_or(char_start as f32 / char_count as f32);
+        let end_ratio = character_positions
+            .and_then(|positions| positions.get(char_end).copied())
+            .or_else(|| ratios.as_ref().map(|ratios| ratios[char_end]))
+            .unwrap_or(char_end as f32 / char_count as f32);
+        let width_ratio = (end_ratio - start_ratio).max(0.001);
+        let glyph_rect = Rect {
+            x: rect.x + start_ratio * rect.width,
+            y: rect.y,
+            width: width_ratio * rect.width,
+            height: rect.height,
+        };
+        let cache_id = emotion_grapheme_cache_id(line.id, index, false);
+        let mut text = StretchedText::new(cache_id, (*grapheme).to_string(), glyph_rect);
+        text.tint = base_tint;
+        if let Some(emotion) = line.emotion_at_char(char_start) {
+            let animation = crate::rythmo_line::text_emotion_transform(
+                emotion,
+                index,
+                graphemes.len(),
+                seconds,
+            );
+            text.draw_rect.x += animation.offset[0];
+            text.draw_rect.y += animation.offset[1] - rect.height * 0.08;
+            text.tint = if emotion == crate::rythmo_line::TextEmotion::Yay {
+                animation.tint
+            } else {
+                [
+                    base_tint[0] * animation.tint[0],
+                    base_tint[1] * animation.tint[1],
+                    base_tint[2] * animation.tint[2],
+                    base_tint[3] * animation.tint[3],
+                ]
+            };
+            text.transform = animation.transform;
+            stretched.push(text);
+
+            if show_lane {
+                let mut readable = StretchedText::new(
+                    emotion_grapheme_cache_id(line.id, index, true),
+                    (*grapheme).to_string(),
+                    {
+                        let (y, height) =
+                            rythmo_layout::text_emotion_copy_rect(rect.y, rect.height, 1.0);
+                        Rect {
+                            y,
+                            height,
+                            ..glyph_rect
+                        }
+                    },
+                );
+                readable.font_scale = 0.68;
+                readable.tint = [base_tint[0], base_tint[1], base_tint[2], 0.82];
+                stretched.push(readable);
+            }
+        } else {
+            stretched.push(text);
+        }
+        segments.push(CursorSegmentInfo {
+            cache_id,
+            start_char: char_start,
+            end_char: char_end,
+            start_ratio,
+            width_ratio,
+        });
+        char_start = char_end;
+    }
+    segments
+}
+
 fn karaoke_text_cache_id(line_id: u64) -> u64 {
     (1_u64 << 62) ^ line_id
+}
+
+fn character_badge_text(
+    line: &crate::rythmo_line::RythmoLine,
+    rect: Rect,
+    font_scale: f32,
+    prewarm: bool,
+) -> StretchedText {
+    let mut label = StretchedText::natural(
+        line.id ^ 0x4348_4152_4143_5445,
+        line.character_name.clone(),
+        rect,
+        font_scale,
+        line.character_color,
+    );
+    label.prewarm = prewarm;
+    label.emphasized = true;
+    label
 }
 
 #[cfg(test)]
@@ -2345,6 +2702,7 @@ pub fn segmented_cursor_index_for_line_at_ratio(
 }
 
 fn cursor_index_for_line_at_ratio(
+    project: &Project,
     line: &crate::rythmo_line::RythmoLine,
     drag: Option<&SyllableDrag>,
     lang: &str,
@@ -2353,11 +2711,26 @@ fn cursor_index_for_line_at_ratio(
     x_ratio: f32,
 ) -> usize {
     if let Some(idx) =
-        segmented_cursor_index_for_line_at_ratio(line, drag, lang, karaoke_preview, state, x_ratio)
+        detection_ui::sync_cursor_index_for_line_at_ratio(project, line, drag, lang, state, x_ratio)
+            .or_else(|| {
+                segmented_cursor_index_for_line_at_ratio(
+                    line,
+                    drag,
+                    lang,
+                    karaoke_preview,
+                    state,
+                    x_ratio,
+                )
+            })
     {
         idx
     } else {
-        (x_ratio * line.text.chars().count() as f32).round() as usize
+        crate::rythmo_line::text_emotion_char_ratios(
+            &line.text,
+            crate::config::get().ui.font_size * 2.0,
+        )
+        .and_then(|ratios| closest_cursor_index_from_ratios(&ratios, x_ratio))
+        .unwrap_or_else(|| (x_ratio * line.text.chars().count() as f32).round() as usize)
     }
 }
 
@@ -2558,6 +2931,7 @@ pub fn render_lines<'a>(
     f32,
     Option<Vec<CursorSegmentInfo>>,
 )> {
+    state.update_text_emotion_presence(project);
     if let Some(drag) = state.dragging.as_ref().filter(|drag| {
         drag.handle == DragHandle::VerticalOnly && matches!(drag.target, DragTarget::Line(_))
     }) {
@@ -2618,6 +2992,29 @@ pub fn render_lines<'a>(
     let karaoke_lang = project.syllable_language_code();
     let margin_frames = interactive_render_margin_frames(fps, render_index);
     let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames, fps);
+    // A badge is rendered before its line body, so its pixels can enter from
+    // the right while the body's start frame is still just outside the query.
+    let max_leading_visual_span = project
+        .lines()
+        .filter_map(|line| {
+            let (badge_width, actor_count) = if line.kind.is_dialogue() {
+                (
+                    badge_width(&line.character_name),
+                    line.voice_actor_names.len(),
+                )
+            } else if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
+                (badge_width(&line.character_name), 0)
+            } else {
+                return None;
+            };
+            Some(
+                4.0 * ppf() + badge_width + actor_count as f32 * (ACTOR_ICON_SIZE + ACTOR_ICON_GAP),
+            )
+        })
+        .fold(0.0_f32, f32::max);
+    let last_frame = last_frame.saturating_add(f64_ceil_to_i64(
+        max_leading_visual_span as f64 / ppf().max(0.001) as f64,
+    ));
     let mut visible_line_ids = render_index.visible_line_ids(project, first_frame, last_frame);
     visible_line_ids.sort_by_key(|id| render_index.line_order_index(*id));
 
@@ -2635,6 +3032,7 @@ pub fn render_lines<'a>(
     }
 
     let mut line_data: Vec<(u64, LineRenderData)> = Vec::with_capacity(visible_line_ids.len());
+    let mut badge_prewarm_candidates = Vec::new();
     let mut collision_line_rects: HashMap<u64, Rect> = HashMap::new();
     for &lid in &visible_line_ids {
         let Some(line) = project.get_line(lid) else {
@@ -2691,7 +3089,6 @@ pub fn render_lines<'a>(
                 fps,
             )
         };
-
         collision_line_rects.insert(lid, r);
 
         let mut badge_rect = if karaoke_playback {
@@ -2727,13 +3124,21 @@ pub fn render_lines<'a>(
                 ACTOR_ICON_GAP,
             )
         });
-        if !rythmo_layout::line_or_badge_intersects_viewport(
+        let intersects_viewport = rythmo_layout::line_or_badge_intersects_viewport(
             r.x,
             r.width,
             leading_visual,
             zone.x,
             zone.x + zone.width,
-        ) {
+        );
+        if !intersects_viewport {
+            if karaoke_preview
+                && show_badge
+                && !line.character_name.is_empty()
+                && leading_visual.is_some_and(|(x, _)| x > zone.x + zone.width)
+            {
+                badge_prewarm_candidates.push((lid, badge_rect, r.x));
+            }
             continue;
         }
 
@@ -2778,8 +3183,9 @@ pub fn render_lines<'a>(
         karaoke_winners.contains(lid)
     });
 
-    // Keep a stable vertical draw order, then compare every badge with the
-    // actual body of the other visible lines.
+    // Keep a stable vertical draw order, then compare every badge with every
+    // queried body, including bodies already culled from the viewport. Relative
+    // overlaps must not change when the leading line leaves the screen.
     line_data.sort_by(|a, b| {
         a.1.badge_rect
             .y
@@ -2796,6 +3202,22 @@ pub fn render_lines<'a>(
                 .map(|line| (line_id, rect, line.character_name.as_str()))
         })
         .collect();
+
+    for (line_id, badge_rect, line_x) in badge_prewarm_candidates {
+        let Some(line) = project.get_line(line_id) else {
+            continue;
+        };
+        let (hidden, fitted_rect, scale) = character_badge_collision_layout(
+            line_id,
+            &line.character_name,
+            &badge_rect,
+            line_x,
+            &collision_targets,
+        );
+        if !hidden {
+            stretched.push(character_badge_text(line, fitted_rect, scale, true));
+        }
+    }
 
     for (line_id, data) in &line_data {
         let Some(line) = project.get_line(*line_id) else {
@@ -2971,8 +3393,22 @@ pub fn render_lines<'a>(
                     state,
                     read_highlight_end,
                     scrolling_text_tint,
+                    (!line.text_emotions.is_empty()).then(|| state.text_emotion_seconds()),
                     stretched,
                 ) {
+                    if is_editing {
+                        cursor_segments = Some(segments);
+                    }
+                } else if !line.text_emotions.is_empty() {
+                    let segments = push_emotional_text(
+                        stretched,
+                        line,
+                        description_rect,
+                        state.text_emotion_seconds(),
+                        scrolling_text_tint,
+                        None,
+                        project.settings().show_text_emotion_lanes,
+                    );
                     if is_editing {
                         cursor_segments = Some(segments);
                     }
@@ -3200,15 +3636,7 @@ pub fn render_lines<'a>(
             // Same emphasized typography as ambiance labels, tinted with the
             // character colour and deliberately left without an underline.
             if !line.character_name.is_empty() {
-                let mut label = StretchedText::natural(
-                    line.id ^ 0x4348_4152_4143_5445,
-                    line.character_name.clone(),
-                    br,
-                    badge_scale,
-                    badge_color,
-                );
-                label.emphasized = true;
-                stretched.push(label);
+                stretched.push(character_badge_text(line, br, badge_scale, false));
                 let (underline_x, underline_width) =
                     label_underline_span(br, &line.character_name, badge_scale);
                 for y_offset in [2.0, 5.5] {
@@ -3267,6 +3695,7 @@ pub fn render_lines<'a>(
                     ],
                     uv_rect: note_uv,
                     tint: [0.7, 0.7, 0.75, 0.9],
+                    transform: [0.0, 0.0, 0.5, 0.5],
                 });
             }
         }
@@ -3993,6 +4422,27 @@ pub fn render_markers<'a>(
                     rotation: 0.0,
                     _padding: [0.0; 2],
                 });
+                let number = project.markers()[..marker_index]
+                    .iter()
+                    .filter(|marker| matches!(marker.kind, MarkerKind::SceneChange))
+                    .count()
+                    + 1;
+                labels.push(LabelInfo {
+                    text: scene_number_label(number),
+                    bounds: Rect {
+                        x: x + 5.0,
+                        y: zone.y + 4.0,
+                        width: 28.0,
+                        height: 24.0,
+                    },
+                    h_align: HAlign::Left,
+                    v_align: VAlign::Top,
+                    overflow: Overflow::Clip,
+                    padding: 0.0,
+                    font_size_override: Some(18.0),
+                    color_override: Some([235, 235, 245]),
+                    font_family_override: None,
+                });
             }
             MarkerKind::LiaisonLeft => {
                 let uv = liaison_left_uv;
@@ -4000,6 +4450,7 @@ pub fn render_markers<'a>(
                     rect: [x - 8.0, zone.y, 16.0, constants::RULER_HEIGHT],
                     uv_rect: uv,
                     tint: [0.7, 0.7, 0.75, 0.9],
+                    transform: [0.0, 0.0, 0.5, 0.5],
                 });
             }
             MarkerKind::LiaisonRight => {
@@ -4008,10 +4459,19 @@ pub fn render_markers<'a>(
                     rect: [x - 8.0, zone.y, 16.0, constants::RULER_HEIGHT],
                     uv_rect: uv,
                     tint: [0.7, 0.7, 0.75, 0.9],
+                    transform: [0.0, 0.0, 0.5, 0.5],
                 });
             }
         }
     }
+}
+
+fn scene_number_label(number: usize) -> &'static str {
+    const LABELS: [&str; 31] = [
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16",
+        "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30",
+    ];
+    LABELS.get(number).copied().unwrap_or("30+")
 }
 
 /// Place the actual liaison SVG from the icon atlas inside ambiance lines.
@@ -4064,6 +4524,7 @@ pub fn render_ambiance_liaison_icons(
             // Keep it fully opaque and white so it remains visible on the
             // dark rythmo band and retains the glyph's solid silhouette.
             tint: [1.0, 1.0, 1.0, 1.0],
+            transform: [0.0, 0.0, 0.5, 0.5],
         });
     }
 }
@@ -4197,9 +4658,170 @@ const MENU_ITEM_H: f32 = 26.0;
 const MENU_ROOT_W: f32 = 230.0;
 const MENU_ACTOR_W: f32 = 240.0;
 const MENU_ACTION_W: f32 = 285.0;
+const MENU_EMOTION_W: f32 = 190.0;
 const MENU_GAP: f32 = 0.0;
 const MENU_MARGIN: f32 = 8.0;
 const MENU_MAX_ACTOR_H: f32 = 260.0;
+
+const EMOTION_ANGER: &[crate::rythmo_line::TextEmotion] = &[
+    crate::rythmo_line::TextEmotion::AngerSoft,
+    crate::rythmo_line::TextEmotion::Shake,
+    crate::rythmo_line::TextEmotion::AngerContained,
+    crate::rythmo_line::TextEmotion::AngerHeavy,
+    crate::rythmo_line::TextEmotion::AngerExtreme,
+];
+const EMOTION_JOY: &[crate::rythmo_line::TextEmotion] = &[
+    crate::rythmo_line::TextEmotion::JoySoft,
+    crate::rythmo_line::TextEmotion::Yay,
+    crate::rythmo_line::TextEmotion::Bounce,
+    crate::rythmo_line::TextEmotion::JoyBurst,
+    crate::rythmo_line::TextEmotion::JoyExtreme,
+];
+const EMOTION_FEAR: &[crate::rythmo_line::TextEmotion] = &[
+    crate::rythmo_line::TextEmotion::FearSoft,
+    crate::rythmo_line::TextEmotion::Wiggle,
+    crate::rythmo_line::TextEmotion::FearPanic,
+    crate::rythmo_line::TextEmotion::FearStrong,
+    crate::rythmo_line::TextEmotion::FearExtreme,
+];
+const EMOTION_SADNESS: &[crate::rythmo_line::TextEmotion] = &[
+    crate::rythmo_line::TextEmotion::SadnessSoft,
+    crate::rythmo_line::TextEmotion::Pendulum,
+    crate::rythmo_line::TextEmotion::SadnessDeep,
+    crate::rythmo_line::TextEmotion::SadnessStrong,
+    crate::rythmo_line::TextEmotion::SadnessExtreme,
+];
+const EMOTION_TENDERNESS: &[crate::rythmo_line::TextEmotion] = &[
+    crate::rythmo_line::TextEmotion::TendernessSoft,
+    crate::rythmo_line::TextEmotion::Swing,
+    crate::rythmo_line::TextEmotion::LoveTender,
+    crate::rythmo_line::TextEmotion::TendernessStrong,
+    crate::rythmo_line::TextEmotion::TendernessExtreme,
+];
+const EMOTION_DISGUST: &[crate::rythmo_line::TextEmotion] = &[
+    crate::rythmo_line::TextEmotion::DisgustSoft,
+    crate::rythmo_line::TextEmotion::Slide,
+    crate::rythmo_line::TextEmotion::Disgust,
+    crate::rythmo_line::TextEmotion::DisgustStrong,
+    crate::rythmo_line::TextEmotion::DisgustExtreme,
+];
+const EMOTION_DOUBT: &[crate::rythmo_line::TextEmotion] = &[
+    crate::rythmo_line::TextEmotion::DoubtSoft,
+    crate::rythmo_line::TextEmotion::Oscillation,
+    crate::rythmo_line::TextEmotion::Doubt,
+    crate::rythmo_line::TextEmotion::DoubtStrong,
+    crate::rythmo_line::TextEmotion::DoubtExtreme,
+];
+const EMOTION_QUESTION: &[crate::rythmo_line::TextEmotion] = &[
+    crate::rythmo_line::TextEmotion::QuestionSoft,
+    crate::rythmo_line::TextEmotion::Question,
+    crate::rythmo_line::TextEmotion::QuestionStrong,
+    crate::rythmo_line::TextEmotion::QuestionExtreme,
+    crate::rythmo_line::TextEmotion::QuestionFast,
+];
+const EMOTION_EXCLAMATION: &[crate::rythmo_line::TextEmotion] = &[
+    crate::rythmo_line::TextEmotion::ExclamationSoft,
+    crate::rythmo_line::TextEmotion::Exclamation,
+    crate::rythmo_line::TextEmotion::ExclamationStrong,
+    crate::rythmo_line::TextEmotion::ExclamationExtreme,
+    crate::rythmo_line::TextEmotion::ExclamationHuge,
+];
+const EMOTION_CATEGORIES: &[(&str, &[crate::rythmo_line::TextEmotion])] = &[
+    ("text_emotion.category.anger", EMOTION_ANGER),
+    ("text_emotion.category.joy", EMOTION_JOY),
+    ("text_emotion.category.fear", EMOTION_FEAR),
+    ("text_emotion.category.sadness", EMOTION_SADNESS),
+    ("text_emotion.category.tenderness", EMOTION_TENDERNESS),
+    ("text_emotion.category.disgust", EMOTION_DISGUST),
+    ("text_emotion.category.doubt", EMOTION_DOUBT),
+    ("text_emotion.category.question", EMOTION_QUESTION),
+    ("text_emotion.category.exclamation", EMOTION_EXCLAMATION),
+];
+
+fn emotion_category(
+    index: usize,
+) -> Option<&'static (&'static str, &'static [crate::rythmo_line::TextEmotion])> {
+    EMOTION_CATEGORIES.get(index)
+}
+
+fn emotion_group(
+    menu_index: usize,
+) -> Option<&'static (&'static str, &'static [crate::rythmo_line::TextEmotion])> {
+    menu_index.checked_sub(1).and_then(emotion_category)
+}
+
+pub fn context_menu_accessibility_label(project: &Project, line_id: u64) -> String {
+    let mut items = vec![
+        t("context.voice_actor.assign_to_actor"),
+        t("context.change_character"),
+    ];
+    if project
+        .get_line(line_id)
+        .is_some_and(|line| line.can_have_text_emotions())
+    {
+        items.push(t("text_emotion.menu"));
+    }
+    format!(
+        "{} : {}",
+        t("accessibility.line_context_menu"),
+        items.join(", ")
+    )
+}
+
+fn selected_context_menu_label<'a>(
+    project: &'a Project,
+    menu: &LineContextMenu,
+) -> Option<&'a str> {
+    if let (Some(category), Some(variant)) = (menu.hover_emotion_index, menu.hover_emotion_variant)
+    {
+        emotion_group(category)
+            .and_then(|(_, emotions)| emotions.get(variant))
+            .map(|emotion| t(emotion.i18n_key()))
+    } else if let Some(index) = menu.hover_emotion_index {
+        Some(if index == 0 {
+            t("text_emotion.remove")
+        } else {
+            t(EMOTION_CATEGORIES[index - 1].0)
+        })
+    } else if let Some(action) = menu.hover_action_index {
+        Some(
+            [
+                t("context.voice_actor.assign_line"),
+                t("context.voice_actor.assign_character"),
+                t("context.voice_actor.unassign_line"),
+                t("context.voice_actor.unassign_character"),
+            ][action],
+        )
+    } else if menu.hover_change_character {
+        Some(t("context.change_character"))
+    } else if menu.hover_text_emotion {
+        Some(t("text_emotion.menu"))
+    } else if let Some(actor_index) = menu.hover_actor_index {
+        if actor_index == project.voice_actors().len() {
+            Some(t("context.voice_actor.create"))
+        } else {
+            project
+                .voice_actor(actor_index)
+                .map(|actor| actor.name.as_str())
+        }
+    } else {
+        Some(t("context.voice_actor.assign_to_actor"))
+    }
+}
+
+fn announce_context_menu_selection(project: &Project, state: &RythmoState) -> EventResponse {
+    state
+        .context_menu
+        .as_ref()
+        .and_then(|menu| selected_context_menu_label(project, menu))
+        .map_or(EventResponse::Consumed, |label| {
+            EventResponse::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Selection {
+                    label: label.to_string(),
+                },
+            ))
+        })
+}
 
 pub fn handle_context_menu_event(
     event: &UiEvent,
@@ -4249,6 +4871,12 @@ pub fn handle_context_menu_event(
                     y: *y,
                     hover_main: true,
                     hover_change_character: false,
+                    hover_text_emotion: false,
+                    hover_emotion_index: None,
+                    hover_emotion_variant: None,
+                    text_range: (state.editing_line == Some(line_id))
+                        .then(|| state.line_input.selection_range())
+                        .flatten(),
                     hover_actor_index: None,
                     hover_action_index: None,
                     actor_scroll: 0.0,
@@ -4257,7 +4885,12 @@ pub fn handle_context_menu_event(
                     state.selected = Some(Selection::Line(line_id));
                 }
                 state.dragging = None;
-                return EventResponse::Consumed;
+                return EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: context_menu_accessibility_label(project, line_id),
+                        role: "menu".to_string(),
+                    },
+                ));
             }
             state.context_menu = None;
             EventResponse::Ignored
@@ -4273,9 +4906,9 @@ pub fn handle_context_menu_event(
             let Some(menu) = state.context_menu.as_mut() else {
                 return EventResponse::Ignored;
             };
-            let (_, actor_rect, _, _, max_scroll) =
+            let (_, actor_rect, _, _, max_scroll, _) =
                 context_menu_layout(project, screen_w, screen_h, menu);
-            if actor_rect.contains(*x, *y) {
+            if context_actor_menu_visible(menu) && actor_rect.contains(*x, *y) {
                 menu.actor_scroll =
                     (menu.actor_scroll - delta * MENU_ITEM_H * 2.0).clamp(0.0, max_scroll);
                 return EventResponse::Consumed;
@@ -4290,14 +4923,48 @@ pub fn handle_context_menu_event(
             let Some(menu) = state.context_menu.as_ref() else {
                 return EventResponse::Ignored;
             };
-            let (root_rect, actor_rect, action_rect, actor_scroll, _) =
+            let (root_rect, actor_rect, action_rect, actor_scroll, _, emotion_rect) =
                 context_menu_layout(project, screen_w, screen_h, menu);
+            let variant_rect = emotion_variant_rect(screen_w, screen_h, menu, emotion_rect);
 
             if root_rect.contains(*x, *y) {
                 let root_item = ((*y - root_rect.y) / MENU_ITEM_H).floor() as usize;
                 if root_item == 1 {
                     state.context_menu = None;
                     return EventResponse::Action(UiAction::OpenLinesPanel);
+                }
+            }
+
+            if emotion_rect.contains(*x, *y) {
+                let index = ((*y - emotion_rect.y) / MENU_ITEM_H).floor() as usize;
+                if index == 0 {
+                    let line_id = menu.line_id;
+                    let range = menu.text_range;
+                    state.context_menu = None;
+                    return EventResponse::Action(UiAction::SetTextEmotion {
+                        line_id,
+                        range,
+                        emotion: None,
+                    });
+                }
+            }
+
+            if variant_rect.contains(*x, *y) {
+                if let (Some(category), Some(variant)) =
+                    (menu.hover_emotion_index, menu.hover_emotion_variant)
+                {
+                    if let Some((_, emotions)) = emotion_group(category) {
+                        if let Some(&emotion) = emotions.get(variant) {
+                            let line_id = menu.line_id;
+                            let range = menu.text_range;
+                            state.context_menu = None;
+                            return EventResponse::Action(UiAction::SetTextEmotion {
+                                line_id,
+                                range,
+                                emotion: Some(emotion),
+                            });
+                        }
+                    }
                 }
             }
 
@@ -4332,7 +4999,7 @@ pub fn handle_context_menu_event(
                 }
             }
 
-            if actor_rect.contains(*x, *y) {
+            if context_actor_menu_visible(menu) && actor_rect.contains(*x, *y) {
                 let item_index =
                     ((*y - actor_rect.y + actor_scroll) / MENU_ITEM_H).floor() as usize;
                 if item_index == project.voice_actors().len() {
@@ -4344,7 +5011,11 @@ pub fn handle_context_menu_event(
 
             if root_rect.contains(*x, *y)
                 || action_rect.contains(*x, *y)
+                || emotion_rect.contains(*x, *y)
+                || variant_rect.contains(*x, *y)
                 || context_menu_bridge_contains(root_rect, actor_rect, action_rect, *x, *y)
+                || bridge_rect(root_rect, emotion_rect).contains(*x, *y)
+                || bridge_rect(emotion_rect, variant_rect).contains(*x, *y)
             {
                 return EventResponse::Consumed;
             }
@@ -4363,21 +5034,33 @@ pub fn handle_context_menu_event(
             if menu.hover_main {
                 menu.hover_main = false;
                 menu.hover_actor_index = Some(0);
+            } else if menu.hover_text_emotion {
+                menu.hover_emotion_index = Some(0);
+                menu.hover_emotion_variant = None;
+                menu.hover_text_emotion = false;
+            } else if menu.hover_emotion_index.is_some() {
+                menu.hover_emotion_variant = Some(0);
+                menu.hover_text_emotion = false;
             } else if menu.hover_actor_index.is_some() {
                 menu.hover_action_index = Some(0);
             }
-            EventResponse::Consumed
+            announce_context_menu_selection(project, state)
         }
         UiEvent::CursorLeft => {
             let Some(menu) = state.context_menu.as_mut() else {
                 return EventResponse::Ignored;
             };
-            if menu.hover_action_index.take().is_none() {
+            if menu.hover_emotion_variant.take().is_some() {
+                // Stay in the category list.
+            } else if menu.hover_emotion_index.take().is_some() {
+                menu.hover_text_emotion = true;
+            } else if menu.hover_action_index.take().is_none() {
                 menu.hover_actor_index = None;
                 menu.hover_main = true;
                 menu.hover_change_character = false;
+                menu.hover_text_emotion = false;
             }
-            EventResponse::Consumed
+            announce_context_menu_selection(project, state)
         }
         UiEvent::CursorUp | UiEvent::CursorDown => {
             let Some(menu) = state.context_menu.as_mut() else {
@@ -4388,51 +5071,52 @@ pub fn handle_context_menu_event(
             } else {
                 -1
             };
-            if menu.hover_main && direction > 0 {
-                menu.hover_main = false;
-                menu.hover_change_character = true;
-            } else if menu.hover_change_character && direction < 0 {
-                menu.hover_change_character = false;
-                menu.hover_main = true;
+            if let (Some(category), Some(variant)) = (
+                menu.hover_emotion_index,
+                menu.hover_emotion_variant.as_mut(),
+            ) {
+                if let Some((_, emotions)) = emotion_group(category) {
+                    let len = emotions.len();
+                    *variant = (*variant as i32 + direction).rem_euclid(len as i32) as usize;
+                }
+            } else if let Some(category) = menu.hover_emotion_index.as_mut() {
+                let len = EMOTION_CATEGORIES.len() + 1;
+                *category = (*category as i32 + direction).rem_euclid(len as i32) as usize;
             } else if let Some(action) = menu.hover_action_index.as_mut() {
                 *action = (*action as i32 + direction).rem_euclid(4) as usize;
-            } else if !menu.hover_main && !menu.hover_change_character {
+            } else if menu.hover_actor_index.is_some()
+                && !menu.hover_main
+                && !menu.hover_change_character
+                && !menu.hover_text_emotion
+            {
                 let len = project.voice_actors().len() + 1;
                 let current = menu.hover_actor_index.unwrap_or(0);
                 menu.hover_actor_index =
                     Some((current as i32 + direction).rem_euclid(len as i32) as usize);
-            }
-            let label = state.context_menu.as_ref().and_then(|menu| {
-                if let Some(action) = menu.hover_action_index {
-                    Some(
-                        [
-                            t("context.voice_actor.assign_line"),
-                            t("context.voice_actor.assign_character"),
-                            t("context.voice_actor.unassign_line"),
-                            t("context.voice_actor.unassign_character"),
-                        ][action],
-                    )
-                } else if menu.hover_change_character {
-                    Some(t("context.change_character"))
-                } else if let Some(actor_index) = menu.hover_actor_index {
-                    if actor_index == project.voice_actors().len() {
-                        Some(t("context.voice_actor.create"))
-                    } else {
-                        project
-                            .voice_actor(actor_index)
-                            .map(|actor| actor.name.as_str())
-                    }
+            } else {
+                let root_len = if project
+                    .get_line(menu.line_id)
+                    .is_some_and(|line| line.can_have_text_emotions())
+                {
+                    3
                 } else {
-                    Some(t("context.voice_actor.assign_to_actor"))
-                }
-            });
-            label.map_or(EventResponse::Consumed, |label| {
-                EventResponse::Action(UiAction::Accessibility(
-                    crate::accessibility::AccessibilityEvent::Selection {
-                        label: label.to_string(),
-                    },
-                ))
-            })
+                    2
+                };
+                let current = if menu.hover_change_character {
+                    1
+                } else if menu.hover_text_emotion {
+                    2
+                } else {
+                    0
+                };
+                let next = (current + direction).rem_euclid(root_len);
+                menu.hover_main = next == 0;
+                menu.hover_change_character = next == 1;
+                menu.hover_text_emotion = next == 2;
+                menu.hover_emotion_index = None;
+                menu.hover_emotion_variant = None;
+            }
+            announce_context_menu_selection(project, state)
         }
         UiEvent::Activate => {
             let Some(menu) = state.context_menu.as_ref() else {
@@ -4442,7 +5126,47 @@ pub fn handle_context_menu_event(
                 let menu = state.context_menu.as_mut().unwrap();
                 menu.hover_main = false;
                 menu.hover_actor_index = Some(0);
-                return EventResponse::Consumed;
+                return announce_context_menu_selection(project, state);
+            }
+            if let (Some(category), Some(variant)) =
+                (menu.hover_emotion_index, menu.hover_emotion_variant)
+            {
+                let line_id = menu.line_id;
+                let range = menu.text_range;
+                if let Some((_, emotions)) = emotion_group(category) {
+                    if let Some(&emotion) = emotions.get(variant) {
+                        state.context_menu = None;
+                        return EventResponse::Action(UiAction::SetTextEmotion {
+                            line_id,
+                            range,
+                            emotion: Some(emotion),
+                        });
+                    }
+                }
+            }
+            if let Some(index) = menu.hover_emotion_index {
+                if index == 0 {
+                    let line_id = menu.line_id;
+                    let range = menu.text_range;
+                    state.context_menu = None;
+                    return EventResponse::Action(UiAction::SetTextEmotion {
+                        line_id,
+                        range,
+                        emotion: None,
+                    });
+                }
+                state.context_menu.as_mut().unwrap().hover_emotion_variant = Some(0);
+                return announce_context_menu_selection(project, state);
+            }
+            if menu.hover_text_emotion {
+                let menu = state.context_menu.as_mut().unwrap();
+                menu.hover_emotion_index = Some(0);
+                menu.hover_emotion_variant = None;
+                return EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Selection {
+                        label: t("text_emotion.remove").to_string(),
+                    },
+                ));
             }
             if menu.hover_change_character {
                 state.context_menu = None;
@@ -4508,8 +5232,9 @@ pub fn render_context_menu<'a>(
     let Some(menu) = &state.context_menu else {
         return;
     };
-    let (root_rect, actor_rect, action_rect, actor_scroll, max_scroll) =
+    let (root_rect, actor_rect, action_rect, actor_scroll, max_scroll, emotion_rect) =
         context_menu_layout(project, screen_w, screen_h, menu);
+    let variant_rect = emotion_variant_rect(screen_w, screen_h, menu, emotion_rect);
 
     render_menu_panel(quads, root_rect);
     render_menu_item(
@@ -4538,6 +5263,69 @@ pub fn render_context_menu<'a>(
         menu.hover_change_character,
         false,
     );
+    if project
+        .get_line(menu.line_id)
+        .is_some_and(|line| line.can_have_text_emotions())
+    {
+        render_menu_item(
+            quads,
+            labels,
+            Rect {
+                x: root_rect.x,
+                y: root_rect.y + MENU_ITEM_H * 2.0,
+                width: root_rect.width,
+                height: MENU_ITEM_H,
+            },
+            t("text_emotion.menu"),
+            menu.hover_text_emotion,
+            true,
+        );
+    }
+
+    if menu.hover_text_emotion || menu.hover_emotion_index.is_some() {
+        render_menu_panel(quads, emotion_rect);
+        for index in 0..=EMOTION_CATEGORIES.len() {
+            let label = if index == 0 {
+                t("text_emotion.remove")
+            } else {
+                t(EMOTION_CATEGORIES[index - 1].0)
+            };
+            render_menu_item(
+                quads,
+                labels,
+                Rect {
+                    x: emotion_rect.x,
+                    y: emotion_rect.y + index as f32 * MENU_ITEM_H,
+                    width: emotion_rect.width,
+                    height: MENU_ITEM_H,
+                },
+                label,
+                menu.hover_emotion_index == Some(index),
+                index > 0,
+            );
+        }
+    }
+
+    if let (Some(category), Some(_)) = (menu.hover_emotion_index, menu.hover_emotion_variant) {
+        if let Some((_, emotions)) = emotion_group(category) {
+            render_menu_panel(quads, variant_rect);
+            for (index, emotion) in emotions.iter().enumerate() {
+                render_menu_item(
+                    quads,
+                    labels,
+                    Rect {
+                        x: variant_rect.x,
+                        y: variant_rect.y + index as f32 * MENU_ITEM_H,
+                        width: variant_rect.width,
+                        height: MENU_ITEM_H,
+                    },
+                    t(emotion.i18n_key()),
+                    menu.hover_emotion_variant == Some(index),
+                    false,
+                );
+            }
+        }
+    }
 
     if !context_actor_menu_visible(menu) {
         return;
@@ -4626,8 +5414,11 @@ fn context_menu_layout(
     screen_w: f32,
     screen_h: f32,
     menu: &LineContextMenu,
-) -> (Rect, Rect, Rect, f32, f32) {
-    let root_h = MENU_ITEM_H * 2.0;
+) -> (Rect, Rect, Rect, f32, f32, Rect) {
+    let emotion_available = project
+        .get_line(menu.line_id)
+        .is_some_and(|line| line.can_have_text_emotions());
+    let root_h = MENU_ITEM_H * if emotion_available { 3.0 } else { 2.0 };
     let (root_x, root_y) =
         clamped_menu_origin(menu.x, menu.y, MENU_ROOT_W, root_h, screen_w, screen_h);
     let root_rect = Rect {
@@ -4682,7 +5473,60 @@ fn context_menu_layout(
         height: MENU_ITEM_H * 4.0,
     };
 
-    (root_rect, actor_rect, action_rect, actor_scroll, max_scroll)
+    let emotion_h = MENU_ITEM_H * (EMOTION_CATEGORIES.len() + 1) as f32;
+    let emotion_x_right = root_rect.x + root_rect.width + MENU_GAP;
+    let emotion_x = if emotion_x_right + MENU_EMOTION_W <= screen_w - MENU_MARGIN {
+        emotion_x_right
+    } else {
+        (root_rect.x - MENU_EMOTION_W - MENU_GAP).max(MENU_MARGIN)
+    };
+    let emotion_rect = Rect {
+        x: emotion_x,
+        y: (root_rect.y + MENU_ITEM_H * 2.0).clamp(
+            MENU_MARGIN,
+            (screen_h - emotion_h - MENU_MARGIN).max(MENU_MARGIN),
+        ),
+        width: MENU_EMOTION_W,
+        height: emotion_h,
+    };
+
+    (
+        root_rect,
+        actor_rect,
+        action_rect,
+        actor_scroll,
+        max_scroll,
+        emotion_rect,
+    )
+}
+
+fn emotion_variant_rect(
+    screen_w: f32,
+    screen_h: f32,
+    menu: &LineContextMenu,
+    emotion_rect: Rect,
+) -> Rect {
+    let count = menu
+        .hover_emotion_index
+        .and_then(|index| emotion_group(index).map(|(_, emotions)| emotions.len()))
+        .unwrap_or(1);
+    let height = MENU_ITEM_H * count as f32;
+    let x_right = emotion_rect.x + emotion_rect.width + MENU_GAP;
+    let x = if x_right + MENU_EMOTION_W <= screen_w - MENU_MARGIN {
+        x_right
+    } else {
+        (emotion_rect.x - MENU_EMOTION_W - MENU_GAP).max(MENU_MARGIN)
+    };
+    let y = (emotion_rect.y + menu.hover_emotion_index.unwrap_or(0) as f32 * MENU_ITEM_H).clamp(
+        MENU_MARGIN,
+        (screen_h - height - MENU_MARGIN).max(MENU_MARGIN),
+    );
+    Rect {
+        x,
+        y,
+        width: MENU_EMOTION_W,
+        height,
+    }
 }
 
 fn bridge_rect(a: Rect, b: Rect) -> Rect {
@@ -4727,28 +5571,49 @@ fn update_context_menu_hover(
     let Some(menu) = state.context_menu.as_mut() else {
         return;
     };
-    let (root_rect, actor_rect, action_rect, actor_scroll, _) =
+    let (root_rect, actor_rect, action_rect, actor_scroll, _, emotion_rect) =
         context_menu_layout(project, screen_w, screen_h, menu);
+    let variant_rect = emotion_variant_rect(screen_w, screen_h, menu, emotion_rect);
 
     let root_hover = root_rect.contains(x, y);
     let mut actor_hover = None;
     let mut action_hover = None;
-    let root_actor_bridge = bridge_rect(root_rect, actor_rect).contains(x, y);
-    let actor_action_bridge =
-        menu.hover_actor_index.is_some() && bridge_rect(actor_rect, action_rect).contains(x, y);
+    let mut emotion_hover = None;
+    let mut emotion_variant_hover = None;
+    let actor_menu_visible = context_actor_menu_visible(menu);
+    let root_actor_bridge = actor_menu_visible && bridge_rect(root_rect, actor_rect).contains(x, y);
+    let actor_action_bridge = actor_menu_visible
+        && menu.hover_actor_index.is_some()
+        && bridge_rect(actor_rect, action_rect).contains(x, y);
 
-    if actor_rect.contains(x, y) {
+    if actor_menu_visible && actor_rect.contains(x, y) {
         let index = ((y - actor_rect.y + actor_scroll) / MENU_ITEM_H).floor() as usize;
         if index <= project.voice_actors().len() {
             actor_hover = Some(index);
         }
     }
 
-    if action_rect.contains(x, y) {
+    if actor_menu_visible && action_rect.contains(x, y) {
         let index = ((y - action_rect.y) / MENU_ITEM_H).floor() as usize;
         if index < 4 {
             action_hover = Some(index);
             actor_hover = menu.hover_actor_index;
+        }
+    }
+    if emotion_rect.contains(x, y) {
+        let index = ((y - emotion_rect.y) / MENU_ITEM_H).floor() as usize;
+        if index <= EMOTION_CATEGORIES.len() {
+            emotion_hover = Some(index);
+        }
+    }
+    if variant_rect.contains(x, y) {
+        if let Some(category) = menu.hover_emotion_index {
+            if let Some((_, emotions)) = emotion_group(category) {
+                let index = ((y - variant_rect.y) / MENU_ITEM_H).floor() as usize;
+                if index < emotions.len() {
+                    emotion_variant_hover = Some(index);
+                }
+            }
         }
     }
 
@@ -4763,6 +5628,18 @@ fn update_context_menu_hover(
     };
     menu.hover_main = root_actor_bridge || root_item == Some(0);
     menu.hover_change_character = root_item == Some(1);
+    menu.hover_text_emotion = root_item == Some(2)
+        || emotion_hover.is_some()
+        || emotion_variant_hover.is_some()
+        || (menu.hover_text_emotion && bridge_rect(root_rect, emotion_rect).contains(x, y))
+        || (menu.hover_emotion_index.is_some()
+            && bridge_rect(emotion_rect, variant_rect).contains(x, y));
+    if emotion_hover.is_some() {
+        menu.hover_emotion_index = emotion_hover;
+        menu.hover_emotion_variant = emotion_hover.filter(|index| *index > 0).map(|_| 0);
+    } else if emotion_variant_hover.is_some() {
+        menu.hover_emotion_variant = emotion_variant_hover;
+    }
     menu.hover_actor_index = actor_hover;
     menu.hover_action_index = action_hover;
 }

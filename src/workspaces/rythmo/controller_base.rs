@@ -265,6 +265,8 @@ pub fn handle_rythmo_event(
         UiEvent::KeyInput { text } => handle_key_input(&ctx, state, text),
         UiEvent::CursorLeft => handle_cursor_move(&ctx, state, -1, false),
         UiEvent::CursorRight => handle_cursor_move(&ctx, state, 1, false),
+        UiEvent::MoveWordLeft => handle_word_move(&ctx, state, -1),
+        UiEvent::MoveWordRight => handle_word_move(&ctx, state, 1),
         UiEvent::ShiftCursorLeft => handle_cursor_move(&ctx, state, -1, true),
         UiEvent::ShiftCursorRight => handle_cursor_move(&ctx, state, 1, true),
         UiEvent::SelectWordLeft => handle_word_selection(&ctx, state, -1),

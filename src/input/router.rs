@@ -95,6 +95,20 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         shift: true,
         ..Modifiers::NONE
     };
+    let alt = Modifiers {
+        alt: true,
+        ..Modifiers::NONE
+    };
+
+    for context in [InputContext::TextEditing, InputContext::Workspace] {
+        router.bind(
+            context,
+            KeyCode::Character('e'),
+            alt,
+            RepeatPolicy::PressOnly,
+            UiAction::OpenTextEmotionMenu,
+        );
+    }
 
     router.bind(
         InputContext::Accessibility,
@@ -1002,6 +1016,24 @@ mod tests {
             assert_eq!(
                 router.resolve(&released, &workspace),
                 Some(&UiAction::EndKeyboardPan)
+            );
+        }
+    }
+
+    #[test]
+    fn alt_e_opens_text_emotions_while_editing_or_browsing_lines() {
+        let router = existing_shortcuts();
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::NONE
+        };
+        for context in [InputContext::TextEditing, InputContext::Workspace] {
+            assert_eq!(
+                router.resolve(
+                    &stroke(KeyCode::Character('e'), alt, false),
+                    &InputContextStack::new([context]),
+                ),
+                Some(&UiAction::OpenTextEmotionMenu)
             );
         }
     }

@@ -94,10 +94,7 @@ impl FrameTiming {
     pub fn new(window: &Window) -> Self {
         let now = Instant::now();
 
-        Self::from_refresh_rate_millihertz(
-            window_refresh_rate_millihertz(window),
-            now,
-        )
+        Self::from_refresh_rate_millihertz(window_refresh_rate_millihertz(window), now)
     }
 
     /// Refreshes display metadata after the window changes monitor or scale
@@ -115,11 +112,9 @@ impl FrameTiming {
         }
 
         self.refresh_rate_millihertz = refresh_rate;
-        self.refresh_interval =
-            refresh_interval_from_millihertz(refresh_rate);
+        self.refresh_interval = refresh_interval_from_millihertz(refresh_rate);
 
-        self.stats.monitor_rate_changes =
-            self.stats.monitor_rate_changes.saturating_add(1);
+        self.stats.monitor_rate_changes = self.stats.monitor_rate_changes.saturating_add(1);
 
         true
     }
@@ -167,8 +162,7 @@ impl FrameTiming {
         };
 
         if self.frame_number > 0 {
-            let missed_refreshes =
-                estimate_missed_refreshes(delta, self.refresh_interval);
+            let missed_refreshes = estimate_missed_refreshes(delta, self.refresh_interval);
 
             self.stats.estimated_missed_refreshes = self
                 .stats
@@ -177,8 +171,7 @@ impl FrameTiming {
         }
 
         self.frame_number = self.frame_number.saturating_add(1);
-        self.stats.frames_started =
-            self.stats.frames_started.saturating_add(1);
+        self.stats.frames_started = self.stats.frames_started.saturating_add(1);
 
         self.last_frame_started_at = now;
 
@@ -191,17 +184,13 @@ impl FrameTiming {
 
     /// Records completion of a successful `surface_texture.present()`.
     pub fn finish_present(&mut self, presented_at: Instant) {
-        let render_duration =
-            presented_at.saturating_duration_since(self.last_frame_started_at);
+        let render_duration = presented_at.saturating_duration_since(self.last_frame_started_at);
 
         self.last_presented_at = presented_at;
-        self.stats.frames_presented =
-            self.stats.frames_presented.saturating_add(1);
+        self.stats.frames_presented = self.stats.frames_presented.saturating_add(1);
         self.stats.last_render_duration = render_duration;
-        self.stats.longest_render_duration = self
-            .stats
-            .longest_render_duration
-            .max(render_duration);
+        self.stats.longest_render_duration =
+            self.stats.longest_render_duration.max(render_duration);
     }
 
     /// Current passive diagnostic counters.
@@ -209,17 +198,12 @@ impl FrameTiming {
         self.stats
     }
 
-    fn from_refresh_rate_millihertz(
-        refresh_rate_millihertz: Option<u32>,
-        now: Instant,
-    ) -> Self {
-        let refresh_rate =
-            normalize_refresh_rate_millihertz(refresh_rate_millihertz);
+    fn from_refresh_rate_millihertz(refresh_rate_millihertz: Option<u32>, now: Instant) -> Self {
+        let refresh_rate = normalize_refresh_rate_millihertz(refresh_rate_millihertz);
 
         Self {
             refresh_rate_millihertz: refresh_rate,
-            refresh_interval:
-                refresh_interval_from_millihertz(refresh_rate),
+            refresh_interval: refresh_interval_from_millihertz(refresh_rate),
 
             last_frame_started_at: now,
             last_presented_at: now,
@@ -236,23 +220,14 @@ fn window_refresh_rate_millihertz(window: &Window) -> Option<u32> {
         .and_then(|monitor| monitor.refresh_rate_millihertz())
 }
 
-fn normalize_refresh_rate_millihertz(
-    refresh_rate_millihertz: Option<u32>,
-) -> u32 {
+fn normalize_refresh_rate_millihertz(refresh_rate_millihertz: Option<u32>) -> u32 {
     refresh_rate_millihertz
         .unwrap_or(DEFAULT_REFRESH_RATE_MILLIHERTZ)
-        .clamp(
-            MIN_REFRESH_RATE_MILLIHERTZ,
-            MAX_REFRESH_RATE_MILLIHERTZ,
-        )
+        .clamp(MIN_REFRESH_RATE_MILLIHERTZ, MAX_REFRESH_RATE_MILLIHERTZ)
 }
 
-fn refresh_interval_from_millihertz(
-    refresh_rate_millihertz: u32,
-) -> Duration {
-    Duration::from_secs_f64(
-        1_000.0 / refresh_rate_millihertz as f64,
-    )
+fn refresh_interval_from_millihertz(refresh_rate_millihertz: u32) -> Duration {
+    Duration::from_secs_f64(1_000.0 / refresh_rate_millihertz as f64)
 }
 
 /// Estimates skipped display refreshes from the observed distance between two
@@ -260,24 +235,17 @@ fn refresh_interval_from_millihertz(
 ///
 /// Rounding to the nearest refresh prevents tiny scheduler jitter from being
 /// reported as a skipped display frame.
-fn estimate_missed_refreshes(
-    frame_delta: Duration,
-    refresh_interval: Duration,
-) -> u64 {
+fn estimate_missed_refreshes(frame_delta: Duration, refresh_interval: Duration) -> u64 {
     let interval_nanos = refresh_interval.as_nanos();
 
     if interval_nanos == 0 {
         return 0;
     }
 
-    let rounded_intervals = frame_delta
-        .as_nanos()
-        .saturating_add(interval_nanos / 2)
-        / interval_nanos;
+    let rounded_intervals =
+        frame_delta.as_nanos().saturating_add(interval_nanos / 2) / interval_nanos;
 
-    rounded_intervals
-        .saturating_sub(1)
-        .min(u64::MAX as u128) as u64
+    rounded_intervals.saturating_sub(1).min(u64::MAX as u128) as u64
 }
 
 #[cfg(test)]
@@ -331,8 +299,7 @@ mod tests {
     #[test]
     fn first_frame_has_zero_delta() {
         let start = Instant::now();
-        let mut timing =
-            FrameTiming::from_refresh_rate_millihertz(Some(60_000), start);
+        let mut timing = FrameTiming::from_refresh_rate_millihertz(Some(60_000), start);
 
         let sample = timing.begin_frame(start);
 
@@ -344,8 +311,7 @@ mod tests {
     #[test]
     fn frame_delta_is_measured_between_observed_frame_starts() {
         let start = Instant::now();
-        let mut timing =
-            FrameTiming::from_refresh_rate_millihertz(Some(144_000), start);
+        let mut timing = FrameTiming::from_refresh_rate_millihertz(Some(144_000), start);
 
         timing.begin_frame(start);
 
@@ -363,8 +329,7 @@ mod tests {
     #[test]
     fn every_visual_consumer_receives_the_same_frame_instant() {
         let start = Instant::now();
-        let mut timing =
-            FrameTiming::from_refresh_rate_millihertz(Some(165_000), start);
+        let mut timing = FrameTiming::from_refresh_rate_millihertz(Some(165_000), start);
 
         let sample = timing.begin_frame(start);
 
@@ -381,10 +346,7 @@ mod tests {
         let interval = refresh_interval_from_millihertz(60_000);
 
         assert_eq!(
-            estimate_missed_refreshes(
-                Duration::from_millis(17),
-                interval,
-            ),
+            estimate_missed_refreshes(Duration::from_millis(17), interval,),
             0
         );
     }
@@ -392,8 +354,7 @@ mod tests {
     #[test]
     fn long_frame_gap_is_recorded_without_creating_a_deadline() {
         let start = Instant::now();
-        let mut timing =
-            FrameTiming::from_refresh_rate_millihertz(Some(60_000), start);
+        let mut timing = FrameTiming::from_refresh_rate_millihertz(Some(60_000), start);
 
         timing.begin_frame(start);
 
@@ -403,17 +364,13 @@ mod tests {
 
         timing.begin_frame(late_start);
 
-        assert_eq!(
-            timing.stats().estimated_missed_refreshes,
-            5
-        );
+        assert_eq!(timing.stats().estimated_missed_refreshes, 5);
     }
 
     #[test]
     fn presentation_duration_is_measured_from_frame_start() {
         let start = Instant::now();
-        let mut timing =
-            FrameTiming::from_refresh_rate_millihertz(Some(60_000), start);
+        let mut timing = FrameTiming::from_refresh_rate_millihertz(Some(60_000), start);
 
         timing.begin_frame(start);
 

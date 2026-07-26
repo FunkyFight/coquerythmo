@@ -78,6 +78,7 @@ impl SceneLine {
 pub struct SceneMarker {
     pub kind: MarkerKind,
     pub frame: i64,
+    pub scene_number: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -159,9 +160,26 @@ impl RythmoScene {
             .visible_marker_indices(options.frame_window.first, options.frame_window.last)
             .into_iter()
             .filter_map(|index| project.marker(index))
-            .map(|marker| SceneMarker {
-                kind: marker.kind.clone(),
-                frame: marker.frame,
+            .map(|marker| {
+                let number = if matches!(marker.kind, MarkerKind::SceneChange) {
+                    Some(
+                        project
+                            .markers()
+                            .iter()
+                            .filter(|candidate| {
+                                matches!(candidate.kind, MarkerKind::SceneChange)
+                                    && candidate.frame <= marker.frame
+                            })
+                            .count(),
+                    )
+                } else {
+                    None
+                };
+                SceneMarker {
+                    kind: marker.kind.clone(),
+                    frame: marker.frame,
+                    scene_number: number,
+                }
             })
             .collect();
 
@@ -446,6 +464,7 @@ mod tests {
             karaoke: true,
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
+            text_emotions: Vec::new(),
         };
         let scene_line = SceneLine {
             line,
@@ -478,6 +497,7 @@ mod tests {
             karaoke: true,
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
+            text_emotions: Vec::new(),
         };
         let scene_line = SceneLine {
             line,
@@ -510,6 +530,7 @@ mod tests {
             karaoke: true,
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
+            text_emotions: Vec::new(),
         };
         project.insert_line(line);
         id
@@ -548,6 +569,7 @@ mod tests {
                 karaoke: true,
                 note: String::new(),
                 presence: crate::rythmo_line::LinePresence::On,
+                text_emotions: Vec::new(),
             },
             track_index: 0,
             karaoke_progress: if active { Some(0.5) } else { None },
@@ -649,6 +671,7 @@ mod tests {
             line: RythmoLine {
                 id: far_line_id,
                 start_frame: 96,
+                text_emotions: Vec::new(),
                 ..near.line.clone()
             },
             ..near

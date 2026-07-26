@@ -204,6 +204,7 @@ impl ColorPickerState {
                     rect: [sv.x, sv.y, sv.width, sv.height],
                     uv_rect: [0.0, 0.0, 1.0, 1.0],
                     tint: [1.0, 1.0, 1.0, 1.0],
+                    transform: [0.0, 0.0, 0.5, 0.5],
                 },
                 bg,
             ));
@@ -216,6 +217,7 @@ impl ColorPickerState {
                     rect: [hue.x, hue.y, hue.width, hue.height],
                     uv_rect: [0.0, 0.0, 1.0, 1.0],
                     tint: [1.0, 1.0, 1.0, 1.0],
+                    transform: [0.0, 0.0, 0.5, 0.5],
                 },
                 bg,
             ));

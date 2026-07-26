@@ -263,34 +263,6 @@ fn begin_source_drag(address: DetectionAddress, cue: DetectionCue, x: f32, y: f3
     });
 }
 
-fn clamp_sync_tick(project: &Project, address: DetectionAddress, tick: MediaTick) -> MediaTick {
-    let Some(line) = project.get_line(address.line_id) else {
-        return tick;
-    };
-    let Some(data) = project.detections().line(address.line_id) else {
-        return tick;
-    };
-    let Some(current) = data.sync_point(crate::detection::SyncPointId(address.detection_id.0))
-    else {
-        return tick;
-    };
-    let current_index = current.grapheme_boundary;
-    let mut minimum = MediaTick::from_frame(line.start_frame).saturating_add(MediaTick(1));
-    let mut maximum = MediaTick::from_frame(line.end_frame()).saturating_sub(MediaTick(1));
-    for point in data.sync_points() {
-        if point.id.0 == address.detection_id.0 {
-            continue;
-        }
-        let index = point.grapheme_boundary;
-        if index < current_index {
-            minimum = MediaTick(minimum.raw().max(point.line_tick.raw().saturating_add(1)));
-        } else if index > current_index {
-            maximum = MediaTick(maximum.raw().min(point.line_tick.raw().saturating_sub(1)));
-        }
-    }
-    tick.clamp(minimum, maximum)
-}
-
 pub(crate) fn handle_detection_event(
     ctx: &RythmoCtx<'_>,
     event: &UiEvent,
@@ -338,24 +310,6 @@ pub(crate) fn handle_detection_event(
                 };
             }
             return Some(EventResponse::Consumed);
-        }
-
-        if state
-            .detection_drag
-            .is_some_and(|drag| !drag.retargets_text())
-        {
-            if let Some(address) =
-                selected_detection(state).filter(|address| address.track().is_none())
-            {
-                return Some(EventResponse::Action(UiAction::MoveDetection {
-                    address,
-                    media_tick: clamp_sync_tick(
-                        ctx.project,
-                        address,
-                        pointer_tick(*x, ctx.current_frame, ctx.zone),
-                    ),
-                }));
-            }
         }
     }
 
@@ -586,7 +540,12 @@ fn character_layout(
     let anchors = sync_anchors(project, line);
     let spans = grapheme_char_spans(line.text.as_str());
     if !anchors.is_empty() {
-        let base = uniform_grapheme_character_positions(&spans);
+        let base = crate::rythmo_line::text_emotion_char_ratios(
+            &line.text,
+            crate::config::get().ui.font_size * 2.0,
+        )
+        .filter(|ratios| ratios.len() == line.text.chars().count() + 1)
+        .unwrap_or_else(|| uniform_grapheme_character_positions(&spans));
         let mapped = map_character_positions(&base, &anchors);
         return Some((base, mapped, breaks, anchors));
     }
@@ -689,6 +648,25 @@ pub(crate) fn sync_cursor_segments_for_line(
     (!segments.is_empty()).then_some(segments)
 }
 
+pub(crate) fn sync_cursor_index_for_line_at_ratio(
+    project: &Project,
+    line: &crate::rythmo_line::RythmoLine,
+    drag: Option<&SyllableDrag>,
+    lang: &str,
+    state: &RythmoState,
+    ratio: f32,
+) -> Option<usize> {
+    if !line_has_visible_sync_points(project, line) {
+        return None;
+    }
+    let (_, mapped, _, _) = character_layout(project, line, drag, lang, state)?;
+    mapped
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| (**left - ratio).abs().total_cmp(&(**right - ratio).abs()))
+        .map(|(index, _)| index)
+}
+
 pub(crate) fn render_sync_text_segments(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
@@ -700,6 +678,7 @@ pub(crate) fn render_sync_text_segments(
     state: &RythmoState,
     read_highlight_end: Option<usize>,
     tint: [f32; 4],
+    emotion_seconds: Option<f32>,
     stretched: &mut Vec<StretchedText>,
 ) -> Option<Vec<CursorSegmentInfo>> {
     if line.karaoke || line.text.is_empty() || line.duration_frames <= 0 {
@@ -730,37 +709,49 @@ pub(crate) fn render_sync_text_segments(
         crate::config::reading_bar_offset_seconds(),
         fps,
     );
-    for segment in &cursor_segments {
-        let start = segment.start_char;
-        let end = segment.end_char;
-        let start_ratio = segment.start_ratio;
-        let width_ratio = segment.width_ratio;
-        let width = rect.width * width_ratio;
-        if width <= 0.5 {
-            continue;
-        }
-        let text = characters[start..end].iter().collect::<String>();
-        if text.is_empty() {
-            continue;
-        }
-        let cache_id = segment.cache_id;
-        // The implicit line edges and explicit synchronization points split
-        // the cue into independent intervals. Each text portion stretches to
-        // fill its complete interval, so the line still fills the whole box.
-        push_read_word_rythmo_text(
+    if let Some(seconds) = emotion_seconds {
+        super::push_emotional_text(
             stretched,
-            cache_id,
-            text,
-            Rect {
-                x: rect.x + rect.width * start_ratio,
-                y: rect.y,
-                width,
-                height: rect.height,
-            },
-            start,
-            read_highlight_end,
+            line,
+            rect,
+            seconds,
             tint,
+            Some(&mapped),
+            project.settings().show_text_emotion_lanes,
         );
+    } else {
+        for segment in &cursor_segments {
+            let start = segment.start_char;
+            let end = segment.end_char;
+            let start_ratio = segment.start_ratio;
+            let width_ratio = segment.width_ratio;
+            let width = rect.width * width_ratio;
+            if width <= 0.5 {
+                continue;
+            }
+            let text = characters[start..end].iter().collect::<String>();
+            if text.is_empty() {
+                continue;
+            }
+            let cache_id = segment.cache_id;
+            // The implicit line edges and explicit synchronization points split
+            // the cue into independent intervals. Each text portion stretches to
+            // fill its complete interval, so the line still fills the whole box.
+            push_read_word_rythmo_text(
+                stretched,
+                cache_id,
+                text,
+                Rect {
+                    x: rect.x + rect.width * start_ratio,
+                    y: rect.y,
+                    width,
+                    height: rect.height,
+                },
+                start,
+                read_highlight_end,
+                tint,
+            );
+        }
     }
     (!cursor_segments.is_empty()).then_some(cursor_segments)
 }
@@ -1189,6 +1180,7 @@ pub(crate) fn render_detection_overlay<'a>(
             rect: [icon.x, icon.y, icon.width, icon.height],
             uv_rect: palette_uv(&drag.cue, detection_uvs),
             tint: [0.78, 0.88, 1.0, 1.0],
+            transform: [0.0, 0.0, 0.5, 0.5],
         });
     }
 
@@ -1287,6 +1279,7 @@ pub(crate) fn render_detection_overlay<'a>(
                     rect: [center - width / 2.0, top, width, SIGN_ICON_SIZE + 4.0],
                     uv_rect: palette_uv(cue, detection_uvs),
                     tint: color,
+                    transform: [0.0, 0.0, 0.5, 0.5],
                 });
             }
 

@@ -37,6 +37,10 @@ pub struct LineContextMenu {
     pub y: f32,
     pub hover_main: bool,
     pub hover_change_character: bool,
+    pub hover_text_emotion: bool,
+    pub hover_emotion_index: Option<usize>,
+    pub hover_emotion_variant: Option<usize>,
+    pub text_range: Option<(usize, usize)>,
     pub hover_actor_index: Option<usize>,
     pub hover_action_index: Option<usize>,
     pub actor_scroll: f32,
@@ -79,6 +83,8 @@ struct KaraokeWidthPrewarmState {
 pub struct RythmoState {
     pub hovered_line: Option<u64>,
     pub hovered_track: Option<usize>,
+    /// Timeline frame under the pointer, used by keyboard paste.
+    pub hovered_frame: Option<i64>,
     /// Track used by keyboard-only line creation and playhead cycling.
     pub keyboard_track: usize,
     pub keyboard_cycle_frame: Option<i64>,
@@ -122,6 +128,8 @@ pub struct RythmoState {
     cached_layout_ctx: RefCell<Option<EditorLayoutCtx>>,
     syllable_breaks_cache: RefCell<HashMap<u64, (Vec<usize>, u64)>>, // line_id -> (breaks, text_hash)
     syllable_visual_ratios_cache: RefCell<HashMap<u64, SyllableVisualRatiosCacheEntry>>,
+    text_emotion_epoch: std::time::Instant,
+    has_text_emotions: std::cell::Cell<bool>,
 }
 
 impl Default for RythmoState {
@@ -221,6 +229,7 @@ impl RythmoState {
         Self {
             hovered_line: None,
             hovered_track: None,
+            hovered_frame: None,
             keyboard_track: 0,
             keyboard_cycle_frame: None,
             selected: None,
@@ -263,6 +272,8 @@ impl RythmoState {
             cached_layout_ctx: RefCell::new(None),
             syllable_breaks_cache: RefCell::new(HashMap::new()),
             syllable_visual_ratios_cache: RefCell::new(HashMap::new()),
+            text_emotion_epoch: std::time::Instant::now(),
+            has_text_emotions: std::cell::Cell::new(false),
         }
     }
 
@@ -599,6 +610,16 @@ impl RythmoState {
             || self.keyboard_pan_direction != 0
             || self.ghost_preview.is_some()
             || self.syllable_drag.is_some()
+            || self.has_text_emotions.get()
+    }
+
+    pub(super) fn text_emotion_seconds(&self) -> f32 {
+        self.text_emotion_epoch.elapsed().as_secs_f32()
+    }
+
+    pub(super) fn update_text_emotion_presence(&self, project: &Project) {
+        self.has_text_emotions
+            .set(project.lines().any(|line| !line.text_emotions.is_empty()));
     }
 
     pub fn needs_pointer_motion(&self) -> bool {

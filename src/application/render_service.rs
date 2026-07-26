@@ -28,8 +28,7 @@ pub struct RenderCoordinator {
 impl RenderCoordinator {
     pub async fn new(window: Arc<Window>) -> Self {
         let gfx = GraphicsContext::new(window).await;
-        let ui_renderer =
-            UiRenderer::new(&gfx.device, &gfx.queue, gfx.surface_format());
+        let ui_renderer = UiRenderer::new(&gfx.device, &gfx.queue, gfx.surface_format());
         let frame_timing = FrameTiming::new(&gfx.window);
 
         Self {

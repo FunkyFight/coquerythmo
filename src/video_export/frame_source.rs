@@ -84,11 +84,7 @@ pub(super) fn write_br_frames(
                 BrInputFormat::Nv12 => {
                     gpu.submit_render_nv12(
                         &scene,
-                        source_frame_at_export_frame(
-                            timeline_start_source_frame,
-                            0,
-                            frame_ratio,
-                        ),
+                        source_frame_at_export_frame(timeline_start_source_frame, 0, frame_ratio),
                         out_w,
                         fps,
                         source_fps,
@@ -99,11 +95,7 @@ pub(super) fn write_br_frames(
                 }
                 BrInputFormat::Rgba => gpu.submit_render(
                     &scene,
-                    source_frame_at_export_frame(
-                        timeline_start_source_frame,
-                        0,
-                        frame_ratio,
-                    ),
+                    source_frame_at_export_frame(timeline_start_source_frame, 0, frame_ratio),
                     out_w,
                     fps,
                     source_fps,
@@ -162,11 +154,8 @@ pub(super) fn write_br_frames(
                 gpu.finish_render_into(out_w, br_h, &mut rgba_buf);
                 stats.finish_readback += finish_start.elapsed();
                 check_stdin_cancel(cancel)?;
-                let video_pos = source_frame_at_export_frame(
-                    timeline_start_source_frame,
-                    frame,
-                    frame_ratio,
-                );
+                let video_pos =
+                    source_frame_at_export_frame(timeline_start_source_frame, frame, frame_ratio);
                 let submit_start = Instant::now();
                 gpu.submit_render(
                     &scene,

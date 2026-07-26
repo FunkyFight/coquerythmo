@@ -287,6 +287,53 @@ impl TextInputState {
         }
     }
 
+    pub fn move_word_left(&mut self, text: &str) {
+        if !self.active {
+            return;
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let mut target = self.cursor_pos.min(chars.len());
+        while target > 0 && is_word_separator(chars[target - 1]) {
+            target -= 1;
+        }
+        while target > 0 && !is_word_separator(chars[target - 1]) {
+            target -= 1;
+        }
+        self.set_cursor_pos(target);
+    }
+
+    pub fn move_word_right(&mut self, text: &str) {
+        if !self.active {
+            return;
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let mut target = self.cursor_pos.min(chars.len());
+        while target < chars.len() && !is_word_separator(chars[target]) {
+            target += 1;
+        }
+        while target < chars.len() && is_word_separator(chars[target]) {
+            target += 1;
+        }
+        self.set_cursor_pos(target);
+    }
+
+    pub fn word_at_cursor(&self, text: &str) -> Option<String> {
+        let chars: Vec<char> = text.chars().collect();
+        let index = self.cursor_pos.min(chars.len().saturating_sub(1));
+        if chars.is_empty() || is_word_separator(chars[index]) {
+            return None;
+        }
+        let mut start = index;
+        while start > 0 && !is_word_separator(chars[start - 1]) {
+            start -= 1;
+        }
+        let mut end = index + 1;
+        while end < chars.len() && !is_word_separator(chars[end]) {
+            end += 1;
+        }
+        Some(chars[start..end].iter().collect())
+    }
+
     /// Move left while extending selection
     pub fn move_left_shift(&mut self) {
         if self.active && self.cursor_pos > 0 {
@@ -639,5 +686,21 @@ mod tests {
         let metrics = TextInputMetrics::center(10.0, 8.0);
         let centered_start = 100.0 + 8.0 + ((120.0 - 16.0) - text_width("ii", 10.0)) * 0.5;
         assert_approx_eq(cursor_x("ii", 0, rect(), metrics), centered_start);
+    }
+
+    #[test]
+    fn word_navigation_moves_and_reports_the_word_at_the_cursor() {
+        let mut input = TextInputState::new();
+        input.activate("un deux trois");
+        input.move_word_left("un deux trois");
+        assert_eq!(
+            input.word_at_cursor("un deux trois").as_deref(),
+            Some("trois")
+        );
+        input.move_word_left("un deux trois");
+        assert_eq!(
+            input.word_at_cursor("un deux trois").as_deref(),
+            Some("deux")
+        );
     }
 }

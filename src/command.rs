@@ -6,7 +6,7 @@
 
 use crate::project::{Character, LineCharacterNameChange, Project};
 use crate::rythmo_drawing::DrawingStroke;
-use crate::rythmo_line::{LinePresence, RythmoLine, RythmoMarker};
+use crate::rythmo_line::{LinePresence, RythmoLine, RythmoMarker, TextEmotionSpan};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 use serde::{Deserialize, Serialize};
 
@@ -69,6 +69,15 @@ pub enum Command {
         line_id: u64,
         old_text: String,
         new_text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        old_emotions: Vec<TextEmotionSpan>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        new_emotions: Vec<TextEmotionSpan>,
+    },
+    SetTextEmotions {
+        line_id: u64,
+        old_emotions: Vec<TextEmotionSpan>,
+        new_emotions: Vec<TextEmotionSpan>,
     },
     SetLineKaraoke {
         line_id: u64,
@@ -213,8 +222,22 @@ impl Command {
                 line_id,
                 old_text,
                 new_text,
+                new_emotions,
+                ..
             } => {
                 project.set_line_text_rebasing_sync_points(*line_id, old_text, new_text);
+                if let Some(line) = project.get_line_mut(*line_id) {
+                    line.text_emotions = new_emotions.clone();
+                }
+            }
+            Command::SetTextEmotions {
+                line_id,
+                new_emotions,
+                ..
+            } => {
+                if let Some(line) = project.get_line_mut(*line_id) {
+                    line.text_emotions = new_emotions.clone();
+                }
             }
             Command::SetLineKaraoke {
                 line_id,
@@ -403,8 +426,22 @@ impl Command {
                 line_id,
                 old_text,
                 new_text,
+                old_emotions,
+                ..
             } => {
                 project.set_line_text_rebasing_sync_points(*line_id, new_text, old_text);
+                if let Some(line) = project.get_line_mut(*line_id) {
+                    line.text_emotions = old_emotions.clone();
+                }
+            }
+            Command::SetTextEmotions {
+                line_id,
+                old_emotions,
+                ..
+            } => {
+                if let Some(line) = project.get_line_mut(*line_id) {
+                    line.text_emotions = old_emotions.clone();
+                }
             }
             Command::SetLineKaraoke {
                 line_id,
@@ -768,10 +805,24 @@ mod tests {
             line_id: id,
             old_text: "test".into(),
             new_text: "modified".into(),
+            old_emotions: Vec::new(),
+            new_emotions: Vec::new(),
         });
 
         history.undo(&mut project);
         assert_eq!(project.get_line(id).unwrap().text, "test");
+    }
+
+    #[test]
+    fn legacy_text_commands_keep_their_journal_representation() {
+        let json =
+            r#"{"kind":"update_line_text","line_id":1,"old_text":"before","new_text":"after"}"#;
+        let command: Command = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(command).unwrap(),
+            serde_json::from_str::<serde_json::Value>(json).unwrap()
+        );
     }
 
     #[test]
@@ -1014,6 +1065,8 @@ mod tests {
             line_id: id,
             old_text: "a".into(),
             new_text: "ab".into(),
+            old_emotions: Vec::new(),
+            new_emotions: Vec::new(),
         });
         assert!(history.last_matches(id, CommandKind::UpdateLineText));
         assert!(!history.last_matches(id, CommandKind::MoveLine));
@@ -1030,6 +1083,8 @@ mod tests {
             line_id: id,
             old_text: "test".into(),
             new_text: "v1".into(),
+            old_emotions: Vec::new(),
+            new_emotions: Vec::new(),
         });
         history.undo(&mut project);
 
@@ -1039,6 +1094,8 @@ mod tests {
             line_id: id,
             old_text: "test".into(),
             new_text: "v2".into(),
+            old_emotions: Vec::new(),
+            new_emotions: Vec::new(),
         });
         // Redo should do nothing (stack cleared)
         history.redo(&mut project);

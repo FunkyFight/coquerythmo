@@ -218,7 +218,7 @@ impl SyllableLanguage {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instrumental_audio_path: Option<String>,
@@ -230,6 +230,8 @@ pub struct ProjectSettings {
     pub highlight_read_word: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub scrolling_text_uses_character_color: bool,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub show_text_emotion_lanes: bool,
     #[serde(default, skip_serializing_if = "is_default_syllable_language")]
     pub syllable_language: SyllableLanguage,
     #[serde(default, skip_serializing_if = "is_default_export_configuration")]
@@ -243,6 +245,23 @@ pub struct ProjectSettings {
     pub automation: crate::automation::AutomationGraph,
 }
 
+impl Default for ProjectSettings {
+    fn default() -> Self {
+        Self {
+            instrumental_audio_path: None,
+            source_audio_offset_frames: 0,
+            instrumental_audio_offset_frames: 0,
+            highlight_read_word: false,
+            scrolling_text_uses_character_color: false,
+            show_text_emotion_lanes: true,
+            syllable_language: SyllableLanguage::default(),
+            export_configuration: ExportConfiguration::default(),
+            detections: crate::detection::DetectionDocument::default(),
+            automation: crate::automation::AutomationGraph::default(),
+        }
+    }
+}
+
 fn is_default_syllable_language(language: &SyllableLanguage) -> bool {
     *language == SyllableLanguage::default()
 }
@@ -253,6 +272,10 @@ fn is_default_export_configuration(configuration: &ExportConfiguration) -> bool 
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 fn is_default_automation_graph(graph: &crate::automation::AutomationGraph) -> bool {
@@ -1055,6 +1078,7 @@ impl Project {
             karaoke: false,
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
+            text_emotions: Vec::new(),
         };
         self.line_map.insert(id, line);
         self.line_order.push(id);
@@ -1108,6 +1132,7 @@ impl Project {
             karaoke: false,
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
+            text_emotions: Vec::new(),
         };
         self.line_map.insert(id, line);
         self.line_order.push(id);
@@ -1765,6 +1790,7 @@ mod tests {
             karaoke: false,
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
+            text_emotions: Vec::new(),
         };
         p.insert_line_at(1, line);
         let ids: Vec<u64> = p.lines().map(|l| l.id).collect();

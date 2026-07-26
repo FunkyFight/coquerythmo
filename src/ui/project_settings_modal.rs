@@ -2,13 +2,14 @@ use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent
 use crate::i18n::t;
 
 pub const PROJECT_SETTINGS_W: f32 = 520.0;
-pub const PROJECT_SETTINGS_H: f32 = 300.0;
-const CONTROL_COUNT: usize = 6;
+pub const PROJECT_SETTINGS_H: f32 = 332.0;
+const CONTROL_COUNT: usize = 7;
 
 pub struct ProjectSettingsModal {
     pub instrumental_audio_path: String,
     pub highlight_read_word: bool,
     pub scrolling_text_uses_character_color: bool,
+    pub show_text_emotion_lanes: bool,
     keyboard_focus: usize,
 }
 
@@ -20,6 +21,7 @@ pub enum ProjectSettingsModalResult {
         instrumental_audio_path: Option<String>,
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
+        show_text_emotion_lanes: bool,
     },
 }
 
@@ -37,11 +39,13 @@ impl ProjectSettingsModal {
         path: Option<String>,
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
+        show_text_emotion_lanes: bool,
     ) -> Self {
         Self {
             instrumental_audio_path: path.unwrap_or_default(),
             highlight_read_word,
             scrolling_text_uses_character_color,
+            show_text_emotion_lanes,
             keyboard_focus: 0,
         }
     }
@@ -52,7 +56,15 @@ impl ProjectSettingsModal {
 
     pub fn keyboard_focus_label(&self) -> String {
         match self.keyboard_focus {
-            0 => t("project_settings.browse").to_string(),
+            0 => format!(
+                "{}, {}",
+                t("project_settings.instrumental_version"),
+                if self.instrumental_audio_path.trim().is_empty() {
+                    t("accessibility.unchecked")
+                } else {
+                    self.instrumental_audio_path.as_str()
+                }
+            ),
             1 => t("project_settings.clear").to_string(),
             2 => format!(
                 "{}, {}",
@@ -72,7 +84,16 @@ impl ProjectSettingsModal {
                     t("accessibility.unchecked")
                 }
             ),
-            4 => t("settings.save").to_string(),
+            4 => format!(
+                "{}, {}",
+                t("project_settings.show_text_emotion_lanes"),
+                if self.show_text_emotion_lanes {
+                    t("accessibility.checked")
+                } else {
+                    t("accessibility.unchecked")
+                }
+            ),
+            5 => t("settings.save").to_string(),
             _ => t("project_settings.close").to_string(),
         }
     }
@@ -111,12 +132,17 @@ impl ProjectSettingsModal {
                         ProjectSettingsModalResult::Consumed
                     }
                     4 => {
+                        self.show_text_emotion_lanes = !self.show_text_emotion_lanes;
+                        ProjectSettingsModalResult::Consumed
+                    }
+                    5 => {
                         let path = self.instrumental_audio_path.trim();
                         ProjectSettingsModalResult::Save {
                             instrumental_audio_path: (!path.is_empty()).then(|| path.to_string()),
                             highlight_read_word: self.highlight_read_word,
                             scrolling_text_uses_character_color: self
                                 .scrolling_text_uses_character_color,
+                            show_text_emotion_lanes: self.show_text_emotion_lanes,
                         }
                     }
                     _ => ProjectSettingsModalResult::Close,
@@ -157,6 +183,11 @@ impl ProjectSettingsModal {
                     return ProjectSettingsModalResult::Consumed;
                 }
 
+                if text_emotion_lanes_rect(card).contains(*x, *y) {
+                    self.show_text_emotion_lanes = !self.show_text_emotion_lanes;
+                    return ProjectSettingsModalResult::Consumed;
+                }
+
                 let save_rect = save_rect(card);
                 if save_rect.contains(*x, *y) {
                     let path = self.instrumental_audio_path.trim();
@@ -165,6 +196,7 @@ impl ProjectSettingsModal {
                         highlight_read_word: self.highlight_read_word,
                         scrolling_text_uses_character_color: self
                             .scrolling_text_uses_character_color,
+                        show_text_emotion_lanes: self.show_text_emotion_lanes,
                     };
                 }
 
@@ -339,6 +371,38 @@ impl ProjectSettingsModal {
             color_override: None,
             font_family_override: None,
         });
+        let emotion_lanes = text_emotion_lanes_rect(card);
+        push_quad(
+            overlay_quads,
+            Rect {
+                width: 20.0,
+                height: 20.0,
+                ..emotion_lanes
+            },
+            if self.show_text_emotion_lanes {
+                [0.90, 0.72, 0.12, 1.0]
+            } else {
+                [0.08, 0.08, 0.10, 1.0]
+            },
+            [0.45, 0.45, 0.52, 0.8],
+            1.0,
+            4.0,
+        );
+        labels.push(LabelInfo {
+            text: t("project_settings.show_text_emotion_lanes"),
+            bounds: Rect {
+                x: emotion_lanes.x + 30.0,
+                width: emotion_lanes.width - 30.0,
+                ..emotion_lanes
+            },
+            h_align: HAlign::Left,
+            v_align: VAlign::Center,
+            overflow: Overflow::Ellipsis,
+            padding: 0.0,
+            font_size_override: Some(12.0),
+            color_override: None,
+            font_family_override: None,
+        });
         let save = save_rect(card);
         push_quad(
             overlay_quads,
@@ -368,7 +432,8 @@ impl ProjectSettingsModal {
             1 => clear,
             2 => highlight,
             3 => character_color,
-            4 => save,
+            4 => emotion_lanes,
+            5 => save,
             _ => close,
         };
         focus_outline(overlay_quads, focus_rect);
@@ -415,6 +480,15 @@ fn scrolling_text_color_rect(card: Rect) -> Rect {
     Rect {
         x: card.x + 22.0,
         y: card.y + 202.0,
+        width: card.width - 44.0,
+        height: 20.0,
+    }
+}
+
+fn text_emotion_lanes_rect(card: Rect) -> Rect {
+    Rect {
+        x: card.x + 22.0,
+        y: card.y + 234.0,
         width: card.width - 44.0,
         height: 20.0,
     }

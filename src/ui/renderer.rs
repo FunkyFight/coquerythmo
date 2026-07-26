@@ -172,6 +172,7 @@ pub struct StretchedText {
     pub font_scale: f32,
     pub prewarm: bool,
     pub emphasized: bool,
+    pub transform: [f32; 4],
 }
 
 impl StretchedText {
@@ -187,6 +188,7 @@ impl StretchedText {
             font_scale: 1.0,
             prewarm: false,
             emphasized: false,
+            transform: [0.0, 0.0, 0.5, 0.5],
         }
     }
 
@@ -208,6 +210,7 @@ impl StretchedText {
             font_scale,
             prewarm: false,
             emphasized: false,
+            transform: [0.0, 0.0, 0.5, 0.5],
         }
     }
 
@@ -228,6 +231,7 @@ impl StretchedText {
             font_scale,
             prewarm: true,
             emphasized: false,
+            transform: [0.0, 0.0, 0.5, 0.5],
         }
     }
 
@@ -257,6 +261,7 @@ impl StretchedText {
             font_scale,
             prewarm: false,
             emphasized: false,
+            transform: [0.0, 0.0, 0.5, 0.5],
         })
     }
 }
@@ -478,6 +483,11 @@ impl UiRenderer {
                             offset: 32,
                             shader_location: 2,
                         },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 48,
+                            shader_location: 3,
+                        },
                     ],
                 }],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -530,6 +540,11 @@ impl UiRenderer {
                             format: wgpu::VertexFormat::Float32x4,
                             offset: 32,
                             shader_location: 2,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 48,
+                            shader_location: 3,
                         },
                     ],
                 }],
@@ -685,6 +700,7 @@ impl UiRenderer {
         let font_size = crate::config::get().ui.font_size * 2.0 * ui_scale;
         let mut result = Vec::new();
         let mut remaining_prewarm_misses = 2usize;
+        let max_texture_size = device.limits().max_texture_dimension_2d;
 
         for st in stretched {
             if st.text.is_empty() {
@@ -692,8 +708,10 @@ impl UiRenderer {
             }
 
             let effective_font_size = font_size * st.font_scale.max(0.1);
-            let tex_w = (st.dest_rect.width.max(1.0) * ui_scale).ceil() as u32;
-            let tex_h = (st.dest_rect.height.max(1.0) * ui_scale).ceil() as u32;
+            let tex_w =
+                ((st.dest_rect.width.max(1.0) * ui_scale).ceil() as u32).min(max_texture_size);
+            let tex_h =
+                ((st.dest_rect.height.max(1.0) * ui_scale).ceil() as u32).min(max_texture_size);
             let cache_hash = Self::hash_stretched_text(
                 &st.text,
                 effective_font_size,
@@ -797,6 +815,7 @@ impl UiRenderer {
                         ],
                         uv_rect: st.uv_rect,
                         tint: st.tint,
+                        transform: st.transform,
                     },
                     st.line_id,
                 ));

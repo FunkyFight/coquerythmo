@@ -224,10 +224,6 @@ impl DetectionDrag {
         }
     }
 
-    pub(crate) const fn retargets_text(self) -> bool {
-        self.retarget_text
-    }
-
     fn exceeds_threshold(self, x: f32, y: f32) -> bool {
         let dx = x - self.start_x;
         let dy = y - self.start_y;
@@ -454,23 +450,23 @@ fn base_character_ratios(
     state: &RythmoState,
 ) -> (Vec<f32>, Vec<usize>) {
     let character_count = line.text.chars().count();
-    let mut positions = (0..=character_count)
-        .map(|index| index as f32 / character_count.max(1) as f32)
-        .collect::<Vec<_>>();
+    let mut positions = crate::rythmo_line::text_emotion_char_ratios(
+        &line.text,
+        crate::config::get().ui.font_size * 2.0,
+    )
+    .filter(|ratios| ratios.len() == character_count + 1)
+    .unwrap_or_else(|| {
+        (0..=character_count)
+            .map(|index| index as f32 / character_count.max(1) as f32)
+            .collect()
+    });
 
-    let breaks = state.get_syllable_breaks(line, lang);
-    if breaks.is_empty() {
-        return (positions, Vec::new());
-    }
     let effective_drag = effective_drag_for_line(line.id, drag, state);
-    let ratios =
-        if let Some(drag) = effective_drag.filter(|drag| drag.ratios.len() == breaks.len() + 1) {
-            drag.ratios.clone()
-        } else if let Some(ratios) = syllable_ratios_for_line(line, None, lang, state) {
-            ratios
-        } else {
-            return (positions, Vec::new());
-        };
+    let Some((breaks, ratios)) =
+        visible_syllable_segments(line, effective_drag, lang, false, state)
+    else {
+        return (positions, Vec::new());
+    };
 
     let mut character_start = 0usize;
     let mut ratio_start = 0.0_f32;
@@ -601,7 +597,12 @@ fn character_layout(
     let anchors = sync_anchor_targets(project, line);
     if !anchors.is_empty() {
         let spans = grapheme_char_spans(line.text.as_str());
-        let base = uniform_grapheme_character_positions(&spans);
+        let base = crate::rythmo_line::text_emotion_char_ratios(
+            &line.text,
+            crate::config::get().ui.font_size * 2.0,
+        )
+        .filter(|ratios| ratios.len() == line.text.chars().count() + 1)
+        .unwrap_or_else(|| uniform_grapheme_character_positions(&spans));
         let breaks = state.get_syllable_breaks(line, lang);
         let shifted = shift_character_ratios(&base, &anchors);
         return (base, shifted, breaks, anchors);
@@ -1715,6 +1716,7 @@ pub(crate) fn render_detection_overlay<'a>(
                     } else {
                         [0.92, 0.92, 0.95, 0.94]
                     },
+                    transform: [0.0, 0.0, 0.5, 0.5],
                 });
             }
         }
@@ -1868,6 +1870,7 @@ pub(crate) fn render_detection_overlay<'a>(
                         ],
                         uv_rect: palette_uv(sign, detection_uvs),
                         tint: [0.94, 0.95, 0.98, 1.0],
+                        transform: [0.0, 0.0, 0.5, 0.5],
                     });
                 }
             }
@@ -1894,6 +1897,7 @@ pub(crate) fn render_detection_overlay<'a>(
                     ],
                     uv_rect: rhubarb_uv(info.rhubarb_image_asset, detection_uvs),
                     tint: [1.0, 1.0, 1.0, 1.0],
+                    transform: [0.0, 0.0, 0.5, 0.5],
                 });
                 push_info_labels(labels, outer, image_rect, info);
             }
@@ -2030,6 +2034,25 @@ mod tests {
         assert_eq!(shifted.last().copied(), Some(1.0));
         assert!(shifted.windows(2).all(|pair| pair[0] <= pair[1]));
         assert!(shifted[2] > base[2]);
+    }
+
+    #[test]
+    fn initial_sync_point_uses_the_rendered_character_widths() {
+        crate::config::init();
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 24, 0.0);
+        project.get_line_mut(line_id).unwrap().text = "cataclysme".into();
+        let line = project.get_line(line_id).unwrap();
+        let state = RythmoState::new();
+        let (positions, breaks) = base_character_ratios(line, None, "fr", &state);
+        let rendered = crate::rythmo_line::text_emotion_char_ratios(
+            &line.text,
+            crate::config::get().ui.font_size * 2.0,
+        )
+        .unwrap();
+
+        assert!(breaks.is_empty());
+        assert_eq!(positions, rendered);
     }
 
     #[test]

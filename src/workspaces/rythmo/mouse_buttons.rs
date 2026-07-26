@@ -31,15 +31,13 @@ pub(crate) fn handle_mouse_release(state: &mut RythmoState, ctx: &RythmoCtx) -> 
     }
 }
 
-fn visible_interaction_geometry(
-    ctx: &RythmoCtx,
-    state: &RythmoState,
-) -> Vec<(u64, Rect, Rect)> {
+fn visible_interaction_geometry(ctx: &RythmoCtx, state: &RythmoState) -> Vec<(u64, Rect, Rect)> {
     let margin_frames = interactive_render_margin_frames(ctx.fps, ctx.render_index);
-    let (first_frame, last_frame) = render_window(ctx.zone, ctx.current_frame, margin_frames, ctx.fps);
-    let mut line_ids =
-        ctx.render_index
-            .visible_line_ids(ctx.project, first_frame, last_frame);
+    let (first_frame, last_frame) =
+        render_window(ctx.zone, ctx.current_frame, margin_frames, ctx.fps);
+    let mut line_ids = ctx
+        .render_index
+        .visible_line_ids(ctx.project, first_frame, last_frame);
     line_ids.sort_by_key(|line_id| ctx.render_index.line_order_index(*line_id));
 
     let layout_ctx =
@@ -138,6 +136,7 @@ pub(crate) fn handle_shift_mouse_press(
 
                 let lang = ctx.project.syllable_language_code();
                 let char_pos = cursor_index_for_line_at_ratio(
+                    ctx.project,
                     line,
                     state.syllable_drag.as_ref(),
                     lang,
@@ -266,6 +265,7 @@ pub(crate) fn handle_double_click(
                 let ratio = ((x - text_rect.x) / text_rect.width).clamp(0.0, 1.0);
                 let lang = ctx.project.syllable_language_code();
                 let char_pos = cursor_index_for_line_at_ratio(
+                    ctx.project,
                     line,
                     state.syllable_drag.as_ref(),
                     lang,

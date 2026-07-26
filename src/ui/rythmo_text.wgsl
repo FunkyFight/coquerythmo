@@ -20,6 +20,7 @@ struct TextInstance {
     @location(0) rect: vec4<f32>,
     @location(1) uv_rect: vec4<f32>,
     @location(2) tint: vec4<f32>,
+    @location(3) transform: vec4<f32>,
 };
 
 @vertex
@@ -35,7 +36,13 @@ fn vs_main(
     );
     let indices = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
     let corner = corners[indices[vertex_index]];
-    let pos_px = instance.rect.xy + corner * instance.rect.zw;
+    let pivot = instance.transform.zw * instance.rect.zw;
+    var local = corner * instance.rect.zw - pivot;
+    local.x += instance.transform.y * local.y;
+    let cs = cos(instance.transform.x);
+    let sn = sin(instance.transform.x);
+    local = vec2<f32>(local.x * cs - local.y * sn, local.x * sn + local.y * cs);
+    let pos_px = instance.rect.xy + pivot + local;
 
     var out: VertexOutput;
     out.position = vec4<f32>(

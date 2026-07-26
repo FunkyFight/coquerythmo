@@ -22,6 +22,7 @@ pub enum Rule {
     MixedVoicePresence,
     MissingFinalPunctuation,
     AmbianceParentheses,
+    TextEmotion,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
@@ -116,6 +117,15 @@ fn add(out: &mut Vec<Diagnostic>, id: u64, severity: Severity, rule: Rule, messa
 }
 
 fn lint_text(line: &RythmoLine, out: &mut Vec<Diagnostic>) {
+    if !line.text_emotions.is_empty() {
+        add(
+            out,
+            line.id,
+            Severity::Warning,
+            Rule::TextEmotion,
+            "N'utilisez pas d'émotions du texte dans un milieu professionnel qui ne l'autorise pas !",
+        );
+    }
     let text = line.text.trim();
     if text.is_empty() {
         return;
@@ -304,6 +314,7 @@ mod tests {
             karaoke: false,
             note: note.into(),
             presence: crate::rythmo_line::LinePresence::On,
+            text_emotions: vec![],
         }
     }
     #[test]
@@ -390,5 +401,28 @@ mod tests {
             assert!(d.iter().any(|d| d.rule == Rule::CharacterOnMultipleTracks));
             assert!(d.iter().any(|d| d.rule == Rule::MixedVoicePresence));
         }
+    }
+
+    #[test]
+    fn text_emotion_has_the_professional_context_warning() {
+        let mut emotional = line(9, "Yay !", "A", 0.25, "");
+        emotional
+            .text_emotions
+            .push(crate::rythmo_line::TextEmotionSpan {
+                start: 0,
+                end: 3,
+                emotion: crate::rythmo_line::TextEmotion::Yay,
+            });
+        let mut diagnostics = Vec::new();
+        lint_text(&emotional, &mut diagnostics);
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.rule == Rule::TextEmotion)
+            .unwrap();
+        assert_eq!(diagnostic.severity, Severity::Warning);
+        assert_eq!(
+            diagnostic.message,
+            "N'utilisez pas d'émotions du texte dans un milieu professionnel qui ne l'autorise pas !"
+        );
     }
 }

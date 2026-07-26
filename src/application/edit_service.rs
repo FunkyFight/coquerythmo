@@ -306,10 +306,27 @@ impl EditExecutor {
                     new_dur: duration_frames,
                 }
             }
-            CommandPayload::UpdateLineText { line_id, text } => Command::UpdateLineText {
+            CommandPayload::UpdateLineText {
                 line_id,
-                old_text: project.get_line(line_id)?.text.clone(),
-                new_text: text,
+                text,
+                text_emotions,
+            } => {
+                let line = project.get_line(line_id)?;
+                Command::UpdateLineText {
+                    line_id,
+                    old_text: line.text.clone(),
+                    new_text: text,
+                    old_emotions: line.text_emotions.clone(),
+                    new_emotions: text_emotions,
+                }
+            }
+            CommandPayload::SetTextEmotions {
+                line_id,
+                text_emotions,
+            } => Command::SetTextEmotions {
+                line_id,
+                old_emotions: project.get_line(line_id)?.text_emotions.clone(),
+                new_emotions: text_emotions,
             },
             CommandPayload::UpdateLineNote { line_id, note } => Command::UpdateLineNote {
                 line_id,
@@ -554,6 +571,7 @@ mod tests {
             CommandPayload::UpdateLineText {
                 line_id,
                 text: "after".into(),
+                text_emotions: Vec::new(),
             },
             EditOrigin::Remote,
         );
@@ -620,6 +638,8 @@ mod tests {
                 line_id,
                 old_text: String::new(),
                 new_text: "first".into(),
+                old_emotions: Vec::new(),
+                new_emotions: Vec::new(),
             },
             EditOrigin::Local,
         );
@@ -631,6 +651,8 @@ mod tests {
                 line_id,
                 old_text: String::new(),
                 new_text: "replacement".into(),
+                old_emotions: Vec::new(),
+                new_emotions: Vec::new(),
             },
             |last| {
                 if let Command::UpdateLineText { new_text, .. } = last {

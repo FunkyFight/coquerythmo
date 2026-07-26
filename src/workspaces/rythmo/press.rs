@@ -105,6 +105,7 @@ pub(crate) fn handle_mouse_press(
 
                 let lang = ctx.project.syllable_language_code();
                 let char_pos = cursor_index_for_line_at_ratio(
+                    ctx.project,
                     line,
                     state.syllable_drag.as_ref(),
                     lang,

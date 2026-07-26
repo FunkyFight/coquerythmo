@@ -14,6 +14,11 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub(crate) fn fps_matches(left: f64, right: f64) -> bool {
+    let scale = left.abs().max(right.abs()).max(1.0);
+    (left - right).abs() <= f64::EPSILON * 256.0 * scale
+}
+
 const HUUID_PREFIX: &str = "Coquerythmo-";
 const HUUID_TIMESTAMP_LEN: usize = 19;
 pub const TRANSACTION_JOURNAL_VERSION: u32 = 1;
@@ -682,7 +687,7 @@ impl TransactionJournal {
     /// value. A failure never partially mutates the caller's project.
     pub fn replay(&self, fps: f64) -> Result<Project, TransactionJournalError> {
         self.validate_integrity()?;
-        if !fps.is_finite() || fps <= 0.0 || fps != self.checkpoint.source_fps {
+        if !fps.is_finite() || fps <= 0.0 || !fps_matches(fps, self.checkpoint.source_fps) {
             return Err(TransactionJournalError::ReplayFpsMismatch);
         }
         let mut project = Project::new();
@@ -757,7 +762,7 @@ fn validate_checkpoint(checkpoint: &ProjectData) -> Result<(), TransactionJourna
                 language.id
             )));
         }
-        if language.project.source_fps != checkpoint.source_fps {
+        if !fps_matches(language.project.source_fps, checkpoint.source_fps) {
             return Err(TransactionJournalError::InvalidCheckpoint(format!(
                 "language {} uses a different source FPS",
                 language.id
@@ -810,6 +815,11 @@ fn validate_command_precondition(command: &Command, project: &Project) -> Result
     let missing_line = |id: u64| format!("line {id} does not exist");
     match command {
         Command::SetLinePresence { .. } => {}
+        Command::SetTextEmotions { line_id, .. } => {
+            if project.get_line(*line_id).is_none() {
+                return Err(missing_line(*line_id));
+            }
+        }
         Command::CreateLine { snapshot, index } | Command::InsertLine { snapshot, index } => {
             snapshot.validate()?;
             if project.get_line(snapshot.id).is_some() {
@@ -1310,6 +1320,8 @@ mod tests {
                     line_id,
                     old_text: "before".into(),
                     new_text: "after".into(),
+                    old_emotions: Vec::new(),
+                    new_emotions: Vec::new(),
                 },
             )
             .unwrap();
@@ -1381,6 +1393,8 @@ mod tests {
                     line_id,
                     old_text: "before".into(),
                     new_text: "after".into(),
+                    old_emotions: Vec::new(),
+                    new_emotions: Vec::new(),
                 },
             )
             .unwrap();
@@ -1388,6 +1402,8 @@ mod tests {
             line_id,
             old_text: "before".into(),
             new_text: "tampered".into(),
+            old_emotions: Vec::new(),
+            new_emotions: Vec::new(),
         };
 
         assert!(matches!(
@@ -1408,6 +1424,8 @@ mod tests {
                 line_id,
                 old_text: "before".into(),
                 new_text: "one".into(),
+                old_emotions: Vec::new(),
+                new_emotions: Vec::new(),
             },
         )
         .unwrap();
@@ -1418,6 +1436,8 @@ mod tests {
                 line_id,
                 old_text: "one".into(),
                 new_text: "left".into(),
+                old_emotions: Vec::new(),
+                new_emotions: Vec::new(),
             },
         )
         .unwrap();
@@ -1428,6 +1448,8 @@ mod tests {
                     line_id,
                     old_text: "one".into(),
                     new_text: "right".into(),
+                    old_emotions: Vec::new(),
+                    new_emotions: Vec::new(),
                 },
             )
             .unwrap();
@@ -1440,6 +1462,8 @@ mod tests {
                 line_id,
                 old_text: "one".into(),
                 new_text: "replacement".into(),
+                old_emotions: Vec::new(),
+                new_emotions: Vec::new(),
             },
         )
         .unwrap();
@@ -1459,6 +1483,8 @@ mod tests {
                     line_id,
                     old_text: "before".into(),
                     new_text: "draft".into(),
+                    old_emotions: Vec::new(),
+                    new_emotions: Vec::new(),
                 },
             )
             .unwrap();
@@ -1468,6 +1494,8 @@ mod tests {
                 line_id,
                 old_text: "before".into(),
                 new_text: "final".into(),
+                old_emotions: Vec::new(),
+                new_emotions: Vec::new(),
             })
             .unwrap();
 
@@ -1521,6 +1549,8 @@ mod tests {
                     line_id,
                     old_text: "before".into(),
                     new_text: "after".into(),
+                    old_emotions: Vec::new(),
+                    new_emotions: Vec::new(),
                 },
             )
             .unwrap();

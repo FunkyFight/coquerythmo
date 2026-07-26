@@ -20,6 +20,7 @@ use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent,
 };
 use resvg::tiny_skia::{self, Pixmap};
+use unicode_segmentation::UnicodeSegmentation;
 
 // Local constants not shared with the UI
 const BASE_TICK_WIDTH: f32 = 1.5;
@@ -582,6 +583,156 @@ impl CpuRenderer {
         }
     }
 
+    fn blit_emotional_text(
+        &mut self,
+        pixmap: &mut Pixmap,
+        line: &crate::rythmo_line::RythmoLine,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        font_size: f32,
+        seconds: f32,
+        scale: f32,
+        tint: [u8; 3],
+        sync_positions: Option<&[f32]>,
+        show_lane: bool,
+    ) {
+        let graphemes: Vec<&str> = line.text.graphemes(true).collect();
+        let char_count = line.text.chars().count().max(1);
+        let ratios = sync_positions
+            .filter(|ratios| ratios.len() == char_count + 1)
+            .map(<[f32]>::to_vec)
+            .or_else(|| {
+                crate::rythmo_line::text_emotion_char_ratios(&line.text, font_size)
+                    .filter(|ratios| ratios.len() == char_count + 1)
+            });
+        let mut char_start = 0;
+        for (index, grapheme) in graphemes.iter().enumerate() {
+            let char_end = char_start + grapheme.chars().count();
+            let start_ratio = ratios
+                .as_ref()
+                .map(|ratios| ratios[char_start])
+                .unwrap_or(char_start as f32 / char_count as f32);
+            let end_ratio = ratios
+                .as_ref()
+                .map(|ratios| ratios[char_end])
+                .unwrap_or(char_end as f32 / char_count as f32);
+            let gx = x + start_ratio * width;
+            let gw = ((end_ratio - start_ratio) * width).max(0.5);
+            if let Some(emotion) = line.emotion_at_char(char_start) {
+                let animation = crate::rythmo_line::text_emotion_transform(
+                    emotion,
+                    index,
+                    graphemes.len(),
+                    seconds,
+                );
+                let animated_tint = if emotion == crate::rythmo_line::TextEmotion::Yay {
+                    [
+                        (255.0 * animation.tint[0]).round() as u8,
+                        (255.0 * animation.tint[1]).round() as u8,
+                        (255.0 * animation.tint[2]).round() as u8,
+                    ]
+                } else {
+                    [
+                        (tint[0] as f32 * animation.tint[0]).round() as u8,
+                        (tint[1] as f32 * animation.tint[1]).round() as u8,
+                        (tint[2] as f32 * animation.tint[2]).round() as u8,
+                    ]
+                };
+                let key = self.get_or_render_rythmo_text(
+                    grapheme,
+                    font_size,
+                    gw.ceil() as u32,
+                    height.ceil() as u32,
+                );
+                if let Some(rendered) = key.and_then(|key| self.rythmo_text_cache.get(&key)) {
+                    Self::blit_cached_transformed(
+                        pixmap,
+                        rendered,
+                        gx + animation.offset[0],
+                        y + animation.offset[1] - height * 0.08,
+                        animation.transform,
+                        animated_tint,
+                    );
+                }
+                if show_lane {
+                    let (copy_y, copy_height) =
+                        rythmo_layout::text_emotion_copy_rect(y, height, scale);
+                    self.blit_rythmo_text_tinted_clipped(
+                        pixmap,
+                        grapheme,
+                        gx,
+                        copy_y,
+                        gw,
+                        copy_height,
+                        font_size * 0.68,
+                        tint,
+                        1.0,
+                    );
+                }
+            } else {
+                self.blit_rythmo_text_tinted_clipped(
+                    pixmap, grapheme, gx, y, gw, height, font_size, tint, 1.0,
+                );
+            }
+            char_start = char_end;
+        }
+    }
+
+    fn blit_cached_transformed(
+        pixmap: &mut Pixmap,
+        rendered: &CachedCpuRythmoText,
+        x: f32,
+        y: f32,
+        transform: [f32; 4],
+        tint: [u8; 3],
+    ) {
+        let [angle, skew, pivot_x, pivot_y] = transform;
+        let (sin, cos) = angle.sin_cos();
+        let pivot = [
+            pivot_x * rendered.width as f32,
+            pivot_y * rendered.height as f32,
+        ];
+        let radius = rendered.width.max(rendered.height) as i32;
+        let left = (x as i32 - radius).max(0);
+        let top = (y as i32 - radius).max(0);
+        let right = (x as i32 + rendered.width as i32 + radius).min(pixmap.width() as i32);
+        let bottom = (y as i32 + rendered.height as i32 + radius).min(pixmap.height() as i32);
+        let pm_w = pixmap.width();
+        let data = pixmap.data_mut();
+        for py in top..bottom {
+            for px in left..right {
+                let rx = px as f32 - x - pivot[0];
+                let ry = py as f32 - y - pivot[1];
+                let unrotated_x = rx * cos + ry * sin;
+                let source_y = -rx * sin + ry * cos + pivot[1];
+                let source_x = unrotated_x - skew * (source_y - pivot[1]) + pivot[0];
+                let sx = source_x.round() as i32;
+                let sy = source_y.round() as i32;
+                if sx < 0 || sy < 0 || sx >= rendered.width as i32 || sy >= rendered.height as i32 {
+                    continue;
+                }
+                let source = ((sy as u32 * rendered.width + sx as u32) * 4) as usize;
+                let destination = ((py as u32 * pm_w + px as u32) * 4) as usize;
+                let alpha = rendered.pixels[source + 3] as u32;
+                if alpha == 0 {
+                    continue;
+                }
+                let inverse_alpha = 255 - alpha;
+                for channel in 0..3 {
+                    let source_channel =
+                        rendered.pixels[source + channel] as u32 * tint[channel] as u32 / 255;
+                    data[destination + channel] = (source_channel
+                        + data[destination + channel] as u32 * inverse_alpha / 255)
+                        .min(255) as u8;
+                }
+                data[destination + 3] =
+                    (alpha + data[destination + 3] as u32 * inverse_alpha / 255).min(255) as u8;
+            }
+        }
+    }
+
     /// Render the bande rythmo for a fractional source-frame position.
     ///
     /// Integer frame bounds are used only for visibility queries; every visual
@@ -962,15 +1113,36 @@ impl CpuRenderer {
                             visual_progress,
                         );
                     }
-                } else {
-                    let lang = scene.syllable_language.code();
-                    let breaks = crate::syllable::syllable_breaks(&line.text, lang);
-                    let base_ratios =
-                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
-                    let ratios = project.detections().warped_ratios(
+                } else if !line.text_emotions.is_empty() {
+                    let sync_positions = project.detections().warped_character_positions(
                         line.id,
                         &line.text,
-                        &breaks,
+                        line.start_frame,
+                        line.duration_frames,
+                    );
+                    self.blit_emotional_text(
+                        &mut pixmap,
+                        line,
+                        x1,
+                        line_y,
+                        lw,
+                        body_h,
+                        font_size,
+                        (current_frame / source_fps.max(1.0)) as f32,
+                        s,
+                        scrolling_text_tint,
+                        sync_positions.as_deref(),
+                        project.settings().show_text_emotion_lanes,
+                    );
+                } else {
+                    let lang = scene.syllable_language.code();
+                    let base_breaks = crate::syllable::syllable_breaks(&line.text, lang);
+                    let base_ratios =
+                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
+                    let (breaks, ratios) = project.detections().warped_segments(
+                        line.id,
+                        &line.text,
+                        &base_breaks,
                         &base_ratios,
                         line.start_frame,
                         line.duration_frames,
@@ -1261,6 +1433,17 @@ impl CpuRenderer {
 
         // Drawings are an overlay in the editor, so composite them last in the
         // exported BR as well (above lines, labels and markers).
+        self.render_markers(
+            &mut pixmap,
+            &scene.markers,
+            current_frame,
+            center_x,
+            ppf,
+            offset_frames,
+            w,
+            h,
+            s,
+        );
         let (first_frame, last_frame) = crate::rythmo_drawing::visible_frame_window(
             width as f32,
             current_frame,
@@ -1295,24 +1478,20 @@ impl CpuRenderer {
         current_frame: f64,
         center_x: f32,
         ppf: f32,
-        offset_x: f32,
+        reading_bar_offset_frames: f64,
         w: f32,
         h: f32,
         s: f32,
     ) {
         use crate::rythmo_line::MarkerKind;
-        let margin_frames = (10.0 * s / ppf).ceil() as i64 + 1;
-        let offset_frames = (offset_x / ppf).round() as i64;
-        let cf_i64 = current_frame.floor() as i64;
-        let first_marker_frame =
-            cf_i64.saturating_sub((w / ppf / 2.0).ceil() as i64 + margin_frames - offset_frames);
-        let last_marker_frame =
-            cf_i64.saturating_add((w / ppf / 2.0).ceil() as i64 + margin_frames + offset_frames);
         for marker in markers {
-            if marker.frame < first_marker_frame || marker.frame > last_marker_frame {
-                continue;
-            }
-            let mx = center_x + (marker.frame as f64 - current_frame) as f32 * ppf + offset_x;
+            let mx = rythmo_layout::export_timeline_x(
+                marker.frame,
+                current_frame,
+                center_x,
+                ppf,
+                reading_bar_offset_frames,
+            );
             if mx < -10.0 * s || mx > w + 10.0 * s {
                 continue;
             }
@@ -1362,6 +1541,15 @@ impl CpuRenderer {
                 }
                 MarkerKind::SceneChange => {
                     blit_rect(pixmap, mx - 1.0 * s, 0.0, 2.0 * s, h, [230, 230, 240, 200]);
+                    if let Some(number) = marker.scene_number {
+                        self.blit_actor_fallback(
+                            pixmap,
+                            &number.to_string(),
+                            mx + 4.0 * s,
+                            2.0 * s,
+                            18.0 * s,
+                        );
+                    }
                 }
                 MarkerKind::LiaisonLeft | MarkerKind::LiaisonRight => {
                     let is_left = matches!(marker.kind, MarkerKind::LiaisonLeft);

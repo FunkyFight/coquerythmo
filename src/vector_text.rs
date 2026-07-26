@@ -349,7 +349,7 @@ fn measure_text_emphasized(
 ) -> f32 {
     prepare_font_system(font_system);
     let mut buffer = GlyphonBuffer::new(font_system, Metrics::new(font_size, line_height));
-    buffer.set_size(font_system, Some(10000.0), Some(line_height));
+    buffer.set_size(font_system, None, Some(line_height));
     let family = if font_family == "sans-serif" {
         Family::SansSerif
     } else {
@@ -562,7 +562,7 @@ fn measure_text(
 
     prepare_font_system(font_system);
     let mut buffer = GlyphonBuffer::new(font_system, Metrics::new(font_size, line_height));
-    buffer.set_size(font_system, Some(10000.0), Some(line_height));
+    buffer.set_size(font_system, None, Some(line_height));
     let family = if font_family == "sans-serif" {
         Family::SansSerif
     } else {
@@ -578,30 +578,59 @@ fn measure_text(
     buffer.shape_until_scroll(font_system, false);
 
     let mut text_width = 0.0_f32;
-    let mut glyph_ends = Vec::new();
+    let mut clusters = std::collections::BTreeMap::new();
     for run in buffer.layout_runs() {
         for glyph in run.glyphs.iter() {
             let end = glyph.x + glyph.w;
-            glyph_ends.push(end);
             text_width = text_width.max(end);
+            clusters
+                .entry((glyph.start, glyph.end))
+                .and_modify(|(left, right, _): &mut (f32, f32, bool)| {
+                    *left = left.min(glyph.x);
+                    *right = right.max(end);
+                })
+                .or_insert((glyph.x, end, glyph.level.is_rtl()));
         }
     }
 
     let natural_width = text_width.max(1.0);
-    let char_count = text.chars().count();
-    let mut ratios = Vec::with_capacity(char_count + 1);
-    ratios.push(0.0);
-    for char_idx in 1..=char_count {
-        let end = if glyph_ends.is_empty() {
-            natural_width
-        } else if glyph_ends.len() == char_count {
-            glyph_ends[char_idx - 1]
-        } else {
-            let glyph_idx = ((char_idx * glyph_ends.len()).saturating_sub(1)) / char_count;
-            glyph_ends[glyph_idx.min(glyph_ends.len() - 1)]
+    let char_offsets = text
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain(std::iter::once(text.len()))
+        .collect::<Vec<_>>();
+    let char_count = char_offsets.len() - 1;
+    let mut boundary_x = vec![(0.0_f32, 0_u32); char_count + 1];
+    for ((byte_start, byte_end), (left, right, rtl)) in clusters {
+        let Ok(char_start) = char_offsets.binary_search(&byte_start) else {
+            continue;
         };
-        ratios.push((end / natural_width).clamp(0.0, 1.0));
+        let Ok(char_end) = char_offsets.binary_search(&byte_end) else {
+            continue;
+        };
+        let count = char_end.saturating_sub(char_start).max(1);
+        for offset in 0..=count {
+            let progress = offset as f32 / count as f32;
+            let x = if rtl {
+                right - (right - left) * progress
+            } else {
+                left + (right - left) * progress
+            };
+            boundary_x[char_start + offset].0 += x;
+            boundary_x[char_start + offset].1 += 1;
+        }
     }
+
+    let mut ratios = Vec::with_capacity(char_count + 1);
+    for (index, (sum, count)) in boundary_x.into_iter().enumerate() {
+        let x = if count == 0 {
+            index as f32 / char_count.max(1) as f32 * natural_width
+        } else {
+            sum / count as f32
+        };
+        ratios.push((x / natural_width).clamp(0.0, 1.0));
+    }
+    ratios[0] = 0.0;
     if let Some(last) = ratios.last_mut() {
         *last = 1.0;
     }
@@ -621,7 +650,7 @@ fn measure_text_visual_bounds(
 ) -> f32 {
     prepare_font_system(font_system);
     let mut buffer = GlyphonBuffer::new(font_system, Metrics::new(font_size, line_height));
-    buffer.set_size(font_system, Some(10000.0), Some(line_height));
+    buffer.set_size(font_system, None, Some(line_height));
     let family = if font_family == "sans-serif" {
         Family::SansSerif
     } else {
@@ -762,5 +791,15 @@ mod tests {
             assert!(w.is_some());
             assert!(w.unwrap() > 0.0);
         }
+    }
+
+    #[test]
+    fn character_ratios_follow_clusters_without_wrapping_long_lines() {
+        crate::config::init();
+        let combined = measure_rythmo_text_char_ratios_standalone("e\u{301}", 16.0).unwrap();
+        assert!(combined[0] < combined[1] && combined[1] < combined[2]);
+
+        let long = measure_rythmo_text_char_ratios_standalone(&"W".repeat(2_000), 16.0).unwrap();
+        assert!(long.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 }

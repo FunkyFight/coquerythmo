@@ -298,6 +298,44 @@ pub(crate) fn handle_word_selection(
     EventResponse::Ignored
 }
 
+pub(crate) fn handle_word_move(
+    ctx: &RythmoCtx,
+    state: &mut RythmoState,
+    dir: i32,
+) -> EventResponse {
+    let (input, text) = if let Some(line_id) = state.editing_character {
+        let Some(line) = ctx.project.get_line(line_id) else {
+            return EventResponse::Ignored;
+        };
+        (&mut state.char_input, line.character_name.as_str())
+    } else if let Some(line_id) = state.editing_line {
+        let Some(line) = ctx.project.get_line(line_id) else {
+            return EventResponse::Ignored;
+        };
+        (&mut state.line_input, line.text.as_str())
+    } else if let Some(line_id) = state.editing_note {
+        let Some(line) = ctx.project.get_line(line_id) else {
+            return EventResponse::Ignored;
+        };
+        (&mut state.note_input, line.note.as_str())
+    } else {
+        return EventResponse::Ignored;
+    };
+    if dir < 0 {
+        input.move_word_left(text);
+    } else {
+        input.move_word_right(text);
+    }
+    input
+        .word_at_cursor(text)
+        .map(|word| {
+            EventResponse::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Selection { label: word },
+            ))
+        })
+        .unwrap_or(EventResponse::Consumed)
+}
+
 fn editing_line_label(ctx: &RythmoCtx<'_>, line_id: u64) -> Option<String> {
     let line = ctx.project.get_line(line_id)?;
     let mut parts = Vec::new();

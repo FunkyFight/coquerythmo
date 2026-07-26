@@ -72,8 +72,20 @@ pub fn encode_delta(command: &Command, project: &Project) -> Option<serde_json::
             "duration_frames": new_dur,
         }),
         Command::UpdateLineText {
-            line_id, new_text, ..
-        } => serde_json::json!({ "action": "update_text", "line_id": line_id, "text": new_text }),
+            line_id,
+            new_text,
+            new_emotions,
+            ..
+        } => {
+            serde_json::json!({ "action": "update_text", "line_id": line_id, "text": new_text, "text_emotions": new_emotions })
+        }
+        Command::SetTextEmotions {
+            line_id,
+            new_emotions,
+            ..
+        } => {
+            serde_json::json!({ "action": "set_text_emotions", "line_id": line_id, "text_emotions": new_emotions })
+        }
         Command::UpdateLineNote {
             line_id, new_note, ..
         } => serde_json::json!({ "action": "update_note", "line_id": line_id, "note": new_note }),
@@ -212,6 +224,14 @@ pub fn decode_delta(data: &serde_json::Value) -> Option<CommandPayload> {
         "update_text" => Some(CommandPayload::UpdateLineText {
             line_id: data.get("line_id")?.as_u64()?,
             text: data.get("text")?.as_str()?.to_string(),
+            text_emotions: data
+                .get("text_emotions")
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or_default(),
+        }),
+        "set_text_emotions" => Some(CommandPayload::SetTextEmotions {
+            line_id: data.get("line_id")?.as_u64()?,
+            text_emotions: serde_json::from_value(data.get("text_emotions")?.clone()).ok()?,
         }),
         "update_note" => Some(CommandPayload::UpdateLineNote {
             line_id: data.get("line_id")?.as_u64()?,

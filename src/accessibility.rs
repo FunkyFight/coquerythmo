@@ -228,6 +228,7 @@ pub fn event_for_action(
         UiAction::CreateLineAtTrack { .. } => "accessibility.line_created",
         UiAction::StartEditingSelectedLine => "accessibility.edit_line",
         UiAction::StartEditingSelectedCharacter => "accessibility.edit_character",
+        UiAction::OpenTextEmotionMenu => "text_emotion.menu",
         UiAction::ClearLineSelection => "accessibility.selection_cleared",
         UiAction::AddMarker(MarkerKind::Boucle) => "toolbar.boucle",
         UiAction::AddMarker(MarkerKind::Out) => "toolbar.out",

@@ -21,6 +21,7 @@ use crate::voice_actor::{decode_icon_rgba, VoiceActor, VOICE_ACTOR_ICON_SIZE};
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent,
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -817,6 +818,11 @@ impl GpuRenderer {
                             format: wgpu::VertexFormat::Float32x4,
                             offset: 32,
                             shader_location: 2,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 48,
+                            shader_location: 3,
                         },
                     ],
                 }],
@@ -1720,6 +1726,99 @@ impl GpuRenderer {
         );
     }
 
+    fn push_emotional_text_icons(
+        &mut self,
+        line: &RythmoLine,
+        font_size: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        seconds: f32,
+        scale: f32,
+        tint: [f32; 4],
+        sync_positions: Option<&[f32]>,
+        show_lane: bool,
+        all_icons: &mut Vec<IconInstance>,
+        icon_batches: &mut Vec<IconBatch>,
+    ) {
+        let graphemes: Vec<&str> = line.text.graphemes(true).collect();
+        let char_count = line.text.chars().count().max(1);
+        let ratios = sync_positions
+            .filter(|ratios| ratios.len() == char_count + 1)
+            .map(<[f32]>::to_vec)
+            .or_else(|| {
+                crate::rythmo_line::text_emotion_char_ratios(&line.text, font_size)
+                    .filter(|ratios| ratios.len() == char_count + 1)
+            });
+        let mut char_start = 0;
+        for (index, grapheme) in graphemes.iter().enumerate() {
+            let char_end = char_start + grapheme.chars().count();
+            let start_ratio = ratios
+                .as_ref()
+                .map(|ratios| ratios[char_start])
+                .unwrap_or(char_start as f32 / char_count as f32);
+            let end_ratio = ratios
+                .as_ref()
+                .map(|ratios| ratios[char_end])
+                .unwrap_or(char_end as f32 / char_count as f32);
+            let gx = x + start_ratio * w;
+            let gw = ((end_ratio - start_ratio) * w).max(0.5);
+            let first = all_icons.len();
+            self.push_rythmo_text_icons_tinted_clipped(
+                grapheme,
+                font_size,
+                gx,
+                y,
+                gw,
+                h,
+                tint,
+                1.0,
+                all_icons,
+                icon_batches,
+            );
+            if let Some(emotion) = line.emotion_at_char(char_start) {
+                let animation = crate::rythmo_line::text_emotion_transform(
+                    emotion,
+                    index,
+                    graphemes.len(),
+                    seconds,
+                );
+                for icon in &mut all_icons[first..] {
+                    icon.rect[0] += animation.offset[0];
+                    icon.rect[1] += animation.offset[1] - h * 0.08;
+                    icon.tint = if emotion == crate::rythmo_line::TextEmotion::Yay {
+                        animation.tint
+                    } else {
+                        [
+                            tint[0] * animation.tint[0],
+                            tint[1] * animation.tint[1],
+                            tint[2] * animation.tint[2],
+                            tint[3] * animation.tint[3],
+                        ]
+                    };
+                    icon.transform = animation.transform;
+                }
+                if show_lane {
+                    let (copy_y, copy_height) = rythmo_layout::text_emotion_copy_rect(y, h, scale);
+                    self.push_rythmo_text_icons_tinted_clipped(
+                        grapheme,
+                        font_size * 0.68,
+                        gx,
+                        copy_y,
+                        gw,
+                        copy_height,
+                        [tint[0], tint[1], tint[2], 0.82],
+                        1.0,
+                        all_icons,
+                        icon_batches,
+                    );
+                }
+            }
+            char_start = char_end;
+        }
+    }
+
     fn push_rythmo_text_icons_tinted_clipped_with_mode(
         &mut self,
         text: &str,
@@ -1776,6 +1875,7 @@ impl GpuRenderer {
                     rect: [draw_x, y, draw_w, h],
                     uv_rect: [0.0, 0.0, uv_end, 1.0],
                     tint,
+                    transform: [0.0, 0.0, 0.5, 0.5],
                 });
                 icon_batches.push(IconBatch {
                     hash,
@@ -1830,6 +1930,7 @@ impl GpuRenderer {
             ],
             uv_rect: [0.0, 0.0, draw_w / tw, draw_h / th],
             tint: [230.0 / 255.0, 230.0 / 255.0, 238.0 / 255.0, 1.0],
+            transform: [0.0, 0.0, 0.5, 0.5],
         });
         icon_batches.push(IconBatch {
             hash,
@@ -1886,6 +1987,7 @@ impl GpuRenderer {
                         rect: [icon_x, y, icon_size, icon_size],
                         uv_rect: [0.0, 0.0, 1.0, 1.0],
                         tint: [1.0; 4],
+                        transform: [0.0, 0.0, 0.5, 0.5],
                     });
                     icon_batches.push(IconBatch {
                         hash,
@@ -2484,15 +2586,37 @@ impl GpuRenderer {
                             &mut icon_batches,
                         );
                     }
-                } else {
-                    let lang = scene.project.syllable_language_code();
-                    let breaks = crate::syllable::syllable_breaks(&line.text, lang);
-                    let base_ratios =
-                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
-                    let ratios = scene.project.detections().warped_ratios(
+                } else if !line.text_emotions.is_empty() {
+                    let sync_positions = scene.project.detections().warped_character_positions(
                         line.id,
                         &line.text,
-                        &breaks,
+                        line.start_frame,
+                        line.duration_frames,
+                    );
+                    self.push_emotional_text_icons(
+                        line,
+                        font_size,
+                        x1,
+                        line_y,
+                        lw,
+                        body_h,
+                        (current_frame / source_fps.max(1.0)) as f32,
+                        s,
+                        scrolling_text_tint,
+                        sync_positions.as_deref(),
+                        scene.project.settings().show_text_emotion_lanes,
+                        &mut all_icons,
+                        &mut icon_batches,
+                    );
+                } else {
+                    let lang = scene.project.syllable_language_code();
+                    let base_breaks = crate::syllable::syllable_breaks(&line.text, lang);
+                    let base_ratios =
+                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
+                    let (breaks, ratios) = scene.project.detections().warped_segments(
+                        line.id,
+                        &line.text,
+                        &base_breaks,
                         &base_ratios,
                         line.start_frame,
                         line.duration_frames,
@@ -2739,6 +2863,7 @@ impl GpuRenderer {
                         rect: [x1 + 4.0 * s, note_y, draw_w, note_h],
                         uv_rect: [0.0, 0.0, uv_end, 1.0],
                         tint: [160.0 / 255.0, 160.0 / 255.0, 170.0 / 255.0, 1.0],
+                        transform: [0.0, 0.0, 0.5, 0.5],
                     });
                     icon_batches.push(IconBatch {
                         hash,
@@ -2750,16 +2875,14 @@ impl GpuRenderer {
         }
 
         // ── Markers ──
-        let marker_margin_frames = (10.0 * s / ppf).ceil() as i64 + 1;
-        let first_marker_frame =
-            cf_i64.saturating_sub((w / ppf / 2.0).ceil() as i64 + marker_margin_frames - offset_frames.round() as i64);
-        let last_marker_frame =
-            cf_i64.saturating_add((w / ppf / 2.0).ceil() as i64 + marker_margin_frames + offset_frames.round() as i64);
         for marker in &common_scene.markers {
-            if marker.frame < first_marker_frame || marker.frame > last_marker_frame {
-                continue;
-            }
-            let mx = center_x + (marker.frame as f64 - current_frame) as f32 * ppf + offset_frames as f32 * ppf;
+            let mx = rythmo_layout::export_timeline_x(
+                marker.frame,
+                current_frame,
+                center_x,
+                ppf,
+                offset_frames,
+            );
             if mx < -10.0 * s || mx > w + 10.0 * s {
                 continue;
             }
@@ -2842,6 +2965,29 @@ impl GpuRenderer {
                         240.0 / 255.0,
                         200.0 / 255.0,
                     ));
+                    if let Some(number) = marker.scene_number {
+                        let hash =
+                            self.get_or_upload_text(&number.to_string(), (18.0 * s).max(1.0));
+                        if let Some(cached) = self.text_cache.get(&hash) {
+                            let start = all_icons.len() as u32;
+                            all_icons.push(IconInstance {
+                                rect: [
+                                    mx + 4.0 * s,
+                                    2.0 * s,
+                                    cached.width as f32,
+                                    cached.height as f32,
+                                ],
+                                uv_rect: [0.0, 0.0, 1.0, 1.0],
+                                tint: [235.0 / 255.0, 235.0 / 255.0, 245.0 / 255.0, 1.0],
+                                transform: [0.0, 0.0, 0.5, 0.5],
+                            });
+                            icon_batches.push(IconBatch {
+                                hash,
+                                start,
+                                count: 1,
+                            });
+                        }
+                    }
                 }
                 MarkerKind::LiaisonLeft | MarkerKind::LiaisonRight => {
                     let is_left = matches!(marker.kind, MarkerKind::LiaisonLeft);
@@ -2884,6 +3030,7 @@ impl GpuRenderer {
                 rect: [0.0, 0.0, width as f32, height as f32],
                 uv_rect: [0.0, 0.0, 1.0, 1.0],
                 tint: [1.0, 1.0, 1.0, 1.0],
+                transform: [0.0, 0.0, 0.5, 0.5],
             });
             Some(index)
         } else {
