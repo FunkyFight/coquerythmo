@@ -734,8 +734,13 @@ mod tests {
             .all(|span| span.emotion != TextEmotion::Shake));
 
         line.karaoke = false;
-        line.text = "e\u{301}!".into();
+        line.kind = RythmoLineKind::AmbianceStart;
         line.text_emotions.clear();
+        line.set_text_emotion(0, 7, Some(TextEmotion::Wave));
+        assert!(line.text_emotions.is_empty());
+
+        line.kind = RythmoLineKind::Dialogue;
+        line.text = "e\u{301}!".into();
         line.set_text_emotion(1, 2, Some(TextEmotion::Wave));
         assert_eq!(
             (line.text_emotions[0].start, line.text_emotions[0].end),
