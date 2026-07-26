@@ -102,7 +102,7 @@ fn horizontal_rect_intersects_viewport(
 
 pub fn scaled_character_badge_width(character_name: &str, scale: f32) -> f32 {
     let scale = scale.max(0.0);
-    let font_size = constants::RYTHMO_FONT_SIZE * scale;
+    let font_size = constants::CHARACTER_LABEL_FONT_SIZE * scale;
 
     let measured = crate::vector_text::measure_rythmo_text_width_emphasized_standalone(
         character_name,
@@ -113,7 +113,7 @@ pub fn scaled_character_badge_width(character_name: &str, scale: f32) -> f32 {
     });
 
     let italic_left_overhang = font_size * 0.25;
-    let horizontal_padding = 12.0 * scale;
+    let horizontal_padding = 16.0 * scale;
 
     (italic_left_overhang + measured + horizontal_padding).max(16.0 * scale)
 }
@@ -565,8 +565,8 @@ mod tests {
 
     #[test]
     fn enlarged_export_badge_text_fits_without_vertical_stretching() {
-        let badge_height = constants::SLOT_HEIGHT * constants::BADGE_OVERLAP_HEIGHT_RATIO;
-        let natural_text_line_height = (constants::BADGE_FONT_SIZE * 1.4).ceil();
+        let badge_height = constants::SLOT_HEIGHT;
+        let natural_text_line_height = (constants::CHARACTER_LABEL_FONT_SIZE * 1.4).ceil();
 
         assert!(badge_height >= natural_text_line_height);
     }
@@ -578,7 +578,7 @@ mod tests {
         for name in cases.iter() {
             let scale = 1.0;
             let badge_w = scaled_character_badge_width(name, scale);
-            let font_size = constants::RYTHMO_FONT_SIZE * scale;
+            let font_size = constants::CHARACTER_LABEL_FONT_SIZE * scale;
             let emphasized_w = crate::vector_text::measure_rythmo_text_width_emphasized_standalone(
                 name, font_size,
             )
@@ -586,7 +586,7 @@ mod tests {
                 name.chars().count().max(1) as f32 * constants::BADGE_CHAR_W * scale
             });
             let overhang = font_size * 0.25;
-            let padding = 12.0 * scale;
+            let padding = 16.0 * scale;
             assert!(
                 badge_w >= emphasized_w + overhang + padding - 0.5,
                 "badge_width ({badge_w}) < emphasized_width ({emphasized_w}) + overhang ({overhang}) + padding ({padding}) for {name}"

@@ -41,6 +41,7 @@ pub const VOICE_ACTOR_DISPLAY_ICON_SIZE: f32 = 28.0;
 pub const SLOT_HEIGHT: f32 = 40.0;
 pub const HANDLE_WIDTH: f32 = 6.0;
 pub const RYTHMO_FONT_SIZE: f32 = 16.0;
+pub const CHARACTER_LABEL_FONT_SIZE: f32 = SLOT_HEIGHT / 1.4;
 
 pub const KARAOKE_DOT_SIZE: f32 = 7.0;
 pub const KARAOKE_DOT_BOUNCE_AMPLITUDE: f32 = 1.45;

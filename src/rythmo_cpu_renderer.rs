@@ -764,10 +764,10 @@ impl CpuRenderer {
         let playhead_w = BASE_PLAYHEAD_WIDTH * s;
         let badge_h = constants::BADGE_HEIGHT * s;
         let badge_gap = constants::BADGE_GAP * s;
-        let export_badge_lead_gap = 16.0 * s;
         let actor_icon_size = constants::VOICE_ACTOR_DISPLAY_ICON_SIZE * s;
         let slot_header_h = badge_h.max(actor_icon_size);
         let font_size = constants::RYTHMO_FONT_SIZE * s;
+        let character_label_font = constants::CHARACTER_LABEL_FONT_SIZE * s;
         let badge_font = constants::BADGE_FONT_SIZE * s;
         self.render_index.refresh(project);
         let visible_frames = (width as f32 / ppf) as i64 + 4;
@@ -881,9 +881,9 @@ impl CpuRenderer {
                 rythmo_layout::scaled_character_badge_width(&line.character_name, s)
             };
             let label_gap = if scene_line.karaoke_should_be_centered() {
-                export_badge_lead_gap
+                badge_gap
             } else {
-                export_badge_lead_gap
+                4.0 * ppf
             };
             let badge_x = x1 - badge_w - label_gap;
             let show_badge =
@@ -953,7 +953,11 @@ impl CpuRenderer {
                 x1,
                 badge_w,
                 s,
-                Some(export_badge_lead_gap),
+                Some(if scene_line.karaoke_should_be_centered() {
+                    badge_gap
+                } else {
+                    4.0 * ppf
+                }),
             );
             let show_badge =
                 line.kind.is_dialogue() && (!line.karaoke || scene_line.character_label_visible);
@@ -996,10 +1000,10 @@ impl CpuRenderer {
 
             if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
                 let ambiance_label = crate::rythmo_line::ambiance_label(&line.character_name);
-                let underline_x = badge_x + font_size * 0.25;
+                let underline_x = badge_x + character_label_font * 0.25;
                 let underline_w = crate::vector_text::measure_rythmo_text_width_standalone(
                     &ambiance_label,
-                    font_size,
+                    character_label_font,
                 )
                 .unwrap_or(badge_w)
                 .min((badge_x + badge_w - underline_x).max(0.0));
@@ -1010,7 +1014,7 @@ impl CpuRenderer {
                     badge_y,
                     badge_w,
                     badge_h,
-                    font_size,
+                    character_label_font,
                     [51, 140, 255],
                 );
                 blit_rect(
@@ -1296,10 +1300,10 @@ impl CpuRenderer {
             // Same emphasized typography as ambiance labels, tinted with the
             // character colour and deliberately left without an underline.
             if show_badge && !badge_hidden {
-                let underline_x = badge_x + font_size * 0.25;
+                let underline_x = badge_x + character_label_font * 0.25;
                 let underline_w = crate::vector_text::measure_rythmo_text_width_standalone(
                     &line.character_name,
-                    font_size,
+                    character_label_font,
                 )
                 .unwrap_or(badge_w)
                 .min((badge_x + badge_w - underline_x).max(0.0));
@@ -1310,7 +1314,7 @@ impl CpuRenderer {
                     badge_y,
                     badge_w,
                     badge_h,
-                    font_size,
+                    character_label_font,
                     [color_channel(cr), color_channel(cg), color_channel(cb)],
                 );
                 for y_offset in [2.0, 5.5] {

@@ -1,4 +1,4 @@
-# 3.7.0
+# 3.7.1
 
 ## Système d’émotion de texte
 
@@ -11,6 +11,7 @@
 
 ## Bande rythmo
 
+- Les étiquettes de personnages dans les exports CPU et GPU conservent désormais les proportions, la taille et l’espacement de l’interface.
 - Le décalage de la barre de lecture est appliqué dans le calcul central des coordonnées.
 - Les lignes, overlays, marqueurs, formes d’onde, dessins, détections, aperçus fantômes et raccourcis respectent désormais ce décalage.
 - Les marqueurs restent visibles et alignés avec les lignes dans les exports CPU et GPU, même lorsque la barre de lecture est décalée.
