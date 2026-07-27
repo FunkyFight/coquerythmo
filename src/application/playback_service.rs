@@ -1,7 +1,9 @@
 //! Playback-owned state. The player remains the existing media adapter; this
 //! component owns the playback session values that coordinate it with the UI.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::observer::TimelineBus;
@@ -17,6 +19,7 @@ pub struct PlaybackSession {
     pub scroll_needs_decode: bool,
     pub last_waveform_revision: u64,
     pub last_nonzero_volume: f32,
+    pub recording_audio_cache: BTreeMap<PathBuf, Arc<Vec<f32>>>,
 }
 
 impl PlaybackSession {
@@ -31,6 +34,7 @@ impl PlaybackSession {
             scroll_needs_decode: false,
             last_waveform_revision: 0,
             last_nonzero_volume: 0.75,
+            recording_audio_cache: BTreeMap::new(),
         }
     }
 }

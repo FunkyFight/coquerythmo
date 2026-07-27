@@ -18,7 +18,7 @@ pub(crate) struct PendingExportJob {
 
 pub(crate) struct PendingRecordingMixJob {
     pub cancel: Arc<AtomicBool>,
-    pub receiver: Receiver<Result<PathBuf, String>>,
+    pub receiver: Receiver<Result<Vec<(PathBuf, Arc<Vec<f32>>)>, String>>,
 }
 
 pub(crate) struct PendingImportJob {
@@ -53,7 +53,6 @@ pub struct JobManager {
     pub(crate) pending_save_job: Option<PendingSaveJob>,
     pub(crate) active_export_cancel: Option<Arc<AtomicBool>>,
     pub(crate) transition_after_save_ready: Option<SaveContinuation>,
-    pub(crate) recording_mix_generation: u64,
     pub(crate) play_recording_mix_when_ready: bool,
 }
 
@@ -67,7 +66,6 @@ impl JobManager {
             pending_save_job: None,
             active_export_cancel: None,
             transition_after_save_ready: None,
-            recording_mix_generation: 0,
             play_recording_mix_when_ready: false,
         }
     }

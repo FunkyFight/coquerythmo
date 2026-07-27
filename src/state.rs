@@ -36,6 +36,7 @@ use crate::workspaces::recording::RecordingWorkspace;
 use crate::workspaces::rythmo::RythmoWorkspace;
 
 use crate::constants;
+use crate::recording_mix::REALTIME_SAMPLE_RATE;
 
 enum DialogueSplitTarget {
     Cursor { line_id: u64, cursor_pos: usize },
@@ -594,7 +595,9 @@ impl State {
             .apply_recording_operation(crate::recording::RecordingOperation::Batch { operations })
         {
             Ok(()) => {
-                self.project_session.recording_asset_paths.remove(&asset_id);
+                if let Some(path) = self.project_session.recording_asset_paths.remove(&asset_id) {
+                    self.playback.recording_audio_cache.remove(&path);
+                }
                 self.ui_shell.ui.recording_clear_asset_selection();
                 self.sync_recording_workspace_ui();
             }
@@ -630,7 +633,6 @@ impl State {
                 .send_recording_transaction(&transaction);
         }
         self.sync_recording_workspace_ui();
-        self.clear_recording_mix_preview();
         self.schedule_recording_mix();
         Ok(())
     }
@@ -644,6 +646,7 @@ impl State {
         }
         if self.project_session.recording_project.clips().len() == 0 {
             self.clear_recording_mix_preview();
+            self.start_deferred_recording_playback();
             return;
         }
         let Some(source) = self.playback.source_video_path.clone() else {
@@ -664,20 +667,50 @@ impl State {
         if let Some(job) = self.jobs.pending_recording_mix_job.take() {
             job.cancel.store(true, Ordering::Relaxed);
         }
-        self.jobs.recording_mix_generation = self.jobs.recording_mix_generation.saturating_add(1);
-        let output = crate::media_binary::installation_temp_dir().join(format!(
-            "coquerythmo-recording-preview-{}-{}.flac",
-            std::process::id(),
-            self.jobs.recording_mix_generation
-        ));
+        let mut missing_paths = Vec::new();
+        for clip in &spec.clips {
+            if !self.playback.recording_audio_cache.contains_key(&clip.path)
+                && !missing_paths.contains(&clip.path)
+            {
+                missing_paths.push(clip.path.clone());
+            }
+        }
+        if missing_paths.is_empty() {
+            let output_sample_rate = self
+                .playback
+                .video_player
+                .as_ref()
+                .and_then(|p| p.audio_output_sample_rate())
+                .unwrap_or(REALTIME_SAMPLE_RATE);
+            match crate::recording_mix::RealtimeRecordingMix::from_spec(
+                &spec,
+                &self.playback.recording_audio_cache,
+                output_sample_rate,
+            ) {
+                Ok(mix) => {
+                    if let Some(player) = &mut self.playback.video_player {
+                        player.set_recording_mix(Some(Arc::new(mix)));
+                    }
+                    self.start_deferred_recording_playback();
+                }
+                Err(error) => {
+                    self.jobs.play_recording_mix_when_ready = false;
+                    self.recording_error(error);
+                }
+            }
+            return;
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancel.clone();
-        let worker_output = output.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let result =
-                crate::recording_mix::render_recording_mix(&spec, &worker_output, &worker_cancel)
-                    .map(|()| worker_output);
+            let result = missing_paths
+                .into_iter()
+                .map(|path| {
+                    crate::recording_mix::decode_realtime_asset(&path, &worker_cancel)
+                        .map(|samples| (path, samples))
+                })
+                .collect();
             let _ = sender.send(result);
         });
         self.jobs.pending_recording_mix_job = Some(PendingRecordingMixJob { cancel, receiver });
@@ -687,24 +720,16 @@ impl State {
         if let Some(job) = self.jobs.pending_recording_mix_job.take() {
             job.cancel.store(true, Ordering::Relaxed);
         }
-        let previous = self
-            .playback
-            .video_player
-            .as_mut()
-            .and_then(|player| player.set_recording_preview_audio_path(None));
-        if let Some(path) = previous {
-            Self::remove_recording_mix_file(&path);
+        if let Some(player) = &mut self.playback.video_player {
+            player.set_recording_mix(None);
         }
     }
 
-    fn remove_recording_mix_file(path: &Path) {
-        let is_ours = path.parent() == Some(crate::media_binary::installation_temp_dir().as_path())
-            && path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("coquerythmo-recording-preview-"));
-        if is_ours {
-            let _ = std::fs::remove_file(path);
+    fn start_deferred_recording_playback(&mut self) {
+        if self.jobs.play_recording_mix_when_ready && self.jobs.pending_recording_mix_job.is_none()
+        {
+            self.jobs.play_recording_mix_when_ready = false;
+            self.toggle_play_pause();
         }
     }
 
@@ -2089,6 +2114,7 @@ impl State {
         self.playback.last_scroll_time = None;
         self.playback.scroll_needs_decode = false;
         self.playback.last_waveform_revision = 0;
+        self.playback.recording_audio_cache.clear();
         self.ui_shell.ui.has_video = false;
         self.ui_shell.ui.total_frames = 0;
         self.playback.timeline.emit(TimelineEvent::PlaybackStopped);
@@ -5388,34 +5414,19 @@ impl State {
             return false;
         };
         self.jobs.pending_recording_mix_job = None;
-        let play_when_ready = std::mem::take(&mut self.jobs.play_recording_mix_when_ready);
-        let mut mix_installed = false;
         match result {
-            Ok(path)
-                if self.active_workspace() == WorkspaceId::Recording
-                    && self.ui_shell.ui.recording_page()
-                        == crate::ui::recording_workspace::RecordingPage::Timeline =>
-            {
-                if let Some(player) = &mut self.playback.video_player {
-                    if let Some(previous) =
-                        player.set_recording_preview_audio_path(Some(path.clone()))
-                    {
-                        Self::remove_recording_mix_file(&previous);
-                    }
-                    mix_installed = true;
-                } else {
-                    Self::remove_recording_mix_file(&path);
+            Ok(decoded) => {
+                for (path, samples) in decoded {
+                    self.playback.recording_audio_cache.insert(path, samples);
                 }
+                self.schedule_recording_mix();
             }
-            Ok(path) => Self::remove_recording_mix_file(&path),
             Err(error) if error == "recording mix cancelled" => {}
             Err(error) => {
+                self.jobs.play_recording_mix_when_ready = false;
                 log::error!("Recording preview mix failed: {error}");
                 self.show_toast(error, 5.0);
             }
-        }
-        if play_when_ready && mix_installed {
-            self.toggle_play_pause();
         }
         true
     }

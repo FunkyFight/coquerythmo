@@ -10,6 +10,8 @@ use std::time::Instant;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SizedSample};
 
+use crate::recording_mix::RealtimeRecordingMix;
+
 const VIDEO_PIX_FMT: &str = "bgra";
 const VIDEO_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 const AUDIO_DECODE_CHANNELS: usize = 2;
@@ -60,7 +62,7 @@ pub struct VideoPlayer {
     path: Option<PathBuf>,
     source_audio_path: Option<PathBuf>,
     instrumental_audio_path: Option<PathBuf>,
-    recording_preview_audio_path: Option<PathBuf>,
+    recording_mix: Arc<RwLock<Option<Arc<RealtimeRecordingMix>>>>,
     active_audio_track: AudioTrack,
     source_audio_offset_frames: i64,
     instrumental_audio_offset_frames: i64,
@@ -186,7 +188,7 @@ impl VideoPlayer {
             path: None,
             source_audio_path: None,
             instrumental_audio_path: None,
-            recording_preview_audio_path: None,
+            recording_mix: Arc::new(RwLock::new(None)),
             active_audio_track: AudioTrack::Source,
             source_audio_offset_frames: 0,
             instrumental_audio_offset_frames: 0,
@@ -251,7 +253,7 @@ impl VideoPlayer {
     pub fn set_volume(&mut self, vol: f32) {
         self.volume = vol;
         if let Some(clock) = &self.audio_clock {
-            clock.set_volume(if self.recording_preview_audio_path.is_some() {
+            clock.set_volume(if self.has_recording_mix() {
                 1.0
             } else if vol < 0.01 {
                 0.0
@@ -266,13 +268,17 @@ impl VideoPlayer {
     }
 
     pub fn active_audio_offset_frames(&self) -> i64 {
-        if self.recording_preview_audio_path.is_some() {
+        if self.has_recording_mix() {
             return 0;
         }
         match self.active_audio_track {
             AudioTrack::Source => self.source_audio_offset_frames,
             AudioTrack::Instrumental => self.instrumental_audio_offset_frames,
         }
+    }
+
+    pub fn audio_output_sample_rate(&self) -> Option<u32> {
+        self.audio_clock.as_ref().map(|c| c.sample_rate)
     }
 
     pub fn set_instrumental_audio_path(&mut self, path: Option<PathBuf>) {
@@ -288,13 +294,14 @@ impl VideoPlayer {
         }
     }
 
-    pub fn set_recording_preview_audio_path(&mut self, path: Option<PathBuf>) -> Option<PathBuf> {
-        if self.recording_preview_audio_path == path {
-            return None;
+    pub fn set_recording_mix(&mut self, mix: Option<Arc<RealtimeRecordingMix>>) {
+        let was_active = self.has_recording_mix();
+        if let Ok(mut current) = self.recording_mix.write() {
+            *current = mix;
         }
-        let previous = std::mem::replace(&mut self.recording_preview_audio_path, path);
+        let is_active = self.has_recording_mix();
         if let Some(clock) = &self.audio_clock {
-            clock.set_volume(if self.recording_preview_audio_path.is_some() {
+            clock.set_volume(if is_active {
                 1.0
             } else if self.volume < 0.01 {
                 0.0
@@ -302,8 +309,16 @@ impl VideoPlayer {
                 self.volume
             });
         }
-        self.reload_audio_at_current_frame();
-        previous
+        if was_active != is_active {
+            self.reload_audio_at_current_frame();
+        }
+    }
+
+    pub fn has_recording_mix(&self) -> bool {
+        self.recording_mix
+            .read()
+            .map(|mix| mix.is_some())
+            .unwrap_or(false)
     }
 
     pub fn set_audio_offsets(&mut self, source_frames: i64, instrumental_frames: i64) {
@@ -809,9 +824,6 @@ impl VideoPlayer {
     }
 
     fn active_audio_path(&self) -> Option<PathBuf> {
-        if let Some(path) = &self.recording_preview_audio_path {
-            return Some(path.clone());
-        }
         match self.active_audio_track {
             AudioTrack::Source => self.source_audio_path.clone(),
             AudioTrack::Instrumental => self
@@ -1016,7 +1028,7 @@ impl VideoPlayer {
         // playback is requested before the first chunk is ready.
         let initial_chunk = None;
 
-        let output_volume = if self.recording_preview_audio_path.is_some() {
+        let output_volume = if self.has_recording_mix() {
             1.0
         } else {
             self.volume
@@ -1030,6 +1042,8 @@ impl VideoPlayer {
                 initial_chunk,
                 state.clone(),
                 channels,
+                timestamp,
+                self.recording_mix.clone(),
             ),
             cpal::SampleFormat::I16 => build_audio_stream::<i16>(
                 &device,
@@ -1038,6 +1052,8 @@ impl VideoPlayer {
                 initial_chunk,
                 state.clone(),
                 channels,
+                timestamp,
+                self.recording_mix.clone(),
             ),
             cpal::SampleFormat::U16 => build_audio_stream::<u16>(
                 &device,
@@ -1046,6 +1062,8 @@ impl VideoPlayer {
                 initial_chunk,
                 state.clone(),
                 channels,
+                timestamp,
+                self.recording_mix.clone(),
             ),
             sample_format => Err(format!(
                 "Unsupported audio sample format: {sample_format:?}"
@@ -1209,6 +1227,8 @@ fn build_audio_stream<T>(
     initial_chunk: Option<Vec<f32>>,
     state: Arc<AudioOutputState>,
     output_channels: usize,
+    timeline_start_seconds: f64,
+    recording_mix: Arc<RwLock<Option<Arc<RealtimeRecordingMix>>>>,
 ) -> Result<cpal::Stream, String>
 where
     T: Sample + SizedSample + FromSample<f32>,
@@ -1228,6 +1248,8 @@ where
                     &state,
                     &mut reader,
                     info,
+                    timeline_start_seconds,
+                    &recording_mix,
                 )
             },
             err_fn,
@@ -1243,6 +1265,8 @@ fn write_audio_output<T>(
     state: &AudioOutputState,
     reader: &mut AudioSampleReader,
     info: &cpal::OutputCallbackInfo,
+    timeline_start_seconds: f64,
+    recording_mix: &RwLock<Option<Arc<RealtimeRecordingMix>>>,
 ) where
     T: Sample + FromSample<f32>,
 {
@@ -1259,15 +1283,25 @@ fn write_audio_output<T>(
         .unwrap_or(0);
     state.update_callback_snapshot(frames_before, frames_after, latency_frames);
 
-    let volume = state.volume();
-    for frame in output.chunks_mut(output_channels.max(1)) {
-        let stereo = match reader.next_stereo() {
+    let recording_mix = recording_mix.read().ok().and_then(|mix| mix.clone());
+    let volume = if recording_mix.is_some() {
+        1.0
+    } else {
+        state.volume()
+    };
+    for (index, frame) in output.chunks_mut(output_channels.max(1)).enumerate() {
+        let source = match reader.next_stereo() {
             Some(stereo) => stereo,
             None => {
                 state.underruns.fetch_add(1, Ordering::Relaxed);
                 [0.0, 0.0]
             }
         };
+        let stereo = recording_mix.as_ref().map_or(source, |mix| {
+            let timeline_seconds = timeline_start_seconds
+                + (frames_before + index as u64) as f64 / f64::from(sample_rate);
+            mix.mix_stereo(timeline_seconds, source)
+        });
         write_output_frame(frame, stereo, volume);
     }
 }

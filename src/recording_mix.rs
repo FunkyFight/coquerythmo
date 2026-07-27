@@ -1,22 +1,21 @@
-//! Offline preview mix for the recording workspace.
+//! Recording-workspace mix specification and adapters.
 //!
-//! Timeline edits produce a small immutable mix specification. The adapter
-//! renders it to FLAC with FFmpeg, after which the existing `VideoPlayer`
-//! audio path can play and seek it with the video clock. Keeping filter graph
-//! construction pure makes mute/solo/placement behavior testable without
-//! spawning media processes.
+//! Preview playback uses cached PCM assets in the existing CPAL callback.
+//! The FFmpeg filter graph remains available for final/offline rendering.
 
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use crate::recording::{AudioAssetId, AudioClipId, AudioTrackId, RecordingProject};
 
 static MIX_TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
+pub const REALTIME_SAMPLE_RATE: u32 = 48_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MixClip {
@@ -34,6 +33,120 @@ pub struct RecordingMixSpec {
     pub clips: Vec<MixClip>,
     pub sample_rate: u32,
     pub source_volume: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct RealtimeRecordingMix {
+    clips: Vec<RealtimeMixClip>,
+    source_volume: f32,
+    output_sample_rate: u32,
+}
+
+#[derive(Debug, Clone)]
+struct RealtimeMixClip {
+    samples: Arc<Vec<f32>>,
+    source_start_seconds: f64,
+    duration_seconds: f64,
+    timeline_start_seconds: f64,
+}
+
+impl RealtimeRecordingMix {
+    pub fn from_spec(
+        spec: &RecordingMixSpec,
+        cache: &BTreeMap<PathBuf, Arc<Vec<f32>>>,
+        output_sample_rate: u32,
+    ) -> Result<Self, String> {
+        let clips = spec
+            .clips
+            .iter()
+            .map(|clip| {
+                Ok(RealtimeMixClip {
+                    samples: cache.get(&clip.path).cloned().ok_or_else(|| {
+                        format!("audio asset is not decoded: {}", clip.path.display())
+                    })?,
+                    source_start_seconds: clip.source_start_seconds,
+                    duration_seconds: clip.duration_seconds,
+                    timeline_start_seconds: clip.timeline_start_seconds,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Self {
+            clips,
+            source_volume: spec.source_volume,
+            output_sample_rate,
+        })
+    }
+
+    pub fn mix_stereo(&self, timeline_seconds: f64, source: [f32; 2]) -> [f32; 2] {
+        let mut mixed = [
+            source[0] * self.source_volume,
+            source[1] * self.source_volume,
+        ];
+        let clip_rate = REALTIME_SAMPLE_RATE as f64;
+        for clip in &self.clips {
+            let clip_seconds = timeline_seconds - clip.timeline_start_seconds;
+            if clip_seconds < 0.0 || clip_seconds >= clip.duration_seconds {
+                continue;
+            }
+            let source_seconds = clip.source_start_seconds + clip_seconds;
+            let sample_f = source_seconds * clip_rate;
+            let sample = sample_f.floor() as usize;
+            let frac = sample_f - sample as f64;
+            let index = sample.saturating_mul(2);
+            if let Some(stereo) = clip.samples.get(index..index + 4) {
+                let left = stereo[0] * (1.0 - frac) as f32 + stereo[2] * frac as f32;
+                let right = stereo[1] * (1.0 - frac) as f32 + stereo[3] * frac as f32;
+                mixed[0] += left;
+                mixed[1] += right;
+            }
+        }
+        mixed
+    }
+}
+
+pub fn decode_realtime_asset(path: &Path, cancel: &AtomicBool) -> Result<Arc<Vec<f32>>, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("recording mix cancelled".into());
+    }
+    // ponytail: recordings are decoded whole once; stream/chunk them if long-form assets
+    // make memory use measurable.
+    let output = crate::media_binary::command("ffmpeg")
+        .args(["-threads", "1", "-v", "error", "-i"])
+        .arg(path)
+        .args([
+            "-vn",
+            "-f",
+            "f32le",
+            "-acodec",
+            "pcm_f32le",
+            "-ar",
+            &REALTIME_SAMPLE_RATE.to_string(),
+            "-ac",
+            "2",
+            "pipe:1",
+        ])
+        .output()
+        .map_err(|error| format!("cannot decode recording asset: {error}"))?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err("recording mix cancelled".into());
+    }
+    if !output.status.success() {
+        return Err(format!(
+            "cannot decode recording asset {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    if output.stdout.len() % 4 != 0 {
+        return Err(format!("invalid PCM data for {}", path.display()));
+    }
+    Ok(Arc::new(
+        output
+            .stdout
+            .chunks_exact(4)
+            .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("four-byte PCM sample")))
+            .collect(),
+    ))
 }
 
 impl RecordingMixSpec {
@@ -308,6 +421,77 @@ mod tests {
         assert!(filter.contains("atrim=start=0.500000000:duration=2.000000000"));
         assert!(filter.contains("adelay=60000S:all=1"));
         assert!(filter.contains("amix=inputs=2"));
+    }
+
+    #[test]
+    fn realtime_mix_reads_clip_at_its_timeline_position() {
+        let mut cache = BTreeMap::new();
+        cache.insert(
+            PathBuf::from("voice.flac"),
+            Arc::new(vec![0.25, -0.5, 0.75, 0.5]),
+        );
+        let mix = RealtimeRecordingMix::from_spec(
+            &RecordingMixSpec {
+                source: None,
+                clips: vec![MixClip {
+                    clip_id: AudioClipId::new(3),
+                    track_id: AudioTrackId::new(1),
+                    path: PathBuf::from("voice.flac"),
+                    source_start_seconds: 0.0,
+                    duration_seconds: 2.0 / f64::from(REALTIME_SAMPLE_RATE),
+                    timeline_start_seconds: 1.0,
+                }],
+                sample_rate: REALTIME_SAMPLE_RATE,
+                source_volume: 0.5,
+            },
+            &cache,
+            REALTIME_SAMPLE_RATE,
+        )
+        .unwrap();
+
+        assert_eq!(mix.mix_stereo(0.5, [1.0, 1.0]), [0.5, 0.5]);
+        assert_eq!(mix.mix_stereo(1.0, [1.0, 1.0]), [0.75, 0.0]);
+    }
+
+#[test]
+    fn realtime_mix_interpolates_at_different_sample_rate() {
+        let mut cache = BTreeMap::new();
+        // 4 stereo frames: [L0, R0, L1, R1, L2, R2, L3, R3]
+        cache.insert(
+            PathBuf::from("voice.flac"),
+            Arc::new(vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, -1.0, -1.0]),
+        );
+        let mix = RealtimeRecordingMix::from_spec(
+            &RecordingMixSpec {
+                source: None,
+                clips: vec![MixClip {
+                    clip_id: AudioClipId::new(1),
+                    track_id: AudioTrackId::new(1),
+                    path: PathBuf::from("voice.flac"),
+                    source_start_seconds: 0.0,
+                    duration_seconds: 4.0 / f64::from(REALTIME_SAMPLE_RATE),
+                    timeline_start_seconds: 0.0,
+                }],
+                sample_rate: REALTIME_SAMPLE_RATE,
+                source_volume: 1.0,
+            },
+            &cache,
+            44_100, // Different output sample rate
+        )
+        .unwrap();
+
+        // At t=0, should get first frame [0.0, 0.0]
+        let out = mix.mix_stereo(0.0, [0.0, 0.0]);
+        assert!((out[0] - 0.0).abs() < 1e-5);
+        assert!((out[1] - 0.0).abs() < 1e-5);
+
+        // At t=1/44100, sample_f = 48000/44100 ≈ 1.088
+        // sample = 1, frac = 0.088, reads frame 1 [1,1] and frame 2 [0,0]
+        // left = 1.0 * (1 - 0.088) + 0.0 * 0.088 ≈ 0.912
+        let out = mix.mix_stereo(1.0 / 44_100.0, [0.0, 0.0]);
+        let expected = 1.0 - (48_000.0 / 44_100.0 - 1.0); // ~0.912
+        assert!((out[0] - expected).abs() < 0.02);
+        assert!((out[1] - expected).abs() < 0.02);
     }
 
     fn add_voice_clip(
