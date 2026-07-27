@@ -133,7 +133,19 @@ pub(crate) fn build_topbar(
     // Recording has its own contextual commands. Until those commands are
     // introduced, only the shared Project menu is exposed here.
     if active_workspace == WorkspaceId::Recording {
-        return vec![Box::new(project_menu)];
+        let daw_button = TextButton::new(
+            Rect {
+                x: 88.0,
+                y: 2.0,
+                width: 150.0,
+                height: 28.0,
+            },
+            t("recording.detach_daw"),
+            || EventResponse::Action(UiAction::OpenSecondaryDisplay),
+        )
+        .with_accent()
+        .with_tooltip(t("recording.detach_daw"));
+        return vec![Box::new(project_menu), Box::new(daw_button)];
     }
 
     let export_menu = Dropdown::new(

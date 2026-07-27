@@ -1652,8 +1652,9 @@ pub(crate) fn render_detection_overlay<'a>(
     labels: &mut Vec<LabelInfo<'a>>,
     icons: &mut Vec<IconInstance>,
     detection_uvs: [[f32; 4]; 18],
+    editable: bool,
 ) {
-    let selected_address = selected_address(state);
+    let selected_address = editable.then(|| selected_address(state)).flatten();
     for track in 0..rythmo_layout::track_count() {
         let line_id = track_storage_line_id(track as u8);
         let Some(data) = project.detections().line(line_id) else {
@@ -1720,6 +1721,10 @@ pub(crate) fn render_detection_overlay<'a>(
                 });
             }
         }
+    }
+
+    if !editable {
+        return;
     }
 
     for line in project.lines() {

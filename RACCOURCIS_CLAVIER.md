@@ -4,16 +4,18 @@ Les raccourcis sont interprétés selon le contexte actif. Un champ texte est
 prioritaire sur les raccourcis de l’espace de travail. Dans une modale, le
 focus reste enfermé dans la modale jusqu’à sa fermeture.
 
-Pour les personnes malvoyantes qui utilisent un logiciel de lecture d'écran : Un raccourci annonce uniquement le nom de son action lorsqu’il en possède un.
+Pour les personnes malvoyantes qui utilisent un logiciel de lecture d’écran :
+un raccourci annonce uniquement le nom de son action lorsqu’il en possède un.
 La combinaison de touches n’est jamais lue et aucun nom de touche ne sert de
 fallback. Sous Windows, les annonces sont transmises au système
-d’accessibilité via AccessKit. Toutes les annonces produites avec `Ctrl`, y
-compris avec `Maj`, sont prioritaires.
-De plus, tous les toasts utilisent également le canal prioritaire. Pendant une
-exportation ou la création d’un proxy, la progression est exposée comme une
-barre de progression au système d’accessibilité. L’opération et son
-pourcentage sont annoncés toutes les minutes sur ce même canal. `Échap`
-annule l’opération en cours et l’annulation est annoncée en priorité.
+d’accessibilité via AccessKit. Les annonces produites avec `Ctrl`, y compris
+avec `Maj`, sont prioritaires.
+
+Les toasts utilisent également le canal prioritaire. Pendant une exportation ou
+la création d’un proxy, la progression est exposée comme une barre de
+progression au système d’accessibilité. L’opération et son pourcentage sont
+annoncés toutes les minutes. `Échap` annule l’opération en cours et
+l’annulation est annoncée en priorité.
 
 ## Navigation commune
 
@@ -39,16 +41,16 @@ annule l’opération en cours et l’annulation est annoncée en priorité.
 | `Ctrl + R` | Ouvrir les projets récents |
 | `Ctrl + Suppr` | Fermer le projet |
 | `Ctrl + M` | Ouvrir l’export du projet |
-| `Ctrl + Alt + S` | Afficher l’avertissement et ouvrir le mode Studio |
 | `Ctrl + Maj + P` | Ouvrir la création d’un proxy |
 | `Ctrl + O` | Ouvrir les paramètres du projet |
 | `Ctrl + N` | Créer un nouveau projet |
 | `Ctrl + I` | Ouvrir le panneau des lignes |
 | `Ctrl + P` | Ouvrir le panneau des rôles |
-| `Ctrl + L` | Ouvrir le sélecteur de langues (hors modale) |
-| `F5` | Afficher l’avertissement Studio lorsqu’une vidéo est chargée |
+| `Ctrl + L` | Ouvrir le sélecteur de langues, hors modale |
+| `Alt + E` | Ouvrir le menu des émotions du texte |
+| `Ctrl + K` | Scinder le dialogue à la position du caret |
 
-Dans la liste des projets récents : `↑`/`↓` parcourent les projets, `Entrée`
+Dans la liste des projets récents, `↑`/`↓` parcourent les projets, `Entrée`
 ouvre le projet, `Suppr` le retire de la liste et `Échap` ferme la liste.
 
 Dans les paramètres du projet, l’option « Définir la couleur du texte à la
@@ -76,6 +78,10 @@ texte des lignes défilantes non karaoké.
 | `Espace` | Lecture/pause |
 | `Ctrl + Tab` | Basculer entre l’audio original et l’audio instrumental |
 
+Sur une détection sélectionnée, `Ctrl + Espace` auditionne le signe avec une
+courte plage audio autour de celui-ci. `Ctrl + Maj + Espace` ajoute un point de
+sync au curseur de lecture.
+
 ## Bande rythmo
 
 | Raccourci | Action |
@@ -83,8 +89,8 @@ texte des lignes défilantes non karaoké.
 | `Entrée` | Sélectionner successivement les lignes présentes au frame courant |
 | `Maj + clic-glissé` (zone vide) | Ajouter les lignes du rectangle à la sélection existante |
 | `↑` / `↓` (sélection active) | Déplacer la ou les lignes vers la piste précédente/suivante |
-| `Maj + ←` / `Maj + →` | Parcourir toutes les lignes ; sans sélection préalable, commencer par la ligne la plus proche de la tête de lecture, puis annoncer le personnage, le dialogue et la piste |
-| `Ctrl + Maj + ←` / `Ctrl + Maj + →` | Décaler la ou les lignes sélectionnées d'une frame vers la gauche/droite |
+| `Maj + ←` / `Maj + →` | Parcourir toutes les lignes ; sans sélection, commencer par la plus proche de la tête de lecture |
+| `Ctrl + Maj + ←` / `Ctrl + Maj + →` | Décaler la ou les lignes sélectionnées d’une frame vers la gauche/droite |
 | `Échap` | Annuler la sélection actuelle de lignes |
 | `I` / `O` | Fixer le début/la fin de la ligne sélectionnée |
 | `Q` / `D` (maintenir) | Déplacer continuellement la timeline à gauche/droite |
@@ -100,7 +106,11 @@ les lignes. Si la souris est hors de la bande rythmo, `Ctrl + V` utilise la pist
 clavier active. Pendant l’édition d’une ligne ou d’un personnage, les flèches
 déplacent le caret et ne modifient pas le volume.
 
-## Export
+Lorsqu’une détection est sélectionnée, `Maj + ←`/`Maj + →` déplacent son ancre
+de synchronisation d’un grapheme. Appuyer sur `Maj` seul bascule l’affinité de
+l’ancre.
+
+## Export et proxy
 
 | Raccourci | Action |
 |---|---|
@@ -109,16 +119,15 @@ déplacent le caret et ne modifient pas le volume.
 | `←` / `→` sur le menu des pages | Passer entre les pages d’export |
 | `↑` / `↓` sur un réglage | Modifier sa valeur |
 | `Entrée` / `Espace` | Activer un format, une langue ou un bouton |
-| `Échap` | Fermer l’export |
+| `Échap` | Fermer l’export ou annuler l’opération en cours |
 
 Les champs largeur et hauteur acceptent les chiffres, `Retour arrière` et
-`Entrée` termine leur édition.
+`Entrée` termine leur édition. Dans la création de proxy, `Tab` / `Maj + Tab`
+parcourent la résolution, la qualité et le bouton de création. Les flèches
+règlent la valeur focalisée, `Entrée` / `Espace` l’active et `Échap` ferme la
+modale.
 
-Dans la création de proxy, `Tab` / `Maj + Tab` parcourent la résolution, la
-qualité et le bouton de création. Les flèches règlent la valeur focalisée,
-`Entrée` / `Espace` l’active et `Échap` ferme la modale.
-
-## Champs texte et modales
+## Champs texte, panneaux et modales
 
 | Raccourci | Action |
 |---|---|
@@ -131,9 +140,18 @@ qualité et le bouton de création. Les flèches règlent la valeur focalisée,
 | `↑` / `↓` | Parcourir les suggestions ou les éléments de liste |
 | `Retour arrière` / `Suppr` | Supprimer le caractère précédent/suivant |
 
-Dans l’Explorateur de fichiers, `Alt + ←`/`Alt + →` parcourent l’historique,
+Dans un panneau ouvert, `Ctrl + A`, `Ctrl + C`, `Ctrl + X`, `Ctrl + V` et
+`Ctrl + Z` s’appliquent à l’édition ou à la sélection du panneau. Dans
+l’Explorateur de fichiers, `Alt + ←`/`Alt + →` parcourent l’historique,
 `Retour arrière` remonte au dossier parent et `Entrée` ouvre le fichier ou
 valide l’action principale.
+
+## Fenêtre secondaire
+
+| Raccourci | Action |
+|---|---|
+| `Espace` | Lecture/pause |
+| `Échap` | Fermer la fenêtre secondaire |
 
 ## Lecture vocale interne
 
@@ -143,10 +161,10 @@ valide l’action principale.
 | `Ctrl` | Interrompre la lecture vocale en cours |
 | `Maj` | Reprendre la lecture vocale interrompue |
 
-Pour les personnes avec un lecteur d'écran : Chaque changement de focus, sélection, activation, valeur et résultat d’action
+Chaque changement de focus, sélection, activation, valeur et résultat d’action
 est annoncé. Une ligne karaoké est identifiée après son numéro de piste. Pour
-`Q`/`D`, le timecode est annoncé une seule fois au
-relâchement de la touche, avec les heures, minutes, secondes et centièmes.
+`Q`/`D`, le timecode est annoncé une seule fois au relâchement de la touche,
+avec les heures, minutes, secondes et centièmes.
 
 L’ouverture d’une liste annonce son premier élément disponible. Sa fermeture
 annonce que la liste est réduite. La fermeture d’une modale est également

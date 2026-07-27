@@ -16,6 +16,11 @@ pub(crate) struct PendingExportJob {
     pub receiver: Receiver<Result<(), String>>,
 }
 
+pub(crate) struct PendingRecordingMixJob {
+    pub cancel: Arc<AtomicBool>,
+    pub receiver: Receiver<Result<PathBuf, String>>,
+}
+
 pub(crate) struct PendingImportJob {
     pub br_path: PathBuf,
     pub receiver: Receiver<Result<LoadedProject, String>>,
@@ -43,10 +48,13 @@ pub(crate) struct PendingSaveJob {
 pub struct JobManager {
     pub(crate) pending_proxy_job: Option<PendingProxyJob>,
     pub(crate) pending_export_job: Option<PendingExportJob>,
+    pub(crate) pending_recording_mix_job: Option<PendingRecordingMixJob>,
     pub(crate) pending_import_job: Option<PendingImportJob>,
     pub(crate) pending_save_job: Option<PendingSaveJob>,
     pub(crate) active_export_cancel: Option<Arc<AtomicBool>>,
     pub(crate) transition_after_save_ready: Option<SaveContinuation>,
+    pub(crate) recording_mix_generation: u64,
+    pub(crate) play_recording_mix_when_ready: bool,
 }
 
 impl JobManager {
@@ -54,10 +62,13 @@ impl JobManager {
         Self {
             pending_proxy_job: None,
             pending_export_job: None,
+            pending_recording_mix_job: None,
             pending_import_job: None,
             pending_save_job: None,
             active_export_cancel: None,
             transition_after_save_ready: None,
+            recording_mix_generation: 0,
+            play_recording_mix_when_ready: false,
         }
     }
 }

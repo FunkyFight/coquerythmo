@@ -226,11 +226,19 @@ impl CommandDispatcher {
                 ) | UiAction::RecordingChooseSolo
                     | UiAction::RecordingChooseOnline
                     | UiAction::RecordingSetTool(_)
+                    | UiAction::RecordingAddTrack
+                    | UiAction::RecordingRemoveTrack(_)
+                    | UiAction::RecordingBeginRenameTrack(_)
+                    | UiAction::RecordingRenameTrack { .. }
                     | UiAction::RecordingToggleTrackMute(_)
                     | UiAction::RecordingToggleTrackSolo(_)
                     | UiAction::RecordingArmTrack(_)
                     | UiAction::RecordingSelectClip { .. }
                     | UiAction::RecordingSelectAsset(_)
+                    | UiAction::RecordingDeleteSelectedAsset
+                    | UiAction::RecordingPlaceAsset { .. }
+                    | UiAction::RecordingMoveSelectedClips { .. }
+                    | UiAction::RecordingDeleteSelectedClips
                     | UiAction::RecordingStartCapture
                     | UiAction::RecordingStopCapture
             )
@@ -267,6 +275,14 @@ impl CommandDispatcher {
             UiAction::RecordingChooseSolo => state.recording_choose_solo(),
             UiAction::RecordingChooseOnline => state.recording_choose_online(),
             UiAction::RecordingSetTool(tool) => state.recording_set_tool(tool),
+            UiAction::RecordingAddTrack => state.recording_add_track(),
+            UiAction::RecordingRemoveTrack(track_id) => state.recording_remove_track(track_id),
+            UiAction::RecordingBeginRenameTrack(track_id) => {
+                state.recording_begin_rename_track(track_id)
+            }
+            UiAction::RecordingRenameTrack { track_id, name } => {
+                state.recording_rename_track(track_id, name)
+            }
             UiAction::RecordingToggleTrackMute(track_id) => {
                 state.recording_toggle_track_mute(track_id)
             }
@@ -278,6 +294,17 @@ impl CommandDispatcher {
                 state.recording_select_clip(clip_id, additive)
             }
             UiAction::RecordingSelectAsset(asset_id) => state.recording_select_asset(asset_id),
+            UiAction::RecordingDeleteSelectedAsset => state.recording_delete_selected_asset(),
+            UiAction::RecordingPlaceAsset {
+                asset_id,
+                track_id,
+                start_frame,
+            } => state.recording_place_asset(asset_id, track_id, start_frame),
+            UiAction::RecordingMoveSelectedClips {
+                track_id,
+                delta_frames,
+            } => state.recording_move_selected_clips(track_id, delta_frames),
+            UiAction::RecordingDeleteSelectedClips => state.recording_delete_selected_clips(),
             UiAction::RecordingStartCapture => state.recording_start_capture(),
             UiAction::RecordingStopCapture => state.recording_stop_capture(),
             UiAction::CloseApp => {
@@ -1005,7 +1032,16 @@ impl CommandDispatcher {
                         .with_window_icon(platform::app_icon())
                         .build(elwt)
                     {
-                        Ok(window) => state.open_secondary_display(Arc::new(window)),
+                        Ok(window) => state.open_secondary_display(
+                            Arc::new(window),
+                            if state.active_workspace()
+                                == crate::application::workspace_service::WorkspaceId::Recording
+                            {
+                                crate::application::window_service::SecondaryWindowKind::Daw
+                            } else {
+                                crate::application::window_service::SecondaryWindowKind::Video
+                            },
+                        ),
                         Err(e) => log::error!("Failed to create secondary display window: {e}"),
                     }
                 }
@@ -1468,6 +1504,31 @@ pub(crate) fn dispatch(
     ) {
         state.request_redraw();
     }
+}
+
+pub(crate) fn dispatch_secondary_daw(
+    ui_event: UiEvent,
+    state: &mut State,
+    elwt: &winit::event_loop::EventLoopWindowTarget<AppEvent>,
+) {
+    match state.handle_secondary_daw_event(&ui_event) {
+        EventResponse::Action(action) => {
+            if CommandDispatcher::dispatch(action, state, elwt) {
+                elwt.exit();
+            }
+        }
+        EventResponse::Actions(actions) => {
+            for action in actions {
+                if CommandDispatcher::dispatch(action, state, elwt) {
+                    elwt.exit();
+                    break;
+                }
+            }
+        }
+        EventResponse::Ignored | EventResponse::Consumed => {}
+    }
+    state.request_redraw();
+    state.request_secondary_redraw();
 }
 
 fn should_request_redraw(

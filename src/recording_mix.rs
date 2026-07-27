@@ -33,6 +33,7 @@ pub struct RecordingMixSpec {
     pub source: Option<PathBuf>,
     pub clips: Vec<MixClip>,
     pub sample_rate: u32,
+    pub source_volume: f32,
 }
 
 impl RecordingMixSpec {
@@ -86,7 +87,16 @@ impl RecordingMixSpec {
             source,
             clips,
             sample_rate: 48_000,
+            source_volume: 1.0,
         })
+    }
+
+    pub fn set_source_volume(&mut self, volume: f32) {
+        self.source_volume = if volume.is_finite() {
+            volume.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
     }
 
     pub fn is_empty(&self) -> bool {
@@ -105,8 +115,8 @@ impl RecordingMixSpec {
         let mut input_index = 0usize;
         if self.source.is_some() {
             filters.push(format!(
-                "[{input_index}:a]aresample={},asetpts=PTS-STARTPTS[source]",
-                self.sample_rate
+                "[{input_index}:a]aresample={},volume={:.6},asetpts=PTS-STARTPTS[source]",
+                self.sample_rate, self.source_volume
             ));
             labels.push("[source]".to_string());
             input_index += 1;
@@ -292,6 +302,7 @@ mod tests {
                 timeline_start_seconds: 1.25,
             }],
             sample_rate: 48_000,
+            source_volume: 1.0,
         };
         let filter = spec.ffmpeg_filter().unwrap();
         assert!(filter.contains("atrim=start=0.500000000:duration=2.000000000"));

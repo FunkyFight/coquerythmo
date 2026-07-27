@@ -17,7 +17,7 @@ pub struct RecentProject {
 }
 
 static INSTANCE: OnceLock<RwLock<Config>> = OnceLock::new();
-static DEV_MODE: bool = false;
+static DEV_MODE: bool = true;
 
 pub fn dev_mode() -> bool {
     DEV_MODE

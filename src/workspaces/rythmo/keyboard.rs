@@ -94,7 +94,12 @@ pub(crate) fn handle_key_input(
 
     if let Some(line_id) = state.editing_line {
         if let Some(line) = ctx.project.get_line(line_id) {
-            match state.line_input.handle_key(text, &line.text) {
+            let input = if line.text.is_empty() {
+                normalize_first_line_input(text, &mut state.line_lowercase_override)
+            } else {
+                text.to_string()
+            };
+            match state.line_input.handle_key(&input, &line.text) {
                 Some(TextInputAction::Changed(new_text)) => {
                     return EventResponse::Action(UiAction::UpdateLineText {
                         id: line_id,
@@ -111,4 +116,42 @@ pub(crate) fn handle_key_input(
         return EventResponse::Consumed;
     }
     EventResponse::Ignored
+}
+
+fn normalize_first_line_input(text: &str, lowercase_override: &mut bool) -> String {
+    if *lowercase_override {
+        return text.to_string();
+    }
+    if let Some(rest) = text.strip_prefix('!') {
+        *lowercase_override = true;
+        return rest.to_string();
+    }
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_first_line_input;
+
+    #[test]
+    fn first_line_input_capitalizes_unless_prefixed_with_exclamation() {
+        let mut override_lowercase = false;
+        assert_eq!(
+            normalize_first_line_input("bonjour", &mut override_lowercase),
+            "Bonjour"
+        );
+        assert_eq!(
+            normalize_first_line_input("!salut", &mut override_lowercase),
+            "salut"
+        );
+        assert!(override_lowercase);
+        assert_eq!(
+            normalize_first_line_input("encore", &mut override_lowercase),
+            "encore"
+        );
+    }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "coquerythmo"
-version = "3.7.1"
+version = "3.7.3"
 edition = "2021"
 license = "GPL-3.0-only"
 
@@ -36,6 +36,9 @@ windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_Window
 
 [build-dependencies]
 winres = "0.1"
+
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 opt-level = 3

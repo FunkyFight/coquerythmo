@@ -500,13 +500,6 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
     }
     router.bind(
         InputContext::Global,
-        KeyCode::Delete,
-        Modifiers::NONE,
-        RepeatPolicy::PressAndRepeat,
-        UiAction::DeleteSelected,
-    );
-    router.bind(
-        InputContext::Global,
         KeyCode::Character('a'),
         ctrl,
         RepeatPolicy::PressAndRepeat,
@@ -752,7 +745,7 @@ mod tests {
         );
         assert_eq!(
             resolve(KeyCode::Delete, Modifiers::NONE, &global, false),
-            Some(&UiAction::DeleteSelected)
+            None
         );
         assert_eq!(
             resolve(KeyCode::ArrowLeft, Modifiers::NONE, &global, false),

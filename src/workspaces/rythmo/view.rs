@@ -1278,7 +1278,8 @@ mod tests {
             RythmoInteractionMode::ReadOnly,
         );
         assert_eq!(press, EventResponse::Consumed);
-        assert_eq!(state.selected, Some(Selection::Line(line_id)));
+        assert_eq!(state.selected, None);
+        assert_eq!(state.hovered_line, None);
         assert!(state.dragging.is_none());
 
         let delete = handle_rythmo_event(
@@ -1298,6 +1299,72 @@ mod tests {
         );
         assert_eq!(delete, EventResponse::Consumed);
         assert!(state.dragging.is_none());
+    }
+
+    #[test]
+    fn read_only_render_hides_authoring_chrome() {
+        crate::config::init();
+        let mut project = Project::new();
+        let line_id = project.add_line(40, 20, 0.0);
+        project.get_line_mut(line_id).unwrap().text = "Bonjour monde".into();
+        let mut detections = crate::detection::DetectionDocument::default();
+        detections
+            .add_sync_point(
+                line_id,
+                13,
+                crate::detection::MediaTick::from_frame(40),
+                crate::detection::MediaTick::from_frame(60),
+                7,
+                crate::detection::MediaTick::from_frame(50),
+            )
+            .unwrap();
+        project.restore_line_detections(line_id, detections.line(line_id).unwrap().clone());
+        let mut render_index = ProjectRenderIndex::new();
+        render_index.refresh(&project);
+        let mut state = RythmoState::new();
+        state.hovered_line = Some(line_id);
+        state.selected = Some(Selection::Line(line_id));
+        let lint = HashMap::from([(line_id, crate::lint::Severity::Error)]);
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 240.0,
+        };
+        let mut quads = Vec::new();
+        let mut syllables = Vec::new();
+        let mut labels = Vec::new();
+        let mut stretched = Vec::new();
+        let mut notes = Vec::new();
+        let mut actors = Vec::new();
+
+        render_lines(
+            &zone,
+            &project,
+            &render_index,
+            50.0,
+            false,
+            false,
+            24.0,
+            &state,
+            &lint,
+            &mut quads,
+            &mut syllables,
+            &mut labels,
+            &mut stretched,
+            &mut notes,
+            &mut actors,
+            [0.0; 4],
+            [[0.0; 4]; 18],
+        );
+
+        assert!(!stretched.is_empty());
+        assert!(quads.iter().all(|quad| {
+            quad.border_width == 0.0
+                && quad.color != HANDLE_COLOR
+                && quad.color != [0.95, 0.18, 0.18, 0.98]
+                && quad.color != [0.48, 0.72, 1.0, 0.96]
+        }));
     }
 
     #[test]
@@ -2910,6 +2977,7 @@ pub fn render_lines<'a>(
     render_index: &ProjectRenderIndex,
     current_frame: f64,
     karaoke_preview: bool,
+    editable: bool,
     fps: f64,
     state: &RythmoState,
     lint_severities: &HashMap<u64, crate::lint::Severity>,
@@ -2932,9 +3000,13 @@ pub fn render_lines<'a>(
     Option<Vec<CursorSegmentInfo>>,
 )> {
     state.update_text_emotion_presence(project);
-    if let Some(drag) = state.dragging.as_ref().filter(|drag| {
-        drag.handle == DragHandle::VerticalOnly && matches!(drag.target, DragTarget::Line(_))
-    }) {
+    if let Some(drag) = editable
+        .then_some(())
+        .and_then(|_| state.dragging.as_ref())
+        .filter(|drag| {
+            drag.handle == DragHandle::VerticalOnly && matches!(drag.target, DragTarget::Line(_))
+        })
+    {
         if let DragTarget::Line(line_id) = drag.target {
             if project.get_line(line_id).is_some() {
                 let guide_x = frame_to_x(drag.original_frame, current_frame, zone, fps);
@@ -2969,7 +3041,7 @@ pub fn render_lines<'a>(
     let layout_ctx = state.get_or_create_layout_ctx(project, current_frame, fps, zone);
 
     // Rend le highlight de la track survolée (s'il y en a une et qu'elle est valide)
-    if let Some(track_idx) = state.hovered_track {
+    if let Some(track_idx) = editable.then_some(()).and(state.hovered_track) {
         if let Some(track) = layout_ctx.track_for_index(track_idx) {
             let y_base = zone.y + constants::RULER_HEIGHT + track.top;
             quads.push(QuadInstance {
@@ -3240,12 +3312,15 @@ pub fn render_lines<'a>(
             continue;
         };
 
-        let is_hovered = state.hovered_line == Some(line.id);
-        let is_selected = matches!(state.selected, Some(Selection::Line(id)) if id == line.id)
-            || matches!(state.selected, Some(Selection::Lines(ref ids)) if ids.contains(&line.id))
-            || matches!(state.selected, Some(Selection::AllLines));
-        let is_editing = state.editing_line == Some(line.id);
-        let lint_severity = lint_severities.get(&line.id).copied();
+        let is_hovered = editable && state.hovered_line == Some(line.id);
+        let is_selected = editable
+            && (matches!(state.selected, Some(Selection::Line(id)) if id == line.id)
+                || matches!(state.selected, Some(Selection::Lines(ref ids)) if ids.contains(&line.id))
+                || matches!(state.selected, Some(Selection::AllLines)));
+        let is_editing = editable && state.editing_line == Some(line.id);
+        let lint_severity = editable
+            .then(|| lint_severities.get(&line.id).copied())
+            .flatten();
         let karaoke_playback_line = data.karaoke_playback;
         let read_highlight_end = if project.settings().highlight_read_word && !line.karaoke {
             let progress =
@@ -3260,7 +3335,7 @@ pub fn render_lines<'a>(
             None
         };
 
-        if !karaoke_playback_line && line.kind.is_dialogue() {
+        if editable && !karaoke_playback_line && line.kind.is_dialogue() {
             // Subtle dark background + border
             let bg = if is_editing {
                 [0.12, 0.12, 0.15, 0.6]
@@ -3385,9 +3460,7 @@ pub fn render_lines<'a>(
                 if let Some(segments) = render_sync_text_segments(
                     project,
                     line,
-                    current_frame,
-                    zone,
-                    fps,
+                    description_rect,
                     drag_ratios,
                     karaoke_lang,
                     state,
@@ -3557,7 +3630,7 @@ pub fn render_lines<'a>(
         }
 
         let is_syllable_drag_line =
-            state.syllable_drag.as_ref().map(|d| d.line_id) == Some(line.id);
+            editable && state.syllable_drag.as_ref().map(|d| d.line_id) == Some(line.id);
         if line.karaoke && !karaoke_playback_line && (is_hovered || is_syllable_drag_line) {
             if let Some(ratios) =
                 syllable_ratios_for_line(line, state.syllable_drag.as_ref(), karaoke_lang, state)
@@ -3615,7 +3688,7 @@ pub fn render_lines<'a>(
                     data.badge_rect,
                     &line.character_name,
                     &state.char_input,
-                    state.editing_character == Some(line.id),
+                    editable && state.editing_character == Some(line.id),
                 );
             }
             continue;
@@ -3632,7 +3705,7 @@ pub fn render_lines<'a>(
 
         if data.show_badge && !badge_hidden {
             let badge_color = line.character_color;
-            let is_editing_char = state.editing_character == Some(line.id);
+            let is_editing_char = editable && state.editing_character == Some(line.id);
             // Same emphasized typography as ambiance labels, tinted with the
             // character colour and deliberately left without an underline.
             if !line.character_name.is_empty() {
@@ -3723,7 +3796,7 @@ pub fn render_lines<'a>(
             });
         }
 
-        let is_editing_note = state.editing_note == Some(line.id);
+        let is_editing_note = editable && state.editing_note == Some(line.id);
         text_input::render_selection_and_cursor(
             quads,
             note_rect,
@@ -3751,6 +3824,7 @@ pub fn render_lines<'a>(
         labels,
         note_icons,
         detection_uvs,
+        editable,
     );
 
     push_editor_karaoke_texture_prewarm_texts(
@@ -3765,7 +3839,10 @@ pub fn render_lines<'a>(
     );
 
     // Ghost preview line when holding click on empty space
-    if let Some(ghost) = &state.ghost_preview {
+    if let Some(ghost) = editable
+        .then_some(())
+        .and_then(|_| state.ghost_preview.as_ref())
+    {
         let body_rect = layout_ctx.track_body_rect(ghost.y_slot, zone);
         let ghost_rect_x = frame_to_x(ghost.frame, current_frame, zone, fps);
         let ghost_w = (ghost.duration_frames as f32 * ppf()).max(2.0);

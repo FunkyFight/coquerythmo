@@ -68,6 +68,12 @@ fn visible_interaction_geometry(ctx: &RythmoCtx, state: &RythmoState) -> Vec<(u6
         .collect()
 }
 
+fn badge_overlaps_other_line(line_id: u64, badge: &Rect, candidates: &[(u64, Rect, Rect)]) -> bool {
+    candidates
+        .iter()
+        .any(|(other_id, _, line_rect)| *other_id != line_id && rects_overlap(badge, line_rect))
+}
+
 pub(crate) fn handle_ctrl_click(
     ctx: &RythmoCtx,
     state: &mut RythmoState,
@@ -208,7 +214,7 @@ pub(crate) fn handle_double_click(
         if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceEnd) {
             continue;
         }
-        if br.contains(x, y) {
+        if !badge_overlaps_other_line(line_id, &br, &candidates) && br.contains(x, y) {
             if let Some(old_id) = finalize_line_id {
                 if old_id != line.id {
                     state.stop_char_editing();
@@ -304,4 +310,32 @@ pub(crate) fn handle_double_click(
         return EventResponse::Action(UiAction::StopEditing);
     }
     EventResponse::Ignored
+}
+
+#[cfg(test)]
+mod tests {
+    use super::badge_overlaps_other_line;
+    use crate::ui::primitives::Rect;
+
+    #[test]
+    fn overlapping_badges_are_not_clickable() {
+        let badge = Rect {
+            x: 10.0,
+            y: 10.0,
+            width: 20.0,
+            height: 10.0,
+        };
+        let other_line = Rect {
+            x: 25.0,
+            y: 12.0,
+            width: 20.0,
+            height: 10.0,
+        };
+        assert!(badge_overlaps_other_line(
+            1,
+            &badge,
+            &[(1, badge, badge), (2, badge, other_line)]
+        ));
+        assert!(!badge_overlaps_other_line(1, &badge, &[(1, badge, badge)]));
+    }
 }

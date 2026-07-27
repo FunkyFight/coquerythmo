@@ -91,6 +91,10 @@
 "recording.track.mute" = "Muet"
 "recording.track.solo" = "Solo"
 "recording.track.arm" = "Armer l'enregistrement"
+"recording.track.add" = "Ajouter une piste"
+"recording.track.new" = "Piste {number}"
+"recording.track.rename" = "Renommer"
+"recording.track.remove" = "Supprimer"
 "recording.tool.select" = "Sélection"
 "recording.tool.cut" = "Couper"
 "recording.capture.start" = "Démarrer l'enregistrement sur la piste"
@@ -170,6 +174,7 @@
 "menu.tools.automation" = "Automatisation"
 "menu.tools.create_proxy" = "Créer un proxy"
 "menu.tools.secondary_display" = "Affichage Secondaire"
+"recording.detach_daw" = "Détacher la vue DAW"
 "menu.tools.rename_character" = "Renommer un personnage"
 
 "automation.title" = "Automatisation"

@@ -1,6 +1,18 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+pub(crate) fn installation_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub(crate) fn installation_temp_dir() -> PathBuf {
+    installation_dir().join("temp")
+}
+
 pub(crate) fn command(binary: &str) -> Command {
     if let Some(path) = path(binary) {
         log::info!("Using {binary}: {}", path.display());

@@ -139,9 +139,6 @@ pub fn used_track_indices(project: &Project) -> Vec<usize> {
         .collect();
     tracks.sort_unstable();
     tracks.dedup();
-    if tracks.is_empty() {
-        tracks.push(0);
-    }
     tracks
 }
 
@@ -415,6 +412,11 @@ mod tests {
             export_timeline_x(100, 100.0, center_x, pixels_per_frame, 24.0),
             center_x - 96.0
         );
+    }
+
+    #[test]
+    fn empty_projects_have_no_visible_rythmo_tracks() {
+        assert!(used_track_indices(&Project::new()).is_empty());
     }
 
     #[test]

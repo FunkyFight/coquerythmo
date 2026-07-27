@@ -1,5 +1,5 @@
 use super::bootstrap;
-use super::dispatcher::{dispatch, CommandDispatcher};
+use super::dispatcher::{dispatch, dispatch_secondary_daw, CommandDispatcher};
 use crate::application::edit_service::EditExecutor;
 use crate::application::workspace_service::WorkspaceId;
 use crate::config;
@@ -239,6 +239,10 @@ pub fn run(startup_path: Option<PathBuf>) {
     let mut cursor_icon = winit::window::CursorIcon::Default;
     let mut last_pointer_dispatch: Option<Instant> = None;
     let mut last_dispatched_cursor_pos = cursor_pos;
+    let mut secondary_cursor_pos = (0.0_f32, 0.0_f32);
+    let mut secondary_ctrl_held = false;
+    let mut secondary_shift_held = false;
+    let mut secondary_last_click_time = None;
 
     event_loop
         .run(move |event, elwt| {
@@ -257,8 +261,90 @@ pub fn run(startup_path: Option<PathBuf>) {
                     windows_accessibility.process_event(&window, &event);
                 }
                 if state.is_secondary_window(window_id) {
+                    let is_daw = state.is_secondary_daw();
                     match event {
                         WindowEvent::CloseRequested => state.close_secondary_display(),
+                        WindowEvent::ModifiersChanged(modifiers) if is_daw => {
+                            secondary_ctrl_held = modifiers.state().control_key();
+                            secondary_shift_held = modifiers.state().shift_key();
+                        }
+                        WindowEvent::CursorMoved { position, .. } if is_daw => {
+                            secondary_cursor_pos = (position.x as f32, position.y as f32);
+                            dispatch_secondary_daw(
+                                UiEvent::MouseMove {
+                                    x: secondary_cursor_pos.0,
+                                    y: secondary_cursor_pos.1,
+                                },
+                                &mut state,
+                                elwt,
+                            );
+                        }
+                        WindowEvent::MouseWheel { delta, .. } if is_daw => {
+                            let delta = match delta {
+                                winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                                winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                                    pos.y as f32 / 40.0
+                                }
+                            };
+                            dispatch_secondary_daw(
+                                UiEvent::Scroll {
+                                    x: secondary_cursor_pos.0,
+                                    y: secondary_cursor_pos.1,
+                                    delta,
+                                    fast: secondary_shift_held,
+                                    ctrl: secondary_ctrl_held,
+                                },
+                                &mut state,
+                                elwt,
+                            );
+                        }
+                        WindowEvent::MouseInput {
+                            state: button_state,
+                            button: MouseButton::Left,
+                            ..
+                        } if is_daw => match button_state {
+                            ElementState::Pressed => {
+                                let now = Instant::now();
+                                let is_double = secondary_last_click_time
+                                    .is_some_and(|last: Instant| {
+                                        now.duration_since(last).as_millis() < 400
+                                    });
+                                secondary_last_click_time = Some(now);
+                                let event = if secondary_ctrl_held {
+                                    UiEvent::CtrlClick {
+                                        x: secondary_cursor_pos.0,
+                                        y: secondary_cursor_pos.1,
+                                    }
+                                } else if secondary_shift_held {
+                                    UiEvent::ShiftMousePress {
+                                        x: secondary_cursor_pos.0,
+                                        y: secondary_cursor_pos.1,
+                                    }
+                                } else if is_double {
+                                    UiEvent::DoubleClick {
+                                        x: secondary_cursor_pos.0,
+                                        y: secondary_cursor_pos.1,
+                                    }
+                                } else {
+                                    UiEvent::MousePress {
+                                        x: secondary_cursor_pos.0,
+                                        y: secondary_cursor_pos.1,
+                                    }
+                                };
+                                dispatch_secondary_daw(event, &mut state, elwt);
+                            }
+                            ElementState::Released => {
+                                dispatch_secondary_daw(
+                                    UiEvent::MouseRelease {
+                                        x: secondary_cursor_pos.0,
+                                        y: secondary_cursor_pos.1,
+                                    },
+                                    &mut state,
+                                    elwt,
+                                );
+                                state.broadcast_finalize();
+                            }
+                        },
                         WindowEvent::KeyboardInput { event, .. } => {
                             if event.state == ElementState::Pressed {
                                 if is_control_key(event.physical_key) {
@@ -308,14 +394,59 @@ pub fn run(startup_path: Option<PathBuf>) {
                                 } else if !handled
                                     && matches!(event.logical_key, Key::Named(NamedKey::Escape))
                                 {
-                                    dispatch_key_action(
-                                        UiAction::CloseSecondaryDisplay,
-                                        &event,
-                                        modifiers,
-                                        InputWindow::Secondary,
+                                    if is_daw && state.is_editing_text() {
+                                        dispatch_secondary_daw(
+                                            UiEvent::KeyInput {
+                                                text: "\x1b".into(),
+                                            },
+                                            &mut state,
+                                            elwt,
+                                        );
+                                    } else {
+                                        dispatch_key_action(
+                                            UiAction::CloseSecondaryDisplay,
+                                            &event,
+                                            modifiers,
+                                            InputWindow::Secondary,
+                                            &mut state,
+                                            elwt,
+                                        );
+                                    }
+                                } else if !handled
+                                    && is_daw
+                                    && matches!(event.logical_key, Key::Named(NamedKey::Delete))
+                                {
+                                    dispatch_secondary_daw(UiEvent::Delete, &mut state, elwt);
+                                } else if !handled
+                                    && is_daw
+                                    && matches!(event.logical_key, Key::Named(NamedKey::Enter))
+                                {
+                                    dispatch_secondary_daw(
+                                        UiEvent::KeyInput { text: "\n".into() },
                                         &mut state,
                                         elwt,
                                     );
+                                } else if !handled
+                                    && is_daw
+                                    && matches!(event.logical_key, Key::Named(NamedKey::Backspace))
+                                {
+                                    dispatch_secondary_daw(
+                                        UiEvent::KeyInput {
+                                            text: "\x08".into(),
+                                        },
+                                        &mut state,
+                                        elwt,
+                                    );
+                                } else if !handled && is_daw && !secondary_ctrl_held {
+                                    if let Key::Character(text) = &event.logical_key {
+                                        dispatch_secondary_daw(
+                                            UiEvent::KeyInput {
+                                                text: text.to_string(),
+                                            },
+                                            &mut state,
+                                            elwt,
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -670,6 +801,20 @@ pub fn run(startup_path: Option<PathBuf>) {
                                 state.request_redraw();
                                 return;
                             }
+                        }
+                        if matches!(event.logical_key, Key::Named(NamedKey::Escape))
+                            && state.active_workspace() == WorkspaceId::Recording
+                            && state.recording_runtime.is_active()
+                        {
+                            dispatch(
+                                UiEvent::KeyInput {
+                                    text: "\x1b".into(),
+                                },
+                                &mut state,
+                                elwt,
+                            );
+                            state.request_redraw();
+                            return;
                         }
                         if state.has_line_context_menu() {
                             let menu_event = match &event.logical_key {

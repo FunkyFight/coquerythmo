@@ -670,9 +670,7 @@ pub(crate) fn sync_cursor_index_for_line_at_ratio(
 pub(crate) fn render_sync_text_segments(
     project: &Project,
     line: &crate::rythmo_line::RythmoLine,
-    current_frame: f64,
-    zone: &Rect,
-    fps: f64,
+    rect: Rect,
     drag: Option<&SyllableDrag>,
     lang: &str,
     state: &RythmoState,
@@ -701,14 +699,6 @@ pub(crate) fn render_sync_text_segments(
     let cursor_segments =
         sync_cursor_segments_from_layout(line.id, character_count, &boundaries, &mapped);
     let characters = line.text.chars().collect::<Vec<_>>();
-    let rect = line_rect(
-        project,
-        line,
-        current_frame,
-        zone,
-        crate::config::reading_bar_offset_seconds(),
-        fps,
-    );
     if let Some(seconds) = emotion_seconds {
         super::push_emotional_text(
             stretched,
@@ -1112,6 +1102,7 @@ pub(crate) fn render_detection_overlay<'a>(
     labels: &mut Vec<LabelInfo<'a>>,
     icons: &mut Vec<IconInstance>,
     detection_uvs: [[f32; 4]; 18],
+    editable: bool,
 ) {
     let mut detector_quads = Vec::new();
     let mut detector_labels = Vec::new();
@@ -1126,6 +1117,7 @@ pub(crate) fn render_detection_overlay<'a>(
         &mut detector_labels,
         &mut detector_icons,
         detection_uvs,
+        editable,
     );
     strip_legacy_popup(
         &mut detector_quads,
@@ -1155,7 +1147,10 @@ pub(crate) fn render_detection_overlay<'a>(
         }
     }
 
-    let drag_snapshot = source_drag().clone().filter(|drag| drag.moved);
+    let drag_snapshot = editable
+        .then(|| source_drag().clone())
+        .flatten()
+        .filter(|drag| drag.moved);
     if let Some(drag) = drag_snapshot.as_ref() {
         let original_track = track_rect(project, drag.origin_track as usize, current_frame, zone);
         let original_icon = sign_icon_rect(drag.origin_tick, original_track, current_frame, zone);
@@ -1219,7 +1214,7 @@ pub(crate) fn render_detection_overlay<'a>(
 
     // Detection symbols stay unframed. Selection is shown with two compact
     // horizontal resize handles instead of the former circular badge.
-    let selected = selected_detection(state);
+    let selected = editable.then(|| selected_detection(state)).flatten();
     for track in 0..rythmo_layout::track_count() {
         let line_id = track_storage_line_id(track as u8);
         let Some(data) = project.detections().line(line_id) else {
@@ -1338,6 +1333,57 @@ mod tests {
         assert_eq!((segments[1].start_char, segments[1].end_char), (2, 5));
         assert!((segments[1].start_ratio - 0.25).abs() < 0.000_01);
         assert!((segments[1].width_ratio - 0.35).abs() < 0.000_01);
+    }
+
+    #[test]
+    fn sync_text_uses_the_active_workspace_rect() {
+        crate::config::init();
+        let mut project = Project::new();
+        let line_id = project.add_line(100, 60, 0.25);
+        project.get_line_mut(line_id).unwrap().text = "un cadeau pour Moondancer".into();
+        let line = project.get_line(line_id).unwrap();
+        let mut detections = crate::detection::DetectionDocument::default();
+        detections
+            .add_sync_point(
+                line_id,
+                line.text.graphemes(true).count(),
+                MediaTick::from_frame(line.start_frame),
+                MediaTick::from_frame(line.end_frame()),
+                9,
+                MediaTick::from_frame(130),
+            )
+            .unwrap();
+        project.restore_line_detections(line_id, detections.line(line_id).unwrap().clone());
+
+        let expected = Rect {
+            x: 120.0,
+            y: 340.0,
+            width: 500.0,
+            height: 48.0,
+        };
+        let mut stretched = Vec::new();
+        let line = project.get_line(line_id).unwrap();
+        render_sync_text_segments(
+            &project,
+            line,
+            expected,
+            None,
+            project.syllable_language_code(),
+            &RythmoState::new(),
+            None,
+            [1.0; 4],
+            None,
+            &mut stretched,
+        )
+        .unwrap();
+
+        assert!(!stretched.is_empty());
+        assert!(
+            stretched
+                .iter()
+                .all(|text| text.dest_rect.y == expected.y
+                    && text.dest_rect.height == expected.height)
+        );
     }
 
     #[test]

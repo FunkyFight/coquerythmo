@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::audio_transfer::{AudioTransferMetadata, AudioTransferReceiver, ReceivedAudio};
 use crate::media_recording::FfmpegFlacRecorder;
@@ -52,7 +53,7 @@ pub struct RecordingRuntime {
 impl RecordingRuntime {
     pub fn new() -> Self {
         let nonce = RECORDING_NONCE.fetch_add(1, Ordering::Relaxed);
-        let temporary_dir = std::env::temp_dir().join(format!(
+        let temporary_dir = crate::media_binary::installation_temp_dir().join(format!(
             "coquerythmo-recording-{}-{nonce}",
             std::process::id()
         ));
@@ -123,7 +124,11 @@ impl RecordingRuntime {
             return Err(RecordingError::CaptureBusy);
         }
         let nonce = RECORDING_NONCE.fetch_add(1, Ordering::Relaxed);
-        let output_path = self.temporary_dir.join(format!("take-{nonce}.flac"));
+        let timestamp = recording_timestamp();
+        let mut output_path = self.temporary_dir.join(format!("{timestamp}.flac"));
+        if output_path.exists() {
+            output_path = self.temporary_dir.join(format!("{timestamp}-{nonce}.flac"));
+        }
         let recorder = FfmpegFlacRecorder::new(&output_path);
         let mut controller = CaptureController::new(recorder, SystemClock::default());
         controller.begin_countdown(target)?;
@@ -196,6 +201,30 @@ impl RecordingRuntime {
     pub fn owns(&self, path: &Path) -> bool {
         self.owned_files.iter().any(|candidate| candidate == path)
     }
+}
+
+fn recording_timestamp() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let days = (seconds / 86_400) as i64;
+    let day_seconds = seconds % 86_400;
+    let hour = day_seconds / 3_600;
+    let minute = (day_seconds % 3_600) / 60;
+    let second = day_seconds % 60;
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_part = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_part + 2) / 5 + 1;
+    let month = month_part + if month_part < 10 { 3 } else { -9 };
+    let year = year + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}_{hour:02}-{minute:02}-{second:02}")
 }
 
 impl Default for RecordingRuntime {

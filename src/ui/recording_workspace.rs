@@ -8,7 +8,7 @@
 use crate::network::NetworkMember;
 use crate::recording::{
     AudioAssetId, AudioClipId, AudioTrackId, CaptureState, RecordingEditor, RecordingError,
-    RecordingProject, RecordingTool,
+    RecordingProject, RecordingTool, WaveformData,
 };
 
 use super::focus::AccessibleRole;
@@ -54,6 +54,10 @@ pub enum RecordingControl {
     ChooseSolo,
     ChooseOnline,
     Tool(RecordingTool),
+    AddTrack,
+    DeleteSelectedClips,
+    RemoveTrack(AudioTrackId),
+    RenameTrack(AudioTrackId),
     TrackMute(AudioTrackId),
     TrackSolo(AudioTrackId),
     TrackArm(AudioTrackId),
@@ -70,6 +74,10 @@ impl RecordingControl {
             Self::ChooseOnline => "recording.choice.online".into(),
             Self::Tool(RecordingTool::Select) => "recording.tool.select".into(),
             Self::Tool(RecordingTool::Cut) => "recording.tool.cut".into(),
+            Self::AddTrack => "recording.track.add".into(),
+            Self::DeleteSelectedClips => "recording.clip.delete".into(),
+            Self::RemoveTrack(id) => format!("recording.track.{}.remove", id.get()),
+            Self::RenameTrack(id) => format!("recording.track.{}.rename", id.get()),
             Self::TrackMute(id) => format!("recording.track.{}.mute", id.get()),
             Self::TrackSolo(id) => format!("recording.track.{}.solo", id.get()),
             Self::TrackArm(id) => format!("recording.track.{}.arm", id.get()),
@@ -127,6 +135,42 @@ pub struct RecordingLayout {
 }
 
 impl RecordingLayout {
+    pub fn video_split_handle_rect(&self) -> Rect {
+        Rect {
+            x: self.video.x,
+            y: self
+                .toolbar
+                .map_or(self.video.y + self.video.height, |bar| bar.y)
+                - super::layout::SPLIT_DRAG_ZONE / 2.0,
+            width: self.video.width,
+            height: super::layout::SPLIT_DRAG_ZONE,
+        }
+    }
+
+    pub fn rythmo_split_handle_rect(&self) -> Rect {
+        Rect {
+            x: self.rythmo.x,
+            y: self
+                .timeline
+                .map_or(self.rythmo.y + self.rythmo.height, |timeline| timeline.y)
+                - super::layout::SPLIT_DRAG_ZONE / 2.0,
+            width: self.rythmo.width,
+            height: super::layout::SPLIT_DRAG_ZONE,
+        }
+    }
+
+    pub fn assets_split_handle_rect(&self) -> Option<Rect> {
+        let assets = self.assets?;
+        Some(Rect {
+            x: assets.x - super::layout::SPLIT_DRAG_ZONE / 2.0,
+            y: assets.y,
+            width: super::layout::SPLIT_DRAG_ZONE,
+            height: assets.height,
+        })
+    }
+}
+
+impl RecordingLayout {
     pub fn choice(content: Rect) -> Self {
         Self {
             content,
@@ -145,12 +189,50 @@ impl RecordingLayout {
     }
 
     pub fn timeline(content: Rect, online: bool) -> Self {
-        let assets_w = content.width.clamp(0.0, 300.0).min(272.0);
+        Self::timeline_with_splits(content, online, 0.48, 0.34, 0.23)
+    }
+
+    pub fn timeline_with_splits(
+        content: Rect,
+        online: bool,
+        video_split: f32,
+        rythmo_split: f32,
+        assets_split: f32,
+    ) -> Self {
+        Self::timeline_with_splits_and_rythmo_min(
+            content,
+            online,
+            video_split,
+            rythmo_split,
+            assets_split,
+            100.0,
+        )
+    }
+
+    pub fn timeline_with_splits_and_rythmo_min(
+        content: Rect,
+        online: bool,
+        _video_split: f32,
+        _rythmo_split: f32,
+        assets_split: f32,
+        rythmo_min_h: f32,
+    ) -> Self {
+        let assets_w = if assets_split <= 0.0 {
+            0.0
+        } else {
+            (content.width * assets_split)
+                .clamp(180.0, 420.0)
+                .min(content.width)
+        };
         let main_w = (content.width - assets_w).max(0.0);
-        let preview_h = (content.height * 0.46).clamp(230.0, 440.0);
-        let toolbar_h = super::layout::TOOLBAR_H.min(preview_h);
-        let rythmo_h = (preview_h * 0.34).clamp(120.0, 180.0);
-        let video_h = (preview_h - toolbar_h - rythmo_h).max(80.0);
+        let toolbar_h = super::layout::TOOLBAR_H.min(content.height);
+        let available_h = (content.height - toolbar_h).max(0.0);
+        let video_h = (available_h - 164.0 - rythmo_min_h.max(100.0)).clamp(140.0, 560.0);
+        let available_after_video = (content.height - video_h - toolbar_h).max(0.0);
+        const DAW_MIN_H: f32 = 164.0;
+        let rythmo_h = rythmo_min_h
+            .max(100.0)
+            .min((available_after_video - DAW_MIN_H).max(0.0));
         let video = Rect {
             x: content.x,
             y: content.y,
@@ -175,7 +257,7 @@ impl RecordingLayout {
             width: main_w,
             height: (content.y + content.height - (rythmo.y + rythmo.height)).max(0.0),
         };
-        let tools_w = 54.0_f32.min(timeline.width);
+        let tools_w = 100.0_f32.min(timeline.width);
         let headers_w = 158.0_f32.min((timeline.width - tools_w).max(0.0));
         let tools = Rect {
             x: timeline.x,
@@ -195,12 +277,12 @@ impl RecordingLayout {
             width: (timeline.x + timeline.width - (track_headers.x + track_headers.width)).max(0.0),
             height: timeline.height,
         };
-        let assets = Rect {
+        let assets = (assets_w > 0.0).then_some(Rect {
             x: content.x + main_w,
             y: content.y,
             width: assets_w,
             height: content.height,
-        };
+        });
         let participants = online.then_some(Rect {
             x: (video.x + video.width - 244.0).max(video.x),
             y: video.y + 8.0,
@@ -218,13 +300,98 @@ impl RecordingLayout {
             tools: Some(tools),
             track_headers: Some(track_headers),
             track_body: Some(track_body),
-            assets: Some(assets),
+            assets,
             participants,
         }
     }
 
+    pub fn detached_main(content: Rect, video_split: f32) -> Self {
+        let min_video = super::layout::VIDEO_MIN_H.min(content.height);
+        let max_video = (content.height - super::layout::RYTHMO_MIN_H).max(min_video);
+        let video_h = (content.height * video_split).clamp(min_video, max_video);
+        let video = Rect {
+            x: content.x,
+            y: content.y,
+            width: content.width,
+            height: video_h,
+        };
+        Self {
+            content,
+            video,
+            toolbar: None,
+            rythmo: Rect {
+                x: content.x,
+                y: video.y + video.height,
+                width: content.width,
+                height: (content.height - video.height).max(0.0),
+            },
+            source_waveform: None,
+            microphone_waveform: None,
+            timeline: None,
+            tools: None,
+            track_headers: None,
+            track_body: None,
+            assets: None,
+            participants: None,
+        }
+    }
+
+    pub fn daw(content: Rect, assets_split: f32) -> Self {
+        let toolbar_h = super::layout::TOOLBAR_H.min(content.height);
+        let toolbar = Rect {
+            height: toolbar_h,
+            ..content
+        };
+        let daw_content = Rect {
+            y: content.y + toolbar_h,
+            height: (content.height - toolbar_h).max(0.0),
+            ..content
+        };
+        let assets_w = (content.width * assets_split)
+            .clamp(180.0, 420.0)
+            .min(content.width);
+        let timeline = Rect {
+            width: (content.width - assets_w).max(0.0),
+            ..daw_content
+        };
+        let tools_w = 100.0_f32.min(timeline.width);
+        let headers_w = 158.0_f32.min((timeline.width - tools_w).max(0.0));
+        let tools = Rect {
+            width: tools_w,
+            ..timeline
+        };
+        let track_headers = Rect {
+            x: tools.x + tools.width,
+            width: headers_w,
+            ..timeline
+        };
+        let track_body = Rect {
+            x: track_headers.x + track_headers.width,
+            width: (timeline.width - tools.width - track_headers.width).max(0.0),
+            ..timeline
+        };
+        Self {
+            content,
+            video: Rect::default(),
+            toolbar: Some(toolbar),
+            rythmo: Rect::default(),
+            source_waveform: None,
+            microphone_waveform: None,
+            timeline: Some(timeline),
+            tools: Some(tools),
+            track_headers: Some(track_headers),
+            track_body: Some(track_body),
+            assets: Some(Rect {
+                x: timeline.x + timeline.width,
+                width: assets_w,
+                ..daw_content
+            }),
+            participants: None,
+        }
+    }
+
     pub fn capturing(screen_w: f32, screen_h: f32) -> Self {
-        let rythmo_h = (screen_h * 0.24).clamp(130.0, 240.0);
+        let rythmo_h = (screen_h * 0.26).clamp(180.0, 280.0);
         let strip_h = 34.0;
         let video_h = (screen_h - rythmo_h - strip_h * 2.0).max(0.0);
         Self {
@@ -274,9 +441,19 @@ pub struct RecordingWorkspaceUi {
     pub page: RecordingPage,
     pub role: RecordingRole,
     pub editor: RecordingEditor,
-    pub view_start_frame: i64,
+    pub view_start_frame: f64,
     pub pixels_per_frame: f32,
     pub selected_asset: Option<AudioAssetId>,
+    pub renaming_track: Option<AudioTrackId>,
+    pub rename_buffer: String,
+    pub dragging_asset: Option<AudioAssetId>,
+    pub dragging_clip: Option<RecordingClipDrag>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RecordingClipDrag {
+    pub last_x: f32,
+    pub accum_px: f32,
 }
 
 impl Default for RecordingWorkspaceUi {
@@ -285,9 +462,13 @@ impl Default for RecordingWorkspaceUi {
             page: RecordingPage::Choice,
             role: RecordingRole::Solo,
             editor: RecordingEditor::default(),
-            view_start_frame: 0,
+            view_start_frame: 0.0,
             pixels_per_frame: 3.0,
             selected_asset: None,
+            renaming_track: None,
+            rename_buffer: String::new(),
+            dragging_asset: None,
+            dragging_clip: None,
         }
     }
 }
@@ -307,6 +488,9 @@ impl RecordingWorkspaceUi {
         self.page = RecordingPage::Choice;
         self.editor.clear_selection();
         self.selected_asset = None;
+        self.cancel_rename_track();
+        self.dragging_asset = None;
+        self.dragging_clip = None;
     }
 
     pub fn selected_clips(&self) -> impl Iterator<Item = AudioClipId> + '_ {
@@ -319,11 +503,39 @@ impl RecordingWorkspaceUi {
         clip_id: AudioClipId,
         additive: bool,
     ) -> Result<(), RecordingError> {
+        self.selected_asset = None;
         self.editor.select_clip(project, clip_id, additive)
     }
 
     pub fn clear_selection(&mut self) {
         self.editor.clear_selection();
+    }
+
+    pub fn begin_rename_track(&mut self, project: &RecordingProject, track_id: AudioTrackId) {
+        self.renaming_track = project.track(track_id).map(|track| track.id);
+        self.rename_buffer = project
+            .track(track_id)
+            .map(|track| track.name.clone())
+            .unwrap_or_default();
+    }
+
+    pub fn cancel_rename_track(&mut self) {
+        self.renaming_track = None;
+        self.rename_buffer.clear();
+    }
+
+    pub fn is_editing_text(&self) -> bool {
+        self.renaming_track.is_some()
+    }
+
+    pub fn sync_view_to_playhead(&mut self, layout: RecordingLayout, current_frame: f64, fps: f64) {
+        let Some(body) = layout.track_body else {
+            return;
+        };
+        self.pixels_per_frame = crate::constants::PIXELS_PER_FRAME * crate::config::scroll_speed();
+        let half_visible_frames = body.width as f64 / self.pixels_per_frame.max(0.001) as f64 / 2.0;
+        let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+        self.view_start_frame = current_frame - half_visible_frames + offset_frames;
     }
 
     fn is_clip_selected(&self, clip_id: AudioClipId) -> bool {
@@ -339,7 +551,8 @@ impl RecordingWorkspaceUi {
         capture: Option<&CaptureState>,
         participants: &[NetworkMember],
         control_owner_id: Option<&str>,
-        current_frame: i64,
+        current_frame: f64,
+        countdown_seconds: Option<u32>,
     ) -> RecordingScene {
         if self.page == RecordingPage::Choice {
             return choice_scene(layout);
@@ -352,6 +565,7 @@ impl RecordingWorkspaceUi {
             participants,
             control_owner_id,
             current_frame,
+            countdown_seconds,
         )
     }
 }
@@ -434,10 +648,10 @@ fn timeline_scene(
     capture: Option<&CaptureState>,
     participants: &[NetworkMember],
     control_owner_id: Option<&str>,
-    current_frame: i64,
+    current_frame: f64,
+    countdown_seconds: Option<u32>,
 ) -> RecordingScene {
     let mut scene = RecordingScene::default();
-    push_quad(&mut scene.quads, layout.content, PANEL_BG, BORDER, 0.0);
     push_quad(
         &mut scene.quads,
         layout.video,
@@ -467,6 +681,8 @@ fn timeline_scene(
             tools,
             ui.editor.tool,
             ui.role.can_edit_timeline(),
+            ui.selected_clips().next().is_some(),
+            project.armed_track_id().is_some(),
         );
         push_tracks(&mut scene, ui, project, headers, body, current_frame);
         push_assets(&mut scene, ui, project, assets);
@@ -485,7 +701,7 @@ fn timeline_scene(
         match state {
             CaptureState::Countdown { .. } => {
                 scene.labels.push(label(
-                    crate::i18n::t("recording.capture.countdown"),
+                    countdown_seconds.unwrap_or(0).to_string(),
                     Rect {
                         x: layout.video.x,
                         y: layout.video.y,
@@ -523,19 +739,21 @@ fn push_tool_controls(
     tools: Rect,
     active: RecordingTool,
     enabled: bool,
+    has_selection: bool,
+    has_armed_track: bool,
 ) {
     for (index, (tool, text, key)) in [
-        (RecordingTool::Select, "S", "recording.tool.select"),
-        (RecordingTool::Cut, "C", "recording.tool.cut"),
+        (RecordingTool::Select, "Sélection", "recording.tool.select"),
+        (RecordingTool::Cut, "Couper", "recording.tool.cut"),
     ]
     .into_iter()
     .enumerate()
     {
         let bounds = Rect {
             x: tools.x + 7.0,
-            y: tools.y + 10.0 + index as f32 * 50.0,
+            y: tools.y + 8.0 + index as f32 * 40.0,
             width: tools.width - 14.0,
-            height: 40.0,
+            height: 34.0,
         };
         let selected = tool == active;
         push_quad(
@@ -561,6 +779,90 @@ fn push_tool_controls(
             enabled,
         });
     }
+    let add_bounds = Rect {
+        x: tools.x + 7.0,
+        y: tools.y + 88.0,
+        width: (tools.width - 18.0) * 0.5,
+        height: 30.0,
+    };
+    push_quad(&mut scene.quads, add_bounds, PANEL_BG, BORDER, 5.0);
+    scene.labels.push(label(
+        "+",
+        add_bounds,
+        18.0,
+        if enabled { TEXT } else { MUTED_TEXT },
+    ));
+    scene.controls.push(RecordingControlInfo {
+        control: RecordingControl::AddTrack,
+        bounds: add_bounds,
+        role: AccessibleRole::Button,
+        label: crate::i18n::t("recording.track.add").into(),
+        value: None,
+        selected: false,
+        enabled,
+    });
+    let delete_bounds = Rect {
+        x: add_bounds.x + add_bounds.width + 4.0,
+        y: add_bounds.y,
+        width: add_bounds.width,
+        height: add_bounds.height,
+    };
+    push_quad(&mut scene.quads, delete_bounds, PANEL_BG, BORDER, 5.0);
+    scene.labels.push(label(
+        "×",
+        delete_bounds,
+        16.0,
+        if enabled && has_selection {
+            TEXT
+        } else {
+            MUTED_TEXT
+        },
+    ));
+    scene.controls.push(RecordingControlInfo {
+        control: RecordingControl::DeleteSelectedClips,
+        bounds: delete_bounds,
+        role: AccessibleRole::Button,
+        label: crate::i18n::t("shortcut.delete").into(),
+        value: None,
+        selected: false,
+        enabled: enabled && has_selection,
+    });
+    let record_bounds = Rect {
+        x: tools.x + 7.0,
+        y: tools.y + 124.0,
+        width: tools.width - 14.0,
+        height: 32.0,
+    };
+    push_quad(
+        &mut scene.quads,
+        record_bounds,
+        if has_armed_track {
+            RECORD
+        } else {
+            [0.13, 0.13, 0.16, 1.0]
+        },
+        BORDER,
+        5.0,
+    );
+    scene.labels.push(label(
+        "● REC",
+        record_bounds,
+        12.0,
+        if enabled && has_armed_track {
+            TEXT
+        } else {
+            MUTED_TEXT
+        },
+    ));
+    scene.controls.push(RecordingControlInfo {
+        control: RecordingControl::StartCapture,
+        bounds: record_bounds,
+        role: AccessibleRole::Button,
+        label: crate::i18n::t("recording.capture.start").into(),
+        value: None,
+        selected: false,
+        enabled: enabled && has_armed_track,
+    });
 }
 
 fn push_tracks(
@@ -569,7 +871,7 @@ fn push_tracks(
     project: &RecordingProject,
     headers: Rect,
     body: Rect,
-    current_frame: i64,
+    current_frame: f64,
 ) {
     const ROW_H: f32 = 58.0;
     for (row, track) in project.tracks().enumerate() {
@@ -607,19 +909,37 @@ fn push_tracks(
             BORDER,
             0.0,
         );
+        let name_bounds = Rect {
+            x: header.x + 8.0,
+            y: header.y + 4.0,
+            width: header.width - 60.0,
+            height: 22.0,
+        };
         scene.labels.push(RecordingLabel {
-            text: track.name.clone(),
-            bounds: Rect {
-                x: header.x + 8.0,
-                y: header.y + 4.0,
-                width: header.width - 16.0,
-                height: 22.0,
+            text: if ui.renaming_track == Some(track.id) {
+                ui.rename_buffer.clone()
+            } else {
+                track.name.clone()
             },
+            bounds: name_bounds,
             h_align: HAlign::Left,
             v_align: VAlign::Center,
             overflow: Overflow::Ellipsis,
             font_size: 12.0,
             color: TEXT,
+        });
+        scene.controls.push(RecordingControlInfo {
+            control: RecordingControl::RenameTrack(track.id),
+            bounds: name_bounds,
+            role: AccessibleRole::Button,
+            label: format!(
+                "{} — {}",
+                track.name,
+                crate::i18n::t("recording.track.rename")
+            ),
+            value: None,
+            selected: ui.renaming_track == Some(track.id),
+            enabled: ui.role.can_edit_timeline(),
         });
         for (index, (control, text, active, color)) in [
             (
@@ -691,31 +1011,76 @@ fn push_tracks(
                 enabled: ui.role.can_edit_timeline(),
             });
         }
+        let remove_bounds = Rect {
+            x: header.x + header.width - 38.0,
+            y: header.y + 4.0,
+            width: 28.0,
+            height: 22.0,
+        };
+        let removable = project.tracks().count() > 1;
+        push_quad(
+            &mut scene.quads,
+            remove_bounds,
+            if removable {
+                [0.20, 0.12, 0.15, 1.0]
+            } else {
+                [0.13, 0.13, 0.16, 1.0]
+            },
+            BORDER,
+            4.0,
+        );
+        scene.labels.push(label(
+            "×",
+            remove_bounds,
+            14.0,
+            if removable { TEXT } else { MUTED_TEXT },
+        ));
+        scene.controls.push(RecordingControlInfo {
+            control: RecordingControl::RemoveTrack(track.id),
+            bounds: remove_bounds,
+            role: AccessibleRole::Button,
+            label: format!(
+                "{} — {}",
+                track.name,
+                crate::i18n::t("recording.track.remove")
+            ),
+            value: None,
+            selected: false,
+            enabled: ui.role.can_edit_timeline() && removable,
+        });
     }
 
     for clip in project.clips() {
         let Some(track_row) = project.tracks().position(|track| track.id == clip.track_id) else {
             continue;
         };
-        let x = body.x + (clip.start_frame - ui.view_start_frame) as f32 * ui.pixels_per_frame;
+        let x =
+            body.x + (clip.start_frame as f64 - ui.view_start_frame) as f32 * ui.pixels_per_frame;
         let width = (clip.duration_frames as f32 * ui.pixels_per_frame).max(3.0);
-        let bounds = Rect {
+        let clip_bounds = Rect {
             x,
             y: body.y + track_row as f32 * ROW_H + 6.0,
             width,
             height: ROW_H - 12.0,
         };
-        if bounds.x + bounds.width < body.x || bounds.x > body.x + body.width {
+        let left = clip_bounds.x.max(body.x);
+        let right = (clip_bounds.x + clip_bounds.width).min(body.x + body.width);
+        if right <= left {
             continue;
         }
+        let bounds = Rect {
+            x: left,
+            width: right - left,
+            ..clip_bounds
+        };
         let selected = ui.is_clip_selected(clip.id);
         push_quad(
             &mut scene.quads,
             bounds,
             if selected {
-                [0.30, 0.36, 0.76, 1.0]
+                [0.20, 0.27, 0.62, 1.0]
             } else {
-                [0.20, 0.29, 0.58, 1.0]
+                [0.13, 0.20, 0.46, 1.0]
             },
             if selected {
                 [0.62, 0.70, 1.0, 1.0]
@@ -725,7 +1090,28 @@ fn push_tracks(
             5.0,
         );
         if let Some(asset) = project.asset(clip.asset_id) {
-            push_clip_waveform(&mut scene.quads, bounds, &asset.waveform.peaks);
+            push_clip_waveform(
+                &mut scene.quads,
+                bounds,
+                clip_bounds,
+                &asset.waveform,
+                asset.sample_rate,
+                project.timeline_fps(),
+                clip.source_start_frame,
+                ui.pixels_per_frame,
+            );
+            // Keep the selection border above the waveform without repainting it.
+            push_quad(
+                &mut scene.quads,
+                bounds,
+                [0.0; 4],
+                if selected {
+                    [0.62, 0.70, 1.0, 1.0]
+                } else {
+                    BORDER
+                },
+                5.0,
+            );
             scene.labels.push(RecordingLabel {
                 text: asset.file_name.clone(),
                 bounds: Rect {
@@ -766,36 +1152,6 @@ fn push_tracks(
             [0.0; 4],
             0.0,
         );
-    }
-
-    if let Some(armed) = project.armed_track_id() {
-        let bounds = Rect {
-            x: headers.x + headers.width - 46.0,
-            y: headers.y + 6.0,
-            width: 38.0,
-            height: 38.0,
-        };
-        push_quad(
-            &mut scene.quads,
-            bounds,
-            RECORD,
-            [1.0, 0.4, 0.45, 1.0],
-            19.0,
-        );
-        scene.labels.push(label("●", bounds, 18.0, TEXT));
-        scene.controls.push(RecordingControlInfo {
-            control: RecordingControl::StartCapture,
-            bounds,
-            role: AccessibleRole::Button,
-            label: format!(
-                "{} {}",
-                crate::i18n::t("recording.capture.start"),
-                armed.get()
-            ),
-            value: None,
-            selected: false,
-            enabled: ui.role.can_edit_timeline(),
-        });
     }
 }
 
@@ -922,32 +1278,112 @@ fn push_participants(
     }
 }
 
-fn push_clip_waveform(quads: &mut Vec<QuadInstance>, rect: Rect, peaks: &[f32]) {
-    if peaks.is_empty() || rect.width <= 2.0 {
+#[allow(clippy::too_many_arguments)]
+fn push_clip_waveform(
+    quads: &mut Vec<QuadInstance>,
+    visible: Rect,
+    full_clip: Rect,
+    waveform: &WaveformData,
+    sample_rate: u32,
+    fps: f64,
+    source_start_frame: i64,
+    pixels_per_frame: f32,
+) {
+    if waveform.peaks.is_empty() || visible.width <= 1.0 {
         return;
     }
-    let bars = peaks
-        .len()
-        .min((rect.width / 3.0).max(1.0) as usize)
-        .min(96);
-    for index in 0..bars {
-        let peak_index = index * peaks.len() / bars;
-        let amplitude = peaks[peak_index].clamp(0.0, 1.0);
-        let height = amplitude * (rect.height - 16.0).max(1.0);
-        let x = rect.x + index as f32 * rect.width / bars as f32;
+    let columns = (visible.width.ceil() as usize).clamp(1, 1024);
+    let column_width = visible.width / columns as f32;
+    let center_y = visible.y + visible.height * 0.5;
+    push_quad(
+        quads,
+        Rect {
+            x: visible.x,
+            y: center_y - 0.5,
+            width: visible.width,
+            height: 1.0,
+        },
+        [0.50, 0.60, 0.86, 0.45],
+        [0.0; 4],
+        0.0,
+    );
+    for index in 0..columns {
+        let x = visible.x + index as f32 * column_width;
+        let amplitude = waveform_visual_amplitude(waveform_amplitude_for_x_range(
+            waveform,
+            sample_rate,
+            fps,
+            source_start_frame,
+            pixels_per_frame,
+            full_clip.x,
+            x,
+            (x + column_width).min(visible.x + visible.width),
+        ));
+        let height = (amplitude * (visible.height - 8.0).max(1.0)).max(1.0);
         push_quad(
             quads,
             Rect {
                 x,
-                y: rect.y + (rect.height - height) * 0.5,
-                width: 1.5,
+                y: center_y - height * 0.5,
+                width: column_width + 0.25,
                 height,
             },
-            [0.75, 0.82, 1.0, 0.72],
+            [0.72, 0.82, 1.0, 0.82],
             [0.0; 4],
             0.0,
         );
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn waveform_amplitude_for_x_range(
+    waveform: &WaveformData,
+    sample_rate: u32,
+    fps: f64,
+    source_start_frame: i64,
+    pixels_per_frame: f32,
+    full_clip_x: f32,
+    x_start: f32,
+    x_end: f32,
+) -> f32 {
+    if waveform.peaks.is_empty()
+        || sample_rate == 0
+        || !fps.is_finite()
+        || fps <= 0.0
+        || pixels_per_frame <= 0.0
+    {
+        return 0.0;
+    }
+    let peak_position = |x: f32| {
+        let source_frame =
+            source_start_frame as f64 + f64::from((x - full_clip_x) / pixels_per_frame);
+        let sample = source_frame.max(0.0) / fps * f64::from(sample_rate);
+        sample / f64::from(waveform.samples_per_peak.max(1))
+    };
+    let start = peak_position(x_start);
+    let end = peak_position(x_end).max(start);
+    if end - start < 1.0 {
+        let position = (start + end) * 0.5;
+        let lower = position.floor() as usize;
+        let fraction = (position - lower as f64) as f32;
+        let left = waveform.peaks.get(lower).copied().unwrap_or(0.0);
+        let right = waveform
+            .peaks
+            .get(lower.saturating_add(1))
+            .copied()
+            .unwrap_or(left);
+        return left + (right - left) * fraction;
+    }
+    let first = start.floor().max(0.0) as usize;
+    let last = end.ceil().max(0.0) as usize;
+    waveform.peaks[first.min(waveform.peaks.len())..last.min(waveform.peaks.len())]
+        .iter()
+        .copied()
+        .fold(0.0, f32::max)
+}
+
+fn waveform_visual_amplitude(peak: f32) -> f32 {
+    peak.clamp(0.0, 1.0).sqrt()
 }
 
 fn push_quad(
@@ -1000,6 +1436,108 @@ mod tests {
     }
 
     #[test]
+    fn timeline_keeps_the_daw_compact_and_gives_space_to_rythmo() {
+        let layout = RecordingLayout::timeline(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1400.0,
+                height: 1000.0,
+            },
+            false,
+        );
+        assert!(layout.video.height > layout.rythmo.height);
+        assert!(layout.timeline.unwrap().height <= 164.0);
+    }
+
+    #[test]
+    fn detached_main_has_no_gap_between_video_and_rythmo() {
+        let content = Rect {
+            x: 0.0,
+            y: 68.0,
+            width: 1280.0,
+            height: 652.0,
+        };
+        let layout = RecordingLayout::detached_main(content, 0.48);
+
+        assert_eq!(layout.video.y + layout.video.height, layout.rythmo.y);
+        assert_eq!(
+            layout.rythmo.y + layout.rythmo.height,
+            content.y + content.height
+        );
+        assert!(layout.toolbar.is_none());
+        assert!(layout.timeline.is_none());
+        assert!(layout.assets.is_none());
+    }
+
+    #[test]
+    fn detached_daw_fills_the_window_with_timeline_and_assets() {
+        let content = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1280.0,
+            height: 720.0,
+        };
+        let layout = RecordingLayout::daw(content, 0.30);
+        let toolbar = layout.toolbar.unwrap();
+        let timeline = layout.timeline.unwrap();
+        let assets = layout.assets.unwrap();
+
+        assert_eq!(toolbar.y, 0.0);
+        assert_eq!(toolbar.height, super::super::layout::TOOLBAR_H);
+        assert_eq!(timeline.y, toolbar.y + toolbar.height);
+        assert_eq!(timeline.height, 720.0 - toolbar.height);
+        assert_eq!(assets.y, timeline.y);
+        assert_eq!(assets.height, timeline.height);
+        assert_eq!(timeline.x + timeline.width, assets.x);
+        assert_eq!(assets.x + assets.width, 1280.0);
+        assert_eq!(layout.video, Rect::default());
+        assert_eq!(layout.rythmo, Rect::default());
+    }
+
+    #[test]
+    fn quiet_recording_peaks_are_visually_amplified_without_lifting_silence() {
+        assert_eq!(waveform_visual_amplitude(0.0), 0.0);
+        assert!(waveform_visual_amplitude(0.04) > 0.04);
+        assert_eq!(waveform_visual_amplitude(1.0), 1.0);
+    }
+
+    #[test]
+    fn clipped_waveform_keeps_its_source_position_instead_of_restretching() {
+        let waveform = WaveformData::new(100, vec![0.1, 0.9, 0.2]).unwrap();
+        let first = waveform_amplitude_for_x_range(&waveform, 100, 1.0, 0, 100.0, 0.0, 0.0, 1.0);
+        let scrolled =
+            waveform_amplitude_for_x_range(&waveform, 100, 1.0, 0, 100.0, -100.0, 0.0, 1.0);
+        let zoomed =
+            waveform_amplitude_for_x_range(&waveform, 100, 1.0, 0, 200.0, 0.0, 200.0, 201.0);
+
+        assert!((first - 0.1).abs() < 0.01);
+        assert!((scrolled - 0.9).abs() < 0.01);
+        assert!((zoomed - 0.9).abs() < 0.01);
+    }
+
+    #[test]
+    fn daw_playhead_uses_the_same_centered_view_as_the_rythmo() {
+        crate::config::init();
+        let layout = RecordingLayout::timeline(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1400.0,
+                height: 1000.0,
+            },
+            false,
+        );
+        let mut ui = RecordingWorkspaceUi::default();
+        ui.sync_view_to_playhead(layout, 240.0, 24.0);
+        let body = layout.track_body.unwrap();
+        let playhead_x = body.x + (240.0 - ui.view_start_frame) as f32 * ui.pixels_per_frame;
+        let expected_x = body.x + body.width * 0.5
+            - crate::config::reading_bar_offset_seconds() as f32 * 24.0 * ui.pixels_per_frame;
+        assert!((playhead_x - expected_x).abs() <= ui.pixels_per_frame);
+    }
+
+    #[test]
     fn actor_scene_exposes_track_state_but_disables_mutating_controls() {
         let mut project = RecordingProject::new(24.0).unwrap();
         let track_id = project.allocate_track_id();
@@ -1022,7 +1560,7 @@ mod tests {
             },
             true,
         );
-        let scene = ui.scene(layout, &project, None, &[], None, 0);
+        let scene = ui.scene(layout, &project, None, &[], None, 0.0, None);
         let track_controls = scene.controls.iter().filter(|control| {
             matches!(
                 control.control,
@@ -1042,6 +1580,65 @@ mod tests {
                     | RecordingControl::TrackArm(_)
             ))
             .all(|control| !control.enabled));
+        let record = scene
+            .controls
+            .iter()
+            .find(|control| matches!(control.control, RecordingControl::StartCapture))
+            .unwrap();
+        let tools = layout.tools.unwrap();
+        assert!(record.bounds.x >= tools.x);
+        assert!(record.bounds.y >= tools.y);
+        assert!(record.bounds.x + record.bounds.width <= tools.x + tools.width);
+        assert!(record.bounds.y + record.bounds.height <= tools.y + tools.height);
+    }
+
+    #[test]
+    fn extra_tracks_expose_rename_and_remove_controls() {
+        let mut project = RecordingProject::new(24.0).unwrap();
+        let first = project.allocate_track_id();
+        let second = project.allocate_track_id();
+        project
+            .apply(&RecordingOperation::Batch {
+                operations: vec![
+                    RecordingOperation::AddTrack {
+                        track: AudioTrack::new(first, "Piste 1"),
+                    },
+                    RecordingOperation::AddTrack {
+                        track: AudioTrack::new(second, "Piste 2"),
+                    },
+                ],
+            })
+            .unwrap();
+        let ui = RecordingWorkspaceUi {
+            page: RecordingPage::Timeline,
+            role: RecordingRole::Solo,
+            ..RecordingWorkspaceUi::default()
+        };
+        let scene = ui.scene(
+            RecordingLayout::timeline(
+                Rect {
+                    x: 0.0,
+                    y: 68.0,
+                    width: 1200.0,
+                    height: 732.0,
+                },
+                false,
+            ),
+            &project,
+            None,
+            &[],
+            None,
+            0.0,
+            None,
+        );
+        assert!(scene.controls.iter().any(|control| matches!(
+            control.control,
+            RecordingControl::RenameTrack(id) if id == second
+        )));
+        assert!(scene.controls.iter().any(|control| matches!(
+            control.control,
+            RecordingControl::RemoveTrack(id) if id == second
+        )));
     }
 
     #[test]

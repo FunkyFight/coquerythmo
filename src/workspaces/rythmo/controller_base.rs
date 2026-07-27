@@ -322,12 +322,12 @@ fn handle_read_only_event(
     state.audio_offset_mode = false;
     state.audio_offset_drag = None;
     state.context_menu = None;
+    state.hovered_line = None;
+    state.hovered_track = None;
     state.detection_hover = None;
     state.detection_menu = None;
     state.detection_drag = None;
-    if matches!(state.selected, Some(Selection::Detection(_))) {
-        state.selected = None;
-    }
+    state.selected = None;
     if state.is_editing() {
         state.stop_line_editing();
         state.stop_note_editing();
@@ -357,16 +357,13 @@ fn handle_read_only_event(
                 EventResponse::Consumed
             }
         }
-        UiEvent::MouseMove { x, y } => handle_mouse_move(ctx, state, *x, *y),
+        UiEvent::MouseMove { .. } => EventResponse::Ignored,
         UiEvent::MousePress { x, y }
         | UiEvent::DoubleClick { x, y }
         | UiEvent::CtrlClick { x, y }
         | UiEvent::ShiftMousePress { x, y }
             if ctx.zone.contains(*x, *y) =>
         {
-            // Selection is view state only. No drag handle is armed.
-            let _ = handle_mouse_move(ctx, state, *x, *y);
-            state.selected = state.hovered_line.map(Selection::Line);
             EventResponse::Consumed
         }
         UiEvent::Delete | UiEvent::Cut | UiEvent::KeyInput { .. } | UiEvent::UndoTextEdit => {

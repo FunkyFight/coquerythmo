@@ -40,6 +40,11 @@ pub fn handle_rythmo_event(
         interaction_mode,
     );
 
+    if interaction_mode == RythmoInteractionMode::ReadOnly {
+        crate::detection_foreground::clear();
+        return response;
+    }
+
     crate::detection_foreground::sync_from_state(project, state, *zone, current_frame, event);
 
     let information_card_open = state.detection_menu.is_some() && state.detection_hover.is_none();

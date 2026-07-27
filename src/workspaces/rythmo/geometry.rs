@@ -404,7 +404,21 @@ fn editor_normal_body_height(
     emotion_track_count: usize,
     zone: &Rect,
 ) -> f32 {
-    let track_count = rythmo_layout::track_count();
+    editor_normal_body_height_for_track_count(
+        karaoke_track_count,
+        emotion_track_count,
+        rythmo_layout::track_count(),
+        zone,
+    )
+}
+
+fn editor_normal_body_height_for_track_count(
+    karaoke_track_count: usize,
+    emotion_track_count: usize,
+    track_count: usize,
+    zone: &Rect,
+) -> f32 {
+    let track_count = track_count.max(1);
     let usable_h = (zone.height - constants::RULER_HEIGHT).max(1.0);
     let header_total = track_count as f32 * (slot_header_height() + BADGE_GAP);
     let weighted_rows = (track_count + karaoke_track_count + emotion_track_count) as f32;
@@ -441,6 +455,27 @@ impl EditorLayoutCtx {
         fps: f64,
         zone: &Rect,
     ) -> Self {
+        Self::new_at_frame_with_fps_for_tracks(
+            project,
+            current_frame,
+            fps,
+            zone,
+            &rythmo_layout::all_track_indices(),
+        )
+    }
+
+    pub(crate) fn new_at_frame_with_fps_for_tracks(
+        project: &Project,
+        current_frame: f64,
+        fps: f64,
+        zone: &Rect,
+        track_indices: &[usize],
+    ) -> Self {
+        let track_indices = if track_indices.is_empty() {
+            &[0]
+        } else {
+            track_indices
+        };
         let karaoke_mode_tracks = rythmo_layout::karaoke_mode_tracks(
             project,
             current_frame,
@@ -450,23 +485,29 @@ impl EditorLayoutCtx {
         let emotion_tracks = rythmo_layout::text_emotion_tracks(project);
         let karaoke_track_count = reserved_karaoke_tracks
             .iter()
-            .filter(|has_karaoke| **has_karaoke)
+            .enumerate()
+            .filter(|(index, has_karaoke)| track_indices.contains(index) && **has_karaoke)
             .count();
         let emotion_track_count = emotion_tracks
             .iter()
             .enumerate()
             .filter(|(index, has_emotion)| {
-                **has_emotion
+                track_indices.contains(index)
+                    && **has_emotion
                     && !reserved_karaoke_tracks
                         .get(*index)
                         .copied()
                         .unwrap_or(false)
             })
             .count();
-        let normal_body_h =
-            editor_normal_body_height(karaoke_track_count, emotion_track_count, zone);
+        let normal_body_h = editor_normal_body_height_for_track_count(
+            karaoke_track_count,
+            emotion_track_count,
+            track_indices.len(),
+            zone,
+        );
         let track_layouts = build_track_layouts_from_karaoke_flags(
-            &rythmo_layout::all_track_indices(),
+            track_indices,
             &karaoke_mode_tracks,
             &reserved_karaoke_tracks,
             &emotion_tracks,

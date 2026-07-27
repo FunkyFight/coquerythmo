@@ -91,6 +91,7 @@ pub struct RythmoState {
     pub selected: Option<Selection>,
     pub editing_line: Option<u64>,
     pub line_input: crate::ui::text_input::TextInputState,
+    pub(crate) line_lowercase_override: bool,
     pub editing_character: Option<u64>,
     pub char_input: crate::ui::text_input::TextInputState,
     pub editing_note: Option<u64>,
@@ -111,6 +112,7 @@ pub struct RythmoState {
     pub keyboard_pan_direction: i32,
     pub keyboard_pan_last_tick: Option<std::time::Instant>,
     pub keyboard_pan_accum_px: f32,
+    pub compact_empty_tracks: bool,
     pub syllable_drag: Option<SyllableDrag>,
     pub context_menu: Option<LineContextMenu>,
     pub detection_hover: Option<DetectionHover>,
@@ -235,6 +237,7 @@ impl RythmoState {
             selected: None,
             editing_line: None,
             line_input: crate::ui::text_input::TextInputState::new(),
+            line_lowercase_override: false,
             editing_character: None,
             char_input: crate::ui::text_input::TextInputState::new(),
             editing_note: None,
@@ -255,6 +258,7 @@ impl RythmoState {
             keyboard_pan_direction: 0,
             keyboard_pan_last_tick: None,
             keyboard_pan_accum_px: 0.0,
+            compact_empty_tracks: false,
             syllable_drag: None,
             context_menu: None,
             detection_hover: None,
@@ -377,9 +381,9 @@ impl RythmoState {
         let mut hasher = DefaultHasher::new();
         // Project revision already covers every change that can affect track
         // usage. Re-scanning all lines here made every pointer move O(n).
-        project.revision().hash(&mut hasher);
         zone.height.to_bits().hash(&mut hasher);
         karaoke_mode_tracks.hash(&mut hasher);
+        project.revision().hash(&mut hasher);
         hasher.finish()
     }
 
@@ -404,12 +408,31 @@ impl RythmoState {
             }
         }
 
-        let layout_ctx = EditorLayoutCtx::new_at_frame_with_fps(project, current_frame, fps, zone);
+        let track_indices = if self.compact_empty_tracks {
+            crate::rythmo_layout::used_track_indices(project)
+        } else {
+            crate::rythmo_layout::all_track_indices()
+        };
+        let layout_ctx = EditorLayoutCtx::new_at_frame_with_fps_for_tracks(
+            project,
+            current_frame,
+            fps,
+            zone,
+            &track_indices,
+        );
 
         *self.cached_layout_signature.borrow_mut() = signature;
         *self.cached_layout_ctx.borrow_mut() = Some(layout_ctx);
 
         Ref::map(self.cached_layout_ctx.borrow(), |ctx| ctx.as_ref().unwrap())
+    }
+
+    pub(crate) fn set_compact_empty_tracks(&mut self, compact: bool) {
+        if self.compact_empty_tracks != compact {
+            self.compact_empty_tracks = compact;
+            *self.cached_layout_signature.borrow_mut() = 0;
+            *self.cached_layout_ctx.borrow_mut() = None;
+        }
     }
 
     pub(super) fn get_syllable_breaks(
@@ -647,6 +670,7 @@ impl RythmoState {
 
     pub fn stop_line_editing(&mut self) {
         self.editing_line = None;
+        self.line_lowercase_override = false;
         self.line_input.deactivate();
     }
 
@@ -663,6 +687,7 @@ impl RythmoState {
 
     pub fn start_editing_line(&mut self, line_id: u64, text: &str) {
         self.editing_line = Some(line_id);
+        self.line_lowercase_override = false;
         self.line_input.activate(text);
         self.selected = Some(Selection::Line(line_id));
     }
@@ -697,6 +722,9 @@ impl RythmoState {
         self.keyboard_pan_accum_px = 0.0;
         self.syllable_drag = None;
         self.context_menu = None;
+        self.detection_hover = None;
+        self.detection_menu = None;
+        self.detection_drag = None;
         if self.active_stroke.take().is_some() {
             self.drawing_dirty = true;
         }

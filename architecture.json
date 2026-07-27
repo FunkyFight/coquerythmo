@@ -1,0 +1,406 @@
+{
+  "meta": {
+    "project": "coquerythmo",
+    "version": "3.7.3",
+    "language": "fr",
+    "generated_at": "2026-07-26",
+    "summary": "Application desktop Rust de bande rythmo, lecture vidéo/audio, détection, export et collaboration Socket.IO.",
+    "analysis": {
+      "rust_source_files": 147,
+      "rust_entrypoint": "src/main.rs",
+      "application_root": "src/app/event_loop.rs",
+      "state_owner": "src/state.rs",
+      "server_root": "server/src/index.js",
+      "observations": [
+        "State compose RenderCoordinator, UiShell, PlaybackSession, CollaborationSession, JobManager, ProjectSession et WorkspaceHost.",
+        "EditExecutor est la frontière des mutations, de l'historique undo/redo, du dirty state et des origines réseau/import.",
+        "Les sauvegardes, imports, proxies et exports sont traités par des jobs suivis depuis la boucle d'événements.",
+        "La collaboration transporte commandes, snapshots de synchronisation, deltas, audio, vidéo et événements d'enregistrement via Socket.IO."
+      ],
+      "sources": [
+        "src/main.rs",
+        "src/app/event_loop.rs",
+        "src/state.rs",
+        "src/application/",
+        "src/workspaces/",
+        "src/project.rs",
+        "src/project_archive.rs",
+        "src/network.rs",
+        "server/src/"
+      ]
+    }
+  },
+  "zones": [
+    { "id": "runtime", "label": "Runtime", "x": 24, "y": 24, "width": 250, "height": 430 },
+    { "id": "application", "label": "Application", "x": 292, "y": 24, "width": 250, "height": 330 },
+    { "id": "workspaces", "label": "Workspaces", "x": 560, "y": 24, "width": 230, "height": 330 },
+    { "id": "media", "label": "Media & jobs", "x": 808, "y": 24, "width": 230, "height": 330 },
+    { "id": "io", "label": "Persistence & delivery", "x": 1056, "y": 24, "width": 240, "height": 450 },
+    { "id": "domain", "label": "Domain", "x": 560, "y": 360, "width": 478, "height": 460 },
+    { "id": "network", "label": "Collaboration", "x": 1056, "y": 500, "width": 240, "height": 290 }
+  ],
+  "nodes": [
+    {
+      "id": "main",
+      "label": "Entrée process",
+      "kind": "entry",
+      "group": "runtime",
+      "file": "src/main.rs",
+      "x": 48,
+      "y": 72,
+      "description": "Initialises le logger, détecte un projet passé en argument et délègue à app::run."
+    },
+    {
+      "id": "app-loop",
+      "label": "Boucle d’événements",
+      "kind": "orchestrator",
+      "group": "runtime",
+      "file": "src/app/event_loop.rs",
+      "x": 48,
+      "y": 174,
+      "description": "Relie winit, les événements natifs, les raccourcis, les jobs, les messages réseau et les redraws."
+    },
+    {
+      "id": "input-router",
+      "label": "ShortcutRouter",
+      "kind": "input",
+      "group": "runtime",
+      "file": "src/input/router.rs",
+      "x": 48,
+      "y": 276,
+      "description": "Résout les combinaisons de touches selon la pile de contextes et produit des UiAction."
+    },
+    {
+      "id": "command-router",
+      "label": "CommandDispatcher",
+      "kind": "commands",
+      "group": "application",
+      "file": "src/app/dispatcher.rs",
+      "x": 316,
+      "y": 72,
+      "description": "Transforme les UiAction en commandes d’application, ouverture de fichiers, lecture, édition ou export."
+    },
+    {
+      "id": "state",
+      "label": "State",
+      "kind": "composition",
+      "group": "application",
+      "file": "src/state.rs",
+      "x": 316,
+      "y": 174,
+      "description": "Propriétaire de la composition runtime : projet, rendu, UI, lecture, collaboration, jobs et workspaces."
+    },
+    {
+      "id": "workspace-host",
+      "label": "WorkspaceHost",
+      "kind": "boundary",
+      "group": "application",
+      "file": "src/application/workspace_service.rs",
+      "x": 316,
+      "y": 276,
+      "description": "Expose un seul workspace actif via un contrat réduit : identité, toolbar, événements de contenu et redraw."
+    },
+    {
+      "id": "rythmo",
+      "label": "RythmoWorkspace",
+      "kind": "workspace",
+      "group": "workspaces",
+      "file": "src/workspaces/rythmo/mod.rs",
+      "x": 584,
+      "y": 72,
+      "description": "Espace principal : bande rythmo, lignes, sélection, clavier, souris, dessin et détection."
+    },
+    {
+      "id": "recording",
+      "label": "RecordingWorkspace",
+      "kind": "workspace",
+      "group": "workspaces",
+      "file": "src/workspaces/recording/mod.rs",
+      "x": 584,
+      "y": 174,
+      "description": "Espace d’enregistrement avec contrôle de rôle, pistes et opérations de capture."
+    },
+    {
+      "id": "ui-shell",
+      "label": "UiShell / UI native",
+      "kind": "presentation",
+      "group": "runtime",
+      "file": "src/application/ui_shell.rs + src/ui/",
+      "x": 48,
+      "y": 378,
+      "description": "État de présentation commun : toolbar, modales, panneaux, overlays, accessibilité et rendu des contrôles."
+    },
+    {
+      "id": "project-session",
+      "label": "ProjectSession",
+      "kind": "session",
+      "group": "domain",
+      "file": "src/application/project_service.rs",
+      "x": 584,
+      "y": 410,
+      "description": "Regroupe le projet rythmo, le projet d’enregistrement, l’historique, le journal de transactions et l’index de rendu."
+    },
+    {
+      "id": "project",
+      "label": "Project",
+      "kind": "domain",
+      "group": "domain",
+      "file": "src/project.rs",
+      "x": 584,
+      "y": 524,
+      "description": "Modèle métier mutable : lignes, personnages, langues, marqueurs, dessins, réglages, détections et exports."
+    },
+    {
+      "id": "recording-domain",
+      "label": "RecordingProject",
+      "kind": "domain",
+      "group": "domain",
+      "file": "src/recording.rs",
+      "x": 584,
+      "y": 638,
+      "description": "État audio d’enregistrement et TransactionLog appliquant les opérations de piste et de capture."
+    },
+    {
+      "id": "edit",
+      "label": "EditExecutor + Command",
+      "kind": "mutation",
+      "group": "domain",
+      "file": "src/application/edit_service.rs",
+      "x": 832,
+      "y": 410,
+      "description": "Frontière unique des mutations : application de commandes, undo/redo, coalescence, dirty state et origines local/import/remote/sync."
+    },
+    {
+      "id": "playback",
+      "label": "PlaybackSession",
+      "kind": "media",
+      "group": "media",
+      "file": "src/application/playback_service.rs",
+      "x": 832,
+      "y": 72,
+      "description": "Coordonne le VideoPlayer, le chemin source/proxy, la timeline, le frame courant et l’audio actif."
+    },
+    {
+      "id": "detection",
+      "label": "Détection & sync",
+      "kind": "analysis",
+      "group": "media",
+      "file": "src/detection.rs",
+      "x": 832,
+      "y": 174,
+      "description": "Conserve les cues de détection et les points de synchronisation associés aux lignes."
+    },
+    {
+      "id": "jobs",
+      "label": "JobManager",
+      "kind": "background",
+      "group": "media",
+      "file": "src/application/job_service.rs",
+      "x": 832,
+      "y": 276,
+      "description": "Suit les jobs d’import, sauvegarde, proxy et export via des receivers interrogés depuis State."
+    },
+    {
+      "id": "render",
+      "label": "RenderCoordinator / wgpu",
+      "kind": "rendering",
+      "group": "io",
+      "file": "src/application/render_service.rs",
+      "x": 1080,
+      "y": 72,
+      "description": "Compose GraphicsContext, UiRenderer et frame timing ; présente les frames et demande les redraws."
+    },
+    {
+      "id": "archive",
+      "label": "Archive projet",
+      "kind": "persistence",
+      "group": "io",
+      "file": "src/project_archive.rs",
+      "x": 1080,
+      "y": 174,
+      "description": "Lit et écrit les bundles .coquerythmo, manifestes, médias, instrumentaux et données d’enregistrement."
+    },
+    {
+      "id": "export",
+      "label": "Import / export",
+      "kind": "delivery",
+      "group": "io",
+      "file": "src/export.rs + src/delivery_export.rs + src/video_export/",
+      "x": 1080,
+      "y": 276,
+      "description": "Convertit SRT/ASS/DETX/JSON et produit sous-titres, audio, références et MP4 avec FFmpeg."
+    },
+    {
+      "id": "media-io",
+      "label": "VideoPlayer + audio",
+      "kind": "adapter",
+      "group": "io",
+      "file": "src/video.rs + src/media_recording.rs + src/audio_transfer.rs",
+      "x": 1080,
+      "y": 378,
+      "description": "Décode vidéo/audio, calcule la waveform et gère les flux audio d’enregistrement."
+    },
+    {
+      "id": "network-client",
+      "label": "NetworkClient / Socket.IO",
+      "kind": "transport",
+      "group": "network",
+      "file": "src/network.rs",
+      "x": 1080,
+      "y": 548,
+      "description": "Transport asynchrone des commandes, snapshots, deltas, médias et événements d’enregistrement."
+    },
+    {
+      "id": "server",
+      "label": "Serveur de collaboration",
+      "kind": "server",
+      "group": "network",
+      "file": "server/src/index.js + server/src/room.js",
+      "x": 1080,
+      "y": 664,
+      "description": "Authentifie, crée et rejoint les rooms, relaye les messages et applique les droits de contrôle."
+    }
+  ],
+  "edges": [
+    { "id": "e01", "source": "main", "target": "app-loop", "label": "app::run", "kind": "control" },
+    { "id": "e02", "source": "app-loop", "target": "state", "label": "boucle / événements", "kind": "control" },
+    { "id": "e03", "source": "app-loop", "target": "input-router", "label": "entrée clavier", "kind": "control" },
+    { "id": "e04", "source": "input-router", "target": "command-router", "label": "UiAction", "kind": "control" },
+    { "id": "e05", "source": "command-router", "target": "state", "label": "dispatch", "kind": "control" },
+    { "id": "e06", "source": "state", "target": "workspace-host", "label": "workspace actif", "kind": "composition" },
+    { "id": "e07", "source": "workspace-host", "target": "rythmo", "label": "Rythmo", "kind": "composition" },
+    { "id": "e08", "source": "workspace-host", "target": "recording", "label": "Recording", "kind": "composition" },
+    { "id": "e09", "source": "state", "target": "ui-shell", "label": "état UI", "kind": "presentation" },
+    { "id": "e10", "source": "rythmo", "target": "ui-shell", "label": "contenu / redraw", "kind": "presentation" },
+    { "id": "e11", "source": "recording", "target": "ui-shell", "label": "vue recording", "kind": "presentation" },
+    { "id": "e12", "source": "state", "target": "project-session", "label": "use cases", "kind": "domain" },
+    { "id": "e13", "source": "project-session", "target": "project", "label": "état projet", "kind": "domain" },
+    { "id": "e14", "source": "state", "target": "edit", "label": "mutation", "kind": "domain" },
+    { "id": "e15", "source": "edit", "target": "project", "label": "Command::apply", "kind": "domain" },
+    { "id": "e16", "source": "project", "target": "detection", "label": "données de détection", "kind": "domain" },
+    { "id": "e17", "source": "rythmo", "target": "detection", "label": "palette / sync", "kind": "domain" },
+    { "id": "e18", "source": "state", "target": "playback", "label": "load / seek / play", "kind": "media" },
+    { "id": "e19", "source": "playback", "target": "media-io", "label": "décodage", "kind": "media" },
+    { "id": "e20", "source": "state", "target": "render", "label": "redraw", "kind": "rendering" },
+    { "id": "e21", "source": "playback", "target": "render", "label": "frame courant", "kind": "rendering" },
+    { "id": "e22", "source": "project-session", "target": "jobs", "label": "jobs en arrière-plan", "kind": "background" },
+    { "id": "e23", "source": "jobs", "target": "archive", "label": "load / save", "kind": "persistence" },
+    { "id": "e24", "source": "jobs", "target": "export", "label": "import / export", "kind": "delivery" },
+    { "id": "e25", "source": "archive", "target": "project-session", "label": "LoadedProject", "kind": "persistence" },
+    { "id": "e26", "source": "export", "target": "project", "label": "snapshot projet", "kind": "delivery" },
+    { "id": "e27", "source": "state", "target": "network-client", "label": "collaboration", "kind": "network" },
+    { "id": "e28", "source": "network-client", "target": "server", "label": "Socket.IO", "kind": "network" },
+    { "id": "e29", "source": "server", "target": "network-client", "label": "events relayed", "kind": "network" },
+    { "id": "e30", "source": "network-client", "target": "edit", "label": "remote command", "kind": "network" },
+    { "id": "e31", "source": "network-client", "target": "project-session", "label": "sync / delta", "kind": "network" },
+    { "id": "e32", "source": "recording", "target": "recording-domain", "label": "transaction", "kind": "domain" },
+    { "id": "e33", "source": "recording-domain", "target": "network-client", "label": "recording events", "kind": "network" },
+    { "id": "e34", "source": "media-io", "target": "render", "label": "frame / waveform", "kind": "rendering" },
+    { "id": "e35", "source": "project", "target": "project-session", "label": "revision / index", "kind": "domain" },
+    { "id": "e36", "source": "project-session", "target": "ui-shell", "label": "vue synchronisée", "kind": "presentation" },
+    { "id": "e37", "source": "project-session", "target": "playback", "label": "média du projet", "kind": "media" },
+    { "id": "e38", "source": "server", "target": "recording-domain", "label": "état distant", "kind": "network" },
+    { "id": "e39", "source": "detection", "target": "edit", "label": "édition sync", "kind": "domain" },
+    { "id": "e40", "source": "state", "target": "jobs", "label": "surveille les jobs", "kind": "background" },
+    { "id": "e41", "source": "render", "target": "ui-shell", "label": "scène + UI", "kind": "presentation" },
+    { "id": "e42", "source": "project-session", "target": "edit", "label": "commande avec session", "kind": "domain" },
+    { "id": "e43", "source": "project-session", "target": "render", "label": "index de rendu", "kind": "rendering" }
+  ],
+  "flows": [
+    {
+      "id": "startup",
+      "label": "Démarrage",
+      "description": "Initialisation du process, composition de State et activation du workspace Rythmo.",
+      "steps": [
+        { "id": "startup-1", "nodeId": "main", "title": "Entrer dans le process", "detail": "src/main.rs initialise le logger et transmet le chemin projet éventuel.", "edgeId": null },
+        { "id": "startup-2", "nodeId": "app-loop", "title": "Lancer app::run", "detail": "La boucle winit prend en charge la fenêtre, les événements et les redraws.", "edgeId": "e01" },
+        { "id": "startup-3", "nodeId": "state", "title": "Composer State", "detail": "State instancie les services, le projet vide, la collaboration, les jobs et les deux workspaces.", "edgeId": "e02" },
+        { "id": "startup-4", "nodeId": "workspace-host", "title": "Choisir le workspace", "detail": "WorkspaceHost démarre avec RythmoWorkspace actif ; State prépare en parallèle le rendu commun.", "edgeId": "e06" },
+        { "id": "startup-5", "nodeId": "rythmo", "title": "Afficher la bande rythmo", "detail": "Le workspace fournit la toolbar et la gestion du contenu Rythmo.", "edgeId": "e07" }
+      ]
+    },
+    {
+      "id": "edit",
+      "label": "Édition locale",
+      "description": "Un raccourci traverse les frontières d’entrée et de commande avant de muter le domaine.",
+      "steps": [
+        { "id": "edit-1", "nodeId": "app-loop", "title": "Recevoir l’entrée", "detail": "winit remet l’événement clavier à la boucle d’application.", "edgeId": null },
+        { "id": "edit-2", "nodeId": "input-router", "title": "Résoudre le raccourci", "detail": "ShortcutRouter applique le contexte actif et produit une UiAction.", "edgeId": "e03" },
+        { "id": "edit-3", "nodeId": "command-router", "title": "Dispatcher l’action", "detail": "CommandDispatcher centralise les effets métier et les gardes de contexte.", "edgeId": "e04" },
+        { "id": "edit-4", "nodeId": "state", "title": "Orchestrer l’édition", "detail": "State route l’action vers le service ou workspace concerné.", "edgeId": "e05" },
+        { "id": "edit-5", "nodeId": "edit", "title": "Créer et appliquer la Command", "detail": "EditExecutor conserve l’historique, la journalisation, le dirty state et la réversibilité.", "edgeId": "e14" },
+        { "id": "edit-6", "nodeId": "project", "title": "Muter le domaine", "detail": "Project applique la mutation sur les lignes, marqueurs, personnages, dessins ou réglages.", "edgeId": "e15" },
+        { "id": "edit-7", "nodeId": "project-session", "title": "Indexer la nouvelle révision", "detail": "ProjectSession expose l’état mis à jour aux vues et au rendu.", "edgeId": "e35" },
+        { "id": "edit-8", "nodeId": "ui-shell", "title": "Représenter l’état", "detail": "UiShell reconstruit les quads, textes, contrôles et overlays visibles.", "edgeId": "e36" }
+      ]
+    },
+    {
+      "id": "open-playback",
+      "label": "Ouvrir & lire",
+      "description": "Chargement d’un projet, récupération du média et boucle de lecture/rendu.",
+      "steps": [
+        { "id": "play-1", "nodeId": "command-router", "title": "Demander l’ouverture", "detail": "Le dispatcher ouvre le sélecteur et délègue l’import au service de fichier.", "edgeId": null },
+        { "id": "play-2", "nodeId": "state", "title": "Préparer le chargement", "detail": "State réinitialise les ressources puis prépare le chargement du bundle ou de la vidéo.", "edgeId": "e05" },
+        { "id": "play-3", "nodeId": "jobs", "title": "Exécuter le travail", "detail": "Les opérations longues sont suivies par JobManager sans bloquer la boucle UI.", "edgeId": "e40" },
+        { "id": "play-4", "nodeId": "archive", "title": "Lire le projet", "detail": "project_archive valide le bundle, extrait les assets temporaires et renvoie LoadedProject.", "edgeId": "e23" },
+        { "id": "play-5", "nodeId": "project-session", "title": "Installer l’état", "detail": "ProjectSession récupère le projet, les réglages, l’historique et les données d’enregistrement.", "edgeId": "e25" },
+        { "id": "play-6", "nodeId": "playback", "title": "Charger la vidéo", "detail": "PlaybackSession choisit la source ou le proxy puis synchronise audio et timeline.", "edgeId": "e37" },
+        { "id": "play-7", "nodeId": "media-io", "title": "Décoder les frames", "detail": "VideoPlayer décode vidéo/audio et prépare éventuellement la waveform.", "edgeId": "e19" },
+        { "id": "play-8", "nodeId": "render", "title": "Présenter la frame", "detail": "Le rendu combine le frame courant, la scène Rythmo et l’UI native wgpu.", "edgeId": "e34" },
+        { "id": "play-9", "nodeId": "ui-shell", "title": "Mettre à jour l’écran", "detail": "La boucle programme le prochain redraw si la lecture ou un job l’exige.", "edgeId": "e41" }
+      ]
+    },
+    {
+      "id": "detection",
+      "label": "Détection & synchronisation",
+      "description": "Le workspace Rythmo expose la palette de détection et rattache les points de sync au projet.",
+      "steps": [
+        { "id": "detect-1", "nodeId": "rythmo", "title": "Interagir avec la ligne", "detail": "Le contrôleur Rythmo reçoit le clic, le clavier ou le drag sur une ligne.", "edgeId": null },
+        { "id": "detect-2", "nodeId": "detection", "title": "Lire les cues", "detail": "DetectionDocument retrouve les cues et points de synchronisation de la ligne.", "edgeId": "e17" },
+        { "id": "detect-3", "nodeId": "edit", "title": "Créer une mutation", "detail": "Les changements de sync passent par la frontière de commandes réversibles.", "edgeId": "e39" },
+        { "id": "detect-4", "nodeId": "project", "title": "Persister la sync", "detail": "Le projet conserve détections, ratios syllabiques et marqueurs cohérents.", "edgeId": "e15" },
+        { "id": "detect-5", "nodeId": "project-session", "title": "Actualiser l’index", "detail": "La nouvelle révision est visible par le render index et les services de session.", "edgeId": "e35" },
+        { "id": "detect-6", "nodeId": "render", "title": "Redessiner l’overlay", "detail": "Le rendu affiche signes, guides, handles, texte synchronisé et information accessible.", "edgeId": "e43" }
+      ]
+    },
+    {
+      "id": "export",
+      "label": "Exporter",
+      "description": "Un export s’exécute en arrière-plan à partir d’un snapshot du projet.",
+      "steps": [
+        { "id": "export-1", "nodeId": "state", "title": "Valider la demande", "detail": "State vérifie média source, configuration, langues et formats sélectionnés.", "edgeId": null },
+        { "id": "export-2", "nodeId": "project-session", "title": "Prendre un snapshot", "detail": "La session fournit un état stable du projet et de ses réglages.", "edgeId": "e12" },
+        { "id": "export-3", "nodeId": "jobs", "title": "Enregistrer le job", "detail": "JobManager conserve le receiver, le progrès et l’annulation éventuelle.", "edgeId": "e22" },
+        { "id": "export-4", "nodeId": "export", "title": "Produire les sorties", "detail": "Les exporters gèrent JSON/SRT/ASS/DETX, audio, références et MP4 via FFmpeg.", "edgeId": "e24" },
+        { "id": "export-5", "nodeId": "project", "title": "Lire le modèle métier", "detail": "Les formats de sortie sont construits depuis le snapshot Project.", "edgeId": "e26" }
+      ]
+    },
+    {
+      "id": "collaboration",
+      "label": "Collaboration",
+      "description": "Les commandes locales et les synchronisations transitent par NetworkClient et le serveur de rooms.",
+      "steps": [
+        { "id": "collab-1", "nodeId": "state", "title": "Déclencher la collaboration", "detail": "State répond aux événements de connexion, room, sync et commandes distantes.", "edgeId": null },
+        { "id": "collab-2", "nodeId": "network-client", "title": "Sérialiser le protocole", "detail": "NetworkClient encode Packet, delta, audio, vidéo et recording events.", "edgeId": "e27" },
+        { "id": "collab-3", "nodeId": "server", "title": "Autoriser et relayer", "detail": "Le serveur authentifie, vérifie la room et les droits de contrôle puis diffuse l’événement.", "edgeId": "e28" },
+        { "id": "collab-4", "nodeId": "network-client", "title": "Recevoir l’événement", "detail": "Les callbacks Socket.IO convertissent les payloads en IncomingMessage.", "edgeId": "e29" },
+        { "id": "collab-5", "nodeId": "project-session", "title": "Synchroniser la session", "detail": "Les snapshots et deltas mettent à jour le projet sans polluer l’historique local.", "edgeId": "e31" },
+        { "id": "collab-6", "nodeId": "edit", "title": "Appliquer une commande distante", "detail": "EditExecutor reconstruit une commande réversible avec l’origine Remote ou Sync.", "edgeId": "e42" },
+        { "id": "collab-7", "nodeId": "project", "title": "Converger sur le domaine", "detail": "Le modèle métier reçoit la mise à jour et incrémente sa révision.", "edgeId": "e15" }
+      ]
+    },
+    {
+      "id": "recording",
+      "label": "Enregistrement en ligne",
+      "description": "Le workspace recording applique des transactions et partage les changements selon le rôle.",
+      "steps": [
+        { "id": "rec-1", "nodeId": "state", "title": "Activer le mode recording", "detail": "State garde le workspace actif et synchronise les contrôles de la vue.", "edgeId": null },
+        { "id": "rec-2", "nodeId": "workspace-host", "title": "Router vers Recording", "detail": "WorkspaceHost expose RecordingWorkspace au shell commun.", "edgeId": "e06" },
+        { "id": "rec-3", "nodeId": "recording", "title": "Manipuler une piste", "detail": "Le workspace applique mute, solo, armement, capture et sélection selon les droits.", "edgeId": "e08" },
+        { "id": "rec-4", "nodeId": "recording-domain", "title": "Appliquer une transaction", "detail": "RecordingProject et TransactionLog changent l’état local et sa révision.", "edgeId": "e32" },
+        { "id": "rec-5", "nodeId": "network-client", "title": "Envoyer l’événement", "detail": "Les transactions et commandes playback passent par Socket.IO.", "edgeId": "e33" },
+        { "id": "rec-6", "nodeId": "server", "title": "Vérifier le contrôle", "detail": "Le serveur accepte recording_transaction, recording_playback et recording_prepare uniquement au contrôleur.", "edgeId": "e28" }
+      ]
+    }
+  ]
+}

@@ -13,14 +13,14 @@ use crate::application::context::AppContext;
 use crate::application::delta_codec::{decode_delta, encode_delta};
 use crate::application::edit_service::{EditExecutor, EditOrigin};
 use crate::application::job_service::{
-    JobManager, PendingExportJob, PendingImportJob, PendingProxyJob, PendingSaveJob,
-    SaveContinuation,
+    JobManager, PendingExportJob, PendingImportJob, PendingProxyJob, PendingRecordingMixJob,
+    PendingSaveJob, SaveContinuation,
 };
 use crate::application::playback_service::PlaybackSession;
 use crate::application::project_service::ProjectSession;
 use crate::application::render_service::RenderCoordinator;
 use crate::application::ui_shell::UiShell;
-use crate::application::window_service::WindowManager;
+use crate::application::window_service::{SecondaryWindowKind, WindowManager};
 use crate::application::workspace_service::{WorkspaceHost, WorkspaceId};
 use crate::command::{Command, CommandKind, LineMove};
 use crate::network::{ConnectionState, IncomingMessage};
@@ -44,6 +44,14 @@ enum DialogueSplitTarget {
 
 fn rebase_pasted_start_frame(source_start: i64, source_anchor: i64, target_anchor: i64) -> i64 {
     target_anchor.saturating_add(source_start.saturating_sub(source_anchor))
+}
+
+fn recording_playback_waits_for_mix(
+    workspace: WorkspaceId,
+    mix_pending: bool,
+    player_is_playing: bool,
+) -> bool {
+    workspace == WorkspaceId::Recording && mix_pending && !player_is_playing
 }
 
 #[derive(Clone)]
@@ -96,6 +104,25 @@ mod clipboard_tests {
                 .line_tick,
             MediaTick::from_frame(420)
         );
+    }
+}
+
+#[cfg(test)]
+mod playback_tests {
+    use super::{recording_playback_waits_for_mix, WorkspaceId};
+
+    #[test]
+    fn recording_play_waits_for_the_pending_mix() {
+        assert!(recording_playback_waits_for_mix(
+            WorkspaceId::Recording,
+            true,
+            false
+        ));
+        assert!(!recording_playback_waits_for_mix(
+            WorkspaceId::Recording,
+            false,
+            false
+        ));
     }
 }
 
@@ -217,13 +244,17 @@ impl State {
         self.project_session
             .render_index
             .refresh(&self.project_session.project);
-        self.ui_shell.ui.handle_event(
+        let response = self.ui_shell.ui.handle_event(
             event,
             &self.project_session.project,
             &self.project_session.render_index,
             render_frame,
             fps,
-        )
+        );
+        if self.active_workspace() == WorkspaceId::Recording {
+            self.sync_recording_workspace_ui();
+        }
+        response
     }
 
     pub fn active_workspace(&self) -> WorkspaceId {
@@ -245,6 +276,14 @@ impl State {
                 crate::i18n::t("accessibility.workspace_selected")
             ),
         });
+        if workspace == WorkspaceId::Rythmo {
+            self.jobs.play_recording_mix_when_ready = false;
+            self.clear_recording_mix_preview();
+        } else if self.ui_shell.ui.recording_page()
+            == crate::ui::recording_workspace::RecordingPage::Timeline
+        {
+            self.schedule_recording_mix();
+        }
     }
 
     fn recording_network_role(&self) -> crate::ui::recording_workspace::RecordingRole {
@@ -271,20 +310,56 @@ impl State {
     }
 
     pub fn sync_recording_workspace_ui(&mut self) {
-        let current_frame = self.current_frame();
+        let current_frame = self.render_frame();
         let capture = self.recording_runtime.capture_state();
+        let countdown_seconds = self.recording_runtime.countdown_seconds_remaining();
         self.ui_shell.ui.sync_recording_scene(
+            &self.project_session.project,
             &self.project_session.recording_project,
             capture,
             &self.collaboration.network.member_details,
             self.collaboration.network.control_owner_id.as_deref(),
             current_frame,
+            countdown_seconds,
         );
+        self.sync_recording_daw_ui();
+    }
+
+    fn sync_recording_daw_ui(&mut self) {
+        if self.window_manager.secondary_kind != Some(SecondaryWindowKind::Daw) {
+            return;
+        }
+        let Some(display) = self.window_manager.secondary_display.as_ref() else {
+            return;
+        };
+        let (width, height) = (display.config.width as f32, display.config.height as f32);
+        let current_frame = self.render_frame();
+        self.ui_shell.ui.sync_recording_daw_scene(
+            width,
+            height,
+            &self.project_session.recording_project,
+            self.recording_runtime.capture_state(),
+            &self.collaboration.network.member_details,
+            self.collaboration.network.control_owner_id.as_deref(),
+            current_frame,
+            self.recording_runtime.countdown_seconds_remaining(),
+        );
+    }
+
+    pub fn handle_secondary_daw_event(&mut self, event: &UiEvent) -> EventResponse {
+        if self.window_manager.secondary_kind != Some(SecondaryWindowKind::Daw) {
+            return EventResponse::Ignored;
+        }
+        self.sync_recording_daw_ui();
+        let response = self.ui_shell.ui.handle_recording_daw_event(event);
+        self.sync_recording_daw_ui();
+        response
     }
 
     pub fn recording_choose_solo(&mut self) {
         self.ui_shell.ui.recording_enter_solo();
         self.sync_recording_workspace_ui();
+        self.schedule_recording_mix();
         self.announce_accessibility(AccessibilityEvent::Selection {
             label: crate::i18n::t("recording.choice.solo").to_string(),
         });
@@ -298,6 +373,7 @@ impl State {
         let role = self.recording_network_role();
         self.ui_shell.ui.recording_enter_online(role);
         self.sync_recording_workspace_ui();
+        self.schedule_recording_mix();
         self.announce_accessibility(AccessibilityEvent::Selection {
             label: match role {
                 crate::ui::recording_workspace::RecordingRole::Director => {
@@ -323,6 +399,206 @@ impl State {
             self.sync_recording_workspace_ui();
         } else {
             self.recording_read_only_error();
+        }
+    }
+
+    pub fn recording_add_track(&mut self) {
+        if !self.ui_shell.ui.recording_can_edit_timeline() {
+            self.recording_read_only_error();
+            return;
+        }
+        let next_number = self.project_session.recording_project.tracks().count() + 1;
+        let id = self.project_session.recording_project.allocate_track_id();
+        if let Err(error) =
+            self.apply_recording_operation(crate::recording::RecordingOperation::AddTrack {
+                track: crate::recording::AudioTrack::new(
+                    id,
+                    crate::i18n::t("recording.track.new")
+                        .replace("{number}", &next_number.to_string()),
+                ),
+            })
+        {
+            self.recording_error(error.to_string());
+        }
+    }
+
+    pub fn recording_begin_rename_track(&mut self, track_id: crate::recording::AudioTrackId) {
+        if self.ui_shell.ui.recording_can_edit_timeline() {
+            self.ui_shell
+                .ui
+                .recording_begin_rename_track(&self.project_session.recording_project, track_id);
+            self.sync_recording_workspace_ui();
+        } else {
+            self.recording_read_only_error();
+        }
+    }
+
+    pub fn recording_remove_track(&mut self, track_id: crate::recording::AudioTrackId) {
+        if let Err(error) =
+            self.apply_recording_operation(crate::recording::RecordingOperation::RemoveTrack {
+                track_id,
+            })
+        {
+            self.recording_error(error.to_string());
+        }
+    }
+
+    pub fn recording_rename_track(
+        &mut self,
+        track_id: crate::recording::AudioTrackId,
+        name: String,
+    ) {
+        let name = name.trim().to_owned();
+        if name.is_empty() {
+            return;
+        }
+        if let Err(error) =
+            self.apply_recording_operation(crate::recording::RecordingOperation::RenameTrack {
+                track_id,
+                name,
+            })
+        {
+            self.recording_error(error.to_string());
+        }
+    }
+
+    pub fn recording_place_asset(
+        &mut self,
+        asset_id: crate::recording::AudioAssetId,
+        track_id: crate::recording::AudioTrackId,
+        start_frame: i64,
+    ) {
+        let Some(asset) = self.project_session.recording_project.asset(asset_id) else {
+            return;
+        };
+        let duration_frames =
+            asset.duration_frames(self.project_session.recording_project.timeline_fps());
+        let clip_id = self.project_session.recording_project.allocate_clip_id();
+        let operation = crate::recording::RecordingOperation::AddClip {
+            clip: crate::recording::AudioClip {
+                id: clip_id,
+                asset_id,
+                track_id,
+                start_frame: start_frame.max(0),
+                source_start_frame: 0,
+                duration_frames,
+            },
+        };
+        if let Err(error) = self.apply_recording_operation(operation) {
+            self.recording_error(error.to_string());
+        }
+    }
+
+    pub fn recording_move_selected_clips(
+        &mut self,
+        track_id: crate::recording::AudioTrackId,
+        delta_frames: i64,
+    ) {
+        if self
+            .project_session
+            .recording_project
+            .track(track_id)
+            .is_none()
+        {
+            return;
+        }
+        let clip_ids = self
+            .ui_shell
+            .ui
+            .recording_editor_mut()
+            .selected_clips()
+            .collect::<Vec<_>>();
+        let minimum_start = clip_ids
+            .iter()
+            .filter_map(|clip_id| self.project_session.recording_project.clip(*clip_id))
+            .map(|clip| clip.start_frame)
+            .min();
+        let Some(minimum_start) = minimum_start else {
+            return;
+        };
+        let effective_delta = delta_frames.max(-minimum_start);
+        let placements = clip_ids
+            .iter()
+            .filter_map(|clip_id| {
+                self.project_session
+                    .recording_project
+                    .clip(*clip_id)
+                    .map(|clip| crate::recording::ClipPlacement {
+                        clip_id: *clip_id,
+                        track_id,
+                        start_frame: clip.start_frame.saturating_add(effective_delta),
+                    })
+            })
+            .collect::<Vec<_>>();
+        let changed = placements.iter().any(|placement| {
+            self.project_session
+                .recording_project
+                .clip(placement.clip_id)
+                .is_some_and(|clip| {
+                    clip.track_id != placement.track_id || clip.start_frame != placement.start_frame
+                })
+        });
+        if changed {
+            if let Err(error) =
+                self.apply_recording_operation(crate::recording::RecordingOperation::MoveClips {
+                    placements,
+                })
+            {
+                self.recording_error(error.to_string());
+            }
+        }
+    }
+
+    pub fn recording_delete_selected_clips(&mut self) {
+        let clip_ids = self
+            .ui_shell
+            .ui
+            .recording_editor_mut()
+            .selected_clips()
+            .collect::<Vec<_>>();
+        if clip_ids.is_empty() {
+            return;
+        }
+        match self.apply_recording_operation(crate::recording::RecordingOperation::DeleteClips {
+            clip_ids,
+        }) {
+            Ok(()) => {
+                self.ui_shell.ui.recording_editor_mut().clear_selection();
+                self.sync_recording_workspace_ui();
+            }
+            Err(error) => self.recording_error(error.to_string()),
+        }
+    }
+
+    pub fn recording_delete_selected_asset(&mut self) {
+        let Some(asset_id) = self.ui_shell.ui.recording_selected_asset() else {
+            return;
+        };
+        let clip_ids = self
+            .project_session
+            .recording_project
+            .clips()
+            .filter(|clip| clip.asset_id == asset_id)
+            .map(|clip| clip.id)
+            .collect::<Vec<_>>();
+        let mut operations = clip_ids
+            .into_iter()
+            .map(
+                |clip_id| crate::recording::RecordingOperation::DeleteClips {
+                    clip_ids: vec![clip_id],
+                },
+            )
+            .collect::<Vec<_>>();
+        operations.push(crate::recording::RecordingOperation::RemoveAsset { asset_id });
+        match self
+            .apply_recording_operation(crate::recording::RecordingOperation::Batch { operations })
+        {
+            Ok(()) => {
+                self.project_session.recording_asset_paths.remove(&asset_id);
+                self.ui_shell.ui.recording_clear_asset_selection();
+                self.sync_recording_workspace_ui();
+            }
+            Err(error) => self.recording_error(error.to_string()),
         }
     }
 
@@ -354,7 +630,82 @@ impl State {
                 .send_recording_transaction(&transaction);
         }
         self.sync_recording_workspace_ui();
+        self.clear_recording_mix_preview();
+        self.schedule_recording_mix();
         Ok(())
+    }
+
+    fn schedule_recording_mix(&mut self) {
+        if self.active_workspace() != WorkspaceId::Recording
+            || self.ui_shell.ui.recording_page()
+                != crate::ui::recording_workspace::RecordingPage::Timeline
+        {
+            return;
+        }
+        if self.project_session.recording_project.clips().len() == 0 {
+            self.clear_recording_mix_preview();
+            return;
+        }
+        let Some(source) = self.playback.source_video_path.clone() else {
+            return;
+        };
+        let mut spec = match crate::recording_mix::RecordingMixSpec::from_project(
+            &self.project_session.recording_project,
+            &self.project_session.recording_asset_paths,
+            Some(source),
+        ) {
+            Ok(spec) => spec,
+            Err(error) => {
+                log::warn!("Recording preview mix is not ready: {error}");
+                return;
+            }
+        };
+        spec.set_source_volume(self.ui_shell.ui.volume());
+        if let Some(job) = self.jobs.pending_recording_mix_job.take() {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+        self.jobs.recording_mix_generation = self.jobs.recording_mix_generation.saturating_add(1);
+        let output = crate::media_binary::installation_temp_dir().join(format!(
+            "coquerythmo-recording-preview-{}-{}.flac",
+            std::process::id(),
+            self.jobs.recording_mix_generation
+        ));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let worker_output = output.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result =
+                crate::recording_mix::render_recording_mix(&spec, &worker_output, &worker_cancel)
+                    .map(|()| worker_output);
+            let _ = sender.send(result);
+        });
+        self.jobs.pending_recording_mix_job = Some(PendingRecordingMixJob { cancel, receiver });
+    }
+
+    fn clear_recording_mix_preview(&mut self) {
+        if let Some(job) = self.jobs.pending_recording_mix_job.take() {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+        let previous = self
+            .playback
+            .video_player
+            .as_mut()
+            .and_then(|player| player.set_recording_preview_audio_path(None));
+        if let Some(path) = previous {
+            Self::remove_recording_mix_file(&path);
+        }
+    }
+
+    fn remove_recording_mix_file(path: &Path) {
+        let is_ours = path.parent() == Some(crate::media_binary::installation_temp_dir().as_path())
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("coquerythmo-recording-preview-"));
+        if is_ours {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     pub fn recording_toggle_track_mute(&mut self, track_id: crate::recording::AudioTrackId) {
@@ -1561,7 +1912,11 @@ impl State {
             .is_some_and(|display| display.window.id() == window_id)
     }
 
-    pub fn open_secondary_display(&mut self, window: Arc<Window>) {
+    pub fn is_secondary_daw(&self) -> bool {
+        self.window_manager.secondary_kind == Some(SecondaryWindowKind::Daw)
+    }
+
+    pub fn open_secondary_display(&mut self, window: Arc<Window>, kind: SecondaryWindowKind) {
         if self.playback.video_player.is_none() {
             log::warn!("No video loaded ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â cannot open secondary display");
             return;
@@ -1575,6 +1930,10 @@ impl State {
         match self.render.gfx.create_window_surface(window) {
             Ok(display) => {
                 self.window_manager.secondary_display = Some(display);
+                self.window_manager.secondary_kind = Some(kind);
+                self.ui_shell
+                    .ui
+                    .set_recording_daw_detached(kind == SecondaryWindowKind::Daw);
                 self.request_redraw();
                 self.request_secondary_redraw();
             }
@@ -1584,6 +1943,8 @@ impl State {
 
     pub fn close_secondary_display(&mut self) {
         self.window_manager.secondary_display = None;
+        self.window_manager.secondary_kind = None;
+        self.ui_shell.ui.set_recording_daw_detached(false);
         self.request_redraw();
     }
 
@@ -1928,6 +2289,7 @@ impl State {
         proxy_path: Option<&Path>,
         seek_frame: Option<i64>,
     ) -> bool {
+        self.clear_recording_mix_preview();
         let (bgl, sampler) = self.renderer_refs();
         let mut player = VideoPlayer::new();
 
@@ -2037,10 +2399,24 @@ impl State {
         self.ui_shell.ui.has_video = true;
         self.ui_shell.ui.total_frames = total;
         self.rebuild_topbar_for_network();
+        self.schedule_recording_mix();
         true
     }
 
     pub fn toggle_play_pause(&mut self) {
+        let recording_mix_pending = recording_playback_waits_for_mix(
+            self.active_workspace(),
+            self.jobs.pending_recording_mix_job.is_some(),
+            self.playback
+                .video_player
+                .as_ref()
+                .is_some_and(|player| player.is_playing()),
+        );
+        if recording_mix_pending {
+            self.jobs.play_recording_mix_when_ready = true;
+            return;
+        }
+        self.jobs.play_recording_mix_when_ready = false;
         let playing = {
             let Some(player) = &mut self.playback.video_player else {
                 return;
@@ -2146,6 +2522,9 @@ impl State {
         self.ui_shell.ui.set_volume(vol);
         if let Some(player) = &mut self.playback.video_player {
             player.set_volume(vol);
+        }
+        if self.active_workspace() == WorkspaceId::Recording {
+            self.schedule_recording_mix();
         }
         self.narration
             .announce_event(AccessibilityEvent::ValueChanged {
@@ -2346,6 +2725,7 @@ impl State {
             Ok(_) => {
                 self.project_session.mark_recording_changed();
                 self.sync_recording_workspace_ui();
+                self.schedule_recording_mix();
             }
             Err(error) => self.recording_error(error.to_string()),
         }
@@ -2416,6 +2796,7 @@ impl State {
             }
         }
         self.sync_recording_workspace_ui();
+        self.schedule_recording_mix();
     }
 
     fn receive_recording_playback(&mut self, playback: crate::network::RecordingPlaybackPayload) {
@@ -2450,6 +2831,7 @@ impl State {
                 .recording_asset_paths
                 .insert(metadata.target.asset_id, path);
             self.project_session.mark_recording_changed();
+            self.schedule_recording_mix();
             return;
         }
 
@@ -2485,6 +2867,7 @@ impl State {
             self.project_session
                 .recording_asset_paths
                 .insert(asset_id, path);
+            self.schedule_recording_mix();
         } else {
             // Non-authoritative peers receive the matching transaction from
             // the DA; keeping the verified local path is intentionally not a
@@ -2493,6 +2876,7 @@ impl State {
                 .recording_asset_paths
                 .insert(metadata.target.asset_id, path);
             self.project_session.mark_recording_changed();
+            self.schedule_recording_mix();
         }
     }
 
@@ -4989,6 +5373,53 @@ impl State {
         true
     }
 
+    fn poll_recording_mix_job(&mut self) -> bool {
+        let result = match self.jobs.pending_recording_mix_job.as_ref() {
+            Some(job) => match job.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err("Recording preview mix job disconnected".into()))
+                }
+            },
+            None => None,
+        };
+        let Some(result) = result else {
+            return false;
+        };
+        self.jobs.pending_recording_mix_job = None;
+        let play_when_ready = std::mem::take(&mut self.jobs.play_recording_mix_when_ready);
+        let mut mix_installed = false;
+        match result {
+            Ok(path)
+                if self.active_workspace() == WorkspaceId::Recording
+                    && self.ui_shell.ui.recording_page()
+                        == crate::ui::recording_workspace::RecordingPage::Timeline =>
+            {
+                if let Some(player) = &mut self.playback.video_player {
+                    if let Some(previous) =
+                        player.set_recording_preview_audio_path(Some(path.clone()))
+                    {
+                        Self::remove_recording_mix_file(&previous);
+                    }
+                    mix_installed = true;
+                } else {
+                    Self::remove_recording_mix_file(&path);
+                }
+            }
+            Ok(path) => Self::remove_recording_mix_file(&path),
+            Err(error) if error == "recording mix cancelled" => {}
+            Err(error) => {
+                log::error!("Recording preview mix failed: {error}");
+                self.show_toast(error, 5.0);
+            }
+        }
+        if play_when_ready && mix_installed {
+            self.toggle_play_pause();
+        }
+        true
+    }
+
     fn poll_import_job(&mut self) -> bool {
         let result = match self.jobs.pending_import_job.as_ref() {
             Some(job) => match job.receiver.try_recv() {
@@ -5084,6 +5515,7 @@ impl State {
                 if !is_legacy_json {
                     self.project_session.loaded_project = Some(loaded);
                 }
+                self.schedule_recording_mix();
                 self.rebuild_topbar_for_network();
                 log::info!("Project imported from {}", job.br_path.display());
                 self.narration.announce_event(AccessibilityEvent::Success {
@@ -5233,6 +5665,7 @@ impl State {
                             self.project_session
                                 .recording_asset_paths
                                 .insert(target.asset_id, path.clone());
+                            self.schedule_recording_mix();
                         }
                         Err(error) => {
                             self.recording_error(error.to_string());
@@ -5359,6 +5792,7 @@ impl State {
         changed |= self.tick_network();
         changed |= self.tick_scroll_decode();
         changed |= self.poll_export_job();
+        changed |= self.poll_recording_mix_job();
         changed |= self.poll_proxy_job();
         changed |= self.poll_import_job();
         changed |= self.poll_save_job();
@@ -5409,6 +5843,7 @@ impl State {
     fn periodic_redraw_due(&self, now: Instant) -> bool {
         if self.ui_shell.ui.has_active_progress()
             || self.jobs.pending_proxy_job.is_some()
+            || self.jobs.pending_recording_mix_job.is_some()
             || self.jobs.pending_import_job.is_some()
             || self.jobs.pending_save_job.is_some()
         {
@@ -5462,6 +5897,7 @@ impl State {
 
         if self.ui_shell.ui.has_active_progress()
             || self.jobs.pending_proxy_job.is_some()
+            || self.jobs.pending_recording_mix_job.is_some()
             || self.jobs.pending_import_job.is_some()
             || self.jobs.pending_save_job.is_some()
         {
@@ -5564,8 +6000,13 @@ impl State {
         self.apply_automation_if_needed();
 
         // Video quad ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â skip when export modal is showing (it would cover the modal)
-        let video_quad = if self.ui_shell.ui.export_progress.is_some()
-            || self.window_manager.secondary_display.is_some()
+        let recording_choice = self.active_workspace() == WorkspaceId::Recording
+            && self.ui_shell.ui.recording_page()
+                == crate::ui::recording_workspace::RecordingPage::Choice;
+        let video_quad = if recording_choice
+            || self.ui_shell.ui.export_progress.is_some()
+            || self.window_manager.secondary_kind
+                == Some(crate::application::window_service::SecondaryWindowKind::Video)
             || self.ui_shell.ui.automation_open()
         {
             None
@@ -5627,6 +6068,11 @@ impl State {
         // The main frame owns playback advancement and display cadence.
         // Rendering the secondary surface must not create a second clock or
         // consume decoded frames twice.
+        let is_daw = self.window_manager.secondary_kind
+            == Some(crate::application::window_service::SecondaryWindowKind::Daw);
+        if is_daw {
+            self.sync_recording_daw_ui();
+        }
         let Some(display) = &mut self.window_manager.secondary_display else {
             return;
         };
@@ -5676,6 +6122,24 @@ impl State {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+        }
+
+        if is_daw {
+            self.ui_shell.ui.render_recording_daw(
+                &mut self.render.ui_renderer,
+                &self.render.gfx.device,
+                &self.render.gfx.queue,
+                &mut encoder,
+                &view,
+                width,
+                height,
+            );
+            self.render
+                .gfx
+                .queue
+                .submit(std::iter::once(encoder.finish()));
+            surface_texture.present();
+            return;
         }
 
         let video_quad =
