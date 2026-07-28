@@ -12,7 +12,7 @@ use crate::recording::{
 };
 
 use super::focus::AccessibleRole;
-use super::primitives::{HAlign, Overflow, QuadInstance, Rect, VAlign};
+use super::primitives::{HAlign, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 
 const PANEL_BG: [f32; 4] = [0.075, 0.078, 0.095, 1.0];
 const PANEL_ALT: [f32; 4] = [0.105, 0.108, 0.13, 1.0];
@@ -21,6 +21,7 @@ const TEXT: [u8; 3] = [225, 227, 236];
 const MUTED_TEXT: [u8; 3] = [155, 158, 172];
 const ACCENT: [f32; 4] = [0.34, 0.28, 0.78, 1.0];
 const RECORD: [f32; 4] = [0.82, 0.18, 0.24, 1.0];
+pub const TRACK_ROW_H: f32 = 58.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingPage {
@@ -159,10 +160,12 @@ impl RecordingLayout {
     pub fn rythmo_split_handle_rect(&self) -> Rect {
         Rect {
             x: self.rythmo.x,
-            y: self
-                .timeline
-                .map_or(self.rythmo.y + self.rythmo.height, |timeline| timeline.y)
-                - super::layout::SPLIT_DRAG_ZONE / 2.0,
+            y: if self.microphone_waveform.is_some() {
+                self.rythmo.y
+            } else {
+                self.timeline
+                    .map_or(self.rythmo.y + self.rythmo.height, |timeline| timeline.y)
+            } - super::layout::SPLIT_DRAG_ZONE / 2.0,
             width: self.rythmo.width,
             height: super::layout::SPLIT_DRAG_ZONE,
         }
@@ -399,9 +402,18 @@ impl RecordingLayout {
         }
     }
 
-    pub fn capturing(screen_w: f32, screen_h: f32) -> Self {
-        let rythmo_h = (screen_h * 0.26).clamp(180.0, 280.0);
+    pub fn capturing(
+        screen_w: f32,
+        screen_h: f32,
+        rythmo_min_h: f32,
+        rythmo_split: Option<f32>,
+    ) -> Self {
         let strip_h = 34.0;
+        let available_rythmo_h = (screen_h - strip_h * 2.0).max(0.0);
+        let automatic_rythmo_h = (screen_h * 0.26).clamp(180.0, 280.0).max(rythmo_min_h);
+        let rythmo_h = rythmo_split
+            .map_or(automatic_rythmo_h, |split| available_rythmo_h * split)
+            .min(available_rythmo_h);
         let video_h = (screen_h - rythmo_h - strip_h * 2.0).max(0.0);
         Self {
             content: Rect {
@@ -457,6 +469,10 @@ pub struct RecordingWorkspaceUi {
     pub rename_buffer: String,
     pub dragging_asset: Option<AudioAssetId>,
     pub dragging_clip: Option<RecordingClipDrag>,
+    track_scroll: usize,
+    track_count: usize,
+    dragging_track_scrollbar: bool,
+    track_scrollbar_drag_offset: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -478,6 +494,10 @@ impl Default for RecordingWorkspaceUi {
             rename_buffer: String::new(),
             dragging_asset: None,
             dragging_clip: None,
+            track_scroll: 0,
+            track_count: 0,
+            dragging_track_scrollbar: false,
+            track_scrollbar_drag_offset: 0.0,
         }
     }
 }
@@ -549,6 +569,68 @@ impl RecordingWorkspaceUi {
         let half_visible_frames = body.width as f64 / self.pixels_per_frame.max(0.001) as f64 / 2.0;
         let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
         self.view_start_frame = current_frame - half_visible_frames + offset_frames;
+    }
+
+    pub fn sync_track_count(&mut self, track_count: usize) {
+        self.track_count = track_count;
+        if track_count == 0 {
+            self.track_scroll = 0;
+        }
+    }
+
+    pub fn handle_track_scroll(&mut self, event: &UiEvent, layout: RecordingLayout) -> bool {
+        let Some(headers) = layout.track_headers else {
+            return false;
+        };
+        let Some(body) = layout.track_body else {
+            return false;
+        };
+        let Some((track, thumb, max_scroll)) =
+            track_scrollbar_geometry(body, self.track_count, self.track_scroll)
+        else {
+            self.track_scroll = 0;
+            self.dragging_track_scrollbar = false;
+            return false;
+        };
+        self.track_scroll = self.track_scroll.min(max_scroll);
+
+        match event {
+            UiEvent::MousePress { x, y } if thumb.contains(*x, *y) => {
+                self.dragging_track_scrollbar = true;
+                self.track_scrollbar_drag_offset = *y - thumb.y;
+                true
+            }
+            UiEvent::MousePress { x, y } if track.contains(*x, *y) => {
+                let travel = (track.height - thumb.height).max(1.0);
+                let ratio = ((*y - track.y - thumb.height / 2.0) / travel).clamp(0.0, 1.0);
+                self.track_scroll = (ratio * max_scroll as f32).round() as usize;
+                self.dragging_track_scrollbar = true;
+                self.track_scrollbar_drag_offset = thumb.height / 2.0;
+                true
+            }
+            UiEvent::MouseMove { y, .. } if self.dragging_track_scrollbar => {
+                let travel = (track.height - thumb.height).max(1.0);
+                let ratio =
+                    ((*y - self.track_scrollbar_drag_offset - track.y) / travel).clamp(0.0, 1.0);
+                self.track_scroll = (ratio * max_scroll as f32).round() as usize;
+                true
+            }
+            UiEvent::MouseRelease { .. } if self.dragging_track_scrollbar => {
+                self.dragging_track_scrollbar = false;
+                true
+            }
+            UiEvent::Scroll { x, y, delta, .. }
+                if headers.contains(*x, *y) || body.contains(*x, *y) =>
+            {
+                if *delta > 0.0 {
+                    self.track_scroll = self.track_scroll.saturating_sub(1);
+                } else if *delta < 0.0 {
+                    self.track_scroll = (self.track_scroll + 1).min(max_scroll);
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     fn is_clip_selected(&self, clip_id: AudioClipId) -> bool {
@@ -707,6 +789,7 @@ fn timeline_scene(
             project.armed_track_id().is_some(),
         );
         push_tracks(&mut scene, ui, project, headers, body, current_frame);
+        push_track_scrollbar(&mut scene, ui, project.tracks().count(), body);
         push_assets(&mut scene, ui, project, assets);
     }
 
@@ -899,6 +982,69 @@ fn push_tool_controls(
     });
 }
 
+fn visible_track_rows(body: Rect) -> usize {
+    (body.height / TRACK_ROW_H).floor().max(1.0) as usize
+}
+
+fn effective_track_scroll(body: Rect, track_count: usize, scroll: usize) -> usize {
+    scroll.min(track_count.saturating_sub(visible_track_rows(body)))
+}
+
+fn track_scrollbar_geometry(
+    body: Rect,
+    track_count: usize,
+    scroll: usize,
+) -> Option<(Rect, Rect, usize)> {
+    let visible = visible_track_rows(body);
+    let max_scroll = track_count.saturating_sub(visible);
+    if max_scroll == 0 {
+        return None;
+    }
+    let track = Rect {
+        x: body.x + body.width - 10.0,
+        y: body.y + 6.0,
+        width: 4.0,
+        height: (body.height - 12.0).max(1.0),
+    };
+    let thumb_h = (track.height * visible as f32 / track_count as f32)
+        .clamp(track.height.min(24.0), track.height);
+    let travel = (track.height - thumb_h).max(0.0);
+    let ratio = effective_track_scroll(body, track_count, scroll) as f32 / max_scroll as f32;
+    let thumb = Rect {
+        x: track.x,
+        y: track.y + ratio * travel,
+        width: track.width,
+        height: thumb_h,
+    };
+    Some((track, thumb, max_scroll))
+}
+
+fn push_track_scrollbar(
+    scene: &mut RecordingScene,
+    ui: &RecordingWorkspaceUi,
+    track_count: usize,
+    body: Rect,
+) {
+    let Some((track, thumb, _)) = track_scrollbar_geometry(body, track_count, ui.track_scroll)
+    else {
+        return;
+    };
+    push_quad(
+        &mut scene.quads,
+        track,
+        [0.12, 0.13, 0.17, 0.9],
+        [0.0; 4],
+        2.0,
+    );
+    push_quad(
+        &mut scene.quads,
+        thumb,
+        [0.48, 0.50, 0.62, 0.95],
+        [0.0; 4],
+        2.0,
+    );
+}
+
 fn push_tracks(
     scene: &mut RecordingScene,
     ui: &RecordingWorkspaceUi,
@@ -907,23 +1053,27 @@ fn push_tracks(
     body: Rect,
     current_frame: f64,
 ) {
-    const ROW_H: f32 = 58.0;
-    for (row, track) in project.tracks().enumerate() {
-        let y = headers.y + row as f32 * ROW_H;
-        if y >= headers.y + headers.height {
-            break;
-        }
+    let track_count = project.tracks().count();
+    let scroll = effective_track_scroll(body, track_count, ui.track_scroll);
+    for (visible_row, track) in project
+        .tracks()
+        .skip(scroll)
+        .take(visible_track_rows(body))
+        .enumerate()
+    {
+        let row = scroll + visible_row;
+        let y = headers.y + visible_row as f32 * TRACK_ROW_H;
         let header = Rect {
             x: headers.x,
             y,
             width: headers.width,
-            height: ROW_H,
+            height: TRACK_ROW_H,
         };
         let lane = Rect {
             x: body.x,
             y,
             width: body.width,
-            height: ROW_H,
+            height: TRACK_ROW_H,
         };
         push_quad(
             &mut scene.quads,
@@ -1062,7 +1212,7 @@ fn push_tracks(
             width: 22.0,
             height: 22.0,
         };
-        let removable = project.tracks().count() > 1;
+        let removable = track_count > 1;
         scene.labels.push(label(
             "×",
             remove_bounds,
@@ -1088,14 +1238,20 @@ fn push_tracks(
         let Some(track_row) = project.tracks().position(|track| track.id == clip.track_id) else {
             continue;
         };
+        let Some(visible_row) = track_row.checked_sub(scroll) else {
+            continue;
+        };
+        if visible_row >= visible_track_rows(body) {
+            continue;
+        }
         let x =
             body.x + (clip.start_frame as f64 - ui.view_start_frame) as f32 * ui.pixels_per_frame;
         let width = (clip.duration_frames as f32 * ui.pixels_per_frame).max(3.0);
         let clip_bounds = Rect {
             x,
-            y: body.y + track_row as f32 * ROW_H + 6.0,
+            y: body.y + visible_row as f32 * TRACK_ROW_H + 6.0,
             width,
-            height: ROW_H - 12.0,
+            height: TRACK_ROW_H - 12.0,
         };
         let left = clip_bounds.x.max(body.x);
         let right = (clip_bounds.x + clip_bounds.width).min(body.x + body.width);
@@ -1472,12 +1628,22 @@ mod tests {
 
     #[test]
     fn capture_layout_keeps_the_normal_rythmo_inside_the_window() {
-        let layout = RecordingLayout::capturing(1280.0, 720.0);
+        let layout = RecordingLayout::capturing(1280.0, 720.0, 380.0, None);
         assert_eq!(layout.rythmo.x, 0.0);
         assert_eq!(layout.rythmo.width, 1280.0);
-        assert!(layout.rythmo.height >= 130.0);
+        assert_eq!(layout.rythmo.height, 380.0);
         assert_eq!(layout.rythmo.y + layout.rythmo.height, 720.0);
+        assert_eq!(
+            layout.rythmo_split_handle_rect().y + super::super::layout::SPLIT_DRAG_ZONE / 2.0,
+            layout.rythmo.y
+        );
         assert!(layout.timeline.is_none());
+    }
+
+    #[test]
+    fn capture_layout_allows_the_actor_to_compress_the_rythmo() {
+        let layout = RecordingLayout::capturing(1280.0, 720.0, 380.0, Some(0.2));
+        assert_eq!(layout.rythmo.height, (720.0 - 68.0) * 0.2);
     }
 
     #[test]
@@ -1684,6 +1850,57 @@ mod tests {
             control.control,
             RecordingControl::RemoveTrack(id) if id == second
         )));
+    }
+
+    #[test]
+    fn daw_scrolls_to_tracks_below_the_viewport() {
+        let mut project = RecordingProject::new(24.0).unwrap();
+        let track_ids: Vec<_> = (0..4)
+            .map(|index| {
+                let id = project.allocate_track_id();
+                project
+                    .apply(&RecordingOperation::AddTrack {
+                        track: AudioTrack::new(id, format!("Piste {}", index + 1)),
+                    })
+                    .unwrap();
+                id
+            })
+            .collect();
+        let layout = RecordingLayout::daw(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1200.0,
+                height: 200.0,
+            },
+            0.23,
+        );
+        let mut ui = RecordingWorkspaceUi {
+            page: RecordingPage::Timeline,
+            role: RecordingRole::Solo,
+            ..RecordingWorkspaceUi::default()
+        };
+        ui.sync_track_count(track_ids.len());
+        let body = layout.track_body.unwrap();
+        assert!(ui.handle_track_scroll(
+            &UiEvent::Scroll {
+                x: body.x + 10.0,
+                y: body.y + 10.0,
+                delta: -1.0,
+                fast: false,
+                ctrl: false,
+            },
+            layout,
+        ));
+        let scene = ui.scene(layout, &project, None, &[], None, 0.0, None);
+        let first_visible = scene
+            .controls
+            .iter()
+            .find_map(|control| match control.control {
+                RecordingControl::TrackMute(id) => Some(id),
+                _ => None,
+            });
+        assert_eq!(first_visible, Some(track_ids[1]));
     }
 
     #[test]

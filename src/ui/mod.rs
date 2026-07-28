@@ -71,7 +71,7 @@ use self::icons::IconAtlas;
 use self::modal_host::ModalHost;
 use self::recording_workspace::{
     RecordingControl, RecordingLayout, RecordingPage, RecordingRole, RecordingScene,
-    RecordingWorkspaceUi,
+    RecordingWorkspaceUi, TRACK_ROW_H,
 };
 use self::renderer::UiRenderer;
 use crate::workspaces::rythmo::view as rythmo;
@@ -139,6 +139,7 @@ pub struct Ui {
     recording_scene: RecordingScene,
     recording_capture_active: bool,
     recording_capture_view: bool,
+    recording_capture_rythmo_split: Option<f32>,
     recording_daw_detached: bool,
     recording_daw_layout: RecordingLayout,
     recording_daw_scene: RecordingScene,
@@ -291,6 +292,7 @@ impl Ui {
             recording_scene: RecordingScene::default(),
             recording_capture_active: false,
             recording_capture_view: false,
+            recording_capture_rythmo_split: None,
             recording_daw_detached: false,
             recording_daw_layout: RecordingLayout::choice(Rect::default()),
             recording_daw_scene: RecordingScene::default(),
@@ -688,7 +690,12 @@ impl Ui {
             capture_active,
         );
         let next_layout = if capture_view {
-            RecordingLayout::capturing(self.screen_w, self.screen_h)
+            RecordingLayout::capturing(
+                self.screen_w,
+                self.screen_h,
+                Self::recording_rythmo_min_height(rythmo_project),
+                self.recording_capture_rythmo_split,
+            )
         } else if self.recording_ui.page == RecordingPage::Choice {
             RecordingLayout::choice(self.workspace_content_rect())
         } else if self.recording_daw_detached {
@@ -712,6 +719,7 @@ impl Ui {
         self.recording_capture_active = capture_active;
         self.recording_capture_view = capture_view;
         self.recording_layout = next_layout;
+        self.recording_ui.sync_track_count(project.tracks().count());
         self.recording_ui.sync_view_to_playhead(
             self.recording_layout,
             current_frame,
@@ -758,6 +766,7 @@ impl Ui {
         if toolbar_changed || self.recording_daw_toolbar_widgets.is_empty() {
             self.rebuild_recording_daw_toolbar();
         }
+        self.recording_ui.sync_track_count(project.tracks().count());
         self.recording_ui.sync_view_to_playhead(
             self.recording_daw_layout,
             current_frame,
@@ -797,6 +806,12 @@ impl Ui {
     }
 
     pub fn handle_recording_daw_event(&mut self, event: &UiEvent) -> EventResponse {
+        if self
+            .recording_ui
+            .handle_track_scroll(event, self.recording_daw_layout)
+        {
+            return EventResponse::Consumed;
+        }
         if !self.recording_playback_controls_enabled() {
             return EventResponse::Consumed;
         }
@@ -935,7 +950,7 @@ impl Ui {
                             _ => None,
                         })
                         .collect();
-                    let row = ((*y - body.y) / 58.0).floor() as usize;
+                    let row = ((*y - body.y) / TRACK_ROW_H).floor() as usize;
                     let Some(track_id) = track_ids.get(row).copied() else {
                         return EventResponse::Consumed;
                     };
@@ -980,7 +995,7 @@ impl Ui {
                             _ => None,
                         })
                         .collect();
-                    let row = ((*y - body.y) / 58.0).floor() as usize;
+                    let row = ((*y - body.y) / TRACK_ROW_H).floor() as usize;
                     let Some(track_id) = track_ids.get(row).copied() else {
                         return EventResponse::Consumed;
                     };
@@ -1241,6 +1256,9 @@ impl Ui {
         }
 
         if self.active_workspace == WorkspaceId::Recording && self.recording_capture_active {
+            if let Some(response) = self.handle_recording_split_drag(event) {
+                return response;
+            }
             if matches!(event, UiEvent::KeyInput { text } if text == "\x1b") {
                 return EventResponse::Action(UiAction::RecordingStopCapture);
             }
@@ -1547,6 +1565,14 @@ impl Ui {
             return response;
         }
 
+        if self.active_workspace == WorkspaceId::Recording
+            && self
+                .recording_ui
+                .handle_track_scroll(event, self.recording_layout)
+        {
+            return EventResponse::Consumed;
+        }
+
         if let Some(response) = self.handle_split_drag(event) {
             return response;
         }
@@ -1632,7 +1658,7 @@ impl Ui {
                                 _ => None,
                             })
                             .collect();
-                        let row = ((*y - body.y) / 58.0).floor() as usize;
+                        let row = ((*y - body.y) / TRACK_ROW_H).floor() as usize;
                         let Some(track_id) = track_ids.get(row).copied() else {
                             return EventResponse::Consumed;
                         };
@@ -1676,7 +1702,7 @@ impl Ui {
                                 _ => None,
                             })
                             .collect();
-                        let row = ((*y - body.y) / 58.0).floor() as usize;
+                        let row = ((*y - body.y) / TRACK_ROW_H).floor() as usize;
                         let Some(track_id) = track_ids.get(row).copied() else {
                             return EventResponse::Consumed;
                         };
@@ -1985,14 +2011,18 @@ impl Ui {
     fn handle_recording_split_drag(&mut self, event: &UiEvent) -> Option<EventResponse> {
         if self.active_workspace != WorkspaceId::Recording
             || self.recording_ui.page != RecordingPage::Timeline
-            || self.recording_capture_view
         {
             return None;
         }
         let layout = self.recording_layout;
         match event {
             UiEvent::MousePress { x, y } => {
-                let handle = if layout.video_split_handle_rect().contains(*x, *y) {
+                let handle = if self.recording_capture_view {
+                    layout
+                        .rythmo_split_handle_rect()
+                        .contains(*x, *y)
+                        .then_some(RecordingSplitHandle::Rythmo)
+                } else if layout.video_split_handle_rect().contains(*x, *y) {
                     Some(RecordingSplitHandle::Video)
                 } else if !self.recording_daw_detached
                     && layout.rythmo_split_handle_rect().contains(*x, *y)
@@ -2028,9 +2058,23 @@ impl Ui {
                             ((*y - content.y) / available).clamp(0.2, 0.72);
                     }
                     RecordingSplitHandle::Rythmo => {
-                        let available = (content.height - layout.video.height - TOOLBAR_H).max(1.0);
-                        self.recording_rythmo_split =
-                            ((*y - layout.rythmo.y) / available).clamp(0.15, 0.72);
+                        if self.recording_capture_view {
+                            let waveform_h = layout
+                                .source_waveform
+                                .into_iter()
+                                .chain(layout.microphone_waveform)
+                                .map(|waveform| waveform.height)
+                                .sum::<f32>();
+                            let available = (content.height - waveform_h).max(1.0);
+                            self.recording_capture_rythmo_split = Some(
+                                ((content.y + content.height - *y) / available).clamp(0.0, 1.0),
+                            );
+                        } else {
+                            let available =
+                                (content.height - layout.video.height - TOOLBAR_H).max(1.0);
+                            self.recording_rythmo_split =
+                                ((*y - layout.rythmo.y) / available).clamp(0.15, 0.72);
+                        }
                     }
                     RecordingSplitHandle::Assets => {
                         self.recording_assets_split = ((content.x + content.width - *x)
@@ -2056,6 +2100,12 @@ impl Ui {
         if self.active_workspace == WorkspaceId::Recording
             && self.recording_ui.page == RecordingPage::Timeline
         {
+            if self.recording_capture_view {
+                return self
+                    .recording_layout
+                    .rythmo_split_handle_rect()
+                    .contains(cx, cy);
+            }
             return self
                 .recording_layout
                 .video_split_handle_rect()
@@ -3893,7 +3943,7 @@ impl Ui {
         });
 
         if body.contains(cursor.0, cursor.1) {
-            let row = ((cursor.1 - body.y) / 58.0).floor().max(0.0);
+            let row = ((cursor.1 - body.y) / TRACK_ROW_H).floor().max(0.0);
             let width = 120.0_f32.min(body.width.max(0.0));
             let x = (body.x
                 + ((cursor.0 - body.x) / pixels_per_frame.max(0.001)).round()
@@ -3901,7 +3951,7 @@ impl Ui {
             .clamp(body.x, (body.x + body.width - width).max(body.x));
             let target = Rect {
                 x,
-                y: body.y + row * 58.0 + 6.0,
+                y: body.y + row * TRACK_ROW_H + 6.0,
                 width,
                 height: 46.0,
             };
@@ -4149,6 +4199,32 @@ impl Ui {
                     self.cursor_pos,
                 );
             }
+            let handle = self.recording_layout.rythmo_split_handle_rect();
+            let active = handle.contains(self.cursor_pos.0, self.cursor_pos.1)
+                || self.dragging_recording_split == Some(RecordingSplitHandle::Rythmo);
+            let color = if active {
+                [0.45, 0.55, 0.95, 0.95]
+            } else {
+                [0.20, 0.20, 0.24, 0.75]
+            };
+            quads.push(QuadInstance {
+                rect: [
+                    handle.x,
+                    handle.y + handle.height * 0.5 - 1.0,
+                    handle.width,
+                    2.0,
+                ],
+                color,
+                color_bottom: color,
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 0.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
             return;
         }
 
