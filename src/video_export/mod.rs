@@ -4,14 +4,14 @@
 //! frame production, audio muxing, FFmpeg invocation and progress reporting.
 
 pub(crate) mod announcer;
-mod audio;
-mod capabilities;
-mod ffmpeg;
-mod frame_source;
-mod pipeline;
+pub mod audio;
+pub mod capabilities;
+pub mod ffmpeg;
+pub mod frame_source;
+pub mod pipeline;
 pub mod preroll;
-mod progress;
-mod types;
+pub mod progress;
+pub mod types;
 
 pub const EXPORT_RENDER_BACKEND_UNKNOWN: u32 = 0;
 pub const EXPORT_RENDER_BACKEND_GPU: u32 = 1;

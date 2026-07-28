@@ -29,10 +29,15 @@ pub struct MixClip {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordingMixSpec {
-    pub source: Option<PathBuf>,
+    /// Duration of silent source audio (e.g. video duration) in seconds.
+    /// If set, this adds a silent source of this duration to the mix,
+    /// ensuring the output has at least this duration.
+    pub source_duration_seconds: Option<f64>,
     pub clips: Vec<MixClip>,
     pub sample_rate: u32,
     pub source_volume: f32,
+    /// If set, the output will be padded with silence to this duration.
+    pub total_duration_seconds: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +159,7 @@ impl RecordingMixSpec {
         project: &RecordingProject,
         asset_paths: &BTreeMap<AudioAssetId, PathBuf>,
         source: Option<PathBuf>,
+        total_duration_seconds: Option<f64>,
     ) -> Result<Self, String> {
         project.validate().map_err(|error| error.to_string())?;
         let fps = project.timeline_fps();
@@ -197,10 +203,11 @@ impl RecordingMixSpec {
                 .then_with(|| left.clip_id.cmp(&right.clip_id))
         });
         Ok(Self {
-            source,
+            source_duration_seconds: None,
             clips,
             sample_rate: 48_000,
             source_volume: 1.0,
+            total_duration_seconds,
         })
     }
 
@@ -213,7 +220,7 @@ impl RecordingMixSpec {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.source.is_none() && self.clips.is_empty()
+        self.source_duration_seconds.is_none() && self.clips.is_empty()
     }
 
     pub fn ffmpeg_filter(&self) -> Result<String, String> {
@@ -226,13 +233,14 @@ impl RecordingMixSpec {
         let mut filters = Vec::new();
         let mut labels = Vec::new();
         let mut input_index = 0usize;
-        if self.source.is_some() {
-            filters.push(format!(
-                "[{input_index}:a]aresample={},volume={:.6},asetpts=PTS-STARTPTS[source]",
-                self.sample_rate, self.source_volume
-            ));
-            labels.push("[source]".to_string());
-            input_index += 1;
+        if let Some(source_duration) = self.source_duration_seconds {
+            if source_duration.is_finite() && source_duration > 0.0 {
+                filters.push(format!(
+                    "anullsrc=r={}:cl=stereo:duration={:.9}[source]",
+                    self.sample_rate, source_duration
+                ));
+                labels.push("[source]".to_string());
+            }
         }
         for (clip_index, clip) in self.clips.iter().enumerate() {
             if !clip.source_start_seconds.is_finite()
@@ -259,6 +267,10 @@ impl RecordingMixSpec {
             labels.concat(),
             labels.len()
         ));
+        if let Some(total_duration) = self.total_duration_seconds {
+            filters.push(format!("[mix]apad=whole_dur={:.9}[padded]", total_duration));
+            filters.push("[padded]anull[mix]".to_string());
+        }
         Ok(filters.join(";"))
     }
 
@@ -270,10 +282,6 @@ impl RecordingMixSpec {
             "-nostdin".into(),
             "-n".into(),
         ];
-        if let Some(source) = &self.source {
-            args.push("-i".into());
-            args.push(source.to_string_lossy().into_owned());
-        }
         for clip in &self.clips {
             args.push("-i".into());
             args.push(clip.path.to_string_lossy().into_owned());
@@ -405,7 +413,7 @@ mod tests {
     #[test]
     fn filter_places_clips_at_their_timeline_offsets() {
         let spec = RecordingMixSpec {
-            source: Some(PathBuf::from("source.mp4")),
+            source_duration_seconds: None,
             clips: vec![MixClip {
                 clip_id: AudioClipId::new(3),
                 track_id: AudioTrackId::new(1),
@@ -416,11 +424,35 @@ mod tests {
             }],
             sample_rate: 48_000,
             source_volume: 1.0,
+            total_duration_seconds: None,
         };
         let filter = spec.ffmpeg_filter().unwrap();
         assert!(filter.contains("atrim=start=0.500000000:duration=2.000000000"));
         assert!(filter.contains("adelay=60000S:all=1"));
-        assert!(filter.contains("amix=inputs=2"));
+        assert!(filter.contains("amix=inputs=1"));
+    }
+
+    #[test]
+    fn silent_source_does_not_shift_file_input_indexes() {
+        let spec = RecordingMixSpec {
+            source_duration_seconds: Some(10.0),
+            clips: vec![MixClip {
+                clip_id: AudioClipId::new(3),
+                track_id: AudioTrackId::new(1),
+                path: PathBuf::from("voice.flac"),
+                source_start_seconds: 0.0,
+                duration_seconds: 2.0,
+                timeline_start_seconds: 1.0,
+            }],
+            sample_rate: 48_000,
+            source_volume: 1.0,
+            total_duration_seconds: Some(10.0),
+        };
+
+        let filter = spec.ffmpeg_filter().unwrap();
+        assert!(filter.contains("anullsrc=r=48000:cl=stereo:duration=10.000000000[source]"));
+        assert!(filter.contains("[0:a]aresample=48000"));
+        assert!(!filter.contains("[1:a]aresample=48000"));
     }
 
     #[test]
@@ -432,7 +464,7 @@ mod tests {
         );
         let mix = RealtimeRecordingMix::from_spec(
             &RecordingMixSpec {
-                source: None,
+                source_duration_seconds: None,
                 clips: vec![MixClip {
                     clip_id: AudioClipId::new(3),
                     track_id: AudioTrackId::new(1),
@@ -443,6 +475,7 @@ mod tests {
                 }],
                 sample_rate: REALTIME_SAMPLE_RATE,
                 source_volume: 0.5,
+                total_duration_seconds: None,
             },
             &cache,
             REALTIME_SAMPLE_RATE,
@@ -453,7 +486,7 @@ mod tests {
         assert_eq!(mix.mix_stereo(1.0, [1.0, 1.0]), [0.75, 0.0]);
     }
 
-#[test]
+    #[test]
     fn realtime_mix_interpolates_at_different_sample_rate() {
         let mut cache = BTreeMap::new();
         // 4 stereo frames: [L0, R0, L1, R1, L2, R2, L3, R3]
@@ -463,7 +496,7 @@ mod tests {
         );
         let mix = RealtimeRecordingMix::from_spec(
             &RecordingMixSpec {
-                source: None,
+                source_duration_seconds: None,
                 clips: vec![MixClip {
                     clip_id: AudioClipId::new(1),
                     track_id: AudioTrackId::new(1),
@@ -474,6 +507,7 @@ mod tests {
                 }],
                 sample_rate: REALTIME_SAMPLE_RATE,
                 source_volume: 1.0,
+                total_duration_seconds: None,
             },
             &cache,
             44_100, // Different output sample rate
@@ -553,7 +587,7 @@ mod tests {
             24,
         );
         let paths = BTreeMap::from([(asset_id, PathBuf::from("voice-2.flac"))]);
-        let spec = RecordingMixSpec::from_project(&project, &paths, None).unwrap();
+        let spec = RecordingMixSpec::from_project(&project, &paths, None, None).unwrap();
         assert_eq!(spec.clips.len(), 1);
         assert_eq!(spec.clips[0].source_start_seconds, 0.5);
         assert_eq!(spec.clips[0].duration_seconds, 1.0);
@@ -596,7 +630,7 @@ mod tests {
             (AudioAssetId::new(2), PathBuf::from("voice-2.flac")),
             (AudioAssetId::new(5), PathBuf::from("voice-5.flac")),
         ]);
-        let spec = RecordingMixSpec::from_project(&project, &paths, None).unwrap();
+        let spec = RecordingMixSpec::from_project(&project, &paths, None, None).unwrap();
         assert_eq!(
             spec.clips
                 .iter()
@@ -611,9 +645,13 @@ mod tests {
                 muted: true,
             })
             .unwrap();
-        let spec =
-            RecordingMixSpec::from_project(&project, &paths, Some(PathBuf::from("source.mp4")))
-                .unwrap();
+        let spec = RecordingMixSpec::from_project(
+            &project,
+            &paths,
+            Some(PathBuf::from("source.mp4")),
+            None,
+        )
+        .unwrap();
         assert!(spec.clips.is_empty());
     }
 
@@ -631,14 +669,16 @@ mod tests {
             24,
         );
         assert!(
-            RecordingMixSpec::from_project(&project, &BTreeMap::new(), None)
+            RecordingMixSpec::from_project(&project, &BTreeMap::new(), None, None)
                 .unwrap_err()
                 .contains("missing FLAC path")
         );
         let wrong_path = BTreeMap::from([(AudioAssetId::new(2), PathBuf::from("voice.wav"))]);
-        assert!(RecordingMixSpec::from_project(&project, &wrong_path, None)
-            .unwrap_err()
-            .contains("does not resolve to a FLAC"));
+        assert!(
+            RecordingMixSpec::from_project(&project, &wrong_path, None, None)
+                .unwrap_err()
+                .contains("does not resolve to a FLAC")
+        );
     }
 
     #[test]
@@ -682,16 +722,15 @@ mod tests {
             })
             .unwrap();
         let paths = BTreeMap::from([(asset_id, PathBuf::from("voice.flac"))]);
-        let spec =
-            RecordingMixSpec::from_project(&project, &paths, Some(PathBuf::from("source.mp4")))
-                .unwrap();
+        let spec = RecordingMixSpec::from_project(
+            &project,
+            &paths,
+            Some(PathBuf::from("source.mp4")),
+            None,
+        )
+        .unwrap();
         assert!(spec.clips.is_empty());
-        assert_eq!(
-            spec.ffmpeg_filter()
-                .unwrap()
-                .matches("amix=inputs=1")
-                .count(),
-            1
-        );
+        // With no source duration and no clips, the mix is empty
+        assert!(spec.is_empty());
     }
 }

@@ -23,7 +23,7 @@ pub(super) struct VideoInfo {
     pub(super) duration_secs: f64,
 }
 
-fn probe_video_duration(path: &Path) -> Option<f64> {
+pub fn probe_video_duration(path: &Path) -> Option<f64> {
     let out = media_binary::command("ffprobe")
         .args([
             "-v",

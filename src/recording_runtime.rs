@@ -3,9 +3,10 @@
 //! Durable timeline mutations remain in `recording`; this adapter owns only
 //! transient CPAL/FFmpeg state and temporary files.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::audio_transfer::{AudioTransferMetadata, AudioTransferReceiver, ReceivedAudio};
 use crate::media_recording::FfmpegFlacRecorder;
@@ -15,12 +16,18 @@ use crate::recording::{
 };
 
 static RECORDING_NONCE: AtomicU64 = AtomicU64::new(0);
+const RECORDING_COUNTDOWN: Duration = Duration::from_secs(3);
 
 type NativeCapture = CaptureController<FfmpegFlacRecorder, SystemClock>;
 
 struct ActiveCapture {
     controller: NativeCapture,
     output_path: PathBuf,
+}
+
+struct ObservedCapture {
+    state: CaptureState,
+    started_at: Instant,
 }
 
 #[derive(Debug)]
@@ -45,9 +52,11 @@ pub enum RecordingRuntimeEvent {
 
 pub struct RecordingRuntime {
     capture: Option<ActiveCapture>,
+    observed_capture: Option<ObservedCapture>,
     incoming: AudioTransferReceiver,
     temporary_dir: PathBuf,
     owned_files: Vec<PathBuf>,
+    audio_paths_by_checksum: HashMap<String, PathBuf>,
 }
 
 impl RecordingRuntime {
@@ -59,9 +68,11 @@ impl RecordingRuntime {
         ));
         Self {
             capture: None,
+            observed_capture: None,
             incoming: AudioTransferReceiver::default(),
             temporary_dir,
             owned_files: Vec::new(),
+            audio_paths_by_checksum: HashMap::new(),
         }
     }
 
@@ -69,12 +80,22 @@ impl RecordingRuntime {
         self.capture
             .as_ref()
             .map(|capture| capture.controller.state())
+            .or_else(|| self.observed_capture.as_ref().map(|capture| &capture.state))
     }
 
     pub fn countdown_seconds_remaining(&self) -> Option<u32> {
         self.capture
             .as_ref()
             .and_then(|capture| capture.controller.countdown_seconds_remaining())
+            .or_else(|| {
+                let capture = self.observed_capture.as_ref()?;
+                matches!(capture.state, CaptureState::Countdown { .. }).then(|| {
+                    RECORDING_COUNTDOWN
+                        .saturating_sub(capture.started_at.elapsed())
+                        .as_secs_f64()
+                        .ceil() as u32
+                })
+            })
     }
 
     pub fn live_waveform(&self) -> WaveformData {
@@ -99,8 +120,9 @@ impl RecordingRuntime {
         &mut self,
         project: &RecordingProject,
         start_frame: i64,
+        username: &str,
     ) -> Result<RecordingRuntimeEvent, RecordingError> {
-        if self.capture.is_some() {
+        if self.capture_state().is_some() {
             return Err(RecordingError::CaptureBusy);
         }
         let track_id = project
@@ -110,7 +132,7 @@ impl RecordingRuntime {
         // Propose IDs without touching durable allocator state. A cancelled
         // countdown therefore keeps strict transaction reconstruction equal.
         let target = project.propose_capture_target(track_id, start_frame)?;
-        self.begin_capture_target(target)
+        self.begin_capture_target(target, username)
     }
 
     /// Start a capture using IDs reserved by the online controller. Actors do
@@ -119,15 +141,21 @@ impl RecordingRuntime {
     pub fn begin_capture_target(
         &mut self,
         target: CaptureTarget,
+        username: &str,
     ) -> Result<RecordingRuntimeEvent, RecordingError> {
-        if self.capture.is_some() {
+        if self.capture_state().is_some() {
             return Err(RecordingError::CaptureBusy);
         }
         let nonce = RECORDING_NONCE.fetch_add(1, Ordering::Relaxed);
         let timestamp = recording_timestamp();
-        let mut output_path = self.temporary_dir.join(format!("{timestamp}.flac"));
+        let prefix = portable_username(username);
+        let mut output_path = self
+            .temporary_dir
+            .join(format!("{prefix}_{timestamp}.flac"));
         if output_path.exists() {
-            output_path = self.temporary_dir.join(format!("{timestamp}-{nonce}.flac"));
+            output_path = self
+                .temporary_dir
+                .join(format!("{prefix}_{timestamp}-{nonce}.flac"));
         }
         let recorder = FfmpegFlacRecorder::new(&output_path);
         let mut controller = CaptureController::new(recorder, SystemClock::default());
@@ -139,7 +167,35 @@ impl RecordingRuntime {
         Ok(RecordingRuntimeEvent::CountdownStarted)
     }
 
+    pub fn begin_observed_capture(
+        &mut self,
+        target: CaptureTarget,
+    ) -> Result<RecordingRuntimeEvent, RecordingError> {
+        if self.capture_state().is_some() {
+            return Err(RecordingError::CaptureBusy);
+        }
+        self.observed_capture = Some(ObservedCapture {
+            state: CaptureState::Countdown {
+                target,
+                deadline: RECORDING_COUNTDOWN,
+            },
+            started_at: Instant::now(),
+        });
+        Ok(RecordingRuntimeEvent::CountdownStarted)
+    }
+
     pub fn cancel_or_stop(&mut self) -> Result<RecordingRuntimeEvent, RecordingError> {
+        if let Some(observed) = self.observed_capture.take() {
+            return match observed.state {
+                CaptureState::Countdown { .. } => Ok(RecordingRuntimeEvent::Cancelled),
+                CaptureState::Capturing { target, .. } | CaptureState::Finalizing { target } => {
+                    Ok(RecordingRuntimeEvent::Finalizing { target })
+                }
+                CaptureState::Idle | CaptureState::Error { .. } => {
+                    Err(RecordingError::CaptureNotActive)
+                }
+            };
+        }
         let capture = self
             .capture
             .as_mut()
@@ -155,6 +211,21 @@ impl RecordingRuntime {
     }
 
     pub fn tick(&mut self) -> RecordingRuntimeEvent {
+        if self.capture.is_none() {
+            let Some(observed) = self.observed_capture.as_mut() else {
+                return RecordingRuntimeEvent::None;
+            };
+            if let CaptureState::Countdown { target, .. } = observed.state {
+                if observed.started_at.elapsed() >= RECORDING_COUNTDOWN {
+                    observed.state = CaptureState::Capturing {
+                        target,
+                        started_at: RECORDING_COUNTDOWN,
+                    };
+                    return RecordingRuntimeEvent::CaptureStarted { target };
+                }
+            }
+            return RecordingRuntimeEvent::None;
+        }
         let event = match self.capture.as_mut() {
             Some(capture) => capture.controller.tick(),
             None => return RecordingRuntimeEvent::None,
@@ -198,6 +269,15 @@ impl RecordingRuntime {
         Ok(received)
     }
 
+    pub fn remember_audio_path(&mut self, checksum: &str, path: &Path) {
+        self.audio_paths_by_checksum
+            .insert(checksum.to_owned(), path.to_owned());
+    }
+
+    pub fn audio_path(&self, checksum: &str) -> Option<&PathBuf> {
+        self.audio_paths_by_checksum.get(checksum)
+    }
+
     pub fn owns(&self, path: &Path) -> bool {
         self.owned_files.iter().any(|candidate| candidate == path)
     }
@@ -227,6 +307,30 @@ fn recording_timestamp() -> String {
     format!("{year:04}-{month:02}-{day:02}_{hour:02}-{minute:02}-{second:02}")
 }
 
+fn portable_username(username: &str) -> String {
+    let username = username
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let username = username.trim().trim_matches(['.', ' ']);
+    if username.is_empty() {
+        "user".into()
+    } else {
+        username.chars().take(80).collect()
+    }
+}
+
 impl Default for RecordingRuntime {
     fn default() -> Self {
         Self::new()
@@ -254,5 +358,50 @@ fn map_event(event: CaptureEvent) -> RecordingRuntimeEvent {
         CaptureEvent::Finished(_) => unreachable!("finished events retain their output path"),
         CaptureEvent::Cancelled => RecordingRuntimeEvent::Cancelled,
         CaptureEvent::Failed { message } => RecordingRuntimeEvent::Failed { message },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::portable_username;
+    use super::{RecordingRuntime, RecordingRuntimeEvent};
+    use crate::recording::{AudioAssetId, AudioClipId, AudioTrackId, CaptureState, CaptureTarget};
+
+    #[test]
+    fn recording_file_prefix_is_portable() {
+        assert_eq!(portable_username(" Comé/dien:* "), "Comé_dien__");
+        assert_eq!(portable_username("..."), "user");
+    }
+
+    #[test]
+    fn observed_capture_changes_view_without_opening_a_recorder() {
+        let mut runtime = RecordingRuntime::new();
+        let target = CaptureTarget {
+            track_id: AudioTrackId::new(1),
+            asset_id: AudioAssetId::new(2),
+            clip_id: AudioClipId::new(3),
+            start_frame: 48,
+        };
+
+        runtime.begin_observed_capture(target).unwrap();
+        assert!(matches!(
+            runtime.capture_state(),
+            Some(CaptureState::Countdown { .. })
+        ));
+        assert!(runtime.capture.is_none());
+        assert!(matches!(
+            runtime.cancel_or_stop().unwrap(),
+            RecordingRuntimeEvent::Cancelled
+        ));
+    }
+
+    #[test]
+    fn remembers_local_audio_by_checksum() {
+        let mut runtime = RecordingRuntime::new();
+        let path = runtime.temporary_dir.join("take.flac");
+
+        runtime.remember_audio_path("checksum", &path);
+
+        assert_eq!(runtime.audio_path("checksum"), Some(&path));
     }
 }

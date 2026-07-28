@@ -31,6 +31,7 @@ pub(crate) struct ToolbarBuildContext<'a> {
     pub(crate) brush_color_presets: &'a [[f32; 4]; 8],
     pub(crate) ctrl_held: bool,
     pub(crate) editable: bool,
+    pub(crate) playback_enabled: bool,
 }
 
 fn icon_uv(icon_uvs: &HashMap<String, [f32; 4]>, name: &str) -> [f32; 4] {
@@ -44,6 +45,7 @@ pub(crate) fn build_topbar(
     settings_uv: [f32; 4],
     project_uv: [f32; 4],
     active_workspace: WorkspaceId,
+    recording_daw_enabled: bool,
 ) -> Vec<Box<dyn Widget>> {
     // Build project menu with "Récent" submenu
     let recents = crate::config::recent_projects();
@@ -132,7 +134,7 @@ pub(crate) fn build_topbar(
 
     // Recording has its own contextual commands. Until those commands are
     // introduced, only the shared Project menu is exposed here.
-    if active_workspace == WorkspaceId::Recording {
+    if active_workspace == WorkspaceId::Recording && recording_daw_enabled {
         let daw_button = TextButton::new(
             Rect {
                 x: 88.0,
@@ -405,40 +407,42 @@ pub(crate) fn build_toolbar(ctx: ToolbarBuildContext<'_>) -> Vec<Box<dyn Widget>
         }};
     }
 
-    btn!(
-        "prev_frame",
-        || EventResponse::Action(UiAction::PrevFrame),
-        "toolbar.prev_frame"
-    );
-    let play_uv = if ctx.playing {
-        icon_uv(ctx.icon_uvs, "pause")
-    } else {
-        icon_uv(ctx.icon_uvs, "resume")
-    };
-    let play_tip = if ctx.playing {
-        "toolbar.stop"
-    } else {
-        "toolbar.play"
-    };
-    let play = IconButton::new(
-        Rect {
-            x,
-            y: y1,
-            width: s,
-            height: s,
-        },
-        "",
-        play_uv,
-        || EventResponse::Action(UiAction::TogglePlayPause),
-    )
-    .with_tooltip(t(play_tip));
-    widgets.push(Box::new(play));
-    x += s + gap;
-    btn!(
-        "next_frame",
-        || EventResponse::Action(UiAction::NextFrame),
-        "toolbar.next_frame"
-    );
+    if ctx.playback_enabled {
+        btn!(
+            "prev_frame",
+            || EventResponse::Action(UiAction::PrevFrame),
+            "toolbar.prev_frame"
+        );
+        let play_uv = if ctx.playing {
+            icon_uv(ctx.icon_uvs, "pause")
+        } else {
+            icon_uv(ctx.icon_uvs, "resume")
+        };
+        let play_tip = if ctx.playing {
+            "toolbar.stop"
+        } else {
+            "toolbar.play"
+        };
+        let play = IconButton::new(
+            Rect {
+                x,
+                y: y1,
+                width: s,
+                height: s,
+            },
+            "",
+            play_uv,
+            || EventResponse::Action(UiAction::TogglePlayPause),
+        )
+        .with_tooltip(t(play_tip));
+        widgets.push(Box::new(play));
+        x += s + gap;
+        btn!(
+            "next_frame",
+            || EventResponse::Action(UiAction::NextFrame),
+            "toolbar.next_frame"
+        );
+    }
 
     if ctx.editable {
         x += gap * 2.0;

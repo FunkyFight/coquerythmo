@@ -100,6 +100,43 @@ impl AudioTransferMetadata {
         }
         Ok(())
     }
+
+    pub fn prefix_file_name_with_user(&mut self, username: &str) -> Result<(), String> {
+        let safe_username: String = username
+            .chars()
+            .map(|character| {
+                if character.is_control()
+                    || matches!(
+                        character,
+                        '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                    )
+                {
+                    '_'
+                } else {
+                    character
+                }
+            })
+            .collect();
+        let safe_username = safe_username.trim().trim_matches(['.', ' ']);
+        let safe_username = if safe_username.is_empty() {
+            "user"
+        } else {
+            safe_username
+        };
+        let prefix: String = safe_username.chars().take(80).collect();
+        if !self.file_name.starts_with(&format!("{prefix}_")) {
+            let stem = self
+                .file_name
+                .strip_suffix(".flac")
+                .or_else(|| self.file_name.strip_suffix(".FLAC"))
+                .unwrap_or("take");
+            let available_stem = 256usize.saturating_sub(prefix.chars().count() + 6);
+            let stem: String = stem.chars().take(available_stem).collect();
+            self.file_name = format!("{prefix}_{stem}.flac");
+        }
+        self.audio.file_name = self.file_name.clone();
+        self.validate()
+    }
 }
 
 #[derive(Debug)]
@@ -191,7 +228,7 @@ impl AudioTransferReceiver {
                 destination_dir.display()
             )
         })?;
-        let safe_name = format!("{}.flac", metadata.transfer_id);
+        let safe_name = metadata.file_name.clone();
         let final_path = destination_dir.join(&safe_name);
         let temporary_path = destination_dir.join(format!(".{safe_name}.part"));
         if final_path.exists() || temporary_path.exists() {
@@ -425,7 +462,31 @@ mod tests {
                 .unwrap();
         }
         let received = receiver.finish(&metadata.transfer_id).unwrap();
+        assert_eq!(
+            received.path.file_name().and_then(|name| name.to_str()),
+            Some("take.flac")
+        );
         assert_eq!(fs::read(received.path).unwrap(), fs::read(source).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn authenticated_username_prefix_is_idempotent() {
+        let root = std::env::temp_dir().join(format!(
+            "coquerythmo-audio-transfer-prefix-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("take.flac");
+        fs::write(&source, b"audio").unwrap();
+        let mut metadata =
+            AudioTransferMetadata::from_file("take_3", &source, target(), recorded()).unwrap();
+
+        metadata.prefix_file_name_with_user("Comé/dien").unwrap();
+        metadata.prefix_file_name_with_user("Comé/dien").unwrap();
+
+        assert_eq!(metadata.file_name, "Comé_dien_take.flac");
         let _ = fs::remove_dir_all(root);
     }
 

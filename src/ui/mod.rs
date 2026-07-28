@@ -138,6 +138,7 @@ pub struct Ui {
     recording_layout: RecordingLayout,
     recording_scene: RecordingScene,
     recording_capture_active: bool,
+    recording_capture_view: bool,
     recording_daw_detached: bool,
     recording_daw_layout: RecordingLayout,
     recording_daw_scene: RecordingScene,
@@ -150,6 +151,14 @@ enum RecordingSplitHandle {
     Video,
     Rythmo,
     Assets,
+}
+
+fn uses_recording_capture_view(
+    page: RecordingPage,
+    role: RecordingRole,
+    capture_active: bool,
+) -> bool {
+    capture_active || (page == RecordingPage::Timeline && matches!(role, RecordingRole::Actor))
 }
 
 struct WhatsNewThumbnailTexture {
@@ -228,6 +237,7 @@ impl Ui {
                 settings_uv,
                 project_uv,
                 WorkspaceId::Rythmo,
+                true,
             ),
             tab_widgets: vec![],
             toolbar_widgets: vec![],
@@ -280,6 +290,7 @@ impl Ui {
             }),
             recording_scene: RecordingScene::default(),
             recording_capture_active: false,
+            recording_capture_view: false,
             recording_daw_detached: false,
             recording_daw_layout: RecordingLayout::choice(Rect::default()),
             recording_daw_scene: RecordingScene::default(),
@@ -313,7 +324,7 @@ impl Ui {
 
     fn refresh_root_focus_nodes(&mut self) {
         let mut nodes = Vec::new();
-        if !self.recording_capture_active {
+        if !self.recording_capture_view {
             for (index, widget) in self.topbar_widgets.iter().enumerate() {
                 let label = widget
                     .accessible_label()
@@ -470,7 +481,7 @@ impl Ui {
         self.tab_widgets = shell::build_workspace_tabs(&self.layout, self.active_workspace);
         self.toolbar_widgets = if self.active_workspace == WorkspaceId::Recording
             && (self.recording_ui.page == RecordingPage::Choice
-                || self.recording_capture_active
+                || self.recording_capture_view
                 || self.recording_daw_detached)
         {
             Vec::new()
@@ -489,6 +500,7 @@ impl Ui {
             self.uv("settings"),
             self.uv("project"),
             self.active_workspace,
+            self.recording_daw_enabled(),
         );
         self.refresh_root_focus_nodes();
     }
@@ -502,7 +514,7 @@ impl Ui {
     pub fn rebuild_toolbar(&mut self) {
         self.toolbar_widgets = if self.active_workspace == WorkspaceId::Recording
             && (self.recording_ui.page == RecordingPage::Choice
-                || self.recording_capture_active
+                || self.recording_capture_view
                 || self.recording_daw_detached)
         {
             Vec::new()
@@ -552,6 +564,7 @@ impl Ui {
             self.uv("settings"),
             self.uv("project"),
             self.active_workspace,
+            self.recording_daw_enabled(),
         );
         self.rebuild_layout();
     }
@@ -570,6 +583,8 @@ impl Ui {
             brush_color_presets: &self.brush_color_presets,
             ctrl_held: self.rythmo_state.ctrl_held,
             editable: self.active_workspace == WorkspaceId::Rythmo,
+            playback_enabled: self.active_workspace != WorkspaceId::Recording
+                || self.recording_playback_controls_enabled(),
         }
     }
 
@@ -667,7 +682,12 @@ impl Ui {
                     | CaptureState::Finalizing { .. }
             )
         });
-        let next_layout = if capture_active {
+        let capture_view = uses_recording_capture_view(
+            self.recording_ui.page,
+            self.recording_ui.role,
+            capture_active,
+        );
+        let next_layout = if capture_view {
             RecordingLayout::capturing(self.screen_w, self.screen_h)
         } else if self.recording_ui.page == RecordingPage::Choice {
             RecordingLayout::choice(self.workspace_content_rect())
@@ -686,9 +706,11 @@ impl Ui {
                 Self::recording_rythmo_min_height(rythmo_project),
             )
         };
-        let chrome_changed =
-            self.recording_capture_active != capture_active || self.recording_layout != next_layout;
+        let chrome_changed = self.recording_capture_view != capture_view
+            || self.recording_capture_active != capture_active
+            || self.recording_layout != next_layout;
         self.recording_capture_active = capture_active;
+        self.recording_capture_view = capture_view;
         self.recording_layout = next_layout;
         self.recording_ui.sync_view_to_playhead(
             self.recording_layout,
@@ -770,10 +792,14 @@ impl Ui {
             brush_color_presets: &self.brush_color_presets,
             ctrl_held: false,
             editable: false,
+            playback_enabled: self.recording_playback_controls_enabled(),
         });
     }
 
     pub fn handle_recording_daw_event(&mut self, event: &UiEvent) -> EventResponse {
+        if !self.recording_playback_controls_enabled() {
+            return EventResponse::Consumed;
+        }
         if self.recording_ui.is_editing_text() {
             let Some(track_id) = self.recording_ui.renaming_track else {
                 return EventResponse::Consumed;
@@ -821,7 +847,7 @@ impl Ui {
             }
         }
 
-        if self.total_frames > 0 {
+        if self.total_frames > 0 && self.recording_playback_controls_enabled() {
             if let Some(toolbar) = self.recording_daw_layout.toolbar {
                 let hit = shell::progress_bar_hit_rect(&toolbar, false);
                 match event {
@@ -994,6 +1020,23 @@ impl Ui {
         if !control.enabled {
             return EventResponse::Consumed;
         }
+        if matches!(event, UiEvent::DoubleClick { .. })
+            && matches!(control.control, RecordingControl::TrackExport(_))
+        {
+            return EventResponse::Consumed;
+        }
+        if self.recording_ui.editor.tool == crate::recording::RecordingTool::Cut
+            && matches!(
+                event,
+                UiEvent::MousePress { .. } | UiEvent::DoubleClick { .. }
+            )
+        {
+            if let RecordingControl::Clip(clip_id) = control.control {
+                if let Some(body) = self.recording_daw_layout.track_body {
+                    return EventResponse::Action(self.recording_cut_action(clip_id, x, body));
+                }
+            }
+        }
         match control.control {
             RecordingControl::Asset(asset_id) => self.recording_ui.dragging_asset = Some(asset_id),
             RecordingControl::Clip(_) => {
@@ -1020,6 +1063,7 @@ impl Ui {
     pub fn reset_recording_workspace(&mut self) {
         self.recording_ui.return_to_choice();
         self.recording_capture_active = false;
+        self.recording_capture_view = false;
         self.recording_scene = RecordingScene::default();
         self.rebuild_layout();
     }
@@ -1030,6 +1074,14 @@ impl Ui {
 
     pub fn recording_can_edit_timeline(&self) -> bool {
         self.recording_ui.role.can_edit_timeline()
+    }
+
+    pub fn recording_playback_controls_enabled(&self) -> bool {
+        !self.network_in_room || self.recording_ui.role.can_control_playback()
+    }
+
+    pub fn recording_daw_enabled(&self) -> bool {
+        !self.network_in_room || !matches!(self.recording_ui.role, RecordingRole::Actor)
     }
 
     pub fn recording_page(&self) -> RecordingPage {
@@ -1092,6 +1144,7 @@ impl Ui {
             RecordingControl::TrackMute(track_id) => UiAction::RecordingToggleTrackMute(*track_id),
             RecordingControl::TrackSolo(track_id) => UiAction::RecordingToggleTrackSolo(*track_id),
             RecordingControl::TrackArm(track_id) => UiAction::RecordingArmTrack(*track_id),
+            RecordingControl::TrackExport(track_id) => UiAction::RecordingExportTrack(*track_id),
             RecordingControl::StartCapture => UiAction::RecordingStartCapture,
             RecordingControl::Clip(clip_id) => UiAction::RecordingSelectClip {
                 clip_id: *clip_id,
@@ -1100,6 +1153,20 @@ impl Ui {
             RecordingControl::Asset(asset_id) => UiAction::RecordingSelectAsset(*asset_id),
             RecordingControl::Participant(_) => return None,
         })
+    }
+
+    fn recording_cut_action(
+        &self,
+        clip_id: crate::recording::AudioClipId,
+        x: f32,
+        body: Rect,
+    ) -> UiAction {
+        UiAction::RecordingCutClip {
+            clip_id,
+            at_frame: (self.recording_ui.view_start_frame
+                + f64::from((x - body.x) / self.recording_ui.pixels_per_frame))
+            .round() as i64,
+        }
     }
 
     fn focused_recording_control(&self) -> Option<&recording_workspace::RecordingControlInfo> {
@@ -1648,6 +1715,16 @@ impl Ui {
                             RecordingControl::Asset(asset_id) => {
                                 self.recording_ui.dragging_asset = Some(*asset_id);
                             }
+                            RecordingControl::Clip(clip_id)
+                                if self.recording_ui.editor.tool
+                                    == crate::recording::RecordingTool::Cut =>
+                            {
+                                if let Some(body) = self.recording_layout.track_body {
+                                    return EventResponse::Action(
+                                        self.recording_cut_action(*clip_id, x, body),
+                                    );
+                                }
+                            }
                             RecordingControl::Clip(_) => {
                                 self.recording_ui.dragging_clip =
                                     Some(recording_workspace::RecordingClipDrag {
@@ -1666,6 +1743,11 @@ impl Ui {
                     .find(|control| control.bounds.contains(x, y))
                 {
                     if !control.enabled {
+                        return EventResponse::Consumed;
+                    }
+                    if matches!(event, UiEvent::DoubleClick { .. })
+                        && matches!(control.control, RecordingControl::TrackExport(_))
+                    {
                         return EventResponse::Consumed;
                     }
                     if let Some(action) = Self::recording_control_action(&control.control, additive)
@@ -1708,6 +1790,8 @@ impl Ui {
 
         // Rythmo zone events (lines, scroll, ctrl+click, etc.)
         if self.total_frames > 0
+            && (self.active_workspace != WorkspaceId::Recording
+                || self.recording_playback_controls_enabled())
             && (self.active_workspace == WorkspaceId::Rythmo
                 || self.recording_layout.toolbar.is_some())
         {
@@ -1901,7 +1985,7 @@ impl Ui {
     fn handle_recording_split_drag(&mut self, event: &UiEvent) -> Option<EventResponse> {
         if self.active_workspace != WorkspaceId::Recording
             || self.recording_ui.page != RecordingPage::Timeline
-            || self.recording_capture_active
+            || self.recording_capture_view
         {
             return None;
         }
@@ -2519,6 +2603,7 @@ impl Ui {
             self.uv("settings"),
             self.uv("project"),
             self.active_workspace,
+            self.recording_daw_enabled(),
         );
         self.rebuild_layout();
     }
@@ -3031,7 +3116,7 @@ impl Ui {
         }
 
         // Non-capturing widgets
-        if !self.recording_capture_active {
+        if !self.recording_capture_view {
             for widget in self
                 .topbar_widgets
                 .iter()
@@ -3101,7 +3186,7 @@ impl Ui {
 
         // Capturing dropdowns belong above persistent overlays such as the
         // side panel, with their text in the same semantic layer.
-        if !self.recording_capture_active {
+        if !self.recording_capture_view {
             for widget in self
                 .topbar_widgets
                 .iter()
@@ -3571,10 +3656,20 @@ impl Ui {
             _padding: [0.0; 2],
         }];
         if let Some(toolbar) = self.recording_daw_layout.toolbar {
-            self.push_toolbar_zone(&mut quads, toolbar, false);
+            self.push_toolbar_zone(&mut quads, toolbar, false, true);
         }
         let scene = &self.recording_daw_scene;
         quads.extend(scene.quads.iter().copied());
+        let mut labels = Vec::new();
+        Self::append_recording_drag_preview(
+            &mut quads,
+            &mut labels,
+            scene,
+            self.recording_ui.dragging_asset_id(),
+            self.recording_daw_layout,
+            self.recording_ui.pixels_per_frame,
+            self.recording_daw_cursor,
+        );
         if let Some(handle) = self.recording_daw_layout.assets_split_handle_rect() {
             let active = handle.contains(self.recording_daw_cursor.0, self.recording_daw_cursor.1)
                 || self.dragging_recording_split == Some(RecordingSplitHandle::Assets);
@@ -3602,7 +3697,6 @@ impl Ui {
                 _padding: [0.0; 2],
             });
         }
-        let mut labels = Vec::new();
         for label in &scene.labels {
             labels.push(LabelInfo {
                 text: &label.text,
@@ -3749,6 +3843,108 @@ impl Ui {
         }));
     }
 
+    fn append_recording_drag_preview<'a>(
+        quads: &mut Vec<QuadInstance>,
+        labels: &mut Vec<LabelInfo<'a>>,
+        scene: &'a RecordingScene,
+        dragging_asset: Option<crate::recording::AudioAssetId>,
+        layout: RecordingLayout,
+        pixels_per_frame: f32,
+        cursor: (f32, f32),
+    ) {
+        let Some(asset_id) = dragging_asset else {
+            return;
+        };
+        let Some(body) = layout.track_body else {
+            return;
+        };
+        let Some(asset) = scene.controls.iter().find(
+            |control| matches!(control.control, RecordingControl::Asset(id) if id == asset_id),
+        ) else {
+            return;
+        };
+
+        let floating = Rect {
+            x: cursor.0 + 14.0,
+            y: cursor.1 + 14.0,
+            width: 190.0,
+            height: 34.0,
+        };
+        quads.push(Self::recording_preview_quad(
+            floating,
+            [0.24, 0.20, 0.52, 0.94],
+            [0.65, 0.70, 1.0, 1.0],
+        ));
+        labels.push(LabelInfo {
+            text: &asset.label,
+            bounds: Rect {
+                x: floating.x + 8.0,
+                y: floating.y,
+                width: floating.width - 16.0,
+                height: floating.height,
+            },
+            h_align: HAlign::Left,
+            v_align: VAlign::Center,
+            overflow: Overflow::Ellipsis,
+            padding: 0.0,
+            font_size_override: Some(11.0),
+            color_override: Some([240, 242, 255]),
+            font_family_override: None,
+        });
+
+        if body.contains(cursor.0, cursor.1) {
+            let row = ((cursor.1 - body.y) / 58.0).floor().max(0.0);
+            let width = 120.0_f32.min(body.width.max(0.0));
+            let x = (body.x
+                + ((cursor.0 - body.x) / pixels_per_frame.max(0.001)).round()
+                    * pixels_per_frame.max(0.001))
+            .clamp(body.x, (body.x + body.width - width).max(body.x));
+            let target = Rect {
+                x,
+                y: body.y + row * 58.0 + 6.0,
+                width,
+                height: 46.0,
+            };
+            quads.push(Self::recording_preview_quad(
+                target,
+                [0.28, 0.42, 0.82, 0.52],
+                [0.65, 0.75, 1.0, 0.95],
+            ));
+            labels.push(LabelInfo {
+                text: &asset.label,
+                bounds: Rect {
+                    x: target.x + 6.0,
+                    y: target.y + 2.0,
+                    width: target.width - 12.0,
+                    height: 18.0,
+                },
+                h_align: HAlign::Left,
+                v_align: VAlign::Center,
+                overflow: Overflow::Ellipsis,
+                padding: 0.0,
+                font_size_override: Some(10.0),
+                color_override: Some([235, 240, 255]),
+                font_family_override: None,
+            });
+        }
+    }
+
+    fn recording_preview_quad(rect: Rect, color: [f32; 4], border_color: [f32; 4]) -> QuadInstance {
+        QuadInstance {
+            rect: [rect.x, rect.y, rect.width, rect.height],
+            color,
+            color_bottom: color,
+            border_color,
+            border_width: 1.0,
+            border_radius: 5.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        }
+    }
+
     fn append_recording_assets_overlay<'a>(
         quads: &mut Vec<QuadInstance>,
         labels: &mut Vec<LabelInfo<'a>>,
@@ -3841,7 +4037,13 @@ impl Ui {
         ));
     }
 
-    fn push_toolbar_zone(&self, quads: &mut Vec<QuadInstance>, toolbar: Rect, editable: bool) {
+    fn push_toolbar_zone(
+        &self,
+        quads: &mut Vec<QuadInstance>,
+        toolbar: Rect,
+        editable: bool,
+        playback_enabled: bool,
+    ) {
         quads.push(QuadInstance {
             rect: [toolbar.x, toolbar.y, toolbar.width, toolbar.height],
             color: TOOLBAR_BG,
@@ -3855,7 +4057,7 @@ impl Ui {
             rotation: 0.0,
             _padding: [0.0; 2],
         });
-        if self.total_frames <= 0 {
+        if self.total_frames <= 0 || !playback_enabled {
             return;
         }
         let pb = shell::progress_bar_rect(&toolbar, editable);
@@ -3923,7 +4125,7 @@ impl Ui {
     ) {
         let l = &self.layout;
 
-        if self.active_workspace == WorkspaceId::Recording && self.recording_capture_active {
+        if self.active_workspace == WorkspaceId::Recording && self.recording_capture_view {
             self.push_rythmo_base(
                 quads,
                 &rythmo_zone,
@@ -3937,6 +4139,15 @@ impl Ui {
             );
             if let Some(scene) = recording_scene {
                 Self::append_recording_scene(quads, labels, scene);
+                Self::append_recording_drag_preview(
+                    quads,
+                    labels,
+                    scene,
+                    self.recording_ui.dragging_asset_id(),
+                    self.recording_layout,
+                    self.recording_ui.pixels_per_frame,
+                    self.cursor_pos,
+                );
             }
             return;
         }
@@ -4135,7 +4346,12 @@ impl Ui {
                 return;
             }
             if let Some(toolbar) = self.recording_layout.toolbar {
-                self.push_toolbar_zone(quads, toolbar, false);
+                self.push_toolbar_zone(
+                    quads,
+                    toolbar,
+                    false,
+                    self.recording_playback_controls_enabled(),
+                );
             }
             if self.recording_ui.page == RecordingPage::Timeline {
                 self.push_rythmo_base(
@@ -4198,6 +4414,15 @@ impl Ui {
             }
             if let Some(scene) = recording_scene {
                 Self::append_recording_scene(quads, labels, scene);
+                Self::append_recording_drag_preview(
+                    quads,
+                    labels,
+                    scene,
+                    self.recording_ui.dragging_asset_id(),
+                    self.recording_layout,
+                    self.recording_ui.pixels_per_frame,
+                    self.cursor_pos,
+                );
             }
             return;
         }
@@ -4222,7 +4447,7 @@ impl Ui {
             _padding: [0.0; 2],
         });
 
-        self.push_toolbar_zone(quads, l.toolbar, true);
+        self.push_toolbar_zone(quads, l.toolbar, true, true);
 
         self.push_rythmo_base(
             quads,
@@ -4448,4 +4673,23 @@ pub(crate) struct DrawingOverlayCache {
     key: (i64, u32, u32, u64, usize, bool),
     zw: u32,
     zh: u32,
+}
+
+#[cfg(test)]
+mod recording_capture_view_tests {
+    use super::{uses_recording_capture_view, RecordingPage, RecordingRole};
+
+    #[test]
+    fn actor_stays_on_record_view_between_takes() {
+        assert!(uses_recording_capture_view(
+            RecordingPage::Timeline,
+            RecordingRole::Actor,
+            false
+        ));
+        assert!(!uses_recording_capture_view(
+            RecordingPage::Timeline,
+            RecordingRole::Director,
+            false
+        ));
+    }
 }

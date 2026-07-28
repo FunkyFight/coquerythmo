@@ -47,6 +47,13 @@ impl RecordingRole {
     pub fn is_online(self) -> bool {
         !matches!(self, Self::Solo)
     }
+
+    pub fn can_control_playback(self) -> bool {
+        matches!(
+            self,
+            Self::Solo | Self::Director | Self::CoDirector { has_control: true }
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +68,7 @@ pub enum RecordingControl {
     TrackMute(AudioTrackId),
     TrackSolo(AudioTrackId),
     TrackArm(AudioTrackId),
+    TrackExport(AudioTrackId),
     StartCapture,
     Clip(AudioClipId),
     Asset(AudioAssetId),
@@ -81,6 +89,7 @@ impl RecordingControl {
             Self::TrackMute(id) => format!("recording.track.{}.mute", id.get()),
             Self::TrackSolo(id) => format!("recording.track.{}.solo", id.get()),
             Self::TrackArm(id) => format!("recording.track.{}.arm", id.get()),
+            Self::TrackExport(id) => format!("recording.track.{}.export", id.get()),
             Self::StartCapture => "recording.capture.start".into(),
             Self::Clip(id) => format!("recording.clip.{}", id.get()),
             Self::Asset(id) => format!("recording.asset.{}", id.get()),
@@ -497,6 +506,10 @@ impl RecordingWorkspaceUi {
         self.editor.selected_clips()
     }
 
+    pub fn dragging_asset_id(&self) -> Option<AudioAssetId> {
+        self.dragging_asset
+    }
+
     pub fn select_clip(
         &mut self,
         project: &RecordingProject,
@@ -640,6 +653,15 @@ fn choice_scene(layout: RecordingLayout) -> RecordingScene {
     scene
 }
 
+fn countdown_font_size(seconds: u32) -> f32 {
+    match seconds {
+        3 => 92.0,
+        2 => 126.0,
+        1 => 164.0,
+        _ => 92.0,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn timeline_scene(
     ui: &RecordingWorkspaceUi,
@@ -700,17 +722,29 @@ fn timeline_scene(
     if let Some(state) = capture {
         match state {
             CaptureState::Countdown { .. } => {
-                scene.labels.push(label(
-                    countdown_seconds.unwrap_or(0).to_string(),
-                    Rect {
-                        x: layout.video.x,
-                        y: layout.video.y,
-                        width: layout.video.width,
-                        height: layout.video.height,
-                    },
-                    38.0,
-                    TEXT,
-                ));
+                let bounds = Rect {
+                    x: layout.video.x,
+                    y: layout.video.y,
+                    width: layout.video.width,
+                    height: layout.video.height,
+                };
+                let seconds = countdown_seconds.unwrap_or(0);
+                let text = seconds.to_string();
+                let font_size = countdown_font_size(seconds);
+                // A few one-pixel offsets give the countdown a bold outline
+                // without adding a second text-rendering API just for this UI.
+                for (dx, dy) in [(0.0, 0.0), (-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                    scene.labels.push(label(
+                        text.clone(),
+                        Rect {
+                            x: bounds.x + dx,
+                            y: bounds.y + dy,
+                            ..bounds
+                        },
+                        font_size,
+                        [255, 32, 48],
+                    ));
+                }
             }
             CaptureState::Capturing { .. } => {
                 scene.labels.push(RecordingLabel {
@@ -960,6 +994,12 @@ fn push_tracks(
                 track.armed,
                 RECORD,
             ),
+            (
+                RecordingControl::TrackExport(track.id),
+                "E",
+                false,
+                [0.25, 0.65, 0.35, 1.0],
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -997,6 +1037,11 @@ fn push_tracks(
                         track.name,
                         crate::i18n::t("recording.track.solo")
                     ),
+                    "E" => format!(
+                        "{} — {}",
+                        track.name,
+                        crate::i18n::t("recording.track.export")
+                    ),
                     _ => format!("{} — {}", track.name, crate::i18n::t("recording.track.arm")),
                 },
                 value: Some(
@@ -1012,27 +1057,16 @@ fn push_tracks(
             });
         }
         let remove_bounds = Rect {
-            x: header.x + header.width - 38.0,
+            x: header.x + header.width - 28.0,
             y: header.y + 4.0,
-            width: 28.0,
+            width: 22.0,
             height: 22.0,
         };
         let removable = project.tracks().count() > 1;
-        push_quad(
-            &mut scene.quads,
-            remove_bounds,
-            if removable {
-                [0.20, 0.12, 0.15, 1.0]
-            } else {
-                [0.13, 0.13, 0.16, 1.0]
-            },
-            BORDER,
-            4.0,
-        );
         scene.labels.push(label(
             "×",
             remove_bounds,
-            14.0,
+            20.0,
             if removable { TEXT } else { MUTED_TEXT },
         ));
         scene.controls.push(RecordingControlInfo {
@@ -1252,11 +1286,16 @@ fn push_participants(
             break;
         }
         let controls = control_owner_id == Some(member.id.as_str());
+        let role_label = match member.role.as_str() {
+            "admin" => crate::i18n::t("recording.role.director"),
+            "co_da" => crate::i18n::t("recording.role.co_director"),
+            _ => crate::i18n::t("recording.role.actor"),
+        };
         scene.labels.push(RecordingLabel {
             text: format!(
                 "{} · {}{}",
                 member.username,
-                member.role,
+                role_label,
                 if member.muted { " · muet" } else { "" }
             ),
             bounds,
@@ -1271,7 +1310,7 @@ fn push_participants(
             bounds,
             role: AccessibleRole::ListItem,
             label: member.username.clone(),
-            value: Some(member.role.clone()),
+            value: Some(role_label.to_string()),
             selected: controls,
             enabled: true,
         });
@@ -1424,6 +1463,12 @@ fn label(text: impl Into<String>, bounds: Rect, font_size: f32, color: [u8; 3]) 
 mod tests {
     use super::*;
     use crate::recording::{AudioTrack, RecordingOperation};
+
+    #[test]
+    fn countdown_grows_towards_recording() {
+        assert!(countdown_font_size(3) < countdown_font_size(2));
+        assert!(countdown_font_size(2) < countdown_font_size(1));
+    }
 
     #[test]
     fn capture_layout_keeps_the_normal_rythmo_inside_the_window() {

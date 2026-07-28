@@ -5,16 +5,22 @@ use super::event_loop::AppEvent;
 use super::event_loop::{close_project_reset, new_project_reset_and_pick_video};
 use super::file_picker::{
     import_cappela_from_path, import_project_from_path, import_subtitle_from_path,
-    open_dialog_filters, open_file_picker, project_or_video_dir, quick_save_existing,
-    quick_save_existing_with_continuation, save_dialog_filters, save_project_as,
-    save_project_as_with_continuation, video_or_project_dir,
+    open_dialog_filters, open_file_picker, open_file_picker_request, project_or_video_dir,
+    quick_save_existing, quick_save_existing_with_continuation, save_dialog_filters,
+    save_project_as, save_project_as_with_continuation, video_or_project_dir,
 };
 use crate::application::command::TextCommand;
 use crate::application::job_service::SaveContinuation;
+use crate::config;
+use crate::i18n;
+use crate::packet::Packet;
+use crate::platform;
 use crate::state::State;
 use crate::ui::file_explorer::{FileExplorerMode, FilePickerIntent};
 use crate::ui::primitives::{EventResponse, UiAction, UiEvent};
-use crate::{config, i18n, packet, platform, video_export, video_proxy};
+use crate::video_export;
+use crate::video_export::capabilities::probe_video_duration;
+use crate::video_proxy;
 use std::sync::Arc;
 use winit::dpi::LogicalSize;
 
@@ -110,6 +116,54 @@ pub(crate) fn handle_file_picker_selected(
                 state,
                 elwt,
             );
+        }
+        FilePickerIntent::ExportRecordingTrack { track_id } => {
+            let project = &state.project_session.recording_project;
+            if project.track(track_id).is_none() {
+                return;
+            }
+
+            // Get video duration for padding silence to match full video length
+            let video_duration: f64 = state
+                .video_path()
+                .and_then(|p| probe_video_duration(p.as_ref()))
+                .unwrap_or(0.0);
+
+            let spec = crate::recording_mix::RecordingMixSpec {
+                source_duration_seconds: video_duration.is_finite().then_some(video_duration),
+                clips: project
+                    .clips()
+                    .filter(|c| c.track_id == track_id)
+                    .filter_map(|clip| {
+                        let asset_path = state
+                            .project_session
+                            .recording_asset_paths
+                            .get(&clip.asset_id)?;
+                        let fps = project.timeline_fps();
+                        Some(crate::recording_mix::MixClip {
+                            clip_id: clip.id,
+                            track_id: clip.track_id,
+                            path: asset_path.clone(),
+                            source_start_seconds: clip.source_start_frame as f64 / fps,
+                            duration_seconds: clip.duration_frames as f64 / fps,
+                            timeline_start_seconds: clip.start_frame as f64 / fps,
+                        })
+                    })
+                    .collect(),
+                sample_rate: 48_000,
+                source_volume: 1.0,
+                total_duration_seconds: video_duration.is_finite().then_some(video_duration),
+            };
+
+            if let Err(e) = crate::recording_mix::render_recording_mix(
+                &spec,
+                &path,
+                &std::sync::atomic::AtomicBool::new(false),
+            ) {
+                state.recording_error(format!("Failed to export track: {e}"));
+            } else {
+                state.show_toast(crate::i18n::t("recording.track.exported"), 3.0);
+            }
         }
     }
 }
@@ -233,6 +287,8 @@ impl CommandDispatcher {
                     | UiAction::RecordingToggleTrackMute(_)
                     | UiAction::RecordingToggleTrackSolo(_)
                     | UiAction::RecordingArmTrack(_)
+                    | UiAction::RecordingExportTrack(_)
+                    | UiAction::RecordingCutClip { .. }
                     | UiAction::RecordingSelectClip { .. }
                     | UiAction::RecordingSelectAsset(_)
                     | UiAction::RecordingDeleteSelectedAsset
@@ -290,6 +346,14 @@ impl CommandDispatcher {
                 state.recording_toggle_track_solo(track_id)
             }
             UiAction::RecordingArmTrack(track_id) => state.recording_arm_track(track_id),
+            UiAction::RecordingExportTrack(track_id) => {
+                if let Some(request) = state.recording_export_track(track_id) {
+                    open_file_picker_request(state, elwt, request);
+                }
+            }
+            UiAction::RecordingCutClip { clip_id, at_frame } => {
+                state.recording_cut_clip(clip_id, at_frame)
+            }
             UiAction::RecordingSelectClip { clip_id, additive } => {
                 state.recording_select_clip(clip_id, additive)
             }
@@ -1021,6 +1085,12 @@ impl CommandDispatcher {
                 state.open_toolbar_dropdown(dropdown);
             }
             UiAction::OpenSecondaryDisplay => {
+                if state.active_workspace()
+                    == crate::application::workspace_service::WorkspaceId::Recording
+                    && !state.can_open_recording_daw()
+                {
+                    return false;
+                }
                 if state.video_path().is_none() {
                     log::warn!("No video loaded — cannot open secondary display");
                 } else if state.has_secondary_display() {
@@ -1164,13 +1234,13 @@ impl CommandDispatcher {
                     cfg.save();
                 }
                 let first_packet = if let Some(code) = room_code {
-                    packet::Packet::JoinRoom {
+                    Packet::JoinRoom {
                         code,
                         username,
                         project_huuid,
                     }
                 } else {
-                    packet::Packet::CreateRoom {
+                    Packet::CreateRoom {
                         username,
                         project_huuid,
                     }

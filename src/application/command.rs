@@ -17,6 +17,11 @@ pub enum UiAction {
     RecordingToggleTrackMute(crate::recording::AudioTrackId),
     RecordingToggleTrackSolo(crate::recording::AudioTrackId),
     RecordingArmTrack(crate::recording::AudioTrackId),
+    RecordingExportTrack(crate::recording::AudioTrackId),
+    RecordingCutClip {
+        clip_id: crate::recording::AudioClipId,
+        at_frame: i64,
+    },
     RecordingSelectClip {
         clip_id: crate::recording::AudioClipId,
         additive: bool,
@@ -630,5 +635,8 @@ pub enum FilePickerIntent {
     },
     ConfiguredExport {
         configuration: crate::project::ExportConfiguration,
+    },
+    ExportRecordingTrack {
+        track_id: crate::recording::AudioTrackId,
     },
 }

@@ -368,7 +368,7 @@ impl VideoPlayer {
             return false;
         }
 
-        // Debounce: ignore toggles within 200ms of each other
+        // Debounce rapid user toggles.
         let now = Instant::now();
         if let Some(last) = self.last_toggle {
             if now.duration_since(last).as_millis() < 50 {
@@ -417,6 +417,10 @@ impl VideoPlayer {
         let was_playing = self.playing;
         if was_playing {
             self.playing = false;
+            // Seeking is followed by a programmatic resume. Do not let the
+            // user-toggle debounce leave playback paused when a synchronized
+            // recording seek arrives just after capture starts.
+            self.last_toggle = None;
             self.stop_decoders();
         }
         was_playing
@@ -1669,6 +1673,17 @@ mod tests {
         assert!(player.pause_for_seek());
         assert!(!player.is_playing());
         assert!(!player.pause_for_seek());
+    }
+
+    #[test]
+    fn seek_can_resume_immediately_after_a_recent_toggle() {
+        let mut player = VideoPlayer::new();
+        player.playing = true;
+        player.last_toggle = Some(Instant::now());
+
+        assert!(player.pause_for_seek());
+        assert!(player.toggle());
+        assert!(player.is_playing());
     }
 
     #[test]

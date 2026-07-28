@@ -55,6 +55,21 @@ fn recording_playback_waits_for_mix(
     workspace == WorkspaceId::Recording && mix_pending && !player_is_playing
 }
 
+fn recording_added_assets<'a>(
+    operation: &'a crate::recording::RecordingOperation,
+    assets: &mut Vec<&'a crate::recording::AudioAsset>,
+) {
+    match operation {
+        crate::recording::RecordingOperation::Batch { operations } => {
+            for operation in operations {
+                recording_added_assets(operation, assets);
+            }
+        }
+        crate::recording::RecordingOperation::AddAsset { asset } => assets.push(asset),
+        _ => {}
+    }
+}
+
 #[derive(Clone)]
 struct LineClipboardEntry {
     line: RythmoLine,
@@ -144,6 +159,7 @@ pub struct State {
     automation_last_run: Option<(u64, u64)>,
     last_progress_percent: Option<u32>,
     last_progress_announcement: Option<Instant>,
+    last_recording_countdown_second: Option<u32>,
 }
 
 impl State {
@@ -182,6 +198,7 @@ impl State {
             automation_last_run: None,
             last_progress_percent: None,
             last_progress_announcement: None,
+            last_recording_countdown_second: None,
         }
     }
 
@@ -263,6 +280,15 @@ impl State {
     }
 
     pub fn activate_workspace(&mut self, workspace: WorkspaceId) {
+        if workspace != WorkspaceId::Recording
+            && self.collaboration.network.is_in_room()
+            && matches!(
+                self.ui_shell.ui.recording_role(),
+                crate::ui::recording_workspace::RecordingRole::Actor
+            )
+        {
+            return;
+        }
         let changed = self.workspace_host.activate(workspace);
         if changed || self.ui_shell.ui.active_workspace() != workspace {
             self.ui_shell.ui.set_active_workspace(workspace);
@@ -291,29 +317,50 @@ impl State {
         use crate::ui::recording_workspace::RecordingRole;
 
         let network = &self.collaboration.network;
-        let Some(member_id) = network.member_id.as_deref() else {
-            return RecordingRole::Actor;
-        };
         let role = network
-            .member_details
-            .iter()
-            .find(|member| member.id == member_id)
+            .member_id
+            .as_deref()
+            .and_then(|member_id| {
+                network
+                    .member_details
+                    .iter()
+                    .find(|member| member.id == member_id)
+            })
             .map(|member| member.role.as_str())
             .or(network.role.as_deref())
             .unwrap_or("actor");
         match role {
             "admin" => RecordingRole::Director,
             "co_da" => RecordingRole::CoDirector {
-                has_control: network.control_owner_id.as_deref() == Some(member_id),
+                has_control: network.member_id.as_deref().is_some_and(|member_id| {
+                    network.control_owner_id.as_deref() == Some(member_id)
+                }),
             },
             _ => RecordingRole::Actor,
         }
+    }
+
+    fn enter_online_recording_view(&mut self) {
+        if !self.collaboration.network.is_in_room() {
+            return;
+        }
+        let role = self.recording_network_role();
+        self.ui_shell.ui.recording_enter_online(role);
+        self.activate_workspace(WorkspaceId::Recording);
+        self.sync_recording_workspace_ui();
+        self.schedule_recording_mix();
     }
 
     pub fn sync_recording_workspace_ui(&mut self) {
         let current_frame = self.render_frame();
         let capture = self.recording_runtime.capture_state();
         let countdown_seconds = self.recording_runtime.countdown_seconds_remaining();
+        if countdown_seconds != self.last_recording_countdown_second {
+            self.last_recording_countdown_second = countdown_seconds;
+            if let Some(seconds @ 1..=3) = countdown_seconds {
+                crate::accessibility::countdown_tone(seconds);
+            }
+        }
         self.ui_shell.ui.sync_recording_scene(
             &self.project_session.project,
             &self.project_session.recording_project,
@@ -550,6 +597,50 @@ impl State {
         }
     }
 
+    pub fn recording_cut_clip(&mut self, clip_id: crate::recording::AudioClipId, at_frame: i64) {
+        if !self.ui_shell.ui.recording_can_edit_timeline() {
+            self.recording_read_only_error();
+            return;
+        }
+        let Some(clip) = self.project_session.recording_project.clip(clip_id) else {
+            self.recording_error(
+                crate::recording::RecordingError::MissingClip(clip_id).to_string(),
+            );
+            return;
+        };
+        if at_frame <= clip.start_frame || at_frame >= clip.end_frame() {
+            self.recording_error(
+                crate::recording::RecordingError::InvalidClip(
+                    clip_id,
+                    "cut must be strictly inside the clip".into(),
+                )
+                .to_string(),
+            );
+            return;
+        }
+        let right_clip_id = self.project_session.recording_project.allocate_clip_id();
+        if let Err(error) =
+            self.apply_recording_operation(crate::recording::RecordingOperation::SplitClip {
+                clip_id,
+                at_frame,
+                right_clip_id,
+            })
+        {
+            self.recording_error(error.to_string());
+            return;
+        }
+        let project = &self.project_session.recording_project;
+        let _ = self
+            .ui_shell
+            .ui
+            .recording_select_clip(project, clip_id, false);
+        let _ = self
+            .ui_shell
+            .ui
+            .recording_select_clip(project, right_clip_id, true);
+        self.sync_recording_workspace_ui();
+    }
+
     pub fn recording_delete_selected_clips(&mut self) {
         let clip_ids = self
             .ui_shell
@@ -626,6 +717,7 @@ impl State {
             .recording_transactions
             .append_and_apply(&mut self.project_session.recording_project, operation)?
             .clone();
+        self.bind_recording_audio_paths(&transaction.operation);
         self.project_session.mark_recording_changed();
         if self.ui_shell.ui.recording_role().is_online() {
             self.collaboration
@@ -635,6 +727,18 @@ impl State {
         self.sync_recording_workspace_ui();
         self.schedule_recording_mix();
         Ok(())
+    }
+
+    fn bind_recording_audio_paths(&mut self, operation: &crate::recording::RecordingOperation) {
+        let mut assets = Vec::new();
+        recording_added_assets(operation, &mut assets);
+        for asset in assets {
+            if let Some(path) = self.recording_runtime.audio_path(&asset.checksum).cloned() {
+                self.project_session
+                    .recording_asset_paths
+                    .insert(asset.id, path);
+            }
+        }
     }
 
     fn schedule_recording_mix(&mut self) {
@@ -655,7 +759,8 @@ impl State {
         let mut spec = match crate::recording_mix::RecordingMixSpec::from_project(
             &self.project_session.recording_project,
             &self.project_session.recording_asset_paths,
-            Some(source),
+            None,
+            None,
         ) {
             Ok(spec) => spec,
             Err(error) => {
@@ -729,7 +834,7 @@ impl State {
         if self.jobs.play_recording_mix_when_ready && self.jobs.pending_recording_mix_job.is_none()
         {
             self.jobs.play_recording_mix_when_ready = false;
-            self.toggle_play_pause();
+            self.toggle_play_pause_internal(false);
         }
     }
 
@@ -781,6 +886,42 @@ impl State {
         }
     }
 
+    pub fn recording_export_track(
+        &mut self,
+        track_id: crate::recording::AudioTrackId,
+    ) -> Option<crate::ui::file_explorer::FileExplorerRequest> {
+        let project = &self.project_session.recording_project;
+        let Some(track) = project.track(track_id) else {
+            return None;
+        };
+
+        let project_dir = self
+            .project_session
+            .project_path
+            .as_ref()
+            .and_then(|p| p.parent().map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let safe_name = track
+            .name
+            .chars()
+            .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+            .collect::<String>();
+
+        Some(crate::ui::file_explorer::FileExplorerRequest {
+            title: crate::i18n::t("recording.track.export").to_string(),
+            mode: crate::ui::file_explorer::FileExplorerMode::Save,
+            intent: crate::ui::file_explorer::FilePickerIntent::ExportRecordingTrack { track_id },
+            filters: vec![crate::ui::file_explorer::FileFilterSpec {
+                name: "FLAC Audio".to_string(),
+                extensions: vec!["flac".to_string()],
+            }],
+            initial_dir: Some(project_dir),
+            default_extension: Some("flac".to_string()),
+            initial_filename: Some(safe_name),
+            extra_locations: vec![],
+        })
+    }
+
     pub fn recording_select_clip(
         &mut self,
         clip_id: crate::recording::AudioClipId,
@@ -814,10 +955,28 @@ impl State {
             self.recording_read_only_error();
             return;
         }
-        let result = self.recording_runtime.begin_capture(
-            &self.project_session.recording_project,
-            self.current_frame(),
-        );
+        let role = self.ui_shell.ui.recording_role();
+        let username = self.recording_username();
+        let result = if role.is_online() {
+            self.project_session
+                .recording_project
+                .armed_track_id()
+                .ok_or_else(|| {
+                    crate::recording::RecordingError::Recorder("no recording track is armed".into())
+                })
+                .and_then(|track_id| {
+                    self.project_session
+                        .recording_project
+                        .propose_capture_target(track_id, self.current_frame())
+                })
+                .and_then(|target| self.recording_runtime.begin_observed_capture(target))
+        } else {
+            self.recording_runtime.begin_capture(
+                &self.project_session.recording_project,
+                self.current_frame(),
+                &username,
+            )
+        };
         if let Err(error) = result {
             self.recording_error(error.to_string());
             return;
@@ -828,6 +987,9 @@ impl State {
                 Some(crate::recording::CaptureState::Countdown { target, .. }) => Some(*target),
                 _ => None,
             };
+            self.collaboration
+                .network
+                .send_recording_capture(self.current_frame(), capture_target);
             self.collaboration.network.send_recording_prepare(
                 &crate::network::RecordingPreparePayload {
                     project: self.project_session.recording_project.clone(),
@@ -844,6 +1006,7 @@ impl State {
     }
 
     pub fn recording_stop_capture(&mut self) {
+        let online = self.ui_shell.ui.recording_role().is_online();
         match self.recording_runtime.cancel_or_stop() {
             Ok(crate::recording_runtime::RecordingRuntimeEvent::Cancelled) => {
                 self.show_toast(crate::i18n::t("recording.capture.cancelled"), 3.0);
@@ -864,10 +1027,39 @@ impl State {
             Ok(_) => {}
             Err(error) => self.recording_error(error.to_string()),
         }
+        if online {
+            self.collaboration
+                .network
+                .send_recording_capture(self.current_frame(), None);
+            self.collaboration.network.send_recording_prepare(
+                &crate::network::RecordingPreparePayload {
+                    project: self.project_session.recording_project.clone(),
+                    transactions: self.project_session.recording_transactions.clone(),
+                    current_frame: self.current_frame(),
+                    capture_target: None,
+                },
+            );
+        }
         self.sync_recording_workspace_ui();
     }
 
-    fn recording_error(&mut self, message: impl Into<String>) {
+    fn recording_username(&self) -> String {
+        self.collaboration
+            .network
+            .member_id
+            .as_deref()
+            .and_then(|member_id| {
+                self.collaboration
+                    .network
+                    .member_details
+                    .iter()
+                    .find(|member| member.id == member_id)
+            })
+            .map(|member| member.username.clone())
+            .unwrap_or_else(|| crate::config::get().network.username.clone())
+    }
+
+    pub fn recording_error(&mut self, message: impl Into<String>) {
         let message = message.into();
         let label = crate::i18n::t("recording.capture.error").replace("{error}", &message);
         self.show_toast(label.clone(), 7.0);
@@ -1941,7 +2133,24 @@ impl State {
         self.window_manager.secondary_kind == Some(SecondaryWindowKind::Daw)
     }
 
+    pub fn can_open_recording_daw(&self) -> bool {
+        !self.collaboration.network.is_in_room()
+            || !matches!(
+                self.ui_shell.ui.recording_role(),
+                crate::ui::recording_workspace::RecordingRole::Actor
+            )
+    }
+
     pub fn open_secondary_display(&mut self, window: Arc<Window>, kind: SecondaryWindowKind) {
+        if kind == SecondaryWindowKind::Daw
+            && matches!(
+                self.ui_shell.ui.recording_role(),
+                crate::ui::recording_workspace::RecordingRole::Actor
+            )
+        {
+            self.recording_read_only_error();
+            return;
+        }
         if self.playback.video_player.is_none() {
             log::warn!("No video loaded ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â cannot open secondary display");
             return;
@@ -2430,6 +2639,32 @@ impl State {
     }
 
     pub fn toggle_play_pause(&mut self) {
+        if self.recording_playback_is_read_only() {
+            return;
+        }
+        self.toggle_play_pause_internal(true);
+    }
+
+    fn recording_playback_is_read_only(&self) -> bool {
+        self.active_workspace() == WorkspaceId::Recording
+            && self.collaboration.network.is_in_room()
+            && !self.ui_shell.ui.recording_role().can_control_playback()
+    }
+
+    fn should_broadcast_recording_playback(&self) -> bool {
+        self.collaboration.network.is_in_room()
+            && self.ui_shell.ui.recording_role().can_edit_timeline()
+    }
+
+    fn broadcast_recording_playback(&self, frame: i64, playing: bool) {
+        if self.should_broadcast_recording_playback() {
+            self.collaboration
+                .network
+                .send_recording_playback(frame.max(0), playing);
+        }
+    }
+
+    fn toggle_play_pause_internal(&mut self, broadcast: bool) {
         let recording_mix_pending = recording_playback_waits_for_mix(
             self.active_workspace(),
             self.jobs.pending_recording_mix_job.is_some(),
@@ -2470,6 +2705,10 @@ impl State {
                 })
                 .to_string(),
             });
+        if broadcast {
+            let frame = self.current_frame();
+            self.broadcast_recording_playback(frame, playing);
+        }
     }
 
     pub fn toggle_active_audio(&mut self) {
@@ -2608,8 +2847,16 @@ impl State {
     }
 
     pub fn prev_frame(&mut self) {
+        if self.recording_playback_is_read_only() {
+            return;
+        }
+        self.prev_frame_internal(true);
+    }
+
+    fn prev_frame_internal(&mut self, broadcast: bool) {
         let bgl = self.render.ui_renderer.texture_bind_group_layout();
         let sampler = self.render.ui_renderer.texture_sampler();
+        let mut playback = None;
         if let Some(player) = &mut self.playback.video_player {
             player.step_backward(
                 &self.render.gfx.device,
@@ -2620,12 +2867,26 @@ impl State {
             if self.ui_shell.ui.is_playing() {
                 self.ui_shell.ui.toggle_play_pause();
             }
+            playback = Some((player.current_frame(), self.ui_shell.ui.is_playing()));
+        }
+        if broadcast {
+            if let Some((frame, playing)) = playback {
+                self.broadcast_recording_playback(frame, playing);
+            }
         }
     }
 
     pub fn next_frame(&mut self) {
+        if self.recording_playback_is_read_only() {
+            return;
+        }
+        self.next_frame_internal(true);
+    }
+
+    fn next_frame_internal(&mut self, broadcast: bool) {
         let bgl = self.render.ui_renderer.texture_bind_group_layout();
         let sampler = self.render.ui_renderer.texture_sampler();
+        let mut playback = None;
         if let Some(player) = &mut self.playback.video_player {
             player.step_forward(
                 &self.render.gfx.device,
@@ -2636,10 +2897,24 @@ impl State {
             if self.ui_shell.ui.is_playing() {
                 self.ui_shell.ui.toggle_play_pause();
             }
+            playback = Some((player.current_frame(), self.ui_shell.ui.is_playing()));
+        }
+        if broadcast {
+            if let Some((frame, playing)) = playback {
+                self.broadcast_recording_playback(frame, playing);
+            }
         }
     }
 
     pub fn seek_absolute(&mut self, frame: i64) {
+        if self.recording_playback_is_read_only() {
+            return;
+        }
+        self.seek_absolute_internal(frame, true);
+    }
+
+    fn seek_absolute_internal(&mut self, frame: i64, broadcast: bool) {
+        let mut playback = None;
         if let Some(player) = &mut self.playback.video_player {
             if player.pause_for_seek() {
                 if self.ui_shell.ui.is_playing() {
@@ -2653,6 +2928,12 @@ impl State {
             self.playback.timeline.emit(TimelineEvent::FrameChanged {
                 frame: player.current_frame(),
             });
+            playback = Some((player.current_frame(), self.ui_shell.ui.is_playing()));
+        }
+        if broadcast {
+            if let Some((frame, playing)) = playback {
+                self.broadcast_recording_playback(frame, playing);
+            }
         }
         self.playback.last_scroll_time = Some(Instant::now());
         self.playback.scroll_needs_decode = true;
@@ -2668,11 +2949,25 @@ impl State {
     }
 
     pub fn seek_relative(&mut self, delta: i32) {
+        if self.recording_playback_is_read_only() {
+            return;
+        }
+        self.seek_relative_internal(delta, true);
+    }
+
+    fn seek_relative_internal(&mut self, delta: i32, broadcast: bool) {
+        let mut playback = None;
         if let Some(player) = &mut self.playback.video_player {
             player.seek_frame_instant(delta);
             self.playback.timeline.emit(TimelineEvent::FrameChanged {
                 frame: player.current_frame(),
             });
+            playback = Some((player.current_frame(), self.ui_shell.ui.is_playing()));
+        }
+        if broadcast {
+            if let Some((frame, playing)) = playback {
+                self.broadcast_recording_playback(frame, playing);
+            }
         }
         self.playback.last_scroll_time = Some(Instant::now());
         self.playback.scroll_needs_decode = true;
@@ -2743,12 +3038,14 @@ impl State {
             return;
         }
 
+        let operation = transaction.operation.clone();
         let result = self
             .project_session
             .recording_transactions
             .append_received_and_apply(&mut self.project_session.recording_project, transaction);
         match result {
             Ok(_) => {
+                self.bind_recording_audio_paths(&operation);
                 self.project_session.mark_recording_changed();
                 self.sync_recording_workspace_ui();
                 self.schedule_recording_mix();
@@ -2800,7 +3097,17 @@ impl State {
             self.project_session.mark_recording_changed();
         }
 
-        self.seek_absolute(current_frame);
+        self.receive_recording_capture(current_frame, capture_target);
+        self.sync_recording_workspace_ui();
+        self.schedule_recording_mix();
+    }
+
+    fn receive_recording_capture(
+        &mut self,
+        current_frame: i64,
+        capture_target: Option<crate::recording::CaptureTarget>,
+    ) {
+        self.seek_absolute_internal(current_frame, false);
         let local_member_is_muted = self
             .collaboration
             .network
@@ -2814,26 +3121,42 @@ impl State {
                     .find(|member| member.id == member_id)
             })
             .is_some_and(|member| member.muted);
-        if let Some(target) = capture_target {
-            if !local_member_is_muted && !self.recording_runtime.is_active() {
-                if let Err(error) = self.recording_runtime.begin_capture_target(target) {
+        self.enter_online_recording_view();
+        match capture_target {
+            Some(target) if !self.recording_runtime.is_active() => {
+                let result = if matches!(
+                    self.recording_network_role(),
+                    crate::ui::recording_workspace::RecordingRole::Actor
+                ) && !local_member_is_muted
+                {
+                    self.recording_runtime
+                        .begin_capture_target(target, &self.recording_username())
+                } else {
+                    self.recording_runtime.begin_observed_capture(target)
+                };
+                if let Err(error) = result {
                     self.recording_error(error.to_string());
                 }
             }
+            None if self.recording_runtime.is_active() => {
+                if let Err(error) = self.recording_runtime.cancel_or_stop() {
+                    self.recording_error(error.to_string());
+                }
+            }
+            _ => {}
         }
         self.sync_recording_workspace_ui();
-        self.schedule_recording_mix();
     }
 
     fn receive_recording_playback(&mut self, playback: crate::network::RecordingPlaybackPayload) {
-        self.seek_absolute(playback.frame);
+        self.seek_absolute_internal(playback.frame, false);
         let is_playing = self
             .playback
             .video_player
             .as_ref()
             .is_some_and(|player| player.is_playing());
         if playback.playing != is_playing {
-            self.toggle_play_pause();
+            self.toggle_play_pause_internal(false);
         }
     }
 
@@ -2846,16 +3169,19 @@ impl State {
             }
         };
         let crate::audio_transfer::ReceivedAudio { metadata, path } = received;
+        self.recording_runtime
+            .remember_audio_path(&metadata.audio.checksum, &path);
 
-        let matching_asset_already_exists = self
+        let matching_asset_id = self
             .project_session
             .recording_project
-            .asset(metadata.target.asset_id)
-            .is_some_and(|asset| asset.checksum == metadata.audio.checksum);
-        if matching_asset_already_exists {
+            .assets()
+            .find(|asset| asset.checksum == metadata.audio.checksum)
+            .map(|asset| asset.id);
+        if let Some(asset_id) = matching_asset_id {
             self.project_session
                 .recording_asset_paths
-                .insert(metadata.target.asset_id, path);
+                .insert(asset_id, path);
             self.project_session.mark_recording_changed();
             self.schedule_recording_mix();
             return;
@@ -2880,7 +3206,6 @@ impl State {
                     return;
                 }
             };
-            let asset_id = target.asset_id;
             let operation = crate::recording::CompletedCapture {
                 target,
                 audio: metadata.audio,
@@ -2890,17 +3215,10 @@ impl State {
                 self.recording_error(error.to_string());
                 return;
             }
-            self.project_session
-                .recording_asset_paths
-                .insert(asset_id, path);
-            self.schedule_recording_mix();
         } else {
             // Non-authoritative peers receive the matching transaction from
-            // the DA; keeping the verified local path is intentionally not a
-            // second durable timeline mutation.
-            self.project_session
-                .recording_asset_paths
-                .insert(metadata.target.asset_id, path);
+            // the DA. The verified path is already retained by checksum and
+            // will be bound to the asset ID carried by that transaction.
             self.project_session.mark_recording_changed();
             self.schedule_recording_mix();
         }
@@ -2952,6 +3270,7 @@ impl State {
                         .collect();
                     self.collaboration.network.member_details = members;
                     self.collaboration.network.control_owner_id = control_owner_id;
+                    self.enter_online_recording_view();
                 }
                 IncomingMessage::Delta(data) => self.apply_delta(data),
                 IncomingMessage::RecordingTransaction(transaction) => {
@@ -2959,6 +3278,9 @@ impl State {
                 }
                 IncomingMessage::RecordingPrepare(prepare) => {
                     self.receive_recording_prepare(prepare)
+                }
+                IncomingMessage::RecordingCapture(capture) => {
+                    self.receive_recording_capture(capture.current_frame, capture.capture_target)
                 }
                 IncomingMessage::RecordingPlayback(playback) => {
                     self.receive_recording_playback(playback)
@@ -2968,13 +3290,52 @@ impl State {
                     let data = ProjectData::from_project(&self.project_session.project);
                     let mut json = serde_json::json!({ "project": data });
                     if !requester.is_empty() {
-                        json["_target"] = serde_json::Value::String(requester);
+                        json["_target"] = serde_json::Value::String(requester.clone());
                     }
                     self.collaboration.network.send_raw("sync", json);
+                    let prepare = crate::network::RecordingPreparePayload {
+                        project: self.project_session.recording_project.clone(),
+                        transactions: self.project_session.recording_transactions.clone(),
+                        current_frame: self.current_frame(),
+                        capture_target: self.recording_runtime.capture_state().and_then(|state| {
+                            match state {
+                                crate::recording::CaptureState::Countdown { target, .. }
+                                | crate::recording::CaptureState::Capturing { target, .. }
+                                | crate::recording::CaptureState::Finalizing { target } => {
+                                    Some(*target)
+                                }
+                                _ => None,
+                            }
+                        }),
+                    };
+                    if requester.is_empty() {
+                        self.collaboration.network.send_recording_prepare(&prepare);
+                    } else {
+                        self.collaboration
+                            .network
+                            .send_recording_prepare_to(&prepare, &requester);
+                    }
                 }
                 IncomingMessage::AudioStart { metadata } => {
-                    match serde_json::from_value(metadata) {
-                        Ok(metadata) => {
+                    match serde_json::from_value::<crate::audio_transfer::AudioTransferMetadata>(
+                        metadata,
+                    ) {
+                        Ok(mut metadata) => {
+                            let sender_username =
+                                metadata.from_member_id.as_deref().and_then(|member_id| {
+                                    self.collaboration
+                                        .network
+                                        .member_details
+                                        .iter()
+                                        .find(|member| member.id == member_id)
+                                        .map(|member| member.username.clone())
+                                });
+                            if let Some(username) = sender_username {
+                                if let Err(error) = metadata.prefix_file_name_with_user(&username) {
+                                    self.recording_error(error);
+                                    continue;
+                                }
+                            }
                             if let Err(error) = self.recording_runtime.begin_audio_receive(metadata)
                             {
                                 self.recording_error(error);
@@ -3022,13 +3383,22 @@ impl State {
                 self.collaboration.network.state = ConnectionState::InRoom;
                 self.collaboration.network.room_code = Some(code.clone());
                 self.collaboration.network.role = Some("admin".into());
-                self.set_network_status("Salon crÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©");
+                self.set_network_status("Salon créé");
                 self.ui_shell.ui.set_network_room_code(Some(&code));
                 self.show_toast(
                     format!("{}{code}", crate::i18n::t("toast.room_created")),
                     5.0,
                 );
                 log::info!("Room created: {code}");
+                self.enter_online_recording_view();
+                self.collaboration.network.send_recording_prepare(
+                    &crate::network::RecordingPreparePayload {
+                        project: self.project_session.recording_project.clone(),
+                        transactions: self.project_session.recording_transactions.clone(),
+                        current_frame: self.current_frame(),
+                        capture_target: None,
+                    },
+                );
             }
             Packet::RoomJoined {
                 code,
@@ -3039,7 +3409,7 @@ impl State {
                 self.collaboration.network.room_code = Some(code.clone());
                 self.collaboration.network.role = Some(role);
                 self.collaboration.network.members = members;
-                self.set_network_status("ConnectÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© au salon");
+                self.set_network_status("Connecté au salon");
                 self.ui_shell.ui.set_network_room_code(Some(&code));
                 self.show_toast(
                     format!("{}{code}", crate::i18n::t("toast.room_joined")),
@@ -3047,6 +3417,7 @@ impl State {
                 );
                 self.ui_shell.ui.sync_overlay = Some("Synchronisation en cours...".into());
                 self.ui_shell.ui.sync_progress = 0.0;
+                self.enter_online_recording_view();
                 // request_sync is sent directly from the room_joined callback
             }
             Packet::JoinError { reason } => {
@@ -3073,7 +3444,7 @@ impl State {
                 self.apply_project_sync(data);
                 self.ui_shell.ui.sync_overlay = None;
                 if self.collaboration.network.room_code.is_some() {
-                    self.set_network_status("Salon synchronisÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©");
+                    self.set_network_status("Salon synchronisé");
                 }
             }
             Packet::RequestSync => {
@@ -5632,7 +6003,7 @@ impl State {
             RecordingRuntimeEvent::None => {}
             RecordingRuntimeEvent::CountdownStarted => changed = true,
             RecordingRuntimeEvent::CaptureStarted { target } => {
-                self.seek_absolute(target.start_frame);
+                self.seek_absolute_internal(target.start_frame, false);
                 self.finish_seek();
                 if self
                     .playback
@@ -5640,13 +6011,9 @@ impl State {
                     .as_ref()
                     .is_some_and(|player| !player.is_playing())
                 {
-                    self.toggle_play_pause();
+                    self.toggle_play_pause_internal(false);
                 }
-                if self.ui_shell.ui.recording_role().is_online() {
-                    self.collaboration
-                        .network
-                        .send_recording_playback(target.start_frame, true);
-                }
+                self.broadcast_recording_playback(target.start_frame, true);
                 self.announce_accessibility(AccessibilityEvent::Activation {
                     label: crate::i18n::t("recording.capture.active").to_string(),
                 });
@@ -5666,18 +6033,15 @@ impl State {
                 let audio = completed.audio.clone();
                 let role = self.ui_shell.ui.recording_role();
                 let commits_locally = matches!(role, RecordingRole::Solo | RecordingRole::Director);
+                self.recording_runtime
+                    .remember_audio_path(&audio.checksum, &path);
 
                 if commits_locally {
                     let operation = completed.clone().into_project_operation(
                         self.project_session.recording_project.timeline_fps(),
                     );
                     match self.apply_recording_operation(operation) {
-                        Ok(()) => {
-                            self.project_session
-                                .recording_asset_paths
-                                .insert(target.asset_id, path.clone());
-                            self.schedule_recording_mix();
-                        }
+                        Ok(()) => {}
                         Err(error) => {
                             self.recording_error(error.to_string());
                             self.sync_recording_workspace_ui();

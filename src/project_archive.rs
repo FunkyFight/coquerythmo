@@ -1427,7 +1427,10 @@ fn create_extraction_guard() -> Result<ExtractionGuard, ProjectArchiveError> {
 
 fn project_extraction_base() -> Result<PathBuf, ProjectArchiveError> {
     let executable = std::env::current_exe().map_err(ProjectArchiveError::Io)?;
-    Ok(project_extraction_base_for_executable(&executable))
+    Ok(project_extraction_process_base(
+        &executable,
+        std::process::id(),
+    ))
 }
 
 fn project_extraction_base_for_executable(executable: &Path) -> PathBuf {
@@ -1438,18 +1441,23 @@ fn project_extraction_base_for_executable(executable: &Path) -> PathBuf {
         .join("coquerythmo-temp")
 }
 
-/// Remove project assets left behind by an interrupted previous process.
-/// Active extractions are still individually removed by `ExtractionGuard`.
+fn project_extraction_process_base(executable: &Path, process_id: u32) -> PathBuf {
+    project_extraction_base_for_executable(executable).join(format!("process-{process_id}"))
+}
+
+/// Remove leftovers for this process id without touching another running
+/// Coquerythmo instance (for example the DA and actor clients).
 pub fn cleanup_project_extraction_at_startup() -> io::Result<()> {
     let executable = std::env::current_exe()?;
-    let current_base = project_extraction_base_for_executable(&executable);
-    let legacy_base = std::env::temp_dir().join("coquerythmo-projects");
-    for base in [current_base, legacy_base] {
-        match fs::remove_dir_all(base) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
+    cleanup_process_extraction(&executable, std::process::id())
+}
+
+fn cleanup_process_extraction(executable: &Path, process_id: u32) -> io::Result<()> {
+    let current_base = project_extraction_process_base(executable, process_id);
+    match fs::remove_dir_all(current_base) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
     Ok(())
 }
@@ -1595,6 +1603,31 @@ mod tests {
             project_extraction_base_for_executable(&executable),
             Path::new("installation").join("coquerythmo-temp")
         );
+        assert_eq!(
+            project_extraction_process_base(&executable, 42),
+            Path::new("installation")
+                .join("coquerythmo-temp")
+                .join("process-42")
+        );
+    }
+
+    #[test]
+    fn startup_cleanup_preserves_other_running_instances() {
+        let root = std::env::temp_dir().join(format!(
+            "coquerythmo-extraction-cleanup-{}",
+            unique_suffix()
+        ));
+        let executable = root.join("coquerythmo.exe");
+        let own = project_extraction_process_base(&executable, 41);
+        let other = project_extraction_process_base(&executable, 42);
+        fs::create_dir_all(&own).unwrap();
+        fs::create_dir_all(&other).unwrap();
+
+        cleanup_process_extraction(&executable, 41).unwrap();
+
+        assert!(!own.exists());
+        assert!(other.exists());
+        let _ = fs::remove_dir_all(root);
     }
     use crate::project_metadata::TransactionJournal;
     use crate::recording::{

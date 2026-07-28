@@ -112,6 +112,25 @@ pub(crate) fn open_file_picker(
     });
 }
 
+pub(crate) fn open_file_picker_request(
+    state: &mut State,
+    elwt: &EventLoopWindowTarget<AppEvent>,
+    request: FileExplorerRequest,
+) {
+    if state.narration.is_enabled() {
+        if let Some(path) = native_file_picker(
+            &request.title,
+            request.mode,
+            &request.filters,
+            request.initial_dir.as_deref(),
+        ) {
+            handle_file_picker_selected(request.intent, path, state, elwt);
+        }
+    } else {
+        state.open_file_explorer(request);
+    }
+}
+
 fn native_file_picker(
     title: &str,
     mode: FileExplorerMode,

@@ -275,6 +275,21 @@ pub fn progress_tone(percent: u32) {
     }
 }
 
+#[cfg(target_os = "windows")]
+pub fn countdown_tone(seconds: u32) {
+    let frequency = match seconds {
+        1 => 1_200,
+        2 => 1_000,
+        _ => 800,
+    };
+    unsafe {
+        let _ = Beep(frequency, 70);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn countdown_tone(_seconds: u32) {}
+
 #[cfg(target_os = "macos")]
 enum WorkerCommand {
     Speak(Announcement),
