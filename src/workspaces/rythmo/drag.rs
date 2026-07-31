@@ -19,7 +19,7 @@ pub(crate) fn handle_transform_drag(
     let cx = (start_bbox.0 + start_bbox.2) / 2.0;
     let cy = (start_bbox.1 + start_bbox.3) / 2.0;
 
-    let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
+    let ppf = crate::rythmo_drawing::ppf_for_scale(1.0, ctx.project.settings().scroll_speed);
 
     // Screen-space bbox center (for rotation, which works in pixels).
     let center_x = ctx.zone.x + ctx.zone.width / 2.0;

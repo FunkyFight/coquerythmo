@@ -85,6 +85,7 @@ fn hit_resize_handle(
     state: &RythmoState,
     current_frame: f64,
     zone: &Rect,
+    fps: f64,
     x: f32,
     y: f32,
 ) -> Option<ResizeDrag> {
@@ -92,7 +93,7 @@ fn hit_resize_handle(
     let track = address.track()? as usize;
     let cue = project.detections().detection(address)?;
     let rect = track_rect(project, track, current_frame, zone);
-    let center_x = tick_x(cue.media_tick, current_frame, zone);
+    let center_x = tick_x(cue.media_tick, current_frame, zone, fps);
     let half = cue_width(cue) / 2.0;
     let top = rect.y - SIGN_BADGE_SIZE + 2.0;
     [(center_x - half, true), (center_x + half, false)]
@@ -115,6 +116,7 @@ fn hit_resize_handle(
                     },
                     current_frame,
                     zone,
+                    fps,
                 ),
                 moving_left,
             })
@@ -138,13 +140,17 @@ fn sync_drag() -> std::sync::MutexGuard<'static, Option<SyncSyllableDragContext>
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn pointer_tick(x: f32, current_frame: f64, zone: &Rect) -> MediaTick {
-    let frame = current_frame + ((x - (zone.x + zone.width / 2.0)) / ppf()) as f64;
+fn pointer_tick(x: f32, current_frame: f64, zone: &Rect, fps: f64) -> MediaTick {
+    let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+    let frame = current_frame + offset_frames + ((x - (zone.x + zone.width / 2.0)) / ppf()) as f64;
     MediaTick::from_frame_position(frame).clamp(MediaTick::ZERO, MediaTick(i64::MAX))
 }
 
-fn tick_x(tick: MediaTick, current_frame: f64, zone: &Rect) -> f32 {
-    zone.x + zone.width / 2.0 + (tick.as_frame_position() - current_frame) as f32 * ppf()
+fn tick_x(tick: MediaTick, current_frame: f64, zone: &Rect, fps: f64) -> f32 {
+    let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+    zone.x
+        + zone.width / 2.0
+        + (tick.as_frame_position() - current_frame - offset_frames) as f32 * ppf()
 }
 
 fn track_rect(project: &Project, track: usize, current_frame: f64, zone: &Rect) -> Rect {
@@ -168,17 +174,23 @@ fn track_under_pointer(
     })
 }
 
-fn sign_badge_rect(tick: MediaTick, track: Rect, current_frame: f64, zone: &Rect) -> Rect {
+fn sign_badge_rect(
+    tick: MediaTick,
+    track: Rect,
+    current_frame: f64,
+    zone: &Rect,
+    fps: f64,
+) -> Rect {
     Rect {
-        x: tick_x(tick, current_frame, zone) - SIGN_BADGE_SIZE / 2.0,
+        x: tick_x(tick, current_frame, zone, fps) - SIGN_BADGE_SIZE / 2.0,
         y: track.y - SIGN_BADGE_SIZE - SIGN_BOTTOM_MARGIN,
         width: SIGN_BADGE_SIZE,
         height: SIGN_BADGE_SIZE,
     }
 }
 
-fn sign_icon_rect(tick: MediaTick, track: Rect, current_frame: f64, zone: &Rect) -> Rect {
-    let badge = sign_badge_rect(tick, track, current_frame, zone);
+fn sign_icon_rect(tick: MediaTick, track: Rect, current_frame: f64, zone: &Rect, fps: f64) -> Rect {
+    let badge = sign_badge_rect(tick, track, current_frame, zone, fps);
     Rect {
         x: badge.x + (badge.width - SIGN_ICON_SIZE) / 2.0,
         y: badge.y + (badge.height - SIGN_ICON_SIZE) / 2.0,
@@ -224,6 +236,7 @@ fn hit_source_detection(
     project: &Project,
     current_frame: f64,
     zone: &Rect,
+    fps: f64,
     x: f32,
     y: f32,
 ) -> Option<(DetectionAddress, DetectionCue)> {
@@ -232,7 +245,7 @@ fn hit_source_detection(
         let data = project.detections().line(line_id)?;
         let rect = track_rect(project, track, current_frame, zone);
         data.source_detections().find_map(|cue| {
-            sign_badge_rect(cue.media_tick, rect, current_frame, zone)
+            sign_badge_rect(cue.media_tick, rect, current_frame, zone, fps)
                 .contains(x, y)
                 .then_some((
                     DetectionAddress {
@@ -273,7 +286,7 @@ pub(crate) fn handle_detection_event(
     if let UiEvent::MouseMove { x, y } = event {
         if let Some(drag) = *resize_drag() {
             const MINIMUM_DURATION: i64 = 5;
-            let pointer = pointer_tick(*x, ctx.current_frame, ctx.zone);
+            let pointer = pointer_tick(*x, ctx.current_frame, ctx.zone, ctx.fps);
             let moving_tick = if drag.moving_left {
                 MediaTick(pointer.raw().min(drag.fixed_tick.raw() - MINIMUM_DURATION))
             } else {
@@ -306,7 +319,7 @@ pub(crate) fn handle_detection_event(
                 drag.target_tick = if drag.lock_x {
                     drag.origin_tick
                 } else {
-                    pointer_tick(*x, ctx.current_frame, ctx.zone)
+                    pointer_tick(*x, ctx.current_frame, ctx.zone, ctx.fps)
                 };
             }
             return Some(EventResponse::Consumed);
@@ -369,15 +382,21 @@ pub(crate) fn handle_detection_event(
 
     if state.detection_menu.is_none() {
         if let UiEvent::MousePress { x, y } | UiEvent::ShiftMousePress { x, y } = event {
-            if let Some(drag) =
-                hit_resize_handle(ctx.project, state, ctx.current_frame, ctx.zone, *x, *y)
-            {
+            if let Some(drag) = hit_resize_handle(
+                ctx.project,
+                state,
+                ctx.current_frame,
+                ctx.zone,
+                ctx.fps,
+                *x,
+                *y,
+            ) {
                 *resize_drag() = Some(drag);
                 state.detection_menu = None;
                 return Some(EventResponse::Consumed);
             }
             if let Some((address, cue)) =
-                hit_source_detection(ctx.project, ctx.current_frame, ctx.zone, *x, *y)
+                hit_source_detection(ctx.project, ctx.current_frame, ctx.zone, ctx.fps, *x, *y)
             {
                 let lock_x = matches!(event, UiEvent::ShiftMousePress { .. });
                 begin_source_drag(address, cue, *x, *y, lock_x);
@@ -1153,13 +1172,14 @@ pub(crate) fn render_detection_overlay<'a>(
         .filter(|drag| drag.moved);
     if let Some(drag) = drag_snapshot.as_ref() {
         let original_track = track_rect(project, drag.origin_track as usize, current_frame, zone);
-        let original_icon = sign_icon_rect(drag.origin_tick, original_track, current_frame, zone);
+        let original_icon =
+            sign_icon_rect(drag.origin_tick, original_track, current_frame, zone, fps);
         detector_icons.retain(|icon| {
             let (x, y) = rect_center(icon.rect);
             !original_icon.contains(x, y)
         });
         let target_track = track_rect(project, drag.target_track as usize, current_frame, zone);
-        let badge = sign_badge_rect(drag.target_tick, target_track, current_frame, zone);
+        let badge = sign_badge_rect(drag.target_tick, target_track, current_frame, zone, fps);
         let x = badge.x + badge.width / 2.0;
         push_line(
             &mut detector_quads,
@@ -1170,7 +1190,7 @@ pub(crate) fn render_detection_overlay<'a>(
             1.5,
             [0.55, 0.73, 1.0, 0.82],
         );
-        let icon = sign_icon_rect(drag.target_tick, target_track, current_frame, zone);
+        let icon = sign_icon_rect(drag.target_tick, target_track, current_frame, zone, fps);
         detector_icons.push(IconInstance {
             rect: [icon.x, icon.y, icon.width, icon.height],
             uv_rect: palette_uv(&drag.cue, detection_uvs),
@@ -1188,7 +1208,7 @@ pub(crate) fn render_detection_overlay<'a>(
         };
         let rect = track_rect(project, track, current_frame, zone);
         for cue in data.source_detections() {
-            let original = sign_icon_rect(cue.media_tick, rect, current_frame, zone);
+            let original = sign_icon_rect(cue.media_tick, rect, current_frame, zone, fps);
             if matches!(
                 cue.kind,
                 DetectionKind::OpeningWave | DetectionKind::ForwardWave
@@ -1226,7 +1246,7 @@ pub(crate) fn render_detection_overlay<'a>(
                 line_id,
                 detection_id: cue.id,
             };
-            let center = tick_x(cue.media_tick, current_frame, zone);
+            let center = tick_x(cue.media_tick, current_frame, zone, fps);
             let width =
                 (cue.duration.as_frame_position().abs() as f32 * ppf()).max(SIGN_ICON_SIZE + 8.0);
             let top = rect.y - SIGN_BADGE_SIZE + 2.0;

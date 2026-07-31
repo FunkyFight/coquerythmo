@@ -155,8 +155,8 @@ impl RythmoDrawing {
     }
 }
 
-pub fn ppf_for_scale(scale: f32) -> f32 {
-    crate::constants::PIXELS_PER_FRAME * scale * crate::config::scroll_speed()
+pub fn ppf_for_scale(scale: f32, scroll_speed: f32) -> f32 {
+    crate::constants::PIXELS_PER_FRAME * scale * scroll_speed
 }
 
 pub fn screen_to_drawing(
@@ -168,9 +168,10 @@ pub fn screen_to_drawing(
     zone_h: f32,
     current_frame: f64,
     ppf: f32,
+    reading_bar_offset_frames: f64,
 ) -> (f64, f32) {
     let center_x = zone_x + zone_w / 2.0;
-    let frame = current_frame + (x - center_x) as f64 / ppf as f64;
+    let frame = current_frame + reading_bar_offset_frames + (x - center_x) as f64 / ppf as f64;
     let y_frac = ((y - zone_y) / zone_h).clamp(0.0, 1.0);
     (frame, y_frac)
 }
@@ -184,9 +185,10 @@ pub fn drawing_to_screen(
     zone_h: f32,
     current_frame: f64,
     ppf: f32,
+    reading_bar_offset_frames: f64,
 ) -> (f32, f32) {
     let center_x = zone_x + zone_w / 2.0;
-    let x = center_x + (frame - current_frame) as f32 * ppf;
+    let x = center_x + (frame - current_frame - reading_bar_offset_frames) as f32 * ppf;
     let y = zone_y + y_frac * zone_h;
     (x, y)
 }
@@ -197,9 +199,10 @@ pub fn visible_frame_window(
     ppf: f32,
     margin_frames: i64,
     fps: f64,
+    reading_bar_offset_seconds: f64,
 ) -> (i64, i64) {
     let half = zone_w as f64 / ppf as f64 / 2.0;
-    let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+    let offset_frames = reading_bar_offset_seconds * fps;
     let first = (current_frame - half + offset_frames).floor() as i64 - margin_frames;
     let last = (current_frame + half + offset_frames).ceil() as i64 + margin_frames;
     (first, last.max(first))
@@ -289,11 +292,12 @@ pub fn rasterize_window(
     current_frame: f64,
     ppf: f32,
     fps: f64,
+    reading_bar_offset_seconds: f64,
 ) -> Vec<u8> {
     let n = (zone_w as usize) * (zone_h as usize) * 4;
     let mut buf = vec![0u8; n];
     let center_x = zone_w as f32 / 2.0;
-    let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+    let offset_frames = reading_bar_offset_seconds * fps;
     let origin_x = center_x - offset_frames as f32 * ppf;
     let zw = zone_w as f32;
     let zh = zone_h as f32;
@@ -348,6 +352,19 @@ mod tests {
 
         assert_eq!(&dst[..4], &[110, 20, 30, 255]);
         assert_eq!(&dst[4..], &[1, 2, 3, 255]);
+    }
+
+    #[test]
+    fn drawing_coordinates_follow_the_reading_bar_offset() {
+        let (frame, y_frac) =
+            screen_to_drawing(500.0, 300.0, 0.0, 0.0, 1000.0, 600.0, 100.0, 4.0, 12.0);
+        assert_eq!(frame, 112.0);
+        assert_eq!(y_frac, 0.5);
+
+        assert_eq!(
+            drawing_to_screen(frame, y_frac, 0.0, 0.0, 1000.0, 600.0, 100.0, 4.0, 12.0,),
+            (500.0, 300.0)
+        );
     }
 
     #[test]

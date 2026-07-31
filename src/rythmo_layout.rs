@@ -1,6 +1,25 @@
 use crate::constants;
 use crate::project::Project;
 
+pub fn reading_bar_offset_seconds(
+    percent: f32,
+    viewport_width: f32,
+    fps: f64,
+    pixels_per_frame: f32,
+) -> f64 {
+    if !percent.is_finite()
+        || !viewport_width.is_finite()
+        || !fps.is_finite()
+        || !pixels_per_frame.is_finite()
+        || viewport_width <= 0.0
+        || fps <= 0.0
+        || pixels_per_frame <= 0.0
+    {
+        return 0.0;
+    }
+    percent as f64 / 100.0 * viewport_width as f64 / (fps * pixels_per_frame as f64)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrackLayout {
     pub track_index: usize,
@@ -398,6 +417,25 @@ pub fn track_for_y_slot(layouts: &[TrackLayout], y_slot: f32) -> Option<&TrackLa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reading_bar_percent_converts_to_monitor_relative_seconds() {
+        let pixels_per_frame = 10.0;
+        let fps = 25.0;
+
+        assert!(
+            (reading_bar_offset_seconds(10.0, 1000.0, fps, pixels_per_frame) - 0.4).abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (reading_bar_offset_seconds(10.0, 500.0, fps, pixels_per_frame) - 0.2).abs()
+                < f64::EPSILON
+        );
+        assert_eq!(
+            reading_bar_offset_seconds(10.0, 0.0, fps, pixels_per_frame),
+            0.0
+        );
+    }
 
     #[test]
     fn export_timeline_offset_moves_markers_with_the_lines() {

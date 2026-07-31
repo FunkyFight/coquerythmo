@@ -802,6 +802,29 @@ pub fn run(startup_path: Option<PathBuf>) {
                                 return;
                             }
                         }
+                        if matches!(event.logical_key, Key::Named(NamedKey::F11))
+                            && state.active_workspace() == WorkspaceId::Recording
+                            && state.is_online_recording_actor()
+                        {
+                            state.toggle_main_window_fullscreen();
+                            state.request_redraw();
+                            return;
+                        }
+                        if matches!(event.logical_key, Key::Named(NamedKey::Escape))
+                            && state.active_workspace() == WorkspaceId::Recording
+                            && state.is_online_recording_actor()
+                        {
+                            dispatch_key_action(
+                                UiAction::OpenRecordingActorMenu,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
+                            state.request_redraw();
+                            return;
+                        }
                         if matches!(event.logical_key, Key::Named(NamedKey::Escape))
                             && state.active_workspace() == WorkspaceId::Recording
                             && state.recording_runtime.is_active()
@@ -987,6 +1010,9 @@ pub fn run(startup_path: Option<PathBuf>) {
                         } else if state.is_rythmo_text_editing() {
                             contexts.push(InputContext::TextEditing);
                         } else if state.has_keyboard_focus() {
+                            if state.active_workspace() == WorkspaceId::Recording {
+                                contexts.push(InputContext::Recording);
+                            }
                             contexts.push(InputContext::MainWindow);
                             contexts.push(InputContext::Global);
                         } else if !state.is_editing_text() {

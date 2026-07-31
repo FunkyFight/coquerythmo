@@ -485,6 +485,9 @@ impl EditExecutor {
         );
         session.project.prune_unused_characters();
         session.project.set_voice_actors(data.voice_actors);
+        if let Some(drawing) = data.drawing {
+            session.project.set_drawing(drawing);
+        }
         let mut settings = session.project.settings().clone();
         settings.automation = automation;
         settings.detections = data.detections;
@@ -555,6 +558,24 @@ mod tests {
         );
         assert_eq!(sync, EditEffects::default());
         assert!(session.history.last().is_none());
+    }
+
+    #[test]
+    fn collaboration_sync_replaces_the_drawing() {
+        let mut source = ProjectSession::new();
+        let mut remote_stroke = crate::rythmo_drawing::DrawingStroke::new(2, [1.0; 4], 0.01);
+        remote_stroke.points.push((24.0, 0.5));
+        source.project.add_drawing_stroke(remote_stroke);
+
+        let mut target = ProjectSession::new();
+        target
+            .project
+            .add_drawing_stroke(crate::rythmo_drawing::DrawingStroke::new(1, [0.0; 4], 0.01));
+
+        EditExecutor::apply_sync(&mut target, SyncProjectData::from_project(&source.project));
+
+        assert!(target.project.drawing().get(1).is_none());
+        assert!(target.project.drawing().get(2).is_some());
     }
 
     #[test]

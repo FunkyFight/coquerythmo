@@ -985,9 +985,16 @@ impl GpuRenderer {
         height: u32,
         ppf: f32,
         fps: f64,
+        reading_bar_offset_seconds: f64,
     ) -> bool {
-        let (first_frame, last_frame) =
-            crate::rythmo_drawing::visible_frame_window(width as f32, current_frame, ppf, 4, fps);
+        let (first_frame, last_frame) = crate::rythmo_drawing::visible_frame_window(
+            width as f32,
+            current_frame,
+            ppf,
+            4,
+            fps,
+            reading_bar_offset_seconds,
+        );
         let strokes: Vec<_> = scene
             .drawings
             .iter()
@@ -1004,6 +1011,7 @@ impl GpuRenderer {
             current_frame,
             ppf,
             fps,
+            reading_bar_offset_seconds,
         );
         let needs_create = self
             .drawing_overlay
@@ -2157,7 +2165,7 @@ impl GpuRenderer {
         let s = width as f32 / constants::REF_WIDTH * br_scale;
         let normal_slot_h = constants::SLOT_HEIGHT * s;
         let ruler_h = constants::RULER_HEIGHT * s;
-        let ppf = constants::PIXELS_PER_FRAME * s * crate::config::scroll_speed();
+        let ppf = constants::PIXELS_PER_FRAME * s * scene.project.settings().scroll_speed;
         let tick_long = constants::TICK_LONG * s;
         let tick_short = constants::TICK_SHORT * s;
         let tick_w = BASE_TICK_WIDTH * s;
@@ -2203,7 +2211,12 @@ impl GpuRenderer {
         let w = width as f32;
         let h = height as f32;
         let center_x = w / 2.0;
-        let offset_frames = crate::config::reading_bar_offset_seconds() * source_fps;
+        let offset_frames = crate::rythmo_layout::reading_bar_offset_seconds(
+            scene.project.settings().reading_bar_offset_percent,
+            w,
+            source_fps,
+            ppf,
+        ) * source_fps;
 
         let mut quads = std::mem::take(&mut self.quads);
         let mut all_icons = std::mem::take(&mut self.all_icons);
@@ -3032,6 +3045,7 @@ impl GpuRenderer {
             height,
             ppf,
             source_fps,
+            offset_frames / source_fps,
         ) {
             let index = all_icons.len() as u32;
             all_icons.push(IconInstance {

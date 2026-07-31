@@ -757,7 +757,7 @@ impl CpuRenderer {
         let s = width as f32 / constants::REF_WIDTH * br_scale; // export BR scale factor
         let normal_slot_h = constants::SLOT_HEIGHT * s;
         let ruler_h = constants::RULER_HEIGHT * s;
-        let ppf = constants::PIXELS_PER_FRAME * s * crate::config::scroll_speed();
+        let ppf = constants::PIXELS_PER_FRAME * s * project.settings().scroll_speed;
         let tick_long = constants::TICK_LONG * s;
         let tick_short = constants::TICK_SHORT * s;
         let tick_w = BASE_TICK_WIDTH * s;
@@ -805,7 +805,12 @@ impl CpuRenderer {
         let w = width as f32;
         let h = height as f32;
         let center_x = w / 2.0;
-        let offset_frames = crate::config::reading_bar_offset_seconds() * source_fps;
+        let offset_frames = crate::rythmo_layout::reading_bar_offset_seconds(
+            project.settings().reading_bar_offset_percent,
+            w,
+            source_fps,
+            ppf,
+        ) * source_fps;
 
         // -- Ruler ticks --
         let first_tick_frame = current_frame_floor - visible_frames / 2;
@@ -1454,6 +1459,7 @@ impl CpuRenderer {
             ppf,
             4,
             source_fps,
+            offset_frames / source_fps,
         );
         let strokes: Vec<_> = scene
             .drawings
@@ -1468,6 +1474,7 @@ impl CpuRenderer {
                 current_frame,
                 ppf,
                 source_fps,
+                offset_frames / source_fps,
             );
             crate::rythmo_drawing::composite_rgba_over(pixmap.data_mut(), &drawing);
         }

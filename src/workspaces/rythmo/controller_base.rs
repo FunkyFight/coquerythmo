@@ -37,6 +37,12 @@ pub fn handle_rythmo_event(
     erasing: bool,
     interaction_mode: RythmoInteractionMode,
 ) -> EventResponse {
+    crate::config::set_project_view_settings(
+        project.settings().scroll_speed,
+        project.settings().reading_bar_offset_percent,
+        zone.width,
+        fps,
+    );
     let mut ctx = RythmoCtx {
         zone,
         project,

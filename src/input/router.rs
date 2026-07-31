@@ -411,6 +411,20 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         UiAction::ToggleActiveAudio,
     );
     router.bind(
+        InputContext::Recording,
+        KeyCode::Tab,
+        ctrl,
+        RepeatPolicy::PressOnly,
+        UiAction::RecordingToggleSharedAudio,
+    );
+    router.bind(
+        InputContext::Recording,
+        KeyCode::Character('l'),
+        ctrl,
+        RepeatPolicy::PressOnly,
+        UiAction::RecordingCycleLanguage,
+    );
+    router.bind(
         InputContext::Global,
         KeyCode::Character('s'),
         ctrl,
@@ -672,6 +686,14 @@ mod tests {
         assert_eq!(
             resolve(KeyCode::Tab, ctrl, &global, false),
             Some(&UiAction::ToggleActiveAudio)
+        );
+        assert_eq!(
+            resolve(KeyCode::Tab, ctrl, &recording, false),
+            Some(&UiAction::RecordingToggleSharedAudio)
+        );
+        assert_eq!(
+            resolve(KeyCode::Character('l'), ctrl, &recording, false),
+            Some(&UiAction::RecordingCycleLanguage)
         );
         assert_eq!(resolve(KeyCode::Tab, ctrl, &global, true), None);
         assert_eq!(

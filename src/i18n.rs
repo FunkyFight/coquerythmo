@@ -77,6 +77,8 @@ mod tests {
             "toast.export_requires_video",
             "export_hub.languages",
             "menu.tools.automation",
+            "recording.actor_requests",
+            "recording.actor_requests.open_microphone",
             "automation.add_entry",
             "automation.add_line_reroute",
             "automation.exec_input",

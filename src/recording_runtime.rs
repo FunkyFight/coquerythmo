@@ -121,6 +121,7 @@ impl RecordingRuntime {
         project: &RecordingProject,
         start_frame: i64,
         username: &str,
+        input_device: Option<&str>,
     ) -> Result<RecordingRuntimeEvent, RecordingError> {
         if self.capture_state().is_some() {
             return Err(RecordingError::CaptureBusy);
@@ -132,7 +133,7 @@ impl RecordingRuntime {
         // Propose IDs without touching durable allocator state. A cancelled
         // countdown therefore keeps strict transaction reconstruction equal.
         let target = project.propose_capture_target(track_id, start_frame)?;
-        self.begin_capture_target(target, username)
+        self.begin_capture_target(target, username, input_device)
     }
 
     /// Start a capture using IDs reserved by the online controller. Actors do
@@ -142,6 +143,7 @@ impl RecordingRuntime {
         &mut self,
         target: CaptureTarget,
         username: &str,
+        input_device: Option<&str>,
     ) -> Result<RecordingRuntimeEvent, RecordingError> {
         if self.capture_state().is_some() {
             return Err(RecordingError::CaptureBusy);
@@ -157,7 +159,8 @@ impl RecordingRuntime {
                 .temporary_dir
                 .join(format!("{prefix}_{timestamp}-{nonce}.flac"));
         }
-        let recorder = FfmpegFlacRecorder::new(&output_path);
+        let recorder = FfmpegFlacRecorder::new(&output_path)
+            .with_input_device(input_device.map(str::to_owned));
         let mut controller = CaptureController::new(recorder, SystemClock::default());
         controller.begin_countdown(target)?;
         self.capture = Some(ActiveCapture {

@@ -20,6 +20,7 @@ pub mod interactive;
 pub mod language_modal;
 pub mod layout;
 pub mod license_badge;
+pub mod microphone_modal;
 pub mod modal_host;
 pub mod pricing_license_modal;
 pub mod pricing_page;
@@ -63,7 +64,6 @@ use crate::network::NetworkMember;
 use crate::project::Project;
 use crate::recording::{CaptureState, RecordingProject};
 use crate::render_index::ProjectRenderIndex;
-use crate::rendering::rythmo::scene::{FrameWindow, RythmoScene, SceneOptions};
 
 use self::actor_icon_cache::ActorIconCache;
 use self::focus::{AccessibleNode, FocusId, FocusManager};
@@ -239,6 +239,7 @@ impl Ui {
                 project_uv,
                 WorkspaceId::Rythmo,
                 true,
+                false,
             ),
             tab_widgets: vec![],
             toolbar_widgets: vec![],
@@ -503,6 +504,7 @@ impl Ui {
             self.uv("project"),
             self.active_workspace,
             self.recording_daw_enabled(),
+            self.recording_actor_requests_enabled(),
         );
         self.refresh_root_focus_nodes();
     }
@@ -567,6 +569,7 @@ impl Ui {
             self.uv("project"),
             self.active_workspace,
             self.recording_daw_enabled(),
+            self.recording_actor_requests_enabled(),
         );
         self.rebuild_layout();
     }
@@ -591,12 +594,7 @@ impl Ui {
     }
 
     fn workspace_content_rect(&self) -> Rect {
-        let tabs_h = if crate::config::dev_mode() {
-            TABBAR_H
-        } else {
-            0.0
-        };
-        let top = TOPBAR_H + tabs_h;
+        let top = TOPBAR_H + TABBAR_H;
         Rect {
             x: 0.0,
             y: top,
@@ -631,26 +629,20 @@ impl Ui {
         }
     }
 
-    fn recording_rythmo_min_height(project: &Project) -> f32 {
-        let mut used = [false; crate::constants::NUM_SLOTS as usize];
-        let mut karaoke = [false; crate::constants::NUM_SLOTS as usize];
-        for line in project.lines() {
-            let track = crate::rythmo_layout::track_index_for_y_slot(line.y_slot);
-            used[track] = true;
-            karaoke[track] |= line.karaoke;
-        }
-        let emotion = crate::rythmo_layout::text_emotion_tracks(project);
-        let used_tracks = used.iter().filter(|used| **used).count();
+    fn recording_rythmo_min_height(render_index: &ProjectRenderIndex) -> f32 {
+        let used = render_index.used_track_indices();
+        let karaoke = render_index.karaoke_tracks();
+        let emotion = render_index.text_emotion_tracks();
+        let used_tracks = used.len();
         let karaoke_tracks = used
             .iter()
-            .zip(karaoke)
-            .filter(|(used, karaoke)| **used && *karaoke)
+            .filter(|track| karaoke.get(**track).copied().unwrap_or(false))
             .count();
         let emotion_tracks = used
             .iter()
-            .enumerate()
-            .filter(|(track, used)| {
-                **used && !karaoke[*track] && emotion.get(*track).copied().unwrap_or(false)
+            .filter(|track| {
+                !karaoke.get(**track).copied().unwrap_or(false)
+                    && emotion.get(**track).copied().unwrap_or(false)
             })
             .count();
         let row_height = 58.0;
@@ -668,8 +660,10 @@ impl Ui {
 
     pub fn sync_recording_scene(
         &mut self,
-        rythmo_project: &Project,
+        render_index: &ProjectRenderIndex,
         project: &RecordingProject,
+        scroll_speed: f32,
+        reading_bar_offset_percent: f32,
         capture: Option<&CaptureState>,
         participants: &[NetworkMember],
         control_owner_id: Option<&str>,
@@ -693,7 +687,7 @@ impl Ui {
             RecordingLayout::capturing(
                 self.screen_w,
                 self.screen_h,
-                Self::recording_rythmo_min_height(rythmo_project),
+                Self::recording_rythmo_min_height(render_index),
                 self.recording_capture_rythmo_split,
             )
         } else if self.recording_ui.page == RecordingPage::Choice {
@@ -710,7 +704,7 @@ impl Ui {
                 self.recording_video_split,
                 self.recording_rythmo_split,
                 self.recording_assets_split,
-                Self::recording_rythmo_min_height(rythmo_project),
+                Self::recording_rythmo_min_height(render_index),
             )
         };
         let chrome_changed = self.recording_capture_view != capture_view
@@ -724,6 +718,8 @@ impl Ui {
             self.recording_layout,
             current_frame,
             project.timeline_fps(),
+            scroll_speed,
+            reading_bar_offset_percent,
         );
         self.recording_scene = self.recording_ui.scene(
             self.recording_layout,
@@ -746,6 +742,8 @@ impl Ui {
         width: f32,
         height: f32,
         project: &RecordingProject,
+        scroll_speed: f32,
+        reading_bar_offset_percent: f32,
         capture: Option<&CaptureState>,
         participants: &[NetworkMember],
         control_owner_id: Option<&str>,
@@ -771,6 +769,8 @@ impl Ui {
             self.recording_daw_layout,
             current_frame,
             project.timeline_fps(),
+            scroll_speed,
+            reading_bar_offset_percent,
         );
         self.recording_daw_scene = self.recording_ui.scene(
             self.recording_daw_layout,
@@ -1099,6 +1099,10 @@ impl Ui {
         !self.network_in_room || !matches!(self.recording_ui.role, RecordingRole::Actor)
     }
 
+    fn recording_actor_requests_enabled(&self) -> bool {
+        self.network_in_room && matches!(self.recording_ui.role, RecordingRole::Director)
+    }
+
     pub fn recording_page(&self) -> RecordingPage {
         self.recording_ui.page
     }
@@ -1253,6 +1257,14 @@ impl Ui {
             .handle_event(event, self.screen_w, self.screen_h)
         {
             return outcome.into_event_response();
+        }
+
+        if self.active_workspace == WorkspaceId::Recording
+            && self.network_in_room
+            && matches!(self.recording_ui.role, RecordingRole::Actor)
+            && matches!(event, UiEvent::KeyInput { text } if text == "\x1b")
+        {
+            return EventResponse::Action(UiAction::OpenRecordingActorMenu);
         }
 
         if self.active_workspace == WorkspaceId::Recording && self.recording_capture_active {
@@ -2544,6 +2556,18 @@ impl Ui {
         self.modal_host.open_proxy_error(detail);
     }
 
+    pub fn open_recording_input_device_modal(
+        &mut self,
+        devices: Vec<String>,
+        selected: Option<String>,
+    ) {
+        self.modal_host.open_microphone(devices, selected);
+    }
+
+    pub fn open_recording_actor_menu(&mut self) {
+        self.modal_host.open_recording_actor_menu(self.volume);
+    }
+
     pub fn open_whats_new_modal(
         &mut self,
         version: impl Into<String>,
@@ -2584,8 +2608,14 @@ impl Ui {
         self.modal_host.open_connect(ip, port, join);
     }
 
-    pub fn open_settings_modal(&mut self, fonts: Vec<String>) {
-        self.modal_host.open_settings(fonts);
+    pub fn open_settings_modal(
+        &mut self,
+        fonts: Vec<String>,
+        scroll_speed: f32,
+        reading_bar_offset_percent: f32,
+    ) {
+        self.modal_host
+            .open_settings(fonts, scroll_speed, reading_bar_offset_percent);
     }
 
     pub fn open_project_settings_modal(
@@ -2654,6 +2684,7 @@ impl Ui {
             self.uv("project"),
             self.active_workspace,
             self.recording_daw_enabled(),
+            self.recording_actor_requests_enabled(),
         );
         self.rebuild_layout();
     }
@@ -4057,25 +4088,10 @@ impl Ui {
             rotation: 0.0,
             _padding: [0.0; 2],
         });
-        let ppf = crate::constants::PIXELS_PER_FRAME * crate::config::scroll_speed();
-        let visible_frames = (zone.width / ppf.max(0.001)) as i64 + 4;
-        let scene_center = render_frame.clamp(i64::MIN as f64, i64::MAX as f64) as i64;
-        let scene = RythmoScene::build(
-            project,
-            render_index,
-            SceneOptions {
-                frame_window: FrameWindow {
-                    first: scene_center.saturating_sub(visible_frames / 2 + 2),
-                    last: scene_center.saturating_add(visible_frames / 2 + 2),
-                },
-                current_frame: render_frame,
-                source_fps: fps,
-                ..SceneOptions::default()
-            },
-        );
         quads.extend(rythmo::render_rythmo_base(
             zone,
             project,
+            render_index,
             render_frame,
             waveform,
             waveform_offset_frames,
@@ -4083,7 +4099,6 @@ impl Ui {
             self.playing,
             fps,
             &self.rythmo_state,
-            &scene,
         ));
     }
 
@@ -4595,7 +4610,13 @@ impl Ui {
         let zw = zone.width.max(1.0) as u32;
         let zh = zone.height.max(1.0) as u32;
         let cf = current_frame;
-        let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
+        let ppf = crate::rythmo_drawing::ppf_for_scale(1.0, project.settings().scroll_speed);
+        let reading_bar_offset_seconds = crate::rythmo_layout::reading_bar_offset_seconds(
+            project.settings().reading_bar_offset_percent,
+            zone.width,
+            fps,
+            ppf,
+        );
 
         // Compute cache key
         let active_stroke_len = self
@@ -4609,16 +4630,16 @@ impl Ui {
             frame_key,
             zw,
             zh,
-            project.revision(),
+            project.drawing_revision(),
             active_stroke_len,
-            self.rythmo_state.drawing_dirty,
         );
 
         // Check if we need to re-rasterize. A live transform drag mutates the
         // actual stroke points without changing the revision, so force an
         // update while a transform handle is active to keep strokes in sync.
         let transform_active = self.rythmo_state.transform_handle.is_some();
-        let needs_update = transform_active
+        let needs_update = self.rythmo_state.drawing_dirty
+            || transform_active
             || self
                 .drawing_overlay_cache
                 .as_ref()
@@ -4626,7 +4647,8 @@ impl Ui {
 
         if needs_update {
             // Collect visible strokes
-            let (first_frame, last_frame) = visible_frame_window(zone.width, cf, ppf, 4, fps);
+            let (first_frame, last_frame) =
+                visible_frame_window(zone.width, cf, ppf, 4, fps, reading_bar_offset_seconds);
             let mut strokes: Vec<&DrawingStroke> =
                 project.drawing().query_window(first_frame, last_frame);
 
@@ -4638,7 +4660,8 @@ impl Ui {
             }
 
             if !strokes.is_empty() {
-                let rgba = rasterize_window(&strokes, zw, zh, cf, ppf, fps);
+                let rgba =
+                    rasterize_window(&strokes, zw, zh, cf, ppf, fps, reading_bar_offset_seconds);
 
                 // Reuse the existing GPU texture when the zone size is unchanged so
                 // scrolling/playback doesn't reallocate a texture every frame (which
@@ -4746,7 +4769,7 @@ impl Ui {
 pub(crate) struct DrawingOverlayCache {
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
-    key: (i64, u32, u32, u64, usize, bool),
+    key: (i64, u32, u32, u64, usize),
     zw: u32,
     zh: u32,
 }

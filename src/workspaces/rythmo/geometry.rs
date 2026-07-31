@@ -483,6 +483,27 @@ impl EditorLayoutCtx {
         );
         let reserved_karaoke_tracks = rythmo_layout::karaoke_tracks(project);
         let emotion_tracks = rythmo_layout::text_emotion_tracks(project);
+        Self::new_for_indexed_tracks(
+            zone,
+            track_indices,
+            &karaoke_mode_tracks,
+            &reserved_karaoke_tracks,
+            &emotion_tracks,
+        )
+    }
+
+    pub(crate) fn new_for_indexed_tracks(
+        zone: &Rect,
+        track_indices: &[usize],
+        karaoke_mode_tracks: &[bool],
+        reserved_karaoke_tracks: &[bool],
+        emotion_tracks: &[bool],
+    ) -> Self {
+        let track_indices = if track_indices.is_empty() {
+            &[0]
+        } else {
+            track_indices
+        };
         let karaoke_track_count = reserved_karaoke_tracks
             .iter()
             .enumerate()

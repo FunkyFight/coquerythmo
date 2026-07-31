@@ -649,16 +649,19 @@ mod tests {
             height: 300.0,
         };
         let mut state = RythmoState::new();
+        let mut render_index = ProjectRenderIndex::new();
+        render_index.refresh(&project);
 
         let before = state
-            .get_or_create_layout_ctx(&project, 0.0, 24.0, &zone)
+            .get_or_create_layout_ctx(&project, &render_index, 0.0, 24.0, &zone)
             .normal_body_h;
         project.get_line_mut(line_id).unwrap().set_text_emotion(
             0,
             7,
             Some(crate::rythmo_line::TextEmotion::Wave),
         );
-        let layout = state.get_or_create_layout_ctx(&project, 0.0, 24.0, &zone);
+        render_index.refresh(&project);
+        let layout = state.get_or_create_layout_ctx(&project, &render_index, 0.0, 24.0, &zone);
 
         assert!(layout.normal_body_h < before);
         let bottom = layout
@@ -671,8 +674,6 @@ mod tests {
         let hitbox = layout.line_rect_with_karaoke_width(line, 0.0, &zone, false, None, 0.0, 24.0);
         drop(layout);
 
-        let mut render_index = ProjectRenderIndex::new();
-        render_index.refresh(&project);
         let response = handle_rythmo_event(
             &UiEvent::MouseMove {
                 x: hitbox.x + hitbox.width / 2.0,
@@ -1385,22 +1386,10 @@ mod tests {
         let visible_audio_frame = current_frame - waveform_offset_frames;
         let mut waveform = vec![0.0; (visible_audio_frame as usize + 1) * 4];
         waveform[visible_audio_frame as usize * 4] = 1.0;
-        let scene = crate::rendering::rythmo::scene::RythmoScene::build(
-            &project,
-            &render_index,
-            crate::rendering::rythmo::scene::SceneOptions {
-                frame_window: crate::rendering::rythmo::scene::FrameWindow {
-                    first: current_frame - 1_000,
-                    last: current_frame + 1_000,
-                },
-                current_frame: current_frame as f64,
-                ..crate::rendering::rythmo::scene::SceneOptions::default()
-            },
-        );
-
         let quads = render_rythmo_base(
             &zone,
             &project,
+            &render_index,
             current_frame as f64,
             &waveform,
             waveform_offset_frames,
@@ -1408,7 +1397,6 @@ mod tests {
             false,
             24.0,
             &state,
-            &scene,
         );
 
         assert!(quads.iter().any(|quad| {
@@ -1576,7 +1564,8 @@ fn push_playhead_segments(
 
 fn active_karaoke_skip_ranges(
     project: &Project,
-    scene: &crate::rendering::rythmo::scene::RythmoScene,
+    render_index: &ProjectRenderIndex,
+    current_frame: f64,
     zone: &Rect,
     karaoke_preview: bool,
     fps: f64,
@@ -1587,13 +1576,18 @@ fn active_karaoke_skip_ranges(
         return Vec::new();
     }
 
-    let layout_ctx = state.get_or_create_layout_ctx(project, scene.current_frame, fps, zone);
-    scene
-        .lines
-        .iter()
-        .filter(|scene_line| scene_line.karaoke_active)
+    let layout_ctx =
+        state.get_or_create_layout_ctx(project, render_index, current_frame, fps, zone);
+    let karaoke_index =
+        state.cached_karaoke_ui_index(project, karaoke_adjacent_max_gap_frames(fps));
+    let frame = visual_frame_to_i64(current_frame);
+    render_index
+        .visible_line_ids(project, frame, frame)
+        .into_iter()
+        .filter_map(|line_id| project.get_line(line_id))
+        .filter(|line| line.karaoke_active(current_frame))
         .filter_map(|line| {
-            let body_rect = layout_ctx.track_body_rect(line.line.y_slot, zone);
+            let body_rect = layout_ctx.track_body_rect(line.y_slot, zone);
             let rect = karaoke_stack_rect(
                 Rect {
                     x: body_rect.x,
@@ -1601,11 +1595,11 @@ fn active_karaoke_skip_ranges(
                     width: body_rect.width,
                     height: body_rect.height,
                 },
-                line.karaoke_stack_row,
+                karaoke_index.stack_row(line),
                 1.0,
             );
 
-            let karaoke_width = karaoke_ui_text_width(&line.line.text);
+            let karaoke_width = karaoke_ui_text_width(&line.text);
             let center_x = zone.x + zone.width / 2.0;
             let karaoke_left = center_x - karaoke_width / 2.0;
             let karaoke_right = center_x + karaoke_width / 2.0;
@@ -1622,6 +1616,7 @@ fn active_karaoke_skip_ranges(
 pub fn render_rythmo_base(
     zone: &Rect,
     project: &Project,
+    render_index: &ProjectRenderIndex,
     current_frame: f64,
     waveform: &[f32],
     waveform_offset_frames: i64,
@@ -1629,8 +1624,13 @@ pub fn render_rythmo_base(
     karaoke_preview: bool,
     fps: f64,
     state: &RythmoState,
-    scene: &crate::rendering::rythmo::scene::RythmoScene,
 ) -> Vec<QuadInstance> {
+    crate::config::set_project_view_settings(
+        project.settings().scroll_speed,
+        project.settings().reading_bar_offset_percent,
+        zone.width,
+        fps,
+    );
     let mut quads = Vec::new();
 
     // Waveform (rendered first, behind playhead)
@@ -1738,7 +1738,8 @@ pub fn render_rythmo_base(
     let playhead_x = zone.x + (zone.width - PLAYHEAD_WIDTH) / 2.0 - offset_frames as f32 * ppf();
     let skip_ranges = active_karaoke_skip_ranges(
         project,
-        scene,
+        render_index,
+        current_frame,
         zone,
         karaoke_preview,
         fps,
@@ -2999,7 +3000,7 @@ pub fn render_lines<'a>(
     f32,
     Option<Vec<CursorSegmentInfo>>,
 )> {
-    state.update_text_emotion_presence(project);
+    state.update_text_emotion_presence(render_index);
     if let Some(drag) = editable
         .then_some(())
         .and_then(|_| state.dragging.as_ref())
@@ -3038,7 +3039,8 @@ pub fn render_lines<'a>(
         if karaoke_preview { 2 } else { 8 },
     );
     let karaoke_count_in_frame_count = karaoke_count_in_frames(fps);
-    let layout_ctx = state.get_or_create_layout_ctx(project, current_frame, fps, zone);
+    let layout_ctx =
+        state.get_or_create_layout_ctx(project, render_index, current_frame, fps, zone);
 
     // Rend le highlight de la track survolée (s'il y en a une et qu'elle est valide)
     if let Some(track_idx) = editable.then_some(()).and(state.hovered_track) {
@@ -3066,24 +3068,7 @@ pub fn render_lines<'a>(
     let (first_frame, last_frame) = render_window(zone, current_frame, margin_frames, fps);
     // A badge is rendered before its line body, so its pixels can enter from
     // the right while the body's start frame is still just outside the query.
-    let max_leading_visual_span = project
-        .lines()
-        .filter_map(|line| {
-            let (badge_width, actor_count) = if line.kind.is_dialogue() {
-                (
-                    badge_width(&line.character_name),
-                    line.voice_actor_names.len(),
-                )
-            } else if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
-                (badge_width(&line.character_name), 0)
-            } else {
-                return None;
-            };
-            Some(
-                4.0 * ppf() + badge_width + actor_count as f32 * (ACTOR_ICON_SIZE + ACTOR_ICON_GAP),
-            )
-        })
-        .fold(0.0_f32, f32::max);
+    let max_leading_visual_span = state.max_leading_visual_span(project);
     let last_frame = last_frame.saturating_add(f64_ceil_to_i64(
         max_leading_visual_span as f64 / ppf().max(0.001) as f64,
     ));
@@ -4910,6 +4895,12 @@ pub fn handle_context_menu_event(
     fps: f64,
     state: &mut RythmoState,
 ) -> EventResponse {
+    crate::config::set_project_view_settings(
+        project.settings().scroll_speed,
+        project.settings().reading_bar_offset_percent,
+        zone.width,
+        fps,
+    );
     match event {
         UiEvent::ContextMenu { x, y } => {
             let line_id = project

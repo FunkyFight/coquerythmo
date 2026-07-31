@@ -143,25 +143,36 @@ impl AudioOutputState {
         }
     }
 
-    fn update_callback_snapshot(&self, frames_before: u64, frames_after: u64, latency_frames: u64) {
+    fn update_callback_snapshot(
+        &self,
+        now: Instant,
+        frames_before: u64,
+        frames_after: u64,
+        latency_frames: u64,
+    ) {
         if let Ok(mut snapshot) = self.snapshot.lock() {
-            snapshot.wall_instant = Instant::now();
-            snapshot.audible_frame = frames_before as i64 - latency_frames as i64;
+            let audible_frame = frames_before as i64 - latency_frames as i64;
+            snapshot.audible_frame = if snapshot.written_frame == 0 {
+                audible_frame
+            } else {
+                audible_frame.max(self.projected_audible_frame(&snapshot, now))
+            };
+            snapshot.wall_instant = now;
             snapshot.written_frame = frames_after;
         }
     }
 
     fn audible_frame_from_snapshot(&self, snapshot: &AudioClockSnapshot, now: Instant) -> u64 {
+        self.projected_audible_frame(snapshot, now).max(0) as u64
+    }
+
+    fn projected_audible_frame(&self, snapshot: &AudioClockSnapshot, now: Instant) -> i64 {
         let elapsed_frames = now
             .saturating_duration_since(snapshot.wall_instant)
             .as_secs_f64()
             * self.sample_rate as f64;
-        let audible = snapshot.audible_frame as f64 + elapsed_frames.max(0.0);
-        if audible <= 0.0 {
-            0
-        } else {
-            (audible as u64).min(snapshot.written_frame)
-        }
+        ((snapshot.audible_frame as f64 + elapsed_frames.max(0.0)) as i64)
+            .min(snapshot.written_frame as i64)
     }
 }
 
@@ -1285,7 +1296,7 @@ fn write_audio_output<T>(
         .duration_since(&info.timestamp().callback)
         .map(|duration| (duration.as_secs_f64() * sample_rate as f64).round() as u64)
         .unwrap_or(0);
-    state.update_callback_snapshot(frames_before, frames_after, latency_frames);
+    state.update_callback_snapshot(Instant::now(), frames_before, frames_after, latency_frames);
 
     let recording_mix = recording_mix.read().ok().and_then(|mix| mix.clone());
     let volume = if recording_mix.is_some() {
@@ -1776,6 +1787,30 @@ mod tests {
 
         assert_eq!(before_audio, 0.0);
         assert!((after_audio - 0.15).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn audio_clock_never_moves_backward_when_reported_latency_increases() {
+        let start = Instant::now();
+        let clock = AudioOutputState::new(48_000, 1.0);
+
+        clock.update_callback_snapshot(start, 0, 4_800, 4_800);
+        assert_eq!(clock.snapshot.lock().unwrap().audible_frame, -4_800);
+
+        *clock.snapshot.lock().unwrap() = super::AudioClockSnapshot {
+            wall_instant: start,
+            audible_frame: 4_800,
+            written_frame: 9_600,
+        };
+        let callback_time = start + Duration::from_millis(100);
+
+        clock.update_callback_snapshot(callback_time, 9_600, 10_080, 7_200);
+
+        let snapshot = clock.snapshot.lock().unwrap();
+        assert_eq!(
+            clock.audible_frame_from_snapshot(&snapshot, callback_time),
+            9_600
+        );
     }
 
     #[test]

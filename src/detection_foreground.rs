@@ -423,7 +423,7 @@ fn selected_anchor_x(
     let address = selected_address(state)?;
     address.track()?;
     let cue = project.detections().detection(address)?;
-    let ppf = crate::constants::PIXELS_PER_FRAME * crate::config::scroll_speed();
+    let ppf = crate::constants::PIXELS_PER_FRAME * project.settings().scroll_speed;
     Some(
         zone.x
             + zone.width / 2.0

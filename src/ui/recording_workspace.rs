@@ -55,6 +55,10 @@ impl RecordingRole {
             Self::Solo | Self::Director | Self::CoDirector { has_control: true }
         )
     }
+
+    pub fn can_change_shared_view(self) -> bool {
+        matches!(self, Self::Solo | Self::Director)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -160,7 +164,7 @@ impl RecordingLayout {
     pub fn rythmo_split_handle_rect(&self) -> Rect {
         Rect {
             x: self.rythmo.x,
-            y: if self.microphone_waveform.is_some() {
+            y: if self.microphone_waveform.is_some() || self.timeline.is_none() {
                 self.rythmo.y
             } else {
                 self.timeline
@@ -408,13 +412,11 @@ impl RecordingLayout {
         rythmo_min_h: f32,
         rythmo_split: Option<f32>,
     ) -> Self {
-        let strip_h = 34.0;
-        let available_rythmo_h = (screen_h - strip_h * 2.0).max(0.0);
         let automatic_rythmo_h = (screen_h * 0.26).clamp(180.0, 280.0).max(rythmo_min_h);
         let rythmo_h = rythmo_split
-            .map_or(automatic_rythmo_h, |split| available_rythmo_h * split)
-            .min(available_rythmo_h);
-        let video_h = (screen_h - rythmo_h - strip_h * 2.0).max(0.0);
+            .map_or(automatic_rythmo_h, |split| screen_h * split)
+            .min(screen_h);
+        let video_h = (screen_h - rythmo_h).max(0.0);
         Self {
             content: Rect {
                 x: 0.0,
@@ -429,21 +431,11 @@ impl RecordingLayout {
                 height: video_h,
             },
             toolbar: None,
-            source_waveform: Some(Rect {
-                x: 0.0,
-                y: video_h,
-                width: screen_w,
-                height: strip_h,
-            }),
-            microphone_waveform: Some(Rect {
-                x: 0.0,
-                y: video_h + strip_h,
-                width: screen_w,
-                height: strip_h,
-            }),
+            source_waveform: None,
+            microphone_waveform: None,
             rythmo: Rect {
                 x: 0.0,
-                y: video_h + strip_h * 2.0,
+                y: video_h,
                 width: screen_w,
                 height: rythmo_h,
             },
@@ -561,13 +553,25 @@ impl RecordingWorkspaceUi {
         self.renaming_track.is_some()
     }
 
-    pub fn sync_view_to_playhead(&mut self, layout: RecordingLayout, current_frame: f64, fps: f64) {
+    pub fn sync_view_to_playhead(
+        &mut self,
+        layout: RecordingLayout,
+        current_frame: f64,
+        fps: f64,
+        scroll_speed: f32,
+        reading_bar_offset_percent: f32,
+    ) {
         let Some(body) = layout.track_body else {
             return;
         };
-        self.pixels_per_frame = crate::constants::PIXELS_PER_FRAME * crate::config::scroll_speed();
+        self.pixels_per_frame = crate::constants::PIXELS_PER_FRAME * scroll_speed;
         let half_visible_frames = body.width as f64 / self.pixels_per_frame.max(0.001) as f64 / 2.0;
-        let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
+        let offset_frames = crate::rythmo_layout::reading_bar_offset_seconds(
+            reading_bar_offset_percent,
+            body.width,
+            fps,
+            self.pixels_per_frame,
+        ) * fps;
         self.view_start_frame = current_frame - half_visible_frames + offset_frames;
     }
 
@@ -760,7 +764,7 @@ fn timeline_scene(
         &mut scene.quads,
         layout.video,
         [0.0, 0.0, 0.0, 1.0],
-        BORDER,
+        [0.0; 4],
         0.0,
     );
 
@@ -1621,6 +1625,14 @@ mod tests {
     use crate::recording::{AudioTrack, RecordingOperation};
 
     #[test]
+    fn only_solo_and_director_can_change_the_shared_view() {
+        assert!(RecordingRole::Solo.can_change_shared_view());
+        assert!(RecordingRole::Director.can_change_shared_view());
+        assert!(!RecordingRole::CoDirector { has_control: true }.can_change_shared_view());
+        assert!(!RecordingRole::Actor.can_change_shared_view());
+    }
+
+    #[test]
     fn countdown_grows_towards_recording() {
         assert!(countdown_font_size(3) < countdown_font_size(2));
         assert!(countdown_font_size(2) < countdown_font_size(1));
@@ -1633,6 +1645,7 @@ mod tests {
         assert_eq!(layout.rythmo.width, 1280.0);
         assert_eq!(layout.rythmo.height, 380.0);
         assert_eq!(layout.rythmo.y + layout.rythmo.height, 720.0);
+        assert_eq!(layout.video.y + layout.video.height, layout.rythmo.y);
         assert_eq!(
             layout.rythmo_split_handle_rect().y + super::super::layout::SPLIT_DRAG_ZONE / 2.0,
             layout.rythmo.y
@@ -1643,7 +1656,7 @@ mod tests {
     #[test]
     fn capture_layout_allows_the_actor_to_compress_the_rythmo() {
         let layout = RecordingLayout::capturing(1280.0, 720.0, 380.0, Some(0.2));
-        assert_eq!(layout.rythmo.height, (720.0 - 68.0) * 0.2);
+        assert_eq!(layout.rythmo.height, 720.0 * 0.2);
     }
 
     #[test]
@@ -1740,7 +1753,7 @@ mod tests {
             false,
         );
         let mut ui = RecordingWorkspaceUi::default();
-        ui.sync_view_to_playhead(layout, 240.0, 24.0);
+        ui.sync_view_to_playhead(layout, 240.0, 24.0, 1.0, 0.0);
         let body = layout.track_body.unwrap();
         let playhead_x = body.x + (240.0 - ui.view_start_frame) as f32 * ui.pixels_per_frame;
         let expected_x = body.x + body.width * 0.5

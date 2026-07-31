@@ -12,7 +12,7 @@ pub struct SettingsModal {
     pub rythmo_font: Option<String>,
     pub scroll_speed: f32,
     pub scroll_speed_text: String,
-    pub reading_bar_offset_seconds: f64,
+    pub reading_bar_offset_percent: f32,
     pub reading_bar_offset_text: String,
     pub available_fonts: Vec<String>,
     pub font_scroll_offset: f32,
@@ -38,26 +38,26 @@ pub enum SettingsModalResult {
         lang: String,
         rythmo_font: Option<String>,
         scroll_speed: f32,
-        reading_bar_offset_seconds: f64,
+        reading_bar_offset_percent: f32,
     },
 }
 
 impl SettingsModal {
-    pub fn new(fonts: Vec<String>) -> Self {
+    pub fn new(fonts: Vec<String>, scroll_speed: f32, reading_bar_offset_percent: f32) -> Self {
         let cfg = crate::config::get();
+        let scroll_speed = scroll_speed.clamp(0.25, 4.0);
+        let reading_bar_offset_percent = reading_bar_offset_percent.clamp(-50.0, 50.0);
         let current_font = cfg.ui.rythmo_font.clone();
         let selected_font_index = current_font
             .as_ref()
             .and_then(|name| fonts.iter().position(|f| f == name));
-        let scroll_speed = cfg.ui.scroll_speed;
-        let reading_bar_offset_seconds = cfg.ui.reading_bar_offset_seconds;
         Self {
             lang: cfg.lang.clone(),
             rythmo_font: current_font,
             scroll_speed,
             scroll_speed_text: format!("×{:.2}", scroll_speed),
-            reading_bar_offset_seconds,
-            reading_bar_offset_text: format!("{:+.2} s", reading_bar_offset_seconds),
+            reading_bar_offset_percent,
+            reading_bar_offset_text: format!("{:+.0} %", reading_bar_offset_percent),
             available_fonts: fonts,
             font_scroll_offset: 0.0,
             selected_font_index,
@@ -118,7 +118,7 @@ impl SettingsModal {
                         lang: self.lang.clone(),
                         rythmo_font: self.rythmo_font.clone(),
                         scroll_speed: self.scroll_speed,
-                        reading_bar_offset_seconds: self.reading_bar_offset_seconds,
+                        reading_bar_offset_percent: self.reading_bar_offset_percent,
                     },
                     6 => SettingsModalResult::Close,
                     _ => SettingsModalResult::Consumed,
@@ -157,22 +157,23 @@ impl SettingsModal {
             }
             UiEvent::CursorLeft | UiEvent::CursorDown if self.keyboard_focus == 3 => {
                 self.scroll_speed = (self.scroll_speed - 0.25).max(0.25);
-                self.scroll_speed_text = format!("Ã—{:.2}", self.scroll_speed);
+                self.scroll_speed_text = format!("×{:.2}", self.scroll_speed);
                 SettingsModalResult::Consumed
             }
             UiEvent::CursorRight | UiEvent::CursorUp if self.keyboard_focus == 3 => {
                 self.scroll_speed = (self.scroll_speed + 0.25).min(4.0);
-                self.scroll_speed_text = format!("Ã—{:.2}", self.scroll_speed);
+                self.scroll_speed_text = format!("×{:.2}", self.scroll_speed);
                 SettingsModalResult::Consumed
             }
             UiEvent::CursorLeft if self.keyboard_focus == 4 => {
-                self.reading_bar_offset_seconds = (self.reading_bar_offset_seconds + 0.1).min(2.0);
-                self.reading_bar_offset_text = format!("{:+.2} s", self.reading_bar_offset_seconds);
+                self.reading_bar_offset_percent =
+                    (self.reading_bar_offset_percent - 1.0).max(-50.0);
+                self.reading_bar_offset_text = format!("{:+.0} %", self.reading_bar_offset_percent);
                 SettingsModalResult::Consumed
             }
             UiEvent::CursorRight if self.keyboard_focus == 4 => {
-                self.reading_bar_offset_seconds = (self.reading_bar_offset_seconds - 0.1).max(-2.0);
-                self.reading_bar_offset_text = format!("{:+.2} s", self.reading_bar_offset_seconds);
+                self.reading_bar_offset_percent = (self.reading_bar_offset_percent + 1.0).min(50.0);
+                self.reading_bar_offset_text = format!("{:+.0} %", self.reading_bar_offset_percent);
                 SettingsModalResult::Consumed
             }
             UiEvent::MouseMove { x, y } => {
@@ -313,12 +314,12 @@ impl SettingsModal {
                 };
                 if speed_minus_rect.contains(*x, *y) {
                     self.scroll_speed = (self.scroll_speed - 0.25).max(0.25);
-                    self.scroll_speed_text = format!("Ã—{:.2}", self.scroll_speed);
+                    self.scroll_speed_text = format!("×{:.2}", self.scroll_speed);
                     return SettingsModalResult::Consumed;
                 }
                 if speed_plus_rect.contains(*x, *y) {
                     self.scroll_speed = (self.scroll_speed + 0.25).min(4.0);
-                    self.scroll_speed_text = format!("Ã—{:.2}", self.scroll_speed);
+                    self.scroll_speed_text = format!("×{:.2}", self.scroll_speed);
                     return SettingsModalResult::Consumed;
                 }
 
@@ -335,17 +336,17 @@ impl SettingsModal {
                     height: 26.0,
                 };
                 if offset_minus_rect.contains(*x, *y) {
-                    self.reading_bar_offset_seconds =
-                        (self.reading_bar_offset_seconds - 0.1).max(-2.0);
+                    self.reading_bar_offset_percent =
+                        (self.reading_bar_offset_percent - 1.0).max(-50.0);
                     self.reading_bar_offset_text =
-                        format!("{:+.2} s", self.reading_bar_offset_seconds);
+                        format!("{:+.0} %", self.reading_bar_offset_percent);
                     return SettingsModalResult::Consumed;
                 }
                 if offset_plus_rect.contains(*x, *y) {
-                    self.reading_bar_offset_seconds =
-                        (self.reading_bar_offset_seconds + 0.1).min(2.0);
+                    self.reading_bar_offset_percent =
+                        (self.reading_bar_offset_percent + 1.0).min(50.0);
                     self.reading_bar_offset_text =
-                        format!("{:+.2} s", self.reading_bar_offset_seconds);
+                        format!("{:+.0} %", self.reading_bar_offset_percent);
                     return SettingsModalResult::Consumed;
                 }
 
@@ -363,12 +364,12 @@ impl SettingsModal {
                     let lang = self.lang.clone();
                     let rythmo_font = self.rythmo_font.clone();
                     let scroll_speed = self.scroll_speed;
-                    let reading_bar_offset_seconds = self.reading_bar_offset_seconds;
+                    let reading_bar_offset_percent = self.reading_bar_offset_percent;
                     return SettingsModalResult::Save {
                         lang,
                         rythmo_font,
                         scroll_speed,
-                        reading_bar_offset_seconds,
+                        reading_bar_offset_percent,
                     };
                 }
 

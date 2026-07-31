@@ -196,8 +196,8 @@ impl SidePanel {
     }
 
     fn line_cell_label(&self, project: &Project, index: usize, column: usize) -> Option<String> {
-        let total = project.lines().count();
-        let line = project.lines().nth(index)?;
+        let total = project.line_count();
+        let line = project.line_at(index)?;
         let character = if line.character_name.trim().is_empty() {
             t("accessibility.character")
         } else {
@@ -283,7 +283,7 @@ impl SidePanel {
 
     fn move_table_focus(&mut self, forward: bool, panel: Rect, project: &Project) -> EventResponse {
         let (item_count, columns) = match self.kind {
-            Some(SidePanelKind::Lines) => (project.lines().count(), 2),
+            Some(SidePanelKind::Lines) => (project.line_count(), 2),
             Some(SidePanelKind::Roles) => (roles(project).len(), 1),
             None => return EventResponse::Ignored,
         };
@@ -634,7 +634,7 @@ impl SidePanel {
             return EventResponse::Ignored;
         };
         let item_count = match kind {
-            SidePanelKind::Lines => project.lines().count(),
+            SidePanelKind::Lines => project.line_count(),
             SidePanelKind::Roles => roles(project).len(),
         };
         match event {
@@ -686,7 +686,7 @@ impl SidePanel {
             UiEvent::Activate => self.activate_keyboard_focus(panel, project),
             UiEvent::KeyInput { text } if text == " " => {
                 if kind == SidePanelKind::Lines && !self.keyboard_close {
-                    let Some(line) = project.lines().nth(self.keyboard_row) else {
+                    let Some(line) = project.line_at(self.keyboard_row) else {
                         return EventResponse::Consumed;
                     };
                     if !self.selected.remove(&line.id) {
@@ -704,7 +704,7 @@ impl SidePanel {
                 self.activate_keyboard_focus(panel, project)
             }
             UiEvent::OpenContextMenu if kind == SidePanelKind::Lines && !self.keyboard_close => {
-                let Some(line) = project.lines().nth(self.keyboard_row) else {
+                let Some(line) = project.line_at(self.keyboard_row) else {
                     return EventResponse::Consumed;
                 };
                 if !self.selected.contains(&line.id) {
@@ -735,7 +735,7 @@ impl SidePanel {
             UiEvent::Delete if kind == SidePanelKind::Lines => {
                 let mut line_ids: Vec<u64> = self.selected.iter().copied().collect();
                 if line_ids.is_empty() && !self.keyboard_close {
-                    if let Some(line) = project.lines().nth(self.keyboard_row) {
+                    if let Some(line) = project.line_at(self.keyboard_row) {
                         line_ids.push(line.id);
                     }
                 }
@@ -749,7 +749,7 @@ impl SidePanel {
             UiEvent::Copy | UiEvent::Cut if kind == SidePanelKind::Lines => {
                 let mut line_ids: Vec<u64> = self.selected.iter().copied().collect();
                 if line_ids.is_empty() && !self.keyboard_close {
-                    if let Some(line) = project.lines().nth(self.keyboard_row) {
+                    if let Some(line) = project.line_at(self.keyboard_row) {
                         line_ids.push(line.id);
                     }
                 }
@@ -781,7 +781,7 @@ impl SidePanel {
         }
         match self.kind {
             Some(SidePanelKind::Lines) => {
-                let Some(line) = project.lines().nth(self.keyboard_row) else {
+                let Some(line) = project.line_at(self.keyboard_row) else {
                     return EventResponse::Consumed;
                 };
                 if !self.selected.contains(&line.id) {
@@ -976,7 +976,7 @@ impl SidePanel {
         }
 
         let item_count = match kind {
-            SidePanelKind::Lines => project.lines().count(),
+            SidePanelKind::Lines => project.line_count(),
             SidePanelKind::Roles => roles(project).len(),
         };
         if let Some((track, thumb, max_scroll)) = scrollbar_geometry(panel, item_count, self.scroll)
@@ -1054,7 +1054,7 @@ impl SidePanel {
         let index = self.scroll + row;
         match kind {
             SidePanelKind::Lines => {
-                let Some(line) = project.lines().nth(index) else {
+                let Some(line) = project.line_at(index) else {
                     return Some(EventResponse::Consumed);
                 };
                 let id = line.id;
@@ -1206,7 +1206,7 @@ impl SidePanel {
             return;
         };
         let item_count = match kind {
-            SidePanelKind::Lines => project.lines().count(),
+            SidePanelKind::Lines => project.line_count(),
             SidePanelKind::Roles => roles(project).len(),
         };
         solid(
@@ -1323,7 +1323,10 @@ impl SidePanel {
                     0.0,
                 );
                 let visible = visible_rows(panel);
-                for (row, line) in project.lines().skip(self.scroll).take(visible).enumerate() {
+                for row in 0..visible {
+                    let Some(line) = project.line_at(self.scroll + row) else {
+                        break;
+                    };
                     let rr = row_rect(panel, row);
                     if self.selected.contains(&line.id) {
                         solid(quads, rr, [0.12, 0.14, 0.23, 1.0], [0.0; 4], 0.0);
@@ -1427,7 +1430,7 @@ impl SidePanel {
                         [205, 207, 218],
                     ));
                 }
-                if project.lines().next().is_none() {
+                if project.line_count() == 0 {
                     labels.push(label(
                         t("panel.empty.lines"),
                         body_rect(panel),

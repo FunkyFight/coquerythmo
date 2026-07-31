@@ -21,7 +21,13 @@ pub(crate) fn handle_drawing_event(
             && y >= ctx.zone.y
             && y <= ctx.zone.y + ctx.zone.height
     };
-    let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
+    let ppf = crate::rythmo_drawing::ppf_for_scale(1.0, ctx.project.settings().scroll_speed);
+    let reading_bar_offset_frames = crate::rythmo_layout::reading_bar_offset_seconds(
+        ctx.project.settings().reading_bar_offset_percent,
+        ctx.zone.width,
+        ctx.fps,
+        ppf,
+    ) * ctx.fps;
 
     match event {
         UiEvent::MousePress { x, y } if in_zone(*x, *y) => {
@@ -34,6 +40,7 @@ pub(crate) fn handle_drawing_event(
                 ctx.zone.height,
                 ctx.current_frame,
                 ppf,
+                reading_bar_offset_frames,
             );
             if erasing {
                 let stroke_ids = ctx.project.drawing().strokes_within_radius(
@@ -70,6 +77,7 @@ pub(crate) fn handle_drawing_event(
                 ctx.zone.height,
                 ctx.current_frame,
                 ppf,
+                reading_bar_offset_frames,
             );
             let stroke_ids = ctx.project.drawing().strokes_within_radius(
                 frame,
@@ -95,6 +103,7 @@ pub(crate) fn handle_drawing_event(
                 ctx.zone.height,
                 ctx.current_frame,
                 ppf,
+                reading_bar_offset_frames,
             );
             if let Some(stroke) = state.active_stroke.as_mut() {
                 stroke.points.push((frame, y_frac));

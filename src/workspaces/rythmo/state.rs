@@ -80,6 +80,12 @@ struct KaraokeWidthPrewarmState {
     complete: bool,
 }
 
+#[derive(Default)]
+struct LeadingVisualSpanCache {
+    signature: u64,
+    span: f32,
+}
+
 pub struct RythmoState {
     pub hovered_line: Option<u64>,
     pub hovered_track: Option<usize>,
@@ -130,6 +136,7 @@ pub struct RythmoState {
     cached_layout_ctx: RefCell<Option<EditorLayoutCtx>>,
     syllable_breaks_cache: RefCell<HashMap<u64, (Vec<usize>, u64)>>, // line_id -> (breaks, text_hash)
     syllable_visual_ratios_cache: RefCell<HashMap<u64, SyllableVisualRatiosCacheEntry>>,
+    leading_visual_span_cache: RefCell<LeadingVisualSpanCache>,
     text_emotion_epoch: std::time::Instant,
     has_text_emotions: std::cell::Cell<bool>,
 }
@@ -276,6 +283,7 @@ impl RythmoState {
             cached_layout_ctx: RefCell::new(None),
             syllable_breaks_cache: RefCell::new(HashMap::new()),
             syllable_visual_ratios_cache: RefCell::new(HashMap::new()),
+            leading_visual_span_cache: RefCell::new(LeadingVisualSpanCache::default()),
             text_emotion_epoch: std::time::Instant::now(),
             has_text_emotions: std::cell::Cell::new(false),
         }
@@ -390,15 +398,13 @@ impl RythmoState {
     pub(super) fn get_or_create_layout_ctx(
         &self,
         project: &Project,
+        render_index: &ProjectRenderIndex,
         current_frame: f64,
         fps: f64,
         zone: &Rect,
     ) -> std::cell::Ref<'_, EditorLayoutCtx> {
-        let karaoke_mode_tracks = crate::rythmo_layout::karaoke_mode_tracks(
-            project,
-            current_frame,
-            karaoke_count_in_frames(fps),
-        );
+        let karaoke_mode_tracks =
+            render_index.karaoke_mode_tracks(current_frame, karaoke_count_in_frames(fps));
         let signature = Self::layout_signature(project, zone, &karaoke_mode_tracks);
         {
             let cached_sig = self.cached_layout_signature.borrow();
@@ -409,16 +415,16 @@ impl RythmoState {
         }
 
         let track_indices = if self.compact_empty_tracks {
-            crate::rythmo_layout::used_track_indices(project)
+            render_index.used_track_indices().to_vec()
         } else {
             crate::rythmo_layout::all_track_indices()
         };
-        let layout_ctx = EditorLayoutCtx::new_at_frame_with_fps_for_tracks(
-            project,
-            current_frame,
-            fps,
+        let layout_ctx = EditorLayoutCtx::new_for_indexed_tracks(
             zone,
             &track_indices,
+            &karaoke_mode_tracks,
+            render_index.karaoke_tracks(),
+            render_index.text_emotion_tracks(),
         );
 
         *self.cached_layout_signature.borrow_mut() = signature;
@@ -640,9 +646,51 @@ impl RythmoState {
         self.text_emotion_epoch.elapsed().as_secs_f32()
     }
 
-    pub(super) fn update_text_emotion_presence(&self, project: &Project) {
-        self.has_text_emotions
-            .set(project.lines().any(|line| !line.text_emotions.is_empty()));
+    pub(super) fn update_text_emotion_presence(&self, render_index: &ProjectRenderIndex) {
+        self.has_text_emotions.set(render_index.has_text_emotions());
+    }
+
+    pub(super) fn max_leading_visual_span(&self, project: &Project) -> f32 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        project.revision().hash(&mut hasher);
+        crate::config::get()
+            .ui
+            .font_size
+            .to_bits()
+            .hash(&mut hasher);
+        project.settings().scroll_speed.to_bits().hash(&mut hasher);
+        crate::vector_text::rythmo_font_family_name().hash(&mut hasher);
+        let signature = hasher.finish();
+
+        let mut cache = self.leading_visual_span_cache.borrow_mut();
+        if cache.signature != signature {
+            cache.span = project
+                .lines()
+                .filter_map(|line| {
+                    let (badge_width, actor_count) = if line.kind.is_dialogue() {
+                        (
+                            badge_width(&line.character_name),
+                            line.voice_actor_names.len(),
+                        )
+                    } else if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart)
+                    {
+                        (badge_width(&line.character_name), 0)
+                    } else {
+                        return None;
+                    };
+                    Some(
+                        4.0 * ppf()
+                            + badge_width
+                            + actor_count as f32 * (ACTOR_ICON_SIZE + ACTOR_ICON_GAP),
+                    )
+                })
+                .fold(0.0_f32, f32::max);
+            cache.signature = signature;
+        }
+        cache.span
     }
 
     pub fn needs_pointer_motion(&self) -> bool {

@@ -38,11 +38,7 @@ impl Layout {
             0.0
         };
         let main_w = screen_w - props_w;
-        let tabbar_h = if crate::config::dev_mode() {
-            TABBAR_H
-        } else {
-            0.0
-        };
+        let tabbar_h = TABBAR_H;
         let content_top = TOPBAR_H + tabbar_h;
         let content_h = screen_h - content_top;
 
@@ -150,9 +146,9 @@ mod tests {
         assert_eq!(layout.rythmo.width, 880.0);
         assert_eq!(layout.topbar.width, 1200.0);
         assert_eq!(layout.tabs.y, TOPBAR_H);
-        assert_eq!(layout.tabs.height, 0.0);
-        assert_eq!(layout.properties.unwrap().y, TOPBAR_H);
-        assert_eq!(layout.video_preview.y, TOPBAR_H);
+        assert_eq!(layout.tabs.height, TABBAR_H);
+        assert_eq!(layout.properties.unwrap().y, TOPBAR_H + TABBAR_H);
+        assert_eq!(layout.video_preview.y, TOPBAR_H + TABBAR_H);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::project::{LineCharacterNameChange, Project};
-use crate::rythmo_drawing::DrawingStroke;
+use crate::rythmo_drawing::{DrawingStroke, RythmoDrawing};
 use crate::rythmo_line::{MarkerKind, RythmoLine, RythmoMarker};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 
@@ -193,6 +193,8 @@ pub struct ProjectData {
     pub known_characters: Vec<CharacterData>,
     #[serde(default)]
     pub voice_actors: Vec<VoiceActor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drawing: Option<RythmoDrawing>,
     #[serde(default, skip_serializing_if = "is_default_automation")]
     pub automation: crate::automation::AutomationGraph,
 }
@@ -417,6 +419,7 @@ impl ProjectData {
                 })
                 .collect(),
             voice_actors: project.voice_actors().to_vec(),
+            drawing: Some(project.drawing().clone()),
             automation: project.settings().automation.clone(),
         }
     }
@@ -468,11 +471,17 @@ mod tests {
             "Bob".into(),
             [0.0, 1.0, 0.0, 1.0],
         );
+        let mut stroke = DrawingStroke::new(7, [1.0, 0.0, 0.0, 1.0], 0.01);
+        stroke.points.push((12.0, 0.5));
+        project.add_drawing_stroke(stroke);
         let data = ProjectData::from_project(&project);
         let json = serde_json::to_string(&data).unwrap();
         let restored: ProjectData = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.lines.len(), 1);
         assert_eq!(restored.lines[0].text, "hello");
+        let drawing = restored.drawing.expect("drawing snapshot");
+        assert_eq!(drawing.strokes.len(), 1);
+        assert_eq!(drawing.strokes[0].id, 7);
     }
 
     #[test]

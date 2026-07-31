@@ -79,8 +79,13 @@ pub(crate) fn handle_mouse_press(
             return EventResponse::Ignored;
         };
         let r = {
-            let layout_ctx =
-                state.get_or_create_layout_ctx(ctx.project, ctx.current_frame, ctx.fps, ctx.zone);
+            let layout_ctx = state.get_or_create_layout_ctx(
+                ctx.project,
+                ctx.render_index,
+                ctx.current_frame,
+                ctx.fps,
+                ctx.zone,
+            );
             layout_ctx.line_rect_with_karaoke_width(
                 line,
                 ctx.current_frame,
@@ -169,7 +174,13 @@ pub(crate) fn handle_mouse_press(
 
     // Click on empty space in Select mode → hit-test a stroke, else start marquee
     if ctx.active_mode == ToolMode::Select {
-        let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
+        let ppf = crate::rythmo_drawing::ppf_for_scale(1.0, ctx.project.settings().scroll_speed);
+        let reading_bar_offset_frames = crate::rythmo_layout::reading_bar_offset_seconds(
+            ctx.project.settings().reading_bar_offset_percent,
+            ctx.zone.width,
+            ctx.fps,
+            ppf,
+        ) * ctx.fps;
         let (frame, y_frac) = crate::rythmo_drawing::screen_to_drawing(
             x,
             y,
@@ -179,6 +190,7 @@ pub(crate) fn handle_mouse_press(
             ctx.zone.height,
             ctx.current_frame,
             ppf,
+            reading_bar_offset_frames,
         );
         let ids =
             ctx.project

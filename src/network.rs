@@ -38,6 +38,12 @@ pub struct RecordingPlaybackPayload {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RecordingViewPayload {
+    pub language_id: u64,
+    pub instrumental: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RecordingCapturePayload {
     pub current_frame: i64,
     pub capture_target: Option<crate::recording::CaptureTarget>,
@@ -92,6 +98,8 @@ pub enum IncomingMessage {
     RecordingPrepare(RecordingPreparePayload),
     RecordingCapture(RecordingCapturePayload),
     RecordingPlayback(RecordingPlaybackPayload),
+    RecordingView(RecordingViewPayload),
+    ActorRequestOpenMicrophone,
 }
 
 /// Outgoing message: event name + JSON payload, sent via dedicated sender thread.
@@ -183,6 +191,8 @@ impl NetworkClient {
         let tx_recording_prepare = in_tx.clone();
         let tx_recording_capture = in_tx.clone();
         let tx_recording_playback = in_tx.clone();
+        let tx_recording_view = in_tx.clone();
+        let tx_actor_request = in_tx.clone();
 
         let (first_event, first_payload) = packet_to_emit(&first_packet);
         let first_event = first_event.to_string();
@@ -426,6 +436,29 @@ impl NetworkClient {
                         }
                     }
                 }
+            })
+            .on("recording_view", move |payload, _| {
+                if let Some(value) = payload_to_value(&payload) {
+                    match serde_json::from_value(value) {
+                        Ok(view) => {
+                            let _ = tx_recording_view.send(IncomingMessage::RecordingView(view));
+                        }
+                        Err(error) => {
+                            let _ = tx_recording_view.send(IncomingMessage::Error(format!(
+                                "invalid recording view: {error}"
+                            )));
+                        }
+                    }
+                }
+            })
+            .on("actor_request", move |payload, _| {
+                if payload_to_value(&payload)
+                    .and_then(|value| value["action"].as_str().map(String::from))
+                    .as_deref()
+                    == Some("open_microphone")
+                {
+                    let _ = tx_actor_request.send(IncomingMessage::ActorRequestOpenMicrophone);
+                }
             });
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| builder.connect()));
@@ -501,6 +534,15 @@ impl NetworkClient {
         let payload = RecordingPlaybackPayload { frame, playing };
         if let Ok(payload) = serde_json::to_value(payload) {
             self.send_raw("recording_playback", payload);
+        }
+    }
+
+    pub fn send_recording_view(&self, view: RecordingViewPayload, target: Option<&str>) {
+        if let Ok(mut payload) = serde_json::to_value(view) {
+            if let Some(target) = target {
+                payload["_target"] = serde_json::Value::String(target.to_owned());
+            }
+            self.send_raw("recording_view", payload);
         }
     }
 

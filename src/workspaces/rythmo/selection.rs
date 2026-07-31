@@ -69,16 +69,27 @@ pub(crate) fn selected_strokes_screen_bbox(
     if strokes.is_empty() {
         return None;
     }
-    let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
-    let center_x = zone.x + zone.width / 2.0;
+    let ppf = crate::rythmo_drawing::ppf_for_scale(1.0, project.settings().scroll_speed);
+    let reading_bar_offset_frames = project.settings().reading_bar_offset_percent as f64 / 100.0
+        * zone.width as f64
+        / ppf as f64;
     let mut min_x = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
     let mut min_y = f32::INFINITY;
     let mut max_y = f32::NEG_INFINITY;
     for s in &strokes {
         for (f, y_frac) in &s.points {
-            let x = center_x + (*f - current_frame) as f32 * ppf;
-            let y = zone.y + y_frac * zone.height;
+            let (x, y) = crate::rythmo_drawing::drawing_to_screen(
+                *f,
+                *y_frac,
+                zone.x,
+                zone.y,
+                zone.width,
+                zone.height,
+                current_frame,
+                ppf,
+                reading_bar_offset_frames,
+            );
             min_x = min_x.min(x);
             max_x = max_x.max(x);
             min_y = min_y.min(y);
@@ -290,12 +301,35 @@ pub(crate) fn finalize_marquee_selection(ctx: &RythmoCtx, state: &mut RythmoStat
         let max_x = start_x.max(end_x);
         let min_y = start_y.min(end_y);
         let max_y = start_y.max(end_y);
-        let ppf = crate::rythmo_drawing::ppf_for_scale(1.0);
-        let center_x = ctx.zone.x + ctx.zone.width / 2.0;
-        let min_frame = ctx.current_frame + (min_x - center_x) as f64 / ppf as f64;
-        let max_frame = ctx.current_frame + (max_x - center_x) as f64 / ppf as f64;
-        let min_y_frac = ((min_y - ctx.zone.y) / ctx.zone.height).clamp(0.0, 1.0);
-        let max_y_frac = ((max_y - ctx.zone.y) / ctx.zone.height).clamp(0.0, 1.0);
+        let ppf = crate::rythmo_drawing::ppf_for_scale(1.0, ctx.project.settings().scroll_speed);
+        let reading_bar_offset_frames = crate::rythmo_layout::reading_bar_offset_seconds(
+            ctx.project.settings().reading_bar_offset_percent,
+            ctx.zone.width,
+            ctx.fps,
+            ppf,
+        ) * ctx.fps;
+        let (min_frame, min_y_frac) = crate::rythmo_drawing::screen_to_drawing(
+            min_x,
+            min_y,
+            ctx.zone.x,
+            ctx.zone.y,
+            ctx.zone.width,
+            ctx.zone.height,
+            ctx.current_frame,
+            ppf,
+            reading_bar_offset_frames,
+        );
+        let (max_frame, max_y_frac) = crate::rythmo_drawing::screen_to_drawing(
+            max_x,
+            max_y,
+            ctx.zone.x,
+            ctx.zone.y,
+            ctx.zone.width,
+            ctx.zone.height,
+            ctx.current_frame,
+            ppf,
+            reading_bar_offset_frames,
+        );
 
         let selection_rect = Rect {
             x: min_x,

@@ -272,36 +272,6 @@ impl CommandDispatcher {
         elwt: &EventLoopWindowTarget<AppEvent>,
         announce_action: bool,
     ) -> bool {
-        if !config::dev_mode()
-            && matches!(
-                &action,
-                UiAction::ActivateWorkspace(
-                    crate::application::workspace_service::WorkspaceId::Recording
-                ) | UiAction::RecordingChooseSolo
-                    | UiAction::RecordingChooseOnline
-                    | UiAction::RecordingSetTool(_)
-                    | UiAction::RecordingAddTrack
-                    | UiAction::RecordingRemoveTrack(_)
-                    | UiAction::RecordingBeginRenameTrack(_)
-                    | UiAction::RecordingRenameTrack { .. }
-                    | UiAction::RecordingToggleTrackMute(_)
-                    | UiAction::RecordingToggleTrackSolo(_)
-                    | UiAction::RecordingArmTrack(_)
-                    | UiAction::RecordingExportTrack(_)
-                    | UiAction::RecordingCutClip { .. }
-                    | UiAction::RecordingSelectClip { .. }
-                    | UiAction::RecordingSelectAsset(_)
-                    | UiAction::RecordingDeleteSelectedAsset
-                    | UiAction::RecordingPlaceAsset { .. }
-                    | UiAction::RecordingMoveSelectedClips { .. }
-                    | UiAction::RecordingDeleteSelectedClips
-                    | UiAction::RecordingStartCapture
-                    | UiAction::RecordingStopCapture
-            )
-        {
-            return false;
-        }
-
         if state.active_workspace() == crate::application::workspace_service::WorkspaceId::Recording
             && action.mutates_rythmo_project()
         {
@@ -371,6 +341,12 @@ impl CommandDispatcher {
             UiAction::RecordingDeleteSelectedClips => state.recording_delete_selected_clips(),
             UiAction::RecordingStartCapture => state.recording_start_capture(),
             UiAction::RecordingStopCapture => state.recording_stop_capture(),
+            UiAction::OpenRecordingActorMenu => state.open_recording_actor_menu(),
+            UiAction::OpenRecordingInputDeviceModal => state.open_recording_input_device_modal(),
+            UiAction::RequestActorsOpenMicrophone => state.request_actors_open_microphone(),
+            UiAction::SetRecordingInputDevice(device) => state.set_recording_input_device(device),
+            UiAction::RecordingToggleSharedAudio => state.recording_toggle_shared_audio(),
+            UiAction::RecordingCycleLanguage => state.recording_cycle_language(),
             UiAction::CloseApp => {
                 if state.is_project_save_in_progress() {
                     state.show_toast(i18n::t("toast.close_blocked_saving"), 5.0);
@@ -1328,15 +1304,11 @@ impl CommandDispatcher {
                 lang,
                 rythmo_font,
                 scroll_speed,
-                reading_bar_offset_seconds,
+                reading_bar_offset_percent,
             } => {
                 let font_changed = crate::config::get().ui.rythmo_font != rythmo_font;
-                crate::config::save_settings(
-                    lang,
-                    rythmo_font,
-                    scroll_speed,
-                    reading_bar_offset_seconds,
-                );
+                crate::config::save_settings(lang, rythmo_font);
+                state.save_project_view_settings(scroll_speed, reading_bar_offset_percent);
                 if font_changed {
                     crate::vector_text::clear_project_font();
                     state.render.ui_renderer.clear_text_cache();
@@ -1358,7 +1330,13 @@ impl CommandDispatcher {
                 );
             }
             UiAction::ToggleActiveAudio => {
-                state.toggle_active_audio();
+                if state.active_workspace()
+                    == crate::application::workspace_service::WorkspaceId::Recording
+                {
+                    state.recording_toggle_shared_audio();
+                } else {
+                    state.toggle_active_audio();
+                }
             }
             UiAction::OffsetActiveAudioBy(delta_frames) => {
                 state.offset_active_audio_by(delta_frames);

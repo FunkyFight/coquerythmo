@@ -314,6 +314,21 @@ pub fn measure_rythmo_text_width_standalone(text: &str, font_size: f32) -> Optio
     })
 }
 
+pub fn measure_ui_text_layout_standalone(text: &str, font_size: f32) -> (f32, Vec<f32>) {
+    let line_height = (font_size * 1.3).ceil().max(1.0);
+    MEASURE_FONT_SYSTEM.with(|font_system| {
+        let (width, ratios) = measure_text(
+            &mut font_system.borrow_mut(),
+            text,
+            font_size,
+            line_height,
+            "sans-serif",
+        );
+        let positions = ratios.into_iter().map(|ratio| ratio * width).collect();
+        (width, positions)
+    })
+}
+
 pub fn measure_rythmo_text_width_emphasized_standalone(text: &str, font_size: f32) -> Option<f32> {
     MEASURE_FONT_SYSTEM.with(|font_system| {
         measure_rythmo_text_width_emphasized(&mut font_system.borrow_mut(), text, font_size)

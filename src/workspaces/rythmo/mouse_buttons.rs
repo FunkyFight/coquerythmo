@@ -40,8 +40,13 @@ fn visible_interaction_geometry(ctx: &RythmoCtx, state: &RythmoState) -> Vec<(u6
         .visible_line_ids(ctx.project, first_frame, last_frame);
     line_ids.sort_by_key(|line_id| ctx.render_index.line_order_index(*line_id));
 
-    let layout_ctx =
-        state.get_or_create_layout_ctx(ctx.project, ctx.current_frame, ctx.fps, ctx.zone);
+    let layout_ctx = state.get_or_create_layout_ctx(
+        ctx.project,
+        ctx.render_index,
+        ctx.current_frame,
+        ctx.fps,
+        ctx.zone,
+    );
     line_ids
         .into_iter()
         .filter_map(|line_id| {
@@ -115,6 +120,7 @@ pub(crate) fn handle_shift_mouse_press(
             let r = {
                 let layout_ctx = state.get_or_create_layout_ctx(
                     ctx.project,
+                    ctx.render_index,
                     ctx.current_frame,
                     ctx.fps,
                     ctx.zone,

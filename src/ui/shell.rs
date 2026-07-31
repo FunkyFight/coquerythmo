@@ -46,6 +46,7 @@ pub(crate) fn build_topbar(
     project_uv: [f32; 4],
     active_workspace: WorkspaceId,
     recording_daw_enabled: bool,
+    actor_requests_enabled: bool,
 ) -> Vec<Box<dyn Widget>> {
     // Build project menu with "Récent" submenu
     let recents = crate::config::recent_projects();
@@ -132,12 +133,27 @@ pub(crate) fn build_topbar(
         );
     }
 
-    // Recording has its own contextual commands. Until those commands are
-    // introduced, only the shared Project menu is exposed here.
+    let microphone_button = |x| {
+        Box::new(
+            TextButton::new(
+                Rect {
+                    x,
+                    y: 2.0,
+                    width: 150.0,
+                    height: 28.0,
+                },
+                t("recording.microphone.select"),
+                || EventResponse::Action(UiAction::OpenRecordingInputDeviceModal),
+            )
+            .with_tooltip(t("recording.microphone.select")),
+        ) as Box<dyn Widget>
+    };
+
     if active_workspace == WorkspaceId::Recording && recording_daw_enabled {
+        let actor_requests_offset = if actor_requests_enabled { 164.0 } else { 0.0 };
         let daw_button = TextButton::new(
             Rect {
-                x: 88.0,
+                x: 242.0 + actor_requests_offset,
                 y: 2.0,
                 width: 150.0,
                 height: 28.0,
@@ -147,7 +163,31 @@ pub(crate) fn build_topbar(
         )
         .with_accent()
         .with_tooltip(t("recording.detach_daw"));
-        return vec![Box::new(project_menu), Box::new(daw_button)];
+        let mut widgets: Vec<Box<dyn Widget>> = vec![Box::new(project_menu)];
+        if actor_requests_enabled {
+            widgets.push(Box::new(
+                Dropdown::new(
+                    Rect {
+                        x: 88.0,
+                        y: 2.0,
+                        width: 160.0,
+                        height: 28.0,
+                    },
+                    vec![t("recording.actor_requests.open_microphone").into()],
+                    |index, _label| match index {
+                        0 => EventResponse::Action(UiAction::RequestActorsOpenMicrophone),
+                        _ => EventResponse::Consumed,
+                    },
+                )
+                .with_arrow(false)
+                .with_trigger_bg(false)
+                .with_trigger_label(t("recording.actor_requests"))
+                .with_panel_width(260.0),
+            ));
+        }
+        widgets.push(microphone_button(88.0 + actor_requests_offset));
+        widgets.push(Box::new(daw_button));
+        return widgets;
     }
 
     let export_menu = Dropdown::new(
@@ -276,6 +316,9 @@ pub(crate) fn build_topbar(
         Box::new(panels_menu),
         Box::new(connect_menu),
     ];
+    if active_workspace == WorkspaceId::Recording {
+        topbar_widgets.push(microphone_button(464.0));
+    }
 
     let discord_w = 80.0;
     let discord_h = 24.0;
@@ -346,10 +389,6 @@ pub(crate) fn build_workspace_tabs(
     layout: &Layout,
     active_workspace: WorkspaceId,
 ) -> Vec<Box<dyn Widget>> {
-    if !crate::config::dev_mode() {
-        return Vec::new();
-    }
-
     let tab_width = 164.0;
     let gap = 4.0;
     let y = layout.tabs.y + 2.0;

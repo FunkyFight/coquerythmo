@@ -524,20 +524,23 @@ fn is_word_separator(ch: char) -> bool {
 }
 
 pub fn cursor_pos_from_x(value: &str, rect: Rect, x: f32, metrics: TextInputMetrics) -> usize {
-    let target = x - text_start_x(value, rect, metrics);
-    let mut width = 0.0;
-    for (index, ch) in value.chars().enumerate() {
-        let next = width + char_advance(ch, metrics.font_size);
-        if target < (width + next) * 0.5 {
-            return index;
-        }
-        width = next;
-    }
-    value.chars().count()
+    let (width, boundaries) =
+        crate::vector_text::measure_ui_text_layout_standalone(value, metrics.font_size);
+    let target = x - text_start_x_for_width(rect, metrics, width);
+    boundaries
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| {
+            (**left - target).abs().total_cmp(&(**right - target).abs())
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(0)
 }
 
 pub fn cursor_x(value: &str, char_pos: usize, rect: Rect, metrics: TextInputMetrics) -> f32 {
-    text_start_x(value, rect, metrics) + text_width_until(value, char_pos, metrics.font_size)
+    let (width, boundaries) =
+        crate::vector_text::measure_ui_text_layout_standalone(value, metrics.font_size);
+    cursor_x_from_layout(rect, metrics, width, &boundaries, char_pos)
 }
 
 pub fn text_width_until(value: &str, char_pos: usize, font_size: f32) -> f32 {
@@ -568,12 +571,14 @@ pub fn render_selection_and_cursor(
         return;
     }
 
+    let (text_width, boundaries) =
+        crate::vector_text::measure_ui_text_layout_standalone(value, metrics.font_size);
     let content_left = rect.x + metrics.padding_x;
     let content_right = rect.x + rect.width - metrics.padding_x;
 
     if let Some((start, end)) = input.selection_range() {
-        let x1 = cursor_x(value, start, rect, metrics);
-        let x2 = cursor_x(value, end, rect, metrics);
+        let x1 = cursor_x_from_layout(rect, metrics, text_width, &boundaries, start);
+        let x2 = cursor_x_from_layout(rect, metrics, text_width, &boundaries, end);
         let left = x1.min(x2).clamp(content_left, content_right);
         let right = x1.max(x2).clamp(content_left, content_right);
         if right - left > 1.0 {
@@ -591,7 +596,8 @@ pub fn render_selection_and_cursor(
     }
 
     if input.cursor_visible() {
-        let x = cursor_x(value, input.cursor_pos, rect, metrics).clamp(content_left, content_right);
+        let x = cursor_x_from_layout(rect, metrics, text_width, &boundaries, input.cursor_pos)
+            .clamp(content_left, content_right);
         quads.push(plain_quad(
             Rect {
                 x,
@@ -605,14 +611,27 @@ pub fn render_selection_and_cursor(
     }
 }
 
-fn text_start_x(value: &str, rect: Rect, metrics: TextInputMetrics) -> f32 {
+fn cursor_x_from_layout(
+    rect: Rect,
+    metrics: TextInputMetrics,
+    text_width: f32,
+    boundaries: &[f32],
+    char_pos: usize,
+) -> f32 {
+    text_start_x_for_width(rect, metrics, text_width)
+        + boundaries
+            .get(char_pos)
+            .copied()
+            .unwrap_or_else(|| boundaries.last().copied().unwrap_or(0.0))
+}
+
+fn text_start_x_for_width(rect: Rect, metrics: TextInputMetrics, text_width: f32) -> f32 {
     let content_left = rect.x + metrics.padding_x;
     let content_width = (rect.width - metrics.padding_x * 2.0).max(0.0);
-    let width = text_width(value, metrics.font_size);
     match metrics.h_align {
         HAlign::Left => content_left,
-        HAlign::Center => content_left + (content_width - width) * 0.5,
-        HAlign::Right => content_left + content_width - width,
+        HAlign::Center => content_left + (content_width - text_width) * 0.5,
+        HAlign::Right => content_left + content_width - text_width,
     }
 }
 
@@ -667,8 +686,10 @@ mod tests {
     #[test]
     fn cursor_x_uses_variable_character_widths() {
         let metrics = TextInputMetrics::left(10.0, 8.0);
-        assert_approx_eq(cursor_x("iii", 3, rect(), metrics), 117.0);
-        assert_approx_eq(cursor_x("www", 3, rect(), metrics), 132.6);
+        let narrow = cursor_x("iii", 3, rect(), metrics);
+        let wide = cursor_x("www", 3, rect(), metrics);
+        assert!(wide > narrow);
+        assert!(narrow > rect().x + metrics.padding_x);
     }
 
     #[test]
@@ -684,7 +705,8 @@ mod tests {
     #[test]
     fn centered_cursor_uses_centered_text_start() {
         let metrics = TextInputMetrics::center(10.0, 8.0);
-        let centered_start = 100.0 + 8.0 + ((120.0 - 16.0) - text_width("ii", 10.0)) * 0.5;
+        let (width, _) = crate::vector_text::measure_ui_text_layout_standalone("ii", 10.0);
+        let centered_start = 100.0 + 8.0 + ((120.0 - 16.0) - width) * 0.5;
         assert_approx_eq(cursor_x("ii", 0, rect(), metrics), centered_start);
     }
 

@@ -24,8 +24,13 @@ pub(crate) fn syllable_mouse_press(
     candidate_ids.sort_by_key(|line_id| ctx.render_index.line_order_index(*line_id));
 
     let candidates: Vec<(u64, Rect)> = {
-        let layout_ctx =
-            state.get_or_create_layout_ctx(ctx.project, ctx.current_frame, ctx.fps, ctx.zone);
+        let layout_ctx = state.get_or_create_layout_ctx(
+            ctx.project,
+            ctx.render_index,
+            ctx.current_frame,
+            ctx.fps,
+            ctx.zone,
+        );
         candidate_ids
             .into_iter()
             .filter_map(|line_id| {

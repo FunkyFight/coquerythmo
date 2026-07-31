@@ -826,6 +826,13 @@ mod tests {
     }
 
     #[test]
+    fn drawing_coordinates_keep_their_journal_representation() {
+        let json = r#"{"kind":"add_drawing_stroke","stroke":{"id":2,"points":[[9.568845960828995,0.39629337]],"color":[1.0,1.0,1.0,1.0],"radius_frac":0.006}}"#;
+        let command: Command = serde_json::from_str(json).unwrap();
+        assert_eq!(serde_json::to_string(&command).unwrap(), json);
+    }
+
+    #[test]
     fn sync_point_add_move_retarget_and_delete_share_command_history() {
         let (mut project, line_id) = make_project_with_line();
         let address = crate::detection::DetectionAddress {

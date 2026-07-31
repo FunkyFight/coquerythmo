@@ -230,6 +230,13 @@ pub struct ProjectSettings {
     pub highlight_read_word: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub scrolling_text_uses_character_color: bool,
+    #[serde(
+        default = "default_scroll_speed",
+        skip_serializing_if = "is_default_scroll_speed"
+    )]
+    pub scroll_speed: f32,
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub reading_bar_offset_percent: f32,
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub show_text_emotion_lanes: bool,
     #[serde(default, skip_serializing_if = "is_default_syllable_language")]
@@ -253,6 +260,8 @@ impl Default for ProjectSettings {
             instrumental_audio_offset_frames: 0,
             highlight_read_word: false,
             scrolling_text_uses_character_color: false,
+            scroll_speed: default_scroll_speed(),
+            reading_bar_offset_percent: 0.0,
             show_text_emotion_lanes: true,
             syllable_language: SyllableLanguage::default(),
             export_configuration: ExportConfiguration::default(),
@@ -260,6 +269,33 @@ impl Default for ProjectSettings {
             automation: crate::automation::AutomationGraph::default(),
         }
     }
+}
+
+impl ProjectSettings {
+    pub(crate) fn normalize_view_settings(&mut self) {
+        self.scroll_speed = if self.scroll_speed.is_finite() {
+            self.scroll_speed.clamp(0.25, 4.0)
+        } else {
+            default_scroll_speed()
+        };
+        self.reading_bar_offset_percent = if self.reading_bar_offset_percent.is_finite() {
+            self.reading_bar_offset_percent.clamp(-50.0, 50.0)
+        } else {
+            0.0
+        };
+    }
+}
+
+fn default_scroll_speed() -> f32 {
+    1.0
+}
+
+fn is_default_scroll_speed(value: &f32) -> bool {
+    *value == default_scroll_speed()
+}
+
+fn is_zero_f32(value: &f32) -> bool {
+    *value == 0.0
 }
 
 fn is_default_syllable_language(language: &SyllableLanguage) -> bool {
@@ -314,6 +350,7 @@ struct BandSnapshot {
     drawing: RythmoDrawing,
     color_index: usize,
     revision: u64,
+    drawing_revision: u64,
     settings: ProjectSettings,
 }
 
@@ -345,6 +382,7 @@ pub struct Project {
     drawing: RythmoDrawing,
     color_index: usize,
     revision: u64,
+    drawing_revision: u64,
     settings: ProjectSettings,
     active_language: ProjectLanguage,
     language_order: Vec<LanguageId>,
@@ -390,6 +428,7 @@ impl Project {
             drawing: RythmoDrawing::new(),
             color_index: 0,
             revision: 0,
+            drawing_revision: 0,
             settings,
             active_language: language,
             language_order: vec![language_id],
@@ -407,6 +446,7 @@ impl Project {
             drawing: self.drawing.clone(),
             color_index: self.color_index,
             revision: self.revision,
+            drawing_revision: self.drawing_revision,
             settings: self.settings.clone(),
             active_language: self.active_language.clone(),
             language_order: self.language_order.clone(),
@@ -416,6 +456,10 @@ impl Project {
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub fn drawing_revision(&self) -> u64 {
+        self.drawing_revision
     }
 
     /// Read-only access to project collections. All changes go through the
@@ -896,6 +940,8 @@ impl Project {
         let highlight_read_word = active.project.settings.highlight_read_word;
         let scrolling_text_uses_character_color =
             active.project.settings.scrolling_text_uses_character_color;
+        let scroll_speed = active.project.settings.scroll_speed;
+        let reading_bar_offset_percent = active.project.settings.reading_bar_offset_percent;
 
         self.language_order.clear();
         self.language_snapshots.clear();
@@ -906,6 +952,8 @@ impl Project {
         active_band.settings.highlight_read_word = highlight_read_word;
         active_band.settings.scrolling_text_uses_character_color =
             scrolling_text_uses_character_color;
+        active_band.settings.scroll_speed = scroll_speed;
+        active_band.settings.reading_bar_offset_percent = reading_bar_offset_percent;
         self.restore_band_snapshot(active_band, previous_revision);
 
         for snapshot in unique {
@@ -914,6 +962,8 @@ impl Project {
             band.settings.export_configuration = global_export_configuration.clone();
             band.settings.highlight_read_word = highlight_read_word;
             band.settings.scrolling_text_uses_character_color = scrolling_text_uses_character_color;
+            band.settings.scroll_speed = scroll_speed;
+            band.settings.reading_bar_offset_percent = reading_bar_offset_percent;
             self.language_snapshots.insert(
                 id,
                 StoredLanguageSnapshot {
@@ -945,6 +995,7 @@ impl Project {
             drawing: self.drawing.clone(),
             color_index: self.color_index,
             revision: self.revision,
+            drawing_revision: self.drawing_revision,
             settings: self.settings.clone(),
         }
     }
@@ -959,6 +1010,10 @@ impl Project {
         self.color_index = band.color_index;
         self.settings = band.settings;
         self.revision = band.revision.max(previous_revision).wrapping_add(1);
+        self.drawing_revision = band
+            .drawing_revision
+            .max(self.drawing_revision)
+            .wrapping_add(1);
     }
 
     fn from_detached_band(language: ProjectLanguage, band: BandSnapshot) -> Self {
@@ -972,6 +1027,7 @@ impl Project {
             drawing: band.drawing,
             color_index: band.color_index,
             revision: band.revision,
+            drawing_revision: band.drawing_revision,
             settings: band.settings,
             active_language: language,
             language_order: vec![id],
@@ -987,6 +1043,12 @@ impl Project {
 
     pub fn get_line(&self, id: u64) -> Option<&RythmoLine> {
         self.line_map.get(&id)
+    }
+
+    pub fn line_at(&self, index: usize) -> Option<&RythmoLine> {
+        self.line_order
+            .get(index)
+            .and_then(|line_id| self.line_map.get(line_id))
     }
 
     pub fn get_line_mut(&mut self, id: u64) -> Option<&mut RythmoLine> {
@@ -1305,17 +1367,22 @@ impl Project {
         self.bump_revision();
     }
 
-    pub fn set_settings(&mut self, settings: ProjectSettings) {
+    pub fn set_settings(&mut self, mut settings: ProjectSettings) {
+        settings.normalize_view_settings();
         if self.settings != settings {
             let export_configuration = settings.export_configuration.clone();
             let highlight_read_word = settings.highlight_read_word;
             let scrolling_text_uses_character_color = settings.scrolling_text_uses_character_color;
+            let scroll_speed = settings.scroll_speed;
+            let reading_bar_offset_percent = settings.reading_bar_offset_percent;
             self.settings = settings;
             for snapshot in self.language_snapshots.values_mut() {
                 snapshot.band.settings.export_configuration = export_configuration.clone();
                 snapshot.band.settings.highlight_read_word = highlight_read_word;
                 snapshot.band.settings.scrolling_text_uses_character_color =
                     scrolling_text_uses_character_color;
+                snapshot.band.settings.scroll_speed = scroll_speed;
+                snapshot.band.settings.reading_bar_offset_percent = reading_bar_offset_percent;
             }
             self.bump_revision();
         }
@@ -1323,6 +1390,7 @@ impl Project {
 
     pub fn add_drawing_stroke(&mut self, stroke: DrawingStroke) {
         self.drawing.add(stroke);
+        self.drawing_revision = self.drawing_revision.wrapping_add(1);
         self.bump_revision();
     }
 
@@ -1335,6 +1403,7 @@ impl Project {
             }
         }
         if changed {
+            self.drawing_revision = self.drawing_revision.wrapping_add(1);
             self.bump_revision();
         }
         changed
@@ -1343,6 +1412,7 @@ impl Project {
     pub fn remove_drawing_stroke(&mut self, id: u64) -> Option<DrawingStroke> {
         let removed = self.drawing.remove(id);
         if removed.is_some() {
+            self.drawing_revision = self.drawing_revision.wrapping_add(1);
             self.bump_revision();
         }
         removed
@@ -1356,6 +1426,7 @@ impl Project {
             }
         }
         if changed {
+            self.drawing_revision = self.drawing_revision.wrapping_add(1);
             self.bump_revision();
         }
         changed
@@ -1366,6 +1437,7 @@ impl Project {
             return false;
         };
         stroke.points = points;
+        self.drawing_revision = self.drawing_revision.wrapping_add(1);
         self.bump_revision();
         true
     }
@@ -1381,6 +1453,7 @@ impl Project {
             }
         }
         if changed {
+            self.drawing_revision = self.drawing_revision.wrapping_add(1);
             self.bump_revision();
         }
         changed
@@ -1388,6 +1461,7 @@ impl Project {
 
     pub fn set_drawing(&mut self, drawing: RythmoDrawing) {
         self.drawing = drawing;
+        self.drawing_revision = self.drawing_revision.wrapping_add(1);
         self.bump_revision();
     }
 
@@ -1841,6 +1915,19 @@ mod tests {
     }
 
     #[test]
+    fn drawing_revision_ignores_line_edits() {
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 48, 0.5);
+        let drawing_revision = project.drawing_revision();
+
+        project.get_line_mut(line_id).unwrap().text = "modified".into();
+        assert_eq!(project.drawing_revision(), drawing_revision);
+
+        project.add_drawing_stroke(crate::rythmo_drawing::DrawingStroke::new(1, [1.0; 4], 0.01));
+        assert_ne!(project.drawing_revision(), drawing_revision);
+    }
+
+    #[test]
     fn test_snapshot() {
         let mut p = Project::new();
         p.add_line(0, 10, 0.25);
@@ -2086,6 +2173,8 @@ mod tests {
         settings.export_configuration.video_aspect = VideoExportAspect::Portrait9x16;
         settings.highlight_read_word = true;
         settings.scrolling_text_uses_character_color = true;
+        settings.scroll_speed = 1.75;
+        settings.reading_bar_offset_percent = -12.0;
         project.set_settings(settings);
 
         assert!(project.select_language(french_id));
@@ -2096,6 +2185,8 @@ mod tests {
         assert!(project.settings().export_configuration.countdown_enabled);
         assert!(project.settings().highlight_read_word);
         assert!(project.settings().scrolling_text_uses_character_color);
+        assert_eq!(project.settings().scroll_speed, 1.75);
+        assert_eq!(project.settings().reading_bar_offset_percent, -12.0);
         assert_eq!(
             project.settings().export_configuration.video_aspect,
             VideoExportAspect::Portrait9x16
@@ -2116,6 +2207,37 @@ mod tests {
                 .settings()
                 .scrolling_text_uses_character_color
         );
+        assert_eq!(
+            project
+                .project_for_language(english_id)
+                .unwrap()
+                .settings()
+                .scroll_speed,
+            1.75
+        );
+        assert_eq!(
+            project
+                .project_for_language(english_id)
+                .unwrap()
+                .settings()
+                .reading_bar_offset_percent,
+            -12.0
+        );
+    }
+
+    #[test]
+    fn view_settings_round_trip_and_default_for_older_projects() {
+        let older: ProjectSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(older.scroll_speed, 1.0);
+        assert_eq!(older.reading_bar_offset_percent, 0.0);
+
+        let mut settings = ProjectSettings::default();
+        settings.scroll_speed = 2.25;
+        settings.reading_bar_offset_percent = 18.0;
+        let restored: ProjectSettings =
+            serde_json::from_value(serde_json::to_value(settings).unwrap()).unwrap();
+        assert_eq!(restored.scroll_speed, 2.25);
+        assert_eq!(restored.reading_bar_offset_percent, 18.0);
     }
 
     #[test]

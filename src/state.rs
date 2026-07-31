@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::Arc;
 use wgpu::CurrentSurfaceTexture;
-use winit::window::{Window, WindowId};
+use winit::window::{Fullscreen, Window, WindowId};
 
 use std::time::{Duration, Instant};
 
@@ -347,12 +347,20 @@ impl State {
         let role = self.recording_network_role();
         self.ui_shell.ui.recording_enter_online(role);
         self.activate_workspace(WorkspaceId::Recording);
+        self.rebuild_topbar_for_network();
         self.sync_recording_workspace_ui();
         self.schedule_recording_mix();
     }
 
     pub fn sync_recording_workspace_ui(&mut self) {
         let current_frame = self.render_frame();
+        self.sync_recording_workspace_ui_at(current_frame);
+    }
+
+    fn sync_recording_workspace_ui_at(&mut self, current_frame: f64) {
+        self.project_session
+            .render_index
+            .refresh(&self.project_session.project);
         let capture = self.recording_runtime.capture_state();
         let countdown_seconds = self.recording_runtime.countdown_seconds_remaining();
         if countdown_seconds != self.last_recording_countdown_second {
@@ -362,18 +370,28 @@ impl State {
             }
         }
         self.ui_shell.ui.sync_recording_scene(
-            &self.project_session.project,
+            &self.project_session.render_index,
             &self.project_session.recording_project,
+            self.project_session.project.settings().scroll_speed,
+            self.project_session
+                .project
+                .settings()
+                .reading_bar_offset_percent,
             capture,
             &self.collaboration.network.member_details,
             self.collaboration.network.control_owner_id.as_deref(),
             current_frame,
             countdown_seconds,
         );
-        self.sync_recording_daw_ui();
+        self.sync_recording_daw_ui_at(current_frame);
     }
 
     fn sync_recording_daw_ui(&mut self) {
+        let current_frame = self.render_frame();
+        self.sync_recording_daw_ui_at(current_frame);
+    }
+
+    fn sync_recording_daw_ui_at(&mut self, current_frame: f64) {
         if self.window_manager.secondary_kind != Some(SecondaryWindowKind::Daw) {
             return;
         }
@@ -381,11 +399,15 @@ impl State {
             return;
         };
         let (width, height) = (display.config.width as f32, display.config.height as f32);
-        let current_frame = self.render_frame();
         self.ui_shell.ui.sync_recording_daw_scene(
             width,
             height,
             &self.project_session.recording_project,
+            self.project_session.project.settings().scroll_speed,
+            self.project_session
+                .project
+                .settings()
+                .reading_bar_offset_percent,
             self.recording_runtime.capture_state(),
             &self.collaboration.network.member_details,
             self.collaboration.network.control_owner_id.as_deref(),
@@ -957,6 +979,7 @@ impl State {
         }
         let role = self.ui_shell.ui.recording_role();
         let username = self.recording_username();
+        let input_device = crate::config::recording_input_device();
         let result = if role.is_online() {
             self.project_session
                 .recording_project
@@ -975,11 +998,23 @@ impl State {
                 &self.project_session.recording_project,
                 self.current_frame(),
                 &username,
+                input_device.as_deref(),
             )
         };
         if let Err(error) = result {
             self.recording_error(error.to_string());
             return;
+        }
+        let capture_start_frame = self.recording_runtime.capture_state().and_then(|state| {
+            if let crate::recording::CaptureState::Countdown { target, .. } = state {
+                Some(target.start_frame)
+            } else {
+                None
+            }
+        });
+        if let Some(start_frame) = capture_start_frame {
+            self.seek_absolute_internal(start_frame, false);
+            self.finish_seek();
         }
 
         if self.ui_shell.ui.recording_role().is_online() {
@@ -1041,6 +1076,76 @@ impl State {
             );
         }
         self.sync_recording_workspace_ui();
+    }
+
+    pub fn open_recording_input_device_modal(&mut self) {
+        match crate::media_recording::input_device_names() {
+            Ok(devices) => {
+                let selected = crate::config::recording_input_device();
+                self.ui_shell
+                    .ui
+                    .open_recording_input_device_modal(devices, selected);
+                self.announce_open_container(
+                    crate::i18n::t("recording.microphone.title"),
+                    crate::i18n::t("recording.microphone.default").to_string(),
+                );
+            }
+            Err(error) => self.recording_error(error.to_string()),
+        }
+    }
+
+    pub fn request_actors_open_microphone(&self) {
+        if self.collaboration.network.is_in_room()
+            && matches!(
+                self.ui_shell.ui.recording_role(),
+                crate::ui::recording_workspace::RecordingRole::Director
+            )
+        {
+            self.collaboration.network.send_raw(
+                "actor_request",
+                serde_json::json!({ "action": "open_microphone" }),
+            );
+        }
+    }
+
+    pub fn open_recording_actor_menu(&mut self) {
+        if !self.is_online_recording_actor() {
+            return;
+        }
+        self.ui_shell.ui.open_recording_actor_menu();
+        self.announce_open_container(
+            crate::i18n::t("recording.actor_menu.title"),
+            crate::i18n::t("recording.actor_menu.microphone").to_string(),
+        );
+    }
+
+    pub fn is_online_recording_actor(&self) -> bool {
+        self.collaboration.network.is_in_room()
+            && matches!(
+                self.ui_shell.ui.recording_role(),
+                crate::ui::recording_workspace::RecordingRole::Actor
+            )
+    }
+
+    pub fn toggle_main_window_fullscreen(&self) {
+        let window = &self.window_manager.main_window;
+        window.set_fullscreen(
+            window
+                .fullscreen()
+                .is_none()
+                .then_some(Fullscreen::Borderless(None)),
+        );
+    }
+
+    pub fn set_recording_input_device(&mut self, device: Option<String>) {
+        let label = device
+            .clone()
+            .unwrap_or_else(|| crate::i18n::t("recording.microphone.default").to_string());
+        crate::config::set_recording_input_device(device);
+        self.show_toast(
+            crate::i18n::t("recording.microphone.saved").replace("{device}", &label),
+            3.0,
+        );
     }
 
     fn recording_username(&self) -> String {
@@ -1413,7 +1518,12 @@ impl State {
 
     pub fn open_settings_modal(&mut self) {
         let fonts = self.render.ui_renderer.enumerate_font_families();
-        self.ui_shell.ui.open_settings_modal(fonts);
+        let settings = self.project_session.project.settings();
+        self.ui_shell.ui.open_settings_modal(
+            fonts,
+            settings.scroll_speed,
+            settings.reading_bar_offset_percent,
+        );
         if let Some(first_label) = self.settings_modal_focus_label() {
             self.announce_open_container(crate::i18n::t("settings.title"), first_label);
         }
@@ -1604,6 +1714,21 @@ impl State {
             |project| project.set_settings(settings),
         );
         self.sync_audio_settings_to_player();
+    }
+
+    pub fn save_project_view_settings(
+        &mut self,
+        scroll_speed: f32,
+        reading_bar_offset_percent: f32,
+    ) {
+        let mut settings = self.project_session.project.settings().clone();
+        settings.scroll_speed = scroll_speed.clamp(0.25, 4.0);
+        settings.reading_bar_offset_percent = reading_bar_offset_percent.clamp(-50.0, 50.0);
+        EditExecutor::apply_domain_change(
+            &mut self.project_session,
+            EditOrigin::Local,
+            |project| project.set_settings(settings),
+        );
     }
 
     pub fn show_toast(&mut self, message: impl Into<String>, duration_secs: f32) {
@@ -2726,6 +2851,64 @@ impl State {
         }
     }
 
+    fn recording_view_payload(&self) -> crate::network::RecordingViewPayload {
+        crate::network::RecordingViewPayload {
+            language_id: self.project_session.project.active_language_id(),
+            instrumental: self.active_audio_is_instrumental(),
+        }
+    }
+
+    fn send_recording_view(&self, target: Option<&str>) {
+        if self.collaboration.network.is_in_room()
+            && matches!(
+                self.ui_shell.ui.recording_role(),
+                crate::ui::recording_workspace::RecordingRole::Director
+            )
+        {
+            self.collaboration
+                .network
+                .send_recording_view(self.recording_view_payload(), target);
+        }
+    }
+
+    fn recording_shared_view_is_allowed(&mut self) -> bool {
+        if self.ui_shell.ui.recording_role().can_change_shared_view() {
+            true
+        } else {
+            let message = crate::i18n::t("recording.director_only");
+            self.show_toast(message, 3.0);
+            self.announce_accessibility(AccessibilityEvent::Error {
+                message: message.to_string(),
+            });
+            false
+        }
+    }
+
+    pub fn recording_toggle_shared_audio(&mut self) {
+        if !self.recording_shared_view_is_allowed() {
+            return;
+        }
+        self.toggle_active_audio();
+        self.send_recording_view(None);
+    }
+
+    pub fn recording_cycle_language(&mut self) {
+        if !self.recording_shared_view_is_allowed() {
+            return;
+        }
+        let languages = self.project_session.project.languages();
+        let Some(index) = languages
+            .iter()
+            .position(|language| language.id == self.project_session.project.active_language_id())
+        else {
+            return;
+        };
+        if let Some(next) = languages.get((index + 1) % languages.len()) {
+            self.select_language(next.id);
+            self.send_recording_view(None);
+        }
+    }
+
     pub fn active_audio_offset_frames(&self) -> i64 {
         self.playback
             .video_player
@@ -3108,6 +3291,9 @@ impl State {
         capture_target: Option<crate::recording::CaptureTarget>,
     ) {
         self.seek_absolute_internal(current_frame, false);
+        if capture_target.is_some() {
+            self.finish_seek();
+        }
         let local_member_is_muted = self
             .collaboration
             .network
@@ -3129,8 +3315,11 @@ impl State {
                     crate::ui::recording_workspace::RecordingRole::Actor
                 ) && !local_member_is_muted
                 {
-                    self.recording_runtime
-                        .begin_capture_target(target, &self.recording_username())
+                    self.recording_runtime.begin_capture_target(
+                        target,
+                        &self.recording_username(),
+                        crate::config::recording_input_device().as_deref(),
+                    )
                 } else {
                     self.recording_runtime.begin_observed_capture(target)
                 };
@@ -3157,6 +3346,21 @@ impl State {
             .is_some_and(|player| player.is_playing());
         if playback.playing != is_playing {
             self.toggle_play_pause_internal(false);
+        }
+    }
+
+    fn receive_recording_view(&mut self, view: crate::network::RecordingViewPayload) {
+        if self
+            .project_session
+            .project
+            .language(view.language_id)
+            .is_none()
+        {
+            return;
+        }
+        self.select_language(view.language_id);
+        if self.active_audio_is_instrumental() != view.instrumental {
+            self.toggle_active_audio();
         }
     }
 
@@ -3285,6 +3489,10 @@ impl State {
                 IncomingMessage::RecordingPlayback(playback) => {
                     self.receive_recording_playback(playback)
                 }
+                IncomingMessage::RecordingView(view) => self.receive_recording_view(view),
+                IncomingMessage::ActorRequestOpenMicrophone => {
+                    self.open_recording_input_device_modal()
+                }
                 IncomingMessage::SyncRequested { requester } => {
                     log::info!("Sync requested by {requester}");
                     let data = ProjectData::from_project(&self.project_session.project);
@@ -3315,6 +3523,7 @@ impl State {
                             .network
                             .send_recording_prepare_to(&prepare, &requester);
                     }
+                    self.send_recording_view((!requester.is_empty()).then_some(requester.as_str()));
                 }
                 IncomingMessage::AudioStart { metadata } => {
                     match serde_json::from_value::<crate::audio_transfer::AudioTransferMetadata>(
@@ -4866,7 +5075,7 @@ impl State {
         }
         let last = state.keyboard_pan_last_tick.replace(now).unwrap_or(now);
         let elapsed = now.saturating_duration_since(last).as_secs_f32().min(0.05);
-        let scroll_speed = crate::config::scroll_speed();
+        let scroll_speed = self.project_session.project.settings().scroll_speed;
         state.keyboard_pan_accum_px +=
             state.keyboard_pan_direction as f32 * 240.0 * scroll_speed * elapsed;
         let ppf = crate::constants::PIXELS_PER_FRAME * scroll_speed;
@@ -6003,8 +6212,15 @@ impl State {
             RecordingRuntimeEvent::None => {}
             RecordingRuntimeEvent::CountdownStarted => changed = true,
             RecordingRuntimeEvent::CaptureStarted { target } => {
-                self.seek_absolute_internal(target.start_frame, false);
-                self.finish_seek();
+                let needs_seek = self
+                    .playback
+                    .video_player
+                    .as_ref()
+                    .is_some_and(|player| player.current_frame() != target.start_frame);
+                if needs_seek {
+                    self.seek_absolute_internal(target.start_frame, false);
+                    self.finish_seek();
+                }
                 if self
                     .playback
                     .video_player
@@ -6334,10 +6550,6 @@ impl State {
         let frame_sample = self.render.begin_frame(Instant::now());
         self.tick_video_at(frame_sample.instant);
 
-        if self.active_workspace() == WorkspaceId::Recording {
-            self.sync_recording_workspace_ui();
-        }
-
         let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -6373,6 +6585,10 @@ impl State {
         let _events = self.playback.timeline.drain();
 
         self.apply_automation_if_needed();
+        let render_frame = self.render_frame_at(frame_sample.instant);
+        if self.active_workspace() == WorkspaceId::Recording {
+            self.sync_recording_workspace_ui_at(render_frame);
+        }
 
         // Video quad ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â skip when export modal is showing (it would cover the modal)
         let recording_choice = self.active_workspace() == WorkspaceId::Recording
@@ -6389,7 +6605,6 @@ impl State {
             build_video_quad(&self.playback.video_player, &self.ui_shell.ui)
         };
         let current_frame = self.current_frame();
-        let render_frame = self.render_frame_at(frame_sample.instant);
 
         // UI render. Keep a read guard instead of cloning the waveform every frame.
         let waveform_arc = self

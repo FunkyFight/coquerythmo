@@ -1,7 +1,7 @@
 //! Native microphone capture adapter for the backend-neutral recording model.
 //!
 //! CPAL owns the real-time input callback. The callback only converts samples
-//! and attempts a bounded, non-blocking send; a worker thread streams raw PCM
+//! and sends them asynchronously; a worker thread streams raw PCM
 //! to FFmpeg and builds the waveform/checksum. No audio hardware is needed to
 //! test the pure helpers at the bottom of this module.
 
@@ -14,12 +14,14 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
-const CHANNEL_CAPACITY: usize = 32;
 const WAVEFORM_PEAKS_PER_SECOND: u32 = 100;
+const MIN_CLOCK_MEASUREMENT: Duration = Duration::from_secs(2);
+const MAX_CLOCK_RATE_DEVIATION: f64 = 0.05;
 
 static TEMP_FILE_NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -29,6 +31,7 @@ static TEMP_FILE_NONCE: AtomicU64 = AtomicU64::new(0);
 /// final path is never overwritten: an existing file makes `start` fail.
 pub struct FfmpegFlacRecorder {
     output_path: PathBuf,
+    input_device: Option<String>,
     active: Option<ActiveRecording>,
 }
 
@@ -37,8 +40,14 @@ struct ActiveRecording {
     worker: JoinHandle<Result<WorkerSummary, RecordingError>>,
     temporary_path: PathBuf,
     live_waveform: Arc<RwLock<WaveformData>>,
-    dropped_samples: Arc<AtomicU64>,
+    capture_timing: Arc<CaptureTiming>,
     stream_error: Arc<Mutex<Option<String>>>,
+}
+
+#[derive(Debug, Default)]
+struct CaptureTiming {
+    elapsed_nanos: AtomicU64,
+    sample_frames: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -54,8 +63,14 @@ impl FfmpegFlacRecorder {
     pub fn new(output_path: impl Into<PathBuf>) -> Self {
         Self {
             output_path: output_path.into(),
+            input_device: None,
             active: None,
         }
+    }
+
+    pub fn with_input_device(mut self, input_device: Option<String>) -> Self {
+        self.input_device = input_device;
+        self
     }
 
     pub fn output_path(&self) -> &Path {
@@ -120,9 +135,7 @@ impl AudioRecorder for FfmpegFlacRecorder {
         }
 
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| recorder_error("no default audio input device is available"))?;
+        let device = input_device(&host, self.input_device.as_deref())?;
         let supported_config = device.default_input_config().map_err(|error| {
             recorder_error(format!(
                 "cannot query default audio input configuration: {error}"
@@ -147,9 +160,11 @@ impl AudioRecorder for FfmpegFlacRecorder {
             samples_per_peak,
             peaks: Vec::new(),
         }));
-        let dropped_samples = Arc::new(AtomicU64::new(0));
+        let capture_timing = Arc::new(CaptureTiming::default());
         let stream_error = Arc::new(Mutex::new(None));
-        let (sender, receiver) = mpsc::sync_channel(CHANNEL_CAPACITY);
+        // ponytail: keep the real-time callback lossless; spool PCM if sustained encoder lag
+        // is ever observed in production.
+        let (sender, receiver) = mpsc::channel();
 
         let worker_path = temporary_path.clone();
         let worker_waveform = Arc::clone(&live_waveform);
@@ -172,7 +187,7 @@ impl AudioRecorder for FfmpegFlacRecorder {
             &stream_config,
             sample_format,
             sender,
-            Arc::clone(&dropped_samples),
+            Arc::clone(&capture_timing),
             Arc::clone(&stream_error),
         ) {
             Ok(stream) => stream,
@@ -195,7 +210,7 @@ impl AudioRecorder for FfmpegFlacRecorder {
             worker,
             temporary_path,
             live_waveform,
-            dropped_samples,
+            capture_timing,
             stream_error,
         });
         Ok(())
@@ -208,7 +223,7 @@ impl AudioRecorder for FfmpegFlacRecorder {
             worker,
             temporary_path,
             live_waveform: _,
-            dropped_samples,
+            capture_timing,
             stream_error,
         } = active;
 
@@ -219,7 +234,7 @@ impl AudioRecorder for FfmpegFlacRecorder {
             .join()
             .map_err(|_| recorder_error("recording worker panicked"))?;
 
-        let summary = match worker_result {
+        let mut summary = match worker_result {
             Ok(summary) => summary,
             Err(error) => {
                 remove_if_present(&temporary_path);
@@ -232,26 +247,54 @@ impl AudioRecorder for FfmpegFlacRecorder {
                 "audio input stream failed: {error}"
             )));
         }
-        let dropped = dropped_samples.load(Ordering::Relaxed);
-        if dropped > 0 {
-            remove_if_present(&temporary_path);
-            return Err(recorder_error(format!(
-                "recording could not keep up; {dropped} input samples were dropped"
-            )));
-        }
-
         if summary.sample_count == 0 {
             remove_if_present(&temporary_path);
             return Err(recorder_error("recording contains no audio samples"));
         }
 
-        fs::rename(&temporary_path, &self.output_path).map_err(|error| {
+        let measured_rate = measured_sample_rate(
+            summary.sample_rate,
+            capture_timing.sample_frames.load(Ordering::Relaxed),
+            Duration::from_nanos(capture_timing.elapsed_nanos.load(Ordering::Relaxed)),
+        );
+        let encoded_path = if measured_rate != summary.sample_rate {
+            match retime_flac(&temporary_path, measured_rate) {
+                Ok(path) => {
+                    log::info!(
+                        "Corrected microphone clock from {} Hz to {measured_rate} Hz",
+                        summary.sample_rate
+                    );
+                    summary.sample_rate = measured_rate;
+                    match sha1_file(&path) {
+                        Ok(checksum) => summary.checksum = checksum,
+                        Err(error) => {
+                            remove_if_present(&path);
+                            remove_if_present(&temporary_path);
+                            return Err(error);
+                        }
+                    }
+                    path
+                }
+                Err(error) => {
+                    remove_if_present(&temporary_path);
+                    return Err(error);
+                }
+            }
+        } else {
+            temporary_path.clone()
+        };
+
+        fs::rename(&encoded_path, &self.output_path).map_err(|error| {
+            remove_if_present(&encoded_path);
             remove_if_present(&temporary_path);
             recorder_error(format!(
                 "cannot finalize recording {}: {error}",
                 self.output_path.display()
             ))
         })?;
+        if encoded_path != temporary_path {
+            remove_if_present(&temporary_path);
+        }
 
         let file_name = self
             .output_path
@@ -307,40 +350,40 @@ fn build_input_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     sample_format: cpal::SampleFormat,
-    sender: SyncSender<Vec<f32>>,
-    dropped_samples: Arc<AtomicU64>,
+    sender: Sender<Vec<f32>>,
+    capture_timing: Arc<CaptureTiming>,
     stream_error: Arc<Mutex<Option<String>>>,
 ) -> Result<cpal::Stream, RecordingError> {
     match sample_format {
         cpal::SampleFormat::I8 => {
-            build_typed_input_stream::<i8>(device, config, sender, dropped_samples, stream_error)
+            build_typed_input_stream::<i8>(device, config, sender, capture_timing, stream_error)
         }
         cpal::SampleFormat::F32 => {
-            build_typed_input_stream::<f32>(device, config, sender, dropped_samples, stream_error)
+            build_typed_input_stream::<f32>(device, config, sender, capture_timing, stream_error)
         }
         cpal::SampleFormat::I16 => {
-            build_typed_input_stream::<i16>(device, config, sender, dropped_samples, stream_error)
+            build_typed_input_stream::<i16>(device, config, sender, capture_timing, stream_error)
         }
         cpal::SampleFormat::I32 => {
-            build_typed_input_stream::<i32>(device, config, sender, dropped_samples, stream_error)
+            build_typed_input_stream::<i32>(device, config, sender, capture_timing, stream_error)
         }
         cpal::SampleFormat::I64 => {
-            build_typed_input_stream::<i64>(device, config, sender, dropped_samples, stream_error)
+            build_typed_input_stream::<i64>(device, config, sender, capture_timing, stream_error)
         }
         cpal::SampleFormat::U8 => {
-            build_typed_input_stream::<u8>(device, config, sender, dropped_samples, stream_error)
+            build_typed_input_stream::<u8>(device, config, sender, capture_timing, stream_error)
         }
         cpal::SampleFormat::U16 => {
-            build_typed_input_stream::<u16>(device, config, sender, dropped_samples, stream_error)
+            build_typed_input_stream::<u16>(device, config, sender, capture_timing, stream_error)
         }
         cpal::SampleFormat::U32 => {
-            build_typed_input_stream::<u32>(device, config, sender, dropped_samples, stream_error)
+            build_typed_input_stream::<u32>(device, config, sender, capture_timing, stream_error)
         }
         cpal::SampleFormat::U64 => {
-            build_typed_input_stream::<u64>(device, config, sender, dropped_samples, stream_error)
+            build_typed_input_stream::<u64>(device, config, sender, capture_timing, stream_error)
         }
         cpal::SampleFormat::F64 => {
-            build_typed_input_stream::<f64>(device, config, sender, dropped_samples, stream_error)
+            build_typed_input_stream::<f64>(device, config, sender, capture_timing, stream_error)
         }
         other => Err(recorder_error(format!(
             "unsupported audio input sample format: {other:?}"
@@ -351,8 +394,8 @@ fn build_input_stream(
 fn build_typed_input_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    sender: SyncSender<Vec<f32>>,
-    dropped_samples: Arc<AtomicU64>,
+    sender: Sender<Vec<f32>>,
+    capture_timing: Arc<CaptureTiming>,
     stream_error: Arc<Mutex<Option<String>>>,
 ) -> Result<cpal::Stream, RecordingError>
 where
@@ -360,25 +403,36 @@ where
     f32: FromSample<T>,
 {
     let error_slot = Arc::clone(&stream_error);
+    let channels = u64::from(config.channels.max(1));
+    let mut first_capture = None;
+    let mut frames_before_callback = 0_u64;
     device
         .build_input_stream(
             config,
-            move |input: &[T], _info: &cpal::InputCallbackInfo| {
+            move |input: &[T], info: &cpal::InputCallbackInfo| {
                 if input.is_empty() {
                     return;
                 }
-                let samples: Vec<f32> = input.iter().copied().map(f32::from_sample).collect();
-                match sender.try_send(samples) {
-                    Ok(()) => {}
-                    Err(TrySendError::Full(samples)) => {
-                        dropped_samples.fetch_add(samples.len() as u64, Ordering::Relaxed);
-                    }
-                    Err(TrySendError::Disconnected(_)) => {
-                        store_first_error(
-                            &stream_error,
-                            "recording worker disconnected".to_owned(),
+                let capture = info.timestamp().capture;
+                if let Some(first_capture) = first_capture {
+                    if let Some(elapsed) = capture.duration_since(&first_capture) {
+                        capture_timing
+                            .sample_frames
+                            .store(frames_before_callback, Ordering::Relaxed);
+                        capture_timing.elapsed_nanos.store(
+                            elapsed.as_nanos().min(u128::from(u64::MAX)) as u64,
+                            Ordering::Relaxed,
                         );
                     }
+                } else {
+                    first_capture = Some(capture);
+                }
+                frames_before_callback =
+                    frames_before_callback.saturating_add(input.len() as u64 / channels);
+                // Format conversion only: no gain, normalization, compression or filtering.
+                let samples = input_samples_as_f32(input);
+                if sender.send(samples).is_err() {
+                    store_first_error(&stream_error, "recording worker disconnected".to_owned());
                 }
             },
             move |error| store_first_error(&error_slot, error.to_string()),
@@ -387,12 +441,99 @@ where
         .map_err(|error| recorder_error(format!("cannot build audio input stream: {error}")))
 }
 
+pub fn input_device_names() -> Result<Vec<String>, RecordingError> {
+    let mut names = cpal::default_host()
+        .input_devices()
+        .map_err(|error| recorder_error(format!("cannot enumerate audio input devices: {error}")))?
+        .filter_map(|device| device.name().ok())
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names.dedup();
+    Ok(names)
+}
+
+fn input_device(
+    host: &cpal::Host,
+    selected_name: Option<&str>,
+) -> Result<cpal::Device, RecordingError> {
+    let Some(selected_name) = selected_name else {
+        return host
+            .default_input_device()
+            .ok_or_else(|| recorder_error("no default audio input device is available"));
+    };
+    host.input_devices()
+        .map_err(|error| recorder_error(format!("cannot enumerate audio input devices: {error}")))?
+        .find(|device| device.name().ok().as_deref() == Some(selected_name))
+        .ok_or_else(|| {
+            recorder_error(format!(
+                "selected audio input device is unavailable: {selected_name}"
+            ))
+        })
+}
+
+fn input_samples_as_f32<T>(input: &[T]) -> Vec<f32>
+where
+    T: Sample + Copy,
+    f32: FromSample<T>,
+{
+    input.iter().copied().map(f32::from_sample).collect()
+}
+
 fn store_first_error(slot: &Mutex<Option<String>>, message: String) {
     if let Ok(mut error) = slot.lock() {
         if error.is_none() {
             *error = Some(message);
         }
     }
+}
+
+fn measured_sample_rate(nominal_rate: u32, sample_frames: u64, elapsed: Duration) -> u32 {
+    if nominal_rate == 0 || sample_frames == 0 || elapsed < MIN_CLOCK_MEASUREMENT {
+        return nominal_rate;
+    }
+    let measured = sample_frames as f64 / elapsed.as_secs_f64();
+    let nominal = f64::from(nominal_rate);
+    if !measured.is_finite()
+        || measured < nominal * (1.0 - MAX_CLOCK_RATE_DEVIATION)
+        || measured > nominal * (1.0 + MAX_CLOCK_RATE_DEVIATION)
+    {
+        return nominal_rate;
+    }
+    measured.round().clamp(1.0, f64::from(u32::MAX)) as u32
+}
+
+fn retime_flac(source: &Path, sample_rate: u32) -> Result<PathBuf, RecordingError> {
+    let corrected = temporary_path_for(source, TEMP_FILE_NONCE.fetch_add(1, Ordering::Relaxed));
+    remove_if_present(&corrected);
+    let output = crate::media_binary::command("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-nostdin")
+        .arg("-n")
+        .arg("-i")
+        .arg(source)
+        .arg("-vn")
+        .arg("-af")
+        .arg(format!("asetrate={sample_rate}"))
+        .arg("-c:a")
+        .arg("flac")
+        .arg("-f")
+        .arg("flac")
+        .arg(&corrected)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| recorder_error(format!("cannot correct microphone clock: {error}")))?;
+    if !output.status.success() {
+        remove_if_present(&corrected);
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(recorder_error(format!(
+            "microphone clock correction failed: {detail}"
+        )));
+    }
+    Ok(corrected)
 }
 
 fn run_flac_worker(
@@ -703,5 +844,27 @@ mod tests {
         let checksum = sha1_reader(std::io::Cursor::new(&bytes)).unwrap();
         assert_eq!(checksum.len(), 40);
         assert!(checksum.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn f32_microphone_samples_are_forwarded_unchanged() {
+        let input = [-1.0_f32, -0.25, 0.0, 0.75, 1.0];
+        assert_eq!(input_samples_as_f32(&input), input);
+    }
+
+    #[test]
+    fn microphone_clock_rate_uses_capture_timestamps_and_rejects_outliers() {
+        assert_eq!(
+            measured_sample_rate(48_000, 95_800, Duration::from_secs(2)),
+            47_900
+        );
+        assert_eq!(
+            measured_sample_rate(48_000, 48_000, Duration::from_secs(1)),
+            48_000
+        );
+        assert_eq!(
+            measured_sample_rate(48_000, 80_000, Duration::from_secs(2)),
+            48_000
+        );
     }
 }

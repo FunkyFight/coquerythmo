@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 const MAX_RECENT: usize = 10;
@@ -17,7 +18,9 @@ pub struct RecentProject {
 }
 
 static INSTANCE: OnceLock<RwLock<Config>> = OnceLock::new();
-static DEV_MODE: bool = true;
+static PROJECT_SCROLL_SPEED: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+static PROJECT_READING_BAR_OFFSET_SECONDS: AtomicU64 = AtomicU64::new(0.0f64.to_bits());
+static DEV_MODE: bool = false;
 
 pub fn dev_mode() -> bool {
     DEV_MODE
@@ -34,6 +37,7 @@ pub struct Config {
     pub lang: String,
     pub network: NetworkConfig,
     pub accessibility: AccessibilityConfig,
+    pub recording_input_device: Option<String>,
     pub last_whats_new_version: Option<String>,
     #[serde(default)]
     pub recent_projects: Vec<RecentProject>,
@@ -76,14 +80,9 @@ pub struct UiConfig {
     pub font_size: f32,
     pub border_radius: f32,
     pub rythmo_font: Option<String>,
-    pub scroll_speed: f32,
     /// Fraction of the free area (screen height minus topbar and toolbar)
     /// allocated to the video preview. The bande rythmo gets the remainder.
     pub video_split: f32,
-    /// Reading bar position offset in seconds relative to center.
-    /// Positive = bar moved to the start/text arrives earlier.
-    /// Negative = bar moved to the end/text arrives later.
-    pub reading_bar_offset_seconds: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +110,10 @@ fn default_servers() -> Vec<SavedServer> {
     }]
 }
 
+pub fn is_default_server(ip: &str, port: u16) -> bool {
+    ip == DEFAULT_SERVER_IP && port == DEFAULT_SERVER_PORT
+}
+
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
@@ -131,6 +134,7 @@ impl Default for Config {
             lang: "fr-fr".into(),
             network: NetworkConfig::default(),
             accessibility: AccessibilityConfig::default(),
+            recording_input_device: None,
             last_whats_new_version: None,
             recent_projects: Vec::new(),
             license_key: String::new(),
@@ -156,9 +160,7 @@ impl Default for UiConfig {
             font_size: 18.0,
             border_radius: 8.0,
             rythmo_font: None,
-            scroll_speed: 1.0,
             video_split: 0.48,
-            reading_bar_offset_seconds: 0.0,
         }
     }
 }
@@ -221,7 +223,8 @@ impl Config {
     }
 
     fn migrate(&mut self) -> bool {
-        self.migrate_default_server_ip()
+        let migrated = self.migrate_default_server_ip();
+        self.ensure_default_server() || migrated
     }
 
     fn migrate_default_server_ip(&mut self) -> bool {
@@ -257,6 +260,36 @@ impl Config {
         }
 
         changed
+    }
+
+    fn ensure_default_server(&mut self) -> bool {
+        if self
+            .network
+            .saved_servers
+            .iter()
+            .any(|server| is_default_server(&server.ip, server.port))
+        {
+            return false;
+        }
+        self.network.saved_servers.insert(
+            0,
+            SavedServer {
+                ip: DEFAULT_SERVER_IP.into(),
+                port: DEFAULT_SERVER_PORT,
+            },
+        );
+        true
+    }
+
+    fn remove_saved_server(&mut self, index: usize) -> bool {
+        let Some(server) = self.network.saved_servers.get(index) else {
+            return false;
+        };
+        if is_default_server(&server.ip, server.port) {
+            return false;
+        }
+        self.network.saved_servers.remove(index);
+        true
     }
 }
 
@@ -311,11 +344,53 @@ mod tests {
             port: DEFAULT_SERVER_PORT + 1,
         }];
 
-        assert!(!config.migrate());
+        assert!(config.migrate());
         assert_eq!(config.network.server_ip, PREVIOUS_DEFAULT_SERVER_IP);
+        assert!(config
+            .network
+            .saved_servers
+            .iter()
+            .any(|server| server.ip == PREVIOUS_DEFAULT_SERVER_IP
+                && server.port == DEFAULT_SERVER_PORT + 1));
+        assert!(config
+            .network
+            .saved_servers
+            .iter()
+            .any(|server| is_default_server(&server.ip, server.port)));
+    }
+
+    #[test]
+    fn migrate_restores_a_missing_default_server() {
+        let mut config = Config::default();
+        config.network.saved_servers.clear();
+
+        assert!(config.migrate());
+        assert_eq!(config.network.saved_servers.len(), 1);
+        assert!(is_default_server(
+            &config.network.saved_servers[0].ip,
+            config.network.saved_servers[0].port
+        ));
+    }
+
+    #[test]
+    fn default_server_cannot_be_removed() {
+        let mut config = Config::default();
+
+        assert!(!config.remove_saved_server(0));
+        assert_eq!(config.network.saved_servers.len(), 1);
+    }
+
+    #[test]
+    fn microphone_selection_survives_config_round_trip() {
+        let mut config = Config::default();
+        config.recording_input_device = Some("Studio microphone".into());
+
+        let encoded = toml::to_string(&config).unwrap();
+        let decoded: Config = toml::from_str(&encoded).unwrap();
+
         assert_eq!(
-            config.network.saved_servers[0].ip,
-            PREVIOUS_DEFAULT_SERVER_IP
+            decoded.recording_input_device.as_deref(),
+            Some("Studio microphone")
         );
     }
 }
@@ -333,30 +408,43 @@ pub fn language_or_default() -> String {
         .unwrap_or_else(|| Config::default().lang)
 }
 
-pub fn save_settings(
-    lang: String,
-    rythmo_font: Option<String>,
-    scroll_speed: f32,
-    reading_bar_offset_seconds: f64,
-) {
+pub fn save_settings(lang: String, rythmo_font: Option<String>) {
     let lock = INSTANCE.get().expect("config not initialized");
     let mut cfg = lock.write().unwrap();
     cfg.lang = lang;
     cfg.ui.rythmo_font = rythmo_font;
-    cfg.ui.scroll_speed = scroll_speed;
-    cfg.ui.reading_bar_offset_seconds = reading_bar_offset_seconds;
     cfg.save();
+}
+
+pub(crate) fn set_project_view_settings(
+    scroll_speed: f32,
+    reading_bar_offset_percent: f32,
+    viewport_width: f32,
+    fps: f64,
+) {
+    let scroll_speed = scroll_speed.clamp(0.25, 4.0);
+    let pixels_per_frame = crate::constants::PIXELS_PER_FRAME * scroll_speed;
+    let offset_seconds = crate::rythmo_layout::reading_bar_offset_seconds(
+        reading_bar_offset_percent.clamp(-50.0, 50.0),
+        viewport_width,
+        fps,
+        pixels_per_frame,
+    );
+    PROJECT_SCROLL_SPEED.store(scroll_speed.to_bits(), Ordering::Relaxed);
+    PROJECT_READING_BAR_OFFSET_SECONDS.store(offset_seconds.to_bits(), Ordering::Relaxed);
+}
+
+pub fn scroll_speed() -> f32 {
+    f32::from_bits(PROJECT_SCROLL_SPEED.load(Ordering::Relaxed))
 }
 
 pub fn reading_bar_offset_seconds() -> f64 {
-    get().ui.reading_bar_offset_seconds
+    f64::from_bits(PROJECT_READING_BAR_OFFSET_SECONDS.load(Ordering::Relaxed))
 }
 
+#[cfg(test)]
 pub fn set_reading_bar_offset_seconds(offset: f64) {
-    let lock = INSTANCE.get().expect("config not initialized");
-    let mut cfg = lock.write().unwrap();
-    cfg.ui.reading_bar_offset_seconds = offset;
-    cfg.save();
+    PROJECT_READING_BAR_OFFSET_SECONDS.store(offset.to_bits(), Ordering::Relaxed);
 }
 
 pub fn add_recent_project(video_path: PathBuf, br_path: PathBuf) {
@@ -429,18 +517,24 @@ pub fn add_server(ip: String, port: u16) {
 pub fn remove_server(index: usize) {
     let lock = INSTANCE.get().expect("config not initialized");
     let mut cfg = lock.write().unwrap();
-    if index < cfg.network.saved_servers.len() {
-        cfg.network.saved_servers.remove(index);
+    if cfg.remove_saved_server(index) {
         cfg.save();
     }
 }
 
-pub fn scroll_speed() -> f32 {
-    get().ui.scroll_speed
-}
-
 pub fn video_split() -> f32 {
     get().ui.video_split
+}
+
+pub fn recording_input_device() -> Option<String> {
+    get().recording_input_device.clone()
+}
+
+pub fn set_recording_input_device(device: Option<String>) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    cfg.recording_input_device = device;
+    cfg.save();
 }
 
 pub fn set_video_split(split: f32) {

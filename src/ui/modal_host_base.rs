@@ -9,6 +9,7 @@ use super::connect_modal::ConnectModal;
 use super::export_modal::ExportModal;
 use super::file_explorer::{FileExplorerModal, FileExplorerRequest, FileExplorerResult};
 use super::language_modal::{LanguageListItem, LanguageModal};
+use super::microphone_modal::{MicrophoneModal, RecordingActorMenuModal};
 use super::pricing_license_modal::PricingLicenseModal;
 use super::pricing_page::PricingPage;
 use super::pricing_plan_modal::PricingPlanModal;
@@ -86,6 +87,8 @@ pub struct ModalHost {
     pub project_settings: Option<ProjectSettingsModal>,
     pub export: Option<ExportModal>,
     pub languages: Option<LanguageModal>,
+    pub microphone: Option<MicrophoneModal>,
+    pub recording_actor_menu: Option<RecordingActorMenuModal>,
     pub file_explorer: Option<FileExplorerModal>,
     pub proxy: Option<ProxyModal>,
     pub rename_character: Option<RenameCharacterModal>,
@@ -108,6 +111,8 @@ impl ModalHost {
             project_settings: None,
             export: None,
             languages: None,
+            microphone: None,
+            recording_actor_menu: None,
             file_explorer: None,
             proxy: None,
             rename_character: None,
@@ -129,6 +134,8 @@ impl ModalHost {
             || self.project_settings.is_some()
             || self.export.is_some()
             || self.languages.is_some()
+            || self.microphone.is_some()
+            || self.recording_actor_menu.is_some()
             || self.file_explorer.is_some()
             || self.proxy.is_some()
             || self.rename_character.is_some()
@@ -242,6 +249,12 @@ impl ModalHost {
         if self.languages.is_some() {
             return Some(self.handle_languages_event(event, screen_w, screen_h));
         }
+        if self.microphone.is_some() {
+            return Some(self.handle_microphone_event(event, screen_w, screen_h));
+        }
+        if self.recording_actor_menu.is_some() {
+            return Some(self.handle_recording_actor_menu_event(event, screen_w, screen_h));
+        }
         if self.voice_actor.is_some() {
             return Some(self.handle_voice_actor_event(event, screen_w, screen_h));
         }
@@ -285,7 +298,7 @@ impl ModalHost {
                 return ModalOutcome::Action(UiAction::Accessibility(
                     crate::accessibility::AccessibilityEvent::Focus {
                         label: modal.keyboard_focus_label(),
-                        role: "text field".to_string(),
+                        role: modal.keyboard_focus_role().to_string(),
                     },
                 ));
             }
@@ -314,6 +327,108 @@ impl ModalHost {
                     },
                     crate::i18n::t("menu.connect"),
                 )
+            }
+        }
+    }
+
+    fn handle_microphone_event(
+        &mut self,
+        event: &UiEvent,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> ModalOutcome {
+        let navigated = matches!(
+            event,
+            UiEvent::CursorUp
+                | UiEvent::CursorDown
+                | UiEvent::Home
+                | UiEvent::End
+                | UiEvent::FocusNext
+                | UiEvent::FocusPrevious
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let result = self
+            .microphone
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h);
+        if navigated
+            && matches!(
+                &result,
+                &super::microphone_modal::MicrophoneModalResult::Consumed
+            )
+        {
+            return ModalOutcome::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Focus {
+                    label: self.microphone.as_ref().unwrap().keyboard_focus_label(),
+                    role: "list box".to_string(),
+                },
+            ));
+        }
+        match result {
+            super::microphone_modal::MicrophoneModalResult::Consumed => ModalOutcome::Consumed,
+            super::microphone_modal::MicrophoneModalResult::Close => {
+                self.microphone = None;
+                closed_modal(crate::i18n::t("recording.microphone.title"))
+            }
+            super::microphone_modal::MicrophoneModalResult::Select(device) => {
+                self.microphone = None;
+                action_closed_modal(
+                    UiAction::SetRecordingInputDevice(device),
+                    crate::i18n::t("recording.microphone.title"),
+                )
+            }
+        }
+    }
+
+    fn handle_recording_actor_menu_event(
+        &mut self,
+        event: &UiEvent,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> ModalOutcome {
+        let navigated = matches!(
+            event,
+            UiEvent::CursorUp
+                | UiEvent::CursorDown
+                | UiEvent::CursorLeft
+                | UiEvent::CursorRight
+                | UiEvent::Home
+                | UiEvent::End
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let result = self
+            .recording_actor_menu
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h);
+        if navigated
+            && matches!(
+                &result,
+                &super::microphone_modal::RecordingActorMenuResult::Consumed
+            )
+        {
+            let menu = self.recording_actor_menu.as_ref().unwrap();
+            return ModalOutcome::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Focus {
+                    label: menu.keyboard_focus_label(),
+                    role: menu.keyboard_focus_role().to_string(),
+                },
+            ));
+        }
+        match result {
+            super::microphone_modal::RecordingActorMenuResult::Consumed => ModalOutcome::Consumed,
+            super::microphone_modal::RecordingActorMenuResult::Close => {
+                self.recording_actor_menu = None;
+                closed_modal(crate::i18n::t("recording.actor_menu.title"))
+            }
+            super::microphone_modal::RecordingActorMenuResult::ChooseMicrophone => {
+                self.recording_actor_menu = None;
+                action_closed_modal(
+                    UiAction::OpenRecordingInputDeviceModal,
+                    crate::i18n::t("recording.actor_menu.title"),
+                )
+            }
+            super::microphone_modal::RecordingActorMenuResult::SetVideoVolume(volume) => {
+                ModalOutcome::Action(UiAction::SetVolume(volume))
             }
         }
     }
@@ -377,14 +492,14 @@ impl ModalHost {
                 lang,
                 rythmo_font,
                 scroll_speed,
-                reading_bar_offset_seconds,
+                reading_bar_offset_percent,
             } => {
                 self.settings = None;
                 ModalOutcome::Action(UiAction::SaveSettings {
                     lang,
                     rythmo_font,
                     scroll_speed,
-                    reading_bar_offset_seconds,
+                    reading_bar_offset_percent,
                 })
             }
         }
@@ -1220,6 +1335,14 @@ impl ModalHost {
         self.languages = Some(LanguageModal::new(languages, active_language_id));
     }
 
+    pub fn open_microphone(&mut self, devices: Vec<String>, selected: Option<String>) {
+        self.microphone = Some(MicrophoneModal::new(devices, selected));
+    }
+
+    pub fn open_recording_actor_menu(&mut self, volume: f32) {
+        self.recording_actor_menu = Some(RecordingActorMenuModal::new(volume));
+    }
+
     pub fn refresh_languages(&mut self, languages: Vec<LanguageListItem>, active_language_id: u64) {
         if let Some(modal) = &mut self.languages {
             modal.refresh(languages, active_language_id);
@@ -1307,8 +1430,17 @@ impl ModalHost {
         ));
     }
 
-    pub fn open_settings(&mut self, fonts: Vec<String>) {
-        self.settings = Some(super::settings_modal::SettingsModal::new(fonts));
+    pub fn open_settings(
+        &mut self,
+        fonts: Vec<String>,
+        scroll_speed: f32,
+        reading_bar_offset_percent: f32,
+    ) {
+        self.settings = Some(super::settings_modal::SettingsModal::new(
+            fonts,
+            scroll_speed,
+            reading_bar_offset_percent,
+        ));
     }
 
     pub fn open_project_settings(
@@ -1388,6 +1520,12 @@ impl ModalHost {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
         if let Some(modal) = &self.languages {
+            modal.render(modal_quads, modal_labels, screen_w, screen_h);
+        }
+        if let Some(modal) = &self.microphone {
+            modal.render(modal_quads, modal_labels, screen_w, screen_h);
+        }
+        if let Some(modal) = &self.recording_actor_menu {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
         if let Some(modal) = &self.voice_actor {

@@ -8,8 +8,13 @@ pub(crate) fn hit_test_line_and_track(
     x: f32,
     y: f32,
 ) -> (Option<u64>, Option<usize>) {
-    let layout_ctx =
-        state.get_or_create_layout_ctx(ctx.project, ctx.current_frame, ctx.fps, ctx.zone);
+    let layout_ctx = state.get_or_create_layout_ctx(
+        ctx.project,
+        ctx.render_index,
+        ctx.current_frame,
+        ctx.fps,
+        ctx.zone,
+    );
     let offset_frames = crate::config::reading_bar_offset_seconds() * ctx.fps;
 
     // A line can only contain the pointer if its timeline interval contains
