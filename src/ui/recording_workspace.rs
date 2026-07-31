@@ -1451,12 +1451,25 @@ fn push_participants(
             "co_da" => crate::i18n::t("recording.role.co_director"),
             _ => crate::i18n::t("recording.role.actor"),
         };
+        let microphone = if member.role == "actor" && !member.muted {
+            format!(
+                " · {}",
+                crate::i18n::t(if member.recording_ready {
+                    "recording.microphone.ready_short"
+                } else {
+                    "recording.microphone.not_ready_short"
+                })
+            )
+        } else {
+            String::new()
+        };
         scene.labels.push(RecordingLabel {
             text: format!(
-                "{} · {}{}",
+                "{} · {}{}{}",
                 member.username,
                 role_label,
-                if member.muted { " · muet" } else { "" }
+                if member.muted { " · muet" } else { "" },
+                microphone
             ),
             bounds,
             h_align: HAlign::Left,

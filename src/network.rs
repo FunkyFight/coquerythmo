@@ -20,6 +20,8 @@ pub struct NetworkMember {
     pub role: String,
     #[serde(default)]
     pub muted: bool,
+    #[serde(default)]
+    pub recording_ready: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -49,6 +51,40 @@ pub struct RecordingCapturePayload {
     pub capture_target: Option<crate::recording::CaptureTarget>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProjectTransferMetadata {
+    pub request_id: String,
+    pub project_huuid: String,
+    pub file_name: String,
+    pub total_bytes: u64,
+    pub total_chunks: usize,
+    pub chunk_size: usize,
+    pub sha1: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProjectTransferParticipant {
+    pub member_id: String,
+    pub username: String,
+    pub response: String,
+    pub progress: f32,
+    #[serde(default)]
+    pub deadline: Option<u64>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProjectTransferStatus {
+    pub request_id: String,
+    pub phase: String,
+    pub total_bytes: u64,
+    pub transferred_bytes: u64,
+    pub participants: Vec<ProjectTransferParticipant>,
+    #[serde(default)]
+    pub cancel_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConnectionState {
     Disconnected,
@@ -68,6 +104,7 @@ pub enum IncomingMessage {
     RoomMetadata {
         member_id: String,
         project_huuid: String,
+        project_matches: bool,
     },
     RoomState {
         members: Vec<NetworkMember>,
@@ -94,12 +131,26 @@ pub enum IncomingMessage {
     AudioEnd {
         transfer_id: String,
     },
+    AudioUploaded {
+        transfer_id: String,
+    },
     RecordingTransaction(crate::recording::RecordingTransaction),
     RecordingPrepare(RecordingPreparePayload),
     RecordingCapture(RecordingCapturePayload),
     RecordingPlayback(RecordingPlaybackPayload),
     RecordingView(RecordingViewPayload),
     ActorRequestOpenMicrophone,
+    ProjectTransferRequest(ProjectTransferMetadata),
+    ProjectTransferReady(ProjectTransferMetadata),
+    ProjectTransferStatus(ProjectTransferStatus),
+    ProjectTransferChunk {
+        request_id: String,
+        index: usize,
+        data_base64: String,
+    },
+    ProjectTransferEnd {
+        request_id: String,
+    },
 }
 
 /// Outgoing message: event name + JSON payload, sent via dedicated sender thread.
@@ -115,6 +166,7 @@ pub struct NetworkClient {
     pub members: Vec<String>,
     pub member_id: Option<String>,
     pub project_huuid: Option<String>,
+    pub project_matches: bool,
     pub member_details: Vec<NetworkMember>,
     pub control_owner_id: Option<String>,
 }
@@ -137,6 +189,7 @@ impl NetworkClient {
             members: Vec::new(),
             member_id: None,
             project_huuid: None,
+            project_matches: false,
             member_details: Vec::new(),
             control_owner_id: None,
         }
@@ -187,12 +240,18 @@ impl NetworkClient {
         let tx_audio_start = in_tx.clone();
         let tx_audio_chunk = in_tx.clone();
         let tx_audio_end = in_tx.clone();
+        let tx_audio_uploaded = in_tx.clone();
         let tx_recording_transaction = in_tx.clone();
         let tx_recording_prepare = in_tx.clone();
         let tx_recording_capture = in_tx.clone();
         let tx_recording_playback = in_tx.clone();
         let tx_recording_view = in_tx.clone();
         let tx_actor_request = in_tx.clone();
+        let tx_project_transfer_request = in_tx.clone();
+        let tx_project_transfer_ready = in_tx.clone();
+        let tx_project_transfer_status = in_tx.clone();
+        let tx_project_transfer_chunk = in_tx.clone();
+        let tx_project_transfer_end = in_tx.clone();
 
         let (first_event, first_payload) = packet_to_emit(&first_packet);
         let first_event = first_event.to_string();
@@ -231,6 +290,7 @@ impl NetworkClient {
                 let _ = tx_room_metadata_created.send(IncomingMessage::RoomMetadata {
                     member_id,
                     project_huuid,
+                    project_matches: true,
                 });
                 let _ = tx_room_created.send(IncomingMessage::Packet(Packet::RoomCreated { code }));
             })
@@ -248,17 +308,20 @@ impl NetworkClient {
                         .unwrap_or_default();
                     let member_id = obj["member_id"].as_str().unwrap_or("").to_string();
                     let project_huuid = obj["project_huuid"].as_str().unwrap_or("").to_string();
+                    let project_matches = obj["project_matches"].as_bool().unwrap_or(false);
                     let _ = tx_room_metadata_joined.send(IncomingMessage::RoomMetadata {
                         member_id,
                         project_huuid,
+                        project_matches,
                     });
                     let _ = tx_room_joined.send(IncomingMessage::Packet(Packet::RoomJoined {
                         code,
                         role,
                         members,
                     }));
-                    // Request sync directly from callback
-                    let _ = client.emit("request_sync", serde_json::json!({}));
+                    if project_matches {
+                        let _ = client.emit("request_sync", serde_json::json!({}));
+                    }
                 }
             })
             .on("join_error", move |payload, _| {
@@ -377,6 +440,12 @@ impl NetworkClient {
                     let _ = tx_audio_end.send(IncomingMessage::AudioEnd { transfer_id });
                 }
             })
+            .on("audio_uploaded", move |payload, _| {
+                if let Some(obj) = payload_to_value(&payload) {
+                    let transfer_id = obj["transfer_id"].as_str().unwrap_or("").to_string();
+                    let _ = tx_audio_uploaded.send(IncomingMessage::AudioUploaded { transfer_id });
+                }
+            })
             .on("recording_transaction", move |payload, _| {
                 if let Some(value) = payload_to_value(&payload) {
                     match serde_json::from_value(value) {
@@ -459,6 +528,49 @@ impl NetworkClient {
                 {
                     let _ = tx_actor_request.send(IncomingMessage::ActorRequestOpenMicrophone);
                 }
+            })
+            .on("project_transfer_request", move |payload, _| {
+                if let Some(value) = payload_to_value(&payload) {
+                    if let Ok(metadata) = serde_json::from_value(value) {
+                        let _ = tx_project_transfer_request
+                            .send(IncomingMessage::ProjectTransferRequest(metadata));
+                    }
+                }
+            })
+            .on("project_transfer_ready", move |payload, _| {
+                if let Some(value) = payload_to_value(&payload) {
+                    if let Ok(metadata) = serde_json::from_value(value["metadata"].clone()) {
+                        let _ = tx_project_transfer_ready
+                            .send(IncomingMessage::ProjectTransferReady(metadata));
+                    }
+                }
+            })
+            .on("project_transfer_status", move |payload, _| {
+                if let Some(value) = payload_to_value(&payload) {
+                    if let Ok(status) = serde_json::from_value(value) {
+                        let _ = tx_project_transfer_status
+                            .send(IncomingMessage::ProjectTransferStatus(status));
+                    }
+                }
+            })
+            .on("project_transfer_chunk", move |payload, _| {
+                if let Some(value) = payload_to_value(&payload) {
+                    let request_id = value["request_id"].as_str().unwrap_or("").to_string();
+                    let index = value["index"].as_u64().unwrap_or(0) as usize;
+                    let data_base64 = value["data"].as_str().unwrap_or("").to_string();
+                    let _ = tx_project_transfer_chunk.send(IncomingMessage::ProjectTransferChunk {
+                        request_id,
+                        index,
+                        data_base64,
+                    });
+                }
+            })
+            .on("project_transfer_end", move |payload, _| {
+                let request_id = payload_to_value(&payload)
+                    .and_then(|value| value["request_id"].as_str().map(String::from))
+                    .unwrap_or_default();
+                let _ = tx_project_transfer_end
+                    .send(IncomingMessage::ProjectTransferEnd { request_id });
             });
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| builder.connect()));
@@ -530,6 +642,10 @@ impl NetworkClient {
         }
     }
 
+    pub fn send_recording_ready(&self, ready: bool) {
+        self.send_raw("recording_ready", serde_json::json!({ "ready": ready }));
+    }
+
     pub fn send_recording_playback(&self, frame: i64, playing: bool) {
         let payload = RecordingPlaybackPayload { frame, playing };
         if let Ok(payload) = serde_json::to_value(payload) {
@@ -544,6 +660,93 @@ impl NetworkClient {
             }
             self.send_raw("recording_view", payload);
         }
+    }
+
+    pub fn request_project_transfer(&self, metadata: &ProjectTransferMetadata) {
+        if let Ok(payload) = serde_json::to_value(metadata) {
+            self.send_raw("project_transfer_request", payload);
+        }
+    }
+
+    pub fn respond_project_transfer(&self, request_id: &str, response: &str) {
+        self.send_raw(
+            "project_transfer_response",
+            serde_json::json!({ "request_id": request_id, "response": response }),
+        );
+    }
+
+    pub fn start_project_transfer(&self, metadata: &ProjectTransferMetadata) {
+        if let Ok(payload) = serde_json::to_value(metadata) {
+            self.send_raw("project_transfer_start", payload);
+        }
+    }
+
+    pub fn send_project_transfer_chunk(&self, request_id: &str, index: usize, data: &str) {
+        self.send_raw(
+            "project_transfer_chunk",
+            serde_json::json!({ "request_id": request_id, "index": index, "data": data }),
+        );
+    }
+
+    pub fn finish_project_transfer(&self, request_id: &str) {
+        self.send_raw(
+            "project_transfer_end",
+            serde_json::json!({ "request_id": request_id }),
+        );
+    }
+
+    pub fn report_project_transfer(&self, request_id: &str, success: bool, error: Option<&str>) {
+        self.send_raw(
+            "project_transfer_result",
+            serde_json::json!({ "request_id": request_id, "success": success, "error": error }),
+        );
+    }
+
+    pub fn send_project_file(
+        &self,
+        path: PathBuf,
+        metadata: ProjectTransferMetadata,
+    ) -> mpsc::Receiver<Result<(), String>> {
+        let (result_tx, result_rx) = mpsc::channel();
+        let Some(out_tx) = self.out_tx.clone() else {
+            let _ = result_tx.send(Err("network is not connected".into()));
+            return result_rx;
+        };
+        std::thread::spawn(move || {
+            let result = (|| {
+                let generic = crate::file_transfer::FileTransferMetadata {
+                    transfer_id: metadata.request_id.clone(),
+                    file_name: metadata.file_name.clone(),
+                    total_bytes: metadata.total_bytes,
+                    total_chunks: metadata.total_chunks,
+                    chunk_size: metadata.chunk_size,
+                    sha1: metadata.sha1.clone(),
+                };
+                generic.validate()?;
+                out_tx
+                    .send(OutgoingMessage(
+                        "project_transfer_start".into(),
+                        serde_json::to_value(&metadata).map_err(|error| error.to_string())?,
+                    ))
+                    .map_err(|_| "network sender stopped".to_string())?;
+                for chunk in crate::file_transfer::FileChunkReader::open(&path, &generic)? {
+                    let (index, data) = chunk?;
+                    out_tx.send(OutgoingMessage(
+                        "project_transfer_chunk".into(),
+                        serde_json::json!({ "request_id": &metadata.request_id, "index": index, "data": data }),
+                    )).map_err(|_| "network sender stopped".to_string())?;
+                }
+                out_tx
+                    .send(OutgoingMessage(
+                        "project_transfer_end".into(),
+                        serde_json::json!({ "request_id": metadata.request_id }),
+                    ))
+                    .map_err(|_| "network sender stopped".to_string())?;
+                Ok(())
+            })();
+            let _ = result_tx.send(result);
+        });
+        result_rx
     }
 
     pub fn set_co_director(&self, member_id: &str, enabled: bool) {
@@ -648,6 +851,7 @@ impl NetworkClient {
         self.members.clear();
         self.member_id = None;
         self.project_huuid = None;
+        self.project_matches = false;
         self.member_details.clear();
         self.control_owner_id = None;
     }

@@ -200,6 +200,7 @@ pub fn event_for_action(
         UiAction::OpenRecordingActorMenu => "recording.actor_menu.title",
         UiAction::OpenRecordingInputDeviceModal => "recording.microphone.select",
         UiAction::RequestActorsOpenMicrophone => "recording.actor_requests.open_microphone",
+        UiAction::RequestActorsTransferProject => "recording.actor_requests.transfer_project",
         UiAction::OpenLanguages => "languages.title",
         UiAction::OpenLinesPanel => "menu.panels.lines",
         UiAction::OpenRolesPanel => "menu.panels.roles",

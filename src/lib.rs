@@ -17,6 +17,7 @@ pub mod delivery_export;
 pub mod detection;
 pub mod detection_foreground;
 pub mod export;
+pub mod file_transfer;
 pub mod frame_timing;
 pub mod graphics;
 pub mod i18n;

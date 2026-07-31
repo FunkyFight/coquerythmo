@@ -173,9 +173,13 @@ pub(crate) fn build_topbar(
                         width: 160.0,
                         height: 28.0,
                     },
-                    vec![t("recording.actor_requests.open_microphone").into()],
+                    vec![
+                        t("recording.actor_requests.open_microphone").into(),
+                        t("recording.actor_requests.transfer_project").into(),
+                    ],
                     |index, _label| match index {
                         0 => EventResponse::Action(UiAction::RequestActorsOpenMicrophone),
+                        1 => EventResponse::Action(UiAction::RequestActorsTransferProject),
                         _ => EventResponse::Consumed,
                     },
                 )

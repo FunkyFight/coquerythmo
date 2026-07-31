@@ -1,13 +1,17 @@
-# 4.0.3
-- Les fenêtres de connexion, de sélection et d’ajout de serveur sont plus grandes et plus lisibles, avec des actions explicites et un caret correctement aligné dans les champs.
-- Le serveur de collaboration par défaut est restauré automatiquement s’il manque et ne peut plus être retiré.
-- Les poignées de redimensionnement des signes de détection tiennent désormais compte du décalage de la barre de lecture.
-- En enregistrement en ligne, le DA peut synchroniser le changement de piste audio avec `Ctrl + Tab` et la langue de la bande rythmo avec `Ctrl + L`.
-- Les onglets Bande rythmo et Enregistrement restent disponibles lorsque le mode développeur est désactivé.
-- Le lancement de la lecture après une modification de la bande rythmo est immédiat : les éditions de répliques ne recalculent plus inutilement le calque de dessin.
-- Le microphone d’enregistrement peut être choisi depuis la barre supérieure et ce choix est conservé dans la configuration.
-- La capture conserve le signal du microphone sans gain, normalisation ni filtre ; le menu Échap du comédien en ligne permet aussi de régler séparément le volume de la vidéo, F11 bascule le plein écran et la vidéo est accolée à la bande rythmo sans cadre.
-- Le DA peut demander depuis la barre supérieure l’ouverture des réglages du microphone chez tous les autres participants.
+# 4.0.7
+
+- Enregistrement en ligne : un comédien peut rejoindre un salon sans projet ouvert ou avec un projet différent.
+- Ajout du transfert de projet demandé par le DA, avec réponse de chaque participant, expiration après 60 secondes et modale globale de suivi.
+- Transfert du fichier `.coquerythmo` par morceaux de 192 Kio, vérification SHA-1, finalisation atomique, gestion des collisions et ajout aux projets récents.
+- Prise en charge des projets locaux modifiés : sauvegarder et remplacer, remplacer sans sauvegarder ou refuser.
+- Ajout des traductions française, anglaise et espagnole et des annonces d’accessibilité associées.
+- Les écrans d’attente n’affichent plus de barre de progression tant qu’aucun transfert de fichier n’est en cours.
+- Le remplacement nettoie les références FLAC orphelines et verrouille clairement le choix du comédien après réponse.
+- Les résultats de transfert répétés après la clôture sont maintenant traités idempotemment.
+- Les prises et projets reçus utilisent désormais les dossiers temporaires et de données de l’utilisateur, jamais le dossier d’installation protégé.
+- Le micro de chaque comédien est testé avant la prise et le DA voit immédiatement qui n’est pas prêt ; le lancement reste bloqué tant qu’un micro actif échoue.
+- La préparation canonique de la timeline précède maintenant le compte à rebours, et les erreurs d’envoi audio ne sont plus silencieuses.
+
 
 
 

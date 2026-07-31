@@ -27,6 +27,7 @@ pub mod pricing_page;
 pub mod pricing_plan_modal;
 pub mod primitives;
 pub mod project_settings_modal;
+pub mod project_transfer_modal;
 pub mod proxy_error_modal;
 pub mod proxy_modal;
 pub mod recording_workspace;
@@ -69,6 +70,7 @@ use self::actor_icon_cache::ActorIconCache;
 use self::focus::{AccessibleNode, FocusId, FocusManager};
 use self::icons::IconAtlas;
 use self::modal_host::ModalHost;
+use self::project_transfer_modal::{ProjectTransferAction, ProjectTransferModal};
 use self::recording_workspace::{
     RecordingControl, RecordingLayout, RecordingPage, RecordingRole, RecordingScene,
     RecordingWorkspaceUi, TRACK_ROW_H,
@@ -117,6 +119,7 @@ pub struct Ui {
     pub scrubbing: bool,
     pub sync_overlay: Option<String>,
     pub sync_progress: f32,
+    pub project_transfer_modal: Option<ProjectTransferModal>,
     pub active_mode: Option<ToolMode>,
     pub brush_color: [f32; 4],
     pub brush_radius_index: usize,
@@ -273,6 +276,7 @@ impl Ui {
             network_room_label: String::new(),
             sync_overlay: None,
             sync_progress: 0.0,
+            project_transfer_modal: None,
             has_video: false,
             current_frame: 0,
             total_frames: 0,
@@ -1218,6 +1222,18 @@ impl Ui {
 
         // Project loading modal blocks all input while a BR is being parsed.
         if self.loading_project.is_some() {
+            return EventResponse::Consumed;
+        }
+
+        if let Some(modal) = self.project_transfer_modal.as_mut() {
+            if let Some(action) = modal.handle_event(event, self.screen_w, self.screen_h) {
+                return EventResponse::Action(match action {
+                    ProjectTransferAction::Accept => UiAction::ProjectTransferAccept,
+                    ProjectTransferAction::SaveAndReplace => UiAction::ProjectTransferSaveAndAccept,
+                    ProjectTransferAction::Replace => UiAction::ProjectTransferReplace,
+                    ProjectTransferAction::Refuse => UiAction::ProjectTransferRefuse,
+                });
+            }
             return EventResponse::Consumed;
         }
 
@@ -2263,6 +2279,43 @@ impl Ui {
         self.export_progress.is_some()
     }
 
+    pub fn open_project_transfer_modal(
+        &mut self,
+        metadata: crate::network::ProjectTransferMetadata,
+        is_director: bool,
+        dirty: bool,
+    ) {
+        self.project_transfer_modal = Some(ProjectTransferModal::new(metadata, is_director, dirty));
+    }
+
+    pub fn set_project_transfer_status(&mut self, status: crate::network::ProjectTransferStatus) {
+        if let Some(modal) = self.project_transfer_modal.as_mut() {
+            modal.set_status(status);
+        }
+    }
+
+    pub fn set_project_transfer_result_path(&mut self, path: String) {
+        if let Some(modal) = self.project_transfer_modal.as_mut() {
+            modal.set_result_path(path);
+        }
+    }
+
+    pub fn mark_project_transfer_responded(&mut self) {
+        if let Some(modal) = self.project_transfer_modal.as_mut() {
+            modal.mark_response_submitted();
+        }
+    }
+
+    pub fn reset_project_transfer_response(&mut self) {
+        if let Some(modal) = self.project_transfer_modal.as_mut() {
+            modal.reset_response();
+        }
+    }
+
+    pub fn close_project_transfer_modal(&mut self) {
+        self.project_transfer_modal = None;
+    }
+
     pub fn needs_animation_or_interaction(&self) -> bool {
         self.playing
             || self.dragging_props
@@ -2270,6 +2323,7 @@ impl Ui {
             || self.dragging_recording_split.is_some()
             || self.scrubbing
             || self.toasts.has_active()
+            || self.project_transfer_modal.is_some()
             || self.rythmo_state.needs_animation_or_interaction()
     }
 
@@ -2709,6 +2763,9 @@ impl Ui {
         waveform_offset_frames: i64,
         waveform_is_instrumental: bool,
     ) {
+        if let Some(modal) = self.project_transfer_modal.as_mut() {
+            modal.refresh_countdown();
+        }
         let rythmo_zone = self.active_rythmo_rect();
         self.rythmo_state.set_compact_empty_tracks(
             self.active_workspace == WorkspaceId::Recording
@@ -3326,7 +3383,8 @@ impl Ui {
         // Sync overlay (blocks UI during video transfer)
         if let Some(msg) = &self.sync_overlay {
             let dw = 420.0;
-            let dh = 100.0;
+            let has_progress = self.sync_progress > 0.0;
+            let dh = if has_progress { 100.0 } else { 64.0 };
             let dx = (self.screen_w - dw) / 2.0;
             let dy = (self.screen_h - dh) / 2.0;
 
@@ -3375,40 +3433,42 @@ impl Ui {
                 color_override: Some([200, 200, 220]),
                 font_family_override: None,
             });
-            // Progress bar track
-            let bx = dx + 30.0;
-            let by = dy + 58.0;
-            let bw = dw - 60.0;
-            let bh = 14.0;
-            overlay_quads.push(QuadInstance {
-                rect: [bx, by, bw, bh],
-                color: [0.10, 0.10, 0.13, 1.0],
-                color_bottom: [0.10, 0.10, 0.13, 1.0],
-                border_color: [0.30, 0.30, 0.38, 0.8],
-                border_width: 1.0,
-                border_radius: 7.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-            // Progress bar fill
-            let fill = (bw - 4.0) * self.sync_progress.clamp(0.0, 1.0);
-            if fill > 0.5 {
+            // Waiting overlays do not need a progress bar; show it only once
+            // bytes are actually moving.
+            if has_progress {
+                let bx = dx + 30.0;
+                let by = dy + 58.0;
+                let bw = dw - 60.0;
+                let bh = 14.0;
                 overlay_quads.push(QuadInstance {
-                    rect: [bx + 2.0, by + 2.0, fill, bh - 4.0],
-                    color: [0.35, 0.60, 1.0, 1.0],
-                    color_bottom: [0.25, 0.45, 0.85, 1.0],
-                    border_color: [0.0; 4],
-                    border_width: 0.0,
-                    border_radius: 5.0,
+                    rect: [bx, by, bw, bh],
+                    color: [0.10, 0.10, 0.13, 1.0],
+                    color_bottom: [0.10, 0.10, 0.13, 1.0],
+                    border_color: [0.30, 0.30, 0.38, 0.8],
+                    border_width: 1.0,
+                    border_radius: 7.0,
                     shadow_offset: [0.0; 2],
                     shadow_color: [0.0; 4],
                     shadow_blur: 0.0,
                     rotation: 0.0,
                     _padding: [0.0; 2],
                 });
+                let fill = (bw - 4.0) * self.sync_progress.clamp(0.0, 1.0);
+                if fill > 0.5 {
+                    overlay_quads.push(QuadInstance {
+                        rect: [bx + 2.0, by + 2.0, fill, bh - 4.0],
+                        color: [0.35, 0.60, 1.0, 1.0],
+                        color_bottom: [0.25, 0.45, 0.85, 1.0],
+                        border_color: [0.0; 4],
+                        border_width: 0.0,
+                        border_radius: 5.0,
+                        shadow_offset: [0.0; 2],
+                        shadow_color: [0.0; 4],
+                        shadow_blur: 0.0,
+                        rotation: 0.0,
+                        _padding: [0.0; 2],
+                    });
+                }
             }
         }
 
@@ -3418,6 +3478,15 @@ impl Ui {
             self.screen_w,
             self.screen_h,
         );
+
+        if let Some(modal) = &self.project_transfer_modal {
+            modal.render(
+                &mut modal_quads,
+                &mut modal_labels,
+                self.screen_w,
+                self.screen_h,
+            );
+        }
 
         // Bande rythmo import loading modal (on top while a background parse runs)
         if let Some((label, started)) = &self.loading_project {

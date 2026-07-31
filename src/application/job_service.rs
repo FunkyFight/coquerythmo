@@ -32,6 +32,8 @@ pub(crate) enum SaveContinuation {
     NewProject,
     CloseProject,
     ExitApplication,
+    ProjectTransfer,
+    ProjectTransferAccept,
 }
 
 pub(crate) struct PendingSaveJob {

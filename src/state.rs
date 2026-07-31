@@ -23,7 +23,9 @@ use crate::application::ui_shell::UiShell;
 use crate::application::window_service::{SecondaryWindowKind, WindowManager};
 use crate::application::workspace_service::{WorkspaceHost, WorkspaceId};
 use crate::command::{Command, CommandKind, LineMove};
-use crate::network::{ConnectionState, IncomingMessage};
+use crate::network::{
+    ConnectionState, IncomingMessage, ProjectTransferMetadata, ProjectTransferStatus,
+};
 use crate::observer::TimelineEvent;
 use crate::packet::{CommandPayload, Packet, ProjectData};
 use crate::project::{Character, LineCharacterNameChange, Project};
@@ -152,6 +154,14 @@ pub struct State {
     pub jobs: JobManager,
     pub project_session: ProjectSession,
     pub recording_runtime: crate::recording_runtime::RecordingRuntime,
+    project_transfer: Option<ProjectTransferRuntime>,
+    project_transfer_prepare: Option<Receiver<Result<ProjectTransferMetadata, String>>>,
+    project_transfer_source: Option<PathBuf>,
+    project_transfer_send: Option<(String, Receiver<Result<(), String>>)>,
+    project_transfer_loading_request: Option<String>,
+    recording_input_preflight: Option<(Option<String>, bool)>,
+    recording_uploads: Vec<(String, Receiver<Result<(), String>>)>,
+    recording_upload_acks: Vec<String>,
     pub workspace_host: WorkspaceHost,
     pub narration: NarrationService,
     last_autosave: Instant,
@@ -160,6 +170,12 @@ pub struct State {
     last_progress_percent: Option<u32>,
     last_progress_announcement: Option<Instant>,
     last_recording_countdown_second: Option<u32>,
+}
+
+struct ProjectTransferRuntime {
+    metadata: ProjectTransferMetadata,
+    status: Option<ProjectTransferStatus>,
+    receiver: crate::file_transfer::FileTransferReceiver,
 }
 
 impl State {
@@ -182,6 +198,14 @@ impl State {
             jobs: JobManager::new(),
             project_session: ProjectSession::new(),
             recording_runtime: crate::recording_runtime::RecordingRuntime::new(),
+            project_transfer: None,
+            project_transfer_prepare: None,
+            project_transfer_source: None,
+            project_transfer_send: None,
+            project_transfer_loading_request: None,
+            recording_input_preflight: None,
+            recording_uploads: Vec::new(),
+            recording_upload_acks: Vec::new(),
             workspace_host: WorkspaceHost::new(
                 vec![
                     Box::new(RythmoWorkspace::new()),
@@ -350,6 +374,36 @@ impl State {
         self.rebuild_topbar_for_network();
         self.sync_recording_workspace_ui();
         self.schedule_recording_mix();
+        self.ensure_recording_input_ready();
+    }
+
+    fn ensure_recording_input_ready(&mut self) {
+        if !matches!(
+            self.recording_network_role(),
+            crate::ui::recording_workspace::RecordingRole::Actor
+        ) {
+            return;
+        }
+        let device = crate::config::recording_input_device();
+        if self
+            .recording_input_preflight
+            .as_ref()
+            .is_some_and(|(checked, _)| checked == &device)
+        {
+            return;
+        }
+        match crate::media_recording::preflight_input_device(device.as_deref()) {
+            Ok(()) => {
+                self.recording_input_preflight = Some((device, true));
+                self.collaboration.network.send_recording_ready(true);
+                self.show_toast(crate::i18n::t("recording.microphone.ready"), 3.0);
+            }
+            Err(error) => {
+                self.recording_input_preflight = Some((device, false));
+                self.collaboration.network.send_recording_ready(false);
+                self.recording_error(error.to_string());
+            }
+        }
     }
 
     pub fn sync_recording_workspace_ui(&mut self) {
@@ -978,6 +1032,24 @@ impl State {
             return;
         }
         let role = self.ui_shell.ui.recording_role();
+        if role.is_online() {
+            let waiting = self
+                .collaboration
+                .network
+                .member_details
+                .iter()
+                .filter(|member| member.role == "actor" && !member.muted && !member.recording_ready)
+                .map(|member| member.username.as_str())
+                .collect::<Vec<_>>();
+            if !waiting.is_empty() {
+                self.show_toast(
+                    crate::i18n::t("recording.capture.waiting_for_microphones")
+                        .replace("{actors}", &waiting.join(", ")),
+                    6.0,
+                );
+                return;
+            }
+        }
         let username = self.recording_username();
         let input_device = crate::config::recording_input_device();
         let result = if role.is_online() {
@@ -1022,9 +1094,8 @@ impl State {
                 Some(crate::recording::CaptureState::Countdown { target, .. }) => Some(*target),
                 _ => None,
             };
-            self.collaboration
-                .network
-                .send_recording_capture(self.current_frame(), capture_target);
+            // Applying this canonical snapshot starts the remote countdown;
+            // peers can never record against an older transaction log.
             self.collaboration.network.send_recording_prepare(
                 &crate::network::RecordingPreparePayload {
                     project: self.project_session.recording_project.clone(),
@@ -1063,9 +1134,6 @@ impl State {
             Err(error) => self.recording_error(error.to_string()),
         }
         if online {
-            self.collaboration
-                .network
-                .send_recording_capture(self.current_frame(), None);
             self.collaboration.network.send_recording_prepare(
                 &crate::network::RecordingPreparePayload {
                     project: self.project_session.recording_project.clone(),
@@ -1108,6 +1176,169 @@ impl State {
         }
     }
 
+    pub fn request_actors_project_transfer(&mut self) {
+        if !self.collaboration.network.is_in_room()
+            || !matches!(
+                self.ui_shell.ui.recording_role(),
+                crate::ui::recording_workspace::RecordingRole::Director
+            )
+        {
+            return;
+        }
+        let Some(path) = self.project_session.project_path.clone() else {
+            self.show_toast(
+                crate::i18n::t("recording.project_transfer_requires_saved"),
+                5.0,
+            );
+            return;
+        };
+        if self.project_session.dirty {
+            let Some(source_video) = self.video_path() else {
+                self.show_toast(crate::i18n::t("toast.save_requires_video"), 5.0);
+                return;
+            };
+            let Some((_, font_asset)) = crate::vector_text::selected_font_asset() else {
+                self.show_toast(crate::i18n::t("toast.save_font_unavailable"), 6.0);
+                return;
+            };
+            if self.start_project_save(
+                path,
+                source_video,
+                self.playback.proxy_video_path.clone(),
+                font_asset,
+                SaveContinuation::ProjectTransfer,
+            ) {
+                self.show_toast(
+                    crate::i18n::t("recording.project_transfer.save_and_transfer"),
+                    4.0,
+                );
+            }
+            return;
+        }
+        let Some(project_huuid) = self.project_session.huuid.clone() else {
+            self.show_toast(
+                crate::i18n::t("recording.project_transfer_requires_saved"),
+                5.0,
+            );
+            return;
+        };
+        let request_id = format!(
+            "project_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        );
+        let prepare_path = path.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = crate::file_transfer::FileTransferMetadata::from_path(
+                request_id.clone(),
+                &prepare_path,
+            )
+            .map(|file| ProjectTransferMetadata {
+                request_id,
+                project_huuid: project_huuid.to_string(),
+                file_name: file.file_name,
+                total_bytes: file.total_bytes,
+                total_chunks: file.total_chunks,
+                chunk_size: file.chunk_size,
+                sha1: file.sha1,
+            });
+            let _ = tx.send(result);
+        });
+        self.project_transfer_prepare = Some(rx);
+        self.project_transfer_source = Some(path);
+        self.ui_shell.ui.sync_overlay =
+            Some(crate::i18n::t("recording.project_transfer_preparing").into());
+        self.ui_shell.ui.sync_progress = 0.0;
+    }
+
+    pub fn respond_to_project_transfer(&mut self, response: &str) {
+        let Some(request_id) = self
+            .project_transfer
+            .as_ref()
+            .map(|runtime| runtime.metadata.request_id.clone())
+        else {
+            return;
+        };
+        self.ui_shell.ui.mark_project_transfer_responded();
+        self.update_project_transfer_response(response);
+        self.collaboration
+            .network
+            .respond_project_transfer(&request_id, response);
+        if response == "accepted" {
+            self.begin_project_transfer_receive(&request_id);
+        }
+    }
+
+    fn update_project_transfer_response(&mut self, response: &str) {
+        let Some(member_id) = self.collaboration.network.member_id.clone() else {
+            return;
+        };
+        let status = self.project_transfer.as_mut().and_then(|runtime| {
+            let status = runtime.status.as_mut()?;
+            let participant = status
+                .participants
+                .iter_mut()
+                .find(|participant| participant.member_id == member_id)?;
+            participant.response = response.to_string();
+            participant.deadline = None;
+            Some(status.clone())
+        });
+        if let Some(status) = status {
+            self.ui_shell.ui.set_project_transfer_status(status);
+        }
+    }
+
+    fn begin_project_transfer_receive(&mut self, request_id: &str) {
+        let Some(metadata) = self
+            .project_transfer
+            .as_ref()
+            .map(|runtime| runtime.metadata.clone())
+        else {
+            return;
+        };
+        let destination = crate::media_binary::user_data_dir().join("transferred_projects");
+        let result = self.project_transfer.as_mut().map(|runtime| {
+            runtime.receiver.begin(
+                crate::file_transfer::FileTransferMetadata {
+                    transfer_id: metadata.request_id.clone(),
+                    file_name: metadata.file_name.clone(),
+                    total_bytes: metadata.total_bytes,
+                    total_chunks: metadata.total_chunks,
+                    chunk_size: metadata.chunk_size,
+                    sha1: metadata.sha1.clone(),
+                },
+                &destination,
+            )
+        });
+        if let Some(Err(error)) = result {
+            self.collaboration
+                .network
+                .report_project_transfer(request_id, false, Some(&error));
+        }
+    }
+
+    pub fn accept_project_transfer_after_save(&mut self) {
+        self.respond_to_project_transfer("accepted");
+    }
+
+    pub fn retry_project_transfer_after_save_failure(&mut self) {
+        let Some(request_id) = self
+            .project_transfer
+            .as_ref()
+            .map(|runtime| runtime.metadata.request_id.clone())
+        else {
+            return;
+        };
+        self.ui_shell.ui.reset_project_transfer_response();
+        self.update_project_transfer_response("saving");
+        self.collaboration
+            .network
+            .respond_project_transfer(&request_id, "saving");
+    }
+
     pub fn open_recording_actor_menu(&mut self) {
         if !self.is_online_recording_actor() {
             return;
@@ -1142,6 +1373,8 @@ impl State {
             .clone()
             .unwrap_or_else(|| crate::i18n::t("recording.microphone.default").to_string());
         crate::config::set_recording_input_device(device);
+        self.recording_input_preflight = None;
+        self.ensure_recording_input_ready();
         self.show_toast(
             crate::i18n::t("recording.microphone.saved").replace("{device}", &label),
             3.0,
@@ -1327,6 +1560,7 @@ impl State {
         std::thread::spawn(move || {
             let recording_assets: Vec<_> = recording_asset_paths
                 .iter()
+                .filter(|(asset_id, _)| recording_project.asset(**asset_id).is_some())
                 .map(
                     |(asset_id, path)| crate::project_archive::RecordingAssetInput {
                         asset_id: *asset_id,
@@ -1502,7 +1736,7 @@ impl State {
         }
         let servers = crate::config::saved_servers();
         // ponytail: server rejects handshakes without a valid password (auth middleware),
-        // so the ping must authenticate just like a real connection ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â else every server
+        // so the ping must authenticate just like a real connection — otherwise every server
         // with a password shows Offline despite being up.
         let password = crate::config::get().network.password.clone();
         for s in servers {
@@ -2191,14 +2425,9 @@ impl State {
     pub fn set_network_status(&mut self, status: impl Into<String>) {
         self.ui_shell.ui.network_status = status.into();
         let display = if self.ui_shell.ui.network_status.is_empty() {
-            "DÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©connectÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©"
-        } else {
-            &self.ui_shell.ui.network_status
-        };
-        let display = if self.ui_shell.ui.network_status.is_empty() {
             "Déconnecté"
         } else {
-            display
+            &self.ui_shell.ui.network_status
         };
         self.window_manager.main_window.set_title(&format!(
             "Coquerythmo v{} - {}",
@@ -2209,14 +2438,9 @@ impl State {
 
     pub fn update_window_title(&self) {
         let display = if self.ui_shell.ui.network_status.is_empty() {
-            "DÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©connectÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©"
-        } else {
-            &self.ui_shell.ui.network_status
-        };
-        let display = if self.ui_shell.ui.network_status.is_empty() {
             "Déconnecté"
         } else {
-            display
+            &self.ui_shell.ui.network_status
         };
         self.window_manager.main_window.set_title(&format!(
             "Coquerythmo v{} - {}",
@@ -2277,7 +2501,7 @@ impl State {
             return;
         }
         if self.playback.video_player.is_none() {
-            log::warn!("No video loaded ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â cannot open secondary display");
+            log::warn!("No video loaded — cannot open secondary display");
             return;
         }
 
@@ -3229,6 +3453,17 @@ impl State {
         match result {
             Ok(_) => {
                 self.bind_recording_audio_paths(&operation);
+                // A remote RemoveAsset can invalidate a path retained from a
+                // previous audio transfer. Never persist an orphaned FLAC
+                // input when the project is saved for replacement.
+                self.project_session
+                    .recording_asset_paths
+                    .retain(|asset_id, _| {
+                        self.project_session
+                            .recording_project
+                            .asset(*asset_id)
+                            .is_some()
+                    });
                 self.project_session.mark_recording_changed();
                 self.sync_recording_workspace_ui();
                 self.schedule_recording_mix();
@@ -3436,18 +3671,32 @@ impl State {
             match msg {
                 IncomingMessage::Connected => {
                     self.collaboration.network.state = ConnectionState::Connected;
-                    self.set_network_status("ConnectÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© au serveur");
+                    self.set_network_status("Connecté au serveur");
                     log::info!("Connected and authenticated");
                 }
                 IncomingMessage::Packet(packet) => self.handle_network_packet(packet),
                 IncomingMessage::Disconnected(reason) => {
                     log::info!("Disconnected: {reason}");
+                    if let Some(runtime) = self.project_transfer.as_mut() {
+                        runtime.receiver.cancel();
+                    }
+                    self.project_transfer = None;
+                    self.project_transfer_prepare = None;
+                    self.project_transfer_source = None;
+                    self.project_transfer_send = None;
+                    self.project_transfer_loading_request = None;
+                    self.recording_input_preflight = None;
+                    self.recording_uploads.clear();
+                    self.recording_upload_acks.clear();
+                    self.ui_shell.ui.close_project_transfer_modal();
+                    self.ui_shell.ui.sync_overlay = None;
                     self.collaboration.network.state = ConnectionState::Disconnected;
                     self.collaboration.network.room_code = None;
                     self.collaboration.network.role = None;
                     self.collaboration.network.members.clear();
                     self.collaboration.network.member_id = None;
                     self.collaboration.network.project_huuid = None;
+                    self.collaboration.network.project_matches = false;
                     self.collaboration.network.member_details.clear();
                     self.collaboration.network.control_owner_id = None;
                     self.set_network_status("");
@@ -3460,9 +3709,11 @@ impl State {
                 IncomingMessage::RoomMetadata {
                     member_id,
                     project_huuid,
+                    project_matches,
                 } => {
                     self.collaboration.network.member_id = Some(member_id);
                     self.collaboration.network.project_huuid = Some(project_huuid);
+                    self.collaboration.network.project_matches = project_matches;
                 }
                 IncomingMessage::RoomState {
                     members,
@@ -3492,6 +3743,113 @@ impl State {
                 IncomingMessage::RecordingView(view) => self.receive_recording_view(view),
                 IncomingMessage::ActorRequestOpenMicrophone => {
                     self.open_recording_input_device_modal()
+                }
+                IncomingMessage::ProjectTransferRequest(metadata) => {
+                    // A fresh in-memory document is not a local project to protect:
+                    // only offer the save-and-replace path when a saved project exists.
+                    let dirty =
+                        self.project_session.project_path.is_some() && self.project_session.dirty;
+                    self.ui_shell
+                        .ui
+                        .open_project_transfer_modal(metadata.clone(), false, dirty);
+                    self.project_transfer = Some(ProjectTransferRuntime {
+                        metadata,
+                        status: None,
+                        receiver: crate::file_transfer::FileTransferReceiver::default(),
+                    });
+                    self.announce_open_container(
+                        crate::i18n::t("recording.project_transfer.title"),
+                        crate::i18n::t("recording.project_transfer_request_received").to_string(),
+                    );
+                    self.ui_shell.ui.sync_overlay = None;
+                    self.ui_shell.ui.sync_progress = 0.0;
+                }
+                IncomingMessage::ProjectTransferReady(metadata) => {
+                    if let Some(path) = self.project_transfer_source.clone() {
+                        let request_id = metadata.request_id.clone();
+                        let receiver = self.collaboration.network.send_project_file(path, metadata);
+                        self.project_transfer_send = Some((request_id, receiver));
+                    }
+                }
+                IncomingMessage::ProjectTransferStatus(status) => {
+                    let progress = if status.total_bytes == 0 {
+                        0.0
+                    } else {
+                        status.transferred_bytes as f32 / status.total_bytes as f32
+                    };
+                    self.ui_shell.ui.sync_progress = progress;
+                    self.narration.publish_progress(
+                        crate::i18n::t("recording.project_transfer.title").to_string(),
+                        Some((progress * 100.0).round() as u32),
+                    );
+                    if let Some(runtime) = self.project_transfer.as_mut() {
+                        runtime.status = Some(status.clone());
+                    }
+                    self.ui_shell.ui.set_project_transfer_status(status.clone());
+                    if matches!(status.phase.as_str(), "completed" | "cancelled") {
+                        if let Some(runtime) = self.project_transfer.as_mut() {
+                            runtime.receiver.cancel();
+                        }
+                        if self.collaboration.network.project_matches {
+                            self.ui_shell.ui.sync_overlay = None;
+                        } else {
+                            self.ui_shell.ui.sync_progress = 0.0;
+                            self.ui_shell.ui.sync_overlay = Some(
+                                crate::i18n::t("recording.project_transfer.no_project").into(),
+                            );
+                        }
+                        self.project_transfer_source = None;
+                        self.project_transfer_send = None;
+                        self.narration.publish_progress(String::new(), None);
+                        self.ui_shell.ui.close_project_transfer_modal();
+                    }
+                }
+                IncomingMessage::ProjectTransferChunk {
+                    request_id,
+                    index,
+                    data_base64,
+                } => {
+                    if let Some(runtime) = self.project_transfer.as_mut() {
+                        if runtime.metadata.request_id == request_id {
+                            if let Err(error) = runtime.receiver.push_base64(index, &data_base64) {
+                                runtime.receiver.cancel();
+                                self.collaboration.network.report_project_transfer(
+                                    &request_id,
+                                    false,
+                                    Some(&error),
+                                );
+                            }
+                        }
+                    }
+                }
+                IncomingMessage::ProjectTransferEnd { request_id } => {
+                    if let Some(runtime) = self.project_transfer.as_mut() {
+                        if runtime.metadata.request_id == request_id {
+                            match runtime.receiver.finish(&request_id) {
+                                Ok(received) => {
+                                    self.project_transfer_loading_request = Some(request_id);
+                                    if self.is_project_save_in_progress() {
+                                        if let Some(request_id) =
+                                            self.project_transfer_loading_request.take()
+                                        {
+                                            self.collaboration.network.report_project_transfer(
+                                                &request_id,
+                                                false,
+                                                Some("project save is still in progress"),
+                                            );
+                                        }
+                                    } else {
+                                        self.start_br_import(received.path);
+                                    }
+                                }
+                                Err(error) => self.collaboration.network.report_project_transfer(
+                                    &request_id,
+                                    false,
+                                    Some(&error),
+                                ),
+                            }
+                        }
+                    }
                 }
                 IncomingMessage::SyncRequested { requester } => {
                     log::info!("Sync requested by {requester}");
@@ -3569,6 +3927,14 @@ impl State {
                 IncomingMessage::AudioEnd { transfer_id } => {
                     self.finish_recording_audio_receive(&transfer_id)
                 }
+                IncomingMessage::AudioUploaded { transfer_id } => {
+                    let was_pending = self.recording_upload_acks.len();
+                    self.recording_upload_acks
+                        .retain(|pending| pending != &transfer_id);
+                    if self.recording_upload_acks.len() != was_pending {
+                        self.show_toast(crate::i18n::t("recording.capture.uploaded"), 4.0);
+                    }
+                }
                 // Video transfer messages remain unused.
                 IncomingMessage::VideoStart { .. }
                 | IncomingMessage::VideoChunk { .. }
@@ -3624,14 +3990,18 @@ impl State {
                     format!("{}{code}", crate::i18n::t("toast.room_joined")),
                     5.0,
                 );
-                self.ui_shell.ui.sync_overlay = Some("Synchronisation en cours...".into());
+                self.ui_shell.ui.sync_overlay = if self.collaboration.network.project_matches {
+                    Some("Synchronisation en cours...".into())
+                } else {
+                    Some(crate::i18n::t("recording.project_transfer.no_project").into())
+                };
                 self.ui_shell.ui.sync_progress = 0.0;
                 self.enter_online_recording_view();
                 // request_sync is sent directly from the room_joined callback
             }
             Packet::JoinError { reason } => {
                 log::error!("Join failed: {reason}");
-                self.set_network_status(format!("ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°chec: {reason}"));
+                self.set_network_status(format!("Échec: {reason}"));
                 self.ui_shell.ui.set_network_room_code(None);
             }
             Packet::MemberJoined { username } => {
@@ -4364,10 +4734,7 @@ impl State {
 
     pub fn split_dialogue(&mut self) -> bool {
         let Some(target) = self.dialogue_split_target() else {
-            self.show_toast(
-                "SÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©lectionne un dialogue et place le curseur dedans.",
-                3.0,
-            );
+            self.show_toast("Sélectionne un dialogue et place le curseur dedans.", 3.0);
             return false;
         };
         let line_id = match &target {
@@ -4378,10 +4745,7 @@ impl State {
             return false;
         };
         if old_line.duration_frames <= 1 {
-            self.show_toast(
-                "Dialogue trop court pour ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âªtre coupÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©.",
-                3.0,
-            );
+            self.show_toast("Dialogue trop court pour être coupé.", 3.0);
             return false;
         }
 
@@ -6011,6 +6375,93 @@ impl State {
         true
     }
 
+    fn poll_project_transfer_prepare(&mut self) -> bool {
+        let result = match self.project_transfer_prepare.as_ref() {
+            Some(receiver) => match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err("project preparation stopped".into())),
+            },
+            None => None,
+        };
+        let Some(result) = result else { return false };
+        self.project_transfer_prepare = None;
+        match result {
+            Ok(metadata) => {
+                if self.project_session.dirty
+                    || self.project_session.project_path.as_ref()
+                        != self.project_transfer_source.as_ref()
+                    || self.project_session.huuid.as_ref().map(ToString::to_string)
+                        != Some(metadata.project_huuid.clone())
+                {
+                    self.project_transfer_source = None;
+                    self.show_toast(
+                        crate::i18n::t("recording.project_transfer_requires_save"),
+                        5.0,
+                    );
+                    return true;
+                }
+                self.project_transfer = Some(ProjectTransferRuntime {
+                    metadata: metadata.clone(),
+                    status: None,
+                    receiver: crate::file_transfer::FileTransferReceiver::default(),
+                });
+                self.ui_shell
+                    .ui
+                    .open_project_transfer_modal(metadata.clone(), true, false);
+                self.announce_open_container(
+                    crate::i18n::t("recording.project_transfer.title"),
+                    crate::i18n::t("recording.project_transfer.waiting").to_string(),
+                );
+                self.collaboration
+                    .network
+                    .request_project_transfer(&metadata);
+                self.ui_shell.ui.sync_overlay =
+                    Some(crate::i18n::t("recording.project_transfer_waiting").into());
+                self.ui_shell.ui.sync_progress = 0.0;
+            }
+            Err(error) => {
+                self.project_transfer_source = None;
+                self.ui_shell.ui.sync_overlay = None;
+                self.show_toast(
+                    format!("{} {error}", crate::i18n::t("toast.save_failed")),
+                    6.0,
+                );
+            }
+        }
+        true
+    }
+
+    fn poll_project_transfer_send(&mut self) -> bool {
+        let result = match self.project_transfer_send.as_ref() {
+            Some((_, receiver)) => match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err("project transfer sender stopped".into()))
+                }
+            },
+            None => None,
+        };
+        let Some(result) = result else { return false };
+        let Some((request_id, _)) = self.project_transfer_send.take() else {
+            return false;
+        };
+        if let Err(error) = result {
+            self.collaboration
+                .network
+                .report_project_transfer(&request_id, false, Some(&error));
+            self.show_toast(
+                format!(
+                    "{} {error}",
+                    crate::i18n::t("recording.project_transfer.failed")
+                ),
+                6.0,
+            );
+        }
+        true
+    }
+
     fn poll_import_job(&mut self) -> bool {
         let result = match self.jobs.pending_import_job.as_ref() {
             Some(job) => match job.receiver.try_recv() {
@@ -6028,6 +6479,7 @@ impl State {
         let Some(job) = self.jobs.pending_import_job.take() else {
             return false;
         };
+        let transfer_request_id = self.project_transfer_loading_request.take();
         self.ui_shell.ui.loading_project = None;
 
         match result {
@@ -6107,6 +6559,23 @@ impl State {
                     self.project_session.loaded_project = Some(loaded);
                 }
                 self.schedule_recording_mix();
+                if let Some(request_id) = transfer_request_id.as_deref() {
+                    self.collaboration.network.project_matches = true;
+                    self.ui_shell
+                        .ui
+                        .set_project_transfer_result_path(job.br_path.display().to_string());
+                    self.collaboration
+                        .network
+                        .report_project_transfer(request_id, true, None);
+                    self.show_toast(
+                        format!(
+                            "{} {}",
+                            crate::i18n::t("recording.project_transfer.loaded"),
+                            job.br_path.display()
+                        ),
+                        6.0,
+                    );
+                }
                 self.rebuild_topbar_for_network();
                 log::info!("Project imported from {}", job.br_path.display());
                 self.narration.announce_event(AccessibilityEvent::Success {
@@ -6133,6 +6602,11 @@ impl State {
                         e
                     ),
                 });
+                if let Some(request_id) = transfer_request_id.as_deref() {
+                    self.collaboration
+                        .network
+                        .report_project_transfer(request_id, false, Some(&e));
+                }
             }
         }
 
@@ -6184,6 +6658,9 @@ impl State {
                     if snapshot_is_current {
                         self.jobs.transition_after_save_ready = Some(job.continuation);
                     } else {
+                        if job.continuation == SaveContinuation::ProjectTransferAccept {
+                            self.retry_project_transfer_after_save_failure();
+                        }
                         self.show_toast(
                             crate::i18n::t("toast.transition_canceled_after_edit"),
                             7.0,
@@ -6193,6 +6670,9 @@ impl State {
             }
             Err(error) => {
                 log::error!("Project save failed: {error}");
+                if job.continuation == SaveContinuation::ProjectTransferAccept {
+                    self.retry_project_transfer_after_save_failure();
+                }
                 self.show_toast(
                     format!("{} {error}", crate::i18n::t("toast.save_failed")),
                     8.0,
@@ -6241,6 +6721,11 @@ impl State {
                 changed = true;
             }
             RecordingRuntimeEvent::Failed { message } => {
+                if self.is_online_recording_actor() {
+                    let device = crate::config::recording_input_device();
+                    self.recording_input_preflight = Some((device, false));
+                    self.collaboration.network.send_recording_ready(false);
+                }
                 self.recording_error(message);
                 changed = true;
             }
@@ -6279,7 +6764,12 @@ impl State {
                         audio,
                     ) {
                         Ok(metadata) => {
-                            let _ = self.collaboration.network.send_audio_file(path, metadata);
+                            let transfer_id = metadata.transfer_id.clone();
+                            self.recording_upload_acks.push(transfer_id.clone());
+                            self.recording_uploads.push((
+                                transfer_id,
+                                self.collaboration.network.send_audio_file(path, metadata),
+                            ));
                         }
                         Err(error) => self.recording_error(error),
                     }
@@ -6293,7 +6783,14 @@ impl State {
                 {
                     self.toggle_play_pause();
                 }
-                self.show_toast(crate::i18n::t("recording.capture.finished"), 4.0);
+                self.show_toast(
+                    crate::i18n::t(if role.is_online() {
+                        "recording.capture.uploading"
+                    } else {
+                        "recording.capture.finished"
+                    }),
+                    4.0,
+                );
                 self.announce_accessibility(AccessibilityEvent::Success {
                     message: crate::i18n::t("recording.capture.finished").to_string(),
                 });
@@ -6307,11 +6804,36 @@ impl State {
         changed
     }
 
+    fn poll_recording_uploads(&mut self) -> bool {
+        let mut pending = Vec::with_capacity(self.recording_uploads.len());
+        let mut completed = 0_usize;
+        let mut failures = Vec::new();
+        for (transfer_id, receiver) in self.recording_uploads.drain(..) {
+            match receiver.try_recv() {
+                Ok(Ok(())) => completed += 1,
+                Ok(Err(error)) => failures.push((transfer_id, error)),
+                Err(TryRecvError::Empty) => pending.push((transfer_id, receiver)),
+                Err(TryRecvError::Disconnected) => failures.push((
+                    transfer_id,
+                    "recording upload stopped unexpectedly".to_string(),
+                )),
+            }
+        }
+        self.recording_uploads = pending;
+        for (transfer_id, error) in failures.iter() {
+            self.recording_upload_acks
+                .retain(|pending| pending != transfer_id);
+            self.recording_error(error);
+        }
+        completed > 0 || !failures.is_empty()
+    }
+
     pub fn tick_background(&mut self) -> bool {
         let mut changed = false;
 
         changed |= self.tick_keyboard_pan();
         changed |= self.poll_recording_runtime();
+        changed |= self.poll_recording_uploads();
 
         if let Ok(mut results) = self.collaboration.ping_results.try_lock() {
             for r in results.drain(..) {
@@ -6381,6 +6903,8 @@ impl State {
         }
 
         changed |= self.tick_network();
+        changed |= self.poll_project_transfer_prepare();
+        changed |= self.poll_project_transfer_send();
         changed |= self.tick_scroll_decode();
         changed |= self.poll_export_job();
         changed |= self.poll_recording_mix_job();
@@ -6437,6 +6961,7 @@ impl State {
             || self.jobs.pending_recording_mix_job.is_some()
             || self.jobs.pending_import_job.is_some()
             || self.jobs.pending_save_job.is_some()
+            || self.ui_shell.ui.project_transfer_modal.is_some()
         {
             return now.saturating_duration_since(self.render.last_redraw())
                 >= Duration::from_millis(100);
@@ -6491,6 +7016,7 @@ impl State {
             || self.jobs.pending_recording_mix_job.is_some()
             || self.jobs.pending_import_job.is_some()
             || self.jobs.pending_save_job.is_some()
+            || self.ui_shell.ui.project_transfer_modal.is_some()
         {
             push_deadline(self.render.last_redraw() + Duration::from_millis(100));
         }
@@ -6590,7 +7116,7 @@ impl State {
             self.sync_recording_workspace_ui_at(render_frame);
         }
 
-        // Video quad ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â skip when export modal is showing (it would cover the modal)
+        // Video quad — skip when export modal is showing (it would cover the modal)
         let recording_choice = self.active_workspace() == WorkspaceId::Recording
             && self.ui_shell.ui.recording_page()
                 == crate::ui::recording_workspace::RecordingPage::Choice;
@@ -6882,7 +7408,7 @@ fn ping_server_socketio(
             let _ = client.emit("ping_server", serde_json::json!({}));
         })
         .on(Event::Close, move |_, _| {
-            // Server disconnected us ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â if we didn't get info, mark offline
+            // Server disconnected us — if we didn't get info, mark offline
             if !done3.load(std::sync::atomic::Ordering::Relaxed) {
                 if let Ok(mut r) = results_disc.lock() {
                     r.push(PingResult {

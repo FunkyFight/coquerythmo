@@ -1227,7 +1227,7 @@ pub fn run(startup_path: Option<PathBuf>) {
                             state.request_redraw();
                         } else if state.is_editing_text() {
                             if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c == "a") {
-                                // Ctrl+A â€” select all text
+                                // Ctrl+A — select all text
                                 dispatch(UiEvent::SelectAll, &mut state, elwt);
                                 CommandDispatcher::announce_shortcut(&UiAction::SelectAll, &state);
                             } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("c")) {
@@ -1249,7 +1249,7 @@ pub fn run(startup_path: Option<PathBuf>) {
                                     &state,
                                 );
                             } else if ctrl_held && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v")) {
-                                // Ctrl+V â€” paste from clipboard
+                                // Ctrl+V — paste from clipboard
                                 if let Some(text) = platform::clipboard_paste() {
                                     dispatch(UiEvent::KeyInput { text }, &mut state, elwt);
                                 }
@@ -1607,6 +1607,12 @@ pub fn run(startup_path: Option<PathBuf>) {
                         }
                         crate::application::job_service::SaveContinuation::ExitApplication => {
                             elwt.exit()
+                        }
+                        crate::application::job_service::SaveContinuation::ProjectTransfer => {
+                            state.request_actors_project_transfer()
+                        }
+                        crate::application::job_service::SaveContinuation::ProjectTransferAccept => {
+                            state.accept_project_transfer_after_save()
                         }
                         crate::application::job_service::SaveContinuation::None => {}
                     }

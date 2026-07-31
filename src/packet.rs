@@ -31,7 +31,7 @@ pub enum Packet {
     JoinRoom {
         code: String,
         username: String,
-        project_huuid: String,
+        project_huuid: Option<String>,
     },
     LeaveRoom,
     Command {

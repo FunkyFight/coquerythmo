@@ -344,6 +344,19 @@ impl CommandDispatcher {
             UiAction::OpenRecordingActorMenu => state.open_recording_actor_menu(),
             UiAction::OpenRecordingInputDeviceModal => state.open_recording_input_device_modal(),
             UiAction::RequestActorsOpenMicrophone => state.request_actors_open_microphone(),
+            UiAction::RequestActorsTransferProject => state.request_actors_project_transfer(),
+            UiAction::ProjectTransferAccept => state.respond_to_project_transfer("accepted"),
+            UiAction::ProjectTransferSaveAndAccept => {
+                state.respond_to_project_transfer("saving");
+                if !quick_save_existing_with_continuation(
+                    state,
+                    SaveContinuation::ProjectTransferAccept,
+                ) {
+                    state.retry_project_transfer_after_save_failure();
+                }
+            }
+            UiAction::ProjectTransferReplace => state.respond_to_project_transfer("accepted"),
+            UiAction::ProjectTransferRefuse => state.respond_to_project_transfer("refused"),
             UiAction::SetRecordingInputDevice(device) => state.set_recording_input_device(device),
             UiAction::RecordingToggleSharedAudio => state.recording_toggle_shared_audio(),
             UiAction::RecordingCycleLanguage => state.recording_cycle_language(),
@@ -1184,22 +1197,22 @@ impl CommandDispatcher {
                 username,
                 room_code,
             } => {
-                let Some(project_huuid) = state
+                let project_huuid = state
                     .project_session
                     .huuid
                     .as_ref()
                     .filter(|_| {
                         state.project_session.project_path.is_some() && !state.project_session.dirty
                     })
-                    .map(ToString::to_string)
-                else {
+                    .map(ToString::to_string);
+                if room_code.is_none() && project_huuid.is_none() {
                     let message = i18n::t("toast.network_requires_saved_project");
                     state.show_toast(message, 6.0);
                     state.announce_accessibility(crate::accessibility::AccessibilityEvent::Error {
                         message: message.to_string(),
                     });
                     return false;
-                };
+                }
                 // Save last used connection settings
                 {
                     let mut cfg = config::get().clone();
@@ -1218,7 +1231,7 @@ impl CommandDispatcher {
                 } else {
                     Packet::CreateRoom {
                         username,
-                        project_huuid,
+                        project_huuid: project_huuid.expect("create room requires a saved project"),
                     }
                 };
                 state.begin_network_connect();

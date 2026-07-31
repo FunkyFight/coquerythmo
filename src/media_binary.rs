@@ -1,16 +1,15 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-pub(crate) fn installation_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."))
+pub(crate) fn installation_temp_dir() -> PathBuf {
+    std::env::temp_dir().join(env!("CARGO_PKG_NAME"))
 }
 
-pub(crate) fn installation_temp_dir() -> PathBuf {
-    installation_dir().join("temp")
+pub(crate) fn user_data_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .or_else(dirs::data_dir)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(env!("CARGO_PKG_NAME"))
 }
 
 pub(crate) fn command(binary: &str) -> Command {
@@ -88,5 +87,16 @@ fn push_binary_candidates(candidates: &mut Vec<PathBuf>, dir: &Path, binary: &st
     #[cfg(windows)]
     if Path::new(binary).extension().is_none() {
         candidates.push(dir.join(format!("{binary}.exe")));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn runtime_files_are_not_written_next_to_the_executable() {
+        assert_eq!(
+            super::installation_temp_dir(),
+            std::env::temp_dir().join(env!("CARGO_PKG_NAME"))
+        );
     }
 }
