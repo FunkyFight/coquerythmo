@@ -228,10 +228,6 @@ impl FileTransferReceiver {
                 .file
                 .flush()
                 .map_err(|error| format!("cannot flush project transfer: {error}"))?;
-            transfer
-                .file
-                .sync_all()
-                .map_err(|error| format!("cannot sync project transfer: {error}"))?;
             if transfer.digest.clone().finalize_hex() != transfer.metadata.sha1 {
                 return Err("project transfer SHA-1 mismatch".into());
             }

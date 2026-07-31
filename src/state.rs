@@ -1554,7 +1554,6 @@ impl State {
         let fps = self.fps();
         let worker_path = path.clone();
         let worker_source = source_video.clone();
-        let worker_proxy = proxy_video.clone();
         let worker_font = font_asset.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1573,7 +1572,9 @@ impl State {
                 fps,
                 &worker_path,
                 &worker_source,
-                worker_proxy.as_deref(),
+                // The proxy is a disposable local cache. Embedding it beside
+                // the source duplicated the largest project asset.
+                None,
                 Some(&worker_font),
                 Some(&transaction_journal),
                 Some(crate::project_archive::RecordingBundleInput {
@@ -3771,7 +3772,20 @@ impl State {
                         self.project_transfer_send = Some((request_id, receiver));
                     }
                 }
-                IncomingMessage::ProjectTransferStatus(status) => {
+                IncomingMessage::ProjectTransferStatus(mut status) => {
+                    if self.project_transfer_loading_request.as_deref()
+                        == Some(status.request_id.as_str())
+                    {
+                        if let Some(member_id) = self.collaboration.network.member_id.as_deref() {
+                            if let Some(participant) = status
+                                .participants
+                                .iter_mut()
+                                .find(|participant| participant.member_id == member_id)
+                            {
+                                participant.response = "loading".into();
+                            }
+                        }
+                    }
                     let progress = if status.total_bytes == 0 {
                         0.0
                     } else {
@@ -3823,30 +3837,45 @@ impl State {
                     }
                 }
                 IncomingMessage::ProjectTransferEnd { request_id } => {
-                    if let Some(runtime) = self.project_transfer.as_mut() {
-                        if runtime.metadata.request_id == request_id {
-                            match runtime.receiver.finish(&request_id) {
-                                Ok(received) => {
-                                    self.project_transfer_loading_request = Some(request_id);
-                                    if self.is_project_save_in_progress() {
-                                        if let Some(request_id) =
-                                            self.project_transfer_loading_request.take()
-                                        {
-                                            self.collaboration.network.report_project_transfer(
-                                                &request_id,
-                                                false,
-                                                Some("project save is still in progress"),
-                                            );
-                                        }
-                                    } else {
-                                        self.start_br_import(received.path);
+                    let is_current = self
+                        .project_transfer
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.metadata.request_id == request_id);
+                    if is_current {
+                        self.project_transfer_loading_request = Some(request_id.clone());
+                        self.update_project_transfer_response("loading");
+                        self.collaboration
+                            .network
+                            .report_project_transfer_loading(&request_id);
+                        let result = self
+                            .project_transfer
+                            .as_mut()
+                            .expect("the current transfer exists")
+                            .receiver
+                            .finish(&request_id);
+                        match result {
+                            Ok(received) => {
+                                if self.is_project_save_in_progress() {
+                                    if let Some(request_id) =
+                                        self.project_transfer_loading_request.take()
+                                    {
+                                        self.collaboration.network.report_project_transfer(
+                                            &request_id,
+                                            false,
+                                            Some("project save is still in progress"),
+                                        );
                                     }
+                                } else {
+                                    self.start_br_import(received.path);
                                 }
-                                Err(error) => self.collaboration.network.report_project_transfer(
+                            }
+                            Err(error) => {
+                                self.project_transfer_loading_request = None;
+                                self.collaboration.network.report_project_transfer(
                                     &request_id,
                                     false,
                                     Some(&error),
-                                ),
+                                );
                             }
                         }
                     }
@@ -6495,6 +6524,13 @@ impl State {
                         let message = crate::i18n::t("toast.import_video_failed");
                         log::error!("{message} {}", source.display());
                         self.show_toast(message, 7.0);
+                        if let Some(request_id) = transfer_request_id.as_deref() {
+                            self.collaboration.network.report_project_transfer(
+                                request_id,
+                                false,
+                                Some(message),
+                            );
+                        }
                         self.narration.announce_event(AccessibilityEvent::Error {
                             message: crate::i18n::t("accessibility.project_load_failed")
                                 .to_string(),

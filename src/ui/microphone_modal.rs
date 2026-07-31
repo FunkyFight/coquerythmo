@@ -1,5 +1,6 @@
 use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
+use crate::media_recording::{InputDeviceInfo, InputDeviceIssue};
 
 const CARD_W: f32 = 620.0;
 const CARD_H: f32 = 500.0;
@@ -13,19 +14,29 @@ pub enum MicrophoneModalResult {
 }
 
 pub struct MicrophoneModal {
-    devices: Vec<String>,
+    devices: Vec<InputDeviceInfo>,
+    display_labels: Vec<String>,
     selected: usize,
     scroll: usize,
     cancel_focused: bool,
 }
 
 impl MicrophoneModal {
-    pub fn new(devices: Vec<String>, selected: Option<String>) -> Self {
+    pub fn new(devices: Vec<InputDeviceInfo>, selected: Option<String>) -> Self {
         let selected = selected
             .as_deref()
-            .and_then(|selected| devices.iter().position(|device| device == selected))
+            .and_then(|selected| devices.iter().position(|device| device.name == selected))
             .map_or(0, |index| index + 1);
         Self {
+            display_labels: std::iter::once(t("recording.microphone.default").to_string())
+                .chain(devices.iter().map(|device| {
+                    device
+                        .issue
+                        .as_ref()
+                        .map(|issue| format!("{} — {}", device.name, Self::issue_label(issue)))
+                        .unwrap_or_else(|| device.name.clone())
+                }))
+                .collect(),
             devices,
             selected,
             scroll: 0,
@@ -79,21 +90,40 @@ impl MicrophoneModal {
     }
 
     fn option_label(&self, index: usize) -> &str {
-        if index == 0 {
-            t("recording.microphone.default")
-        } else {
-            self.devices
-                .get(index - 1)
-                .map(String::as_str)
-                .unwrap_or_default()
+        self.display_labels
+            .get(index)
+            .map(String::as_str)
+            .unwrap_or_default()
+    }
+
+    fn issue_label(issue: &InputDeviceIssue) -> String {
+        match issue {
+            InputDeviceIssue::DefaultConfigUnavailable => {
+                t("recording.microphone.reason.no_config").to_string()
+            }
+            InputDeviceIssue::SupportedConfigUnavailable => {
+                t("recording.microphone.reason.no_supported_config").to_string()
+            }
+            InputDeviceIssue::SampleRateTooLow(rate) => {
+                t("recording.microphone.reason.sample_rate")
+                    .replace("{rate}", &format!("{rate} Hz"))
+            }
         }
+    }
+
+    fn option_enabled(&self, index: usize) -> bool {
+        index == 0
+            || self
+                .devices
+                .get(index - 1)
+                .is_some_and(|device| device.issue.is_none())
     }
 
     fn selected_value(&self) -> Option<String> {
         self.selected
             .checked_sub(1)
             .and_then(|index| self.devices.get(index))
-            .cloned()
+            .map(|device| device.name.clone())
     }
 
     fn ensure_selected_visible(&mut self, visible_rows: usize) {
@@ -141,7 +171,11 @@ impl MicrophoneModal {
                 if self.cancel_focused {
                     MicrophoneModalResult::Close
                 } else {
-                    MicrophoneModalResult::Select(self.selected_value())
+                    if self.option_enabled(self.selected) {
+                        MicrophoneModalResult::Select(self.selected_value())
+                    } else {
+                        MicrophoneModalResult::Consumed
+                    }
                 }
             }
             UiEvent::Scroll { x, y, delta, .. } if list.contains(*x, *y) => {
@@ -161,7 +195,9 @@ impl MicrophoneModal {
                     let index = self.scroll + ((*y - list.y) / ROW_H).floor() as usize;
                     if index < self.option_count() {
                         self.selected = index;
-                        return MicrophoneModalResult::Select(self.selected_value());
+                        if self.option_enabled(index) {
+                            return MicrophoneModalResult::Select(self.selected_value());
+                        }
                     }
                 }
                 MicrophoneModalResult::Consumed
@@ -247,6 +283,7 @@ impl MicrophoneModal {
                     [0.38, 0.62, 1.0, 1.0],
                 );
             }
+            let incompatible = index > 0 && !self.option_enabled(index);
             labels.push(LabelInfo {
                 text: self.option_label(index),
                 bounds: row,
@@ -255,7 +292,11 @@ impl MicrophoneModal {
                 overflow: Overflow::Ellipsis,
                 padding: 12.0,
                 font_size_override: Some(14.0),
-                color_override: Some([230, 232, 240]),
+                color_override: Some(if incompatible {
+                    [235, 92, 92]
+                } else {
+                    [230, 232, 240]
+                }),
                 font_family_override: None,
             });
         }
@@ -658,7 +699,13 @@ mod tests {
 
     #[test]
     fn keyboard_selects_the_highlighted_microphone() {
-        let mut modal = MicrophoneModal::new(vec!["Studio microphone".into()], None);
+        let mut modal = MicrophoneModal::new(
+            vec![InputDeviceInfo {
+                name: "Studio microphone".into(),
+                issue: None,
+            }],
+            None,
+        );
         assert_eq!(
             modal.handle_event(&UiEvent::CursorDown, 1280.0, 720.0),
             MicrophoneModalResult::Consumed
@@ -667,6 +714,26 @@ mod tests {
             modal.handle_event(&UiEvent::KeyInput { text: "\r".into() }, 1280.0, 720.0),
             MicrophoneModalResult::Select(Some("Studio microphone".into()))
         );
+    }
+
+    #[test]
+    fn incompatible_microphones_are_visible_but_not_selectable() {
+        let mut modal = MicrophoneModal::new(
+            vec![InputDeviceInfo {
+                name: "Telephone microphone".into(),
+                issue: Some(InputDeviceIssue::SampleRateTooLow(16_000)),
+            }],
+            None,
+        );
+        assert_eq!(
+            modal.handle_event(&UiEvent::CursorDown, 1280.0, 720.0),
+            MicrophoneModalResult::Consumed
+        );
+        assert_eq!(
+            modal.handle_event(&UiEvent::KeyInput { text: "\r".into() }, 1280.0, 720.0),
+            MicrophoneModalResult::Consumed
+        );
+        assert!(modal.option_label(1).contains("48 kHz"));
     }
 
     #[test]

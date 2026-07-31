@@ -23,6 +23,7 @@ pub struct ProjectTransferModal {
     focused: usize,
     response_submitted: bool,
     row_labels: Vec<String>,
+    phase_label: String,
     project_label: String,
     result_path: Option<String>,
 }
@@ -42,12 +43,28 @@ impl ProjectTransferModal {
             focused: 0,
             response_submitted: false,
             row_labels: Vec::new(),
+            phase_label: String::new(),
             project_label,
             result_path: None,
         }
     }
 
     pub fn set_status(&mut self, status: ProjectTransferStatus) {
+        let percent = if status.total_bytes == 0 {
+            0
+        } else {
+            (status.transferred_bytes.saturating_mul(100) / status.total_bytes).min(100)
+        };
+        self.phase_label = match status.phase.as_str() {
+            "transferring" => format!(
+                "{} - {percent} %",
+                t("recording.project_transfer.receiving")
+            ),
+            "finishing" => format!("{}...", t("recording.project_transfer.loading")),
+            "completed" => t("recording.project_transfer.complete").to_string(),
+            "cancelled" => t("recording.project_transfer.failed").to_string(),
+            _ => String::new(),
+        };
         self.row_labels = status
             .participants
             .iter()
@@ -67,10 +84,16 @@ impl ProjectTransferModal {
                         ))
                     })
                     .unwrap_or_default();
+                let progress = if participant.response == "receiving" {
+                    format!(" - {} %", (participant.progress * 100.0).round() as u32)
+                } else {
+                    String::new()
+                };
                 format!(
-                    "{} — {}{}",
+                    "{} - {}{}{}",
                     participant.username,
                     transfer_label(&participant.response),
+                    progress,
                     countdown
                 )
             })
@@ -302,6 +325,22 @@ impl ProjectTransferModal {
                     width: card.width - 64.0,
                     height: 14.0,
                 };
+                labels.push(LabelInfo {
+                    text: self.phase_label.as_str(),
+                    bounds: Rect {
+                        x: bar.x,
+                        y: bar.y - 27.0,
+                        width: bar.width,
+                        height: 22.0,
+                    },
+                    h_align: HAlign::Left,
+                    v_align: VAlign::Center,
+                    overflow: Overflow::Clip,
+                    padding: 0.0,
+                    font_size_override: Some(13.0),
+                    color_override: Some([195, 205, 225]),
+                    font_family_override: None,
+                });
                 quads.push(QuadInstance {
                     rect: [bar.x, bar.y, bar.width, bar.height],
                     color: [0.08, 0.08, 0.11, 1.0],

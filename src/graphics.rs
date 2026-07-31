@@ -10,6 +10,18 @@ fn present_mode() -> wgpu::PresentMode {
     wgpu::PresentMode::Fifo
 }
 
+fn graphics_backends() -> wgpu::Backends {
+    #[cfg(target_os = "windows")]
+    {
+        wgpu::Backends::DX12
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        wgpu::Backends::PRIMARY
+    }
+}
+
 pub struct GraphicsContext {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -48,7 +60,7 @@ impl GraphicsContext {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
+            backends: graphics_backends(),
             flags: wgpu::InstanceFlags::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::default(),
@@ -176,10 +188,16 @@ impl GraphicsContext {
 
 #[cfg(test)]
 mod tests {
-    use super::present_mode;
+    use super::{graphics_backends, present_mode};
 
     #[test]
     fn presentation_always_uses_strict_vsync() {
         assert_eq!(present_mode(), wgpu::PresentMode::Fifo);
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_uses_only_dx12() {
+        assert_eq!(graphics_backends(), wgpu::Backends::DX12);
     }
 }

@@ -2612,7 +2612,7 @@ impl Ui {
 
     pub fn open_recording_input_device_modal(
         &mut self,
-        devices: Vec<String>,
+        devices: Vec<crate::media_recording::InputDeviceInfo>,
         selected: Option<String>,
     ) {
         self.modal_host.open_microphone(devices, selected);

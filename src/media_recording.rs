@@ -23,6 +23,19 @@ const MIN_RECORDING_SAMPLE_RATE: u32 = 48_000;
 
 static TEMP_FILE_NONCE: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputDeviceIssue {
+    DefaultConfigUnavailable,
+    SupportedConfigUnavailable,
+    SampleRateTooLow(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputDeviceInfo {
+    pub name: String,
+    pub issue: Option<InputDeviceIssue>,
+}
+
 /// Records one microphone take to a lossless FLAC file.
 ///
 /// Construct a fresh adapter (or call `set_output_path`) for each take. The
@@ -367,16 +380,18 @@ where
         .map_err(|error| recorder_error(format!("cannot build audio input stream: {error}")))
 }
 
-pub fn input_device_names() -> Result<Vec<String>, RecordingError> {
-    let mut names = cpal::default_host()
+pub fn input_device_names() -> Result<Vec<InputDeviceInfo>, RecordingError> {
+    let mut devices = cpal::default_host()
         .input_devices()
         .map_err(|error| recorder_error(format!("cannot enumerate audio input devices: {error}")))?
-        .filter(should_list_input_device)
-        .filter_map(|device| device.name().ok())
+        .filter_map(|device| {
+            let name = device.name().ok()?;
+            Some(inspect_input_device(device, name))
+        })
         .collect::<Vec<_>>();
-    names.sort_unstable();
-    names.dedup();
-    Ok(names)
+    devices.sort_by(|left, right| left.name.cmp(&right.name));
+    devices.dedup_by(|left, right| left.name == right.name);
+    Ok(devices)
 }
 
 /// Opens and starts the selected input once so OS privacy prompts and device
@@ -416,17 +431,22 @@ fn input_device(
         })
 }
 
-fn should_list_input_device(device: &cpal::Device) -> bool {
-    let Ok(default) = device.default_input_config() else {
-        return true;
+fn inspect_input_device(device: cpal::Device, name: String) -> InputDeviceInfo {
+    let issue = match device.default_input_config() {
+        Err(_) => Some(InputDeviceIssue::DefaultConfigUnavailable),
+        Ok(default) if default.sample_rate().0 >= MIN_RECORDING_SAMPLE_RATE => None,
+        Ok(default) => match device.supported_input_configs() {
+            Err(_) => Some(InputDeviceIssue::SupportedConfigUnavailable),
+            Ok(ranges) => {
+                if select_recording_input_config(&default, ranges).is_some() {
+                    None
+                } else {
+                    Some(InputDeviceIssue::SampleRateTooLow(default.sample_rate().0))
+                }
+            }
+        },
     };
-    if default.sample_rate().0 >= MIN_RECORDING_SAMPLE_RATE {
-        return true;
-    }
-    let Ok(ranges) = device.supported_input_configs() else {
-        return true;
-    };
-    select_recording_input_config(&default, ranges).is_some()
+    InputDeviceInfo { name, issue }
 }
 
 fn recording_input_config(

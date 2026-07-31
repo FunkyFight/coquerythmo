@@ -1067,10 +1067,9 @@ fn read_entry_to_file<R: Read>(
     let mut writer = BufWriter::with_capacity(COPY_BUFFER_BYTES, output);
     copy_payload(reader, &mut writer, header)?;
     writer.flush()?;
-    let file = writer
+    writer
         .into_inner()
         .map_err(|error| ProjectArchiveError::Io(error.into_error()))?;
-    file.sync_all()?;
     Ok(())
 }
 

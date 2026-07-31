@@ -1335,7 +1335,11 @@ impl ModalHost {
         self.languages = Some(LanguageModal::new(languages, active_language_id));
     }
 
-    pub fn open_microphone(&mut self, devices: Vec<String>, selected: Option<String>) {
+    pub fn open_microphone(
+        &mut self,
+        devices: Vec<crate::media_recording::InputDeviceInfo>,
+        selected: Option<String>,
+    ) {
         self.microphone = Some(MicrophoneModal::new(devices, selected));
     }
 

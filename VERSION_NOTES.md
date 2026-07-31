@@ -8,6 +8,7 @@
 - Les écrans d’attente n’affichent plus de barre de progression tant qu’aucun transfert de fichier n’est en cours.
 - Le remplacement nettoie les références FLAC orphelines et verrouille clairement le choix du comédien après réponse.
 - Les résultats de transfert répétés après la clôture sont maintenant traités idempotemment.
+- Les microphones incompatibles restent visibles dans la sélection, avec une raison courte en rouge, mais ne peuvent pas être choisis.
 - Les prises et projets reçus utilisent désormais les dossiers temporaires et de données de l’utilisateur, jamais le dossier d’installation protégé.
 - Le micro de chaque comédien est testé avant la prise et le DA voit immédiatement qui n’est pas prêt ; le lancement reste bloqué tant qu’un micro actif échoue.
 - La préparation canonique de la timeline précède maintenant le compte à rebours, et les erreurs d’envoi audio ne sont plus silencieuses.

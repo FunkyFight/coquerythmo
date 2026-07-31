@@ -695,6 +695,13 @@ impl NetworkClient {
         );
     }
 
+    pub fn report_project_transfer_loading(&self, request_id: &str) {
+        self.send_raw(
+            "project_transfer_loading",
+            serde_json::json!({ "request_id": request_id }),
+        );
+    }
+
     pub fn report_project_transfer(&self, request_id: &str, success: bool, error: Option<&str>) {
         self.send_raw(
             "project_transfer_result",
