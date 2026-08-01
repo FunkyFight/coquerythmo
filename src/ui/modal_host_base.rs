@@ -7,7 +7,6 @@
 
 use super::connect_modal::ConnectModal;
 use super::export_modal::ExportModal;
-use super::file_explorer::{FileExplorerModal, FileExplorerRequest, FileExplorerResult};
 use super::language_modal::{LanguageListItem, LanguageModal};
 use super::microphone_modal::{MicrophoneModal, RecordingActorMenuModal};
 use super::pricing_license_modal::PricingLicenseModal;
@@ -89,7 +88,6 @@ pub struct ModalHost {
     pub languages: Option<LanguageModal>,
     pub microphone: Option<MicrophoneModal>,
     pub recording_actor_menu: Option<RecordingActorMenuModal>,
-    pub file_explorer: Option<FileExplorerModal>,
     pub proxy: Option<ProxyModal>,
     pub rename_character: Option<RenameCharacterModal>,
     pub proxy_error: Option<ProxyErrorModal>,
@@ -113,7 +111,6 @@ impl ModalHost {
             languages: None,
             microphone: None,
             recording_actor_menu: None,
-            file_explorer: None,
             proxy: None,
             rename_character: None,
             proxy_error: None,
@@ -136,7 +133,6 @@ impl ModalHost {
             || self.languages.is_some()
             || self.microphone.is_some()
             || self.recording_actor_menu.is_some()
-            || self.file_explorer.is_some()
             || self.proxy.is_some()
             || self.rename_character.is_some()
             || self.proxy_error.is_some()
@@ -151,10 +147,7 @@ impl ModalHost {
     }
 
     pub fn is_editing_text(&self) -> bool {
-        self.file_explorer
-            .as_ref()
-            .is_some_and(|modal| modal.is_editing_text())
-            || self.settings.is_some()
+        self.settings.is_some()
             || self.project_settings.is_some()
             || self.connect.is_some()
             || self.export.is_some()
@@ -203,9 +196,6 @@ impl ModalHost {
                 screen_w,
                 screen_h,
             ));
-        }
-        if self.file_explorer.is_some() {
-            return Some(self.handle_file_explorer_event(event, screen_w, screen_h));
         }
         if self.proxy_error.is_some() {
             let translated = legacy_keyboard_event(event);
@@ -493,6 +483,7 @@ impl ModalHost {
                 rythmo_font,
                 scroll_speed,
                 reading_bar_offset_percent,
+                temporary_directory,
             } => {
                 self.settings = None;
                 ModalOutcome::Action(UiAction::SaveSettings {
@@ -500,7 +491,11 @@ impl ModalHost {
                     rythmo_font,
                     scroll_speed,
                     reading_bar_offset_percent,
+                    temporary_directory,
                 })
+            }
+            super::settings_modal::SettingsModalResult::BrowseTemporaryDirectory => {
+                ModalOutcome::Action(UiAction::PickTemporaryDirectory)
             }
         }
     }
@@ -724,39 +719,6 @@ impl ModalHost {
             }
             LanguageModalResult::ClearInstrumental { id } => {
                 ModalOutcome::Action(UiAction::ClearLanguageInstrumentalAudio { id })
-            }
-        }
-    }
-
-    fn handle_file_explorer_event(
-        &mut self,
-        event: &UiEvent,
-        screen_w: f32,
-        screen_h: f32,
-    ) -> ModalOutcome {
-        match self
-            .file_explorer
-            .as_mut()
-            .unwrap()
-            .handle_event(event, screen_w, screen_h)
-        {
-            FileExplorerResult::Consumed => ModalOutcome::Consumed,
-            FileExplorerResult::Accessibility(event) => {
-                ModalOutcome::Action(UiAction::Accessibility(event))
-            }
-            FileExplorerResult::Close => {
-                self.file_explorer = None;
-                closed_modal(crate::i18n::t("accessibility.file_explorer"))
-            }
-            FileExplorerResult::Clipboard(text) => {
-                ModalOutcome::Action(UiAction::SetClipboard(text))
-            }
-            FileExplorerResult::Selected { intent, path } => {
-                self.file_explorer = None;
-                action_closed_modal(
-                    UiAction::FilePickerSelected { intent, path },
-                    crate::i18n::t("accessibility.file_explorer"),
-                )
             }
         }
     }
@@ -1353,16 +1315,6 @@ impl ModalHost {
         }
     }
 
-    pub fn open_file_explorer(&mut self, request: FileExplorerRequest) {
-        self.file_explorer = Some(FileExplorerModal::new(request));
-    }
-
-    pub fn poll_file_explorer(&mut self) -> bool {
-        self.file_explorer
-            .as_mut()
-            .is_some_and(|modal| modal.poll_background())
-    }
-
     pub fn open_voice_actor(&mut self) {
         self.voice_actor = Some(super::voice_actor_modal::VoiceActorModal::new());
     }
@@ -1434,17 +1386,41 @@ impl ModalHost {
         ));
     }
 
+    /// Open the connect modal in "join" mode with the room code pre-filled
+    /// (used by `coquerythmo://join...` quick-setup links, where ip+password
+    /// come from the URL and only the username is left to type).
+    pub fn open_connect_with_room(
+        &mut self,
+        ip: &str,
+        port: u16,
+        room_code: &str,
+        password: &str,
+    ) {
+        let modal = super::connect_modal::ConnectModal::new_with_room(
+            ip, port, room_code, password,
+        );
+        self.connect = Some(modal);
+    }
+
     pub fn open_settings(
         &mut self,
         fonts: Vec<String>,
         scroll_speed: f32,
         reading_bar_offset_percent: f32,
+        temporary_directory: std::path::PathBuf,
     ) {
         self.settings = Some(super::settings_modal::SettingsModal::new(
             fonts,
             scroll_speed,
             reading_bar_offset_percent,
+            temporary_directory,
         ));
+    }
+
+    pub fn set_settings_temporary_directory(&mut self, path: std::path::PathBuf) {
+        if let Some(modal) = &mut self.settings {
+            modal.set_temporary_directory(path);
+        }
     }
 
     pub fn open_project_settings(
@@ -1551,8 +1527,8 @@ impl ModalHost {
         &'a self,
         modal_quads: &mut Vec<QuadInstance>,
         modal_labels: &mut Vec<LabelInfo<'a>>,
-        modal_overlay_quads: &mut Vec<QuadInstance>,
-        modal_overlay_labels: &mut Vec<LabelInfo<'a>>,
+        _modal_overlay_quads: &mut Vec<QuadInstance>,
+        _modal_overlay_labels: &mut Vec<LabelInfo<'a>>,
         screen_w: f32,
         screen_h: f32,
     ) {
@@ -1561,14 +1537,6 @@ impl ModalHost {
         }
         if let Some(modal) = &self.proxy_error {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
-        }
-        if let Some(modal) = &self.file_explorer {
-            modal.render(
-                modal_overlay_quads,
-                modal_overlay_labels,
-                screen_w,
-                screen_h,
-            );
         }
     }
 }

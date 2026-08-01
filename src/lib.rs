@@ -31,6 +31,7 @@ pub mod observer;
 pub mod packet;
 pub mod platform;
 pub mod project;
+pub mod protocol;
 pub mod project_archive;
 pub mod project_metadata;
 pub mod recording;

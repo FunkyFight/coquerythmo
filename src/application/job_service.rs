@@ -34,6 +34,9 @@ pub(crate) enum SaveContinuation {
     ExitApplication,
     ProjectTransfer,
     ProjectTransferAccept,
+    /// After saving, close the current project chain and continue the pending
+    /// `coquerythmo://` host flow (load the linked project, create a room).
+    ProtocolHost,
 }
 
 pub(crate) struct PendingSaveJob {

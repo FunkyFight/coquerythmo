@@ -376,11 +376,7 @@ fn even_dimension(value: u32) -> u32 {
 }
 
 fn proxies_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("proxies")
+    crate::media_binary::installation_temp_dir().join("proxies")
 }
 
 fn manifest_path(br_path: &Path) -> PathBuf {

@@ -1,9 +1,10 @@
 use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
 use std::cell::Cell;
+use std::path::PathBuf;
 
 pub const SETTINGS_W: f32 = 450.0;
-pub const SETTINGS_H: f32 = 580.0;
+pub const SETTINGS_H: f32 = 640.0;
 pub const FONT_ITEM_H: f32 = 26.0;
 pub const FONT_LIST_H: f32 = 220.0;
 
@@ -14,6 +15,8 @@ pub struct SettingsModal {
     pub scroll_speed_text: String,
     pub reading_bar_offset_percent: f32,
     pub reading_bar_offset_text: String,
+    pub temporary_directory: PathBuf,
+    pub temporary_directory_text: String,
     pub available_fonts: Vec<String>,
     pub font_scroll_offset: f32,
     pub selected_font_index: Option<usize>,
@@ -39,11 +42,18 @@ pub enum SettingsModalResult {
         rythmo_font: Option<String>,
         scroll_speed: f32,
         reading_bar_offset_percent: f32,
+        temporary_directory: PathBuf,
     },
+    BrowseTemporaryDirectory,
 }
 
 impl SettingsModal {
-    pub fn new(fonts: Vec<String>, scroll_speed: f32, reading_bar_offset_percent: f32) -> Self {
+    pub fn new(
+        fonts: Vec<String>,
+        scroll_speed: f32,
+        reading_bar_offset_percent: f32,
+        temporary_directory: PathBuf,
+    ) -> Self {
         let cfg = crate::config::get();
         let scroll_speed = scroll_speed.clamp(0.25, 4.0);
         let reading_bar_offset_percent = reading_bar_offset_percent.clamp(-50.0, 50.0);
@@ -58,6 +68,8 @@ impl SettingsModal {
             scroll_speed_text: format!("×{:.2}", scroll_speed),
             reading_bar_offset_percent,
             reading_bar_offset_text: format!("{:+.0} %", reading_bar_offset_percent),
+            temporary_directory_text: temporary_directory.display().to_string(),
+            temporary_directory,
             available_fonts: fonts,
             font_scroll_offset: 0.0,
             selected_font_index,
@@ -84,7 +96,12 @@ impl SettingsModal {
                 t("settings.reading_bar_offset"),
                 self.reading_bar_offset_text
             ),
-            5 => t("settings.save").to_string(),
+            5 => format!(
+                "{} {}",
+                t("settings.temporary_directory"),
+                self.temporary_directory_text
+            ),
+            6 => t("settings.save").to_string(),
             _ => t("project_settings.close").to_string(),
         }
     }
@@ -101,9 +118,9 @@ impl SettingsModal {
             UiEvent::KeyInput { text } if text == "\x1b" => SettingsModalResult::Close,
             UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}" => {
                 self.keyboard_focus = if text == "\t" {
-                    (self.keyboard_focus + 1) % 7
+                    (self.keyboard_focus + 1) % 8
                 } else {
-                    (self.keyboard_focus + 6) % 7
+                    (self.keyboard_focus + 7) % 8
                 };
                 SettingsModalResult::Consumed
             }
@@ -114,13 +131,15 @@ impl SettingsModal {
                         self.rythmo_font = None;
                         SettingsModalResult::Consumed
                     }
-                    5 => SettingsModalResult::Save {
+                    5 => SettingsModalResult::BrowseTemporaryDirectory,
+                    6 => SettingsModalResult::Save {
                         lang: self.lang.clone(),
                         rythmo_font: self.rythmo_font.clone(),
                         scroll_speed: self.scroll_speed,
                         reading_bar_offset_percent: self.reading_bar_offset_percent,
+                        temporary_directory: self.temporary_directory.clone(),
                     },
-                    6 => SettingsModalResult::Close,
+                    7 => SettingsModalResult::Close,
                     _ => SettingsModalResult::Consumed,
                 }
             }
@@ -365,12 +384,25 @@ impl SettingsModal {
                     let rythmo_font = self.rythmo_font.clone();
                     let scroll_speed = self.scroll_speed;
                     let reading_bar_offset_percent = self.reading_bar_offset_percent;
+                    let temporary_directory = self.temporary_directory.clone();
                     return SettingsModalResult::Save {
                         lang,
                         rythmo_font,
                         scroll_speed,
                         reading_bar_offset_percent,
+                        temporary_directory,
                     };
+                }
+
+                let temporary_directory_y = card.y + 530.0;
+                let temporary_directory_rect = Rect {
+                    x: card.x + 20.0,
+                    y: temporary_directory_y,
+                    width: card.width - 40.0,
+                    height: 30.0,
+                };
+                if temporary_directory_rect.contains(*x, *y) {
+                    return SettingsModalResult::BrowseTemporaryDirectory;
                 }
 
                 let close_rect = close_rect(card);
@@ -382,6 +414,11 @@ impl SettingsModal {
             }
             _ => SettingsModalResult::Consumed,
         }
+    }
+
+    pub fn set_temporary_directory(&mut self, path: PathBuf) {
+        self.temporary_directory_text = path.display().to_string();
+        self.temporary_directory = path;
     }
 
     pub fn render<'a>(
@@ -1038,6 +1075,88 @@ impl SettingsModal {
             font_family_override: None,
         });
 
+        // --- Runtime temporary directory ---
+        let temporary_directory_label_y = card.y + 510.0;
+        let temporary_directory_y = temporary_directory_label_y + 20.0;
+        labels.push(LabelInfo {
+            text: t("settings.temporary_directory"),
+            bounds: Rect {
+                x: card.x + 20.0,
+                y: temporary_directory_label_y,
+                width: card.width - 40.0,
+                height: 18.0,
+            },
+            h_align: HAlign::Left,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(12.0),
+            color_override: Some([180, 180, 195]),
+            font_family_override: None,
+        });
+        let browse_w = 100.0;
+        let row_w = card.width - 40.0;
+        let path_w = row_w - browse_w - 8.0;
+        overlay_quads.push(QuadInstance {
+            rect: [card.x + 20.0, temporary_directory_y, path_w, 30.0],
+            color: [0.08, 0.08, 0.10, 1.0],
+            color_bottom: [0.08, 0.08, 0.10, 1.0],
+            border_color: [0.30, 0.30, 0.36, 0.5],
+            border_width: 1.0,
+            border_radius: 4.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+        labels.push(LabelInfo {
+            text: &self.temporary_directory_text,
+            bounds: Rect {
+                x: card.x + 28.0,
+                y: temporary_directory_y,
+                width: path_w - 16.0,
+                height: 30.0,
+            },
+            h_align: HAlign::Left,
+            v_align: VAlign::Center,
+            overflow: Overflow::Ellipsis,
+            padding: 0.0,
+            font_size_override: Some(11.0),
+            color_override: None,
+            font_family_override: None,
+        });
+        let browse_x = card.x + 20.0 + path_w + 8.0;
+        overlay_quads.push(QuadInstance {
+            rect: [browse_x, temporary_directory_y, browse_w, 30.0],
+            color: [0.15, 0.15, 0.18, 1.0],
+            color_bottom: [0.11, 0.11, 0.14, 1.0],
+            border_color: [0.30, 0.30, 0.36, 0.7],
+            border_width: 1.0,
+            border_radius: 4.0,
+            shadow_offset: [0.0, 2.0],
+            shadow_color: [0.0, 0.0, 0.0, 0.3],
+            shadow_blur: 3.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+        labels.push(LabelInfo {
+            text: t("settings.browse"),
+            bounds: Rect {
+                x: browse_x,
+                y: temporary_directory_y,
+                width: browse_w,
+                height: 30.0,
+            },
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(12.0),
+            color_override: None,
+            font_family_override: None,
+        });
+
         // Save button
         let save_w = 140.0;
         let save_h = 36.0;
@@ -1139,13 +1258,20 @@ impl SettingsModal {
             width: 140.0,
             height: 36.0,
         };
+        let temporary_directory = Rect {
+            x: card.x + 20.0,
+            y: card.y + 530.0,
+            width: card.width - 40.0,
+            height: 30.0,
+        };
         Some(match self.keyboard_focus {
             0 => language_rect(card, &self.lang),
             1 => list,
             2 => default_font,
             3 => speed,
             4 => offset_control,
-            5 => save,
+            5 => temporary_directory,
+            6 => save,
             _ => close_rect(card),
         })
     }

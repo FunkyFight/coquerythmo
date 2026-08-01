@@ -5,6 +5,8 @@
 //! `render_lines`, markers and drawing) inside [`RecordingLayout::rythmo`].
 //! This module only describes the DAW chrome around that read-only view.
 
+use std::collections::BTreeMap;
+
 use crate::network::NetworkMember;
 use crate::recording::{
     AudioAssetId, AudioClipId, AudioTrackId, CaptureState, RecordingEditor, RecordingError,
@@ -59,6 +61,10 @@ impl RecordingRole {
     pub fn can_change_shared_view(self) -> bool {
         matches!(self, Self::Solo | Self::Director)
     }
+
+    pub fn can_adjust_track_volume(self) -> bool {
+        self.can_edit_timeline()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -73,6 +79,7 @@ pub enum RecordingControl {
     TrackMute(AudioTrackId),
     TrackSolo(AudioTrackId),
     TrackArm(AudioTrackId),
+    TrackVolume(AudioTrackId),
     TrackExport(AudioTrackId),
     StartCapture,
     Clip(AudioClipId),
@@ -94,6 +101,7 @@ impl RecordingControl {
             Self::TrackMute(id) => format!("recording.track.{}.mute", id.get()),
             Self::TrackSolo(id) => format!("recording.track.{}.solo", id.get()),
             Self::TrackArm(id) => format!("recording.track.{}.arm", id.get()),
+            Self::TrackVolume(id) => format!("recording.track.{}.volume", id.get()),
             Self::TrackExport(id) => format!("recording.track.{}.export", id.get()),
             Self::StartCapture => "recording.capture.start".into(),
             Self::Clip(id) => format!("recording.clip.{}", id.get()),
@@ -461,6 +469,8 @@ pub struct RecordingWorkspaceUi {
     pub rename_buffer: String,
     pub dragging_asset: Option<AudioAssetId>,
     pub dragging_clip: Option<RecordingClipDrag>,
+    pub dragging_track_volume: Option<AudioTrackId>,
+    track_volumes: BTreeMap<AudioTrackId, f32>,
     track_scroll: usize,
     track_count: usize,
     dragging_track_scrollbar: bool,
@@ -486,6 +496,8 @@ impl Default for RecordingWorkspaceUi {
             rename_buffer: String::new(),
             dragging_asset: None,
             dragging_clip: None,
+            dragging_track_volume: None,
+            track_volumes: BTreeMap::new(),
             track_scroll: 0,
             track_count: 0,
             dragging_track_scrollbar: false,
@@ -512,6 +524,8 @@ impl RecordingWorkspaceUi {
         self.cancel_rename_track();
         self.dragging_asset = None;
         self.dragging_clip = None;
+        self.dragging_track_volume = None;
+        self.track_volumes.clear();
     }
 
     pub fn selected_clips(&self) -> impl Iterator<Item = AudioClipId> + '_ {
@@ -551,6 +565,23 @@ impl RecordingWorkspaceUi {
 
     pub fn is_editing_text(&self) -> bool {
         self.renaming_track.is_some()
+    }
+
+    pub fn track_volume(&self, track_id: AudioTrackId) -> f32 {
+        self.track_volumes.get(&track_id).copied().unwrap_or(1.0)
+    }
+
+    pub fn set_track_volume(&mut self, track_id: AudioTrackId, volume: f32) {
+        let volume = if volume.is_finite() {
+            volume.clamp(0.0, crate::recording_mix::TRACK_VOLUME_MAX)
+        } else {
+            1.0
+        };
+        if (volume - 1.0).abs() <= f32::EPSILON {
+            self.track_volumes.remove(&track_id);
+        } else {
+            self.track_volumes.insert(track_id, volume);
+        }
     }
 
     pub fn sync_view_to_playhead(
@@ -1097,10 +1128,16 @@ fn push_tracks(
             BORDER,
             0.0,
         );
+        let volume_bounds = Rect {
+            x: header.x + header.width - 70.0,
+            y: header.y + 2.0,
+            width: 42.0,
+            height: 24.0,
+        };
         let name_bounds = Rect {
             x: header.x + 8.0,
             y: header.y + 4.0,
-            width: header.width - 60.0,
+            width: (volume_bounds.x - header.x - 12.0).max(24.0),
             height: 22.0,
         };
         scene.labels.push(RecordingLabel {
@@ -1128,6 +1165,64 @@ fn push_tracks(
             value: None,
             selected: ui.renaming_track == Some(track.id),
             enabled: ui.role.can_edit_timeline(),
+        });
+        let track_volume = ui.track_volume(track.id);
+        let volume_track = Rect {
+            x: volume_bounds.x + 3.0,
+            y: volume_bounds.y + 18.0,
+            width: volume_bounds.width - 6.0,
+            height: 3.0,
+        };
+        push_quad(
+            &mut scene.quads,
+            volume_track,
+            [0.18, 0.19, 0.23, 1.0],
+            [0.0; 4],
+            1.5,
+        );
+        push_quad(
+            &mut scene.quads,
+            Rect {
+                width: volume_track.width
+                    * (track_volume / crate::recording_mix::TRACK_VOLUME_MAX),
+                ..volume_track
+            },
+            ACCENT,
+            [0.0; 4],
+            1.5,
+        );
+        let knob_x = volume_track.x
+            + volume_track.width * (track_volume / crate::recording_mix::TRACK_VOLUME_MAX);
+        push_quad(
+            &mut scene.quads,
+            Rect {
+                x: knob_x - 2.0,
+                y: volume_bounds.y + 14.0,
+                width: 4.0,
+                height: 11.0,
+            },
+            [0.9, 0.9, 0.95, 1.0],
+            [0.0; 4],
+            1.5,
+        );
+        scene.labels.push(label(
+            format!("{:.0}%", track_volume * 100.0),
+            volume_bounds,
+            9.0,
+            TEXT,
+        ));
+        scene.controls.push(RecordingControlInfo {
+            control: RecordingControl::TrackVolume(track.id),
+            bounds: volume_bounds,
+            role: AccessibleRole::Slider,
+            label: format!(
+                "{} â€” {}",
+                track.name,
+                crate::i18n::t("recording.track.volume")
+            ),
+            value: Some(format!("{:.0} %", track_volume * 100.0)),
+            selected: false,
+            enabled: ui.role.can_adjust_track_volume(),
         });
         for (index, (control, text, active, color)) in [
             (
@@ -1804,9 +1899,10 @@ mod tests {
                 RecordingControl::TrackMute(_)
                     | RecordingControl::TrackSolo(_)
                     | RecordingControl::TrackArm(_)
+                    | RecordingControl::TrackVolume(_)
             )
         });
-        assert!(track_controls.count() >= 3);
+        assert!(track_controls.count() >= 4);
         assert!(scene
             .controls
             .iter()
@@ -1815,6 +1911,7 @@ mod tests {
                 RecordingControl::TrackMute(_)
                     | RecordingControl::TrackSolo(_)
                     | RecordingControl::TrackArm(_)
+                    | RecordingControl::TrackVolume(_)
             ))
             .all(|control| !control.enabled));
         let record = scene

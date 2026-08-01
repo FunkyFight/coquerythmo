@@ -124,6 +124,49 @@ fn add_registry_value(key: &str, name: Option<&str>, value: &str) -> bool {
 #[cfg(not(target_os = "windows"))]
 pub(crate) fn register_project_file_association() {}
 
+/// Register the `coquerythmo://` URL scheme so browsers and other apps can
+/// launch/join sessions from a link. Stored under HKCU, no elevation needed.
+#[cfg(target_os = "windows")]
+pub(crate) fn register_url_protocol() {
+    use crate::protocol::PROTOCOL_SCHEME;
+
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    let command = format!("\"{}\" \"%1\"", executable.display());
+    let icon = format!("\"{}\",0", executable.display());
+    let base = format!(r"HKCU\Software\Classes\{PROTOCOL_SCHEME}");
+    let entries = [
+        (base.clone(), "URL:Coquerythmo quick session link".to_string()),
+        (format!(r"{base}\DefaultIcon"), icon),
+        (format!(r"{base}\shell\open\command"), command),
+    ];
+    for (key, value) in entries {
+        if !add_registry_value(&key, None, &value) {
+            return;
+        }
+    }
+    // The named (empty) REG_SZ `URL Protocol` value marks the key as a URI
+    // scheme handler for Windows ShellExecute.
+    if !add_registry_value(&base, Some("URL Protocol"), "") {
+        return;
+    }
+
+    const SHCNE_ASSOCCHANGED: i32 = 0x0800_0000;
+    const SHCNF_IDLIST: u32 = 0;
+    unsafe {
+        windows_sys::Win32::UI::Shell::SHChangeNotify(
+            SHCNE_ASSOCCHANGED,
+            SHCNF_IDLIST,
+            std::ptr::null(),
+            std::ptr::null(),
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn register_url_protocol() {}
+
 #[cfg(target_os = "macos")]
 fn configure_platform_window(builder: WindowBuilder) -> WindowBuilder {
     builder.with_accepts_first_mouse(true)

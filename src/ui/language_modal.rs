@@ -167,7 +167,7 @@ impl LanguageModal {
                     .unwrap_or(t("languages.syllables.french"))
             ),
             8 => t("languages.clear_instrumental").to_string(),
-            _ => t("file_explorer.cancel").to_string(),
+            _ => t("project_settings.close").to_string(),
         }
     }
 

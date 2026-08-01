@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub(crate) fn installation_temp_dir() -> PathBuf {
-    std::env::temp_dir().join(env!("CARGO_PKG_NAME"))
+    crate::config::temporary_directory().join(env!("CARGO_PKG_NAME"))
 }
 
 pub(crate) fn user_data_dir() -> PathBuf {

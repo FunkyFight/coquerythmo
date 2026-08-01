@@ -12,7 +12,6 @@ pub mod connect_modal;
 pub mod context_menu;
 pub mod dropdown;
 pub mod export_modal;
-pub mod file_explorer;
 pub mod focus;
 pub mod icon_button;
 pub mod icons;
@@ -112,7 +111,6 @@ pub struct Ui {
     actor_icon_cache: ActorIconCache,
     network_in_room: bool,
     pub network_status: String,
-    network_room_label: String,
     pub has_video: bool,
     pub current_frame: i64,
     pub total_frames: i64,
@@ -273,7 +271,6 @@ impl Ui {
             actor_icon_cache: ActorIconCache::new(),
             network_in_room: false,
             network_status: "".into(),
-            network_room_label: String::new(),
             sync_overlay: None,
             sync_progress: 0.0,
             project_transfer_modal: None,
@@ -513,12 +510,6 @@ impl Ui {
         self.refresh_root_focus_nodes();
     }
 
-    pub fn set_network_room_code(&mut self, code: Option<&str>) {
-        self.network_room_label = code
-            .map(|code| format!("Code salon : {code}"))
-            .unwrap_or_default();
-    }
-
     pub fn rebuild_toolbar(&mut self) {
         self.toolbar_widgets = if self.active_workspace == WorkspaceId::Recording
             && (self.recording_ui.page == RecordingPage::Choice
@@ -546,6 +537,7 @@ impl Ui {
             self.recording_daw_toolbar_widgets.clear();
             self.recording_ui.dragging_asset = None;
             self.recording_ui.dragging_clip = None;
+            self.recording_ui.dragging_track_volume = None;
         }
         if self.active_workspace == WorkspaceId::Recording {
             self.rebuild_layout();
@@ -816,6 +808,28 @@ impl Ui {
         {
             return EventResponse::Consumed;
         }
+        if let Some(track_id) = self.recording_ui.dragging_track_volume {
+            match event {
+                UiEvent::MouseMove { x, .. } => {
+                    if let Some(control) = self.recording_daw_scene.controls.iter().find(
+                        |control| control.control == RecordingControl::TrackVolume(track_id),
+                    ) {
+                        let volume = ((*x - control.bounds.x) / control.bounds.width
+                            * crate::recording_mix::TRACK_VOLUME_MAX)
+                            .clamp(0.0, crate::recording_mix::TRACK_VOLUME_MAX);
+                        return EventResponse::Action(UiAction::RecordingSetTrackVolume {
+                            track_id,
+                            volume,
+                        });
+                    }
+                }
+                UiEvent::MouseRelease { .. } => {
+                    self.recording_ui.dragging_track_volume = None;
+                    return EventResponse::Consumed;
+                }
+                _ => {}
+            }
+        }
         if !self.recording_playback_controls_enabled() {
             return EventResponse::Consumed;
         }
@@ -1064,6 +1078,16 @@ impl Ui {
                     accum_px: 0.0,
                 });
             }
+            RecordingControl::TrackVolume(track_id) => {
+                self.recording_ui.dragging_track_volume = Some(track_id);
+                let volume = ((x - control.bounds.x) / control.bounds.width
+                    * crate::recording_mix::TRACK_VOLUME_MAX)
+                    .clamp(0.0, crate::recording_mix::TRACK_VOLUME_MAX);
+                return EventResponse::Action(UiAction::RecordingSetTrackVolume {
+                    track_id,
+                    volume,
+                });
+            }
             _ => {}
         }
         Self::recording_control_action(&control.control, additive)
@@ -1093,6 +1117,21 @@ impl Ui {
 
     pub fn recording_can_edit_timeline(&self) -> bool {
         self.recording_ui.role.can_edit_timeline()
+    }
+
+    pub fn recording_track_volume(
+        &self,
+        track_id: crate::recording::AudioTrackId,
+    ) -> f32 {
+        self.recording_ui.track_volume(track_id)
+    }
+
+    pub fn recording_set_track_volume(
+        &mut self,
+        track_id: crate::recording::AudioTrackId,
+        volume: f32,
+    ) {
+        self.recording_ui.set_track_volume(track_id, volume);
     }
 
     pub fn recording_playback_controls_enabled(&self) -> bool {
@@ -1167,6 +1206,12 @@ impl Ui {
             RecordingControl::TrackMute(track_id) => UiAction::RecordingToggleTrackMute(*track_id),
             RecordingControl::TrackSolo(track_id) => UiAction::RecordingToggleTrackSolo(*track_id),
             RecordingControl::TrackArm(track_id) => UiAction::RecordingArmTrack(*track_id),
+            RecordingControl::TrackVolume(track_id) => {
+                UiAction::RecordingAdjustTrackVolume {
+                    track_id: *track_id,
+                    delta: 0.1,
+                }
+            }
             RecordingControl::TrackExport(track_id) => UiAction::RecordingExportTrack(*track_id),
             RecordingControl::StartCapture => UiAction::RecordingStartCapture,
             RecordingControl::Clip(clip_id) => UiAction::RecordingSelectClip {
@@ -1666,6 +1711,28 @@ impl Ui {
                     },
                 );
             }
+            if let Some(track_id) = self.recording_ui.dragging_track_volume {
+                match event {
+                    UiEvent::MouseMove { x, .. } => {
+                        if let Some(control) = self.recording_scene.controls.iter().find(
+                            |control| control.control == RecordingControl::TrackVolume(track_id),
+                        ) {
+                            let volume = ((*x - control.bounds.x) / control.bounds.width
+                                * crate::recording_mix::TRACK_VOLUME_MAX)
+                                .clamp(0.0, crate::recording_mix::TRACK_VOLUME_MAX);
+                            return EventResponse::Action(UiAction::RecordingSetTrackVolume {
+                                track_id,
+                                volume,
+                            });
+                        }
+                    }
+                    UiEvent::MouseRelease { .. } => {
+                        self.recording_ui.dragging_track_volume = None;
+                        return EventResponse::Consumed;
+                    }
+                    _ => {}
+                }
+            }
             if let Some(asset_id) = self.recording_ui.dragging_asset {
                 match event {
                     UiEvent::MouseMove { .. } => return EventResponse::Consumed,
@@ -1786,6 +1853,9 @@ impl Ui {
                                         accum_px: 0.0,
                                     });
                             }
+                            RecordingControl::TrackVolume(track_id) => {
+                                self.recording_ui.dragging_track_volume = Some(*track_id);
+                            }
                             _ => {}
                         }
                     }
@@ -1798,6 +1868,15 @@ impl Ui {
                 {
                     if !control.enabled {
                         return EventResponse::Consumed;
+                    }
+                    if let RecordingControl::TrackVolume(track_id) = &control.control {
+                        let volume = ((x - control.bounds.x) / control.bounds.width
+                            * crate::recording_mix::TRACK_VOLUME_MAX)
+                            .clamp(0.0, crate::recording_mix::TRACK_VOLUME_MAX);
+                        return EventResponse::Action(UiAction::RecordingSetTrackVolume {
+                            track_id: *track_id,
+                            volume,
+                        });
                     }
                     if matches!(event, UiEvent::DoubleClick { .. })
                         && matches!(control.control, RecordingControl::TrackExport(_))
@@ -2329,11 +2408,6 @@ impl Ui {
 
     pub fn needs_background_poll(&self) -> bool {
         self.modal_host.server_browser.is_some()
-            || self
-                .modal_host
-                .file_explorer
-                .as_ref()
-                .is_some_and(|modal| modal.needs_background_poll())
     }
 
     pub fn next_cursor_blink_deadline(&self) -> Option<std::time::Instant> {
@@ -2342,14 +2416,6 @@ impl Ui {
             deadline = Some(deadline.map_or(side_panel_deadline, |current| {
                 current.min(side_panel_deadline)
             }));
-        }
-        if let Some(modal_deadline) = self
-            .modal_host
-            .file_explorer
-            .as_ref()
-            .and_then(|modal| modal.next_cursor_blink_deadline())
-        {
-            deadline = Some(deadline.map_or(modal_deadline, |current| current.min(modal_deadline)));
         }
         if let Some(modal_deadline) = self
             .modal_host
@@ -2582,14 +2648,6 @@ impl Ui {
             .refresh_languages(languages, active_language_id);
     }
 
-    pub fn open_file_explorer(&mut self, request: file_explorer::FileExplorerRequest) {
-        self.modal_host.open_file_explorer(request);
-    }
-
-    pub fn poll_file_explorer(&mut self) -> bool {
-        self.modal_host.poll_file_explorer()
-    }
-
     pub fn open_voice_actor_modal(&mut self) {
         self.modal_host.open_voice_actor();
     }
@@ -2662,14 +2720,32 @@ impl Ui {
         self.modal_host.open_connect(ip, port, join);
     }
 
+    /// Open the connect modal pre-filled with a room code, for the
+    /// `coquerythmo://<join>` quick-setup flow.
+    pub fn open_connect_modal_with_room(
+        &mut self,
+        ip: &str,
+        port: u16,
+        room_code: &str,
+        password: &str,
+    ) {
+        self.modal_host
+            .open_connect_with_room(ip, port, room_code, password);
+    }
+
     pub fn open_settings_modal(
         &mut self,
         fonts: Vec<String>,
         scroll_speed: f32,
         reading_bar_offset_percent: f32,
+        temporary_directory: std::path::PathBuf,
     ) {
-        self.modal_host
-            .open_settings(fonts, scroll_speed, reading_bar_offset_percent);
+        self.modal_host.open_settings(
+            fonts,
+            scroll_speed,
+            reading_bar_offset_percent,
+            temporary_directory,
+        );
     }
 
     pub fn open_project_settings_modal(
@@ -2697,6 +2773,10 @@ impl Ui {
 
     pub fn close_settings_modal(&mut self) {
         self.modal_host.close_settings();
+    }
+
+    pub fn set_settings_temporary_directory(&mut self, path: std::path::PathBuf) {
+        self.modal_host.set_settings_temporary_directory(path);
     }
 
     pub fn rythmo_state(&self) -> &rythmo::RythmoState {
@@ -4342,109 +4422,6 @@ impl Ui {
             rotation: 0.0,
             _padding: [0.0; 2],
         });
-
-        let status_text = self.network_status.trim();
-        let room_text = self.network_room_label.trim();
-        if !status_text.is_empty() || !room_text.is_empty() {
-            let left = 472.0;
-            let right = self.screen_w - 42.0;
-            let available = right - left;
-            if available >= 140.0 {
-                let y = 0.0;
-                let h = TOPBAR_HEIGHT;
-                let dot_color =
-                    if status_text.starts_with("Erreur") || status_text.starts_with("Échec") {
-                        [0.90, 0.28, 0.28, 1.0]
-                    } else if status_text == "Connexion..." {
-                        [0.95, 0.68, 0.30, 1.0]
-                    } else if self.network_in_room {
-                        [0.38, 0.78, 0.48, 1.0]
-                    } else {
-                        [0.46, 0.48, 0.55, 1.0]
-                    };
-
-                let has_status = !status_text.is_empty();
-                let has_room = !room_text.is_empty();
-                let status_w = if has_room {
-                    (available * 0.42).clamp(92.0, 190.0).min(available - 96.0)
-                } else {
-                    available.min(240.0)
-                };
-                let status_x = if has_room { left } else { right - status_w };
-
-                if has_status {
-                    quads.push(QuadInstance {
-                        rect: [status_x + 4.0, 13.0, 6.0, 6.0],
-                        color: dot_color,
-                        color_bottom: dot_color,
-                        border_color: [0.0; 4],
-                        border_width: 0.0,
-                        border_radius: 3.0,
-                        shadow_offset: [0.0; 2],
-                        shadow_color: [0.0; 4],
-                        shadow_blur: 0.0,
-                        rotation: 0.0,
-                        _padding: [0.0; 2],
-                    });
-                    labels.push(LabelInfo {
-                        text: status_text,
-                        bounds: Rect {
-                            x: status_x + 14.0,
-                            y,
-                            width: status_w - 14.0,
-                            height: h,
-                        },
-                        h_align: HAlign::Left,
-                        v_align: VAlign::Center,
-                        overflow: Overflow::Ellipsis,
-                        padding: 0.0,
-                        font_size_override: Some(11.0),
-                        color_override: Some([165, 168, 178]),
-                        font_family_override: None,
-                    });
-                }
-
-                if has_room {
-                    let room_x = if has_status {
-                        status_x + status_w + 12.0
-                    } else {
-                        left
-                    };
-                    let room_w = (right - room_x).max(80.0);
-                    if has_status && room_w >= 90.0 {
-                        quads.push(QuadInstance {
-                            rect: [room_x - 7.0, 8.0, 1.0, 16.0],
-                            color: [0.28, 0.28, 0.34, 0.9],
-                            color_bottom: [0.28, 0.28, 0.34, 0.9],
-                            border_color: [0.0; 4],
-                            border_width: 0.0,
-                            border_radius: 0.0,
-                            shadow_offset: [0.0; 2],
-                            shadow_color: [0.0; 4],
-                            shadow_blur: 0.0,
-                            rotation: 0.0,
-                            _padding: [0.0; 2],
-                        });
-                    }
-                    labels.push(LabelInfo {
-                        text: room_text,
-                        bounds: Rect {
-                            x: room_x,
-                            y,
-                            width: room_w,
-                            height: h,
-                        },
-                        h_align: HAlign::Left,
-                        v_align: VAlign::Center,
-                        overflow: Overflow::Ellipsis,
-                        padding: 0.0,
-                        font_size_override: Some(11.0),
-                        color_override: Some([210, 212, 222]),
-                        font_family_override: None,
-                    });
-                }
-            }
-        }
 
         if self.active_workspace == WorkspaceId::Recording {
             if self.recording_daw_detached && self.recording_ui.page == RecordingPage::Timeline {

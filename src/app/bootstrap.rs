@@ -15,6 +15,7 @@ pub(crate) fn initialize() -> bool {
     let updater_started = update::check();
     if !updater_started {
         platform::register_project_file_association();
+        platform::register_url_protocol();
     }
     updater_started
 }

@@ -1,5 +1,40 @@
 //! Semantic application commands emitted by UI and input adapters.
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilePickerMode {
+    Open,
+    Save,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileFilterSpec {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
+impl FileFilterSpec {
+    pub fn new(name: impl Into<String>, extensions: &[&str]) -> Self {
+        Self {
+            name: name.into(),
+            extensions: extensions
+                .iter()
+                .map(|extension| extension.trim_start_matches('.').to_ascii_lowercase())
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FilePickerRequest {
+    pub title: String,
+    pub mode: FilePickerMode,
+    pub intent: FilePickerIntent,
+    pub filters: Vec<FileFilterSpec>,
+    pub initial_dir: Option<std::path::PathBuf>,
+    pub default_extension: Option<String>,
+    pub initial_filename: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiAction {
     Accessibility(crate::accessibility::AccessibilityEvent),
@@ -17,6 +52,14 @@ pub enum UiAction {
     RecordingToggleTrackMute(crate::recording::AudioTrackId),
     RecordingToggleTrackSolo(crate::recording::AudioTrackId),
     RecordingArmTrack(crate::recording::AudioTrackId),
+    RecordingSetTrackVolume {
+        track_id: crate::recording::AudioTrackId,
+        volume: f32,
+    },
+    RecordingAdjustTrackVolume {
+        track_id: crate::recording::AudioTrackId,
+        delta: f32,
+    },
     RecordingExportTrack(crate::recording::AudioTrackId),
     RecordingCutClip {
         clip_id: crate::recording::AudioClipId,
@@ -51,6 +94,12 @@ pub enum UiAction {
     SetRecordingInputDevice(Option<String>),
     RecordingToggleSharedAudio,
     RecordingCycleLanguage,
+    /// Copy a `coquerythmo://` host link for the current project and session
+    /// to the clipboard (menu "Mise en place rapide").
+    CopyQuickHostLink,
+    /// Copy a `coquerythmo://` join link for the current session and room
+    /// code to the clipboard. The recipient supplies their own username.
+    CopyQuickJoinLink,
     CloseApp,
     CloseSecondaryDisplay,
     Undo,
@@ -115,10 +164,6 @@ pub enum UiAction {
     },
     SaveExportConfiguration {
         configuration: crate::project::ExportConfiguration,
-    },
-    FilePickerSelected {
-        intent: FilePickerIntent,
-        path: std::path::PathBuf,
     },
     PickProjectInstrumentalAudio,
     OpenProxyModal,
@@ -393,11 +438,13 @@ pub enum UiAction {
     OpenSettings,
     OpenProjectSettings,
     RestoreBackup,
+    PickTemporaryDirectory,
     SaveSettings {
         lang: String,
         rythmo_font: Option<String>,
         scroll_speed: f32,
         reading_bar_offset_percent: f32,
+        temporary_directory: std::path::PathBuf,
     },
     SaveProjectSettings {
         instrumental_audio_path: Option<String>,

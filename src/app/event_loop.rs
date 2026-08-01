@@ -11,7 +11,6 @@ use crate::platform;
 use crate::state::State;
 use crate::ui::primitives::{UiAction, UiEvent};
 use crate::update;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::dpi::LogicalSize;
@@ -182,7 +181,7 @@ fn announce_named_text_command(command: crate::application::command::TextCommand
     CommandDispatcher::announce_shortcut(&UiAction::Text(command), state);
 }
 
-pub fn run(startup_path: Option<PathBuf>) {
+pub fn run(startup: Option<super::StartupInput>) {
     if bootstrap::initialize() {
         // Updater was launched, exit so it can replace our files
         return;
@@ -223,8 +222,10 @@ pub fn run(startup_path: Option<PathBuf>) {
 
     let mut state = pollster::block_on(State::new(window.clone(), accessibility_sender));
     state.update_window_title();
-    if let Some(path) = startup_path {
-        state.start_br_import(path);
+    match startup {
+        Some(super::StartupInput::Project(path)) => state.start_br_import(path),
+        Some(super::StartupInput::Url(url)) => state.handle_protocol_url(&url),
+        None => {}
     }
     if config::should_show_whats_new(update::current_version()) {
         start_whats_new_fetch(update::current_version().to_string(), event_loop_proxy);
@@ -1613,6 +1614,12 @@ pub fn run(startup_path: Option<PathBuf>) {
                         }
                         crate::application::job_service::SaveContinuation::ProjectTransferAccept => {
                             state.accept_project_transfer_after_save()
+                        }
+                        crate::application::job_service::SaveContinuation::ProtocolHost => {
+                            // Quick-setup link resumed after saving: close the
+                            // current project, then load the target and create
+                            // the room (handled inside `poll_pending_protocol`).
+                            state.protocol_resume_after_save()
                         }
                         crate::application::job_service::SaveContinuation::None => {}
                     }

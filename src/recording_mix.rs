@@ -16,6 +16,7 @@ use crate::recording::{AudioAssetId, AudioClipId, AudioTrackId, RecordingProject
 
 static MIX_TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
 pub const REALTIME_SAMPLE_RATE: u32 = 48_000;
+pub const TRACK_VOLUME_MAX: f32 = 2.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MixClip {
@@ -25,6 +26,7 @@ pub struct MixClip {
     pub source_start_seconds: f64,
     pub duration_seconds: f64,
     pub timeline_start_seconds: f64,
+    pub volume: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +55,7 @@ struct RealtimeMixClip {
     source_start_seconds: f64,
     duration_seconds: f64,
     timeline_start_seconds: f64,
+    volume: f32,
 }
 
 impl RealtimeRecordingMix {
@@ -72,6 +75,7 @@ impl RealtimeRecordingMix {
                     source_start_seconds: clip.source_start_seconds,
                     duration_seconds: clip.duration_seconds,
                     timeline_start_seconds: clip.timeline_start_seconds,
+                    volume: clip.volume,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -97,12 +101,15 @@ impl RealtimeRecordingMix {
             let sample_f = source_seconds * clip_rate;
             let sample = sample_f.floor() as usize;
             let frac = sample_f - sample as f64;
-            let index = sample.saturating_mul(2);
-            if let Some(stereo) = clip.samples.get(index..index + 4) {
-                let left = stereo[0] * (1.0 - frac) as f32 + stereo[2] * frac as f32;
-                let right = stereo[1] * (1.0 - frac) as f32 + stereo[3] * frac as f32;
-                mixed[0] += left;
-                mixed[1] += right;
+            if let Some(&current) = clip.samples.get(sample) {
+                let next = clip
+                    .samples
+                    .get(sample.saturating_add(1))
+                    .copied()
+                    .unwrap_or(current);
+                let value = (current * (1.0 - frac) as f32 + next * frac as f32) * clip.volume;
+                mixed[0] += value;
+                mixed[1] += value;
             }
         }
         mixed
@@ -127,7 +134,7 @@ pub fn decode_realtime_asset(path: &Path, cancel: &AtomicBool) -> Result<Arc<Vec
             "-ar",
             &REALTIME_SAMPLE_RATE.to_string(),
             "-ac",
-            "2",
+            "1",
             "pipe:1",
         ])
         .output()
@@ -195,6 +202,7 @@ impl RecordingMixSpec {
                 source_start_seconds: clip.source_start_frame as f64 / fps,
                 duration_seconds: clip.duration_frames as f64 / fps,
                 timeline_start_seconds: clip.start_frame as f64 / fps,
+                volume: 1.0,
             });
         }
         clips.sort_by(|left, right| {
@@ -219,6 +227,19 @@ impl RecordingMixSpec {
         };
     }
 
+    pub fn set_track_volume(&mut self, track_id: AudioTrackId, volume: f32) {
+        let volume = if volume.is_finite() {
+            volume.clamp(0.0, TRACK_VOLUME_MAX)
+        } else {
+            1.0
+        };
+        for clip in &mut self.clips {
+            if clip.track_id == track_id {
+                clip.volume = volume;
+            }
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.source_duration_seconds.is_none() && self.clips.is_empty()
     }
@@ -236,7 +257,7 @@ impl RecordingMixSpec {
         if let Some(source_duration) = self.source_duration_seconds {
             if source_duration.is_finite() && source_duration > 0.0 {
                 filters.push(format!(
-                    "anullsrc=r={}:cl=stereo:duration={:.9}[source]",
+                    "anullsrc=r={}:cl=mono:duration={:.9}[source]",
                     self.sample_rate, source_duration
                 ));
                 labels.push("[source]".to_string());
@@ -246,17 +267,24 @@ impl RecordingMixSpec {
             if !clip.source_start_seconds.is_finite()
                 || !clip.duration_seconds.is_finite()
                 || !clip.timeline_start_seconds.is_finite()
+                || !clip.volume.is_finite()
                 || clip.source_start_seconds < 0.0
                 || clip.duration_seconds <= 0.0
                 || clip.timeline_start_seconds < 0.0
+                || !(0.0..=TRACK_VOLUME_MAX).contains(&clip.volume)
             {
                 return Err(format!("invalid timing for clip {}", clip.clip_id));
             }
             let label = format!("clip{clip_index}");
             let delay_samples =
                 (clip.timeline_start_seconds * f64::from(self.sample_rate)).round() as u64;
+            let volume = if (clip.volume - 1.0).abs() > f32::EPSILON {
+                format!("volume={:.9},", clip.volume)
+            } else {
+                String::new()
+            };
             filters.push(format!(
-                "[{input_index}:a]aresample={},atrim=start={:.9}:duration={:.9},asetpts=PTS-STARTPTS,adelay={delay_samples}S:all=1[{label}]",
+                "[{input_index}:a]{volume}aresample={},atrim=start={:.9}:duration={:.9},asetpts=PTS-STARTPTS,adelay={delay_samples}S:all=1[{label}]",
                 self.sample_rate, clip.source_start_seconds, clip.duration_seconds
             ));
             labels.push(format!("[{label}]"));
@@ -295,6 +323,8 @@ impl RecordingMixSpec {
             "flac".into(),
             "-ar".into(),
             self.sample_rate.to_string(),
+            "-ac".into(),
+            "1".into(),
             output.to_string_lossy().into_owned(),
         ]);
         Ok(args)
@@ -421,6 +451,7 @@ mod tests {
                 source_start_seconds: 0.5,
                 duration_seconds: 2.0,
                 timeline_start_seconds: 1.25,
+                volume: 1.0,
             }],
             sample_rate: 48_000,
             source_volume: 1.0,
@@ -443,6 +474,7 @@ mod tests {
                 source_start_seconds: 0.0,
                 duration_seconds: 2.0,
                 timeline_start_seconds: 1.0,
+                volume: 1.0,
             }],
             sample_rate: 48_000,
             source_volume: 1.0,
@@ -450,7 +482,7 @@ mod tests {
         };
 
         let filter = spec.ffmpeg_filter().unwrap();
-        assert!(filter.contains("anullsrc=r=48000:cl=stereo:duration=10.000000000[source]"));
+        assert!(filter.contains("anullsrc=r=48000:cl=mono:duration=10.000000000[source]"));
         assert!(filter.contains("[0:a]aresample=48000"));
         assert!(!filter.contains("[1:a]aresample=48000"));
     }
@@ -469,9 +501,10 @@ mod tests {
                     clip_id: AudioClipId::new(3),
                     track_id: AudioTrackId::new(1),
                     path: PathBuf::from("voice.flac"),
-                    source_start_seconds: 0.0,
-                    duration_seconds: 2.0 / f64::from(REALTIME_SAMPLE_RATE),
-                    timeline_start_seconds: 1.0,
+                source_start_seconds: 0.0,
+                duration_seconds: 2.0 / f64::from(REALTIME_SAMPLE_RATE),
+                timeline_start_seconds: 1.0,
+                volume: 1.0,
                 }],
                 sample_rate: REALTIME_SAMPLE_RATE,
                 source_volume: 0.5,
@@ -483,16 +516,43 @@ mod tests {
         .unwrap();
 
         assert_eq!(mix.mix_stereo(0.5, [1.0, 1.0]), [0.5, 0.5]);
-        assert_eq!(mix.mix_stereo(1.0, [1.0, 1.0]), [0.75, 0.0]);
+        assert_eq!(mix.mix_stereo(1.0, [1.0, 1.0]), [0.75, 0.75]);
+    }
+
+    #[test]
+    fn realtime_mix_applies_a_local_track_volume() {
+        let mut cache = BTreeMap::new();
+        cache.insert(PathBuf::from("voice.flac"), Arc::new(vec![0.5]));
+        let mut spec = RecordingMixSpec {
+            source_duration_seconds: None,
+            clips: vec![MixClip {
+                clip_id: AudioClipId::new(1),
+                track_id: AudioTrackId::new(2),
+                path: PathBuf::from("voice.flac"),
+                source_start_seconds: 0.0,
+                duration_seconds: 1.0 / f64::from(REALTIME_SAMPLE_RATE),
+                timeline_start_seconds: 0.0,
+                volume: 1.0,
+            }],
+            sample_rate: REALTIME_SAMPLE_RATE,
+            source_volume: 1.0,
+            total_duration_seconds: None,
+        };
+        spec.set_track_volume(AudioTrackId::new(2), 1.5);
+
+        let mix =
+            RealtimeRecordingMix::from_spec(&spec, &cache, REALTIME_SAMPLE_RATE).unwrap();
+        assert_eq!(mix.mix_stereo(0.0, [0.0, 0.0]), [0.75, 0.75]);
+        assert!(spec.ffmpeg_filter().unwrap().contains("volume=1.500000000"));
     }
 
     #[test]
     fn realtime_mix_interpolates_at_different_sample_rate() {
         let mut cache = BTreeMap::new();
-        // 4 stereo frames: [L0, R0, L1, R1, L2, R2, L3, R3]
+        // 4 mono frames.
         cache.insert(
             PathBuf::from("voice.flac"),
-            Arc::new(vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, -1.0, -1.0]),
+            Arc::new(vec![0.0, 1.0, 0.0, -1.0]),
         );
         let mix = RealtimeRecordingMix::from_spec(
             &RecordingMixSpec {
@@ -501,9 +561,10 @@ mod tests {
                     clip_id: AudioClipId::new(1),
                     track_id: AudioTrackId::new(1),
                     path: PathBuf::from("voice.flac"),
-                    source_start_seconds: 0.0,
-                    duration_seconds: 4.0 / f64::from(REALTIME_SAMPLE_RATE),
-                    timeline_start_seconds: 0.0,
+                source_start_seconds: 0.0,
+                duration_seconds: 4.0 / f64::from(REALTIME_SAMPLE_RATE),
+                timeline_start_seconds: 0.0,
+                volume: 1.0,
                 }],
                 sample_rate: REALTIME_SAMPLE_RATE,
                 source_volume: 1.0,

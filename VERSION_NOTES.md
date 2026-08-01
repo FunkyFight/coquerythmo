@@ -1,3 +1,18 @@
+# 4.2.0
+
+- Lecture audio : les fichiers stéréo sont lus en stéréo ; les enregistrements restent traités en mono.
+- Ajout d’un réglage de volume indépendant par piste dans le DAW, local à la station et non partagé.
+- Correction du mix de prévisualisation et de l’export des enregistrements pour conserver le mono.
+
+# 4.1.0
+
+- Ajout d’un système de mise en place rapide par liens `coquerythmo://` pour configurer un projet et créer ou rejoindre un salon.
+- Retrait de l’état « Salon créé » et du code du salon de l’interface ; le code apparaît désormais dans le titre de la fenêtre après l’état du salon.
+- Les fichiers temporaires internes utilisent par défaut le dossier temporaire de Windows et peuvent être déplacés depuis les Paramètres ; ils ne sont plus créés dans le dossier d’installation.
+- Les sauvegardes automatiques, transferts reçus, proxys vidéo et extractions de projets utilisent les dossiers de données ou temporaires de l’utilisateur.
+- L’explorateur de fichiers personnalisé est supprimé : toutes les sélections de fichiers et de dossiers utilisent désormais l’explorateur Windows.
+- La console affiche au démarrage un rappel en jaune gold et en gras ainsi que l’utilité des logs pour le diagnostic des bugs.
+
 # 4.0.7
 
 - Enregistrement en ligne : un comédien peut rejoindre un salon sans projet ouvert ou avec un projet différent.

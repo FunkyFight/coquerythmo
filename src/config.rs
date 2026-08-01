@@ -37,6 +37,9 @@ pub struct Config {
     pub lang: String,
     pub network: NetworkConfig,
     pub accessibility: AccessibilityConfig,
+    /// Base directory for runtime temporary files. `None` means the OS temp
+    /// directory (for example `%TEMP%` on Windows).
+    pub temporary_directory: Option<PathBuf>,
     pub recording_input_device: Option<String>,
     pub last_whats_new_version: Option<String>,
     #[serde(default)]
@@ -134,6 +137,7 @@ impl Default for Config {
             lang: "fr-fr".into(),
             network: NetworkConfig::default(),
             accessibility: AccessibilityConfig::default(),
+            temporary_directory: None,
             recording_input_device: None,
             last_whats_new_version: None,
             recent_projects: Vec::new(),
@@ -168,7 +172,9 @@ impl Default for UiConfig {
 impl Config {
     fn config_path() -> PathBuf {
         let dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
+            .or_else(dirs::data_local_dir)
+            .or_else(dirs::data_dir)
+            .unwrap_or_else(std::env::temp_dir)
             .join(APP_NAME);
         dir.join(CONFIG_FILE)
     }
@@ -393,10 +399,34 @@ mod tests {
             Some("Studio microphone")
         );
     }
+
+    #[test]
+    fn temporary_directory_survives_config_round_trip() {
+        let mut config = Config::default();
+        config.temporary_directory = Some(PathBuf::from(r"D:\CoquerythmoTemp"));
+
+        let encoded = toml::to_string(&config).unwrap();
+        let decoded: Config = toml::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded.temporary_directory, config.temporary_directory);
+    }
 }
 
 pub fn init() {
     INSTANCE.get_or_init(|| RwLock::new(Config::load()));
+}
+
+pub fn default_temporary_directory() -> PathBuf {
+    std::env::temp_dir()
+}
+
+pub fn temporary_directory() -> PathBuf {
+    INSTANCE
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .and_then(|config| config.temporary_directory.clone())
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(default_temporary_directory)
 }
 
 /// Return the configured UI language without requiring the global config to
@@ -408,11 +438,18 @@ pub fn language_or_default() -> String {
         .unwrap_or_else(|| Config::default().lang)
 }
 
-pub fn save_settings(lang: String, rythmo_font: Option<String>) {
+pub fn save_settings(lang: String, rythmo_font: Option<String>, temporary_directory: PathBuf) {
     let lock = INSTANCE.get().expect("config not initialized");
     let mut cfg = lock.write().unwrap();
     cfg.lang = lang;
     cfg.ui.rythmo_font = rythmo_font;
+    cfg.temporary_directory = if temporary_directory.as_os_str().is_empty()
+        || temporary_directory == default_temporary_directory()
+    {
+        None
+    } else {
+        Some(temporary_directory)
+    };
     cfg.save();
 }
 

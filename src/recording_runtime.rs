@@ -55,25 +55,43 @@ pub struct RecordingRuntime {
     observed_capture: Option<ObservedCapture>,
     incoming: AudioTransferReceiver,
     temporary_dir: PathBuf,
+    temporary_directories: Vec<PathBuf>,
     owned_files: Vec<PathBuf>,
     audio_paths_by_checksum: HashMap<String, PathBuf>,
 }
 
 impl RecordingRuntime {
     pub fn new() -> Self {
-        let nonce = RECORDING_NONCE.fetch_add(1, Ordering::Relaxed);
-        let temporary_dir = crate::media_binary::installation_temp_dir().join(format!(
-            "coquerythmo-recording-{}-{nonce}",
-            std::process::id()
-        ));
+        let temporary_dir = Self::new_temporary_dir();
         Self {
             capture: None,
             observed_capture: None,
             incoming: AudioTransferReceiver::default(),
             temporary_dir,
+            temporary_directories: Vec::new(),
             owned_files: Vec::new(),
             audio_paths_by_checksum: HashMap::new(),
         }
+    }
+
+    fn new_temporary_dir() -> PathBuf {
+        let nonce = RECORDING_NONCE.fetch_add(1, Ordering::Relaxed);
+        crate::media_binary::installation_temp_dir().join(format!(
+            "coquerythmo-recording-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    pub fn refresh_temporary_directory(&mut self) {
+        if self.is_active() {
+            return;
+        }
+        let configured_base = crate::media_binary::installation_temp_dir();
+        if self.temporary_dir.parent() == Some(configured_base.as_path()) {
+            return;
+        }
+        let previous = std::mem::replace(&mut self.temporary_dir, Self::new_temporary_dir());
+        self.temporary_directories.push(previous);
     }
 
     pub fn capture_state(&self) -> Option<&CaptureState> {
@@ -148,6 +166,7 @@ impl RecordingRuntime {
         if self.capture_state().is_some() {
             return Err(RecordingError::CaptureBusy);
         }
+        self.refresh_temporary_directory();
         let nonce = RECORDING_NONCE.fetch_add(1, Ordering::Relaxed);
         let timestamp = recording_timestamp();
         let prefix = portable_username(username);
@@ -254,6 +273,7 @@ impl RecordingRuntime {
     }
 
     pub fn begin_audio_receive(&mut self, metadata: AudioTransferMetadata) -> Result<(), String> {
+        self.refresh_temporary_directory();
         self.incoming.begin(metadata, &self.temporary_dir)
     }
 
@@ -348,7 +368,11 @@ impl Drop for RecordingRuntime {
         for path in self.owned_files.drain(..) {
             let _ = std::fs::remove_file(path);
         }
-        let _ = std::fs::remove_dir(&self.temporary_dir);
+        let mut temporary_directories = std::mem::take(&mut self.temporary_directories);
+        temporary_directories.push(std::mem::take(&mut self.temporary_dir));
+        for directory in temporary_directories {
+            let _ = std::fs::remove_dir(directory);
+        }
     }
 }
 

@@ -29,6 +29,12 @@ use crate::network::{
 use crate::observer::TimelineEvent;
 use crate::packet::{CommandPayload, Packet, ProjectData};
 use crate::project::{Character, LineCharacterNameChange, Project};
+use crate::protocol::{ProtocolKind, ProtocolPayload};
+
+// Marker only — the real "close project with protocol continuation" logic
+// lives in `crate::app::dispatcher::protocol_close_current_project`, which
+// has access to the save helpers. State just tracks the pending flow and
+// polls its stages.
 use crate::rythmo_line::RythmoLine;
 use crate::ui::primitives::{EventResponse, UiEvent};
 use crate::ui::Ui;
@@ -170,6 +176,27 @@ pub struct State {
     last_progress_percent: Option<u32>,
     last_progress_announcement: Option<Instant>,
     last_recording_countdown_second: Option<u32>,
+    /// Pending `coquerythmo://` quick-setup flow awaiting either a project
+    /// save/close decision, a project import or (join only) a username prompt.
+    pending_protocol: Option<PendingProtocolFlow>,
+}
+
+/// Internal state machine for protocol quick-setup links. At most one flow
+/// may run at a time; each step is resumable so the app never deadlocks when
+/// the user cancels midway.
+pub(crate) struct PendingProtocolFlow {
+    pub(crate) payload: ProtocolPayload,
+    pub(crate) stage: PendingProtocolStage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingProtocolStage {
+    /// Waiting for the current project to close (save prompt, discard or
+    /// "no save needed"). Continues via [`State::protocol_current_closed`].
+    ClosingCurrentProject,
+    /// Waiting for the `.coquerythmo` import job to finish parsing the file
+    /// from the link. Continues via [`State::poll_pending_protocol`].
+    ImportingTargetProject,
 }
 
 struct ProjectTransferRuntime {
@@ -223,6 +250,7 @@ impl State {
             last_progress_percent: None,
             last_progress_announcement: None,
             last_recording_countdown_second: None,
+            pending_protocol: None,
         }
     }
 
@@ -845,6 +873,19 @@ impl State {
             }
         };
         spec.set_source_volume(self.ui_shell.ui.volume());
+        if self
+            .ui_shell
+            .ui
+            .recording_role()
+            .can_adjust_track_volume()
+        {
+            for track in self.project_session.recording_project.tracks() {
+                spec.set_track_volume(
+                    track.id,
+                    self.ui_shell.ui.recording_track_volume(track.id),
+                );
+            }
+        }
         if let Some(job) = self.jobs.pending_recording_mix_job.take() {
             job.cancel.store(true, Ordering::Relaxed);
         }
@@ -962,10 +1003,36 @@ impl State {
         }
     }
 
+    pub fn recording_set_track_volume(
+        &mut self,
+        track_id: crate::recording::AudioTrackId,
+        volume: f32,
+    ) {
+        if !self.ui_shell.ui.recording_role().can_adjust_track_volume() {
+            self.recording_read_only_error();
+            return;
+        }
+        if self.project_session.recording_project.track(track_id).is_none() {
+            return;
+        }
+        self.ui_shell.ui.recording_set_track_volume(track_id, volume);
+        self.sync_recording_workspace_ui();
+        self.schedule_recording_mix();
+    }
+
+    pub fn recording_adjust_track_volume(
+        &mut self,
+        track_id: crate::recording::AudioTrackId,
+        delta: f32,
+    ) {
+        let current = self.ui_shell.ui.recording_track_volume(track_id);
+        self.recording_set_track_volume(track_id, current + delta);
+    }
+
     pub fn recording_export_track(
         &mut self,
         track_id: crate::recording::AudioTrackId,
-    ) -> Option<crate::ui::file_explorer::FileExplorerRequest> {
+    ) -> Option<crate::application::command::FilePickerRequest> {
         let project = &self.project_session.recording_project;
         let Some(track) = project.track(track_id) else {
             return None;
@@ -983,18 +1050,19 @@ impl State {
             .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
             .collect::<String>();
 
-        Some(crate::ui::file_explorer::FileExplorerRequest {
+        Some(crate::application::command::FilePickerRequest {
             title: crate::i18n::t("recording.track.export").to_string(),
-            mode: crate::ui::file_explorer::FileExplorerMode::Save,
-            intent: crate::ui::file_explorer::FilePickerIntent::ExportRecordingTrack { track_id },
-            filters: vec![crate::ui::file_explorer::FileFilterSpec {
+            mode: crate::application::command::FilePickerMode::Save,
+            intent: crate::application::command::FilePickerIntent::ExportRecordingTrack {
+                track_id,
+            },
+            filters: vec![crate::application::command::FileFilterSpec {
                 name: "FLAC Audio".to_string(),
                 extensions: vec!["flac".to_string()],
             }],
             initial_dir: Some(project_dir),
             default_extension: Some("flac".to_string()),
             initial_filename: Some(safe_name),
-            extra_locations: vec![],
         })
     }
 
@@ -1709,6 +1777,28 @@ impl State {
         }
     }
 
+    pub fn open_connect_modal_with_room(
+        &mut self,
+        ip: &str,
+        port: u16,
+        room_code: &str,
+        password: &str,
+    ) {
+        self.ui_shell
+            .ui
+            .open_connect_modal_with_room(ip, port, room_code, password);
+        if let Some(first) = self
+            .ui_shell
+            .ui
+            .modal_host
+            .connect
+            .as_ref()
+            .map(|modal| modal.keyboard_focus_label())
+        {
+            self.announce_open_container(crate::i18n::t("menu.connect"), first);
+        }
+    }
+
     pub fn open_add_server_modal(&mut self) {
         self.ui_shell.ui.open_add_server_modal();
         if let Some(first) = self
@@ -1758,6 +1848,7 @@ impl State {
             fonts,
             settings.scroll_speed,
             settings.reading_bar_offset_percent,
+            crate::config::temporary_directory(),
         );
         if let Some(first_label) = self.settings_modal_focus_label() {
             self.announce_open_container(crate::i18n::t("settings.title"), first_label);
@@ -2350,24 +2441,6 @@ impl State {
         self.project_session.dirty = true;
     }
 
-    pub fn open_file_explorer(&mut self, request: crate::ui::file_explorer::FileExplorerRequest) {
-        let title = request.title.clone();
-        let first = match request.mode {
-            crate::ui::file_explorer::FileExplorerMode::Open => {
-                crate::i18n::t("file_explorer.back").to_string()
-            }
-            crate::ui::file_explorer::FileExplorerMode::Save => {
-                crate::i18n::t("file_explorer.filename").to_string()
-            }
-        };
-        self.ui_shell.ui.open_file_explorer(request);
-        self.announce_open_container(&title, first);
-    }
-
-    pub fn poll_file_explorer(&mut self) -> bool {
-        self.ui_shell.ui.poll_file_explorer()
-    }
-
     pub fn open_voice_actor_modal(&mut self) {
         self.ui_shell.ui.open_voice_actor_modal();
         if let Some(first) = self
@@ -2398,9 +2471,11 @@ impl State {
         });
     }
 
+    pub fn set_settings_temporary_directory(&mut self, path: PathBuf) {
+        self.ui_shell.ui.set_settings_temporary_directory(path);
+    }
+
     pub fn rebuild_topbar_for_network(&mut self) {
-        let room_code = self.collaboration.network.room_code.clone();
-        self.ui_shell.ui.set_network_room_code(room_code.as_deref());
         self.ui_shell
             .ui
             .rebuild_topbar(self.collaboration.network.is_in_room());
@@ -2413,8 +2488,8 @@ impl State {
     }
 
     pub fn begin_network_connect(&mut self) {
+        self.collaboration.network.room_code = None;
         self.set_network_status("Connexion...");
-        self.ui_shell.ui.set_network_room_code(None);
     }
 
     pub fn disconnect_network(&mut self) {
@@ -2425,16 +2500,7 @@ impl State {
 
     pub fn set_network_status(&mut self, status: impl Into<String>) {
         self.ui_shell.ui.network_status = status.into();
-        let display = if self.ui_shell.ui.network_status.is_empty() {
-            "Déconnecté"
-        } else {
-            &self.ui_shell.ui.network_status
-        };
-        self.window_manager.main_window.set_title(&format!(
-            "Coquerythmo v{} - {}",
-            crate::update::current_version(),
-            display
-        ));
+        self.update_window_title();
     }
 
     pub fn update_window_title(&self) {
@@ -2443,11 +2509,26 @@ impl State {
         } else {
             &self.ui_shell.ui.network_status
         };
-        self.window_manager.main_window.set_title(&format!(
-            "Coquerythmo v{} - {}",
-            crate::update::current_version(),
-            display
-        ));
+        let code = self
+            .collaboration
+            .network
+            .is_in_room()
+            .then(|| self.collaboration.network.room_code.as_deref())
+            .flatten()
+            .filter(|code| !code.trim().is_empty());
+        let title = match code {
+            Some(code) => format!(
+                "Coquerythmo v{} - {} - {code}",
+                crate::update::current_version(),
+                display
+            ),
+            None => format!(
+                "Coquerythmo v{} - {}",
+                crate::update::current_version(),
+                display
+            ),
+        };
+        self.window_manager.main_window.set_title(&title);
     }
 
     pub fn request_redraw(&self) {
@@ -3701,7 +3782,6 @@ impl State {
                     self.collaboration.network.member_details.clear();
                     self.collaboration.network.control_owner_id = None;
                     self.set_network_status("");
-                    self.ui_shell.ui.set_network_room_code(None);
                 }
                 IncomingMessage::Error(err) => {
                     log::error!("Network error: {err}");
@@ -3988,7 +4068,6 @@ impl State {
                 self.collaboration.network.room_code = Some(code.clone());
                 self.collaboration.network.role = Some("admin".into());
                 self.set_network_status("Salon créé");
-                self.ui_shell.ui.set_network_room_code(Some(&code));
                 self.show_toast(
                     format!("{}{code}", crate::i18n::t("toast.room_created")),
                     5.0,
@@ -4014,7 +4093,6 @@ impl State {
                 self.collaboration.network.role = Some(role);
                 self.collaboration.network.members = members;
                 self.set_network_status("Connecté au salon");
-                self.ui_shell.ui.set_network_room_code(Some(&code));
                 self.show_toast(
                     format!("{}{code}", crate::i18n::t("toast.room_joined")),
                     5.0,
@@ -4031,7 +4109,6 @@ impl State {
             Packet::JoinError { reason } => {
                 log::error!("Join failed: {reason}");
                 self.set_network_status(format!("Échec: {reason}"));
-                self.ui_shell.ui.set_network_room_code(None);
             }
             Packet::MemberJoined { username } => {
                 self.collaboration.network.members.push(username.clone());
@@ -6215,19 +6292,16 @@ impl State {
     // -- Backup --
 
     fn backup_path() -> std::path::PathBuf {
-        std::env::current_exe()
-            .map(|p| {
-                p.parent()
-                    .unwrap_or(std::path::Path::new("."))
-                    .join("br_backup.json")
-            })
-            .unwrap_or_else(|_| std::path::PathBuf::from("br_backup.json"))
+        crate::media_binary::user_data_dir().join("br_backup.json")
     }
 
     pub fn save_backup(&self) {
         use crate::export::{JsonExporter, ProjectExporter};
         let path = Self::backup_path();
         let fps = self.fps();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         if let Err(e) = JsonExporter.export(&self.project_session.project, fps, &path) {
             log::warn!("Auto-save failed: {e}");
         } else {
@@ -6947,9 +7021,297 @@ impl State {
         changed |= self.poll_proxy_job();
         changed |= self.poll_import_job();
         changed |= self.poll_save_job();
-        changed |= self.poll_file_explorer();
+        changed |= self.poll_pending_protocol();
         changed |= self.poll_waveform_change();
         changed
+    }
+
+    /// Entry point called at startup when the app is launched from a
+    /// `coquerythmo://` URI.
+    pub fn handle_protocol_url(&mut self, url: &str) {
+        let Some(payload) = ProtocolPayload::from_url(url) else {
+            self.show_toast(crate::i18n::t("toast.protocol_invalid_link"), 6.0);
+            return;
+        };
+        if !payload.is_valid() {
+            self.show_toast(crate::i18n::t("toast.protocol_invalid_link"), 6.0);
+            return;
+        }
+        match payload.kind() {
+            Some(ProtocolKind::Host) => self.protocol_start_host(payload),
+            Some(ProtocolKind::Join) => self.protocol_start_join(payload),
+            None => {
+                self.show_toast(crate::i18n::t("toast.protocol_invalid_link"), 6.0);
+            }
+        }
+    }
+
+    /// Host flow: close the current project (with save prompt when dirty),
+    /// load the target project, then create a room as the director. The flow
+    /// continues either via `protocol_current_closed` once the close is done
+    /// (with/without a save, see [`SaveContinuation::ProtocolHost`]), or via
+    /// [`Self::poll_pending_protocol`] once the `.coquerythmo` import job has
+    /// finished parsing the target file.
+    fn protocol_start_host(&mut self, payload: ProtocolPayload) {
+        let Some(project_path) = payload
+            .project
+            .clone()
+            .filter(|p| !p.trim().is_empty())
+            .map(std::path::PathBuf::from)
+        else {
+            log::warn!("protocol host link: missing project path");
+            self.show_toast(crate::i18n::t("toast.protocol_invalid_link"), 6.0);
+            return;
+        };
+        if !project_path.exists() {
+            self.show_toast(
+                format!(
+                    "{} {}",
+                    crate::i18n::t("toast.protocol_project_missing"),
+                    project_path.display()
+                ),
+                6.0,
+            );
+            return;
+        }
+        if self.is_project_save_in_progress() {
+            self.show_toast(
+                crate::i18n::t("toast.project_change_blocked_saving"),
+                5.0,
+            );
+            return;
+        }
+        self.pending_protocol = Some(PendingProtocolFlow {
+            payload,
+            stage: PendingProtocolStage::ClosingCurrentProject,
+        });
+        if self.project_session.dirty && self.project_session.project_path.is_some() {
+            // Reuse the standard close-project prompt; `handle_protocol_close_action`
+            // below intercepts the `CloseProject{Save,Discard}` actions before the
+            // generic dispatcher can act on them, so we can resume the flow.
+            self.open_save_prompt(crate::ui::save_prompt_modal::SavePromptKind::CloseProject);
+        } else if self.project_session.dirty {
+            // Project was freshly created and never saved: no raccourci.
+            // Fall back to a manual save — the flow is aborted so the user
+            // can pick a location without losing the target project path.
+            self.pending_protocol = None;
+            self.open_save_prompt(crate::ui::save_prompt_modal::SavePromptKind::CloseProject);
+            self.show_toast(
+                crate::i18n::t("toast.protocol_requires_saved_project"),
+                6.0,
+            );
+            return;
+        } else {
+            // Nothing worth saving → close immediately and load the target.
+            self.protocol_current_closed();
+        }
+    }
+
+    /// True when a `coquerythmo://` host flow is currently waiting for the
+    /// current project to close and there is a save prompt on screen. Used by
+    /// the dispatcher to dispatch `SaveContinuation::ProtocolHost`.
+    pub(crate) fn protocol_is_awaiting_close(&self) -> bool {
+        matches!(
+            self.pending_protocol.as_ref().map(|p| p.stage),
+            Some(PendingProtocolStage::ClosingCurrentProject)
+        )
+    }
+
+    /// Abort the pending protocol quick-setup flow (e.g. when the user cancels
+    /// the save prompt or an error blocks progression).
+    pub(crate) fn protocol_abort(&mut self) {
+        self.pending_protocol = None;
+    }
+
+    /// Called by the dispatcher when the save prompt answered "Discard": close
+    /// without saving, then load the linked project.
+    pub(crate) fn protocol_discard_current_and_continue(&mut self) {
+        self.protocol_current_closed();
+    }
+
+    /// Build and copy a `coquerythmo://` quick-setup link of the given kind
+    /// to the clipboard, using the current network configuration and session
+    /// state. Toasts are shown both on success and when prerequisites are
+    /// missing (no active room, no saved project for hosts).
+    pub(crate) fn copy_protocol_link_to_clipboard(&mut self, kind: ProtocolKind) {
+        let cfg = crate::config::get().clone();
+        let server = format!("{}:{}", cfg.network.server_ip, cfg.network.server_port);
+        let payload = match kind {
+            ProtocolKind::Host => {
+                let Some(project_path) = self.project_session.project_path.clone() else {
+                    self.show_toast(
+                        crate::i18n::t("toast.protocol_host_requires_project"),
+                        6.0,
+                    );
+                    return;
+                };
+                let Some(username) = (!cfg.network.username.trim().is_empty())
+                    .then(|| cfg.network.username.trim().to_string())
+                else {
+                    self.show_toast(
+                        crate::i18n::t("toast.protocol_host_requires_username"),
+                        6.0,
+                    );
+                    return;
+                };
+                ProtocolPayload::host(
+                    &server,
+                    username,
+                    cfg.network.password.clone(),
+                    project_path.to_string_lossy(),
+                )
+            }
+            ProtocolKind::Join => {
+                let Some(code) = self.collaboration.network.room_code.clone() else {
+                    self.show_toast(crate::i18n::t("toast.protocol_join_requires_room"), 6.0);
+                    return;
+                };
+                ProtocolPayload::join(
+                    &server,
+                    cfg.network.password.clone(),
+                    code,
+                )
+            }
+        };
+        let url = payload.to_url();
+        crate::platform::clipboard_set(&url);
+        log::info!("protocol: copied quick-setup link to clipboard");
+        self.show_toast(crate::i18n::t("toast.protocol_copied"), 4.0);
+    }
+
+    /// Advances the host flow once the previous project has fully closed
+    /// (either discarded, saved with [`SaveContinuation::ProtocolHost`], or
+    /// the app was already idle). Clears the workspace, kicks off the target
+    /// import, and moves to `ImportingTargetProject`.
+    pub(crate) fn protocol_current_closed(&mut self) {
+        let stage = self
+            .pending_protocol
+            .as_ref()
+            .map(|p| p.stage)
+            .unwrap_or(PendingProtocolStage::ClosingCurrentProject);
+        // Only act while still in the closing stage.
+        if stage != PendingProtocolStage::ClosingCurrentProject {
+            return;
+        }
+        self.clear_video_for_new_project();
+        crate::application::edit_service::EditExecutor::reset(&mut self.project_session);
+        self.recording_runtime = crate::recording_runtime::RecordingRuntime::new();
+        self.ui_shell.ui.reset_recording_workspace();
+        crate::vector_text::clear_project_font();
+        self.render.ui_renderer.clear_text_cache();
+
+        let Some(pending) = self.pending_protocol.as_mut() else {
+            return;
+        };
+        let Some(project_path) = pending.payload.project.clone() else {
+            self.pending_protocol = None;
+            return;
+        };
+        pending.stage = PendingProtocolStage::ImportingTargetProject;
+        log::info!("protocol: closed current project, loading {}", project_path);
+        self.start_br_import(std::path::PathBuf::from(project_path));
+    }
+
+    /// Drive the protocol flow past its `ImportingTargetProject` stage. Returns
+    /// true when UI state changed (redraw requested).
+    pub(crate) fn poll_pending_protocol(&mut self) -> bool {
+        let Some(pending) = self.pending_protocol.as_mut() else {
+            return false;
+        };
+        if pending.stage != PendingProtocolStage::ImportingTargetProject {
+            return false;
+        }
+        if self.jobs.pending_import_job.is_some() {
+            return false;
+        }
+        // Import just completed; make sure the project is actually ready to be
+        // shared. A silent failure here would block the room creation, so a
+        // toast explains what went wrong.
+        let payload = pending.payload.clone();
+        let project_path_ok = self
+            .project_session
+            .project_path
+            .as_ref()
+            .is_some_and(|current| match payload.project.as_deref() {
+                Some(expected) => current == std::path::Path::new(expected),
+                None => true,
+            });
+        let ready = project_path_ok
+            && !self.project_session.dirty
+            && self.project_session.huuid.is_some();
+        if !ready {
+            log::warn!(
+                "protocol: import done but not ready (dirty={}, path ok={})",
+                self.project_session.dirty,
+                project_path_ok
+            );
+            self.pending_protocol = None;
+            self.show_toast(
+                crate::i18n::t("toast.protocol_project_not_ready"),
+                6.0,
+            );
+            return true;
+        }
+
+        // Everything is ready — create a fresh room as the director. The
+        // pending flow is dropped once the connect request is fired; room
+        // arrival / director role / workspace switch are handled by
+        // `handle_network_packet` (RoomCreated).
+        let payload = payload.clone();
+        let (server_ip, server_port) = payload.server_endpoint();
+        let Some(username) = payload.username else {
+            self.pending_protocol = None;
+            return true;
+        };
+        let password = payload.password;
+        let project_huuid = self
+            .project_session
+            .huuid
+            .as_ref()
+            .map(|h| h.to_string())
+            .expect("ready implies a project huuid");
+        self.pending_protocol = None;
+        self.begin_network_connect();
+        self.collaboration.network.connect_and_send(
+            &server_ip,
+            server_port,
+            &password,
+            Packet::CreateRoom {
+                username,
+                project_huuid,
+            },
+        );
+        self.rebuild_topbar_for_network();
+        true
+    }
+
+    /// Join flow: open the connect modal so the user only has to type their
+    /// name. The actual network connect is left to the standard
+    /// [`crate::ui::primitives::UiAction::NetworkConnect`] handler — no need
+    /// for a parallel path.
+    fn protocol_start_join(&mut self, payload: ProtocolPayload) {
+        let code = payload.code.clone().unwrap_or_default();
+        let (ip, port) = payload.server_endpoint();
+        // Persist the server and password so the connect action has the
+        // hidden link fields available without exposing them in the prompt.
+        {
+            let mut cfg = crate::config::get().clone();
+            cfg.network.server_ip = ip.clone();
+            cfg.network.server_port = port;
+            cfg.network.password = payload.password.clone();
+            cfg.save();
+        }
+        // The invitation never embeds a username: the recipient must provide
+        // their own, while the modal keeps the other link fields hidden.
+        self.open_connect_modal_with_room(&ip, port, &code, &payload.password);
+    }
+
+    /// Resumes the pending host flow once the user has saved (or discarded)
+    /// the previous project. Called from the save dispatch chain (the
+    /// `SaveContinuation::ProtocolHost` branch of [`super::event_loop::run`])
+    /// and from the `CloseProjectDiscard` action handler.
+    pub(crate) fn protocol_resume_after_save(&mut self) {
+        self.protocol_current_closed();
     }
 
     fn poll_waveform_change(&mut self) -> bool {
@@ -7501,3 +7863,4 @@ fn ping_server_socketio(
         }
     }
 }
+

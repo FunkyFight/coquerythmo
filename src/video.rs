@@ -1763,6 +1763,15 @@ mod tests {
     }
 
     #[test]
+    fn stereo_audio_preserves_both_output_sides() {
+        let (_sender, receiver) = mpsc::sync_channel(1);
+        let mut reader = AudioSampleReader::new(receiver, Some(vec![0.25, -0.5]));
+
+        assert_eq!(reader.next_stereo(), Some([0.25, -0.5]));
+        assert_eq!(reader.next_stereo(), None);
+    }
+
+    #[test]
     fn visual_playback_clock_waits_for_reported_output_latency() {
         let mut player = VideoPlayer::new();
         let start = Instant::now();

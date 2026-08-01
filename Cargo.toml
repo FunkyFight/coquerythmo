@@ -1,6 +1,6 @@
 [package]
 name = "coquerythmo"
-version = "4.0.14"
+version = "4.1.1"
 edition = "2021"
 license = "GPL-3.0-only"
 

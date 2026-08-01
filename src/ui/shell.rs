@@ -151,9 +151,10 @@ pub(crate) fn build_topbar(
 
     if active_workspace == WorkspaceId::Recording && recording_daw_enabled {
         let actor_requests_offset = if actor_requests_enabled { 164.0 } else { 0.0 };
+        let quick_setup_offset = actor_requests_offset + 200.0;
         let daw_button = TextButton::new(
             Rect {
-                x: 242.0 + actor_requests_offset,
+                x: 88.0 + actor_requests_offset + quick_setup_offset,
                 y: 2.0,
                 width: 150.0,
                 height: 28.0,
@@ -189,7 +190,32 @@ pub(crate) fn build_topbar(
                 .with_panel_width(260.0),
             ));
         }
-        widgets.push(microphone_button(88.0 + actor_requests_offset));
+        // « Mise en place rapide » : builds `coquerythmo://` links for the
+        // current project/session so the user can share them in one click.
+        widgets.push(Box::new(
+            Dropdown::new(
+                Rect {
+                    x: 88.0 + actor_requests_offset,
+                    y: 2.0,
+                    width: 192.0,
+                    height: 28.0,
+                },
+                vec![
+                    t("recording.quick_setup.host_session").into(),
+                    t("recording.quick_setup.join_session").into(),
+                ],
+                |index, _label| match index {
+                    0 => EventResponse::Action(UiAction::CopyQuickHostLink),
+                    1 => EventResponse::Action(UiAction::CopyQuickJoinLink),
+                    _ => EventResponse::Consumed,
+                },
+            )
+            .with_arrow(false)
+            .with_trigger_bg(false)
+            .with_trigger_label(t("recording.quick_setup"))
+            .with_panel_width(392.0),
+        ));
+        widgets.push(microphone_button(88.0 + quick_setup_offset));
         widgets.push(Box::new(daw_button));
         return widgets;
     }

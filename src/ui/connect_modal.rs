@@ -24,6 +24,7 @@ pub struct ConnectModal {
     pub focused: usize,
     endpoint: String,
     masked_password: String,
+    username_only: bool,
 }
 
 impl ConnectModal {
@@ -43,16 +44,50 @@ impl ConnectModal {
             focused: 0,
             endpoint: format!("{ip}:{port}"),
             masked_password: "•".repeat(net.password.chars().count()),
+            username_only: false,
         };
         modal.input.activate(&modal.fields[0]);
         modal
     }
 
+    /// Variant for `coquerythmo://` quick-join links: joins `ip` directly and
+    /// pre-fills the room code so the user only has to type a username. The
+    /// password and room code remain in the modal state but are not exposed.
+    pub fn new_with_room(ip: &str, port: u16, room_code: &str, password: &str) -> Self {
+        let mut modal = Self {
+            join: true,
+            ip: ip.to_string(),
+            port,
+            fields: [
+                password.to_string(),
+                String::new(),
+                room_code.trim().to_uppercase(),
+            ],
+            input: text_input::TextInputState::new(),
+            focused: 0,
+            endpoint: format!("{ip}:{port}"),
+            masked_password: "•".repeat(password.chars().count()),
+            username_only: true,
+        };
+        modal.input.activate(&modal.fields[Self::USERNAME]);
+        modal
+    }
+
     pub fn field_count(&self) -> usize {
-        if self.join {
+        if self.username_only {
+            1
+        } else if self.join {
             3
         } else {
             2
+        }
+    }
+
+    fn field_index(&self, visible_index: usize) -> usize {
+        if self.username_only {
+            Self::USERNAME
+        } else {
+            visible_index
         }
     }
 
@@ -69,7 +104,7 @@ impl ConnectModal {
     }
 
     pub fn field_label(&self, i: usize) -> &str {
-        match i {
+        match self.field_index(i) {
             Self::PASSWORD => t("connect.password"),
             Self::USERNAME => t("connect.username"),
             Self::ROOM_CODE => t("connect.room_code"),
@@ -78,7 +113,7 @@ impl ConnectModal {
     }
 
     fn field_placeholder(&self, i: usize) -> &str {
-        match i {
+        match self.field_index(i) {
             Self::PASSWORD => t("connect.password_placeholder"),
             Self::USERNAME => t("connect.username_placeholder"),
             Self::ROOM_CODE => t("connect.room_code_placeholder"),
@@ -115,7 +150,8 @@ impl ConnectModal {
     fn set_focus(&mut self, focus: usize) {
         self.focused = focus % self.focus_count();
         if self.focused < self.field_count() {
-            self.input.activate(&self.fields[self.focused]);
+            let field = self.field_index(self.focused);
+            self.input.activate(&self.fields[field]);
         } else {
             self.input.deactivate();
         }
@@ -227,13 +263,14 @@ impl ConnectModal {
                 }
                 if self.focused < self.field_count() {
                     let focused = self.focused;
+                    let field = self.field_index(focused);
                     if let Some(text_input::TextInputAction::Changed(new_text)) =
-                        self.input.handle_key(text, &self.fields[focused])
+                        self.input.handle_key(text, &self.fields[field])
                     {
-                        if focused == Self::PASSWORD {
+                        if field == Self::PASSWORD {
                             self.masked_password = "•".repeat(new_text.chars().count());
                         }
-                        self.fields[focused] = new_text;
+                        self.fields[field] = new_text;
                     }
                 }
                 ConnectModalResult::Consumed
@@ -251,7 +288,8 @@ impl ConnectModal {
                 ConnectModalResult::Consumed
             }
             UiEvent::CursorRight if self.focused < self.field_count() => {
-                self.input.move_right(&self.fields[self.focused]);
+                let field = self.field_index(self.focused);
+                self.input.move_right(&self.fields[field]);
                 ConnectModalResult::Consumed
             }
             UiEvent::CursorUp => {
@@ -272,14 +310,15 @@ impl ConnectModal {
                 for i in 0..self.field_count() {
                     let field = self.field_rect(card, i);
                     if field.contains(*x, *y) {
+                        let field_index = self.field_index(i);
                         self.set_focus(i);
                         if double {
-                            self.input.select_all(&self.fields[i]);
+                            self.input.select_all(&self.fields[field_index]);
                         } else {
-                            let display_value = if i == Self::PASSWORD {
+                            let display_value = if field_index == Self::PASSWORD {
                                 &self.masked_password
                             } else {
-                                &self.fields[i]
+                                &self.fields[field_index]
                             };
                             self.input.set_cursor_pos(text_input::cursor_pos_from_x(
                                 display_value,
@@ -403,6 +442,7 @@ impl ConnectModal {
         for i in 0..self.field_count() {
             let field = self.field_rect(card, i);
             let focused = self.focused == i;
+            let field_index = self.field_index(i);
             labels.push(label(
                 self.field_label(i),
                 Rect {
@@ -421,10 +461,10 @@ impl ConnectModal {
             ));
             overlay_quads.push(input_quad(field, focused));
 
-            let display_value = if i == Self::PASSWORD {
+            let display_value = if field_index == Self::PASSWORD {
                 &self.masked_password
             } else {
-                &self.fields[i]
+                &self.fields[field_index]
             };
             labels.push(LabelInfo {
                 text: if display_value.is_empty() {
@@ -648,6 +688,7 @@ mod tests {
             focused: 0,
             endpoint: "127.0.0.1:9050".into(),
             masked_password: String::new(),
+            username_only: false,
         }
     }
 
@@ -663,5 +704,19 @@ mod tests {
         assert!(!join.can_submit());
         join.fields[ConnectModal::ROOM_CODE] = "abcd".into();
         assert!(join.can_submit());
+    }
+
+    #[test]
+    fn invitation_mode_exposes_only_the_username_field() {
+        let mut invite = modal(true);
+        invite.username_only = true;
+        invite.fields[ConnectModal::ROOM_CODE] = "ABCD".into();
+
+        assert_eq!(invite.field_count(), 1);
+        assert_eq!(invite.field_index(0), ConnectModal::USERNAME);
+        assert!(!invite.can_submit());
+
+        invite.fields[ConnectModal::USERNAME] = "Invitee".into();
+        assert!(invite.can_submit());
     }
 }

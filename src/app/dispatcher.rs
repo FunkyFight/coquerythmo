@@ -9,14 +9,13 @@ use super::file_picker::{
     quick_save_existing, quick_save_existing_with_continuation, save_dialog_filters,
     save_project_as, save_project_as_with_continuation, video_or_project_dir,
 };
-use crate::application::command::TextCommand;
+use crate::application::command::{FilePickerIntent, FilePickerMode, TextCommand};
 use crate::application::job_service::SaveContinuation;
 use crate::config;
 use crate::i18n;
 use crate::packet::Packet;
 use crate::platform;
 use crate::state::State;
-use crate::ui::file_explorer::{FileExplorerMode, FilePickerIntent};
 use crate::ui::primitives::{EventResponse, UiAction, UiEvent};
 use crate::video_export;
 use crate::video_export::capabilities::probe_video_duration;
@@ -147,6 +146,7 @@ pub(crate) fn handle_file_picker_selected(
                             source_start_seconds: clip.source_start_frame as f64 / fps,
                             duration_seconds: clip.duration_frames as f64 / fps,
                             timeline_start_seconds: clip.start_frame as f64 / fps,
+                            volume: 1.0,
                         })
                     })
                     .collect(),
@@ -316,6 +316,12 @@ impl CommandDispatcher {
                 state.recording_toggle_track_solo(track_id)
             }
             UiAction::RecordingArmTrack(track_id) => state.recording_arm_track(track_id),
+            UiAction::RecordingSetTrackVolume { track_id, volume } => {
+                state.recording_set_track_volume(track_id, volume)
+            }
+            UiAction::RecordingAdjustTrackVolume { track_id, delta } => {
+                state.recording_adjust_track_volume(track_id, delta)
+            }
             UiAction::RecordingExportTrack(track_id) => {
                 if let Some(request) = state.recording_export_track(track_id) {
                     open_file_picker_request(state, elwt, request);
@@ -360,6 +366,12 @@ impl CommandDispatcher {
             UiAction::SetRecordingInputDevice(device) => state.set_recording_input_device(device),
             UiAction::RecordingToggleSharedAudio => state.recording_toggle_shared_audio(),
             UiAction::RecordingCycleLanguage => state.recording_cycle_language(),
+            UiAction::CopyQuickHostLink => {
+                state.copy_protocol_link_to_clipboard(crate::protocol::ProtocolKind::Host);
+            }
+            UiAction::CopyQuickJoinLink => {
+                state.copy_protocol_link_to_clipboard(crate::protocol::ProtocolKind::Join);
+            }
             UiAction::CloseApp => {
                 if state.is_project_save_in_progress() {
                     state.show_toast(i18n::t("toast.close_blocked_saving"), 5.0);
@@ -376,7 +388,7 @@ impl CommandDispatcher {
                     state,
                     elwt,
                     i18n::t("picker.video.title"),
-                    FileExplorerMode::Open,
+                    FilePickerMode::Open,
                     FilePickerIntent::AddVideo,
                     filters,
                     project_or_video_dir(state),
@@ -392,7 +404,7 @@ impl CommandDispatcher {
                     state,
                     elwt,
                     i18n::t("picker.project_save.title"),
-                    FileExplorerMode::Save,
+                    FilePickerMode::Save,
                     FilePickerIntent::ExportProject,
                     filters,
                     project_or_video_dir(state),
@@ -408,7 +420,7 @@ impl CommandDispatcher {
                     state,
                     elwt,
                     i18n::t("picker.import.title"),
-                    FileExplorerMode::Open,
+                    FilePickerMode::Open,
                     FilePickerIntent::ImportProject,
                     filters,
                     project_or_video_dir(state),
@@ -421,7 +433,7 @@ impl CommandDispatcher {
                     state,
                     elwt,
                     i18n::t("picker.import.cappela.title"),
-                    FileExplorerMode::Open,
+                    FilePickerMode::Open,
                     FilePickerIntent::ImportCappelaProject,
                     filters,
                     project_or_video_dir(state),
@@ -437,7 +449,7 @@ impl CommandDispatcher {
                     state,
                     elwt,
                     i18n::t("picker.import.srt.title"),
-                    FileExplorerMode::Open,
+                    FilePickerMode::Open,
                     FilePickerIntent::ImportSrtProject,
                     filters,
                     project_or_video_dir(state),
@@ -459,7 +471,7 @@ impl CommandDispatcher {
                     state,
                     elwt,
                     i18n::t("picker.import.srt.title"),
-                    FileExplorerMode::Open,
+                    FilePickerMode::Open,
                     FilePickerIntent::ImportSrtProject,
                     filters,
                     project_or_video_dir(state),
@@ -478,16 +490,13 @@ impl CommandDispatcher {
                         state,
                         elwt,
                         i18n::t("picker.project_save.title"),
-                        FileExplorerMode::Save,
+                        FilePickerMode::Save,
                         FilePickerIntent::QuickSave,
                         filters,
                         project_or_video_dir(state),
                         Some(crate::project_archive::PROJECT_EXTENSION),
                     );
                 }
-            }
-            UiAction::FilePickerSelected { intent, path } => {
-                handle_file_picker_selected(intent, path, state, elwt);
             }
             UiAction::TogglePlayPause => {
                 state.toggle_play_pause();
@@ -765,7 +774,7 @@ impl CommandDispatcher {
                     state,
                     elwt,
                     i18n::t("picker.voice_actor_icon.title"),
-                    FileExplorerMode::Open,
+                    FilePickerMode::Open,
                     FilePickerIntent::VoiceActorIcon,
                     filters,
                     video_or_project_dir(state),
@@ -833,7 +842,7 @@ impl CommandDispatcher {
                     state,
                     elwt,
                     i18n::t("picker.instrumental_audio.title"),
-                    FileExplorerMode::Open,
+                    FilePickerMode::Open,
                     FilePickerIntent::LanguageInstrumentalAudio { language_id: id },
                     filters,
                     video_or_project_dir(state),
@@ -858,7 +867,7 @@ impl CommandDispatcher {
                     state,
                     elwt,
                     i18n::t("picker.delivery_export.title"),
-                    FileExplorerMode::Save,
+                    FilePickerMode::Save,
                     FilePickerIntent::ConfiguredExport { configuration },
                     filters,
                     video_or_project_dir(state),
@@ -944,7 +953,7 @@ impl CommandDispatcher {
                     state,
                     elwt,
                     i18n::t("picker.export_mp4.title"),
-                    FileExplorerMode::Save,
+                    FilePickerMode::Save,
                     FilePickerIntent::ExportMp4 {
                         fps,
                         br_scale,
@@ -1063,7 +1072,7 @@ impl CommandDispatcher {
                     state,
                     elwt,
                     i18n::t("picker.instrumental_audio.title"),
-                    FileExplorerMode::Open,
+                    FilePickerMode::Open,
                     FilePickerIntent::ProjectInstrumentalAudio,
                     filters,
                     video_or_project_dir(state),
@@ -1254,6 +1263,19 @@ impl CommandDispatcher {
             UiAction::OpenSettings => {
                 state.open_settings_modal();
             }
+            UiAction::PickTemporaryDirectory => {
+                let current = crate::config::temporary_directory();
+                let mut dialog =
+                    rfd::FileDialog::new().set_title(i18n::t("settings.temporary_directory"));
+                if current.is_dir() {
+                    dialog = dialog.set_directory(&current);
+                } else if let Some(parent) = current.parent().filter(|path| path.is_dir()) {
+                    dialog = dialog.set_directory(parent);
+                }
+                if let Some(path) = dialog.pick_folder() {
+                    state.set_settings_temporary_directory(path);
+                }
+            }
             UiAction::OpenPricingPage => {
                 state.open_pricing_page();
             }
@@ -1318,9 +1340,11 @@ impl CommandDispatcher {
                 rythmo_font,
                 scroll_speed,
                 reading_bar_offset_percent,
+                temporary_directory,
             } => {
                 let font_changed = crate::config::get().ui.rythmo_font != rythmo_font;
-                crate::config::save_settings(lang, rythmo_font);
+                crate::config::save_settings(lang, rythmo_font, temporary_directory);
+                state.recording_runtime.refresh_temporary_directory();
                 state.save_project_view_settings(scroll_speed, reading_bar_offset_percent);
                 if font_changed {
                     crate::vector_text::clear_project_font();
@@ -1376,7 +1400,7 @@ impl CommandDispatcher {
                         state,
                         elwt,
                         i18n::t("picker.project_save.title"),
-                        FileExplorerMode::Save,
+                        FilePickerMode::Save,
                         FilePickerIntent::NewProjectSave,
                         filters,
                         project_or_video_dir(state),
@@ -1403,7 +1427,13 @@ impl CommandDispatcher {
                 }
             }
             UiAction::CloseProjectSave => {
-                if state.project_session.project_path.is_some() {
+                if state.protocol_is_awaiting_close() {
+                    // The save prompt was shown as part of a `coquerythmo://`
+                    // quick-setup flow: run our quick-save with the protocol
+                    // continuation so that once the file is written we close
+                    // it, load the linked project and create the room.
+                    quick_save_existing_with_continuation(state, SaveContinuation::ProtocolHost);
+                } else if state.project_session.project_path.is_some() {
                     quick_save_existing_with_continuation(state, SaveContinuation::CloseProject);
                 } else {
                     let filters = save_dialog_filters(
@@ -1414,7 +1444,7 @@ impl CommandDispatcher {
                         state,
                         elwt,
                         i18n::t("picker.project_save.title"),
-                        FileExplorerMode::Save,
+                        FilePickerMode::Save,
                         FilePickerIntent::CloseProjectSave,
                         filters,
                         project_or_video_dir(state),
@@ -1422,7 +1452,16 @@ impl CommandDispatcher {
                     );
                 }
             }
-            UiAction::CloseProjectDiscard => close_project_reset(state),
+            UiAction::CloseProjectDiscard => {
+                if state.protocol_is_awaiting_close() {
+                    // Part of a coquerythmo:// quick-setup flow: close without
+                    // saving and immediately import the linked project.
+                    close_project_reset(state);
+                    state.protocol_discard_current_and_continue();
+                } else {
+                    close_project_reset(state);
+                }
+            }
             UiAction::ExitApplication => {
                 if state.is_project_save_in_progress() {
                     state.show_toast(i18n::t("toast.close_blocked_saving"), 5.0);
@@ -1446,7 +1485,7 @@ impl CommandDispatcher {
                         state,
                         elwt,
                         i18n::t("picker.project_save.title"),
-                        FileExplorerMode::Save,
+                        FilePickerMode::Save,
                         FilePickerIntent::ExitApplicationSave,
                         filters,
                         project_or_video_dir(state),

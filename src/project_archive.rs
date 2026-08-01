@@ -1425,34 +1425,31 @@ fn create_extraction_guard() -> Result<ExtractionGuard, ProjectArchiveError> {
 }
 
 fn project_extraction_base() -> Result<PathBuf, ProjectArchiveError> {
-    let executable = std::env::current_exe().map_err(ProjectArchiveError::Io)?;
-    Ok(project_extraction_process_base(
-        &executable,
-        std::process::id(),
-    ))
+    Ok(
+        crate::media_binary::installation_temp_dir()
+            .join(format!("process-{}", std::process::id())),
+    )
 }
 
-fn project_extraction_base_for_executable(executable: &Path) -> PathBuf {
-    executable
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."))
-        .join("coquerythmo-temp")
+fn project_extraction_base_for_temp_directory(temp_directory: &Path) -> PathBuf {
+    temp_directory.join(env!("CARGO_PKG_NAME"))
 }
 
-fn project_extraction_process_base(executable: &Path, process_id: u32) -> PathBuf {
-    project_extraction_base_for_executable(executable).join(format!("process-{process_id}"))
+fn project_extraction_process_base(temp_directory: &Path, process_id: u32) -> PathBuf {
+    project_extraction_base_for_temp_directory(temp_directory).join(format!("process-{process_id}"))
 }
 
 /// Remove leftovers for this process id without touching another running
 /// Coquerythmo instance (for example the DA and actor clients).
 pub fn cleanup_project_extraction_at_startup() -> io::Result<()> {
-    let executable = std::env::current_exe()?;
-    cleanup_process_extraction(&executable, std::process::id())
+    cleanup_process_extraction(
+        &crate::media_binary::installation_temp_dir(),
+        std::process::id(),
+    )
 }
 
-fn cleanup_process_extraction(executable: &Path, process_id: u32) -> io::Result<()> {
-    let current_base = project_extraction_process_base(executable, process_id);
+fn cleanup_process_extraction(temp_directory: &Path, process_id: u32) -> io::Result<()> {
+    let current_base = project_extraction_process_base(temp_directory, process_id);
     match fs::remove_dir_all(current_base) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -1596,17 +1593,15 @@ mod tests {
     use crate::project::ProjectSettings;
 
     #[test]
-    fn extraction_directory_lives_beside_the_executable() {
-        let executable = Path::new("installation").join("coquerythmo.exe");
+    fn extraction_directory_lives_in_the_configured_temp_directory() {
+        let temp_directory = Path::new("temp");
         assert_eq!(
-            project_extraction_base_for_executable(&executable),
-            Path::new("installation").join("coquerythmo-temp")
+            project_extraction_base_for_temp_directory(temp_directory),
+            Path::new("temp").join("coquerythmo")
         );
         assert_eq!(
-            project_extraction_process_base(&executable, 42),
-            Path::new("installation")
-                .join("coquerythmo-temp")
-                .join("process-42")
+            project_extraction_process_base(temp_directory, 42),
+            Path::new("temp").join("coquerythmo").join("process-42")
         );
     }
 
@@ -1616,13 +1611,13 @@ mod tests {
             "coquerythmo-extraction-cleanup-{}",
             unique_suffix()
         ));
-        let executable = root.join("coquerythmo.exe");
-        let own = project_extraction_process_base(&executable, 41);
-        let other = project_extraction_process_base(&executable, 42);
+        let temp_directory = root.join("temp");
+        let own = project_extraction_process_base(&temp_directory, 41);
+        let other = project_extraction_process_base(&temp_directory, 42);
         fs::create_dir_all(&own).unwrap();
         fs::create_dir_all(&other).unwrap();
 
-        cleanup_process_extraction(&executable, 41).unwrap();
+        cleanup_process_extraction(&temp_directory, 41).unwrap();
 
         assert!(!own.exists());
         assert!(other.exists());

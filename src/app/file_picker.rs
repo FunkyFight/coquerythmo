@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
+use crate::application::command::{
+    FileFilterSpec, FilePickerIntent, FilePickerMode, FilePickerRequest,
+};
 use crate::application::job_service::SaveContinuation;
 use crate::export;
 use crate::export::ProjectImporter;
 use crate::i18n;
 use crate::state::State;
-use crate::ui::file_explorer::{
-    FileExplorerMode, FileExplorerRequest, FileFilterSpec, FilePickerIntent,
-};
 use winit::event_loop::EventLoopWindowTarget;
 
 use super::dispatcher::handle_file_picker_selected;
@@ -58,90 +58,52 @@ pub(crate) fn video_or_project_dir(state: &State) -> Option<PathBuf> {
         .or_else(downloads_or_home_dir)
 }
 
-pub(crate) fn picker_extra_locations(state: &State) -> Vec<(String, PathBuf)> {
-    let mut locations = Vec::new();
-    if let Some(path) = state
-        .project_session
-        .project_path
-        .as_ref()
-        .and_then(|prev| prev.parent().map(PathBuf::from))
-    {
-        locations.push((i18n::t("file_explorer.sidebar.project").to_string(), path));
-    }
-    if let Some(path) = state
-        .video_path()
-        .and_then(|video| video.parent().map(PathBuf::from))
-    {
-        if !locations.iter().any(|(_, existing)| {
-            existing
-                .to_string_lossy()
-                .eq_ignore_ascii_case(&path.to_string_lossy())
-        }) {
-            locations.push((i18n::t("file_explorer.sidebar.video").to_string(), path));
-        }
-    }
-    locations
-}
-
 pub(crate) fn open_file_picker(
     state: &mut State,
     elwt: &EventLoopWindowTarget<AppEvent>,
     title: &str,
-    mode: FileExplorerMode,
+    mode: FilePickerMode,
     intent: FilePickerIntent,
     filters: Vec<FileFilterSpec>,
     initial_dir: Option<PathBuf>,
     default_extension: Option<&str>,
 ) {
-    if state.narration.is_enabled() {
-        if let Some(path) = native_file_picker(title, mode, &filters, initial_dir.as_deref()) {
-            handle_file_picker_selected(intent, path, state, elwt);
-        }
-        return;
-    }
-
-    state.open_file_explorer(FileExplorerRequest {
-        title: title.to_string(),
-        mode,
-        intent,
-        filters,
-        initial_dir,
-        default_extension: default_extension.map(str::to_string),
-        initial_filename: None,
-        extra_locations: picker_extra_locations(state),
-    });
+    open_file_picker_request(
+        state,
+        elwt,
+        FilePickerRequest {
+            title: title.to_string(),
+            mode,
+            intent,
+            filters,
+            initial_dir,
+            default_extension: default_extension.map(str::to_string),
+            initial_filename: None,
+        },
+    );
 }
 
 pub(crate) fn open_file_picker_request(
     state: &mut State,
     elwt: &EventLoopWindowTarget<AppEvent>,
-    request: FileExplorerRequest,
+    request: FilePickerRequest,
 ) {
-    if state.narration.is_enabled() {
-        if let Some(path) = native_file_picker(
-            &request.title,
-            request.mode,
-            &request.filters,
-            request.initial_dir.as_deref(),
-        ) {
-            handle_file_picker_selected(request.intent, path, state, elwt);
-        }
+    if let Some(path) = native_file_picker(&request) {
+        handle_file_picker_selected(request.intent, path, state, elwt);
     } else {
-        state.open_file_explorer(request);
+        log::debug!("File picker cancelled: {}", request.title);
     }
 }
 
-fn native_file_picker(
-    title: &str,
-    mode: FileExplorerMode,
-    filters: &[FileFilterSpec],
-    initial_dir: Option<&std::path::Path>,
-) -> Option<PathBuf> {
-    let mut dialog = rfd::FileDialog::new().set_title(title);
-    if let Some(initial_dir) = initial_dir {
+fn native_file_picker(request: &FilePickerRequest) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new().set_title(&request.title);
+    if let Some(initial_dir) = request.initial_dir.as_deref() {
         dialog = dialog.set_directory(initial_dir);
     }
-    for filter in filters {
+    if let Some(initial_filename) = request.initial_filename.as_deref() {
+        dialog = dialog.set_file_name(initial_filename);
+    }
+    for filter in &request.filters {
         let extensions: Vec<_> = filter
             .extensions
             .iter()
@@ -153,9 +115,17 @@ fn native_file_picker(
         }
     }
 
-    match mode {
-        FileExplorerMode::Open => dialog.pick_file(),
-        FileExplorerMode::Save => dialog.save_file(),
+    let path = match request.mode {
+        FilePickerMode::Open => dialog.pick_file(),
+        FilePickerMode::Save => dialog.save_file(),
+    }?;
+    if request.mode == FilePickerMode::Save
+        && path.extension().is_none()
+        && request.default_extension.is_some()
+    {
+        Some(path.with_extension(request.default_extension.as_deref().unwrap()))
+    } else {
+        Some(path)
     }
 }
 
