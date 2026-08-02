@@ -1183,8 +1183,7 @@ fn push_tracks(
         push_quad(
             &mut scene.quads,
             Rect {
-                width: volume_track.width
-                    * (track_volume / crate::recording_mix::TRACK_VOLUME_MAX),
+                width: volume_track.width * (track_volume / crate::recording_mix::TRACK_VOLUME_MAX),
                 ..volume_track
             },
             ACCENT,

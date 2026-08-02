@@ -6,8 +6,12 @@
 #![allow(clippy::result_large_err)]
 
 use std::path::PathBuf;
-use std::sync::{mpsc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex,
+};
 use std::thread;
+use std::time::Duration;
 
 use rust_socketio::{ClientBuilder, Event, Payload, RawClient};
 
@@ -140,6 +144,7 @@ pub enum IncomingMessage {
     RecordingPlayback(RecordingPlaybackPayload),
     RecordingView(RecordingViewPayload),
     ActorRequestOpenMicrophone,
+    ActorRequestCloseProjectTransferWaiting,
     ProjectTransferRequest(ProjectTransferMetadata),
     ProjectTransferReady(ProjectTransferMetadata),
     ProjectTransferStatus(ProjectTransferStatus),
@@ -160,6 +165,7 @@ pub struct NetworkClient {
     _client: Option<rust_socketio::client::Client>,
     out_tx: Option<mpsc::SyncSender<OutgoingMessage>>,
     rx: Option<mpsc::Receiver<IncomingMessage>>,
+    session_id: String,
     pub state: ConnectionState,
     pub room_code: Option<String>,
     pub role: Option<String>,
@@ -183,6 +189,7 @@ impl NetworkClient {
             _client: None,
             out_tx: None,
             rx: None,
+            session_id: format!("{:032x}", rand::random::<u128>()),
             state: ConnectionState::Disconnected,
             room_code: None,
             role: None,
@@ -253,23 +260,56 @@ impl NetworkClient {
         let tx_project_transfer_chunk = in_tx.clone();
         let tx_project_transfer_end = in_tx.clone();
 
-        let (first_event, first_payload) = packet_to_emit(&first_packet);
+        let (first_event, first_payload) = packet_to_emit(&first_packet, Some(&self.session_id));
         let first_event = first_event.to_string();
         let out_rx = Mutex::new(Some(out_rx));
+        let sender_client = Arc::new(Mutex::new(None::<RawClient>));
+        let sender_started = Arc::new(AtomicBool::new(false));
+        let sender_client_on_connect = Arc::clone(&sender_client);
+        let sender_client_on_close = Arc::clone(&sender_client);
+        let sender_client_for_thread = Arc::clone(&sender_client);
+        let sender_started_on_connect = Arc::clone(&sender_started);
 
         let builder = ClientBuilder::new(&url)
             .auth(serde_json::json!({ "password": password }))
+            .reconnect(true)
+            .reconnect_on_disconnect(true)
             .on(Event::Connect, move |_, client: RawClient| {
+                if let Ok(mut active_client) = sender_client_on_connect.lock() {
+                    *active_client = Some(client.clone());
+                }
                 let _ = tx_connect.send(IncomingMessage::Connected);
                 let _ = client.emit(&*first_event, first_payload.clone());
-                // Take out_rx once and spawn sender thread
-                if let Some(rx) = out_rx.lock().unwrap().take() {
-                    let raw = client;
-                    thread::spawn(move || {
-                        while let Ok(OutgoingMessage(event, payload)) = rx.recv() {
-                            let _ = raw.emit(&*event, payload);
-                        }
-                    });
+                if sender_started_on_connect
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    // Take out_rx once and route it through the socket that most recently
+                    // connected. The Socket.IO crate replaces its RawClient on reconnect.
+                    if let Some(rx) = out_rx.lock().unwrap().take() {
+                        let active_client = Arc::clone(&sender_client_for_thread);
+                        thread::spawn(move || {
+                            while let Ok(OutgoingMessage(event, payload)) = rx.recv() {
+                                loop {
+                                    let client =
+                                        active_client.lock().ok().and_then(|active| active.clone());
+                                    let Some(client) = client else {
+                                        thread::sleep(Duration::from_millis(25));
+                                        continue;
+                                    };
+                                    if client.emit(&*event, payload.clone()).is_ok() {
+                                        break;
+                                    }
+                                    thread::sleep(Duration::from_millis(25));
+                                }
+                            }
+                        });
+                    }
+                }
+            })
+            .on(Event::Close, move |_, _| {
+                if let Ok(mut active_client) = sender_client_on_close.lock() {
+                    *active_client = None;
                 }
             })
             .on(Event::Error, move |err, _| {
@@ -521,12 +561,18 @@ impl NetworkClient {
                 }
             })
             .on("actor_request", move |payload, _| {
-                if payload_to_value(&payload)
+                match payload_to_value(&payload)
                     .and_then(|value| value["action"].as_str().map(String::from))
                     .as_deref()
-                    == Some("open_microphone")
                 {
-                    let _ = tx_actor_request.send(IncomingMessage::ActorRequestOpenMicrophone);
+                    Some("open_microphone") => {
+                        let _ = tx_actor_request.send(IncomingMessage::ActorRequestOpenMicrophone);
+                    }
+                    Some("close_project_transfer_waiting") => {
+                        let _ = tx_actor_request
+                            .send(IncomingMessage::ActorRequestCloseProjectTransferWaiting);
+                    }
+                    _ => {}
                 }
             })
             .on("project_transfer_request", move |payload, _| {
@@ -597,7 +643,7 @@ impl NetworkClient {
 
     /// Send a packet via the sender thread.
     pub fn send(&self, packet: &Packet) {
-        let (event, payload) = packet_to_emit(packet);
+        let (event, payload) = packet_to_emit(packet, None);
         self.send_raw(event, payload);
     }
 
@@ -870,27 +916,36 @@ impl Drop for NetworkClient {
     }
 }
 
-fn packet_to_emit(packet: &Packet) -> (&'static str, serde_json::Value) {
+fn packet_to_emit(packet: &Packet, session_id: Option<&str>) -> (&'static str, serde_json::Value) {
     match packet {
         Packet::CreateRoom {
             username,
             project_huuid,
-        } => (
-            "create_room",
-            serde_json::json!({ "username": username, "project_huuid": project_huuid }),
-        ),
+        } => {
+            let mut payload = serde_json::json!({
+                "username": username,
+                "project_huuid": project_huuid,
+            });
+            if let Some(session_id) = session_id {
+                payload["session_id"] = serde_json::Value::String(session_id.to_owned());
+            }
+            ("create_room", payload)
+        }
         Packet::JoinRoom {
             code,
             username,
             project_huuid,
-        } => (
-            "join_room",
-            serde_json::json!({
+        } => {
+            let mut payload = serde_json::json!({
                 "code": code,
                 "username": username,
                 "project_huuid": project_huuid,
-            }),
-        ),
+            });
+            if let Some(session_id) = session_id {
+                payload["session_id"] = serde_json::Value::String(session_id.to_owned());
+            }
+            ("join_room", payload)
+        }
         Packet::LeaveRoom => ("leave_room", serde_json::json!({})),
         Packet::Command { payload } => ("command", serde_json::json!({ "payload": payload })),
         Packet::RequestSync => ("request_sync", serde_json::json!({})),

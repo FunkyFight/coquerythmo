@@ -189,6 +189,9 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> Option<ModalOutcome> {
+        if self.microphone.is_some() {
+            return Some(self.handle_microphone_event(event, screen_w, screen_h));
+        }
         if self.pricing_page.is_some() {
             let translated = legacy_keyboard_event(event);
             return Some(self.handle_pricing_event(
@@ -1389,16 +1392,9 @@ impl ModalHost {
     /// Open the connect modal in "join" mode with the room code pre-filled
     /// (used by `coquerythmo://join...` quick-setup links, where ip+password
     /// come from the URL and only the username is left to type).
-    pub fn open_connect_with_room(
-        &mut self,
-        ip: &str,
-        port: u16,
-        room_code: &str,
-        password: &str,
-    ) {
-        let modal = super::connect_modal::ConnectModal::new_with_room(
-            ip, port, room_code, password,
-        );
+    pub fn open_connect_with_room(&mut self, ip: &str, port: u16, room_code: &str, password: &str) {
+        let modal =
+            super::connect_modal::ConnectModal::new_with_room(ip, port, room_code, password);
         self.connect = Some(modal);
     }
 
@@ -1544,5 +1540,29 @@ impl ModalHost {
 impl Default for ModalHost {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media_recording::InputDeviceInfo;
+
+    #[test]
+    fn microphone_modal_is_routed_as_topmost_input() {
+        let mut host = ModalHost::new();
+        host.open_microphone(
+            vec![InputDeviceInfo {
+                name: "Studio microphone".into(),
+                issue: None,
+            }],
+            None,
+        );
+
+        let result =
+            host.handle_topmost_event(&UiEvent::MousePress { x: 820.0, y: 570.0 }, 1280.0, 720.0);
+
+        assert!(matches!(result, Some(ModalOutcome::Action(_))));
+        assert!(host.microphone.is_none());
     }
 }

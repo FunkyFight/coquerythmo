@@ -501,10 +501,10 @@ mod tests {
                     clip_id: AudioClipId::new(3),
                     track_id: AudioTrackId::new(1),
                     path: PathBuf::from("voice.flac"),
-                source_start_seconds: 0.0,
-                duration_seconds: 2.0 / f64::from(REALTIME_SAMPLE_RATE),
-                timeline_start_seconds: 1.0,
-                volume: 1.0,
+                    source_start_seconds: 0.0,
+                    duration_seconds: 2.0 / f64::from(REALTIME_SAMPLE_RATE),
+                    timeline_start_seconds: 1.0,
+                    volume: 1.0,
                 }],
                 sample_rate: REALTIME_SAMPLE_RATE,
                 source_volume: 0.5,
@@ -540,8 +540,7 @@ mod tests {
         };
         spec.set_track_volume(AudioTrackId::new(2), 1.5);
 
-        let mix =
-            RealtimeRecordingMix::from_spec(&spec, &cache, REALTIME_SAMPLE_RATE).unwrap();
+        let mix = RealtimeRecordingMix::from_spec(&spec, &cache, REALTIME_SAMPLE_RATE).unwrap();
         assert_eq!(mix.mix_stereo(0.0, [0.0, 0.0]), [0.75, 0.75]);
         assert!(spec.ffmpeg_filter().unwrap().contains("volume=1.500000000"));
     }
@@ -561,10 +560,10 @@ mod tests {
                     clip_id: AudioClipId::new(1),
                     track_id: AudioTrackId::new(1),
                     path: PathBuf::from("voice.flac"),
-                source_start_seconds: 0.0,
-                duration_seconds: 4.0 / f64::from(REALTIME_SAMPLE_RATE),
-                timeline_start_seconds: 0.0,
-                volume: 1.0,
+                    source_start_seconds: 0.0,
+                    duration_seconds: 4.0 / f64::from(REALTIME_SAMPLE_RATE),
+                    timeline_start_seconds: 0.0,
+                    volume: 1.0,
                 }],
                 sample_rate: REALTIME_SAMPLE_RATE,
                 source_volume: 1.0,

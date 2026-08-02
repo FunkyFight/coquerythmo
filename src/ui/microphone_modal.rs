@@ -111,14 +111,6 @@ impl MicrophoneModal {
         }
     }
 
-    fn option_enabled(&self, index: usize) -> bool {
-        index == 0
-            || self
-                .devices
-                .get(index - 1)
-                .is_some_and(|device| device.issue.is_none())
-    }
-
     fn selected_value(&self) -> Option<String> {
         self.selected
             .checked_sub(1)
@@ -171,11 +163,7 @@ impl MicrophoneModal {
                 if self.cancel_focused {
                     MicrophoneModalResult::Close
                 } else {
-                    if self.option_enabled(self.selected) {
-                        MicrophoneModalResult::Select(self.selected_value())
-                    } else {
-                        MicrophoneModalResult::Consumed
-                    }
+                    MicrophoneModalResult::Select(self.selected_value())
                 }
             }
             UiEvent::Scroll { x, y, delta, .. } if list.contains(*x, *y) => {
@@ -187,7 +175,10 @@ impl MicrophoneModal {
                 }
                 MicrophoneModalResult::Consumed
             }
-            UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
+            UiEvent::MousePress { x, y }
+            | UiEvent::DoubleClick { x, y }
+            | UiEvent::CtrlClick { x, y }
+            | UiEvent::ShiftMousePress { x, y } => {
                 if !card.contains(*x, *y) || Self::cancel(card).contains(*x, *y) {
                     return MicrophoneModalResult::Close;
                 }
@@ -195,9 +186,7 @@ impl MicrophoneModal {
                     let index = self.scroll + ((*y - list.y) / ROW_H).floor() as usize;
                     if index < self.option_count() {
                         self.selected = index;
-                        if self.option_enabled(index) {
-                            return MicrophoneModalResult::Select(self.selected_value());
-                        }
+                        return MicrophoneModalResult::Select(self.selected_value());
                     }
                 }
                 MicrophoneModalResult::Consumed
@@ -283,7 +272,11 @@ impl MicrophoneModal {
                     [0.38, 0.62, 1.0, 1.0],
                 );
             }
-            let incompatible = index > 0 && !self.option_enabled(index);
+            let incompatible = index > 0
+                && self
+                    .devices
+                    .get(index - 1)
+                    .is_some_and(|device| device.issue.is_some());
             labels.push(LabelInfo {
                 text: self.option_label(index),
                 bounds: row,
@@ -717,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn incompatible_microphones_are_visible_but_not_selectable() {
+    fn listed_microphones_are_selectable_even_when_preflight_reports_an_issue() {
         let mut modal = MicrophoneModal::new(
             vec![InputDeviceInfo {
                 name: "Telephone microphone".into(),
@@ -725,15 +718,44 @@ mod tests {
             }],
             None,
         );
+        let card = MicrophoneModal::card(1280.0, 720.0);
+        let list = MicrophoneModal::list(card);
         assert_eq!(
-            modal.handle_event(&UiEvent::CursorDown, 1280.0, 720.0),
-            MicrophoneModalResult::Consumed
-        );
-        assert_eq!(
-            modal.handle_event(&UiEvent::KeyInput { text: "\r".into() }, 1280.0, 720.0),
-            MicrophoneModalResult::Consumed
+            modal.handle_event(
+                &UiEvent::MousePress {
+                    x: list.x + 20.0,
+                    y: list.y + ROW_H + 10.0,
+                },
+                1280.0,
+                720.0,
+            ),
+            MicrophoneModalResult::Select(Some("Telephone microphone".into()))
         );
         assert!(modal.option_label(1).contains("48 kHz"));
+    }
+
+    #[test]
+    fn mouse_click_selects_a_microphone_for_any_local_user() {
+        let mut modal = MicrophoneModal::new(
+            vec![InputDeviceInfo {
+                name: "Studio microphone".into(),
+                issue: None,
+            }],
+            None,
+        );
+        let card = MicrophoneModal::card(1280.0, 720.0);
+        let list = MicrophoneModal::list(card);
+        assert_eq!(
+            modal.handle_event(
+                &UiEvent::MousePress {
+                    x: list.x + 20.0,
+                    y: list.y + ROW_H + 10.0,
+                },
+                1280.0,
+                720.0,
+            ),
+            MicrophoneModalResult::Select(Some("Studio microphone".into()))
+        );
     }
 
     #[test]

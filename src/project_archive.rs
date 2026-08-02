@@ -52,6 +52,19 @@ pub enum ProjectFileKind {
     LegacyJson,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectLoadStage {
+    ReadingManifest,
+    ExtractingAssets,
+    VerifyingAssets,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProjectLoadProgress {
+    pub stage: ProjectLoadStage,
+    pub fraction: f32,
+}
+
 /// One instrumental audio file to place in a bundle.
 ///
 /// `language_id` is metadata, not an archive path, and may therefore be an
@@ -616,6 +629,17 @@ pub fn save_bundle_with_instrumentals_and_recording_data(
 
 /// Load either a `.coquerythmo` bundle or a legacy `ProjectData` JSON file.
 pub fn load_project_file(path: &Path) -> Result<LoadedProject, ProjectArchiveError> {
+    load_project_file_with_progress(path, |_| {})
+}
+
+pub fn load_project_file_with_progress(
+    path: &Path,
+    mut report: impl FnMut(ProjectLoadProgress),
+) -> Result<LoadedProject, ProjectArchiveError> {
+    report(ProjectLoadProgress {
+        stage: ProjectLoadStage::ReadingManifest,
+        fraction: 0.0,
+    });
     let mut file = File::open(path)?;
     let mut prefix = [0_u8; MAGIC.len()];
     let is_bundle = if file.metadata()?.len() >= MAGIC.len() as u64 {
@@ -626,9 +650,16 @@ pub fn load_project_file(path: &Path) -> Result<LoadedProject, ProjectArchiveErr
     };
     file.rewind()?;
     if is_bundle {
-        load_bundle(file)
+        load_bundle(file, &mut report)
     } else {
-        load_legacy_json(file)
+        let loaded = load_legacy_json(file);
+        if loaded.is_ok() {
+            report(ProjectLoadProgress {
+                stage: ProjectLoadStage::ReadingManifest,
+                fraction: 1.0,
+            });
+        }
+        loaded
     }
 }
 
@@ -676,7 +707,10 @@ fn load_legacy_json(file: File) -> Result<LoadedProject, ProjectArchiveError> {
     })
 }
 
-fn load_bundle(file: File) -> Result<LoadedProject, ProjectArchiveError> {
+fn load_bundle(
+    file: File,
+    report: &mut dyn FnMut(ProjectLoadProgress),
+) -> Result<LoadedProject, ProjectArchiveError> {
     let file_len = file.metadata()?.len();
     let mut reader = BufReader::with_capacity(COPY_BUFFER_BYTES, file);
     let mut magic = [0_u8; MAGIC.len()];
@@ -743,12 +777,28 @@ fn load_bundle(file: File) -> Result<LoadedProject, ProjectArchiveError> {
         validate_recording_archive_state(&recording.project, &recording.transaction_log)?;
     }
 
+    report(ProjectLoadProgress {
+        stage: ProjectLoadStage::ReadingManifest,
+        fraction: 1.0,
+    });
+
     let extraction = create_extraction_guard()?;
     let expected_names = manifest_asset_names(&manifest.assets, manifest.recording.as_ref())?;
     let mut remaining = expected_names;
     let mut extracted_paths = HashMap::new();
     let mut seen_entries = HashSet::new();
     seen_entries.insert(MANIFEST_ENTRY.to_string());
+    let extraction_start = reader.stream_position()?;
+    let extraction_total = file_len.saturating_sub(extraction_start).max(1);
+    let mut extracted_bytes = 0_u64;
+    let has_recording_assets = manifest
+        .recording
+        .as_ref()
+        .is_some_and(|recording| !recording.assets.is_empty());
+    report(ProjectLoadProgress {
+        stage: ProjectLoadStage::ExtractingAssets,
+        fraction: 0.0,
+    });
 
     for _ in 1..entry_count {
         let header = read_entry_header(&mut reader, file_len)?;
@@ -766,9 +816,37 @@ fn load_bundle(file: File) -> Result<LoadedProject, ProjectArchiveError> {
             .write(true)
             .create_new(true)
             .open(&output_path)?;
-        read_entry_to_file(&mut reader, &header, output)?;
+        let expected_recording_sha1 = recording_checksum_for_entry(&manifest, &header.name)?;
+        let stage = if expected_recording_sha1.is_some() {
+            ProjectLoadStage::VerifyingAssets
+        } else {
+            ProjectLoadStage::ExtractingAssets
+        };
+        let mut report_bytes = |bytes| {
+            extracted_bytes = extracted_bytes.saturating_add(bytes);
+            report(ProjectLoadProgress {
+                stage,
+                fraction: (extracted_bytes as f32 / extraction_total as f32).clamp(0.0, 1.0),
+            });
+        };
+        read_entry_to_file(
+            &mut reader,
+            &header,
+            output,
+            expected_recording_sha1,
+            &mut report_bytes,
+        )?;
         extracted_paths.insert(header.name, output_path);
     }
+
+    report(ProjectLoadProgress {
+        stage: if has_recording_assets {
+            ProjectLoadStage::VerifyingAssets
+        } else {
+            ProjectLoadStage::ExtractingAssets
+        },
+        fraction: 1.0,
+    });
 
     if let Some(name) = remaining.into_iter().next() {
         return Err(ProjectArchiveError::MissingEntry(name));
@@ -834,14 +912,6 @@ fn load_bundle(file: File) -> Result<LoadedProject, ProjectArchiveError> {
                     .ok_or_else(|| {
                         ProjectArchiveError::MissingEntry(asset_manifest.entry.clone())
                     })?;
-                let expected_checksum = &recording
-                    .project
-                    .asset(asset_manifest.asset_id)
-                    .ok_or(ProjectArchiveError::UndeclaredRecordingAsset(
-                        asset_manifest.asset_id,
-                    ))?
-                    .checksum;
-                verify_recording_file_checksum(asset_manifest.asset_id, &path, expected_checksum)?;
                 audio_asset_paths.insert(asset_manifest.asset_id, path);
             }
             Ok::<_, ProjectArchiveError>(LoadedRecordingProject {
@@ -1002,6 +1072,29 @@ fn insert_manifest_name(
     Ok(())
 }
 
+fn recording_checksum_for_entry(
+    manifest: &BundleManifest,
+    entry_name: &str,
+) -> Result<Option<(AudioAssetId, [u8; 20])>, ProjectArchiveError> {
+    let Some(recording) = &manifest.recording else {
+        return Ok(None);
+    };
+    let Some(asset_manifest) = recording
+        .assets
+        .iter()
+        .find(|asset| asset.entry == entry_name)
+    else {
+        return Ok(None);
+    };
+    let asset = recording.project.asset(asset_manifest.asset_id).ok_or(
+        ProjectArchiveError::UndeclaredRecordingAsset(asset_manifest.asset_id),
+    )?;
+    Ok(Some((
+        asset_manifest.asset_id,
+        parse_recording_sha1(asset_manifest.asset_id, &asset.checksum)?,
+    )))
+}
+
 struct EntryHeader {
     name: String,
     len: u64,
@@ -1055,7 +1148,8 @@ fn read_entry_to_vec<R: Read>(
         limit: usize::MAX as u64,
     })?;
     let mut bytes = Vec::with_capacity(capacity);
-    copy_payload(reader, &mut bytes, header)?;
+    let mut ignore_progress = |_| {};
+    copy_payload(reader, &mut bytes, header, None, &mut ignore_progress)?;
     Ok(bytes)
 }
 
@@ -1063,9 +1157,17 @@ fn read_entry_to_file<R: Read>(
     reader: &mut R,
     header: &EntryHeader,
     output: File,
+    expected_recording_sha1: Option<(AudioAssetId, [u8; 20])>,
+    progress: &mut dyn FnMut(u64),
 ) -> Result<(), ProjectArchiveError> {
     let mut writer = BufWriter::with_capacity(COPY_BUFFER_BYTES, output);
-    copy_payload(reader, &mut writer, header)?;
+    copy_payload(
+        reader,
+        &mut writer,
+        header,
+        expected_recording_sha1,
+        progress,
+    )?;
     writer.flush()?;
     writer
         .into_inner()
@@ -1077,20 +1179,34 @@ fn copy_payload<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
     header: &EntryHeader,
+    expected_recording_sha1: Option<(AudioAssetId, [u8; 20])>,
+    progress: &mut dyn FnMut(u64),
 ) -> Result<(), ProjectArchiveError> {
     let mut remaining = header.len;
     let mut crc = Crc32::new();
+    let mut sha1 = expected_recording_sha1.map(|_| Sha1::new());
     let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
     while remaining > 0 {
         let wanted = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
         reader.read_exact(&mut buffer[..wanted])?;
         writer.write_all(&buffer[..wanted])?;
         crc.update(&buffer[..wanted]);
+        if let Some(sha1) = &mut sha1 {
+            sha1.update(&buffer[..wanted]);
+        }
+        progress(wanted as u64);
         remaining -= wanted as u64;
     }
     let expected_crc = read_u32(reader)?;
     if crc.finish() != expected_crc {
         return Err(ProjectArchiveError::ChecksumMismatch(header.name.clone()));
+    }
+    if let (Some((asset_id, expected)), Some(actual)) =
+        (expected_recording_sha1, sha1.map(Sha1::finalize))
+    {
+        if actual != expected {
+            return Err(ProjectArchiveError::RecordingChecksumMismatch(asset_id));
+        }
     }
     Ok(())
 }
@@ -1283,29 +1399,6 @@ fn parse_recording_sha1(
             .map_err(|_| ProjectArchiveError::InvalidRecordingChecksum(asset_id))?;
     }
     Ok(digest)
-}
-
-fn verify_recording_file_checksum(
-    asset_id: AudioAssetId,
-    path: &Path,
-    checksum: &str,
-) -> Result<(), ProjectArchiveError> {
-    let expected = parse_recording_sha1(asset_id, checksum)?;
-    let file = File::open(path)?;
-    let mut reader = BufReader::with_capacity(COPY_BUFFER_BYTES, file);
-    let mut digest = Sha1::new();
-    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
-    loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    if digest.finalize() != expected {
-        return Err(ProjectArchiveError::RecordingChecksumMismatch(asset_id));
-    }
-    Ok(())
 }
 
 fn ensure_destination_is_not_asset(

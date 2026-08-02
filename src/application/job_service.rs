@@ -3,9 +3,9 @@
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use crate::project_archive::LoadedProject;
+use crate::project_archive::{LoadedProject, ProjectLoadProgress};
 
 pub(crate) struct PendingProxyJob {
     pub source_path: PathBuf,
@@ -24,6 +24,8 @@ pub(crate) struct PendingRecordingMixJob {
 pub(crate) struct PendingImportJob {
     pub br_path: PathBuf,
     pub receiver: Receiver<Result<LoadedProject, String>>,
+    pub progress: Arc<Mutex<ProjectLoadProgress>>,
+    pub transfer_request_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

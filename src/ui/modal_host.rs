@@ -39,6 +39,9 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> Option<ModalOutcome> {
+        if self.0.microphone.is_some() {
+            return self.0.handle_topmost_event(event, screen_w, screen_h);
+        }
         if let Some(response) = crate::detection_foreground::handle_modal_event(event) {
             return match response {
                 EventResponse::Consumed => Some(ModalOutcome::Consumed),

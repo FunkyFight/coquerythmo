@@ -79,6 +79,12 @@ use crate::workspaces::rythmo::view as rythmo;
 
 use theme::*;
 
+pub struct ProjectLoadUi {
+    pub label: String,
+    pub phase: String,
+    pub progress: f32,
+}
+
 pub struct Ui {
     topbar_widgets: Vec<Box<dyn Widget>>,
     tab_widgets: Vec<Box<dyn Widget>>,
@@ -128,9 +134,9 @@ pub struct Ui {
     pub brush_color_presets: [[f32; 4]; 8],
     pub brush_color_preset_index: usize,
     pub toasts: toast::ToastManager,
-    /// Active bande rythmo import (label, start instant). Set by State while a
-    /// background parse runs; the modal blocks input + shows a spinner.
-    pub loading_project: Option<(String, std::time::Instant)>,
+    /// Active bande rythmo import. Set by State while a background parse runs;
+    /// the modal blocks input and exposes the current load stage.
+    pub loading_project: Option<ProjectLoadUi>,
     automation_editor: automation::AutomationEditor,
     side_panel: side_panel::SidePanel,
     focus: FocusManager,
@@ -811,9 +817,11 @@ impl Ui {
         if let Some(track_id) = self.recording_ui.dragging_track_volume {
             match event {
                 UiEvent::MouseMove { x, .. } => {
-                    if let Some(control) = self.recording_daw_scene.controls.iter().find(
-                        |control| control.control == RecordingControl::TrackVolume(track_id),
-                    ) {
+                    if let Some(control) =
+                        self.recording_daw_scene.controls.iter().find(|control| {
+                            control.control == RecordingControl::TrackVolume(track_id)
+                        })
+                    {
                         let volume = ((*x - control.bounds.x) / control.bounds.width
                             * crate::recording_mix::TRACK_VOLUME_MAX)
                             .clamp(0.0, crate::recording_mix::TRACK_VOLUME_MAX);
@@ -1119,10 +1127,7 @@ impl Ui {
         self.recording_ui.role.can_edit_timeline()
     }
 
-    pub fn recording_track_volume(
-        &self,
-        track_id: crate::recording::AudioTrackId,
-    ) -> f32 {
+    pub fn recording_track_volume(&self, track_id: crate::recording::AudioTrackId) -> f32 {
         self.recording_ui.track_volume(track_id)
     }
 
@@ -1206,12 +1211,10 @@ impl Ui {
             RecordingControl::TrackMute(track_id) => UiAction::RecordingToggleTrackMute(*track_id),
             RecordingControl::TrackSolo(track_id) => UiAction::RecordingToggleTrackSolo(*track_id),
             RecordingControl::TrackArm(track_id) => UiAction::RecordingArmTrack(*track_id),
-            RecordingControl::TrackVolume(track_id) => {
-                UiAction::RecordingAdjustTrackVolume {
-                    track_id: *track_id,
-                    delta: 0.1,
-                }
-            }
+            RecordingControl::TrackVolume(track_id) => UiAction::RecordingAdjustTrackVolume {
+                track_id: *track_id,
+                delta: 0.1,
+            },
             RecordingControl::TrackExport(track_id) => UiAction::RecordingExportTrack(*track_id),
             RecordingControl::StartCapture => UiAction::RecordingStartCapture,
             RecordingControl::Clip(clip_id) => UiAction::RecordingSelectClip {
@@ -1257,6 +1260,16 @@ impl Ui {
             self.cursor_pos = (*x, *y);
         }
 
+        // A microphone picker is opened for the local actor while other
+        // recording overlays may still be settling. It owns every event
+        // until it closes, including clicks on its cancel button.
+        if let Some(outcome) =
+            self.modal_host
+                .handle_topmost_event(event, self.screen_w, self.screen_h)
+        {
+            return outcome.into_event_response();
+        }
+
         if let UiEvent::MousePress { x, y }
         | UiEvent::DoubleClick { x, y }
         | UiEvent::CtrlClick { x, y }
@@ -1290,14 +1303,6 @@ impl Ui {
                 return EventResponse::Action(UiAction::CancelExport);
             }
             return EventResponse::Consumed;
-        }
-
-        // ModalHost owns modal priority, lifecycle and command conversion.
-        if let Some(outcome) =
-            self.modal_host
-                .handle_topmost_event(event, self.screen_w, self.screen_h)
-        {
-            return outcome.into_event_response();
         }
 
         // Toast click to dismiss
@@ -1714,9 +1719,11 @@ impl Ui {
             if let Some(track_id) = self.recording_ui.dragging_track_volume {
                 match event {
                     UiEvent::MouseMove { x, .. } => {
-                        if let Some(control) = self.recording_scene.controls.iter().find(
-                            |control| control.control == RecordingControl::TrackVolume(track_id),
-                        ) {
+                        if let Some(control) =
+                            self.recording_scene.controls.iter().find(|control| {
+                                control.control == RecordingControl::TrackVolume(track_id)
+                            })
+                        {
                             let volume = ((*x - control.bounds.x) / control.bounds.width
                                 * crate::recording_mix::TRACK_VOLUME_MAX)
                                 .clamp(0.0, crate::recording_mix::TRACK_VOLUME_MAX);
@@ -2365,6 +2372,26 @@ impl Ui {
         dirty: bool,
     ) {
         self.project_transfer_modal = Some(ProjectTransferModal::new(metadata, is_director, dirty));
+    }
+
+    pub fn start_project_load(&mut self, label: String) {
+        self.loading_project = Some(ProjectLoadUi {
+            label,
+            phase: t("loading_project.reading_manifest").to_string(),
+            progress: 0.0,
+        });
+    }
+
+    pub fn set_project_load_progress(&mut self, phase_key: &str, progress: f32) {
+        if let Some(load) = self.loading_project.as_mut() {
+            let progress = progress.clamp(0.0, 1.0);
+            load.phase = format!("{} — {:.0} %", t(phase_key), progress * 100.0);
+            load.progress = progress;
+        }
+    }
+
+    pub fn finish_project_load(&mut self) {
+        self.loading_project = None;
     }
 
     pub fn set_project_transfer_status(&mut self, status: crate::network::ProjectTransferStatus) {
@@ -3569,9 +3596,9 @@ impl Ui {
         }
 
         // Bande rythmo import loading modal (on top while a background parse runs)
-        if let Some((label, started)) = &self.loading_project {
-            let dw = 420.0;
-            let dh = 130.0;
+        if let Some(load) = &self.loading_project {
+            let dw = 520.0;
+            let dh = 190.0;
             let dx = (self.screen_w - dw) / 2.0;
             let dy = (self.screen_h - dh) / 2.0;
 
@@ -3622,7 +3649,7 @@ impl Ui {
             });
             // File name
             overlay_labels.push(LabelInfo {
-                text: label.as_str(),
+                text: load.label.as_str(),
                 bounds: Rect {
                     x: dx + 20.0,
                     y: dy + 52.0,
@@ -3637,11 +3664,28 @@ impl Ui {
                 color_override: Some([180, 180, 190]),
                 font_family_override: None,
             });
-            // Indeterminate sliding bar
+            // Exact stage and overall progress, updated by the background
+            // archive reader.
+            overlay_labels.push(LabelInfo {
+                text: load.phase.as_str(),
+                bounds: Rect {
+                    x: dx + 24.0,
+                    y: dy + 78.0,
+                    width: dw - 48.0,
+                    height: 22.0,
+                },
+                h_align: HAlign::Center,
+                v_align: VAlign::Center,
+                overflow: Overflow::Clip,
+                padding: 0.0,
+                font_size_override: Some(13.0),
+                color_override: Some([205, 210, 225]),
+                font_family_override: None,
+            });
             let bx = dx + 30.0;
-            let by = dy + 88.0;
+            let by = dy + 120.0;
             let bw = dw - 60.0;
-            let bh = 10.0;
+            let bh = 14.0;
             overlay_quads.push(QuadInstance {
                 rect: [bx, by, bw, bh],
                 color: [0.10, 0.10, 0.13, 1.0],
@@ -3655,23 +3699,22 @@ impl Ui {
                 rotation: 0.0,
                 _padding: [0.0; 2],
             });
-            let track = bw - 4.0;
-            let fill_w = track * 0.35;
-            let p = (started.elapsed().as_secs_f32() * 1.2).sin() * 0.5 + 0.5;
-            let fill_x = bx + 2.0 + (track - fill_w) * p;
-            overlay_quads.push(QuadInstance {
-                rect: [fill_x, by + 2.0, fill_w, bh - 4.0],
-                color: [0.35, 0.60, 1.0, 1.0],
-                color_bottom: [0.25, 0.45, 0.85, 1.0],
-                border_color: [0.0; 4],
-                border_width: 0.0,
-                border_radius: 3.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
+            let fill = (bw - 4.0) * load.progress.clamp(0.0, 1.0);
+            if fill > 0.5 {
+                overlay_quads.push(QuadInstance {
+                    rect: [bx + 2.0, by + 2.0, fill, bh - 4.0],
+                    color: [0.35, 0.60, 1.0, 1.0],
+                    color_bottom: [0.25, 0.45, 0.85, 1.0],
+                    border_color: [0.0; 4],
+                    border_width: 0.0,
+                    border_radius: 5.0,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0; 4],
+                    shadow_blur: 0.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
+                });
+            }
         }
 
         // Export progress modal (rendered last so it's always on top)

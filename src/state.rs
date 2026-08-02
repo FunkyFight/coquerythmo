@@ -29,6 +29,7 @@ use crate::network::{
 use crate::observer::TimelineEvent;
 use crate::packet::{CommandPayload, Packet, ProjectData};
 use crate::project::{Character, LineCharacterNameChange, Project};
+use crate::project_archive::{ProjectLoadProgress, ProjectLoadStage};
 use crate::protocol::{ProtocolKind, ProtocolPayload};
 
 // Marker only — the real "close project with protocol continuation" logic
@@ -75,6 +76,22 @@ fn recording_added_assets<'a>(
         }
         crate::recording::RecordingOperation::AddAsset { asset } => assets.push(asset),
         _ => {}
+    }
+}
+
+fn project_load_stage_key(stage: ProjectLoadStage) -> &'static str {
+    match stage {
+        ProjectLoadStage::ReadingManifest => "loading_project.reading_manifest",
+        ProjectLoadStage::ExtractingAssets => "loading_project.extracting_assets",
+        ProjectLoadStage::VerifyingAssets => "loading_project.verifying_assets",
+    }
+}
+
+fn project_load_overall_progress(progress: ProjectLoadProgress) -> f32 {
+    match progress.stage {
+        ProjectLoadStage::ReadingManifest => progress.fraction * 0.08,
+        ProjectLoadStage::ExtractingAssets => 0.08 + progress.fraction * 0.82,
+        ProjectLoadStage::VerifyingAssets => 0.08 + progress.fraction * 0.82,
     }
 }
 
@@ -165,6 +182,7 @@ pub struct State {
     project_transfer_source: Option<PathBuf>,
     project_transfer_send: Option<(String, Receiver<Result<(), String>>)>,
     project_transfer_loading_request: Option<String>,
+    project_transfer_waiting_dismissed: Option<String>,
     recording_input_preflight: Option<(Option<String>, bool)>,
     recording_uploads: Vec<(String, Receiver<Result<(), String>>)>,
     recording_upload_acks: Vec<String>,
@@ -230,6 +248,7 @@ impl State {
             project_transfer_source: None,
             project_transfer_send: None,
             project_transfer_loading_request: None,
+            project_transfer_waiting_dismissed: None,
             recording_input_preflight: None,
             recording_uploads: Vec::new(),
             recording_upload_acks: Vec::new(),
@@ -873,17 +892,9 @@ impl State {
             }
         };
         spec.set_source_volume(self.ui_shell.ui.volume());
-        if self
-            .ui_shell
-            .ui
-            .recording_role()
-            .can_adjust_track_volume()
-        {
+        if self.ui_shell.ui.recording_role().can_adjust_track_volume() {
             for track in self.project_session.recording_project.tracks() {
-                spec.set_track_volume(
-                    track.id,
-                    self.ui_shell.ui.recording_track_volume(track.id),
-                );
+                spec.set_track_volume(track.id, self.ui_shell.ui.recording_track_volume(track.id));
             }
         }
         if let Some(job) = self.jobs.pending_recording_mix_job.take() {
@@ -1012,10 +1023,17 @@ impl State {
             self.recording_read_only_error();
             return;
         }
-        if self.project_session.recording_project.track(track_id).is_none() {
+        if self
+            .project_session
+            .recording_project
+            .track(track_id)
+            .is_none()
+        {
             return;
         }
-        self.ui_shell.ui.recording_set_track_volume(track_id, volume);
+        self.ui_shell
+            .ui
+            .recording_set_track_volume(track_id, volume);
         self.sync_recording_workspace_ui();
         self.schedule_recording_mix();
     }
@@ -1242,6 +1260,79 @@ impl State {
                 serde_json::json!({ "action": "open_microphone" }),
             );
         }
+    }
+
+    pub fn request_actors_close_project_transfer_waiting(&self) {
+        if self.collaboration.network.is_in_room()
+            && matches!(
+                self.ui_shell.ui.recording_role(),
+                crate::ui::recording_workspace::RecordingRole::Director
+            )
+        {
+            self.collaboration.network.send_raw(
+                "actor_request",
+                serde_json::json!({ "action": "close_project_transfer_waiting" }),
+            );
+        }
+    }
+
+    fn close_project_transfer_waiting(&mut self) {
+        let transfer = self.project_transfer.as_ref().map(|runtime| {
+            let response = self
+                .collaboration
+                .network
+                .member_id
+                .as_deref()
+                .and_then(|member_id| {
+                    runtime
+                        .status
+                        .as_ref()?
+                        .participants
+                        .iter()
+                        .find(|participant| participant.member_id == member_id)
+                        .map(|participant| participant.response.clone())
+                });
+            (
+                runtime.metadata.request_id.clone(),
+                runtime.status.as_ref().map(|status| status.phase.clone()),
+                response,
+                runtime.receiver.is_active(),
+            )
+        });
+
+        if let Some((request_id, phase, response, receiver_active)) = &transfer {
+            if (*receiver_active && !matches!(phase.as_deref(), Some("collecting")))
+                || (matches!(phase.as_deref(), Some("transferring" | "finishing"))
+                    && matches!(response.as_deref(), Some("receiving" | "loading")))
+            {
+                self.collaboration.network.report_project_transfer(
+                    request_id,
+                    false,
+                    Some("transfer waiting closed by the director"),
+                );
+            }
+            self.project_transfer_waiting_dismissed = Some(request_id.clone());
+            if self
+                .jobs
+                .pending_import_job
+                .as_ref()
+                .is_some_and(|job| job.transfer_request_id.as_deref() == Some(request_id.as_str()))
+            {
+                self.jobs.pending_import_job = None;
+                self.ui_shell.ui.finish_project_load();
+            }
+        }
+
+        if let Some(runtime) = self.project_transfer.as_mut() {
+            runtime.receiver.cancel();
+        }
+        self.project_transfer = None;
+        self.project_transfer_loading_request = None;
+        self.ui_shell.ui.close_project_transfer_modal();
+        self.ui_shell.ui.sync_overlay = None;
+        self.ui_shell.ui.sync_progress = 0.0;
+        self.narration.publish_progress(String::new(), None);
+        self.show_toast(crate::i18n::t("recording.project_transfer.dismissed"), 5.0);
     }
 
     pub fn request_actors_project_transfer(&mut self) {
@@ -2924,16 +3015,29 @@ impl State {
             .unwrap_or_default();
         let (tx, rx) = mpsc::channel();
         let thread_path = br_path.clone();
+        let progress = Arc::new(std::sync::Mutex::new(ProjectLoadProgress {
+            stage: ProjectLoadStage::ReadingManifest,
+            fraction: 0.0,
+        }));
+        let progress_for_job = progress.clone();
+        let transfer_request_id = self.project_transfer_loading_request.clone();
         std::thread::spawn(move || {
-            let result = crate::project_archive::load_project_file(&thread_path)
+            let result =
+                crate::project_archive::load_project_file_with_progress(&thread_path, |update| {
+                    if let Ok(mut progress) = progress_for_job.lock() {
+                        *progress = update;
+                    }
+                })
                 .map_err(|error| error.to_string());
             let _ = tx.send(result);
         });
         self.jobs.pending_import_job = Some(PendingImportJob {
             br_path,
             receiver: rx,
+            progress,
+            transfer_request_id,
         });
-        self.ui_shell.ui.loading_project = Some((label, Instant::now()));
+        self.ui_shell.ui.start_project_load(label);
         self.narration.announce_event(AccessibilityEvent::Opened {
             label: format!(
                 "{} {}",
@@ -2942,7 +3046,7 @@ impl State {
                     .ui
                     .loading_project
                     .as_ref()
-                    .map(|(label, _)| label.as_str())
+                    .map(|load| load.label.as_str())
                     .unwrap_or_default()
             ),
         });
@@ -3767,6 +3871,7 @@ impl State {
                     self.project_transfer_source = None;
                     self.project_transfer_send = None;
                     self.project_transfer_loading_request = None;
+                    self.project_transfer_waiting_dismissed = None;
                     self.recording_input_preflight = None;
                     self.recording_uploads.clear();
                     self.recording_upload_acks.clear();
@@ -3825,6 +3930,9 @@ impl State {
                 IncomingMessage::ActorRequestOpenMicrophone => {
                     self.open_recording_input_device_modal()
                 }
+                IncomingMessage::ActorRequestCloseProjectTransferWaiting => {
+                    self.close_project_transfer_waiting()
+                }
                 IncomingMessage::ProjectTransferRequest(metadata) => {
                     // A fresh in-memory document is not a local project to protect:
                     // only offer the save-and-replace path when a saved project exists.
@@ -3838,6 +3946,7 @@ impl State {
                         status: None,
                         receiver: crate::file_transfer::FileTransferReceiver::default(),
                     });
+                    self.project_transfer_waiting_dismissed = None;
                     self.announce_open_container(
                         crate::i18n::t("recording.project_transfer.title"),
                         crate::i18n::t("recording.project_transfer_request_received").to_string(),
@@ -3853,6 +3962,8 @@ impl State {
                     }
                 }
                 IncomingMessage::ProjectTransferStatus(mut status) => {
+                    let dismissed = self.project_transfer_waiting_dismissed.as_deref()
+                        == Some(status.request_id.as_str());
                     if self.project_transfer_loading_request.as_deref()
                         == Some(status.request_id.as_str())
                     {
@@ -3881,21 +3992,28 @@ impl State {
                     }
                     self.ui_shell.ui.set_project_transfer_status(status.clone());
                     if matches!(status.phase.as_str(), "completed" | "cancelled") {
-                        if let Some(runtime) = self.project_transfer.as_mut() {
-                            runtime.receiver.cancel();
-                        }
-                        if self.collaboration.network.project_matches {
+                        if dismissed {
                             self.ui_shell.ui.sync_overlay = None;
-                        } else {
                             self.ui_shell.ui.sync_progress = 0.0;
-                            self.ui_shell.ui.sync_overlay = Some(
-                                crate::i18n::t("recording.project_transfer.no_project").into(),
-                            );
+                            self.narration.publish_progress(String::new(), None);
+                            self.project_transfer_waiting_dismissed = None;
+                        } else {
+                            if let Some(runtime) = self.project_transfer.as_mut() {
+                                runtime.receiver.cancel();
+                            }
+                            if self.collaboration.network.project_matches {
+                                self.ui_shell.ui.sync_overlay = None;
+                            } else {
+                                self.ui_shell.ui.sync_progress = 0.0;
+                                self.ui_shell.ui.sync_overlay = Some(
+                                    crate::i18n::t("recording.project_transfer.no_project").into(),
+                                );
+                            }
+                            self.project_transfer_source = None;
+                            self.project_transfer_send = None;
+                            self.narration.publish_progress(String::new(), None);
+                            self.ui_shell.ui.close_project_transfer_modal();
                         }
-                        self.project_transfer_source = None;
-                        self.project_transfer_send = None;
-                        self.narration.publish_progress(String::new(), None);
-                        self.ui_shell.ui.close_project_transfer_modal();
                     }
                 }
                 IncomingMessage::ProjectTransferChunk {
@@ -6565,6 +6683,22 @@ impl State {
         true
     }
 
+    fn poll_project_load_progress(&mut self) -> bool {
+        let progress = self
+            .jobs
+            .pending_import_job
+            .as_ref()
+            .and_then(|job| job.progress.lock().ok().map(|progress| *progress));
+        let Some(progress) = progress else {
+            return false;
+        };
+        self.ui_shell.ui.set_project_load_progress(
+            project_load_stage_key(progress.stage),
+            project_load_overall_progress(progress),
+        );
+        true
+    }
+
     fn poll_import_job(&mut self) -> bool {
         let result = match self.jobs.pending_import_job.as_ref() {
             Some(job) => match job.receiver.try_recv() {
@@ -6582,8 +6716,13 @@ impl State {
         let Some(job) = self.jobs.pending_import_job.take() else {
             return false;
         };
-        let transfer_request_id = self.project_transfer_loading_request.take();
-        self.ui_shell.ui.loading_project = None;
+        let transfer_request_id = job.transfer_request_id.clone();
+        if transfer_request_id.is_some() {
+            self.project_transfer_loading_request.take();
+        }
+        self.ui_shell
+            .ui
+            .set_project_load_progress("loading_project.preparing_project", 0.94);
 
         match result {
             Ok(mut loaded) => {
@@ -6609,6 +6748,7 @@ impl State {
                             message: crate::i18n::t("accessibility.project_load_failed")
                                 .to_string(),
                         });
+                        self.ui_shell.ui.finish_project_load();
                         return true;
                     }
                 }
@@ -6669,6 +6809,10 @@ impl State {
                     self.project_session.loaded_project = Some(loaded);
                 }
                 self.schedule_recording_mix();
+                self.ui_shell
+                    .ui
+                    .set_project_load_progress("loading_project.ready", 1.0);
+                self.ui_shell.ui.finish_project_load();
                 if let Some(request_id) = transfer_request_id.as_deref() {
                     self.collaboration.network.project_matches = true;
                     self.ui_shell
@@ -6701,6 +6845,7 @@ impl State {
             }
             Err(e) => {
                 log::error!("Import failed: {e}");
+                self.ui_shell.ui.finish_project_load();
                 self.show_toast(
                     format!("{} {e}", crate::i18n::t("toast.import_failed")),
                     6.0,
@@ -7015,6 +7160,7 @@ impl State {
         changed |= self.tick_network();
         changed |= self.poll_project_transfer_prepare();
         changed |= self.poll_project_transfer_send();
+        changed |= self.poll_project_load_progress();
         changed |= self.tick_scroll_decode();
         changed |= self.poll_export_job();
         changed |= self.poll_recording_mix_job();
@@ -7075,10 +7221,7 @@ impl State {
             return;
         }
         if self.is_project_save_in_progress() {
-            self.show_toast(
-                crate::i18n::t("toast.project_change_blocked_saving"),
-                5.0,
-            );
+            self.show_toast(crate::i18n::t("toast.project_change_blocked_saving"), 5.0);
             return;
         }
         self.pending_protocol = Some(PendingProtocolFlow {
@@ -7096,10 +7239,7 @@ impl State {
             // can pick a location without losing the target project path.
             self.pending_protocol = None;
             self.open_save_prompt(crate::ui::save_prompt_modal::SavePromptKind::CloseProject);
-            self.show_toast(
-                crate::i18n::t("toast.protocol_requires_saved_project"),
-                6.0,
-            );
+            self.show_toast(crate::i18n::t("toast.protocol_requires_saved_project"), 6.0);
             return;
         } else {
             // Nothing worth saving → close immediately and load the target.
@@ -7139,19 +7279,13 @@ impl State {
         let payload = match kind {
             ProtocolKind::Host => {
                 let Some(project_path) = self.project_session.project_path.clone() else {
-                    self.show_toast(
-                        crate::i18n::t("toast.protocol_host_requires_project"),
-                        6.0,
-                    );
+                    self.show_toast(crate::i18n::t("toast.protocol_host_requires_project"), 6.0);
                     return;
                 };
                 let Some(username) = (!cfg.network.username.trim().is_empty())
                     .then(|| cfg.network.username.trim().to_string())
                 else {
-                    self.show_toast(
-                        crate::i18n::t("toast.protocol_host_requires_username"),
-                        6.0,
-                    );
+                    self.show_toast(crate::i18n::t("toast.protocol_host_requires_username"), 6.0);
                     return;
                 };
                 ProtocolPayload::host(
@@ -7166,11 +7300,7 @@ impl State {
                     self.show_toast(crate::i18n::t("toast.protocol_join_requires_room"), 6.0);
                     return;
                 };
-                ProtocolPayload::join(
-                    &server,
-                    cfg.network.password.clone(),
-                    code,
-                )
+                ProtocolPayload::join(&server, cfg.network.password.clone(), code)
             }
         };
         let url = payload.to_url();
@@ -7236,9 +7366,8 @@ impl State {
                 Some(expected) => current == std::path::Path::new(expected),
                 None => true,
             });
-        let ready = project_path_ok
-            && !self.project_session.dirty
-            && self.project_session.huuid.is_some();
+        let ready =
+            project_path_ok && !self.project_session.dirty && self.project_session.huuid.is_some();
         if !ready {
             log::warn!(
                 "protocol: import done but not ready (dirty={}, path ok={})",
@@ -7246,10 +7375,7 @@ impl State {
                 project_path_ok
             );
             self.pending_protocol = None;
-            self.show_toast(
-                crate::i18n::t("toast.protocol_project_not_ready"),
-                6.0,
-            );
+            self.show_toast(crate::i18n::t("toast.protocol_project_not_ready"), 6.0);
             return true;
         }
 
@@ -7863,4 +7989,3 @@ fn ping_server_socketio(
         }
     }
 }
-

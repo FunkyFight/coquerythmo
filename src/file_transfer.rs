@@ -149,6 +149,10 @@ pub struct FileTransferReceiver {
 }
 
 impl FileTransferReceiver {
+    pub fn is_active(&self) -> bool {
+        self.active.is_some()
+    }
+
     pub fn begin(
         &mut self,
         metadata: FileTransferMetadata,

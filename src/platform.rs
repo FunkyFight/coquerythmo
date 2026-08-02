@@ -1,4 +1,4 @@
-﻿//! OS-specific windows, icon and clipboard adapters.
+//! OS-specific windows, icon and clipboard adapters.
 
 use winit::window::WindowBuilder;
 
@@ -137,7 +137,10 @@ pub(crate) fn register_url_protocol() {
     let icon = format!("\"{}\",0", executable.display());
     let base = format!(r"HKCU\Software\Classes\{PROTOCOL_SCHEME}");
     let entries = [
-        (base.clone(), "URL:Coquerythmo quick session link".to_string()),
+        (
+            base.clone(),
+            "URL:Coquerythmo quick session link".to_string(),
+        ),
         (format!(r"{base}\DefaultIcon"), icon),
         (format!(r"{base}\shell\open\command"), command),
     ];

@@ -351,6 +351,9 @@ impl CommandDispatcher {
             UiAction::OpenRecordingInputDeviceModal => state.open_recording_input_device_modal(),
             UiAction::RequestActorsOpenMicrophone => state.request_actors_open_microphone(),
             UiAction::RequestActorsTransferProject => state.request_actors_project_transfer(),
+            UiAction::RequestActorsCloseProjectTransferWaiting => {
+                state.request_actors_close_project_transfer_waiting()
+            }
             UiAction::ProjectTransferAccept => state.respond_to_project_transfer("accepted"),
             UiAction::ProjectTransferSaveAndAccept => {
                 state.respond_to_project_transfer("saving");

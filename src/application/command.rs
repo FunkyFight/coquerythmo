@@ -87,6 +87,7 @@ pub enum UiAction {
     OpenRecordingInputDeviceModal,
     RequestActorsOpenMicrophone,
     RequestActorsTransferProject,
+    RequestActorsCloseProjectTransferWaiting,
     ProjectTransferAccept,
     ProjectTransferSaveAndAccept,
     ProjectTransferReplace,

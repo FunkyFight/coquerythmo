@@ -60,7 +60,7 @@ impl ProjectTransferModal {
                 "{} - {percent} %",
                 t("recording.project_transfer.receiving")
             ),
-            "finishing" => format!("{}...", t("recording.project_transfer.loading")),
+            "finishing" => t("recording.project_transfer.load_waiting").to_string(),
             "completed" => t("recording.project_transfer.complete").to_string(),
             "cancelled" => t("recording.project_transfer.failed").to_string(),
             _ => String::new(),
