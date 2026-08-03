@@ -12,21 +12,10 @@ const V: Ctx = Ctx::Vowel;
 
 const US: &[Dialect] = &[Dialect::EnUs];
 const GB: &[Dialect] = &[Dialect::EnGb];
-const BOTH: &[Dialect] = &[Dialect::EnUs, Dialect::EnGb];
 
 const fn r(g: &'static str, l: Ctx, rt: Ctx, p: &'static [Phoneme]) -> GraphemeRule {
     GraphemeRule::rule(g, l, rt, p)
 }
-const fn rol(
-    g: &'static str,
-    l: Ctx,
-    rt: Ctx,
-    p: &'static [Phoneme],
-    dialects: &'static [Dialect],
-) -> GraphemeRule {
-    GraphemeRule::only(g, l, rt, p, dialects)
-}
-
 #[rustfmt::skip]
 pub static RULES: &[GraphemeRule] = &[
     // ═══ Long vowel digraphs & diphthongs (checked before trigraphs) ════
@@ -218,6 +207,12 @@ pub static EXCEPTIONS: DictTable = &[
     ("though", ALL, &[("th", &[VoicedDentalFricative]), ("ough", &[DiphthongGoatEn])]),
     ("through", ALL, &[("th", &[VoicelessDentalFricative]), ("rough", &[AlveolarApproximant, CloseBackRounded])]),
     ("thought", ALL, &[("th", &[VoicelessDentalFricative]), ("ought", &[OpenMidBackRounded, VoicelessAlveolarPlosive])]),
+    // Proper name: Nicole = /nɪˈkoʊl/ (the final e is silent).
+    ("nicole", ALL, &[("n", &[AlveolarNasal]), ("i", &[NearCloseFrontEn]), ("c", &[VoicelessVelarPlosive]), ("o", &[DiphthongGoatEn]), ("l", &[AlveolarLateralApproximant]), ("e", &[])]),
+    ("button", ALL, &[("b", &[VoicedBilabialPlosive]), ("u", &[OpenMidBackEn]), ("tt", &[VoicelessAlveolarPlosive]), ("on", &[SyllabicN])]),
+    ("rhythm", ALL, &[("r", &[AlveolarApproximant]), ("h", &[]), ("y", &[NearCloseFrontEn]), ("th", &[VoicedDentalFricative]), ("m", &[SyllabicM])]),
+    ("uh-oh", ALL, &[("uh", &[GlottalStop]), ("-", &[]), ("oh", &[OpenMidBackRounded])]),
+    ("why", ALL, &[("wh", &[VoicelessLabialVelarFricative]), ("y", &[DiphthongPriceEn])]),
     ("know", ALL, &[("kn", &[AlveolarNasal]), ("ow", &[DiphthongGoatEn])]),
     ("knife", ALL, &[("kn", &[AlveolarNasal]), ("i", &[DiphthongPriceEn]), ("f", &[VoicelessLabiodentalFricative]), ("e", &[])]),
     ("write", ALL, &[("wr", &[AlveolarApproximant]), ("i", &[DiphthongPriceEn]), ("t", &[VoicelessAlveolarPlosive]), ("e", &[])]),
@@ -252,6 +247,6 @@ pub static EXCEPTIONS: DictTable = &[
 ];
 
 pub static PRONOUNCEABLE_ACRONYMS: &[&str] = &[
-    "nasa", "nato", "unesco", "unicef", "laser", "radar", "scuba", "aids",
-    "ovni", "gif", "jpeg", "sim", "pin", "vat", "opec", "fifa", "uefa",
+    "nasa", "nato", "unesco", "unicef", "laser", "radar", "scuba", "aids", "ovni", "gif", "jpeg",
+    "sim", "pin", "vat", "opec", "fifa", "uefa",
 ];

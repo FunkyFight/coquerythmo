@@ -351,6 +351,8 @@ pub struct LineDetectionData {
     detections: Vec<DetectionCue>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     sync_points: Vec<TextSyncPoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    generated_signs: Option<crate::phonetics::GeneratedSignsInfo>,
 }
 
 #[derive(Deserialize)]
@@ -361,6 +363,8 @@ struct LineDetectionDataWire {
     detections: Vec<DetectionCue>,
     #[serde(default)]
     sync_points: Vec<TextSyncPoint>,
+    #[serde(default)]
+    generated_signs: Option<crate::phonetics::GeneratedSignsInfo>,
 }
 
 impl<'de> Deserialize<'de> for LineDetectionData {
@@ -390,13 +394,17 @@ impl<'de> Deserialize<'de> for LineDetectionData {
             original_text: wire.original_text,
             detections,
             sync_points,
+            generated_signs: wire.generated_signs,
         })
     }
 }
 
 impl LineDetectionData {
     pub fn is_empty(&self) -> bool {
-        self.original_text.is_empty() && self.detections.is_empty() && self.sync_points.is_empty()
+        self.original_text.is_empty()
+            && self.detections.is_empty()
+            && self.sync_points.is_empty()
+            && self.generated_signs.is_none()
     }
 
     pub fn detections(&self) -> &[DetectionCue] {
@@ -411,6 +419,14 @@ impl LineDetectionData {
 
     pub fn sync_points(&self) -> &[TextSyncPoint] {
         &self.sync_points
+    }
+
+    pub fn generated_signs(&self) -> Option<&crate::phonetics::GeneratedSignsInfo> {
+        self.generated_signs.as_ref()
+    }
+
+    pub fn set_generated_signs(&mut self, info: Option<crate::phonetics::GeneratedSignsInfo>) {
+        self.generated_signs = info;
     }
 
     /// Shift line-scoped synchronization points when their owning dialogue is
@@ -465,7 +481,14 @@ impl LineDetectionData {
             return Some(self.sync_points.remove(index).as_detection_cue());
         }
         let index = self.detections.iter().position(|cue| cue.id == id)?;
-        Some(self.detections.remove(index))
+        let cue = self.detections.remove(index);
+        if let Some(info) = self.generated_signs.as_mut() {
+            info.cue_ids.retain(|cue_id| *cue_id != id.0);
+            if info.cue_ids.is_empty() {
+                self.generated_signs = None;
+            }
+        }
+        Some(cue)
     }
 
     pub fn move_detection(&mut self, id: DetectionCueId, media_tick: MediaTick) -> bool {
@@ -655,6 +678,29 @@ impl DetectionDocument {
 
     pub fn line_mut_if_present(&mut self, line_id: u64) -> Option<&mut LineDetectionData> {
         self.lines.get_mut(&line_id)
+    }
+
+    pub fn set_generated_signs(
+        &mut self,
+        line_id: u64,
+        info: Option<crate::phonetics::GeneratedSignsInfo>,
+    ) -> bool {
+        let current = self
+            .line(line_id)
+            .and_then(LineDetectionData::generated_signs)
+            .cloned();
+        if current == info {
+            return false;
+        }
+        if info.is_none() {
+            if let Some(data) = self.line_mut_if_present(line_id) {
+                data.set_generated_signs(None);
+            }
+            self.prune_empty_line(line_id);
+        } else {
+            self.line_mut(line_id).set_generated_signs(info);
+        }
+        true
     }
 
     pub fn remove_line(&mut self, line_id: u64) -> Option<LineDetectionData> {
@@ -1324,10 +1370,18 @@ pub enum DetectionChange {
         line_id: u64,
         data: LineDetectionData,
     },
+    SetGeneratedSigns {
+        line_id: u64,
+        old_info: Option<crate::phonetics::GeneratedSignsInfo>,
+        new_info: Option<crate::phonetics::GeneratedSignsInfo>,
+    },
+    Batch {
+        changes: Vec<DetectionChange>,
+    },
 }
 
 impl DetectionChange {
-    pub const fn line_id(&self) -> u64 {
+    pub fn line_id(&self) -> u64 {
         match self {
             Self::Add { address, .. }
             | Self::Remove { address, .. }
@@ -1336,6 +1390,8 @@ impl DetectionChange {
             | Self::Retarget { address, .. }
             | Self::SetAffinity { address, .. } => address.line_id,
             Self::RemoveLine { line_id, .. } => *line_id,
+            Self::SetGeneratedSigns { line_id, .. } => *line_id,
+            Self::Batch { changes } => changes.first().map_or(0, Self::line_id),
         }
     }
 
@@ -1370,6 +1426,10 @@ impl DetectionChange {
                 ..
             } => document.set_sync_affinity(*address, *new_affinity),
             Self::RemoveLine { line_id, .. } => document.remove_line(*line_id).is_some(),
+            Self::SetGeneratedSigns {
+                line_id, new_info, ..
+            } => document.set_generated_signs(*line_id, new_info.clone()),
+            Self::Batch { changes } => apply_batch(document, changes),
         }
     }
 
@@ -1407,8 +1467,34 @@ impl DetectionChange {
                 document.restore_line(*line_id, data.clone());
                 true
             }
+            Self::SetGeneratedSigns {
+                line_id, old_info, ..
+            } => document.set_generated_signs(*line_id, old_info.clone()),
+            Self::Batch { changes } => {
+                for change in changes.iter().rev() {
+                    if !change.unapply(document) {
+                        return false;
+                    }
+                }
+                true
+            }
         }
     }
+}
+
+fn apply_batch(document: &mut DetectionDocument, changes: &[DetectionChange]) -> bool {
+    if changes.is_empty() {
+        return false;
+    }
+    for (index, change) in changes.iter().enumerate() {
+        if !change.apply(document) {
+            for previous in changes[..index].iter().rev() {
+                let _ = previous.unapply(document);
+            }
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -1487,6 +1573,103 @@ mod tests {
         assert_eq!(document.detection(address), Some(&cue));
         assert!(change.unapply(&mut document));
         assert!(document.detection(address).is_none());
+    }
+
+    #[test]
+    fn generated_sign_batch_is_reversible_and_persistent() {
+        let line_id = 42;
+        let cue_one = DetectionCue {
+            id: DetectionCueId(7),
+            kind: DetectionKind::Labial,
+            media_tick: MediaTick(120),
+            duration: MediaTick::ZERO,
+            target: TextAnchor::Grapheme { index: 1 },
+        };
+        let cue_two = DetectionCue {
+            id: DetectionCueId(8),
+            kind: DetectionKind::MouthOpen,
+            media_tick: MediaTick(180),
+            duration: MediaTick::ZERO,
+            target: TextAnchor::GraphemeRange { start: 2, end: 4 },
+        };
+        let info = crate::phonetics::GeneratedSignsInfo {
+            generation_id: 1,
+            engine_version: crate::phonetics::ENGINE_VERSION,
+            language: crate::phonetics::Language::French,
+            dialect: crate::phonetics::Dialect::Generic,
+            text_fingerprint: crate::phonetics::text_fingerprint("chat"),
+            mapping_fingerprint: 123,
+            cue_ids: vec![7, 8],
+        };
+        let batch = DetectionChange::Batch {
+            changes: vec![
+                DetectionChange::Add {
+                    address: DetectionAddress {
+                        line_id,
+                        detection_id: cue_one.id,
+                    },
+                    cue: cue_one.clone(),
+                },
+                DetectionChange::Add {
+                    address: DetectionAddress {
+                        line_id,
+                        detection_id: cue_two.id,
+                    },
+                    cue: cue_two.clone(),
+                },
+                DetectionChange::SetGeneratedSigns {
+                    line_id,
+                    old_info: None,
+                    new_info: Some(info.clone()),
+                },
+            ],
+        };
+
+        let mut document = DetectionDocument::default();
+        assert!(batch.apply(&mut document));
+        let data = document.line(line_id).unwrap();
+        assert_eq!(data.detections(), &[cue_one, cue_two]);
+        assert_eq!(data.generated_signs(), Some(&info));
+
+        let json = serde_json::to_string(&document).unwrap();
+        let restored: DetectionDocument = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, document);
+
+        assert!(batch.unapply(&mut document));
+        assert!(document.line(line_id).is_none());
+    }
+
+    #[test]
+    fn failed_detection_batch_rolls_back_prior_changes() {
+        let line_id = 43;
+        let cue = DetectionCue {
+            id: DetectionCueId(1),
+            kind: DetectionKind::Labial,
+            media_tick: MediaTick(120),
+            duration: MediaTick::ZERO,
+            target: TextAnchor::BeforeText,
+        };
+        let batch = DetectionChange::Batch {
+            changes: vec![
+                DetectionChange::Add {
+                    address: DetectionAddress {
+                        line_id,
+                        detection_id: cue.id,
+                    },
+                    cue: cue.clone(),
+                },
+                DetectionChange::Add {
+                    address: DetectionAddress {
+                        line_id,
+                        detection_id: cue.id,
+                    },
+                    cue,
+                },
+            ],
+        };
+        let mut document = DetectionDocument::default();
+        assert!(!batch.apply(&mut document));
+        assert!(document.line(line_id).is_none());
     }
 
     #[test]

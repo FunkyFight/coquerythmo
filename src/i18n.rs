@@ -80,6 +80,7 @@ mod tests {
             "recording.actor_requests",
             "recording.actor_requests.open_microphone",
             "recording.actor_requests.transfer_project",
+            "recording.actor_requests.transfer_display_settings",
             "recording.actor_requests.close_transfer_waiting",
             "recording.project_transfer.title",
             "recording.project_transfer.accept",

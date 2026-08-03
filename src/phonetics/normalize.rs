@@ -97,7 +97,10 @@ pub fn normalize_line(text: &str) -> NormalizedLine {
         // Multi-char clusters (flags, keycaps…): keep first char mapping.
         let lowered = fold_fullwidth(first).to_lowercase().next().unwrap_or(' ');
         let equiv = expanded_equiv(lowered);
-        let write_ws = matches!(lowered, ' ' | '\t' | '\r' | '\n' | '\u{00A0}' | '\u{202F}' | '\u{2009}' | '\u{3000}');
+        let write_ws = matches!(
+            lowered,
+            ' ' | '\t' | '\r' | '\n' | '\u{00A0}' | '\u{202F}' | '\u{2009}' | '\u{3000}'
+        );
         if write_ws {
             // Collapse runs of whitespace to a single space, remembered as
             // coming from the first whitespace grapheme.
@@ -158,7 +161,10 @@ mod tests {
         let line = normalize_line(text);
         (
             line.normalized_string(),
-            line.normalized.iter().map(|c| c.original_grapheme).collect(),
+            line.normalized
+                .iter()
+                .map(|c| c.original_grapheme)
+                .collect(),
         )
     }
 

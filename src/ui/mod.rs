@@ -1593,6 +1593,7 @@ impl Ui {
                     hover_main: true,
                     hover_change_character: false,
                     hover_text_emotion: false,
+                    hover_generate_detection: false,
                     hover_emotion_index: None,
                     hover_emotion_variant: None,
                     text_range: (self.rythmo_state.editing_line == Some(line_id))

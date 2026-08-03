@@ -136,11 +136,15 @@ pub struct PronunciationCandidate {
 
 impl PronunciationCandidate {
     pub fn phonemes(&self) -> impl Iterator<Item = &PhonemeOccurrence> {
-        self.segments.iter().flat_map(|segment| segment.phonemes.iter())
+        self.segments
+            .iter()
+            .flat_map(|segment| segment.phonemes.iter())
     }
 
     pub fn is_empty(&self) -> bool {
-        self.segments.iter().all(|segment| segment.phonemes.is_empty())
+        self.segments
+            .iter()
+            .all(|segment| segment.phonemes.is_empty())
     }
 }
 
@@ -239,6 +243,7 @@ pub struct GeneratedSignsInfo {
     /// Fingerprint of the mapping profile used.
     pub mapping_fingerprint: u64,
     /// Ids of cues created by this run, in insertion order.
+    #[serde(default)]
     pub cue_ids: Vec<u64>,
 }
 

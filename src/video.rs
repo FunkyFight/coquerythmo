@@ -15,6 +15,7 @@ use crate::recording_mix::RealtimeRecordingMix;
 const VIDEO_PIX_FMT: &str = "bgra";
 const VIDEO_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 const AUDIO_DECODE_CHANNELS: usize = 2;
+const AUDIO_CHUNK_FRAMES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioTrack {
@@ -495,6 +496,15 @@ impl VideoPlayer {
         self.receiver_has_current_frame
     }
 
+    pub fn is_playback_preparing(&self) -> bool {
+        self.receiver_has_current_frame
+            || self.waiting_for_first_frame
+            || self
+                .audio_ready
+                .as_ref()
+                .is_some_and(|ready| !ready.load(Ordering::Acquire))
+    }
+
     /// Decode and display the frame at current_frame. Call after scroll stabilizes.
     pub fn decode_current_frame(
         &mut self,
@@ -685,12 +695,13 @@ impl VideoPlayer {
     }
 
     fn try_start_playback_clock(&mut self, now: Instant) {
-        if self
-            .audio_ready
-            .as_ref()
-            .is_some_and(|ready| !ready.load(Ordering::Acquire))
-        {
-            return;
+        if !self.audio_should_wait_at(self.current_frame as f64 / self.fps.max(1.0)) {
+            let Some(ready) = self.audio_ready.as_ref() else {
+                return;
+            };
+            if !ready.load(Ordering::Acquire) {
+                return;
+            }
         }
         self.waiting_for_first_frame = false;
         self.start_playback_clock(now);
@@ -1580,7 +1591,7 @@ fn decode_audio_stream_from(
 
     let stdout = child.stdout.take().unwrap();
     let mut reader = std::io::BufReader::new(stdout);
-    let chunk_samples = 4096 * AUDIO_CHANNELS as usize;
+    let chunk_samples = AUDIO_CHUNK_FRAMES * AUDIO_CHANNELS as usize;
     let chunk_bytes = chunk_samples * 4;
     let mut buf = vec![0u8; chunk_bytes];
 

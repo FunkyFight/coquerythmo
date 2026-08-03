@@ -29,6 +29,7 @@ pub mod media_recording;
 pub mod network;
 pub mod observer;
 pub mod packet;
+pub mod phonetics;
 pub mod platform;
 pub mod project;
 pub mod project_archive;

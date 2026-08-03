@@ -201,6 +201,9 @@ pub fn event_for_action(
         UiAction::OpenRecordingInputDeviceModal => "recording.microphone.select",
         UiAction::RequestActorsOpenMicrophone => "recording.actor_requests.open_microphone",
         UiAction::RequestActorsTransferProject => "recording.actor_requests.transfer_project",
+        UiAction::RequestActorsTransferDisplaySettings => {
+            "recording.actor_requests.transfer_display_settings"
+        }
         UiAction::RequestActorsCloseProjectTransferWaiting => {
             "recording.actor_requests.close_transfer_waiting"
         }

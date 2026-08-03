@@ -177,12 +177,14 @@ pub(crate) fn build_topbar(
                     vec![
                         t("recording.actor_requests.open_microphone").into(),
                         t("recording.actor_requests.transfer_project").into(),
+                        t("recording.actor_requests.transfer_display_settings").into(),
                         t("recording.actor_requests.close_transfer_waiting").into(),
                     ],
                     |index, _label| match index {
                         0 => EventResponse::Action(UiAction::RequestActorsOpenMicrophone),
                         1 => EventResponse::Action(UiAction::RequestActorsTransferProject),
-                        2 => EventResponse::Action(
+                        2 => EventResponse::Action(UiAction::RequestActorsTransferDisplaySettings),
+                        3 => EventResponse::Action(
                             UiAction::RequestActorsCloseProjectTransferWaiting,
                         ),
                         _ => EventResponse::Consumed,

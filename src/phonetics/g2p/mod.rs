@@ -185,6 +185,8 @@ pub fn convert_line(engine: &G2PEngine, text: &str) -> PhoneticLine {
                         out.candidates
                             .extend(remap_multi(engine, word, &token, range));
                     }
+                } else {
+                    out.unknown = true;
                 }
             }
             TokenKind::Number => {
@@ -196,7 +198,9 @@ pub fn convert_line(engine: &G2PEngine, text: &str) -> PhoneticLine {
                     segments,
                 }];
             }
-            TokenKind::Acronym | TokenKind::AcronymWord | TokenKind::Word
+            TokenKind::Acronym
+            | TokenKind::AcronymWord
+            | TokenKind::Word
             | TokenKind::ElidedPrefix => {
                 // Re-detect all-caps acronyms from the original casing (the
                 // tokenizer sees lowercase).
@@ -235,7 +239,8 @@ pub fn convert_line(engine: &G2PEngine, text: &str) -> PhoneticLine {
                             .iter()
                             .any(|segment| segment.phonemes.is_empty() && !segment.silent)
                 });
-                out.candidates = remap_ranges(resolved, &token, range);
+                out.candidates = remap_ranges(resolved, &token, range, &normalized);
+                out.unknown |= out.candidates.is_empty();
             }
         }
         out_tokens.push(out);
@@ -273,19 +278,31 @@ fn remap_ranges(
     mut candidates: Vec<PronunciationCandidate>,
     token: &tokenizer::RawToken,
     original_range: TextRange,
+    normalized: &crate::phonetics::normalize::NormalizedLine,
 ) -> Vec<PronunciationCandidate> {
     let token_len = token.text.chars().count().max(1);
-    let span = original_range.len().max(1);
     for candidate in &mut candidates {
         for segment in &mut candidate.segments {
             let rel_start = segment.range.start.min(token_len);
             let rel_end = segment.range.end.min(token_len).max(rel_start);
-            let start = original_range.start + rel_start * span / token_len;
-            let mut end = original_range.start + rel_end * span / token_len;
-            if rel_end > rel_start && end <= start {
-                end = start + 1;
-            }
-            segment.range = TextRange::new(start, end);
+            let normalized_start = token
+                .normalized_start
+                .saturating_add(rel_start)
+                .min(token.normalized_end);
+            let normalized_end = token
+                .normalized_start
+                .saturating_add(rel_end)
+                .min(token.normalized_end);
+            let mapped = normalized
+                .normalized
+                .get(normalized_start..normalized_end)
+                .and_then(|chars| {
+                    let first = chars.first()?.original_grapheme;
+                    let last = chars.last()?.original_grapheme;
+                    Some(TextRange::new(first, last.saturating_add(1)))
+                })
+                .unwrap_or(original_range);
+            segment.range = mapped;
         }
     }
     candidates

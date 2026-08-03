@@ -137,6 +137,119 @@ impl State {
         self.announce_detection_visual(kind, "ajouté");
     }
 
+    pub fn generate_detection_signs(&mut self, line_id: u64) {
+        if !crate::config::dev_mode() {
+            return;
+        }
+        let Some(line) = self.project_session.project.get_line(line_id).cloned() else {
+            return;
+        };
+        if !line.kind.is_dialogue() || line.text.trim().is_empty() || line.duration_frames <= 0 {
+            self.show_toast(
+                "La ligne ne peut pas être convertie en signes de détection",
+                4.0,
+            );
+            return;
+        }
+
+        let language = match self.project_session.project.syllable_language() {
+            crate::project::SyllableLanguage::French => crate::phonetics::Language::French,
+            crate::project::SyllableLanguage::English => crate::phonetics::Language::English,
+            crate::project::SyllableLanguage::Spanish => crate::phonetics::Language::Spanish,
+        };
+        let converter = crate::phonetics::converter_for(language);
+        let analysis = converter.convert(&line.text);
+        let mapping = crate::phonetics::mapping::default_mapping(language);
+        if let Err(errors) = crate::phonetics::mapping::validate_mapping(&mapping) {
+            self.show_toast(format!("Mapping de détection invalide : {errors:?}"), 5.0);
+            return;
+        }
+
+        let grapheme_count = UnicodeSegmentation::graphemes(line.text.as_str(), true).count();
+        let first_id = self
+            .project_session
+            .project
+            .detections()
+            .line(line_id)
+            .and_then(LineDetectionData::next_detection_id)
+            .unwrap_or(DetectionCueId(1));
+        let result = crate::phonetics::sign_generation::generate_cues(
+            &analysis,
+            &crate::phonetics::sign_generation::GenerationOptions {
+                mapping: mapping.clone(),
+                placement: crate::phonetics::sign_generation::SignPlacement::Center,
+                include_optional: false,
+                start_frame: line.start_frame,
+                duration_frames: line.duration_frames,
+                progress: None,
+                grapheme_count,
+                first_id,
+            },
+        );
+        if result.cues.is_empty() {
+            self.show_toast("Aucun signe de détection n'a été produit", 4.0);
+            return;
+        }
+
+        let previous_info = self
+            .project_session
+            .project
+            .detections()
+            .line(line_id)
+            .and_then(LineDetectionData::generated_signs)
+            .cloned();
+        if let Some(info) = previous_info.as_ref() {
+            let message = if info.is_stale_for(&line.text) {
+                "Les signes générés sont obsolètes après modification du texte ; supprimez-les ou confirmez une régénération"
+            } else {
+                "Des signes générés existent déjà sur cette ligne ; régénérez après confirmation"
+            };
+            self.show_toast(message, 5.0);
+            return;
+        }
+
+        let generated_count = result.cues.len();
+        let unknown = result.unknown_ranges.len();
+        let ambiguous = result.ambiguous_ranges.len();
+        let cue_ids = result.cues.iter().map(|cue| cue.id.0).collect();
+        let generation = crate::phonetics::GeneratedSignsInfo {
+            generation_id: 1,
+            engine_version: crate::phonetics::ENGINE_VERSION,
+            language,
+            dialect: converter.dialect(),
+            text_fingerprint: crate::phonetics::text_fingerprint(&line.text),
+            mapping_fingerprint: crate::phonetics::mapping::mapping_fingerprint(&mapping),
+            cue_ids,
+        };
+        let mut changes = Vec::with_capacity(result.cues.len() + 1);
+        for cue in result.cues {
+            changes.push(DetectionChange::Add {
+                address: DetectionAddress {
+                    line_id,
+                    detection_id: cue.id,
+                },
+                cue,
+            });
+        }
+        changes.push(DetectionChange::SetGeneratedSigns {
+            line_id,
+            old_info: previous_info,
+            new_info: Some(generation),
+        });
+        self.execute_detection_command(Command::Detection {
+            change: DetectionChange::Batch { changes },
+        });
+
+        let mut message = format!("{} signe(s) de détection généré(s)", generated_count);
+        if unknown > 0 || ambiguous > 0 {
+            message.push_str(&format!(
+                " — {} mot(s) inconnu(s), {} ambiguïté(s)",
+                unknown, ambiguous
+            ));
+        }
+        self.show_toast(message, 5.0);
+    }
+
     pub fn move_detection(&mut self, address: DetectionAddress, mut media_tick: MediaTick) {
         let Some(cue) = self
             .project_session

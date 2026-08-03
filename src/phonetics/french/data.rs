@@ -154,7 +154,7 @@ pub static RULES: &[GraphemeRule] = &[
     r("ê", A, A, &[OpenMidFront]),
     r("ë", A, A, &[OpenMidFront]),
     r("à", A, A, &[OpenCentral]),
-    r("â", A, A, &[OpenCentral]),
+    r("â", A, A, &[OpenBackFr]),
     r("î", A, A, &[CloseFront]),
     r("ï", A, A, &[CloseFront]),
     r("ô", A, A, &[CloseMidBackRounded]),
@@ -167,6 +167,7 @@ pub static RULES: &[GraphemeRule] = &[
 
     // ═══ Groupes consonantiques ══════════════════════════════════════════
     r("tch", A, A, &[VoicelessPostalveolarAffricate]), // match, sandwich
+    r("dj", A, A, &[VoicedPostalveolarAffricate]), // emprunts: djembé, djihad
     r("sch", A, A, &[VoicelessPostalveolarFricative]),
     r("sh", A, A, &[VoicelessPostalveolarFricative]),
     r("ch", A, C, &[VoicelessVelarPlosive]),  // orchestre, technique, chrétien
@@ -298,7 +299,7 @@ pub static DICTIONARY: DictTable = &[
     ("dans", ALL, &[("d", &[VoicedAlveolarPlosive]), ("an", &[NasalOpenBackFr]), ("s", &[])]),
     ("sans", ALL, &[("s", &[VoicelessAlveolarFricative]), ("an", &[NasalOpenBackFr]), ("s", &[])]),
     ("temps", ALL, &[("t", &[VoicelessAlveolarPlosive]), ("emps", &[NasalOpenBackFr])]),
-    ("monsieur", ALL, &[("m", &[BilabialNasal]), ("o", &[Schwa]), ("s", &[]), ("i", &[PalatalApproximant]), ("eu", &[CloseMidFrontRounded]), ("r", &[VoicedUvularFricative])]),
+    ("monsieur", ALL, &[("m", &[BilabialNasal]), ("o", &[Schwa]), ("n", &[]), ("s", &[]), ("i", &[PalatalApproximant]), ("eu", &[CloseMidFrontRounded]), ("r", &[VoicedUvularFricative])]),
     ("madame", ALL, &[("m", &[BilabialNasal]), ("a", &[OpenCentral]), ("d", &[VoicedAlveolarPlosive]), ("a", &[OpenCentral]), ("m", &[BilabialNasal]), ("e", &[])]),
     ("mademoiselle", ALL, &[("m", &[BilabialNasal]), ("a", &[OpenCentral]), ("d", &[VoicedAlveolarPlosive]), ("e", &[Schwa]), ("m", &[BilabialNasal]), ("oi", &[LabialVelarApproximant, OpenCentral]), ("s", &[VoicedAlveolarFricative]), ("ell", &[OpenMidFront, AlveolarLateralApproximant]), ("e", &[])]),
 
@@ -330,7 +331,7 @@ pub static DICTIONARY: DictTable = &[
     ("dix", ALL, &[("d", &[VoicedAlveolarPlosive]), ("i", &[CloseFront]), ("x", &[VoicelessAlveolarFricative])]),
     ("onze", ALL, &[("on", &[NasalOpenMidBackFr]), ("z", &[VoicedAlveolarFricative]), ("e", &[])]),
     ("douze", ALL, &[("d", &[VoicedAlveolarPlosive]), ("ou", &[CloseBackRounded]), ("z", &[VoicedAlveolarFricative]), ("e", &[])]),
-    ("treize", ALL, &[("t", &[VoicelessAlveolarPlosive]), ("r", &[VoicedUvularFricative]), ("e", &[OpenMidFront]), ("z", &[VoicedAlveolarFricative]), ("e", &[])]),
+    ("treize", ALL, &[("t", &[VoicelessAlveolarPlosive]), ("r", &[VoicedUvularFricative]), ("ei", &[OpenMidFront]), ("z", &[VoicedAlveolarFricative]), ("e", &[])]),
     ("quatorze", ALL, &[("qu", &[VoicelessVelarPlosive]), ("a", &[OpenCentral]), ("t", &[VoicelessAlveolarPlosive]), ("o", &[OpenMidBackRounded]), ("r", &[VoicedUvularFricative]), ("z", &[VoicedAlveolarFricative]), ("e", &[])]),
     ("quinze", ALL, &[("qu", &[VoicelessVelarPlosive]), ("in", &[NasalOpenMidFrontFr]), ("z", &[VoicedAlveolarFricative]), ("e", &[])]),
     ("seize", ALL, &[("s", &[VoicelessAlveolarFricative]), ("ei", &[OpenMidFront]), ("z", &[VoicedAlveolarFricative]), ("e", &[])]),
@@ -406,7 +407,7 @@ pub static EXCEPTIONS: DictTable = &[
 
 // ═══════════════════════════ Acronymes prononçables ════════════════════════
 pub static PRONOUNCEABLE_ACRONYMS: &[&str] = &[
-    "nasa", "otan", "onu", "ovni", "sida", "unesco", "unicef", "radar",
-    "laser", "smic", "rsa", "bts", "cap", "insee", "inria", "cnes", "hal",
-    "samu", "taser", "gif", "ratp", "crs", "ens", "fnac",
+    "nasa", "otan", "onu", "ovni", "sida", "unesco", "unicef", "radar", "laser", "smic", "rsa",
+    "bts", "cap", "insee", "inria", "cnes", "hal", "samu", "taser", "gif", "ratp", "crs", "ens",
+    "fnac",
 ];

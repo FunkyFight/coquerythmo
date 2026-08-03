@@ -90,9 +90,20 @@ fn hit_resize_handle(
     y: f32,
 ) -> Option<ResizeDrag> {
     let address = selected_detection(state)?;
-    let track = address.track()? as usize;
     let cue = project.detections().detection(address)?;
-    let rect = track_rect(project, track, current_frame, zone);
+    let rect = if let Some(track) = address.track() {
+        track_rect(project, track as usize, current_frame, zone)
+    } else {
+        let line = project.get_line(address.line_id)?;
+        line_rect(
+            project,
+            line,
+            current_frame,
+            zone,
+            crate::config::reading_bar_offset_seconds(),
+            fps,
+        )
+    };
     let center_x = tick_x(cue.media_tick, current_frame, zone, fps);
     let half = cue_width(cue) / 2.0;
     let top = rect.y - SIGN_BADGE_SIZE + 2.0;
@@ -364,9 +375,9 @@ pub(crate) fn handle_detection_event(
         }
 
         if state.detection_drag.is_some() {
-            if let Some(_address) =
-                selected_detection(state).filter(|address| address.track().is_none())
-            {
+            if let Some(_address) = selected_detection(state).filter(|address| {
+                address.track().is_none() && ctx.project.detections().sync_point(*address).is_some()
+            }) {
                 state.detection_drag = None;
                 // Moving a synchronization point never changes the line's
                 // global start or duration.
@@ -1312,6 +1323,84 @@ pub(crate) fn render_detection_overlay<'a>(
                         2.0,
                     );
                 }
+            }
+        }
+    }
+
+    for line in project.lines() {
+        if !line.kind.is_dialogue() {
+            continue;
+        }
+        let Some(data) = project.detections().line(line.id) else {
+            continue;
+        };
+        let rect = line_rect(
+            project,
+            line,
+            current_frame,
+            zone,
+            crate::config::reading_bar_offset_seconds(),
+            fps,
+        );
+        for cue in data.source_detections() {
+            let address = DetectionAddress {
+                line_id: line.id,
+                detection_id: cue.id,
+            };
+            if matches!(
+                cue.kind,
+                DetectionKind::OpeningWave | DetectionKind::ForwardWave
+            ) {
+                let center = tick_x(cue.media_tick, current_frame, zone, fps);
+                let width = cue_width(cue);
+                let top = rect.y - SIGN_BADGE_SIZE + 2.0;
+                let color = if selected == Some(address) {
+                    [0.78, 0.88, 1.0, 1.0]
+                } else {
+                    [0.92, 0.92, 0.95, 0.94]
+                };
+                let segments = 20;
+                for index in 0..segments {
+                    let u0 = index as f32 / segments as f32;
+                    let u1 = (index + 1) as f32 / segments as f32;
+                    let curve = |u: f32| {
+                        let arch = (std::f32::consts::PI * u).sin() * 9.0;
+                        if matches!(cue.kind, DetectionKind::ForwardWave) {
+                            top + 13.0 - arch
+                        } else {
+                            top + 4.0 + arch
+                        }
+                    };
+                    push_line(
+                        quads,
+                        center - width / 2.0 + width * u0,
+                        curve(u0),
+                        center - width / 2.0 + width * u1,
+                        curve(u1),
+                        2.0,
+                        color,
+                    );
+                }
+            }
+            if selected != Some(address) {
+                continue;
+            }
+            let center = tick_x(cue.media_tick, current_frame, zone, fps);
+            let width =
+                (cue.duration.as_frame_position().abs() as f32 * ppf()).max(SIGN_ICON_SIZE + 8.0);
+            let top = rect.y - SIGN_BADGE_SIZE + 2.0;
+            for x in [center - width / 2.0, center + width / 2.0] {
+                push_quad(
+                    quads,
+                    Rect {
+                        x: x - 2.0,
+                        y: top + 7.0,
+                        width: 4.0,
+                        height: 12.0,
+                    },
+                    [0.68, 0.82, 1.0, 1.0],
+                    2.0,
+                );
             }
         }
     }

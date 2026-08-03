@@ -351,6 +351,9 @@ impl CommandDispatcher {
             UiAction::OpenRecordingInputDeviceModal => state.open_recording_input_device_modal(),
             UiAction::RequestActorsOpenMicrophone => state.request_actors_open_microphone(),
             UiAction::RequestActorsTransferProject => state.request_actors_project_transfer(),
+            UiAction::RequestActorsTransferDisplaySettings => {
+                state.request_actors_transfer_display_settings()
+            }
             UiAction::RequestActorsCloseProjectTransferWaiting => {
                 state.request_actors_close_project_transfer_waiting()
             }
@@ -603,6 +606,9 @@ impl CommandDispatcher {
                 target,
             } => {
                 state.add_detection(line_id, kind, media_tick, target);
+            }
+            UiAction::GenerateDetectionSigns { line_id } => {
+                state.generate_detection_signs(line_id);
             }
             UiAction::SetLinePresence { line_id, presence } => {
                 state.set_line_presence(line_id, presence);

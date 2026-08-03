@@ -144,6 +144,10 @@ pub enum IncomingMessage {
     RecordingPlayback(RecordingPlaybackPayload),
     RecordingView(RecordingViewPayload),
     ActorRequestOpenMicrophone,
+    ActorRequestApplyDisplaySettings {
+        scroll_speed: f32,
+        reading_bar_offset_percent: f32,
+    },
     ActorRequestCloseProjectTransferWaiting,
     ProjectTransferRequest(ProjectTransferMetadata),
     ProjectTransferReady(ProjectTransferMetadata),
@@ -561,12 +565,26 @@ impl NetworkClient {
                 }
             })
             .on("actor_request", move |payload, _| {
-                match payload_to_value(&payload)
-                    .and_then(|value| value["action"].as_str().map(String::from))
-                    .as_deref()
-                {
+                let Some(value) = payload_to_value(&payload) else {
+                    return;
+                };
+                match value["action"].as_str() {
                     Some("open_microphone") => {
                         let _ = tx_actor_request.send(IncomingMessage::ActorRequestOpenMicrophone);
+                    }
+                    Some("apply_display_settings") => {
+                        let (Some(scroll_speed), Some(reading_bar_offset_percent)) = (
+                            value["scroll_speed"].as_f64(),
+                            value["reading_bar_offset_percent"].as_f64(),
+                        ) else {
+                            return;
+                        };
+                        let _ = tx_actor_request.send(
+                            IncomingMessage::ActorRequestApplyDisplaySettings {
+                                scroll_speed: scroll_speed as f32,
+                                reading_bar_offset_percent: reading_bar_offset_percent as f32,
+                            },
+                        );
                     }
                     Some("close_project_transfer_waiting") => {
                         let _ = tx_actor_request

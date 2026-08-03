@@ -878,9 +878,6 @@ fn hit_existing_detection(
     }
 
     for line in ctx.project.lines() {
-        if line.karaoke {
-            continue;
-        }
         let Some(data) = ctx.project.detections().line(line.id) else {
             continue;
         };
@@ -892,6 +889,21 @@ fn hit_existing_detection(
             crate::config::reading_bar_offset_seconds(),
             ctx.fps,
         );
+        if line.kind.is_dialogue() {
+            if let Some(address) = data.source_detections().find_map(|cue| {
+                source_icon_rect(cue.media_tick, rect, ctx.current_frame, ctx.zone, ctx.fps)
+                    .contains(x, y)
+                    .then_some(DetectionAddress {
+                        line_id: line.id,
+                        detection_id: cue.id,
+                    })
+            }) {
+                return Some(address);
+            }
+        }
+        if line.karaoke {
+            continue;
+        }
         for point in data.sync_points() {
             let Some(cue_x) = sync_point_x(
                 ctx.project,
@@ -932,6 +944,12 @@ fn clamp_sync_drag_tick(
             MediaTick::from_frame(line.end_frame()),
         );
     };
+    if data.detection(address.detection_id).is_some() {
+        return tick.clamp(
+            MediaTick::from_frame(line.start_frame),
+            MediaTick::from_frame(line.end_frame()),
+        );
+    }
     let Some(current) = data.sync_point(SyncPointId(address.detection_id.0)) else {
         return tick;
     };
@@ -1069,7 +1087,7 @@ fn navigate_detection(
     let Some(data) = project.detections().line(address.line_id) else {
         return None;
     };
-    let ids = if address.track().is_some() {
+    let ids = if address.track().is_some() || project.detections().detection(address).is_some() {
         data.source_detections()
             .map(|cue| cue.id)
             .collect::<Vec<_>>()
@@ -1244,8 +1262,9 @@ pub(crate) fn handle_detection_event(
             if let Some(address) = hit_existing_detection(ctx, state, *x, *y) {
                 state.selected = Some(Selection::Detection(address));
                 state.detection_menu = None;
-                let retarget_text =
-                    matches!(event, UiEvent::ShiftMousePress { .. }) && address.track().is_none();
+                let retarget_text = matches!(event, UiEvent::ShiftMousePress { .. })
+                    && address.track().is_none()
+                    && ctx.project.detections().sync_point(address).is_some();
                 state.detection_drag =
                     Some(DetectionDrag::with_retarget(address, *x, *y, retarget_text));
                 if address.track().is_none() {
@@ -1287,7 +1306,7 @@ pub(crate) fn handle_detection_event(
         }
         UiEvent::MouseRelease { x, y } => {
             if let Some(drag) = state.detection_drag.take() {
-                if !drag.moved && drag.address.track().is_some() {
+                if !drag.moved {
                     if let Some(sign) = ctx
                         .project
                         .detections()
@@ -1673,6 +1692,81 @@ pub(crate) fn render_detection_overlay<'a>(
             }
             let address = DetectionAddress {
                 line_id,
+                detection_id: cue.id,
+            };
+            let selected = selected_address == Some(address);
+            let hit = source_icon_rect(cue.media_tick, rect, current_frame, zone, fps);
+            if selected {
+                push_quad(
+                    quads,
+                    Rect {
+                        x: hit.x + 1.0,
+                        y: hit.y + 1.0,
+                        width: hit.width - 2.0,
+                        height: hit.height - 2.0,
+                    },
+                    [0.20, 0.42, 0.88, 0.24],
+                    hit.width / 2.0,
+                );
+            }
+            push_line(
+                quads,
+                x,
+                rect.y + 2.0,
+                x,
+                rect.y + rect.height - 2.0,
+                if selected { 1.5 } else { 1.0 },
+                if selected {
+                    [0.55, 0.73, 1.0, 0.82]
+                } else {
+                    [0.72, 0.74, 0.80, 0.42]
+                },
+            );
+            if let Some(sign) = PaletteSign::from_cue(cue) {
+                icons.push(IconInstance {
+                    rect: [
+                        hit.x + (hit.width - DETECTION_ICON_SIZE) / 2.0,
+                        hit.y + (hit.height - DETECTION_ICON_SIZE) / 2.0,
+                        DETECTION_ICON_SIZE,
+                        DETECTION_ICON_SIZE,
+                    ],
+                    uv_rect: palette_uv(sign, detection_uvs),
+                    tint: if selected {
+                        [0.78, 0.88, 1.0, 1.0]
+                    } else {
+                        [0.92, 0.92, 0.95, 0.94]
+                    },
+                    transform: [0.0, 0.0, 0.5, 0.5],
+                });
+            }
+        }
+    }
+
+    // Line-owned source cues are used by text-driven generation. They share
+    // the same visual treatment as track cues, but are anchored above the
+    // dialogue row so the cue remains selectable next to its source text.
+    for line in project.lines() {
+        if !line.kind.is_dialogue() {
+            continue;
+        }
+        let Some(data) = project.detections().line(line.id) else {
+            continue;
+        };
+        let rect = line_rect(
+            project,
+            line,
+            current_frame,
+            zone,
+            crate::config::reading_bar_offset_seconds(),
+            fps,
+        );
+        for cue in data.source_detections() {
+            let x = tick_x(cue.media_tick, current_frame, zone, fps);
+            if x < zone.x - DETECTION_HIT_SIZE || x > zone.x + zone.width + DETECTION_HIT_SIZE {
+                continue;
+            }
+            let address = DetectionAddress {
+                line_id: line.id,
                 detection_id: cue.id,
             };
             let selected = selected_address == Some(address);

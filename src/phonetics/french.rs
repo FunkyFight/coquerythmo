@@ -64,5 +64,3 @@ impl GraphemeToPhonemeConverter for FrenchG2P {
         self.engine.resolve_word(word)
     }
 }
-
-

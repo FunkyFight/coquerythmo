@@ -1194,6 +1194,43 @@ fn validate_command_precondition(command: &Command, project: &Project) -> Result
                         ));
                     }
                 }
+                crate::detection::DetectionChange::SetGeneratedSigns {
+                    line_id, old_info, ..
+                } => {
+                    if project.get_line(*line_id).is_none() {
+                        return Err(missing_line(*line_id));
+                    }
+                    let current = project
+                        .detections()
+                        .line(*line_id)
+                        .and_then(crate::detection::LineDetectionData::generated_signs)
+                        .cloned();
+                    if current != *old_info {
+                        return Err(format!(
+                            "generated-sign metadata for line {line_id} does not match the origin"
+                        ));
+                    }
+                }
+                crate::detection::DetectionChange::Batch { changes } => {
+                    if changes.is_empty() {
+                        return Err("empty detection batch".into());
+                    }
+                    if changes
+                        .iter()
+                        .any(|nested| nested.line_id() != change.line_id())
+                    {
+                        return Err("detection batch spans multiple lines".into());
+                    }
+                    if project.get_line(change.line_id()).is_none() {
+                        return Err(missing_line(change.line_id()));
+                    }
+                    let mut probe = project.detections().clone();
+                    for nested in changes {
+                        if !nested.apply(&mut probe) {
+                            return Err("detection batch cannot be applied atomically".into());
+                        }
+                    }
+                }
             }
 
             let mut candidate = project.detections().clone();

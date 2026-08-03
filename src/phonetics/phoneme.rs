@@ -147,28 +147,28 @@ pub enum Phoneme {
     /// /ɜr/ r-colored open-mid central (en-US "nurse").
     RColoredOpenMidCentralEnUs,
     // English diphthongs.
-    DiphthongFaceEn,   // /eɪ/
-    DiphthongPriceEn,  // /aɪ/
-    DiphthongChoiceEn, // /ɔɪ/
-    DiphthongGoatEn,   // /oʊ/ US, /əʊ/ GB kept unified at mapping level
-    DiphthongMouthEn,  // /aʊ/
-    DiphthongNearEnGb, // /ɪə/
+    DiphthongFaceEn,     // /eɪ/
+    DiphthongPriceEn,    // /aɪ/
+    DiphthongChoiceEn,   // /ɔɪ/
+    DiphthongGoatEn,     // /oʊ/ US, /əʊ/ GB kept unified at mapping level
+    DiphthongMouthEn,    // /aʊ/
+    DiphthongNearEnGb,   // /ɪə/
     DiphthongSquareEnGb, // /ɛə/
-    DiphthongCureEnGb, // /ʊə/
+    DiphthongCureEnGb,   // /ʊə/
 
     // ── Shared consonants ───────────────────────────────────────────────
-    VoicelessBilabialPlosive, // p
-    VoicedBilabialPlosive,    // b
-    VoicelessAlveolarPlosive, // t
-    VoicedAlveolarPlosive,    // d
-    VoicelessVelarPlosive,    // k
-    VoicedVelarPlosive,       // g
-    BilabialNasal,            // m
-    AlveolarNasal,            // n
-    VoicelessLabiodentalFricative, // f
-    VoicedLabiodentalFricative,    // v
-    VoicelessAlveolarFricative,    // s
-    VoicedAlveolarFricative,       // z
+    VoicelessBilabialPlosive,       // p
+    VoicedBilabialPlosive,          // b
+    VoicelessAlveolarPlosive,       // t
+    VoicedAlveolarPlosive,          // d
+    VoicelessVelarPlosive,          // k
+    VoicedVelarPlosive,             // g
+    BilabialNasal,                  // m
+    AlveolarNasal,                  // n
+    VoicelessLabiodentalFricative,  // f
+    VoicedLabiodentalFricative,     // v
+    VoicelessAlveolarFricative,     // s
+    VoicedAlveolarFricative,        // z
     VoicelessPostalveolarFricative, // ʃ
     VoicedPostalveolarFricative,    // ʒ
     VoicelessGlottalFricative,      // h
@@ -181,34 +181,34 @@ pub enum Phoneme {
     PalatalNasal, // /ɲ/ (fr "agneau", es "niño")
 
     // ── English consonants ──────────────────────────────────────────────
-    VoicelessDentalFricative,  // θ (en "think")
-    VoicedDentalFricative,     // ð (en "this")
+    VoicelessDentalFricative,       // θ (en "think")
+    VoicedDentalFricative,          // ð (en "this")
     VoicelessPostalveolarAffricate, // tʃ (en "church", es "mucho")
     VoicedPostalveolarAffricate,    // dʒ (en "judge")
-    VelarNasal,                // ŋ (en "sing")
-    AlveolarApproximant,       // ɹ (en-US/GB r onset)
-    SyllabicL,                 // l̩ (en "bottle")
-    SyllabicN,                 // n̩ (en "button")
-    SyllabicM,                 // m̩ (en "rhythm")
-    GlottalStop,               // ʔ
-    VoicelessLabialVelarFricative, // ʍ (en "whine", conservative)
+    VelarNasal,                     // ŋ (en "sing")
+    AlveolarApproximant,            // ɹ (en-US/GB r onset)
+    SyllabicL,                      // l̩ (en "bottle")
+    SyllabicN,                      // n̩ (en "button")
+    SyllabicM,                      // m̩ (en "rhythm")
+    GlottalStop,                    // ʔ
+    VoicelessLabialVelarFricative,  // ʍ (en "whine", conservative)
 
     // ── Spanish consonants ──────────────────────────────────────────────
-    VoicelessDentalFricativeEsSpain, // θ (es-ES "zapato", "cena")
-    VoicelessVelarFricative,         // x (es "jamón", "gente")
-    AlveolarTap,                     // ɾ (es "pero")
-    AlveolarTrill,                   // r (es "perro", initial "rojo")
-    VoicedPalatalFricative,          // ʝ (es "yo", "llama" most dialects)
-    VoicedPostalveolarFricativeEs,   // ʒ (es "yo/ll" Rioplatense/sheísmo)
+    VoicelessDentalFricativeEsSpain,  // θ (es-ES "zapato", "cena")
+    VoicelessVelarFricative,          // x (es "jamón", "gente")
+    AlveolarTap,                      // ɾ (es "pero")
+    AlveolarTrill,                    // r (es "perro", initial "rojo")
+    VoicedPalatalFricative,           // ʝ (es "yo", "llama" most dialects)
+    VoicedPostalveolarFricativeEs,    // ʒ (es "yo/ll" Rioplatense/sheísmo)
     VoicelessPostalveolarFricativeEs, // ʃ (es "yo/ll" zheísmo)
-    VoicedBilabialApproximant,       // β̞ (es intervocalic b/v)
-    VoicedDentalApproximant,         // ð̞ (es intervocalic d)
-    VoicedVelarApproximant,          // ɣ̞ (es intervocalic g)
-    VoicelessAlveolarAffricate,      // ts (es-ES "ch"→tʃ handled as affricate variant; Mexican "tl")
+    VoicedBilabialApproximant,        // β̞ (es intervocalic b/v)
+    VoicedDentalApproximant,          // ð̞ (es intervocalic d)
+    VoicedVelarApproximant,           // ɣ̞ (es intervocalic g)
+    VoicelessAlveolarAffricate, // ts (es-ES "ch"→tʃ handled as affricate variant; Mexican "tl")
 
-    // ── Spanish vowels (hiatus/diphthong glides reuse shared set) ───────
-    // Spanish uses CloseFront/CloseMidFront/OpenCentral/CloseMidBackRounded/
-    // CloseBackRounded plus glides PalatalApproximant/LabialVelarApproximant.
+                                // ── Spanish vowels (hiatus/diphthong glides reuse shared set) ───────
+                                // Spanish uses CloseFront/CloseMidFront/OpenCentral/CloseMidBackRounded/
+                                // CloseBackRounded plus glides PalatalApproximant/LabialVelarApproximant.
 }
 
 impl Phoneme {

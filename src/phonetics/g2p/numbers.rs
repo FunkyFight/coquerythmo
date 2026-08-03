@@ -79,8 +79,25 @@ fn fr_units() -> [&'static str; 17] {
 
 fn en_units() -> [&'static str; 20] {
     [
-        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
         "nineteen",
     ]
 }
@@ -174,12 +191,28 @@ fn en_spell(v: i64) -> Vec<&'static str> {
 fn es_spell(v: i64) -> Vec<&'static str> {
     let u = es_units();
     let tens = [
-        "", "", "veinte", "treinta", "cuarenta", "cincuenta", "sesenta", "setenta", "ochenta",
+        "",
+        "",
+        "veinte",
+        "treinta",
+        "cuarenta",
+        "cincuenta",
+        "sesenta",
+        "setenta",
+        "ochenta",
         "noventa",
     ];
     let veintis = [
-        "", "veintiuno", "veintidós", "veintitrés", "veinticuatro", "veinticinco", "veintiséis",
-        "veintisiete", "veintiocho", "veintinueve",
+        "",
+        "veintiuno",
+        "veintidós",
+        "veintitrés",
+        "veinticuatro",
+        "veinticinco",
+        "veintiséis",
+        "veintisiete",
+        "veintiocho",
+        "veintinueve",
     ];
     let mut out: Vec<&'static str> = Vec::new();
     if v >= 1000 {
@@ -310,7 +343,11 @@ fn fr_spell(v: i64) -> Vec<&'static str> {
         }
         80..=99 => {
             let r = tail - 80;
-            out.push(if r == 0 { "quatre-vingts" } else { "quatre-vingt" });
+            out.push(if r == 0 {
+                "quatre-vingts"
+            } else {
+                "quatre-vingt"
+            });
             match r {
                 0 => {}
                 1..=16 => out.push(u[r as usize]),
@@ -342,10 +379,19 @@ mod tests {
     fn french_numbers() {
         assert_eq!(spell_number(Language::French, "0"), vec!["zéro"]);
         assert_eq!(spell_number(Language::French, "5"), vec!["cinq"]);
-        assert_eq!(spell_number(Language::French, "21"), vec!["vingt", "et", "un"]);
-        assert_eq!(spell_number(Language::French, "75"), vec!["soixante", "quinze"]);
+        assert_eq!(
+            spell_number(Language::French, "21"),
+            vec!["vingt", "et", "un"]
+        );
+        assert_eq!(
+            spell_number(Language::French, "75"),
+            vec!["soixante", "quinze"]
+        );
         assert_eq!(spell_number(Language::French, "80"), vec!["quatre-vingts"]);
-        assert_eq!(spell_number(Language::French, "97"), vec!["quatre-vingt", "dix-sept"]);
+        assert_eq!(
+            spell_number(Language::French, "97"),
+            vec!["quatre-vingt", "dix-sept"]
+        );
         assert_eq!(
             spell_number(Language::French, "1200"),
             vec!["mille", "deux", "cents"]
@@ -367,7 +413,10 @@ mod tests {
 
     #[test]
     fn spanish_numbers() {
-        assert_eq!(spell_number(Language::Spanish, "31"), vec!["treinta", "y", "uno"]);
+        assert_eq!(
+            spell_number(Language::Spanish, "31"),
+            vec!["treinta", "y", "uno"]
+        );
         assert_eq!(spell_number(Language::Spanish, "16"), vec!["dieciséis"]);
         assert_eq!(spell_number(Language::Spanish, "100"), vec!["cien"]);
         assert_eq!(

@@ -1419,6 +1419,7 @@ mod tests {
             hover_main: false,
             hover_change_character: false,
             hover_text_emotion: true,
+            hover_generate_detection: false,
             hover_emotion_index: None,
             hover_emotion_variant: None,
             text_range: None,
@@ -1468,6 +1469,7 @@ mod tests {
             hover_main: false,
             hover_change_character: false,
             hover_text_emotion: true,
+            hover_generate_detection: false,
             hover_emotion_index: Some(0),
             hover_emotion_variant: None,
             text_range: None,
@@ -4823,11 +4825,71 @@ pub fn context_menu_accessibility_label(project: &Project, line_id: u64) -> Stri
     {
         items.push(t("text_emotion.menu"));
     }
+    if can_generate_detection_signs(project, line_id) {
+        items.push(t("context.generate_detection_signs"));
+    }
     format!(
         "{} : {}",
         t("accessibility.line_context_menu"),
         items.join(", ")
     )
+}
+
+fn can_generate_detection_signs(project: &Project, line_id: u64) -> bool {
+    crate::config::dev_mode()
+        && project.get_line(line_id).is_some_and(|line| {
+            line.kind.is_dialogue() && !line.text.trim().is_empty() && line.duration_frames > 0
+        })
+}
+
+fn generation_root_index(project: &Project, line_id: u64) -> Option<usize> {
+    can_generate_detection_signs(project, line_id).then(|| {
+        if project
+            .get_line(line_id)
+            .is_some_and(|line| line.can_have_text_emotions())
+        {
+            3
+        } else {
+            2
+        }
+    })
+}
+
+fn root_item_count(project: &Project, line_id: u64) -> usize {
+    if let Some(index) = generation_root_index(project, line_id) {
+        index + 1
+    } else if project
+        .get_line(line_id)
+        .is_some_and(|line| line.can_have_text_emotions())
+    {
+        3
+    } else {
+        2
+    }
+}
+
+fn root_hover_index(project: &Project, menu: &LineContextMenu) -> usize {
+    if menu.hover_change_character {
+        1
+    } else if menu.hover_text_emotion {
+        2
+    } else if menu.hover_generate_detection {
+        generation_root_index(project, menu.line_id).unwrap_or(0)
+    } else {
+        0
+    }
+}
+
+fn set_root_hover(project: &Project, menu: &mut LineContextMenu, index: usize) {
+    menu.hover_main = index == 0;
+    menu.hover_change_character = index == 1;
+    menu.hover_text_emotion = index == 2
+        && project
+            .get_line(menu.line_id)
+            .is_some_and(|line| line.can_have_text_emotions());
+    menu.hover_generate_detection = generation_root_index(project, menu.line_id) == Some(index);
+    menu.hover_emotion_index = None;
+    menu.hover_emotion_variant = None;
 }
 
 fn selected_context_menu_label<'a>(
@@ -4856,6 +4918,8 @@ fn selected_context_menu_label<'a>(
         )
     } else if menu.hover_change_character {
         Some(t("context.change_character"))
+    } else if menu.hover_generate_detection {
+        Some(t("context.generate_detection_signs"))
     } else if menu.hover_text_emotion {
         Some(t("text_emotion.menu"))
     } else if let Some(actor_index) = menu.hover_actor_index {
@@ -4940,6 +5004,7 @@ pub fn handle_context_menu_event(
                     hover_main: true,
                     hover_change_character: false,
                     hover_text_emotion: false,
+                    hover_generate_detection: false,
                     hover_emotion_index: None,
                     hover_emotion_variant: None,
                     text_range: (state.editing_line == Some(line_id))
@@ -5000,6 +5065,11 @@ pub fn handle_context_menu_event(
                 if root_item == 1 {
                     state.context_menu = None;
                     return EventResponse::Action(UiAction::OpenLinesPanel);
+                }
+                if generation_root_index(project, menu.line_id) == Some(root_item) {
+                    let line_id = menu.line_id;
+                    state.context_menu = None;
+                    return EventResponse::Action(UiAction::GenerateDetectionSigns { line_id });
                 }
             }
 
@@ -5127,6 +5197,7 @@ pub fn handle_context_menu_event(
                 menu.hover_main = true;
                 menu.hover_change_character = false;
                 menu.hover_text_emotion = false;
+                menu.hover_generate_detection = false;
             }
             announce_context_menu_selection(project, state)
         }
@@ -5156,33 +5227,17 @@ pub fn handle_context_menu_event(
                 && !menu.hover_main
                 && !menu.hover_change_character
                 && !menu.hover_text_emotion
+                && !menu.hover_generate_detection
             {
                 let len = project.voice_actors().len() + 1;
                 let current = menu.hover_actor_index.unwrap_or(0);
                 menu.hover_actor_index =
                     Some((current as i32 + direction).rem_euclid(len as i32) as usize);
             } else {
-                let root_len = if project
-                    .get_line(menu.line_id)
-                    .is_some_and(|line| line.can_have_text_emotions())
-                {
-                    3
-                } else {
-                    2
-                };
-                let current = if menu.hover_change_character {
-                    1
-                } else if menu.hover_text_emotion {
-                    2
-                } else {
-                    0
-                };
-                let next = (current + direction).rem_euclid(root_len);
-                menu.hover_main = next == 0;
-                menu.hover_change_character = next == 1;
-                menu.hover_text_emotion = next == 2;
-                menu.hover_emotion_index = None;
-                menu.hover_emotion_variant = None;
+                let root_len = root_item_count(project, menu.line_id) as i32;
+                let current = root_hover_index(project, menu) as i32;
+                let next = (current + direction).rem_euclid(root_len) as usize;
+                set_root_hover(project, menu, next);
             }
             announce_context_menu_selection(project, state)
         }
@@ -5190,6 +5245,11 @@ pub fn handle_context_menu_event(
             let Some(menu) = state.context_menu.as_ref() else {
                 return EventResponse::Ignored;
             };
+            if menu.hover_generate_detection {
+                let line_id = menu.line_id;
+                state.context_menu = None;
+                return EventResponse::Action(UiAction::GenerateDetectionSigns { line_id });
+            }
             if menu.hover_main {
                 let menu = state.context_menu.as_mut().unwrap();
                 menu.hover_main = false;
@@ -5350,6 +5410,22 @@ pub fn render_context_menu<'a>(
         );
     }
 
+    if let Some(index) = generation_root_index(project, menu.line_id) {
+        render_menu_item(
+            quads,
+            labels,
+            Rect {
+                x: root_rect.x,
+                y: root_rect.y + MENU_ITEM_H * index as f32,
+                width: root_rect.width,
+                height: MENU_ITEM_H,
+            },
+            t("context.generate_detection_signs"),
+            menu.hover_generate_detection,
+            false,
+        );
+    }
+
     if menu.hover_text_emotion || menu.hover_emotion_index.is_some() {
         render_menu_panel(quads, emotion_rect);
         for index in 0..=EMOTION_CATEGORIES.len() {
@@ -5483,10 +5559,7 @@ fn context_menu_layout(
     screen_h: f32,
     menu: &LineContextMenu,
 ) -> (Rect, Rect, Rect, f32, f32, Rect) {
-    let emotion_available = project
-        .get_line(menu.line_id)
-        .is_some_and(|line| line.can_have_text_emotions());
-    let root_h = MENU_ITEM_H * if emotion_available { 3.0 } else { 2.0 };
+    let root_h = MENU_ITEM_H * root_item_count(project, menu.line_id) as f32;
     let (root_x, root_y) =
         clamped_menu_origin(menu.x, menu.y, MENU_ROOT_W, root_h, screen_w, screen_h);
     let root_rect = Rect {
@@ -5668,7 +5741,10 @@ fn update_context_menu_hover(
             actor_hover = menu.hover_actor_index;
         }
     }
-    if emotion_rect.contains(x, y) {
+    let emotion_available = project
+        .get_line(menu.line_id)
+        .is_some_and(|line| line.can_have_text_emotions());
+    if emotion_available && emotion_rect.contains(x, y) {
         let index = ((y - emotion_rect.y) / MENU_ITEM_H).floor() as usize;
         if index <= EMOTION_CATEGORIES.len() {
             emotion_hover = Some(index);
@@ -5696,7 +5772,8 @@ fn update_context_menu_hover(
     };
     menu.hover_main = root_actor_bridge || root_item == Some(0);
     menu.hover_change_character = root_item == Some(1);
-    menu.hover_text_emotion = root_item == Some(2)
+    menu.hover_generate_detection = generation_root_index(project, menu.line_id) == root_item;
+    menu.hover_text_emotion = (emotion_available && root_item == Some(2))
         || emotion_hover.is_some()
         || emotion_variant_hover.is_some()
         || (menu.hover_text_emotion && bridge_rect(root_rect, emotion_rect).contains(x, y))

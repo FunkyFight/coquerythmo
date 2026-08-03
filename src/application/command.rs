@@ -87,6 +87,7 @@ pub enum UiAction {
     OpenRecordingInputDeviceModal,
     RequestActorsOpenMicrophone,
     RequestActorsTransferProject,
+    RequestActorsTransferDisplaySettings,
     RequestActorsCloseProjectTransferWaiting,
     ProjectTransferAccept,
     ProjectTransferSaveAndAccept,
@@ -314,6 +315,9 @@ pub enum UiAction {
         kind: crate::detection::DetectionKind,
         media_tick: crate::detection::MediaTick,
         target: crate::detection::TextAnchor,
+    },
+    GenerateDetectionSigns {
+        line_id: u64,
     },
     MoveDetection {
         address: crate::detection::DetectionAddress,

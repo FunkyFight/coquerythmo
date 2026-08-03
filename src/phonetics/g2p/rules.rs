@@ -90,8 +90,9 @@ impl Ctx {
             }
             Ctx::FrontVowel => {
                 let idx = if from_left { pos.wrapping_sub(1) } else { pos };
-                text.get(idx)
-                    .is_some_and(|&ch| matches!(ch, 'e' | 'i' | 'é' | 'è' | 'ê' | 'ë' | 'î' | 'ï' | 'y'))
+                text.get(idx).is_some_and(|&ch| {
+                    matches!(ch, 'e' | 'i' | 'é' | 'è' | 'ê' | 'ë' | 'î' | 'ï' | 'y')
+                })
             }
             Ctx::BackVowel => {
                 let idx = if from_left { pos.wrapping_sub(1) } else { pos };

@@ -38,6 +38,7 @@ pub struct LineContextMenu {
     pub hover_main: bool,
     pub hover_change_character: bool,
     pub hover_text_emotion: bool,
+    pub hover_generate_detection: bool,
     pub hover_emotion_index: Option<usize>,
     pub hover_emotion_variant: Option<usize>,
     pub text_range: Option<(usize, usize)>,

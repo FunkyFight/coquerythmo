@@ -13,9 +13,10 @@ pub fn syllable_breaks(text: &str, lang: &str) -> Vec<usize> {
 
     let hypher_lang = match lang {
         "en-us" | "en" => Lang::English,
+        "es-419" | "es-es" | "es" => Lang::Spanish,
         _ => Lang::French,
     };
-    let is_french = !matches!(lang, "en-us" | "en");
+    let is_french = matches!(lang, "fr-fr" | "fr");
 
     let chars: Vec<char> = text.chars().collect();
     let total_chars = chars.len();
@@ -103,7 +104,7 @@ fn hyphenate_word(
         for (si, syl) in syllables.iter().enumerate() {
             let syl_len = syl.chars().count();
 
-            if !is_french {
+            if hypher_lang == Lang::English {
                 for inner_break in english_syllable_breaks(syl) {
                     clean_breaks.push(clean_pos + inner_break);
                 }
@@ -117,7 +118,7 @@ fn hyphenate_word(
     } else if is_french && clean_len >= 3 {
         // Fallback: French CV-based syllable splitting
         clean_breaks.extend(french_syllable_breaks(&clean));
-    } else if !is_french && clean_len >= 4 {
+    } else if hypher_lang == Lang::English && clean_len >= 4 {
         clean_breaks.extend(english_syllable_breaks(&clean));
     }
 
@@ -815,6 +816,19 @@ mod tests {
             vec![3, 6],
             "tambourine should split as tam|bou|rine, got {:?}",
             breaks
+        );
+    }
+
+    #[test]
+    fn test_spanish_uses_spanish_hyphenation() {
+        let breaks = syllable_breaks("casa bonita", "es-419");
+        assert!(
+            breaks.contains(&5),
+            "must preserve the word boundary: {breaks:?}"
+        );
+        assert!(
+            breaks.len() >= 2,
+            "Spanish words should be split: {breaks:?}"
         );
     }
 

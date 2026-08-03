@@ -122,6 +122,7 @@
 "recording.actor_requests" = "Solicitudes de actores"
 "recording.actor_requests.open_microphone" = "Abrir ajustes del micrófono"
 "recording.actor_requests.transfer_project" = "Transferir proyecto"
+"recording.actor_requests.transfer_display_settings" = "Transferir los ajustes de visualización de la BR"
 "recording.actor_requests.close_transfer_waiting" = "Cerrar la espera de transferencia de los actores"
 "recording.quick_setup" = "Configuración rápida"
 "recording.quick_setup.host_session" = "Enlace de sesión (este PC — director)"
@@ -437,6 +438,7 @@
 
 # Voice actor context menu
 "context.change_character" = "Cambiar el personaje"
+"context.generate_detection_signs" = "Convertir en signos de detección"
 "context.voice_actor.assign_to_actor" = "Asignar a un actor de voz"
 "context.voice_actor.create" = "Crear un actor de voz"
 "context.voice_actor.assign_line" = "Asignar línea"
@@ -514,6 +516,7 @@
 "languages.syllables" = "Idioma de separación silábica"
 "languages.syllables.french" = "Francés"
 "languages.syllables.english" = "Inglés"
+"languages.syllables.spanish" = "Español"
 "toast.language_created" = "Idioma creado, duplicado y seleccionado:"
 "toast.language_selected" = "Idioma seleccionado:"
 "toast.language_deleted" = "Idioma eliminado:"

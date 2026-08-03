@@ -25,7 +25,7 @@ pub mod types;
 
 pub use english::EnglishG2P;
 pub use french::FrenchG2P;
-pub use g2p::{GraphemeToPhonemeConverter, G2PEngine};
+pub use g2p::{G2PEngine, GraphemeToPhonemeConverter};
 pub use mapping::{DetectionMapping, PhonemeSignRule, SignMappingProfile};
 pub use normalize::{normalize_line, NormalizedChar, NormalizedLine};
 pub use phoneme::{Dialect, Language, Phoneme};
@@ -35,7 +35,7 @@ pub use types::*;
 /// Version of the linguistic engine + embedded data. Bumped whenever rules,
 /// dictionaries or the mapping change so stale generated signs can be
 /// detected at load time.
-pub const ENGINE_VERSION: u32 = 1;
+pub const ENGINE_VERSION: u32 = 2;
 
 /// Quick FNV-1a fingerprint used to detect that the source text of a line
 /// changed after signs were generated.

@@ -3,6 +3,7 @@
 - Lecture audio : les fichiers stéréo sont lus en stéréo ; les enregistrements restent traités en mono.
 - Ajout d’un réglage de volume indépendant par piste dans le DAW, local à la station et non partagé.
 - Correction du mix de prévisualisation et de l’export des enregistrements pour conserver le mono.
+- Ajout de l'envoi des params de BR aux comédiens.
 
 # 4.1.0
 

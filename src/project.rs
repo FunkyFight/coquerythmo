@@ -187,6 +187,7 @@ pub enum SyllableLanguage {
     #[default]
     French,
     English,
+    Spanish,
 }
 
 impl SyllableLanguage {
@@ -194,12 +195,20 @@ impl SyllableLanguage {
         match self {
             Self::French => "fr-fr",
             Self::English => "en-us",
+            Self::Spanish => "es-419",
         }
     }
 
     pub fn from_code(code: &str) -> Self {
         let normalized = code.trim().to_lowercase();
-        if normalized == "en"
+        if normalized == "es"
+            || normalized.starts_with("es-")
+            || normalized.contains("spanish")
+            || normalized.contains("espagnol")
+            || normalized.contains("español")
+        {
+            Self::Spanish
+        } else if normalized == "en"
             || normalized.starts_with("en-")
             || normalized.contains("english")
             || normalized.contains("anglais")
@@ -213,7 +222,8 @@ impl SyllableLanguage {
     pub fn toggled(self) -> Self {
         match self {
             Self::French => Self::English,
-            Self::English => Self::French,
+            Self::English => Self::Spanish,
+            Self::Spanish => Self::French,
         }
     }
 }
@@ -2133,6 +2143,30 @@ mod tests {
             project.language_syllable_language(english_id),
             Some(SyllableLanguage::English)
         );
+    }
+
+    #[test]
+    fn spanish_is_a_persisted_syllable_language_and_cycles_with_keyboard_toggle() {
+        assert_eq!(
+            SyllableLanguage::from_code("es-ES"),
+            SyllableLanguage::Spanish
+        );
+        assert_eq!(SyllableLanguage::Spanish.code(), "es-419");
+        assert_eq!(
+            SyllableLanguage::French.toggled(),
+            SyllableLanguage::English
+        );
+        assert_eq!(
+            SyllableLanguage::English.toggled(),
+            SyllableLanguage::Spanish
+        );
+        assert_eq!(
+            SyllableLanguage::Spanish.toggled(),
+            SyllableLanguage::French
+        );
+
+        let project = Project::new_with_language("Español", "es-ES");
+        assert_eq!(project.syllable_language(), SyllableLanguage::Spanish);
     }
 
     #[test]

@@ -2,10 +2,10 @@
 //! coverage report. Called by tests; the report is what powers the generated
 //! documentation.
 
+use crate::phonetics::converter_for_dialect;
 use crate::phonetics::g2p::rules::{Dialects, DictTable};
 use crate::phonetics::mapping::{default_mapping, validate_mapping};
 use crate::phonetics::phoneme::{Dialect, Language, Phoneme};
-use crate::phonetics::converter_for_dialect;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Per-language coverage statistics.
@@ -70,11 +70,14 @@ fn sample_sentence(language: Language) -> &'static str {
 /// Build the full coverage report used by docs and tests.
 pub fn build_report(language: Language) -> CoverageReport {
     let mapping = default_mapping(language);
-    let inventory = Phoneme::ALL;
+    let inventory = crate::phonetics::mapping::relevant_phonemes(language);
     let mut mapped = BTreeSet::new();
     let mut silenced = BTreeSet::new();
     for rule in &mapping.rules {
         for phoneme in &rule.phonemes {
+            if !inventory.contains(phoneme) {
+                continue;
+            }
             if rule.signs.is_empty() {
                 silenced.insert(*phoneme);
             } else {
@@ -84,11 +87,11 @@ pub fn build_report(language: Language) -> CoverageReport {
     }
     let _ = (mapped.len(), silenced.len());
 
-    // Smoke: probe each phoneme by converting crafted probe words that should
-    // contain it (curated probe list below).
+    // Probe each relevant phoneme by converting a curated word that should
+    // contain it. A missing or mismatching probe is reported as uncovered.
     let mut missing_test: Vec<Phoneme> = Vec::new();
     for &phoneme in inventory {
-        if probe_words(language, phoneme).is_none() {
+        if !matches!(verify_probe(language, phoneme), Ok(true)) {
             missing_test.push(phoneme);
         }
     }
@@ -163,24 +166,28 @@ fn probe_words(language: Language, phoneme: Phoneme) -> Option<&'static str> {
         (French, Schwa) => "le",
         (French, CloseMidBackRounded) => "eau",
         (French, OpenMidBackRounded) => "porte",
-        (French, NasalOpenBackFr) => "vent",
+        (French, NasalOpenBackFr) => "dans",
+        (French, VoicelessPostalveolarAffricate) => "match",
+        (French, VoicedPostalveolarAffricate) => "djembé",
+        (French, VelarNasal) => "parking",
         (French, NasalOpenMidFrontFr) => "vin",
         (French, NasalOpenMidBackFr) => "bon",
         (French, NasalOpenMidFrontRoundedFr) => "brun",
         (French, OpenBackFr) => "pâte",
 
-        (English, VoicelessDentalFricative) => "think",
+        (English, VoicelessDentalFricative) => "through",
         (English, VoicedDentalFricative) => "this",
         (English, CloseFront) => "see",
         (English, NearCloseFrontEn) => "bit",
-        (English, OpenMidFront) => "bed",
+        (English, CloseMidFront) => "lemon",
+        (English, OpenMidFront) => "pet",
         (English, NearOpenFrontEn) => "cat",
-        (English, OpenCentral) => "palm",
+        (English, OpenCentral) => "car",
         (English, OpenMidBackEn) => "strut",
+        (English, OpenMidBackRounded) => "thought",
         (English, CloseBackRounded) => "too",
-        (English, NearCloseBackRoundedEn) => "book",
+        (English, NearCloseBackRoundedEn) => "could",
         (English, OpenBackRoundedEnGb) => "lot",
-        (English, CloseMidBackRounded) => "thought",
         (English, DiphthongFaceEn) => "face",
         (English, DiphthongPriceEn) => "price",
         (English, DiphthongChoiceEn) => "choice",
@@ -189,7 +196,7 @@ fn probe_words(language: Language, phoneme: Phoneme) -> Option<&'static str> {
         (English, DiphthongNearEnGb) => "near",
         (English, DiphthongSquareEnGb) => "square",
         (English, DiphthongCureEnGb) => "cure",
-        (English, Schwa) => "about",
+        (English, Schwa) => "and",
         (English, RColoredSchwaEnUs) => "better",
         (English, RColoredOpenMidCentralEnUs) => "nurse",
         (English, OpenMidCentralEnGb) => "nurse",
@@ -213,6 +220,7 @@ fn probe_words(language: Language, phoneme: Phoneme) -> Option<&'static str> {
         (English, VelarNasal) => "sing",
         (English, AlveolarLateralApproximant) => "leg",
         (English, AlveolarApproximant) => "red",
+        (English, AlveolarTap) => "better",
         (English, LabialVelarApproximant) => "we",
         (English, PalatalApproximant) => "yes",
         (English, SyllabicL) => "bottle",
@@ -235,20 +243,23 @@ fn probe_words(language: Language, phoneme: Phoneme) -> Option<&'static str> {
         (Spanish, CloseBackRounded) => "tú",
         (Spanish, VoicelessBilabialPlosive) => "padre",
         (Spanish, VoicedBilabialPlosive) => "bomba",
-        (Spanish, VoicedBilabialApproximant) => "sabe",
+        (Spanish, VoicedBilabialApproximant) => "nueve",
         (Spanish, VoicelessAlveolarPlosive) => "toda",
         (Spanish, VoicedAlveolarPlosive) => "donde",
         (Spanish, VoicedDentalApproximant) => "nada",
         (Spanish, VoicelessVelarPlosive) => "cosa",
         (Spanish, VoicedVelarPlosive) => "gato",
-        (Spanish, VoicedVelarApproximant) => "lago",
+        (Spanish, VoicedVelarApproximant) => "i-griega",
         (Spanish, VoicelessAlveolarFricative) => "casa",
         (Spanish, VoicelessLabiodentalFricative) => "foco",
         (Spanish, AlveolarLateralApproximant) => "lado",
         (Spanish, BilabialNasal) => "mano",
         (Spanish, AlveolarNasal) => "nada",
-        (Spanish, PalatalApproximant) => "aire",
-        (Spanish, LabialVelarApproximant) => "agua",
+        (Spanish, PalatalApproximant) => "seis",
+        (Spanish, LabialVelarApproximant) => "cuatro",
+        (Spanish, VoicedPostalveolarFricativeEs) => "yo",
+        (Spanish, VoicelessPostalveolarFricativeEs) => "yo",
+        (Spanish, VoicelessAlveolarAffricate) => "tsunami",
         _ => return None,
     })
 }
@@ -259,10 +270,19 @@ pub fn verify_probe(language: Language, phoneme: Phoneme) -> Result<bool, String
     let Some(word) = probe_words(language, phoneme) else {
         return Ok(false); // no probe: reported as "without test"
     };
-    let dialect = match language {
-        Language::English => Dialect::EnUs,
-        Language::Spanish => Dialect::EsSpain,
-        Language::French => Dialect::Generic,
+    let dialect = match (language, phoneme) {
+        (
+            Language::English,
+            Phoneme::OpenBackRoundedEnGb
+            | Phoneme::OpenMidCentralEnGb
+            | Phoneme::DiphthongNearEnGb
+            | Phoneme::DiphthongSquareEnGb
+            | Phoneme::DiphthongCureEnGb,
+        ) => Dialect::EnGb,
+        (Language::English, _) => Dialect::EnUs,
+        (Language::Spanish, Phoneme::VoicelessDentalFricativeEsSpain) => Dialect::EsSpain,
+        (Language::Spanish, _) => Dialect::EsLatam,
+        (Language::French, _) => Dialect::Generic,
     };
     let converter = converter_for_dialect(language, dialect);
     let line = converter.convert(word);
@@ -337,4 +357,74 @@ pub fn validate_dict_table(table: DictTable, name: &str) -> Result<(), String> {
         *_dupes.entry(key).or_default() += 1;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::phonetics::mapping::relevant_phonemes;
+
+    #[test]
+    fn every_language_table_and_smoke_sentence_are_valid() {
+        for language in Language::ALL {
+            check_language(language).unwrap_or_else(|error| {
+                panic!("{}: {error}", language.code());
+            });
+            match language {
+                Language::French => {
+                    validate_rules_table(crate::phonetics::french::data::RULES, "fr-rules")
+                        .unwrap();
+                    validate_dict_table(crate::phonetics::french::data::DICTIONARY, "fr-dict")
+                        .unwrap();
+                    validate_dict_table(
+                        crate::phonetics::french::data::EXCEPTIONS,
+                        "fr-exceptions",
+                    )
+                    .unwrap();
+                }
+                Language::English => {
+                    validate_rules_table(crate::phonetics::english::data::RULES, "en-rules")
+                        .unwrap();
+                    validate_dict_table(crate::phonetics::english::data::DICTIONARY, "en-dict")
+                        .unwrap();
+                    validate_dict_table(
+                        crate::phonetics::english::data::EXCEPTIONS,
+                        "en-exceptions",
+                    )
+                    .unwrap();
+                }
+                Language::Spanish => {
+                    validate_rules_table(crate::phonetics::spanish::data::RULES, "es-rules")
+                        .unwrap();
+                    validate_dict_table(crate::phonetics::spanish::data::DICTIONARY, "es-dict")
+                        .unwrap();
+                    validate_dict_table(
+                        crate::phonetics::spanish::data::EXCEPTIONS,
+                        "es-exceptions",
+                    )
+                    .unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_report_has_a_probe_for_each_relevant_phoneme() {
+        for language in Language::ALL {
+            let report = build_report(language);
+            assert_eq!(report.phonemes_declared, relevant_phonemes(language).len());
+            assert!(
+                report.phonemes_without_test.is_empty(),
+                "{} missing probes: {:?}",
+                language.code(),
+                report.phonemes_without_test
+            );
+            assert_eq!(
+                report.phonemes_mapped + report.phonemes_explicitly_silent,
+                report.phonemes_declared,
+                "{} has an implicit mapping gap",
+                language.code()
+            );
+        }
+    }
 }

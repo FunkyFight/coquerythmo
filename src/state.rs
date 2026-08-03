@@ -1262,6 +1262,25 @@ impl State {
         }
     }
 
+    pub fn request_actors_transfer_display_settings(&self) {
+        if self.collaboration.network.is_in_room()
+            && matches!(
+                self.ui_shell.ui.recording_role(),
+                crate::ui::recording_workspace::RecordingRole::Director
+            )
+        {
+            let settings = self.project_session.project.settings();
+            self.collaboration.network.send_raw(
+                "actor_request",
+                serde_json::json!({
+                    "action": "apply_display_settings",
+                    "scroll_speed": settings.scroll_speed,
+                    "reading_bar_offset_percent": settings.reading_bar_offset_percent,
+                }),
+            );
+        }
+    }
+
     pub fn request_actors_close_project_transfer_waiting(&self) {
         if self.collaboration.network.is_in_room()
             && matches!(
@@ -2133,18 +2152,31 @@ impl State {
         self.sync_audio_settings_to_player();
     }
 
-    pub fn save_project_view_settings(
+    fn apply_project_view_settings(
         &mut self,
         scroll_speed: f32,
         reading_bar_offset_percent: f32,
+        origin: EditOrigin,
     ) {
         let mut settings = self.project_session.project.settings().clone();
         settings.scroll_speed = scroll_speed.clamp(0.25, 4.0);
         settings.reading_bar_offset_percent = reading_bar_offset_percent.clamp(-50.0, 50.0);
         EditExecutor::apply_domain_change(
             &mut self.project_session,
-            EditOrigin::Local,
+            origin,
             |project| project.set_settings(settings),
+        );
+    }
+
+    pub fn save_project_view_settings(
+        &mut self,
+        scroll_speed: f32,
+        reading_bar_offset_percent: f32,
+    ) {
+        self.apply_project_view_settings(
+            scroll_speed,
+            reading_bar_offset_percent,
+            EditOrigin::Local,
         );
     }
 
@@ -3930,6 +3962,14 @@ impl State {
                 IncomingMessage::ActorRequestOpenMicrophone => {
                     self.open_recording_input_device_modal()
                 }
+                IncomingMessage::ActorRequestApplyDisplaySettings {
+                    scroll_speed,
+                    reading_bar_offset_percent,
+                } => self.apply_project_view_settings(
+                    scroll_speed,
+                    reading_bar_offset_percent,
+                    EditOrigin::Remote,
+                ),
                 IncomingMessage::ActorRequestCloseProjectTransferWaiting => {
                     self.close_project_transfer_waiting()
                 }
@@ -5858,6 +5898,25 @@ impl State {
     }
 
     pub fn update_line_text(&mut self, id: u64, text: String) {
+        let generated_signs_became_stale = self
+            .project_session
+            .project
+            .get_line(id)
+            .and_then(|line| {
+                self.project_session
+                    .project
+                    .detections()
+                    .line(id)
+                    .and_then(crate::detection::LineDetectionData::generated_signs)
+                    .map(|info| !info.is_stale_for(&line.text) && info.is_stale_for(&text))
+            })
+            .unwrap_or(false);
+        if generated_signs_became_stale {
+            self.show_toast(
+                "Le texte a changé : les signes de détection générés doivent être vérifiés avant régénération",
+                5.0,
+            );
+        }
         let ambiguous_sync_points = self
             .project_session
             .project
@@ -5988,6 +6047,7 @@ impl State {
                 hover_main: false,
                 hover_change_character: false,
                 hover_text_emotion: true,
+                hover_generate_detection: false,
                 hover_emotion_index: Some(0),
                 hover_emotion_variant: None,
                 text_range: range,
@@ -7479,6 +7539,19 @@ impl State {
             })
     }
 
+    fn playback_preparation_pending(&self) -> bool {
+        self.playback
+            .video_player
+            .as_ref()
+            .is_some_and(|player| player.is_playback_preparing())
+    }
+
+    fn playback_preparation_redraw_due(&self, now: Instant) -> bool {
+        self.playback_preparation_pending()
+            && now.saturating_duration_since(self.render.last_redraw())
+                >= Duration::from_millis(50)
+    }
+
     fn periodic_redraw_due(&self, now: Instant) -> bool {
         if self.ui_shell.ui.has_active_progress()
             || self.jobs.pending_proxy_job.is_some()
@@ -7508,24 +7581,22 @@ impl State {
         let now = Instant::now();
         self.scroll_decode_due(now)
             || self.periodic_redraw_due(now)
+            || self.playback_preparation_redraw_due(now)
             || self.waveform_redraw_pending()
             || self.needs_continuous_redraw()
             || self.secondary_needs_continuous_redraw()
     }
 
     pub fn needs_continuous_redraw(&self) -> bool {
-        self.is_video_playing()
-            || self
-                .playback
-                .video_player
-                .as_ref()
-                .is_some_and(|player| player.is_preparing_frame())
+        (self.is_video_playing() && !self.playback_preparation_pending())
             || self.recording_runtime.is_active()
             || self.ui_shell.ui.needs_animation_or_interaction()
     }
 
     pub fn secondary_needs_continuous_redraw(&self) -> bool {
-        self.has_secondary_display() && self.is_video_playing()
+        self.has_secondary_display()
+            && self.is_video_playing()
+            && !self.playback_preparation_pending()
     }
 
     pub fn next_wake_deadline(&self) -> Option<Instant> {
@@ -7551,6 +7622,10 @@ impl State {
             } else {
                 push_deadline(self.render.last_redraw() + Duration::from_millis(500));
             }
+        }
+
+        if self.playback_preparation_pending() {
+            push_deadline(self.render.last_redraw() + Duration::from_millis(50));
         }
 
         if self.playback.scroll_needs_decode {

@@ -59,10 +59,10 @@ fn post_process(dialect: Dialect, mut segments: Vec<GraphemeSegment>) -> Vec<Gra
 fn lax_to_long(phoneme: Phoneme) -> Option<Phoneme> {
     use Phoneme::*;
     Some(match phoneme {
-        NearOpenFrontEn => DiphthongFaceEn,       // æ→eɪ
-        NearCloseFrontEn => DiphthongPriceEn,     // ɪ→aɪ
-        OpenMidFront => CloseFront,               // e→iː (mete)
-        OpenMidBackEn => CloseBackRounded,        // ʌ→uː (cute)
+        NearOpenFrontEn => DiphthongFaceEn,   // æ→eɪ
+        NearCloseFrontEn => DiphthongPriceEn, // ɪ→aɪ
+        OpenMidFront => CloseFront,           // e→iː (mete)
+        OpenMidBackEn => CloseBackRounded,    // ʌ→uː (cute)
         OpenMidBackRounded | OpenBackRoundedEnGb => DiphthongGoatEn, // ɔ/ɒ→oʊ
         NearCloseBackRoundedEn => OpenBackRoundedEnGb, // prominent "lure" shift avoided
         _ => return None,
@@ -86,7 +86,12 @@ fn apply_magic_e(segments: &mut Vec<GraphemeSegment>) {
     let mut vowel_idx = None;
     for back in (0..len - 1).rev() {
         let segment = &segments[back];
-        if segment.grapheme == "qu" || segment.grapheme.chars().all(|c| "bcçdfghjklmnpqrstvwxz".contains(c)) {
+        if segment.grapheme == "qu"
+            || segment
+                .grapheme
+                .chars()
+                .all(|c| "bcçdfghjklmnpqrstvwxz".contains(c))
+        {
             continue; // skip consonant group
         }
         vowel_idx = Some(back);
@@ -131,12 +136,31 @@ fn is_vowel_phoneme(phoneme: Phoneme) -> bool {
     use Phoneme::*;
     matches!(
         phoneme,
-        OpenCentral | CloseFront | CloseMidFront | OpenMidFront | CloseMidBackRounded
-            | OpenMidBackRounded | CloseBackRounded | CloseFrontRounded | CloseMidFrontRounded
-            | OpenMidFrontRounded | Schwa | NearCloseFrontEn | NearCloseBackRoundedEn
-            | OpenMidBackEn | NearOpenFrontEn | OpenBackRoundedEnGb | OpenMidCentralEnGb
-            | DiphthongFaceEn | DiphthongPriceEn | DiphthongChoiceEn | DiphthongGoatEn
-            | DiphthongMouthEn | DiphthongNearEnGb | DiphthongSquareEnGb | DiphthongCureEnGb
+        OpenCentral
+            | CloseFront
+            | CloseMidFront
+            | OpenMidFront
+            | CloseMidBackRounded
+            | OpenMidBackRounded
+            | CloseBackRounded
+            | CloseFrontRounded
+            | CloseMidFrontRounded
+            | OpenMidFrontRounded
+            | Schwa
+            | NearCloseFrontEn
+            | NearCloseBackRoundedEn
+            | OpenMidBackEn
+            | NearOpenFrontEn
+            | OpenBackRoundedEnGb
+            | OpenMidCentralEnGb
+            | DiphthongFaceEn
+            | DiphthongPriceEn
+            | DiphthongChoiceEn
+            | DiphthongGoatEn
+            | DiphthongMouthEn
+            | DiphthongNearEnGb
+            | DiphthongSquareEnGb
+            | DiphthongCureEnGb
     )
 }
 

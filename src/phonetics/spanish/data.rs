@@ -88,7 +88,6 @@ pub static RULES: &[GraphemeRule] = &[
     r("u", A, A, &[CloseBackRounded]),
 ];
 
-
 // ═══════════════════════════ Diccionario ══════════════════════════════════
 const ALL: Dialects = Dialects::All;
 const ONLY_SPAIN: Dialects = Dialects::Only(SPAIN);
@@ -155,6 +154,13 @@ pub static DICTIONARY: DictTable = &[
 
 #[rustfmt::skip]
 pub static EXCEPTIONS: DictTable = &[
+    // Variantes regionales del yeísmo; la primera entrada permanece como
+    // pronunciación por defecto y las siguientes son candidatas alternativas.
+    ("yo", ALL, &[("y", &[VoicedPalatalFricative]), ("o", &[CloseMidBackRounded])]),
+    ("yo", ALL, &[("y", &[VoicedPostalveolarFricativeEs]), ("o", &[CloseMidBackRounded])]),
+    ("yo", ALL, &[("y", &[VoicelessPostalveolarFricativeEs]), ("o", &[CloseMidBackRounded])]),
+    // Emprunt courant conservant l'attaque /ts/.
+    ("tsunami", ALL, &[("ts", &[VoicelessAlveolarAffricate]), ("u", &[CloseBackRounded]), ("n", &[AlveolarNasal]), ("a", &[OpenCentral]), ("m", &[BilabialNasal]), ("i", &[CloseFront])]),
     // Distinción España : z/ce/ci extraña los términos comunes. Mots
     // empruntés : x méxicaine ≈ x dans México, Oaxaca…
     ("méxico", ONLY_SPAIN, &[("m", &[BilabialNasal]), ("é", &[CloseMidFront]), ("x", &[VoicelessVelarFricative]), ("i", &[CloseFront]), ("c", &[VoicelessVelarPlosive]), ("o", &[CloseMidBackRounded])]),
@@ -163,6 +169,5 @@ pub static EXCEPTIONS: DictTable = &[
 ];
 
 pub static PRONOUNCEABLE_ACRONYMS: &[&str] = &[
-    "onu", "otan", "unesco", "unicef", "ovni", "sida", "radar", "láser",
-    "mercosur", "unam", "dni",
+    "onu", "otan", "unesco", "unicef", "ovni", "sida", "radar", "láser", "mercosur", "unam", "dni",
 ];

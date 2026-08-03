@@ -217,9 +217,9 @@ impl LanguageModal {
 
     fn syllable_option_rect(details: Rect, index: usize) -> Rect {
         let gap = 8.0;
-        let width = (details.width - gap) / 2.0;
+        let width = (details.width - gap * 2.0) / 3.0;
         Rect {
-            x: details.x + index.min(1) as f32 * (width + gap),
+            x: details.x + index.min(2) as f32 * (width + gap),
             y: details.y + 362.0,
             width,
             height: 36.0,
@@ -358,11 +358,25 @@ impl LanguageModal {
                 LanguageModalResult::Consumed
             }
             UiEvent::CursorLeft | UiEvent::CursorRight if self.keyboard_focus == 7 => {
-                let language = if matches!(event, UiEvent::CursorRight) {
-                    crate::project::SyllableLanguage::English
+                let options = [
+                    crate::project::SyllableLanguage::French,
+                    crate::project::SyllableLanguage::English,
+                    crate::project::SyllableLanguage::Spanish,
+                ];
+                let current = self
+                    .selected()
+                    .map(|selected| selected.syllable_language)
+                    .unwrap_or_default();
+                let index = options
+                    .iter()
+                    .position(|option| *option == current)
+                    .unwrap_or(0);
+                let next = if matches!(event, UiEvent::CursorRight) {
+                    (index + 1) % options.len()
                 } else {
-                    crate::project::SyllableLanguage::French
+                    (index + options.len() - 1) % options.len()
                 };
+                let language = options[next];
                 if self
                     .selected()
                     .is_some_and(|selected| selected.syllable_language != language)
@@ -452,6 +466,16 @@ impl LanguageModal {
                         return LanguageModalResult::SetSyllableLanguage {
                             id: self.selected_id,
                             language: crate::project::SyllableLanguage::English,
+                        };
+                    }
+                } else if Self::syllable_option_rect(details, 2).contains(*x, *y) {
+                    self.keyboard_focus = 7;
+                    if self.selected().is_some_and(|selected| {
+                        selected.syllable_language != crate::project::SyllableLanguage::Spanish
+                    }) {
+                        return LanguageModalResult::SetSyllableLanguage {
+                            id: self.selected_id,
+                            language: crate::project::SyllableLanguage::Spanish,
                         };
                     }
                 } else if Self::clear_audio_rect(details).contains(*x, *y)
@@ -742,6 +766,7 @@ impl LanguageModal {
         for (index, language) in [
             crate::project::SyllableLanguage::French,
             crate::project::SyllableLanguage::English,
+            crate::project::SyllableLanguage::Spanish,
         ]
         .into_iter()
         .enumerate()
@@ -822,6 +847,7 @@ pub(super) fn syllable_language_label(language: crate::project::SyllableLanguage
     match language {
         crate::project::SyllableLanguage::French => t("languages.syllables.french"),
         crate::project::SyllableLanguage::English => t("languages.syllables.english"),
+        crate::project::SyllableLanguage::Spanish => t("languages.syllables.spanish"),
     }
 }
 
