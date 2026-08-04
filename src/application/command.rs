@@ -102,6 +102,10 @@ pub enum UiAction {
     /// Copy a `coquerythmo://` join link for the current session and room
     /// code to the clipboard. The recipient supplies their own username.
     CopyQuickJoinLink,
+    /// Open the current online room invitation (room code and join URL).
+    OpenRoomInvitation,
+    /// Copy the current online room code to the clipboard.
+    CopyRoomCode,
     CloseApp,
     CloseSecondaryDisplay,
     Undo,

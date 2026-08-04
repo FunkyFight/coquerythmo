@@ -7,6 +7,7 @@
 
 use super::connect_modal::ConnectModal;
 use super::export_modal::ExportModal;
+use super::invitation_modal::InvitationModal;
 use super::language_modal::{LanguageListItem, LanguageModal};
 use super::microphone_modal::{MicrophoneModal, RecordingActorMenuModal};
 use super::pricing_license_modal::PricingLicenseModal;
@@ -85,6 +86,7 @@ pub struct ModalHost {
     pub settings: Option<SettingsModal>,
     pub project_settings: Option<ProjectSettingsModal>,
     pub export: Option<ExportModal>,
+    pub invitation: Option<InvitationModal>,
     pub languages: Option<LanguageModal>,
     pub microphone: Option<MicrophoneModal>,
     pub recording_actor_menu: Option<RecordingActorMenuModal>,
@@ -108,6 +110,7 @@ impl ModalHost {
             settings: None,
             project_settings: None,
             export: None,
+            invitation: None,
             languages: None,
             microphone: None,
             recording_actor_menu: None,
@@ -130,6 +133,7 @@ impl ModalHost {
             || self.settings.is_some()
             || self.project_settings.is_some()
             || self.export.is_some()
+            || self.invitation.is_some()
             || self.languages.is_some()
             || self.microphone.is_some()
             || self.recording_actor_menu.is_some()
@@ -238,6 +242,9 @@ impl ModalHost {
         }
         if self.export.is_some() {
             return Some(self.handle_export_event(event, screen_w, screen_h));
+        }
+        if self.invitation.is_some() {
+            return Some(self.handle_invitation_event(event, screen_w, screen_h));
         }
         if self.languages.is_some() {
             return Some(self.handle_languages_event(event, screen_w, screen_h));
@@ -369,6 +376,32 @@ impl ModalHost {
                     UiAction::SetRecordingInputDevice(device),
                     crate::i18n::t("recording.microphone.title"),
                 )
+            }
+        }
+    }
+
+    fn handle_invitation_event(
+        &mut self,
+        event: &UiEvent,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> ModalOutcome {
+        let result = self
+            .invitation
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h);
+        match result {
+            super::invitation_modal::InvitationModalResult::Consumed => ModalOutcome::Consumed,
+            super::invitation_modal::InvitationModalResult::Close => {
+                self.invitation = None;
+                closed_modal(crate::i18n::t("invite.title"))
+            }
+            super::invitation_modal::InvitationModalResult::CopyLink => {
+                ModalOutcome::Action(UiAction::CopyQuickJoinLink)
+            }
+            super::invitation_modal::InvitationModalResult::CopyCode => {
+                ModalOutcome::Action(UiAction::CopyRoomCode)
             }
         }
     }
@@ -1312,6 +1345,10 @@ impl ModalHost {
         self.recording_actor_menu = Some(RecordingActorMenuModal::new(volume));
     }
 
+    pub fn open_invitation(&mut self, code: String, link: String) {
+        self.invitation = Some(InvitationModal::new(code, link));
+    }
+
     pub fn refresh_languages(&mut self, languages: Vec<LanguageListItem>, active_language_id: u64) {
         if let Some(modal) = &mut self.languages {
             modal.refresh(languages, active_language_id);
@@ -1493,6 +1530,9 @@ impl ModalHost {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
         if let Some(modal) = &self.export {
+            modal.render(modal_quads, modal_labels, screen_w, screen_h);
+        }
+        if let Some(modal) = &self.invitation {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
         if let Some(modal) = &self.languages {

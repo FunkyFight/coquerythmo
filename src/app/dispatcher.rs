@@ -378,6 +378,8 @@ impl CommandDispatcher {
             UiAction::CopyQuickJoinLink => {
                 state.copy_protocol_link_to_clipboard(crate::protocol::ProtocolKind::Join);
             }
+            UiAction::OpenRoomInvitation => state.open_room_invitation(),
+            UiAction::CopyRoomCode => state.copy_room_code_to_clipboard(),
             UiAction::CloseApp => {
                 if state.is_project_save_in_progress() {
                     state.show_toast(i18n::t("toast.close_blocked_saving"), 5.0);

@@ -6,10 +6,10 @@
 
 use super::primitives::{EventResponse, LabelInfo, QuadInstance, UiEvent};
 use super::{
-    connect_modal, export_modal, language_modal, microphone_modal, pricing_license_modal,
-    pricing_page, pricing_plan_modal, primitives, project_settings_modal, proxy_error_modal,
-    proxy_modal, rename_character_modal, save_prompt_modal, server_browser, settings_modal,
-    voice_actor_modal, whats_new_modal,
+    connect_modal, export_modal, invitation_modal, language_modal, microphone_modal,
+    pricing_license_modal, pricing_page, pricing_plan_modal, primitives, project_settings_modal,
+    proxy_error_modal, proxy_modal, rename_character_modal, save_prompt_modal, server_browser,
+    settings_modal, voice_actor_modal, whats_new_modal,
 };
 use std::ops::{Deref, DerefMut};
 

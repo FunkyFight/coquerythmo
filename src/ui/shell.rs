@@ -154,7 +154,7 @@ pub(crate) fn build_topbar(
         let quick_setup_offset = actor_requests_offset + 200.0;
         let daw_button = TextButton::new(
             Rect {
-                x: 88.0 + actor_requests_offset + quick_setup_offset,
+                x: 88.0 + quick_setup_offset + 164.0,
                 y: 2.0,
                 width: 150.0,
                 height: 28.0,
@@ -196,31 +196,45 @@ pub(crate) fn build_topbar(
                 .with_panel_width(420.0),
             ));
         }
-        // « Mise en place rapide » : builds `coquerythmo://` links for the
-        // current project/session so the user can share them in one click.
-        widgets.push(Box::new(
-            Dropdown::new(
-                Rect {
-                    x: 88.0 + actor_requests_offset,
-                    y: 2.0,
-                    width: 192.0,
-                    height: 28.0,
-                },
-                vec![
-                    t("recording.quick_setup.host_session").into(),
-                    t("recording.quick_setup.join_session").into(),
-                ],
-                |index, _label| match index {
-                    0 => EventResponse::Action(UiAction::CopyQuickHostLink),
-                    1 => EventResponse::Action(UiAction::CopyQuickJoinLink),
-                    _ => EventResponse::Consumed,
-                },
-            )
-            .with_arrow(false)
-            .with_trigger_bg(false)
-            .with_trigger_label(t("recording.quick_setup"))
-            .with_panel_width(392.0),
-        ));
+        if in_room {
+            widgets.push(Box::new(
+                TextButton::new(
+                    Rect {
+                        x: 88.0 + actor_requests_offset,
+                        y: 2.0,
+                        width: 192.0,
+                        height: 28.0,
+                    },
+                    t("recording.invitation"),
+                    || EventResponse::Action(UiAction::OpenRoomInvitation),
+                )
+                .with_tooltip(t("recording.invitation")),
+            ));
+        } else {
+            widgets.push(Box::new(
+                Dropdown::new(
+                    Rect {
+                        x: 88.0 + actor_requests_offset,
+                        y: 2.0,
+                        width: 192.0,
+                        height: 28.0,
+                    },
+                    vec![
+                        t("recording.quick_setup.host_session").into(),
+                        t("recording.quick_setup.join_session").into(),
+                    ],
+                    |index, _label| match index {
+                        0 => EventResponse::Action(UiAction::CopyQuickHostLink),
+                        1 => EventResponse::Action(UiAction::CopyQuickJoinLink),
+                        _ => EventResponse::Consumed,
+                    },
+                )
+                .with_arrow(false)
+                .with_trigger_bg(false)
+                .with_trigger_label(t("recording.quick_setup"))
+                .with_panel_width(392.0),
+            ));
+        }
         widgets.push(microphone_button(88.0 + quick_setup_offset));
         widgets.push(Box::new(daw_button));
         return widgets;
@@ -354,6 +368,21 @@ pub(crate) fn build_topbar(
     ];
     if active_workspace == WorkspaceId::Recording {
         topbar_widgets.push(microphone_button(464.0));
+        if in_room {
+            topbar_widgets.push(Box::new(
+                TextButton::new(
+                    Rect {
+                        x: 618.0,
+                        y: 2.0,
+                        width: 120.0,
+                        height: 28.0,
+                    },
+                    t("recording.invitation"),
+                    || EventResponse::Action(UiAction::OpenRoomInvitation),
+                )
+                .with_tooltip(t("recording.invitation")),
+            ));
+        }
     }
 
     let discord_w = 80.0;
@@ -819,5 +848,30 @@ pub(crate) fn progress_bar_hit_rect(toolbar: &Rect, editable: bool) -> Rect {
         y: rect.y - 8.0,
         width: rect.width,
         height: rect.height + 16.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_choice_topbar_buttons_do_not_overlap() {
+        crate::config::init();
+        let widgets = build_topbar(
+            false,
+            true,
+            1280.0,
+            [0.0; 4],
+            [0.0; 4],
+            WorkspaceId::Recording,
+            true,
+            false,
+        );
+        for pair in widgets.windows(2) {
+            let left = pair[0].bounds();
+            let right = pair[1].bounds();
+            assert!(left.x + left.width <= right.x);
+        }
     }
 }

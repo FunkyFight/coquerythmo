@@ -703,8 +703,8 @@ impl RecordingWorkspaceUi {
 fn choice_scene(layout: RecordingLayout) -> RecordingScene {
     let mut scene = RecordingScene::default();
     push_quad(&mut scene.quads, layout.content, PANEL_BG, BORDER, 0.0);
-    let card_w = (layout.content.width * 0.32).clamp(240.0, 420.0);
     let gap = 28.0;
+    let card_w = ((layout.content.width - gap).max(0.0) * 0.5).min(420.0);
     let total = card_w * 2.0 + gap;
     let x = layout.content.x + (layout.content.width - total).max(0.0) * 0.5;
     let y = layout.content.y + (layout.content.height - 210.0).max(0.0) * 0.45;
@@ -2035,5 +2035,20 @@ mod tests {
             RecordingControl::ChooseOnline.stable_id(),
             "recording.choice.online"
         );
+    }
+
+    #[test]
+    fn choice_cards_fit_without_overlapping_on_narrow_windows() {
+        let content = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 480.0,
+            height: 500.0,
+        };
+        let scene = choice_scene(RecordingLayout::choice(content));
+        let solo = scene.controls[0].bounds;
+        let online = scene.controls[1].bounds;
+        assert!(solo.x + solo.width <= online.x);
+        assert!(online.x + online.width <= content.x + content.width);
     }
 }

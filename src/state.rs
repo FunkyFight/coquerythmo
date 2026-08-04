@@ -7369,6 +7369,35 @@ impl State {
         self.show_toast(crate::i18n::t("toast.protocol_copied"), 4.0);
     }
 
+    pub fn open_room_invitation(&mut self) {
+        let Some(code) = self.collaboration.network.room_code.clone() else {
+            self.show_toast(crate::i18n::t("toast.protocol_join_requires_room"), 6.0);
+            return;
+        };
+        let cfg = crate::config::get().clone();
+        let server = format!("{}:{}", cfg.network.server_ip, cfg.network.server_port);
+        let link = ProtocolPayload::join(&server, cfg.network.password, code.clone()).to_url();
+        self.ui_shell.ui.open_room_invitation(code, link);
+        let first = self
+            .ui_shell
+            .ui
+            .modal_host
+            .invitation
+            .as_ref()
+            .map(|modal| modal.keyboard_focus_label())
+            .unwrap_or_else(|| crate::i18n::t("invite.copy_link").to_string());
+        self.announce_open_container(crate::i18n::t("invite.title"), first);
+    }
+
+    pub fn copy_room_code_to_clipboard(&mut self) {
+        let Some(code) = self.collaboration.network.room_code.as_deref() else {
+            self.show_toast(crate::i18n::t("toast.protocol_join_requires_room"), 6.0);
+            return;
+        };
+        crate::platform::clipboard_set(code);
+        self.show_toast(crate::i18n::t("toast.room_code_copied"), 4.0);
+    }
+
     /// Advances the host flow once the previous project has fully closed
     /// (either discarded, saved with [`SaveContinuation::ProtocolHost`], or
     /// the app was already idle). Clears the workspace, kicks off the target

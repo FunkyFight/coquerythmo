@@ -16,6 +16,7 @@ pub mod focus;
 pub mod icon_button;
 pub mod icons;
 pub mod interactive;
+pub mod invitation_modal;
 pub mod language_modal;
 pub mod layout;
 pub mod license_badge;
@@ -2706,6 +2707,10 @@ impl Ui {
 
     pub fn open_recording_actor_menu(&mut self) {
         self.modal_host.open_recording_actor_menu(self.volume);
+    }
+
+    pub fn open_room_invitation(&mut self, code: String, link: String) {
+        self.modal_host.open_invitation(code, link);
     }
 
     pub fn open_whats_new_modal(
