@@ -60,8 +60,21 @@ fn recording_playback_waits_for_mix(
     workspace: WorkspaceId,
     mix_pending: bool,
     player_is_playing: bool,
+    capture_started: bool,
 ) -> bool {
-    workspace == WorkspaceId::Recording && mix_pending && !player_is_playing
+    workspace == WorkspaceId::Recording
+        && mix_pending
+        && !player_is_playing
+        && !capture_started
+}
+
+fn recording_playback_is_blocked_during_countdown(
+    capture: Option<&crate::recording::CaptureState>,
+) -> bool {
+    matches!(
+        capture,
+        Some(crate::recording::CaptureState::Countdown { .. })
+    )
 }
 
 fn recording_added_assets<'a>(
@@ -150,20 +163,52 @@ mod clipboard_tests {
 
 #[cfg(test)]
 mod playback_tests {
-    use super::{recording_playback_waits_for_mix, WorkspaceId};
+    use super::{
+        recording_playback_is_blocked_during_countdown, recording_playback_waits_for_mix,
+        WorkspaceId,
+    };
+    use crate::recording::{AudioAssetId, AudioClipId, AudioTrackId, CaptureState, CaptureTarget};
+    use std::time::Duration;
 
     #[test]
     fn recording_play_waits_for_the_pending_mix() {
         assert!(recording_playback_waits_for_mix(
             WorkspaceId::Recording,
             true,
-            false
+            false,
+            false,
         ));
         assert!(!recording_playback_waits_for_mix(
             WorkspaceId::Recording,
             false,
-            false
+            false,
+            false,
         ));
+        assert!(!recording_playback_waits_for_mix(
+            WorkspaceId::Recording,
+            true,
+            false,
+            true,
+        ));
+    }
+
+    #[test]
+    fn remote_playback_is_ignored_during_recording_countdown() {
+        let target = CaptureTarget {
+            track_id: AudioTrackId::new(1),
+            asset_id: AudioAssetId::new(2),
+            clip_id: AudioClipId::new(3),
+            start_frame: 48,
+        };
+        let countdown = CaptureState::Countdown {
+            target,
+            deadline: Duration::from_secs(3),
+        };
+
+        assert!(recording_playback_is_blocked_during_countdown(Some(
+            &countdown,
+        )));
+        assert!(!recording_playback_is_blocked_during_countdown(None));
     }
 }
 
@@ -1163,6 +1208,9 @@ impl State {
             self.recording_error(error.to_string());
             return;
         }
+        // A mix job requested before Record must not resume playback in the
+        // countdown; the capture start event owns the next Play transition.
+        self.jobs.play_recording_mix_when_ready = false;
         let capture_start_frame = self.recording_runtime.capture_state().and_then(|state| {
             if let crate::recording::CaptureState::Countdown { target, .. } = state {
                 Some(target.start_frame)
@@ -3232,6 +3280,10 @@ impl State {
     }
 
     fn toggle_play_pause_internal(&mut self, broadcast: bool) {
+        let capture_started = matches!(
+            self.recording_runtime.capture_state(),
+            Some(crate::recording::CaptureState::Capturing { .. })
+        );
         let recording_mix_pending = recording_playback_waits_for_mix(
             self.active_workspace(),
             self.jobs.pending_recording_mix_job.is_some(),
@@ -3239,6 +3291,7 @@ impl State {
                 .video_player
                 .as_ref()
                 .is_some_and(|player| player.is_playing()),
+            capture_started,
         );
         if recording_mix_pending {
             self.jobs.play_recording_mix_when_ready = true;
@@ -3743,6 +3796,9 @@ impl State {
         current_frame: i64,
         capture_target: Option<crate::recording::CaptureTarget>,
     ) {
+        if capture_target.is_some() {
+            self.jobs.play_recording_mix_when_ready = false;
+        }
         self.seek_absolute_internal(current_frame, false);
         if capture_target.is_some() {
             self.finish_seek();
@@ -3791,6 +3847,9 @@ impl State {
     }
 
     fn receive_recording_playback(&mut self, playback: crate::network::RecordingPlaybackPayload) {
+        if recording_playback_is_blocked_during_countdown(self.recording_runtime.capture_state()) {
+            return;
+        }
         self.seek_absolute_internal(playback.frame, false);
         let is_playing = self
             .playback

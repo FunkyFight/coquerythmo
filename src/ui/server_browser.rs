@@ -717,11 +717,12 @@ impl Default for AddServerModal {
 impl AddServerModal {
     pub fn new() -> Self {
         let mut input = text_input::TextInputState::new();
-        let ip = String::new();
+        let default_server = crate::config::default_server();
+        let ip = default_server.ip;
         input.activate(&ip);
         Self {
             ip,
-            port: "9050".into(),
+            port: default_server.port.to_string(),
             input,
             focused: 0,
         }
@@ -1254,9 +1255,8 @@ mod tests {
     #[test]
     fn add_server_requires_a_valid_address_and_port() {
         let mut modal = AddServerModal::new();
-        assert!(!modal.can_add());
-        modal.ip = "localhost".into();
         assert!(modal.can_add());
+        modal.ip = "localhost".into();
         modal.port = "invalid".into();
         assert!(!modal.can_add());
     }

@@ -2944,6 +2944,29 @@ impl GpuRenderer {
                         38.0 / 255.0,
                         230.0 / 255.0,
                     ));
+                    if let Some(number) = marker.loop_number {
+                        let hash =
+                            self.get_or_upload_text(&number.to_string(), (18.0 * s).max(1.0));
+                        if let Some(cached) = self.text_cache.get(&hash) {
+                            let start = all_icons.len() as u32;
+                            all_icons.push(IconInstance {
+                                rect: [
+                                    mx + 8.0 * s,
+                                    cy + 5.0 * s,
+                                    cached.width as f32,
+                                    cached.height as f32,
+                                ],
+                                uv_rect: [0.0, 0.0, 1.0, 1.0],
+                                tint: [217.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0],
+                                transform: [0.0, 0.0, 0.5, 0.5],
+                            });
+                            icon_batches.push(IconBatch {
+                                hash,
+                                start,
+                                count: 1,
+                            });
+                        }
+                    }
                 }
                 MarkerKind::Out => {
                     quads.push(quad(
@@ -2986,29 +3009,6 @@ impl GpuRenderer {
                         240.0 / 255.0,
                         200.0 / 255.0,
                     ));
-                    if let Some(number) = marker.scene_number {
-                        let hash =
-                            self.get_or_upload_text(&number.to_string(), (18.0 * s).max(1.0));
-                        if let Some(cached) = self.text_cache.get(&hash) {
-                            let start = all_icons.len() as u32;
-                            all_icons.push(IconInstance {
-                                rect: [
-                                    mx + 4.0 * s,
-                                    2.0 * s,
-                                    cached.width as f32,
-                                    cached.height as f32,
-                                ],
-                                uv_rect: [0.0, 0.0, 1.0, 1.0],
-                                tint: [235.0 / 255.0, 235.0 / 255.0, 245.0 / 255.0, 1.0],
-                                transform: [0.0, 0.0, 0.5, 0.5],
-                            });
-                            icon_batches.push(IconBatch {
-                                hash,
-                                start,
-                                count: 1,
-                            });
-                        }
-                    }
                 }
                 MarkerKind::LiaisonLeft | MarkerKind::LiaisonRight => {
                     let is_left = matches!(marker.kind, MarkerKind::LiaisonLeft);

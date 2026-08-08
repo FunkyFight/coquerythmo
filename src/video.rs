@@ -255,7 +255,7 @@ impl VideoPlayer {
         let first_frame = decode_frame_at(video_path, width, height, 0.0)?;
         self.upload_frame(&first_frame, device, queue, bind_group_layout, sampler);
 
-        self.start_decoders_at(0.0);
+        self.start_decoders_at(0.0, true);
 
         self.decode_source_waveform();
 
@@ -280,9 +280,6 @@ impl VideoPlayer {
     }
 
     pub fn active_audio_offset_frames(&self) -> i64 {
-        if self.has_recording_mix() {
-            return 0;
-        }
         match self.active_audio_track {
             AudioTrack::Source => self.source_audio_offset_frames,
             AudioTrack::Instrumental => self.instrumental_audio_offset_frames,
@@ -393,7 +390,9 @@ impl VideoPlayer {
         if self.playing {
             if self.receiver.is_none() {
                 let ts = self.current_frame as f64 / self.fps;
-                self.start_decoders_at(ts);
+                self.start_decoders_at(ts, true);
+            } else if self.audio_clock.is_none() && self.pending_audio_start_at.is_none() {
+                self.start_audio_at(self.current_frame as f64 / self.fps.max(1.0));
             }
             if self.receiver_has_current_frame {
                 // Starting the clock here would make the rythmo move while the
@@ -474,7 +473,7 @@ impl VideoPlayer {
         }
 
         let timestamp = self.current_frame as f64 / self.fps.max(1.0);
-        self.start_decoders_at(timestamp);
+        self.start_decoders_at(timestamp, true);
         self.waiting_for_first_frame = true;
         self.playback_start_time = None;
     }
@@ -489,7 +488,7 @@ impl VideoPlayer {
         self.stop_decoders();
         self.finished = false;
         let timestamp = self.current_frame as f64 / self.fps.max(1.0);
-        self.start_decoders_at(timestamp);
+        self.start_decoders_at(timestamp, false);
     }
 
     pub fn is_preparing_frame(&self) -> bool {
@@ -797,12 +796,11 @@ impl VideoPlayer {
         }
     }
 
-    fn start_decoders_at(&mut self, timestamp: f64) {
+    fn start_decoders_at(&mut self, timestamp: f64, with_audio: bool) {
         let path = match &self.path {
             Some(p) => p.clone(),
             None => return,
         };
-        let audio_path = self.active_audio_path().unwrap_or_else(|| path.clone());
 
         // Fresh kill signal for new decoders
         self.kill_signal = Arc::new(AtomicBool::new(false));
@@ -828,15 +826,25 @@ impl VideoPlayer {
         self.frame_recycler = Some(free_tx);
         self.decoder_handle = Some(vid_handle);
 
-        // A positive offset is leading silence, so defer the audio stream
-        // rather than playing it immediately from timestamp zero.
-        if self.audio_should_wait_at(timestamp) {
+        if with_audio {
+            self.start_audio_at(timestamp);
+        }
+    }
+
+    fn start_audio_at(&mut self, video_timestamp: f64) {
+        let Some(audio_path) = self.active_audio_path() else {
+            return;
+        };
+        if self.audio_should_wait_at(video_timestamp) {
             self.pending_audio_start_at =
                 Some(self.active_audio_offset_frames() as f64 / self.fps.max(1.0));
-        } else if self
+            return;
+        }
+        if self
             .setup_audio_from(
                 &audio_path,
-                self.audio_timestamp_for_video_timestamp(timestamp),
+                self.audio_timestamp_for_video_timestamp(video_timestamp),
+                video_timestamp,
             )
             .is_ok()
         {
@@ -900,6 +908,7 @@ impl VideoPlayer {
             .setup_audio_from(
                 &audio_path,
                 self.audio_timestamp_for_video_timestamp(video_timestamp),
+                video_timestamp,
             )
             .is_ok()
         {
@@ -942,7 +951,10 @@ impl VideoPlayer {
         }
 
         let timestamp = self.audio_timestamp_for_video_timestamp(video_timestamp);
-        if self.setup_audio_from(&audio_path, timestamp).is_ok() {
+        if self
+            .setup_audio_from(&audio_path, timestamp, video_timestamp)
+            .is_ok()
+        {
             self.set_volume(self.volume);
             if was_playing {
                 self.playback_start_time = None;
@@ -1030,7 +1042,12 @@ impl VideoPlayer {
         });
     }
 
-    fn setup_audio_from(&mut self, path: &Path, timestamp: f64) -> Result<(), String> {
+    fn setup_audio_from(
+        &mut self,
+        path: &Path,
+        decode_timestamp: f64,
+        timeline_start_seconds: f64,
+    ) -> Result<(), String> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -1047,7 +1064,13 @@ impl VideoPlayer {
         let audio_ready = Arc::new(AtomicBool::new(false));
         let decoder_ready = audio_ready.clone();
         let audio_handle = thread::spawn(move || {
-            decode_audio_stream_from(path_clone, timestamp, sample_rate, audio_tx, decoder_ready);
+            decode_audio_stream_from(
+                path_clone,
+                decode_timestamp,
+                sample_rate,
+                audio_tx,
+                decoder_ready,
+            );
         });
         // Never wait for FFmpeg on the UI thread. While paused, the bounded
         // channel naturally pre-buffers audio; the callback is non-blocking if
@@ -1068,7 +1091,7 @@ impl VideoPlayer {
                 initial_chunk,
                 state.clone(),
                 channels,
-                timestamp,
+                timeline_start_seconds,
                 self.recording_mix.clone(),
             ),
             cpal::SampleFormat::I16 => build_audio_stream::<i16>(
@@ -1078,7 +1101,7 @@ impl VideoPlayer {
                 initial_chunk,
                 state.clone(),
                 channels,
-                timestamp,
+                timeline_start_seconds,
                 self.recording_mix.clone(),
             ),
             cpal::SampleFormat::U16 => build_audio_stream::<u16>(
@@ -1088,7 +1111,7 @@ impl VideoPlayer {
                 initial_chunk,
                 state.clone(),
                 channels,
-                timestamp,
+                timeline_start_seconds,
                 self.recording_mix.clone(),
             ),
             sample_format => Err(format!(
@@ -1733,6 +1756,36 @@ mod tests {
 
         assert!(player.audio_should_wait_at(0.5));
         assert!(!player.audio_should_wait_at(1.0));
+    }
+
+    #[test]
+    fn recording_mix_keeps_the_active_audio_offset() {
+        let mut player = VideoPlayer::new();
+        player.fps = 24.0;
+        player.source_audio_offset_frames = 24;
+        player.instrumental_audio_offset_frames = 48;
+        let mix = crate::recording_mix::RealtimeRecordingMix::from_spec(
+            &crate::recording_mix::RecordingMixSpec {
+                source_duration_seconds: None,
+                clips: Vec::new(),
+                sample_rate: 48_000,
+                source_volume: 1.0,
+                total_duration_seconds: None,
+            },
+            &std::collections::BTreeMap::new(),
+            48_000,
+        )
+        .unwrap();
+        player.set_recording_mix(Some(Arc::new(mix)));
+
+        assert_eq!(player.active_audio_offset_frames(), 24);
+        assert!(player.audio_should_wait_at(0.5));
+        assert_eq!(player.audio_timestamp_for_video_timestamp(1.0), 0.0);
+
+        player.active_audio_track = AudioTrack::Instrumental;
+        assert_eq!(player.active_audio_offset_frames(), 48);
+        assert!(player.audio_should_wait_at(1.0));
+        assert_eq!(player.audio_timestamp_for_video_timestamp(2.0), 0.0);
     }
 
     #[test]

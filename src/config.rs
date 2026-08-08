@@ -107,10 +107,14 @@ pub struct SavedServer {
 }
 
 fn default_servers() -> Vec<SavedServer> {
-    vec![SavedServer {
+    vec![default_server()]
+}
+
+pub fn default_server() -> SavedServer {
+    SavedServer {
         ip: DEFAULT_SERVER_IP.into(),
         port: DEFAULT_SERVER_PORT,
-    }]
+    }
 }
 
 pub fn is_default_server(ip: &str, port: u16) -> bool {

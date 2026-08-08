@@ -370,6 +370,18 @@ impl CpuRenderer {
     }
 
     fn blit_actor_fallback(&mut self, pixmap: &mut Pixmap, text: &str, x: f32, y: f32, size: f32) {
+        self.blit_actor_fallback_tinted(pixmap, text, x, y, size, [230, 230, 238]);
+    }
+
+    fn blit_actor_fallback_tinted(
+        &mut self,
+        pixmap: &mut Pixmap,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        color: [u8; 3],
+    ) {
         let (tex, tw, th) = self.rasterize_text(text, size * 0.55);
         if tw == 0 || th == 0 {
             return;
@@ -396,9 +408,11 @@ impl CpuRenderer {
                     continue;
                 }
                 let inv = 255 - a;
-                pm_data[di] = ((230u32 * a + pm_data[di] as u32 * inv) / 255) as u8;
-                pm_data[di + 1] = ((230u32 * a + pm_data[di + 1] as u32 * inv) / 255) as u8;
-                pm_data[di + 2] = ((238u32 * a + pm_data[di + 2] as u32 * inv) / 255) as u8;
+                pm_data[di] = ((color[0] as u32 * a + pm_data[di] as u32 * inv) / 255) as u8;
+                pm_data[di + 1] =
+                    ((color[1] as u32 * a + pm_data[di + 1] as u32 * inv) / 255) as u8;
+                pm_data[di + 2] =
+                    ((color[2] as u32 * a + pm_data[di + 2] as u32 * inv) / 255) as u8;
                 pm_data[di + 3] = (a + (pm_data[di + 3] as u32 * inv) / 255) as u8;
             }
         }
@@ -1529,6 +1543,16 @@ impl CpuRenderer {
                         2.5 * s,
                         [217, 38, 38, 230],
                     );
+                    if let Some(number) = marker.loop_number {
+                        self.blit_actor_fallback_tinted(
+                            pixmap,
+                            &number.to_string(),
+                            mx + 8.0 * s,
+                            cy + 5.0 * s,
+                            18.0 * s,
+                            [217, 38, 38],
+                        );
+                    }
                 }
                 MarkerKind::Out => {
                     blit_rect(pixmap, mx - 1.0 * s, 0.0, 2.0 * s, h, [217, 115, 115, 180]);
@@ -1552,15 +1576,6 @@ impl CpuRenderer {
                 }
                 MarkerKind::SceneChange => {
                     blit_rect(pixmap, mx - 1.0 * s, 0.0, 2.0 * s, h, [230, 230, 240, 200]);
-                    if let Some(number) = marker.scene_number {
-                        self.blit_actor_fallback(
-                            pixmap,
-                            &number.to_string(),
-                            mx + 4.0 * s,
-                            2.0 * s,
-                            18.0 * s,
-                        );
-                    }
                 }
                 MarkerKind::LiaisonLeft | MarkerKind::LiaisonRight => {
                     let is_left = matches!(marker.kind, MarkerKind::LiaisonLeft);

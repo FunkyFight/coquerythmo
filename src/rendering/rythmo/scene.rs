@@ -78,7 +78,7 @@ impl SceneLine {
 pub struct SceneMarker {
     pub kind: MarkerKind,
     pub frame: i64,
-    pub scene_number: Option<usize>,
+    pub loop_number: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -161,13 +161,13 @@ impl RythmoScene {
             .into_iter()
             .filter_map(|index| project.marker(index))
             .map(|marker| {
-                let number = if matches!(marker.kind, MarkerKind::SceneChange) {
+                let number = if matches!(marker.kind, MarkerKind::Boucle) {
                     Some(
                         project
                             .markers()
                             .iter()
                             .filter(|candidate| {
-                                matches!(candidate.kind, MarkerKind::SceneChange)
+                                matches!(candidate.kind, MarkerKind::Boucle)
                                     && candidate.frame <= marker.frame
                             })
                             .count(),
@@ -178,7 +178,7 @@ impl RythmoScene {
                 SceneMarker {
                     kind: marker.kind.clone(),
                     frame: marker.frame,
-                    scene_number: number,
+                    loop_number: number,
                 }
             })
             .collect();
@@ -446,6 +446,47 @@ mod tests {
         );
         assert_eq!(first.markers.len(), 1);
         assert_eq!(first.lines[1].karaoke_progress, Some(1.0 / 6.0));
+    }
+
+    #[test]
+    fn only_loop_starts_are_numbered() {
+        let mut project = Project::new();
+        project.add_marker(RythmoMarker {
+            kind: MarkerKind::SceneChange,
+            frame: 10,
+        });
+        project.add_marker(RythmoMarker {
+            kind: MarkerKind::Boucle,
+            frame: 20,
+        });
+        project.add_marker(RythmoMarker {
+            kind: MarkerKind::SceneChange,
+            frame: 30,
+        });
+        project.add_marker(RythmoMarker {
+            kind: MarkerKind::Boucle,
+            frame: 40,
+        });
+
+        let mut index = ProjectRenderIndex::new();
+        index.refresh(&project);
+        let scene = RythmoScene::build(
+            &project,
+            &index,
+            SceneOptions {
+                frame_window: FrameWindow { first: 0, last: 50 },
+                ..SceneOptions::default()
+            },
+        );
+
+        assert_eq!(
+            scene
+                .markers
+                .iter()
+                .map(|marker| marker.loop_number)
+                .collect::<Vec<_>>(),
+            vec![None, Some(1), None, Some(2)]
+        );
     }
 
     #[test]

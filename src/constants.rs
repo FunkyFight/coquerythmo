@@ -19,7 +19,7 @@ pub const REF_WIDTH: f32 = 800.0;
 pub const DEFAULT_EXPORT_FPS: u32 = 60;
 
 /// Delay (ms) before decoding a frame after scrolling stops.
-pub const SCROLL_DECODE_DELAY_MS: u128 = 100;
+pub const SCROLL_DECODE_DELAY_MS: u128 = 50;
 
 /// Default line duration in seconds when creating a new line.
 pub const DEFAULT_LINE_DURATION_SEC: f64 = 2.0;

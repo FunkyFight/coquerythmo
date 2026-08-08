@@ -4411,6 +4411,27 @@ pub fn render_markers<'a>(
                     rotation: -pi4,
                     _padding: [0.0; 2],
                 });
+                let number = project.markers()[..marker_index]
+                    .iter()
+                    .filter(|marker| matches!(marker.kind, MarkerKind::Boucle))
+                    .count()
+                    + 1;
+                labels.push(LabelInfo {
+                    text: loop_number_label(number),
+                    bounds: Rect {
+                        x: x + 8.0,
+                        y: zone.y + zone.height / 2.0 + 5.0,
+                        width: 28.0,
+                        height: 20.0,
+                    },
+                    h_align: HAlign::Left,
+                    v_align: VAlign::Top,
+                    overflow: Overflow::Clip,
+                    padding: 0.0,
+                    font_size_override: Some(18.0),
+                    color_override: Some([217, 38, 38]),
+                    font_family_override: None,
+                });
             }
             MarkerKind::Out => {
                 let col = [0.85, 0.45, 0.45, 0.7];
@@ -4486,27 +4507,6 @@ pub fn render_markers<'a>(
                     rotation: 0.0,
                     _padding: [0.0; 2],
                 });
-                let number = project.markers()[..marker_index]
-                    .iter()
-                    .filter(|marker| matches!(marker.kind, MarkerKind::SceneChange))
-                    .count()
-                    + 1;
-                labels.push(LabelInfo {
-                    text: scene_number_label(number),
-                    bounds: Rect {
-                        x: x + 5.0,
-                        y: zone.y + 4.0,
-                        width: 28.0,
-                        height: 24.0,
-                    },
-                    h_align: HAlign::Left,
-                    v_align: VAlign::Top,
-                    overflow: Overflow::Clip,
-                    padding: 0.0,
-                    font_size_override: Some(18.0),
-                    color_override: Some([235, 235, 245]),
-                    font_family_override: None,
-                });
             }
             MarkerKind::LiaisonLeft => {
                 let uv = liaison_left_uv;
@@ -4530,7 +4530,7 @@ pub fn render_markers<'a>(
     }
 }
 
-fn scene_number_label(number: usize) -> &'static str {
+fn loop_number_label(number: usize) -> &'static str {
     const LABELS: [&str; 31] = [
         "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16",
         "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30",

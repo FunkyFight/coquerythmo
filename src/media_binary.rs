@@ -71,6 +71,12 @@ pub(crate) fn path(binary: &str) -> Option<PathBuf> {
         push_binary_candidates(&mut candidates, &current_dir.join("bin"), binary);
     }
 
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            push_binary_candidates(&mut candidates, &dir, binary);
+        }
+    }
+
     #[cfg(target_os = "macos")]
     candidates.extend(
         ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
