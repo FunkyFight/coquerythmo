@@ -5,9 +5,9 @@ use super::event_loop::AppEvent;
 use super::event_loop::{close_project_reset, new_project_reset_and_pick_video};
 use super::file_picker::{
     import_cappela_from_path, import_project_from_path, import_subtitle_from_path,
-    open_dialog_filters, open_file_picker, open_file_picker_request, project_or_video_dir,
-    quick_save_existing, quick_save_existing_with_continuation, save_dialog_filters,
-    save_project_as, save_project_as_with_continuation, video_or_project_dir,
+    open_dialog_filters, open_file_picker, open_file_picker_request, open_multiple_file_picker,
+    project_or_video_dir, quick_save_existing, quick_save_existing_with_continuation,
+    save_dialog_filters, save_project_as, save_project_as_with_continuation, video_or_project_dir,
 };
 use crate::application::command::{FilePickerIntent, FilePickerMode, TextCommand};
 use crate::application::job_service::SaveContinuation;
@@ -48,6 +48,16 @@ pub(crate) fn handle_file_picker_selected(
             }
         }
         FilePickerIntent::RecordingAudio => state.recording_begin_audio_import(path, None),
+        FilePickerIntent::VoicelinesAudio => state.voicelines_begin_audio_import(path),
+        FilePickerIntent::VoicelinesExportRegion {
+            audio_id,
+            region_id,
+        } => state.voicelines_export_region_to(audio_id, region_id, path),
+        FilePickerIntent::VoicelinesExportAll { audio_id } => {
+            state.voicelines_export_all_to(audio_id, path)
+        }
+        FilePickerIntent::VoicelinesSaveSession => state.voicelines_save_session(path),
+        FilePickerIntent::VoicelinesLoadSession => state.voicelines_load_session(path),
         FilePickerIntent::ImportProject => import_project_from_path(state, path),
         FilePickerIntent::ImportCappelaProject => import_cappela_from_path(state, path),
         FilePickerIntent::ImportSrtProject => import_subtitle_from_path(state, path),
@@ -285,8 +295,12 @@ impl CommandDispatcher {
         elwt: &EventLoopWindowTarget<AppEvent>,
         announce_action: bool,
     ) -> bool {
-        if state.active_workspace() == crate::application::workspace_service::WorkspaceId::Recording
+        let voicelines_history = state.active_workspace()
+            == crate::application::workspace_service::WorkspaceId::Voicelines
+            && matches!(action, UiAction::Undo | UiAction::Redo);
+        if state.active_workspace() != crate::application::workspace_service::WorkspaceId::Rythmo
             && action.mutates_rythmo_project()
+            && !voicelines_history
         {
             state.announce_accessibility(crate::accessibility::AccessibilityEvent::Error {
                 message: crate::i18n::t("accessibility.rythmo_read_only").to_string(),
@@ -311,6 +325,67 @@ impl CommandDispatcher {
                 }
             }
             UiAction::ActivateWorkspace(workspace) => state.activate_workspace(workspace),
+            UiAction::VoicelinesImportAudio => {
+                let filters = open_dialog_filters(
+                    "Audio",
+                    &["flac", "wav", "mp3", "ogg", "m4a", "aac", "opus"],
+                );
+                open_multiple_file_picker(
+                    state,
+                    elwt,
+                    "Ajouter un audio aux Voicelines",
+                    FilePickerIntent::VoicelinesAudio,
+                    filters,
+                    project_or_video_dir(state),
+                );
+            }
+            UiAction::VoicelinesSelectAudio(id) => state.voicelines_select_audio(id),
+            UiAction::VoicelinesRemoveAudio(id) => state.voicelines_remove_audio(id),
+            UiAction::VoicelinesAddRegion { start_ms, end_ms } => {
+                state.voicelines_add_region(start_ms, end_ms)
+            }
+            UiAction::VoicelinesMoveRegion {
+                region_id,
+                start_ms,
+                end_ms,
+            } => state.voicelines_move_region(region_id, start_ms, end_ms),
+            UiAction::VoicelinesSelectRegion(selected) => {
+                state.ui_shell.ui.set_voicelines_selected_region(selected)
+            }
+            UiAction::VoicelinesRenameRegion { region_id, name } => {
+                state.voicelines_rename_region(region_id, &name)
+            }
+            UiAction::VoicelinesDeleteRegion(region_id) => {
+                state.voicelines_delete_region(region_id)
+            }
+            UiAction::VoicelinesToggleAutomaticNaming => state.voicelines_toggle_automatic_naming(),
+            UiAction::VoicelinesSetNamingPattern(pattern) => {
+                state.voicelines_set_naming_pattern(pattern)
+            }
+            UiAction::VoicelinesAutoDetect => state.voicelines_auto_detect(),
+            UiAction::VoicelinesPlayRegion(region_id) => state.voicelines_play_region(region_id),
+            UiAction::VoicelinesExportRegion(region_id) => {
+                if let Some(request) = state.voicelines_export_region_request(region_id) {
+                    open_file_picker_request(state, elwt, request);
+                }
+            }
+            UiAction::VoicelinesExportAll => {
+                if let Some(request) = state.voicelines_export_all_request() {
+                    open_file_picker_request(state, elwt, request);
+                }
+            }
+            UiAction::VoicelinesSaveSession => {
+                if state.project_session.project_path.is_some() {
+                    quick_save_existing(state);
+                } else {
+                    let request = state.voicelines_save_request();
+                    open_file_picker_request(state, elwt, request);
+                }
+            }
+            UiAction::VoicelinesLoadSession => {
+                let request = state.voicelines_load_request();
+                open_file_picker_request(state, elwt, request);
+            }
             UiAction::RecordingChooseSolo => state.recording_choose_solo(),
             UiAction::RecordingChooseOnline => state.recording_choose_online(),
             UiAction::RecordingSetTool(tool) => state.recording_set_tool(tool),
@@ -347,6 +422,9 @@ impl CommandDispatcher {
                 state.recording_select_clip(clip_id, additive)
             }
             UiAction::RecordingSelectAsset(asset_id) => state.recording_select_asset(asset_id),
+            UiAction::RecordingSendAssetToVoicelines(asset_id) => {
+                state.recording_send_asset_to_voicelines(asset_id)
+            }
             UiAction::RecordingDeleteSelectedAsset => state.recording_delete_selected_asset(),
             UiAction::RecordingPlaceAsset {
                 asset_id,
@@ -401,8 +479,24 @@ impl CommandDispatcher {
                 }
             }
             UiAction::CloseSecondaryDisplay => state.close_secondary_display(),
-            UiAction::Undo => state.undo(),
-            UiAction::Redo => state.redo(),
+            UiAction::Undo => {
+                if state.active_workspace()
+                    == crate::application::workspace_service::WorkspaceId::Voicelines
+                {
+                    state.voicelines_undo();
+                } else {
+                    state.undo();
+                }
+            }
+            UiAction::Redo => {
+                if state.active_workspace()
+                    == crate::application::workspace_service::WorkspaceId::Voicelines
+                {
+                    state.voicelines_redo();
+                } else {
+                    state.redo();
+                }
+            }
             UiAction::AddVideo => {
                 let filters = open_dialog_filters("Video", &["mp4", "mov", "avi", "mkv", "webm"]);
                 open_file_picker(

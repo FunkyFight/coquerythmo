@@ -302,19 +302,7 @@ impl RecordingRuntime {
         source: &Path,
         username: &str,
     ) -> Result<RecordedAudio, RecordingError> {
-        self.refresh_temporary_directory();
-        let nonce = RECORDING_NONCE.fetch_add(1, Ordering::Relaxed);
-        let stem = source
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .map(portable_username)
-            .unwrap_or_else(|| "audio".into());
-        let output = self.temporary_dir.join(format!(
-            "{}_{}_{}-{nonce}.flac",
-            portable_username(username),
-            recording_timestamp(),
-            stem
-        ));
+        let output = self.allocate_external_audio_path(source, username);
         let audio = match import_audio(source, &output) {
             Ok(audio) => audio,
             Err(error) => {
@@ -322,9 +310,29 @@ impl RecordingRuntime {
                 return Err(error);
             }
         };
-        self.owned_files.push(output.clone());
-        self.remember_audio_path(&audio.checksum, &output);
+        self.remember_external_audio(&audio, output);
         Ok(audio)
+    }
+
+    pub fn allocate_external_audio_path(&mut self, source: &Path, label: &str) -> PathBuf {
+        self.refresh_temporary_directory();
+        let nonce = RECORDING_NONCE.fetch_add(1, Ordering::Relaxed);
+        let stem = source
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(portable_username)
+            .unwrap_or_else(|| "audio".into());
+        self.temporary_dir.join(format!(
+            "{}_{}_{}-{nonce}.flac",
+            portable_username(label),
+            recording_timestamp(),
+            stem
+        ))
+    }
+
+    pub fn remember_external_audio(&mut self, audio: &RecordedAudio, path: PathBuf) {
+        self.owned_files.push(path.clone());
+        self.remember_audio_path(&audio.checksum, &path);
     }
 
     pub fn audio_path(&self, checksum: &str) -> Option<&PathBuf> {

@@ -95,6 +95,34 @@ pub(crate) fn open_file_picker_request(
     }
 }
 
+pub(crate) fn open_multiple_file_picker(
+    state: &mut State,
+    elwt: &EventLoopWindowTarget<AppEvent>,
+    title: &str,
+    intent: FilePickerIntent,
+    filters: Vec<FileFilterSpec>,
+    initial_dir: Option<PathBuf>,
+) {
+    let mut dialog = rfd::FileDialog::new().set_title(title);
+    if let Some(initial_dir) = initial_dir {
+        dialog = dialog.set_directory(initial_dir);
+    }
+    for filter in filters {
+        let extensions = filter
+            .extensions
+            .iter()
+            .filter(|extension| extension.as_str() != "*")
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if !extensions.is_empty() {
+            dialog = dialog.add_filter(&filter.name, &extensions);
+        }
+    }
+    for path in dialog.pick_files().unwrap_or_default() {
+        handle_file_picker_selected(intent.clone(), path, state, elwt);
+    }
+}
+
 fn native_file_picker(request: &FilePickerRequest) -> Option<PathBuf> {
     let mut dialog = rfd::FileDialog::new().set_title(&request.title);
     if let Some(initial_dir) = request.initial_dir.as_deref() {
@@ -118,6 +146,7 @@ fn native_file_picker(request: &FilePickerRequest) -> Option<PathBuf> {
     let path = match request.mode {
         FilePickerMode::Open => dialog.pick_file(),
         FilePickerMode::Save => dialog.save_file(),
+        FilePickerMode::Folder => dialog.pick_folder(),
     }?;
     if request.mode == FilePickerMode::Save
         && path.extension().is_none()

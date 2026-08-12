@@ -5,6 +5,7 @@
 pub enum WorkspaceId {
     Rythmo,
     Recording,
+    Voicelines,
 }
 
 /// Commands a workspace can ask the shell to execute.
@@ -124,6 +125,7 @@ mod tests {
             match self.0 {
                 WorkspaceId::Rythmo => "rythmo",
                 WorkspaceId::Recording => "recording",
+                WorkspaceId::Voicelines => "voicelines",
             }
         }
 
@@ -146,6 +148,7 @@ mod tests {
             vec![
                 Box::new(IdentifiedWorkspace(WorkspaceId::Rythmo)),
                 Box::new(IdentifiedWorkspace(WorkspaceId::Recording)),
+                Box::new(IdentifiedWorkspace(WorkspaceId::Voicelines)),
             ],
             WorkspaceId::Rythmo,
         );

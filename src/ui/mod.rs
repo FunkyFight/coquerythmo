@@ -46,6 +46,7 @@ pub mod theme;
 pub mod toast;
 pub mod tooltip;
 pub mod voice_actor_modal;
+pub mod voicelines_workspace;
 pub mod whats_new_modal;
 
 use layout::{
@@ -153,6 +154,9 @@ pub struct Ui {
     recording_daw_scene: RecordingScene,
     recording_daw_cursor: (f32, f32),
     recording_daw_toolbar_widgets: Vec<Box<dyn Widget>>,
+    voicelines_ui: voicelines_workspace::VoicelinesWorkspaceUi,
+    voicelines_layout: voicelines_workspace::VoicelinesLayout,
+    voicelines_scene: voicelines_workspace::VoicelinesScene,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -168,6 +172,14 @@ fn uses_recording_capture_view(
     capture_active: bool,
 ) -> bool {
     capture_active || (page == RecordingPage::Timeline && matches!(role, RecordingRole::Actor))
+}
+
+fn shows_rythmo(workspace: WorkspaceId, recording_page: RecordingPage, zone: Rect) -> bool {
+    workspace == WorkspaceId::Rythmo
+        || (workspace == WorkspaceId::Recording
+            && recording_page == RecordingPage::Timeline
+            && zone.width > 0.0
+            && zone.height > 0.0)
 }
 
 struct WhatsNewThumbnailTexture {
@@ -332,6 +344,14 @@ impl Ui {
             recording_daw_scene: RecordingScene::default(),
             recording_daw_cursor: (0.0, 0.0),
             recording_daw_toolbar_widgets: Vec::new(),
+            voicelines_ui: voicelines_workspace::VoicelinesWorkspaceUi::default(),
+            voicelines_layout: voicelines_workspace::VoicelinesLayout::compute(Rect {
+                x: 0.0,
+                y: TOPBAR_H + TABBAR_H,
+                width: sw,
+                height: (sh - TOPBAR_H - TABBAR_H).max(0.0),
+            }),
+            voicelines_scene: voicelines_workspace::VoicelinesScene::default(),
             active_mode: Some(ToolMode::Select),
             brush_color: [1.0, 1.0, 1.0, 1.0],
             brush_radius_index: 0,
@@ -418,6 +438,11 @@ impl Ui {
                 node.value = control.value.clone();
                 node.enabled = control.enabled;
                 node
+            }));
+        } else if self.active_workspace == WorkspaceId::Voicelines {
+            nodes.extend(self.voicelines_scene.controls.iter().map(|control| {
+                AccessibleNode::focusable(control.id.clone(), control.role, control.label.clone())
+                    .with_selected(Some(control.selected))
             }));
         }
         self.focus.replace_root(nodes);
@@ -514,6 +539,8 @@ impl Ui {
             self.props_width,
             self.video_split,
         );
+        self.voicelines_layout =
+            voicelines_workspace::VoicelinesLayout::compute(self.workspace_content_rect());
         self.tab_widgets = shell::build_workspace_tabs(&self.layout, self.active_workspace);
         self.toolbar_widgets = if self.active_workspace == WorkspaceId::Recording
             && (self.recording_ui.page == RecordingPage::Choice
@@ -632,10 +659,10 @@ impl Ui {
     }
 
     fn active_toolbar_rect(&self) -> Rect {
-        if self.active_workspace == WorkspaceId::Recording {
-            self.recording_layout.toolbar.unwrap_or(self.layout.toolbar)
-        } else {
-            self.layout.toolbar
+        match self.active_workspace {
+            WorkspaceId::Recording => self.recording_layout.toolbar.unwrap_or(self.layout.toolbar),
+            WorkspaceId::Voicelines => self.voicelines_layout.toolbar,
+            WorkspaceId::Rythmo => self.layout.toolbar,
         }
     }
 
@@ -836,6 +863,13 @@ impl Ui {
     }
 
     pub fn handle_recording_daw_event(&mut self, event: &UiEvent) -> EventResponse {
+        if let Some(response) = self.recording_ui.handle_asset_context_menu(
+            event,
+            &self.recording_daw_scene,
+            self.recording_daw_layout.content,
+        ) {
+            return response;
+        }
         if self
             .recording_ui
             .handle_asset_scroll(event, self.recording_daw_layout)
@@ -1318,6 +1352,7 @@ impl Ui {
         &mut self,
         event: &UiEvent,
         project: &Project,
+        voicelines_project: &crate::voicelines::VoicelinesProject,
         render_index: &ProjectRenderIndex,
         render_frame: f64,
         fps: f64,
@@ -1576,14 +1611,31 @@ impl Ui {
                     }
                     return EventResponse::Consumed;
                 }
+                if self.active_workspace == WorkspaceId::Voicelines {
+                    if let Some(id) = self.focus.current_id().map(|id| id.0.clone()) {
+                        if let Some(action) = self.voicelines_ui.control_action(&id) {
+                            return EventResponse::Action(action);
+                        }
+                    }
+                }
             }
             UiEvent::CursorLeft | UiEvent::CursorRight if self.focused_workspace_tab() => {
-                let index = usize::from(matches!(event, UiEvent::CursorRight));
-                self.focus.focus(&FocusId::new(format!("tabs.{index}")));
-                let workspace = if index == 0 {
-                    WorkspaceId::Rythmo
+                let current = self
+                    .focus
+                    .current_id()
+                    .and_then(|id| id.0.strip_prefix("tabs."))
+                    .and_then(|index| index.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let index = if matches!(event, UiEvent::CursorRight) {
+                    (current + 1) % 3
                 } else {
-                    WorkspaceId::Recording
+                    (current + 2) % 3
+                };
+                self.focus.focus(&FocusId::new(format!("tabs.{index}")));
+                let workspace = match index {
+                    0 => WorkspaceId::Rythmo,
+                    1 => WorkspaceId::Recording,
+                    _ => WorkspaceId::Voicelines,
                 };
                 return EventResponse::Action(UiAction::ActivateWorkspace(workspace));
             }
@@ -1618,7 +1670,14 @@ impl Ui {
                 UiEvent::OpenContextMenu | UiEvent::ContextMenu { .. }
             )
         {
-            return EventResponse::Consumed;
+            return self
+                .recording_ui
+                .handle_asset_context_menu(
+                    event,
+                    &self.recording_scene,
+                    self.recording_layout.content,
+                )
+                .unwrap_or(EventResponse::Consumed);
         }
 
         if matches!(event, UiEvent::OpenContextMenu) {
@@ -1681,6 +1740,15 @@ impl Ui {
                 if resp != EventResponse::Ignored {
                     return resp;
                 }
+            }
+        }
+
+        if self.active_workspace == WorkspaceId::Voicelines {
+            let response =
+                self.voicelines_ui
+                    .handle_event(event, voicelines_project, self.voicelines_layout);
+            if response != EventResponse::Ignored {
+                return response;
             }
         }
 
@@ -1755,7 +1823,18 @@ impl Ui {
             }
         }
 
+        if self.active_workspace == WorkspaceId::Voicelines {
+            return EventResponse::Ignored;
+        }
+
         if self.active_workspace == WorkspaceId::Recording {
+            if let Some(response) = self.recording_ui.handle_asset_context_menu(
+                event,
+                &self.recording_scene,
+                self.recording_layout.content,
+            ) {
+                return response;
+            }
             if (matches!(event, UiEvent::Delete)
                 || matches!(event, UiEvent::KeyInput { text } if text == "\x7f"))
                 && (self.recording_ui.selected_clips().next().is_some()
@@ -2127,6 +2206,9 @@ impl Ui {
     }
 
     fn handle_split_drag(&mut self, event: &UiEvent) -> Option<EventResponse> {
+        if self.active_workspace != WorkspaceId::Rythmo {
+            return None;
+        }
         let content_top = TOPBAR_H + TABBAR_H;
         let content_h = self.screen_h - content_top;
         let free_h = (content_h - TOOLBAR_H).max(0.0);
@@ -2399,7 +2481,14 @@ impl Ui {
     }
 
     pub fn toggle_play_pause(&mut self) {
-        self.playing = !self.playing;
+        self.set_playing(!self.playing);
+    }
+
+    pub fn set_playing(&mut self, playing: bool) {
+        if self.playing == playing {
+            return;
+        }
+        self.playing = playing;
         if self.playing {
             self.rythmo_state.hovered_line = None;
             self.rythmo_state.hovered_track = None;
@@ -2696,6 +2785,30 @@ impl Ui {
             || self.modal_host.is_editing_text()
             || self.side_panel.is_editing_text()
             || self.recording_ui.is_editing_text()
+            || self.voicelines_ui.is_editing_text()
+    }
+
+    pub fn voicelines_audio_selected(&mut self, duration_ms: u64, audio_index: usize) {
+        self.voicelines_ui.audio_selected(duration_ms, audio_index);
+    }
+
+    pub fn set_voicelines_selected_region(
+        &mut self,
+        selected: Option<crate::voicelines::RegionId>,
+    ) {
+        self.voicelines_ui.set_selected_region(selected);
+    }
+
+    pub fn begin_voicelines_region_rename(
+        &mut self,
+        region_id: crate::voicelines::RegionId,
+        name: String,
+    ) {
+        self.voicelines_ui.begin_rename(region_id, name);
+    }
+
+    pub fn begin_voicelines_naming_pattern(&mut self, pattern: String) {
+        self.voicelines_ui.begin_naming_pattern(pattern);
     }
 
     pub fn open_export_modal(
@@ -2923,6 +3036,7 @@ impl Ui {
         ui_scale: f32,
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         project: &Project,
+        voicelines_project: &crate::voicelines::VoicelinesProject,
         render_index: &ProjectRenderIndex,
         current_frame: i64,
         render_frame: f64,
@@ -2931,6 +3045,16 @@ impl Ui {
         waveform_offset_frames: i64,
         waveform_is_instrumental: bool,
     ) {
+        if self.active_workspace == WorkspaceId::Voicelines {
+            self.voicelines_ui
+                .sync(voicelines_project, self.voicelines_layout);
+            self.voicelines_scene = self.voicelines_ui.scene(
+                voicelines_project,
+                (render_frame.max(0.0) * 10.0).round() as u64,
+                self.voicelines_layout,
+            );
+            self.refresh_root_focus_nodes();
+        }
         if let Some(modal) = self.project_transfer_modal.as_mut() {
             modal.refresh_countdown();
         }
@@ -2939,10 +3063,7 @@ impl Ui {
             self.active_workspace == WorkspaceId::Recording
                 && self.recording_ui.page == RecordingPage::Timeline,
         );
-        let show_rythmo = self.active_workspace == WorkspaceId::Rythmo
-            || (self.recording_ui.page == RecordingPage::Timeline
-                && rythmo_zone.width > 0.0
-                && rythmo_zone.height > 0.0);
+        let show_rythmo = shows_rythmo(self.active_workspace, self.recording_ui.page, rythmo_zone);
         let rythmo_editable = self.active_workspace == WorkspaceId::Rythmo;
         let recording_scene =
             (self.active_workspace == WorkspaceId::Recording).then(|| self.recording_scene.clone());
@@ -3443,10 +3564,21 @@ impl Ui {
             }
         }
 
-        let focused_bounds = self.focused_widget().map(Widget::bounds).or_else(|| {
-            self.focused_recording_control()
-                .map(|control| control.bounds)
-        });
+        let focused_bounds = self
+            .focused_widget()
+            .map(Widget::bounds)
+            .or_else(|| {
+                self.focused_recording_control()
+                    .map(|control| control.bounds)
+            })
+            .or_else(|| {
+                let id = self.focus.current_id()?.0.as_str();
+                self.voicelines_scene
+                    .controls
+                    .iter()
+                    .find(|control| control.id == id)
+                    .map(|control| control.bounds)
+            });
         if let Some(bounds) = focused_bounds {
             overlay_quads.push(QuadInstance {
                 rect: [
@@ -4692,6 +4824,12 @@ impl Ui {
             return;
         }
 
+        if self.active_workspace == WorkspaceId::Voicelines {
+            voicelines_workspace::append_scene(quads, labels, &self.voicelines_scene);
+            self.push_toolbar_zone(quads, self.voicelines_layout.toolbar, false, true);
+            return;
+        }
+
         // Video preview
         quads.push(QuadInstance {
             rect: [
@@ -4952,8 +5090,9 @@ pub(crate) struct DrawingOverlayCache {
 mod recording_capture_view_tests {
     use super::recording_workspace::RecordingControlInfo;
     use super::{
-        recording_drop_target, uses_recording_capture_view, RecordingControl, RecordingLayout,
-        RecordingPage, RecordingRole, RecordingScene, RecordingWorkspaceUi, Rect, TRACK_ROW_H,
+        recording_drop_target, shows_rythmo, uses_recording_capture_view, RecordingControl,
+        RecordingLayout, RecordingPage, RecordingRole, RecordingScene, RecordingWorkspaceUi, Rect,
+        WorkspaceId, TRACK_ROW_H,
     };
     use crate::ui::focus::AccessibleRole;
 
@@ -4968,6 +5107,25 @@ mod recording_capture_view_tests {
             RecordingPage::Timeline,
             RecordingRole::Director,
             false
+        ));
+    }
+
+    #[test]
+    fn voicelines_never_renders_the_rythmo_workspace() {
+        let visible_zone = Rect {
+            width: 800.0,
+            height: 300.0,
+            ..Rect::default()
+        };
+        assert!(!shows_rythmo(
+            WorkspaceId::Voicelines,
+            RecordingPage::Timeline,
+            visible_zone
+        ));
+        assert!(shows_rythmo(
+            WorkspaceId::Recording,
+            RecordingPage::Timeline,
+            visible_zone
         ));
     }
 

@@ -498,6 +498,7 @@ pub(crate) fn build_workspace_tabs(
     [
         (WorkspaceId::Rythmo, t("workspace_tabs.rythmo")),
         (WorkspaceId::Recording, t("workspace_tabs.recording")),
+        (WorkspaceId::Voicelines, t("workspace_tabs.voicelines")),
     ]
     .into_iter()
     .enumerate()

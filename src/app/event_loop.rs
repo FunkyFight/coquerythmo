@@ -100,6 +100,7 @@ pub(crate) fn new_project_reset_and_pick_video(
     state.clear_video_for_new_project();
     EditExecutor::reset(&mut state.project_session);
     state.recording_runtime = crate::recording_runtime::RecordingRuntime::new();
+    state.reset_voicelines_document();
     state.ui_shell.ui.reset_recording_workspace();
     crate::vector_text::clear_project_font();
     state.render.ui_renderer.clear_text_cache();
@@ -110,6 +111,7 @@ pub(crate) fn close_project_reset(state: &mut State) {
     state.clear_video_for_new_project();
     EditExecutor::reset(&mut state.project_session);
     state.recording_runtime = crate::recording_runtime::RecordingRuntime::new();
+    state.reset_voicelines_document();
     state.ui_shell.ui.reset_recording_workspace();
     crate::vector_text::clear_project_font();
     state.render.ui_renderer.clear_text_cache();
@@ -1037,6 +1039,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                             match state.active_workspace() {
                                 WorkspaceId::Rythmo => contexts.push(InputContext::Workspace),
                                 WorkspaceId::Recording => contexts.push(InputContext::Recording),
+                                WorkspaceId::Voicelines => contexts.push(InputContext::Workspace),
                             }
                             contexts.push(InputContext::Global);
                         }
@@ -1592,10 +1595,22 @@ pub fn run(startup: Option<super::StartupInput>) {
                         .and_then(|e| e.to_str())
                         .map(|e| e.to_lowercase())
                         .unwrap_or_default();
+                    let is_audio = ["flac", "wav", "mp3", "ogg", "m4a", "aac", "opus"]
+                        .contains(&ext.as_str());
                     if state.active_workspace()
+                        == crate::application::workspace_service::WorkspaceId::Voicelines
+                    {
+                        if is_audio {
+                            state.voicelines_begin_audio_import(path);
+                        } else if ext == crate::project_archive::PROJECT_EXTENSION {
+                            state.voicelines_load_session(path);
+                        } else {
+                            state.show_toast("Déposez un audio ou une session Voicelines", 4.0);
+                        }
+                        state.request_redraw();
+                    } else if state.active_workspace()
                         == crate::application::workspace_service::WorkspaceId::Recording
-                        && ["flac", "wav", "mp3", "ogg", "m4a", "aac", "opus"]
-                            .contains(&ext.as_str())
+                        && is_audio
                     {
                         let position = crate::platform::cursor_position(&window)
                             .map(|(x, y)| state.window_to_ui_position(x, y))

@@ -15,7 +15,9 @@ use crate::recording::{
 };
 
 use super::focus::AccessibleRole;
-use super::primitives::{HAlign, Overflow, QuadInstance, Rect, UiEvent, VAlign};
+use super::primitives::{
+    EventResponse, HAlign, Overflow, QuadInstance, Rect, UiAction, UiEvent, VAlign,
+};
 
 const PANEL_BG: [f32; 4] = [0.075, 0.078, 0.095, 1.0];
 const PANEL_ALT: [f32; 4] = [0.105, 0.108, 0.13, 1.0];
@@ -29,6 +31,8 @@ const USED_AUDIO_SELECTED: [f32; 4] = [0.14, 0.55, 0.27, 1.0];
 pub const TRACK_ROW_H: f32 = 58.0;
 const ASSET_ROW_H: f32 = 42.0;
 const ASSET_GROUP_H: f32 = 24.0;
+const ASSET_MENU_W: f32 = 154.0;
+const ASSET_MENU_ITEM_H: f32 = 30.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingPage {
@@ -491,6 +495,17 @@ pub struct RecordingWorkspaceUi {
     dragging_asset_scrollbar: bool,
     asset_scrollbar_drag_offset: f32,
     expanded_asset_owners: BTreeSet<String>,
+    asset_context_menu: Option<AssetContextMenu>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AssetContextMenu {
+    asset_id: AudioAssetId,
+    x: f32,
+    y: f32,
+    submenu_open: bool,
+    hover_parent: bool,
+    hover_voicelines: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -545,6 +560,7 @@ impl Default for RecordingWorkspaceUi {
             dragging_asset_scrollbar: false,
             asset_scrollbar_drag_offset: 0.0,
             expanded_asset_owners: BTreeSet::new(),
+            asset_context_menu: None,
         }
     }
 }
@@ -571,6 +587,7 @@ impl RecordingWorkspaceUi {
         self.dragging_track_volume = None;
         self.track_volumes.clear();
         self.expanded_asset_owners.clear();
+        self.asset_context_menu = None;
     }
 
     pub fn selected_clips(&self) -> impl Iterator<Item = AudioClipId> + '_ {
@@ -795,6 +812,129 @@ impl RecordingWorkspaceUi {
                 true
             }
             _ => false,
+        }
+    }
+
+    pub fn handle_asset_context_menu(
+        &mut self,
+        event: &UiEvent,
+        scene: &RecordingScene,
+        screen: Rect,
+    ) -> Option<EventResponse> {
+        if let UiEvent::ContextMenu { x, y } = event {
+            let asset_id = scene.controls.iter().rev().find_map(|control| {
+                (control.bounds.contains(*x, *y))
+                    .then_some(&control.control)
+                    .and_then(|control| match control {
+                        RecordingControl::Asset(id) => Some(*id),
+                        _ => None,
+                    })
+            });
+            let Some(asset_id) = asset_id else {
+                self.asset_context_menu = None;
+                return Some(EventResponse::Consumed);
+            };
+            let (x, y) = super::context_menu::clamped_origin(
+                *x,
+                *y,
+                ASSET_MENU_W * 2.0 - 2.0,
+                ASSET_MENU_ITEM_H,
+                screen.x + screen.width,
+                screen.y + screen.height,
+            );
+            self.selected_asset = Some(asset_id);
+            self.dragging_asset = None;
+            self.asset_context_menu = Some(AssetContextMenu {
+                asset_id,
+                x,
+                y,
+                submenu_open: false,
+                hover_parent: false,
+                hover_voicelines: false,
+            });
+            return Some(EventResponse::Consumed);
+        }
+
+        if matches!(event, UiEvent::OpenContextMenu) && self.asset_context_menu.is_none() {
+            let asset_id = self.selected_asset?;
+            let bounds = scene
+                .controls
+                .iter()
+                .find_map(|control| match control.control {
+                    RecordingControl::Asset(id) if id == asset_id => Some(control.bounds),
+                    _ => None,
+                })?;
+            let (x, y) = super::context_menu::clamped_origin(
+                bounds.x + 16.0,
+                bounds.y + bounds.height,
+                ASSET_MENU_W * 2.0 - 2.0,
+                ASSET_MENU_ITEM_H,
+                screen.x + screen.width,
+                screen.y + screen.height,
+            );
+            self.asset_context_menu = Some(AssetContextMenu {
+                asset_id,
+                x,
+                y,
+                submenu_open: true,
+                hover_parent: true,
+                hover_voicelines: false,
+            });
+            return Some(EventResponse::Consumed);
+        }
+
+        let menu = self.asset_context_menu.as_mut()?;
+        let parent = Rect {
+            x: menu.x,
+            y: menu.y,
+            width: ASSET_MENU_W,
+            height: ASSET_MENU_ITEM_H,
+        };
+        let submenu = Rect {
+            x: menu.x + ASSET_MENU_W - 2.0,
+            ..parent
+        };
+        match event {
+            UiEvent::MouseMove { x, y } => {
+                menu.hover_parent = parent.contains(*x, *y);
+                menu.hover_voicelines = menu.submenu_open && submenu.contains(*x, *y);
+                if menu.hover_parent {
+                    menu.submenu_open = true;
+                }
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::MousePress { x, y } if menu.submenu_open && submenu.contains(*x, *y) => {
+                let asset_id = menu.asset_id;
+                self.asset_context_menu = None;
+                Some(EventResponse::Action(
+                    UiAction::RecordingSendAssetToVoicelines(asset_id),
+                ))
+            }
+            UiEvent::MousePress { x, y } if parent.contains(*x, *y) => {
+                menu.submenu_open = true;
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::CursorRight => {
+                menu.submenu_open = true;
+                menu.hover_voicelines = true;
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::Activate if menu.submenu_open => {
+                let asset_id = menu.asset_id;
+                self.asset_context_menu = None;
+                Some(EventResponse::Action(
+                    UiAction::RecordingSendAssetToVoicelines(asset_id),
+                ))
+            }
+            UiEvent::KeyInput { text } if text == "\x1b" => {
+                self.asset_context_menu = None;
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::MousePress { .. } | UiEvent::OpenContextMenu => {
+                self.asset_context_menu = None;
+                Some(EventResponse::Consumed)
+            }
+            _ => Some(EventResponse::Consumed),
         }
     }
 
@@ -1078,7 +1218,103 @@ fn timeline_scene(
     if let Some(prompt) = ui.audio_import_prompt_scene(layout.content) {
         scene.controls.extend(prompt.controls);
     }
+    if let Some(menu) = ui.asset_context_menu {
+        push_asset_context_menu(&mut scene, menu);
+    }
     scene
+}
+
+fn push_asset_context_menu(scene: &mut RecordingScene, menu: AssetContextMenu) {
+    let parent = Rect {
+        x: menu.x,
+        y: menu.y,
+        width: ASSET_MENU_W,
+        height: ASSET_MENU_ITEM_H,
+    };
+    push_quad(
+        &mut scene.quads,
+        parent,
+        [0.13, 0.13, 0.16, 0.99],
+        BORDER,
+        0.0,
+    );
+    if menu.hover_parent {
+        push_quad(
+            &mut scene.quads,
+            inset_rect(parent, 3.0),
+            [0.31, 0.40, 0.72, 0.85],
+            [0.0; 4],
+            0.0,
+        );
+    }
+    scene.labels.push(RecordingLabel {
+        text: "Envoyer vers".into(),
+        bounds: Rect {
+            x: parent.x + 10.0,
+            width: parent.width - 34.0,
+            ..parent
+        },
+        h_align: HAlign::Left,
+        v_align: VAlign::Center,
+        overflow: Overflow::Ellipsis,
+        font_size: 12.0,
+        color: TEXT,
+    });
+    scene.labels.push(label(
+        ">",
+        Rect {
+            x: parent.x + parent.width - 24.0,
+            width: 18.0,
+            ..parent
+        },
+        12.0,
+        MUTED_TEXT,
+    ));
+
+    if menu.submenu_open {
+        let submenu = Rect {
+            x: parent.x + parent.width - 2.0,
+            ..parent
+        };
+        push_quad(
+            &mut scene.quads,
+            submenu,
+            [0.13, 0.13, 0.16, 0.99],
+            BORDER,
+            0.0,
+        );
+        if menu.hover_voicelines {
+            push_quad(
+                &mut scene.quads,
+                inset_rect(submenu, 3.0),
+                [0.31, 0.40, 0.72, 0.85],
+                [0.0; 4],
+                0.0,
+            );
+        }
+        scene.labels.push(RecordingLabel {
+            text: "Voicelines".into(),
+            bounds: Rect {
+                x: submenu.x + 10.0,
+                width: submenu.width - 20.0,
+                ..submenu
+            },
+            h_align: HAlign::Left,
+            v_align: VAlign::Center,
+            overflow: Overflow::Ellipsis,
+            font_size: 12.0,
+            color: TEXT,
+        });
+    }
+}
+
+fn inset_rect(rect: Rect, amount: f32) -> Rect {
+    Rect {
+        x: rect.x + amount,
+        y: rect.y + amount,
+        width: (rect.width - amount * 2.0).max(0.0),
+        height: (rect.height - amount * 2.0).max(0.0),
+    }
 }
 
 fn push_audio_import_prompt(scene: &mut RecordingScene, ui: &RecordingWorkspaceUi, screen: Rect) {
@@ -2629,5 +2865,61 @@ mod tests {
         let online = scene.controls[1].bounds;
         assert!(solo.x + solo.width <= online.x);
         assert!(online.x + online.width <= content.x + content.width);
+    }
+
+    #[test]
+    fn recording_asset_context_menu_sends_the_clicked_audio_to_voicelines() {
+        let asset_id = AudioAssetId::new(7);
+        let scene = RecordingScene {
+            controls: vec![RecordingControlInfo {
+                control: RecordingControl::Asset(asset_id),
+                bounds: Rect {
+                    x: 40.0,
+                    y: 40.0,
+                    width: 160.0,
+                    height: 36.0,
+                },
+                role: AccessibleRole::ListItem,
+                label: "audio.flac".into(),
+                value: None,
+                selected: false,
+                enabled: true,
+            }],
+            ..RecordingScene::default()
+        };
+        let screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        let mut ui = RecordingWorkspaceUi::default();
+
+        assert_eq!(
+            ui.handle_asset_context_menu(
+                &UiEvent::ContextMenu { x: 60.0, y: 60.0 },
+                &scene,
+                screen,
+            ),
+            Some(EventResponse::Consumed)
+        );
+        assert_eq!(
+            ui.handle_asset_context_menu(
+                &UiEvent::MousePress { x: 70.0, y: 70.0 },
+                &scene,
+                screen,
+            ),
+            Some(EventResponse::Consumed)
+        );
+        assert_eq!(
+            ui.handle_asset_context_menu(
+                &UiEvent::MousePress { x: 220.0, y: 70.0 },
+                &scene,
+                screen,
+            ),
+            Some(EventResponse::Action(
+                UiAction::RecordingSendAssetToVoicelines(asset_id)
+            ))
+        );
     }
 }

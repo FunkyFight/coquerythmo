@@ -19,6 +19,7 @@ use crate::integrity::Sha1;
 use crate::project::Project;
 use crate::project_metadata::{Huuid, TransactionJournal};
 use crate::recording::{AudioAssetId, RecordingProject, TransactionLog};
+use crate::voicelines::{AudioId, VoicelinesProject};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -42,6 +43,7 @@ const MAX_ENTRY_NAME_BYTES: usize = 1024;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 1024 * 1024;
 const DEFAULT_LANGUAGE_ID: &str = "default";
+const VOICELINES_FORMAT_NAME: &str = "coquerythmo-voicelines";
 
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -98,6 +100,11 @@ pub struct LoadedRecordingProject {
     pub audio_asset_paths: BTreeMap<AudioAssetId, PathBuf>,
 }
 
+pub struct LoadedBundledVoicelines {
+    pub project: VoicelinesProject,
+    pub audio_paths: BTreeMap<AudioId, PathBuf>,
+}
+
 /// A loaded project plus the filesystem paths required by media decoders.
 ///
 /// Bundle assets are extracted into a private temporary directory. Keep this
@@ -114,7 +121,14 @@ pub struct LoadedProject {
     pub font_asset_path: Option<PathBuf>,
     pub instrumental_audio_paths: BTreeMap<String, PathBuf>,
     pub recording: Option<LoadedRecordingProject>,
+    pub voicelines: Option<LoadedBundledVoicelines>,
     extraction: Option<ExtractionGuard>,
+}
+
+pub struct LoadedVoicelinesProject {
+    pub project: VoicelinesProject,
+    pub audio_paths: BTreeMap<AudioId, PathBuf>,
+    _extraction: ExtractionGuard,
 }
 
 impl LoadedProject {
@@ -258,6 +272,8 @@ struct BundleManifest {
     assets: BundleAssets,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     recording: Option<BundleRecordingManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    voicelines: Option<BundleVoicelinesManifest>,
 }
 
 /// Metadata created only after a complete bundle has been installed at its
@@ -301,6 +317,27 @@ struct BundleRecordingManifest {
 #[derive(Serialize, Deserialize)]
 struct RecordingAssetManifest {
     asset_id: AudioAssetId,
+    entry: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VoicelinesBundleManifest {
+    format: String,
+    format_version: u32,
+    project: VoicelinesProject,
+    audios: Vec<VoicelinesAudioManifest>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BundleVoicelinesManifest {
+    project: VoicelinesProject,
+    #[serde(default)]
+    audios: Vec<VoicelinesAudioManifest>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VoicelinesAudioManifest {
+    audio_id: AudioId,
     entry: String,
 }
 
@@ -387,6 +424,32 @@ pub fn save_bundle_with_recording_data(
     transaction_journal: Option<&TransactionJournal>,
     recording: Option<RecordingBundleInput<'_>>,
 ) -> Result<SavedProjectMetadata, ProjectArchiveError> {
+    save_bundle_with_recording_and_voicelines_data(
+        project,
+        fps,
+        bundle_path,
+        source_video,
+        proxy_video,
+        default_uses_proxy,
+        font_asset,
+        transaction_journal,
+        recording,
+        None,
+    )
+}
+
+pub fn save_bundle_with_recording_and_voicelines_data(
+    project: &Project,
+    fps: f64,
+    bundle_path: &Path,
+    source_video: &Path,
+    proxy_video: Option<&Path>,
+    default_uses_proxy: bool,
+    font_asset: Option<&Path>,
+    transaction_journal: Option<&TransactionJournal>,
+    recording: Option<RecordingBundleInput<'_>>,
+    voicelines: Option<&VoicelinesProject>,
+) -> Result<SavedProjectMetadata, ProjectArchiveError> {
     let instrumental_paths: Vec<(String, PathBuf)> = project
         .language_snapshots()
         .into_iter()
@@ -405,7 +468,7 @@ pub fn save_bundle_with_recording_data(
         .map(|(language_id, path)| InstrumentalAssetInput { language_id, path })
         .collect();
 
-    save_bundle_with_instrumentals_and_recording_data(
+    save_bundle_with_instrumentals_recording_and_voicelines_data(
         project,
         fps,
         bundle_path,
@@ -416,6 +479,7 @@ pub fn save_bundle_with_recording_data(
         font_asset,
         transaction_journal,
         recording,
+        voicelines,
     )
 }
 
@@ -477,6 +541,34 @@ pub fn save_bundle_with_instrumentals_and_recording_data(
     font_asset: Option<&Path>,
     transaction_journal: Option<&TransactionJournal>,
     recording: Option<RecordingBundleInput<'_>>,
+) -> Result<SavedProjectMetadata, ProjectArchiveError> {
+    save_bundle_with_instrumentals_recording_and_voicelines_data(
+        project,
+        fps,
+        bundle_path,
+        source_video,
+        instrumentals,
+        proxy_video,
+        default_uses_proxy,
+        font_asset,
+        transaction_journal,
+        recording,
+        None,
+    )
+}
+
+fn save_bundle_with_instrumentals_recording_and_voicelines_data(
+    project: &Project,
+    fps: f64,
+    bundle_path: &Path,
+    source_video: &Path,
+    instrumentals: &[InstrumentalAssetInput<'_>],
+    proxy_video: Option<&Path>,
+    default_uses_proxy: bool,
+    font_asset: Option<&Path>,
+    transaction_journal: Option<&TransactionJournal>,
+    recording: Option<RecordingBundleInput<'_>>,
+    voicelines: Option<&VoicelinesProject>,
 ) -> Result<SavedProjectMetadata, ProjectArchiveError> {
     let transaction_journal = if let Some(journal) = transaction_journal {
         journal
@@ -547,6 +639,13 @@ pub fn save_bundle_with_instrumentals_and_recording_data(
         Some((manifest, entries)) => (Some(manifest), entries),
         None => (None, Vec::new()),
     };
+    let prepared_voicelines = voicelines
+        .map(|project| prepare_voicelines_bundle(bundle_path, project))
+        .transpose()?;
+    let (voicelines_manifest, voicelines_entries) = match prepared_voicelines {
+        Some((manifest, entries)) => (Some(manifest), entries),
+        None => (None, Vec::new()),
+    };
 
     let mut project_data = ProjectData::from_project(project, fps);
     // Never leave a machine-specific path in a portable manifest.
@@ -576,6 +675,7 @@ pub fn save_bundle_with_instrumentals_and_recording_data(
             instrumentals: instrumental_manifest,
         },
         recording: recording_manifest,
+        voicelines: voicelines_manifest,
     };
     let manifest_bytes = serde_json::to_vec(&manifest)?;
     if manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
@@ -586,7 +686,9 @@ pub fn save_bundle_with_instrumentals_and_recording_data(
         });
     }
 
-    let mut entries = Vec::with_capacity(1 + instrumentals.len() + recording_entries.len() + 3);
+    let mut entries = Vec::with_capacity(
+        1 + instrumentals.len() + recording_entries.len() + voicelines_entries.len() + 3,
+    );
     entries.push(source);
     if let Some(proxy) = proxy {
         entries.push(proxy);
@@ -596,6 +698,7 @@ pub fn save_bundle_with_instrumentals_and_recording_data(
     }
     entries.extend(instrumental_entries);
     entries.extend(recording_entries);
+    entries.extend(voicelines_entries);
 
     let entry_count = u32::try_from(entries.len() + 1)
         .map_err(|_| ProjectArchiveError::TooManyEntries(u32::MAX))?;
@@ -633,6 +736,185 @@ pub fn save_bundle_with_instrumentals_and_recording_data(
     Ok(SavedProjectMetadata {
         huuid,
         transaction_journal: saved_transaction_journal,
+    })
+}
+
+pub fn save_voicelines_file(
+    bundle_path: &Path,
+    project: &VoicelinesProject,
+) -> Result<(), ProjectArchiveError> {
+    let (voicelines, entries) = prepare_voicelines_bundle(bundle_path, project)?;
+
+    let manifest_bytes = serde_json::to_vec(&VoicelinesBundleManifest {
+        format: VOICELINES_FORMAT_NAME.to_string(),
+        format_version: FORMAT_VERSION,
+        project: voicelines.project,
+        audios: voicelines.audios,
+    })?;
+    if manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(ProjectArchiveError::EntryTooLarge {
+            name: MANIFEST_ENTRY.to_string(),
+            size: manifest_bytes.len() as u64,
+            limit: MAX_MANIFEST_BYTES,
+        });
+    }
+    let entry_count = u32::try_from(entries.len() + 1)
+        .map_err(|_| ProjectArchiveError::TooManyEntries(u32::MAX))?;
+    if entry_count > MAX_ENTRY_COUNT {
+        return Err(ProjectArchiveError::TooManyEntries(entry_count));
+    }
+
+    let (temporary_path, temporary_file) = create_temporary_file_near(bundle_path)?;
+    let write_result = (|| -> Result<(), ProjectArchiveError> {
+        let mut writer = BufWriter::with_capacity(COPY_BUFFER_BYTES, temporary_file);
+        writer.write_all(MAGIC)?;
+        write_u32(&mut writer, FORMAT_VERSION)?;
+        write_u32(&mut writer, entry_count)?;
+        write_bytes_entry(&mut writer, MANIFEST_ENTRY, &manifest_bytes)?;
+        for entry in entries {
+            write_file_entry(&mut writer, &entry)?;
+        }
+        writer.write_all(FOOTER_MAGIC)?;
+        writer.flush()?;
+        writer
+            .into_inner()
+            .map_err(|error| ProjectArchiveError::Io(error.into_error()))?
+            .sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error);
+    }
+    if let Err(error) = commit_temporary_file(&temporary_path, bundle_path) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(ProjectArchiveError::Io(error));
+    }
+    Ok(())
+}
+
+fn prepare_voicelines_bundle(
+    bundle_path: &Path,
+    project: &VoicelinesProject,
+) -> Result<(BundleVoicelinesManifest, Vec<FileEntryToWrite>), ProjectArchiveError> {
+    let mut project = project.clone();
+    project
+        .validate()
+        .map_err(ProjectArchiveError::InvalidFormat)?;
+    let mut audios = Vec::with_capacity(project.audios().len());
+    let mut entries = Vec::with_capacity(project.audios().len());
+    for (index, audio) in project.audios().iter().enumerate() {
+        ensure_destination_is_not_asset(bundle_path, &audio.playback_path)?;
+        let entry = entry_name_for_asset(
+            &format!("voicelines/audio-{index:04}"),
+            &audio.playback_path,
+        );
+        entries.push(file_entry(entry.clone(), &audio.playback_path)?);
+        audios.push(VoicelinesAudioManifest {
+            audio_id: audio.id,
+            entry,
+        });
+    }
+    Ok((BundleVoicelinesManifest { project, audios }, entries))
+}
+
+pub fn load_voicelines_file(path: &Path) -> Result<LoadedVoicelinesProject, ProjectArchiveError> {
+    let file = File::open(path)?;
+    let file_len = file.metadata()?.len();
+    let mut reader = BufReader::with_capacity(COPY_BUFFER_BYTES, file);
+    let mut magic = [0_u8; MAGIC.len()];
+    reader.read_exact(&mut magic)?;
+    if &magic != MAGIC {
+        return Err(ProjectArchiveError::InvalidFormat("bad magic".into()));
+    }
+    let version = read_u32(&mut reader)?;
+    if version != FORMAT_VERSION {
+        return Err(ProjectArchiveError::UnsupportedVersion(version));
+    }
+    let entry_count = read_u32(&mut reader)?;
+    if entry_count == 0 || entry_count > MAX_ENTRY_COUNT {
+        return Err(ProjectArchiveError::InvalidFormat(
+            "invalid voicelines entry count".into(),
+        ));
+    }
+    let manifest_header = read_entry_header(&mut reader, file_len)?;
+    if manifest_header.name != MANIFEST_ENTRY || manifest_header.len > MAX_MANIFEST_BYTES {
+        return Err(ProjectArchiveError::InvalidFormat(
+            "invalid voicelines manifest entry".into(),
+        ));
+    }
+    let manifest_bytes = read_entry_to_vec(&mut reader, &manifest_header)?;
+    let mut manifest: VoicelinesBundleManifest = serde_json::from_slice(&manifest_bytes)?;
+    if manifest.format != VOICELINES_FORMAT_NAME
+        || manifest.format_version != version
+        || manifest.audios.len() + 1 != entry_count as usize
+    {
+        return Err(ProjectArchiveError::InvalidFormat(
+            "invalid voicelines manifest".into(),
+        ));
+    }
+    manifest
+        .project
+        .validate()
+        .map_err(ProjectArchiveError::InvalidFormat)?;
+    if manifest.audios.len() != manifest.project.audios().len() {
+        return Err(ProjectArchiveError::InvalidFormat(
+            "voicelines audio manifest does not match the project".into(),
+        ));
+    }
+
+    let mut expected = HashMap::new();
+    for audio in &manifest.audios {
+        if manifest.project.audio(audio.audio_id).is_none() {
+            return Err(ProjectArchiveError::InvalidFormat(format!(
+                "unknown voicelines audio {}",
+                audio.audio_id
+            )));
+        }
+        if expected
+            .insert(audio.entry.clone(), audio.audio_id)
+            .is_some()
+        {
+            return Err(ProjectArchiveError::DuplicateEntry(audio.entry.clone()));
+        }
+    }
+
+    let extraction = create_extraction_guard()?;
+    let mut audio_paths = BTreeMap::new();
+    for _ in 1..entry_count {
+        let header = read_entry_header(&mut reader, file_len)?;
+        let Some(audio_id) = expected.remove(&header.name) else {
+            return Err(ProjectArchiveError::UndeclaredEntry(header.name));
+        };
+        let output_path = extraction_path(&extraction.path, &header.name)?;
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output_path)?;
+        read_entry_to_file(&mut reader, &header, output, None, &mut |_| {})?;
+        audio_paths.insert(audio_id, output_path);
+    }
+    if let Some(name) = expected.into_keys().next() {
+        return Err(ProjectArchiveError::MissingEntry(name));
+    }
+    let mut footer = [0_u8; FOOTER_MAGIC.len()];
+    reader.read_exact(&mut footer)?;
+    if &footer != FOOTER_MAGIC {
+        return Err(ProjectArchiveError::InvalidFormat("bad footer".into()));
+    }
+    let mut trailing = [0_u8; 1];
+    if reader.read(&mut trailing)? != 0 {
+        return Err(ProjectArchiveError::InvalidFormat(
+            "trailing bytes after container footer".into(),
+        ));
+    }
+    Ok(LoadedVoicelinesProject {
+        project: manifest.project,
+        audio_paths,
+        _extraction: extraction,
     })
 }
 
@@ -713,6 +995,7 @@ fn load_legacy_json(file: File) -> Result<LoadedProject, ProjectArchiveError> {
         font_asset_path: None,
         instrumental_audio_paths,
         recording: None,
+        voicelines: None,
         extraction: None,
     })
 }
@@ -786,6 +1069,12 @@ fn load_bundle(
         }
         validate_recording_archive_state(&recording.project, &recording.transaction_log)?;
     }
+    if let Some(voicelines) = &mut manifest.voicelines {
+        voicelines
+            .project
+            .validate()
+            .map_err(ProjectArchiveError::InvalidFormat)?;
+    }
 
     report(ProjectLoadProgress {
         stage: ProjectLoadStage::ReadingManifest,
@@ -793,7 +1082,11 @@ fn load_bundle(
     });
 
     let extraction = create_extraction_guard()?;
-    let expected_names = manifest_asset_names(&manifest.assets, manifest.recording.as_ref())?;
+    let expected_names = manifest_asset_names(
+        &manifest.assets,
+        manifest.recording.as_ref(),
+        manifest.voicelines.as_ref(),
+    )?;
     let mut remaining = expected_names;
     let mut extracted_paths = HashMap::new();
     let mut seen_entries = HashSet::new();
@@ -936,6 +1229,24 @@ fn load_bundle(
             })
         })
         .transpose()?;
+    let voicelines = manifest
+        .voicelines
+        .take()
+        .map(|voicelines| {
+            let mut audio_paths = BTreeMap::new();
+            for audio in &voicelines.audios {
+                let path = extracted_paths
+                    .get(&audio.entry)
+                    .cloned()
+                    .ok_or_else(|| ProjectArchiveError::MissingEntry(audio.entry.clone()))?;
+                audio_paths.insert(audio.audio_id, path);
+            }
+            Ok::<_, ProjectArchiveError>(LoadedBundledVoicelines {
+                project: voicelines.project,
+                audio_paths,
+            })
+        })
+        .transpose()?;
 
     Ok(LoadedProject {
         kind: ProjectFileKind::Bundle,
@@ -948,6 +1259,7 @@ fn load_bundle(
         font_asset_path,
         instrumental_audio_paths,
         recording,
+        voicelines,
         extraction: Some(extraction),
     })
 }
@@ -1017,7 +1329,11 @@ fn validate_manifest(
             "header and manifest versions differ".into(),
         ));
     }
-    let names = manifest_asset_names(&manifest.assets, manifest.recording.as_ref())?;
+    let names = manifest_asset_names(
+        &manifest.assets,
+        manifest.recording.as_ref(),
+        manifest.voicelines.as_ref(),
+    )?;
     let expected_count = u32::try_from(names.len() + 1)
         .map_err(|_| ProjectArchiveError::TooManyEntries(u32::MAX))?;
     if expected_count != entry_count {
@@ -1031,6 +1347,7 @@ fn validate_manifest(
 fn manifest_asset_names(
     assets: &BundleAssets,
     recording: Option<&BundleRecordingManifest>,
+    voicelines: Option<&BundleVoicelinesManifest>,
 ) -> Result<HashSet<String>, ProjectArchiveError> {
     let mut names = HashSet::new();
     insert_manifest_name(&mut names, &assets.source_video)?;
@@ -1072,6 +1389,25 @@ fn manifest_asset_names(
             if !asset_ids.contains(&asset.id) {
                 return Err(ProjectArchiveError::MissingRecordingAsset(asset.id));
             }
+        }
+    }
+    if let Some(voicelines) = voicelines {
+        if voicelines.audios.len() != voicelines.project.audios().len() {
+            return Err(ProjectArchiveError::InvalidFormat(
+                "voicelines audio manifest does not match the project".into(),
+            ));
+        }
+        let mut audio_ids = HashSet::new();
+        for audio in &voicelines.audios {
+            if !audio_ids.insert(audio.audio_id)
+                || voicelines.project.audio(audio.audio_id).is_none()
+            {
+                return Err(ProjectArchiveError::InvalidFormat(format!(
+                    "invalid voicelines audio {}",
+                    audio.audio_id
+                )));
+            }
+            insert_manifest_name(&mut names, &audio.entry)?;
         }
     }
     Ok(names)
@@ -1734,7 +2070,7 @@ mod tests {
     }
     use crate::project_metadata::TransactionJournal;
     use crate::recording::{
-        AudioAsset, AudioAssetId, AudioClip, AudioClipId, AudioTrack, AudioTrackId,
+        AudioAsset, AudioAssetId, AudioClip, AudioClipId, AudioTrack, AudioTrackId, RecordedAudio,
         RecordingOperation, WaveformData,
     };
 
@@ -1888,6 +2224,69 @@ mod tests {
         assert_ne!(first.huuid, second.huuid);
         let second_loaded = load_project_file(&bundle).unwrap();
         assert_eq!(second_loaded.huuid.as_ref(), Some(&second.huuid));
+    }
+
+    #[test]
+    fn project_bundle_round_trip_preserves_voicelines() {
+        let dir = TestDir::new();
+        let source = dir.path("source.mp4");
+        let voice = dir.path("voice.flac");
+        let bundle = dir.path("voicelines.coquerythmo");
+        let voice_bytes = b"fLaC\0voiceline";
+        fs::write(&source, b"video").unwrap();
+        fs::write(&voice, voice_bytes).unwrap();
+        let mut voicelines = VoicelinesProject::default();
+        let audio_id = voicelines.add_audio(
+            PathBuf::from("dialogue.wav"),
+            voice,
+            RecordedAudio {
+                file_name: "voice.flac".into(),
+                sample_rate: 1_000,
+                channels: 1,
+                sample_count: 1_000,
+                checksum: "a".repeat(40),
+                waveform: WaveformData::default(),
+            },
+        );
+        voicelines.add_region(100, 500).unwrap();
+        let recording = RecordingProject::new(24.0).unwrap();
+        let recording_log = TransactionLog::default();
+
+        save_bundle_with_recording_and_voicelines_data(
+            &sample_project(None),
+            24.0,
+            &bundle,
+            &source,
+            None,
+            false,
+            None,
+            None,
+            Some(RecordingBundleInput {
+                project: &recording,
+                transaction_log: &recording_log,
+                assets: &[],
+            }),
+            Some(&voicelines),
+        )
+        .unwrap();
+
+        let loaded = load_project_file(&bundle).unwrap();
+        assert_eq!(loaded.project_data.source_fps, 24.0);
+        assert_eq!(loaded.recording.as_ref().unwrap().project, recording);
+        let loaded_voicelines = loaded.voicelines.as_ref().unwrap();
+        assert_eq!(
+            loaded_voicelines
+                .project
+                .audio(audio_id)
+                .unwrap()
+                .regions
+                .len(),
+            1
+        );
+        assert_eq!(
+            fs::read(loaded_voicelines.audio_paths.get(&audio_id).unwrap()).unwrap(),
+            voice_bytes
+        );
     }
 
     #[test]
@@ -2142,6 +2541,7 @@ mod tests {
                     entry: recording_entry.into(),
                 }],
             }),
+            voicelines: None,
         };
         let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
         let mut writer = BufWriter::new(File::create(&bundle).unwrap());
@@ -2356,6 +2756,7 @@ mod tests {
                 instrumentals: Vec::new(),
             },
             recording: None,
+            voicelines: None,
         };
         let bytes = serde_json::to_vec(&manifest).unwrap();
         let mut writer = BufWriter::new(File::create(&bundle).unwrap());

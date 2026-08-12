@@ -45,6 +45,7 @@ pub(crate) struct PendingSaveJob {
     pub path: PathBuf,
     pub saved_revision: u64,
     pub saved_recording_revision: u64,
+    pub saved_voicelines_revision: u64,
     pub source_video: PathBuf,
     pub proxy_video: Option<PathBuf>,
     pub default_uses_proxy: bool,

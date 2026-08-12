@@ -55,4 +55,5 @@ pub mod video;
 pub mod video_export;
 pub mod video_proxy;
 pub mod voice_actor;
+pub mod voicelines;
 pub mod workspaces;

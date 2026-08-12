@@ -4,6 +4,7 @@
 pub enum FilePickerMode {
     Open,
     Save,
+    Folder,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +40,32 @@ pub struct FilePickerRequest {
 pub enum UiAction {
     Accessibility(crate::accessibility::AccessibilityEvent),
     ActivateWorkspace(crate::application::workspace_service::WorkspaceId),
+    VoicelinesImportAudio,
+    VoicelinesSelectAudio(crate::voicelines::AudioId),
+    VoicelinesRemoveAudio(crate::voicelines::AudioId),
+    VoicelinesAddRegion {
+        start_ms: u64,
+        end_ms: u64,
+    },
+    VoicelinesMoveRegion {
+        region_id: crate::voicelines::RegionId,
+        start_ms: u64,
+        end_ms: u64,
+    },
+    VoicelinesSelectRegion(Option<crate::voicelines::RegionId>),
+    VoicelinesRenameRegion {
+        region_id: crate::voicelines::RegionId,
+        name: String,
+    },
+    VoicelinesDeleteRegion(crate::voicelines::RegionId),
+    VoicelinesToggleAutomaticNaming,
+    VoicelinesSetNamingPattern(String),
+    VoicelinesAutoDetect,
+    VoicelinesPlayRegion(crate::voicelines::RegionId),
+    VoicelinesExportRegion(crate::voicelines::RegionId),
+    VoicelinesExportAll,
+    VoicelinesSaveSession,
+    VoicelinesLoadSession,
     RecordingChooseSolo,
     RecordingChooseOnline,
     RecordingImportAudio,
@@ -76,6 +103,7 @@ pub enum UiAction {
         additive: bool,
     },
     RecordingSelectAsset(crate::recording::AudioAssetId),
+    RecordingSendAssetToVoicelines(crate::recording::AudioAssetId),
     RecordingDeleteSelectedAsset,
     RecordingPlaceAsset {
         asset_id: crate::recording::AudioAssetId,
@@ -695,6 +723,16 @@ pub enum ToolMode {
 pub enum FilePickerIntent {
     AddVideo,
     RecordingAudio,
+    VoicelinesAudio,
+    VoicelinesExportRegion {
+        audio_id: crate::voicelines::AudioId,
+        region_id: crate::voicelines::RegionId,
+    },
+    VoicelinesExportAll {
+        audio_id: crate::voicelines::AudioId,
+    },
+    VoicelinesSaveSession,
+    VoicelinesLoadSession,
     ImportProject,
     ImportCappelaProject,
     ImportSrtProject,

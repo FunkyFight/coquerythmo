@@ -70,6 +70,7 @@ pub struct VideoPlayer {
     finished: bool,
     current_frame: i64,
     total_frames: i64,
+    audio_only: bool,
     volume: f32,
 
     audio_stream: Option<cpal::Stream>,
@@ -207,6 +208,7 @@ impl VideoPlayer {
             finished: false,
             current_frame: 0,
             total_frames: 0,
+            audio_only: false,
             volume: 0.75,
             audio_stream: None,
             audio_clock: None,
@@ -230,6 +232,7 @@ impl VideoPlayer {
         sampler: &wgpu::Sampler,
     ) -> Result<(), String> {
         self.stop();
+        self.audio_only = false;
 
         let (width, height, fps, total_frames) = probe_video(video_path)?;
         self.width = width;
@@ -259,6 +262,34 @@ impl VideoPlayer {
 
         self.decode_source_waveform();
 
+        Ok(())
+    }
+
+    /// Load an audio timeline without creating a video texture or decoder.
+    pub fn load_audio_only(
+        &mut self,
+        audio_path: &Path,
+        duration_seconds: f64,
+    ) -> Result<(), String> {
+        self.stop();
+        if !audio_path.is_file() || !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+            return Err("invalid audio-only media".into());
+        }
+        self.texture = None;
+        self.texture_view = None;
+        self.bind_group = None;
+        self.width = 0;
+        self.height = 0;
+        self.fps = 100.0;
+        self.total_frames = (duration_seconds * self.fps).ceil().max(1.0) as i64;
+        self.current_frame = 0;
+        self.path = None;
+        self.source_audio_path = Some(audio_path.to_path_buf());
+        self.instrumental_audio_path = None;
+        self.active_audio_track = AudioTrack::Source;
+        self.finished = false;
+        self.audio_only = true;
+        self.decode_source_waveform();
         Ok(())
     }
 
@@ -626,6 +657,11 @@ impl VideoPlayer {
             return;
         }
 
+        if self.audio_only {
+            self.current_frame = target_frame;
+            return;
+        }
+
         // Consume frames from channel to catch up
         let mut last_frame = None;
         let frames_behind = (target_frame - self.current_frame) as usize;
@@ -797,34 +833,35 @@ impl VideoPlayer {
     }
 
     fn start_decoders_at(&mut self, timestamp: f64, with_audio: bool) {
-        let path = match &self.path {
-            Some(p) => p.clone(),
-            None => return,
-        };
-
         // Fresh kill signal for new decoders
         self.kill_signal = Arc::new(AtomicBool::new(false));
 
-        // Video decoder
-        let frame_size = (self.width * self.height * 4) as usize;
-        let (tx, rx) = mpsc::sync_channel::<VideoFrame>(3);
-        let (free_tx, free_rx) = mpsc::sync_channel::<Vec<u8>>(3);
-        for _ in 0..3 {
-            if free_tx.send(vec![0u8; frame_size]).is_err() {
-                break;
+        if let Some(path) = self.path.clone() {
+            // Video decoder
+            let frame_size = (self.width * self.height * 4) as usize;
+            let (tx, rx) = mpsc::sync_channel::<VideoFrame>(3);
+            let (free_tx, free_rx) = mpsc::sync_channel::<Vec<u8>>(3);
+            for _ in 0..3 {
+                if free_tx.send(vec![0u8; frame_size]).is_err() {
+                    break;
+                }
             }
+            let w = self.width;
+            let h = self.height;
+            let kill = self.kill_signal.clone();
+            let vid_handle = thread::spawn(move || {
+                decode_video_stream_from(path, w, h, timestamp, tx, free_rx, kill);
+            });
+            self.receiver = Some(rx);
+            self.receiver_has_current_frame = true;
+            self.frame_recycler = Some(free_tx);
+            self.decoder_handle = Some(vid_handle);
+        } else {
+            self.receiver = None;
+            self.receiver_has_current_frame = false;
+            self.frame_recycler = None;
+            self.decoder_handle = None;
         }
-        let path_clone = path.clone();
-        let w = self.width;
-        let h = self.height;
-        let kill = self.kill_signal.clone();
-        let vid_handle = thread::spawn(move || {
-            decode_video_stream_from(path_clone, w, h, timestamp, tx, free_rx, kill);
-        });
-        self.receiver = Some(rx);
-        self.receiver_has_current_frame = true;
-        self.frame_recycler = Some(free_tx);
-        self.decoder_handle = Some(vid_handle);
 
         if with_audio {
             self.start_audio_at(timestamp);

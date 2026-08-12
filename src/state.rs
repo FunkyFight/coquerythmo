@@ -43,6 +43,7 @@ use crate::video::{AudioTrack, VideoPlayer};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 use crate::workspaces::recording::RecordingWorkspace;
 use crate::workspaces::rythmo::RythmoWorkspace;
+use crate::workspaces::voicelines::VoicelinesWorkspace;
 
 use crate::constants;
 use crate::recording_mix::REALTIME_SAMPLE_RATE;
@@ -360,6 +361,14 @@ pub struct State {
     pub jobs: JobManager,
     pub project_session: ProjectSession,
     pub recording_runtime: crate::recording_runtime::RecordingRuntime,
+    pub voicelines_project: crate::voicelines::VoicelinesProject,
+    voicelines_revision: u64,
+    voicelines_player: Option<VideoPlayer>,
+    voicelines_imports: Vec<PendingVoicelinesImport>,
+    voicelines_exports: Vec<PendingVoicelinesExport>,
+    voicelines_play_until_ms: Option<u64>,
+    voicelines_undo: Vec<crate::voicelines::VoicelinesProject>,
+    voicelines_redo: Vec<crate::voicelines::VoicelinesProject>,
     project_transfer: Option<ProjectTransferRuntime>,
     project_transfer_prepare: Option<Receiver<Result<ProjectTransferMetadata, String>>>,
     project_transfer_source: Option<PathBuf>,
@@ -406,6 +415,16 @@ struct ProjectTransferRuntime {
     receiver: crate::file_transfer::FileTransferReceiver,
 }
 
+struct PendingVoicelinesImport {
+    source_path: PathBuf,
+    output_path: PathBuf,
+    receiver: Receiver<Result<crate::recording::RecordedAudio, crate::recording::RecordingError>>,
+}
+
+struct PendingVoicelinesExport {
+    receiver: Receiver<Result<String, String>>,
+}
+
 impl State {
     pub async fn new(
         window: Arc<Window>,
@@ -426,6 +445,14 @@ impl State {
             jobs: JobManager::new(),
             project_session: ProjectSession::new(),
             recording_runtime: crate::recording_runtime::RecordingRuntime::new(),
+            voicelines_project: crate::voicelines::VoicelinesProject::default(),
+            voicelines_revision: 0,
+            voicelines_player: None,
+            voicelines_imports: Vec::new(),
+            voicelines_exports: Vec::new(),
+            voicelines_play_until_ms: None,
+            voicelines_undo: Vec::new(),
+            voicelines_redo: Vec::new(),
             project_transfer: None,
             project_transfer_prepare: None,
             project_transfer_source: None,
@@ -439,6 +466,7 @@ impl State {
                 vec![
                     Box::new(RythmoWorkspace::new()),
                     Box::new(RecordingWorkspace::new()),
+                    Box::new(VoicelinesWorkspace::new()),
                 ],
                 WorkspaceId::Rythmo,
             ),
@@ -507,18 +535,504 @@ impl State {
         (x / self.ui_scale, y / self.ui_scale)
     }
 
+    // -- Voicelines --
+
+    pub fn voicelines_begin_audio_import(&mut self, source_path: PathBuf) {
+        let supported = source_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                ["flac", "wav", "mp3", "ogg", "m4a", "aac", "opus"]
+                    .contains(&extension.to_ascii_lowercase().as_str())
+            });
+        if !source_path.is_file() || !supported {
+            self.show_toast("Format audio non pris en charge", 4.0);
+            return;
+        }
+        let output_path = self
+            .recording_runtime
+            .allocate_external_audio_path(&source_path, "voicelines");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker_source = source_path.clone();
+        let worker_output = output_path.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(crate::media_recording::import_audio(
+                &worker_source,
+                &worker_output,
+            ));
+        });
+        self.voicelines_imports.push(PendingVoicelinesImport {
+            source_path: source_path.clone(),
+            output_path,
+            receiver,
+        });
+        self.show_toast(
+            format!(
+                "Import de {} en cours…",
+                source_path
+                    .file_name()
+                    .map(|name| name.to_string_lossy())
+                    .unwrap_or_default()
+            ),
+            2.0,
+        );
+    }
+
+    pub fn voicelines_select_audio(&mut self, id: crate::voicelines::AudioId) {
+        if self.voicelines_project.select_audio(id)
+            || self.voicelines_project.active_audio_id() == Some(id)
+        {
+            if let Err(error) = self.voicelines_load_active_player() {
+                self.show_toast(error, 5.0);
+            }
+        }
+    }
+
+    pub(crate) fn reset_voicelines_document(&mut self) {
+        self.voicelines_project = crate::voicelines::VoicelinesProject::default();
+        self.voicelines_revision = 0;
+        self.voicelines_undo.clear();
+        self.voicelines_redo.clear();
+        self.voicelines_player = None;
+        self.voicelines_play_until_ms = None;
+        self.ui_shell.ui.set_voicelines_selected_region(None);
+    }
+
+    pub fn voicelines_remove_audio(&mut self, id: crate::voicelines::AudioId) {
+        let before = self.voicelines_project.clone();
+        if !self.voicelines_project.remove_audio(id) {
+            return;
+        }
+        self.voicelines_commit(before);
+        self.voicelines_play_until_ms = None;
+        if self.voicelines_project.active_audio().is_some() {
+            if let Err(error) = self.voicelines_load_active_player() {
+                self.show_toast(error, 5.0);
+            }
+        } else {
+            self.voicelines_player = None;
+            self.ui_shell.ui.total_frames = 0;
+            self.ui_shell.ui.set_playing(false);
+        }
+    }
+
+    pub fn voicelines_add_region(&mut self, start_ms: u64, end_ms: u64) {
+        let before = self.voicelines_project.clone();
+        let manual = matches!(
+            self.voicelines_project.naming(),
+            crate::voicelines::NamingMode::Manual
+        );
+        if let Some(id) = self.voicelines_project.add_region(start_ms, end_ms) {
+            self.voicelines_commit(before);
+            self.ui_shell.ui.set_voicelines_selected_region(Some(id));
+            if manual {
+                let name = self
+                    .voicelines_project
+                    .active_audio()
+                    .and_then(|audio| audio.regions.iter().find(|region| region.id == id))
+                    .map(|region| region.name.clone())
+                    .unwrap_or_default();
+                self.ui_shell.ui.begin_voicelines_region_rename(id, name);
+            }
+        }
+    }
+
+    pub fn voicelines_move_region(
+        &mut self,
+        region_id: crate::voicelines::RegionId,
+        start_ms: u64,
+        end_ms: u64,
+    ) {
+        let before = self.voicelines_project.clone();
+        if self
+            .voicelines_project
+            .move_region(region_id, start_ms, end_ms)
+        {
+            self.voicelines_commit(before);
+        }
+    }
+
+    pub fn voicelines_rename_region(&mut self, region_id: crate::voicelines::RegionId, name: &str) {
+        let before = self.voicelines_project.clone();
+        if self.voicelines_project.rename_region(region_id, name) {
+            self.voicelines_commit(before);
+        }
+    }
+
+    pub fn voicelines_delete_region(&mut self, region_id: crate::voicelines::RegionId) {
+        let before = self.voicelines_project.clone();
+        if self.voicelines_project.remove_region(region_id) {
+            self.voicelines_commit(before);
+            self.ui_shell.ui.set_voicelines_selected_region(None);
+        }
+    }
+
+    pub fn voicelines_toggle_automatic_naming(&mut self) {
+        if matches!(
+            self.voicelines_project.naming(),
+            crate::voicelines::NamingMode::Manual
+        ) {
+            self.ui_shell.ui.begin_voicelines_naming_pattern(
+                self.voicelines_project.automatic_pattern().to_owned(),
+            );
+            return;
+        }
+        let before = self.voicelines_project.clone();
+        self.voicelines_project.set_manual_naming();
+        self.voicelines_commit(before);
+    }
+
+    pub fn voicelines_set_naming_pattern(&mut self, pattern: String) {
+        let before = self.voicelines_project.clone();
+        if let Err(error) = self.voicelines_project.set_automatic_naming(&pattern) {
+            self.ui_shell.ui.begin_voicelines_naming_pattern(pattern);
+            self.show_toast(error, 4.0);
+            return;
+        }
+        self.voicelines_commit(before);
+    }
+
+    pub fn voicelines_auto_detect(&mut self) {
+        let before = self.voicelines_project.clone();
+        let count = self.voicelines_project.auto_detect_regions();
+        self.voicelines_commit(before);
+        self.ui_shell.ui.set_voicelines_selected_region(None);
+        self.show_toast(format!("{count} zone(s) détectée(s)"), 3.0);
+    }
+
+    pub fn voicelines_play_region(&mut self, region_id: crate::voicelines::RegionId) {
+        let Some(region) = self
+            .voicelines_project
+            .active_audio()
+            .and_then(|audio| audio.regions.iter().find(|region| region.id == region_id))
+            .cloned()
+        else {
+            return;
+        };
+        self.seek_absolute_internal((region.start_ms / 10) as i64, false);
+        self.toggle_play_pause_internal(false);
+        self.voicelines_play_until_ms = Some(region.end_ms);
+    }
+
+    pub fn voicelines_export_region_request(
+        &self,
+        region_id: crate::voicelines::RegionId,
+    ) -> Option<crate::application::command::FilePickerRequest> {
+        let audio = self.voicelines_project.active_audio()?;
+        let region = audio.regions.iter().find(|region| region.id == region_id)?;
+        Some(crate::application::command::FilePickerRequest {
+            title: "Exporter la voiceline".into(),
+            mode: crate::application::command::FilePickerMode::Save,
+            intent: crate::application::command::FilePickerIntent::VoicelinesExportRegion {
+                audio_id: audio.id,
+                region_id,
+            },
+            filters: vec![crate::application::command::FileFilterSpec::new(
+                "Audio OGG",
+                &["ogg"],
+            )],
+            initial_dir: audio.source_path.parent().map(Path::to_path_buf),
+            default_extension: Some("ogg".into()),
+            initial_filename: Some(format!(
+                "{}.ogg",
+                crate::voicelines::export_stem(&region.name)
+            )),
+        })
+    }
+
+    pub fn voicelines_export_all_request(
+        &self,
+    ) -> Option<crate::application::command::FilePickerRequest> {
+        let audio = self.voicelines_project.active_audio()?;
+        (!audio.regions.is_empty()).then(|| crate::application::command::FilePickerRequest {
+            title: "Dossier d'export des voicelines".into(),
+            mode: crate::application::command::FilePickerMode::Folder,
+            intent: crate::application::command::FilePickerIntent::VoicelinesExportAll {
+                audio_id: audio.id,
+            },
+            filters: Vec::new(),
+            initial_dir: audio.source_path.parent().map(Path::to_path_buf),
+            default_extension: None,
+            initial_filename: None,
+        })
+    }
+
+    pub fn voicelines_save_request(&self) -> crate::application::command::FilePickerRequest {
+        crate::application::command::FilePickerRequest {
+            title: "Sauvegarder la session Voicelines".into(),
+            mode: crate::application::command::FilePickerMode::Save,
+            intent: crate::application::command::FilePickerIntent::VoicelinesSaveSession,
+            filters: vec![crate::application::command::FileFilterSpec::new(
+                "Session Voicelines",
+                &[crate::project_archive::PROJECT_EXTENSION],
+            )],
+            initial_dir: self
+                .voicelines_project
+                .active_audio()
+                .and_then(|audio| audio.source_path.parent().map(Path::to_path_buf)),
+            default_extension: Some(crate::project_archive::PROJECT_EXTENSION.into()),
+            initial_filename: Some("voicelines.coquerythmo".into()),
+        }
+    }
+
+    pub fn voicelines_load_request(&self) -> crate::application::command::FilePickerRequest {
+        crate::application::command::FilePickerRequest {
+            title: "Charger une session Voicelines".into(),
+            mode: crate::application::command::FilePickerMode::Open,
+            intent: crate::application::command::FilePickerIntent::VoicelinesLoadSession,
+            filters: vec![crate::application::command::FileFilterSpec::new(
+                "Session Voicelines",
+                &[crate::project_archive::PROJECT_EXTENSION],
+            )],
+            initial_dir: None,
+            default_extension: None,
+            initial_filename: None,
+        }
+    }
+
+    pub fn voicelines_export_region_to(
+        &mut self,
+        audio_id: crate::voicelines::AudioId,
+        region_id: crate::voicelines::RegionId,
+        output: PathBuf,
+    ) {
+        let Some(audio) = self.voicelines_project.audio(audio_id).cloned() else {
+            return;
+        };
+        let Some(region) = audio
+            .regions
+            .iter()
+            .find(|region| region.id == region_id)
+            .cloned()
+        else {
+            return;
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = crate::voicelines::export_region(&audio, &region, &output)
+                .map(|()| format!("{} exportée", region.name));
+            let _ = sender.send(result);
+        });
+        self.voicelines_exports
+            .push(PendingVoicelinesExport { receiver });
+        self.show_toast("Export en cours…", 2.0);
+    }
+
+    pub fn voicelines_export_all_to(
+        &mut self,
+        audio_id: crate::voicelines::AudioId,
+        directory: PathBuf,
+    ) {
+        let Some(audio) = self.voicelines_project.audio(audio_id).cloned() else {
+            return;
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = crate::voicelines::export_all(&audio, &directory)
+                .map(|paths| format!("{} voiceline(s) exportée(s)", paths.len()));
+            let _ = sender.send(result);
+        });
+        self.voicelines_exports
+            .push(PendingVoicelinesExport { receiver });
+        self.show_toast("Export en cours…", 2.0);
+    }
+
+    pub fn voicelines_save_session(&mut self, path: PathBuf) {
+        match self.voicelines_project.save(&path) {
+            Ok(()) => self.show_toast("Session Voicelines sauvegardée", 3.0),
+            Err(error) => self.show_toast(error, 6.0),
+        }
+    }
+
+    pub fn voicelines_load_session(&mut self, path: PathBuf) {
+        let loaded = match crate::voicelines::VoicelinesProject::load(&path) {
+            Ok(project) => project,
+            Err(error) => {
+                self.show_toast(error, 6.0);
+                return;
+            }
+        };
+        let project = match Self::voicelines_bind_loaded_project(
+            &mut self.recording_runtime,
+            loaded.project,
+            loaded.audio_paths,
+        ) {
+            Ok(project) => project,
+            Err(error) => {
+                self.show_toast(error, 7.0);
+                return;
+            }
+        };
+        let before = std::mem::replace(&mut self.voicelines_project, project);
+        self.voicelines_commit(before);
+        if let Err(error) = self.voicelines_load_active_player() {
+            self.show_toast(error, 6.0);
+        } else {
+            self.show_toast("Session Voicelines chargée", 3.0);
+        }
+    }
+
+    fn voicelines_bind_loaded_project(
+        runtime: &mut crate::recording_runtime::RecordingRuntime,
+        mut project: crate::voicelines::VoicelinesProject,
+        sources: std::collections::BTreeMap<crate::voicelines::AudioId, PathBuf>,
+    ) -> Result<crate::voicelines::VoicelinesProject, String> {
+        for (id, source) in sources {
+            let recorded = runtime
+                .import_external_audio(&source, "voicelines")
+                .map_err(|error| format!("{}: {error}", source.display()))?;
+            let playback_path = runtime
+                .audio_path(&recorded.checksum)
+                .cloned()
+                .ok_or_else(|| "Audio Voicelines importé introuvable".to_string())?;
+            project.bind_audio(id, playback_path, recorded);
+        }
+        Ok(project)
+    }
+
+    fn voicelines_load_active_player(&mut self) -> Result<(), String> {
+        let audio = self
+            .voicelines_project
+            .active_audio()
+            .ok_or_else(|| "Aucun audio sélectionné".to_string())?;
+        let path = audio.playback_path.clone();
+        let duration_ms = audio.duration_ms();
+        let audio_index = self
+            .voicelines_project
+            .audios()
+            .iter()
+            .position(|candidate| candidate.id == audio.id)
+            .unwrap_or(0);
+        let mut player = VideoPlayer::new();
+        player.load_audio_only(&path, duration_ms as f64 / 1_000.0)?;
+        player.set_volume(self.ui_shell.ui.volume());
+        self.voicelines_player = Some(player);
+        self.voicelines_play_until_ms = None;
+        self.ui_shell.ui.set_playing(false);
+        self.ui_shell.ui.total_frames = (duration_ms / 10) as i64;
+        self.ui_shell
+            .ui
+            .voicelines_audio_selected(duration_ms, audio_index);
+        Ok(())
+    }
+
+    fn voicelines_commit(&mut self, before: crate::voicelines::VoicelinesProject) {
+        if before == self.voicelines_project {
+            return;
+        }
+        // ponytail: snapshots are capped; use operation deltas if very large audio lists make this measurable.
+        if self.voicelines_undo.len() == 20 {
+            self.voicelines_undo.remove(0);
+        }
+        self.voicelines_undo.push(before);
+        self.voicelines_redo.clear();
+        self.voicelines_revision = self.voicelines_revision.wrapping_add(1);
+        self.project_session.dirty = true;
+    }
+
+    pub fn voicelines_undo(&mut self) {
+        let Some(previous) = self.voicelines_undo.pop() else {
+            return;
+        };
+        let current = std::mem::replace(&mut self.voicelines_project, previous);
+        self.voicelines_redo.push(current);
+        self.voicelines_after_history_restore();
+    }
+
+    pub fn voicelines_redo(&mut self) {
+        let Some(next) = self.voicelines_redo.pop() else {
+            return;
+        };
+        let current = std::mem::replace(&mut self.voicelines_project, next);
+        self.voicelines_undo.push(current);
+        self.voicelines_after_history_restore();
+    }
+
+    fn voicelines_after_history_restore(&mut self) {
+        self.voicelines_revision = self.voicelines_revision.wrapping_add(1);
+        self.project_session.dirty = true;
+        self.ui_shell.ui.set_voicelines_selected_region(None);
+        if self.voicelines_project.active_audio().is_some() {
+            if let Err(error) = self.voicelines_load_active_player() {
+                self.show_toast(error, 5.0);
+            }
+        } else {
+            self.voicelines_player = None;
+            self.voicelines_play_until_ms = None;
+            self.ui_shell.ui.total_frames = 0;
+            self.ui_shell.ui.set_playing(false);
+        }
+    }
+
+    fn poll_voicelines_jobs(&mut self) -> bool {
+        let mut changed = false;
+        let mut index = self.voicelines_imports.len();
+        while index > 0 {
+            index -= 1;
+            let result = match self.voicelines_imports[index].receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Disconnected) => Some(Err(
+                    crate::recording::RecordingError::Recorder("audio import disconnected".into()),
+                )),
+                Err(TryRecvError::Empty) => None,
+            };
+            let Some(result) = result else { continue };
+            let pending = self.voicelines_imports.swap_remove(index);
+            match result {
+                Ok(recorded) => {
+                    self.recording_runtime
+                        .remember_external_audio(&recorded, pending.output_path.clone());
+                    let before = self.voicelines_project.clone();
+                    let id = self.voicelines_project.add_audio(
+                        pending.source_path,
+                        pending.output_path,
+                        recorded,
+                    );
+                    self.voicelines_commit(before);
+                    self.voicelines_select_audio(id);
+                    self.show_toast("Audio ajouté", 2.5);
+                }
+                Err(error) => {
+                    let _ = std::fs::remove_file(pending.output_path);
+                    self.show_toast(error.to_string(), 6.0);
+                }
+            }
+            changed = true;
+        }
+
+        let mut index = self.voicelines_exports.len();
+        while index > 0 {
+            index -= 1;
+            let result = match self.voicelines_exports[index].receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Disconnected) => Some(Err("export interrompu".into())),
+                Err(TryRecvError::Empty) => None,
+            };
+            if let Some(result) = result {
+                self.voicelines_exports.swap_remove(index);
+                match result {
+                    Ok(message) => self.show_toast(message, 4.0),
+                    Err(error) => self.show_toast(error, 7.0),
+                }
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub fn handle_ui_event(&mut self, event: &UiEvent) -> EventResponse {
         if self.active_workspace() == WorkspaceId::Recording {
             self.sync_recording_workspace_ui();
         }
         let render_frame = self.render_frame();
-        let fps = self.fps();
+        let fps = self.active_fps();
         self.project_session
             .render_index
             .refresh(&self.project_session.project);
         let response = self.ui_shell.ui.handle_event(
             event,
             &self.project_session.project,
+            &self.voicelines_project,
             &self.project_session.render_index,
             render_frame,
             fps,
@@ -543,13 +1057,35 @@ impl State {
         {
             return;
         }
+        let previous = self.active_workspace();
+        if previous != workspace {
+            if previous == WorkspaceId::Voicelines {
+                if let Some(player) = &mut self.voicelines_player {
+                    player.pause_for_seek();
+                }
+            } else if workspace == WorkspaceId::Voicelines {
+                if let Some(player) = &mut self.playback.video_player {
+                    player.pause_for_seek();
+                }
+            }
+            self.ui_shell.ui.set_playing(false);
+        }
         let changed = self.workspace_host.activate(workspace);
         if changed || self.ui_shell.ui.active_workspace() != workspace {
             self.ui_shell.ui.set_active_workspace(workspace);
         }
+        if workspace == WorkspaceId::Voicelines
+            && self.voicelines_player.is_none()
+            && self.voicelines_project.active_audio().is_some()
+        {
+            if let Err(error) = self.voicelines_load_active_player() {
+                self.show_toast(error, 5.0);
+            }
+        }
         let label = match workspace {
             WorkspaceId::Rythmo => crate::i18n::t("workspace_tabs.rythmo"),
             WorkspaceId::Recording => crate::i18n::t("workspace_tabs.recording"),
+            WorkspaceId::Voicelines => crate::i18n::t("workspace_tabs.voicelines"),
         };
         self.announce_accessibility(AccessibilityEvent::Selection {
             label: format!(
@@ -557,13 +1093,18 @@ impl State {
                 crate::i18n::t("accessibility.workspace_selected")
             ),
         });
-        if workspace == WorkspaceId::Rythmo {
-            self.jobs.play_recording_mix_when_ready = false;
-            self.clear_recording_mix_preview();
-        } else if self.ui_shell.ui.recording_page()
-            == crate::ui::recording_workspace::RecordingPage::Timeline
-        {
-            self.schedule_recording_mix();
+        match workspace {
+            WorkspaceId::Rythmo | WorkspaceId::Voicelines => {
+                self.jobs.play_recording_mix_when_ready = false;
+                self.clear_recording_mix_preview();
+            }
+            WorkspaceId::Recording
+                if self.ui_shell.ui.recording_page()
+                    == crate::ui::recording_workspace::RecordingPage::Timeline =>
+            {
+                self.schedule_recording_mix();
+            }
+            WorkspaceId::Recording => {}
         }
     }
 
@@ -1386,6 +1927,19 @@ impl State {
         }
     }
 
+    pub fn recording_send_asset_to_voicelines(&mut self, asset_id: crate::recording::AudioAssetId) {
+        let Some(path) = self
+            .project_session
+            .recording_asset_paths
+            .get(&asset_id)
+            .cloned()
+        else {
+            self.show_toast("Audio d'enregistrement introuvable", 4.0);
+            return;
+        };
+        self.voicelines_begin_audio_import(path);
+    }
+
     pub fn recording_start_capture(&mut self) {
         if !self.ui_shell.ui.recording_can_edit_timeline() {
             self.recording_read_only_error();
@@ -2002,10 +2556,12 @@ impl State {
         let project = self.project_session.project.snapshot();
         let saved_revision = project.revision();
         let saved_recording_revision = self.project_session.recording_revision;
+        let saved_voicelines_revision = self.voicelines_revision;
         let transaction_journal = self.project_session.transaction_journal.clone();
         let recording_project = self.project_session.recording_project.clone();
         let recording_transactions = self.project_session.recording_transactions.clone();
         let recording_asset_paths = self.project_session.recording_asset_paths.clone();
+        let voicelines_project = self.voicelines_project.clone();
         let fps = self.fps();
         let default_uses_proxy = self.default_media_uses_proxy();
         let worker_path = path.clone();
@@ -2024,7 +2580,7 @@ impl State {
                     },
                 )
                 .collect();
-            let result = crate::project_archive::save_bundle_with_recording_data(
+            let result = crate::project_archive::save_bundle_with_recording_and_voicelines_data(
                 &project,
                 fps,
                 &worker_path,
@@ -2038,6 +2594,7 @@ impl State {
                     transaction_log: &recording_transactions,
                     assets: &recording_assets,
                 }),
+                Some(&voicelines_project),
             )
             .map_err(|error| error.to_string());
             let _ = sender.send(result);
@@ -2047,6 +2604,7 @@ impl State {
             path,
             saved_revision,
             saved_recording_revision,
+            saved_voicelines_revision,
             source_video,
             proxy_video,
             default_uses_proxy,
@@ -3063,14 +3621,13 @@ impl State {
     // -- Video --
 
     pub fn current_frame(&self) -> i64 {
-        self.playback
-            .video_player
+        self.active_player()
             .as_ref()
             .map_or(0, |p| p.current_frame())
     }
 
     fn timecode_for_frame(&self, frame: i64) -> String {
-        let fps = self.fps().max(1.0);
+        let fps = self.active_fps().max(1.0);
         let total_centiseconds = ((frame.max(0) as f64 / fps) * 100.0).round() as i64;
         let hours = total_centiseconds / 360_000;
         let minutes = (total_centiseconds / 6_000) % 60;
@@ -3110,18 +3667,14 @@ impl State {
     }
 
     pub fn render_frame(&self) -> f64 {
-        self.playback
-            .video_player
-            .as_ref()
+        self.active_player()
             .map_or(self.current_frame() as f64, |p| {
                 p.current_frame_for_render()
             })
     }
 
     fn render_frame_at(&self, now: Instant) -> f64 {
-        self.playback
-            .video_player
-            .as_ref()
+        self.active_player()
             .map_or(self.current_frame() as f64, |player| {
                 player.current_frame_for_render_at(now)
             })
@@ -3131,14 +3684,26 @@ impl State {
         self.playback
             .video_player
             .as_ref()
-            .map_or(30.0, |p| p.fps())
+            .map_or(30.0, VideoPlayer::fps)
+    }
+
+    fn active_fps(&self) -> f64 {
+        self.active_player().map_or(30.0, VideoPlayer::fps)
     }
 
     pub fn total_frames(&self) -> i64 {
         self.playback
             .video_player
             .as_ref()
-            .map_or(0, |p| p.total_frames())
+            .map_or(0, VideoPlayer::total_frames)
+    }
+
+    fn active_player(&self) -> Option<&VideoPlayer> {
+        if self.active_workspace() == WorkspaceId::Voicelines {
+            self.voicelines_player.as_ref()
+        } else {
+            self.playback.video_player.as_ref()
+        }
     }
 
     pub fn source_video_size(&self) -> Option<(u32, u32)> {
@@ -3719,7 +4284,12 @@ impl State {
         }
         self.jobs.play_recording_mix_when_ready = false;
         let playing = {
-            let Some(player) = &mut self.playback.video_player else {
+            let player = if self.active_workspace() == WorkspaceId::Voicelines {
+                &mut self.voicelines_player
+            } else {
+                &mut self.playback.video_player
+            };
+            let Some(player) = player else {
                 return;
             };
             if !player.toggle() {
@@ -3745,7 +4315,7 @@ impl State {
                 })
                 .to_string(),
             });
-        if broadcast {
+        if broadcast && self.active_workspace() == WorkspaceId::Recording {
             let frame = self.current_frame();
             self.broadcast_recording_playback(frame, playing);
         }
@@ -3886,6 +4456,9 @@ impl State {
         if let Some(player) = &mut self.playback.video_player {
             player.set_volume(vol);
         }
+        if let Some(player) = &mut self.voicelines_player {
+            player.set_volume(vol);
+        }
         if self.active_workspace() == WorkspaceId::Recording {
             self.schedule_recording_mix();
         }
@@ -3952,6 +4525,10 @@ impl State {
     }
 
     fn prev_frame_internal(&mut self, broadcast: bool) {
+        if self.active_workspace() == WorkspaceId::Voicelines {
+            self.seek_relative_internal(-1, false);
+            return;
+        }
         let bgl = self.render.ui_renderer.texture_bind_group_layout();
         let sampler = self.render.ui_renderer.texture_sampler();
         let mut playback = None;
@@ -3982,6 +4559,10 @@ impl State {
     }
 
     fn next_frame_internal(&mut self, broadcast: bool) {
+        if self.active_workspace() == WorkspaceId::Voicelines {
+            self.seek_relative_internal(1, false);
+            return;
+        }
         let bgl = self.render.ui_renderer.texture_bind_group_layout();
         let sampler = self.render.ui_renderer.texture_sampler();
         let mut playback = None;
@@ -4013,7 +4594,12 @@ impl State {
 
     fn seek_absolute_internal(&mut self, frame: i64, broadcast: bool) {
         let mut playback = None;
-        if let Some(player) = &mut self.playback.video_player {
+        let player = if self.active_workspace() == WorkspaceId::Voicelines {
+            &mut self.voicelines_player
+        } else {
+            &mut self.playback.video_player
+        };
+        if let Some(player) = player {
             if player.pause_for_seek() {
                 if self.ui_shell.ui.is_playing() {
                     self.ui_shell.ui.toggle_play_pause();
@@ -4028,7 +4614,7 @@ impl State {
             });
             playback = Some((player.current_frame(), self.ui_shell.ui.is_playing()));
         }
-        if broadcast {
+        if broadcast && self.active_workspace() == WorkspaceId::Recording {
             if let Some((frame, playing)) = playback {
                 self.broadcast_recording_playback(frame, playing);
             }
@@ -4041,7 +4627,12 @@ impl State {
         self.playback.scroll_needs_decode = false;
         self.playback.last_scroll_time = None;
 
-        if let Some(player) = &mut self.playback.video_player {
+        let player = if self.active_workspace() == WorkspaceId::Voicelines {
+            &mut self.voicelines_player
+        } else {
+            &mut self.playback.video_player
+        };
+        if let Some(player) = player {
             player.prepare_current_frame();
         }
     }
@@ -4055,14 +4646,19 @@ impl State {
 
     fn seek_relative_internal(&mut self, delta: i32, broadcast: bool) {
         let mut playback = None;
-        if let Some(player) = &mut self.playback.video_player {
+        let player = if self.active_workspace() == WorkspaceId::Voicelines {
+            &mut self.voicelines_player
+        } else {
+            &mut self.playback.video_player
+        };
+        if let Some(player) = player {
             player.seek_frame_instant(delta);
             self.playback.timeline.emit(TimelineEvent::FrameChanged {
                 frame: player.current_frame(),
             });
             playback = Some((player.current_frame(), self.ui_shell.ui.is_playing()));
         }
-        if broadcast {
+        if broadcast && self.active_workspace() == WorkspaceId::Recording {
             if let Some((frame, playing)) = playback {
                 self.broadcast_recording_playback(frame, playing);
             }
@@ -6988,7 +7584,13 @@ impl State {
     // -- Render --
 
     fn tick_video_at(&mut self, now: Instant) {
-        if let Some(player) = &mut self.playback.video_player {
+        let voicelines = self.active_workspace() == WorkspaceId::Voicelines;
+        let player = if voicelines {
+            &mut self.voicelines_player
+        } else {
+            &mut self.playback.video_player
+        };
+        if let Some(player) = player {
             let prev_frame = player.current_frame();
             let (bgl, sampler) = (
                 self.render.ui_renderer.texture_bind_group_layout(),
@@ -7009,6 +7611,17 @@ impl State {
             if !player.is_playing() && self.ui_shell.ui.is_playing() {
                 self.playback.timeline.emit(TimelineEvent::PlaybackStopped);
                 self.ui_shell.ui.toggle_play_pause();
+            }
+        }
+        if voicelines {
+            if let Some(end_ms) = self.voicelines_play_until_ms {
+                if self.render_frame_at(now) * 10.0 >= end_ms as f64 {
+                    if let Some(player) = &mut self.voicelines_player {
+                        player.pause_for_seek();
+                    }
+                    self.voicelines_play_until_ms = None;
+                    self.ui_shell.ui.set_playing(false);
+                }
             }
         }
     }
@@ -7270,6 +7883,7 @@ impl State {
                 let loaded_huuid = loaded.huuid.clone();
                 let loaded_transaction_journal = loaded.transaction_journal.clone();
                 let loaded_recording = loaded.recording.take();
+                let loaded_voicelines = loaded.voicelines.take();
                 let loaded_default_uses_proxy = loaded.default_uses_proxy;
                 let source_removed = crate::video_proxy::source_is_removed(&job.br_path);
                 if source_removed {
@@ -7304,6 +7918,23 @@ impl State {
                     }
                 }
 
+                let mut recording_runtime = crate::recording_runtime::RecordingRuntime::new();
+                let voicelines_project = match loaded_voicelines {
+                    Some(voicelines) => match Self::voicelines_bind_loaded_project(
+                        &mut recording_runtime,
+                        voicelines.project,
+                        voicelines.audio_paths,
+                    ) {
+                        Ok(project) => project,
+                        Err(error) => {
+                            self.show_toast(error, 7.0);
+                            self.ui_shell.ui.finish_project_load();
+                            return true;
+                        }
+                    },
+                    None => crate::voicelines::VoicelinesProject::default(),
+                };
+
                 crate::vector_text::clear_project_font();
                 if let Some(font_path) = loaded.font_asset_path.as_deref() {
                     if let Some(family) = crate::vector_text::register_project_font_file(font_path)
@@ -7334,7 +7965,13 @@ impl State {
                 } else {
                     self.project_session.reset_recording_document(fps);
                 }
-                self.recording_runtime = crate::recording_runtime::RecordingRuntime::new();
+                self.recording_runtime = recording_runtime;
+                self.voicelines_project = voicelines_project;
+                self.voicelines_revision = 0;
+                self.voicelines_undo.clear();
+                self.voicelines_redo.clear();
+                self.voicelines_player = None;
+                self.voicelines_play_until_ms = None;
                 self.project_session.dirty = false;
                 self.sync_audio_settings_to_player();
                 self.project_session.project_path = if is_legacy_json {
@@ -7451,6 +8088,7 @@ impl State {
                 let snapshot_is_current = self.project_session.project.revision()
                     == job.saved_revision
                     && self.project_session.recording_revision == job.saved_recording_revision
+                    && self.voicelines_revision == job.saved_voicelines_revision
                     && self.video_path().as_ref() == Some(&job.source_video)
                     && self.proxy_video_path() == job.proxy_video
                     && self.default_media_uses_proxy() == job.default_uses_proxy
@@ -7654,6 +8292,7 @@ impl State {
         changed |= self.tick_keyboard_pan();
         changed |= self.poll_recording_runtime();
         changed |= self.poll_recording_uploads();
+        changed |= self.poll_voicelines_jobs();
 
         if let Ok(mut results) = self.collaboration.ping_results.try_lock() {
             for r in results.drain(..) {
@@ -7920,6 +8559,7 @@ impl State {
         self.clear_video_for_new_project();
         crate::application::edit_service::EditExecutor::reset(&mut self.project_session);
         self.recording_runtime = crate::recording_runtime::RecordingRuntime::new();
+        self.reset_voicelines_document();
         self.ui_shell.ui.reset_recording_workspace();
         crate::vector_text::clear_project_font();
         self.render.ui_renderer.clear_text_cache();
@@ -8253,6 +8893,7 @@ impl State {
             && self.ui_shell.ui.recording_page()
                 == crate::ui::recording_workspace::RecordingPage::Choice;
         let video_quad = if recording_choice
+            || self.active_workspace() == WorkspaceId::Voicelines
             || self.ui_shell.ui.export_progress.is_some()
             || self.window_manager.secondary_kind
                 == Some(crate::application::window_service::SecondaryWindowKind::Video)
@@ -8278,7 +8919,7 @@ impl State {
             .as_deref()
             .map(Vec::as_slice)
             .unwrap_or(empty_waveform);
-        let fps = self.fps();
+        let fps = self.active_fps();
         let waveform_offset_frames = self.active_audio_offset_frames();
         let waveform_is_instrumental = self.active_audio_is_instrumental();
         self.project_session
@@ -8295,6 +8936,7 @@ impl State {
             self.ui_scale,
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
             &self.project_session.project,
+            &self.voicelines_project,
             &self.project_session.render_index,
             current_frame,
             render_frame,

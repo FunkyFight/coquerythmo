@@ -74,6 +74,7 @@
 
 "workspace_tabs.rythmo" = "Bande rythmo"
 "workspace_tabs.recording" = "Enregistrement"
+"workspace_tabs.voicelines" = "Voicelines"
 "recording.choice.solo" = "S'enregistrer en solo"
 "recording.choice.solo_hint" = "Enregistrez et montez vos prises localement, sans connexion."
 "recording.choice.online" = "S'enregistrer en ligne"

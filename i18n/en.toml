@@ -74,6 +74,7 @@
 
 "workspace_tabs.rythmo" = "Rythmo Band"
 "workspace_tabs.recording" = "Recording"
+"workspace_tabs.voicelines" = "Voicelines"
 "recording.choice.solo" = "Record solo"
 "recording.choice.solo_hint" = "Record and edit your takes locally, without connecting."
 "recording.choice.online" = "Record online"
