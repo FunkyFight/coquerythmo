@@ -46,7 +46,7 @@ l’annulation est annoncée en priorité.
 | `Ctrl + N` | Créer un nouveau projet |
 | `Ctrl + I` | Ouvrir le panneau des lignes |
 | `Ctrl + P` | Ouvrir le panneau des rôles |
-| `Ctrl + L` | Ouvrir le sélecteur de langues, hors modale |
+| `Ctrl + L` | Ouvrir l’Explorateur des médias, hors modale |
 | `Alt + E` | Ouvrir le menu des émotions du texte |
 | `Ctrl + K` | Scinder le dialogue à la position du caret |
 

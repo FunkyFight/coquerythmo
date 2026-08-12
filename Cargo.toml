@@ -1,6 +1,6 @@
 [package]
 name = "coquerythmo"
-version = "4.2.1"
+version = "4.2.5"
 edition = "2021"
 license = "GPL-3.0-only"
 
@@ -32,7 +32,7 @@ unicode-segmentation = "1"
 [target.'cfg(windows)'.dependencies]
 accesskit = "0.12.3"
 accesskit_winit = { version = "0.18.7", default-features = false, features = ["rwh_06"] }
-windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 winres = "0.1"

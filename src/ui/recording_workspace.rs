@@ -5,7 +5,8 @@
 //! `render_lines`, markers and drawing) inside [`RecordingLayout::rythmo`].
 //! This module only describes the DAW chrome around that read-only view.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use crate::network::NetworkMember;
 use crate::recording::{
@@ -23,7 +24,11 @@ const TEXT: [u8; 3] = [225, 227, 236];
 const MUTED_TEXT: [u8; 3] = [155, 158, 172];
 const ACCENT: [f32; 4] = [0.34, 0.28, 0.78, 1.0];
 const RECORD: [f32; 4] = [0.82, 0.18, 0.24, 1.0];
+const USED_AUDIO: [f32; 4] = [0.10, 0.40, 0.21, 1.0];
+const USED_AUDIO_SELECTED: [f32; 4] = [0.14, 0.55, 0.27, 1.0];
 pub const TRACK_ROW_H: f32 = 58.0;
+const ASSET_ROW_H: f32 = 42.0;
+const ASSET_GROUP_H: f32 = 24.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingPage {
@@ -84,6 +89,8 @@ pub enum RecordingControl {
     StartCapture,
     Clip(AudioClipId),
     Asset(AudioAssetId),
+    AssetGroup(String),
+    ImportUsername,
     Participant(String),
 }
 
@@ -106,6 +113,8 @@ impl RecordingControl {
             Self::StartCapture => "recording.capture.start".into(),
             Self::Clip(id) => format!("recording.clip.{}", id.get()),
             Self::Asset(id) => format!("recording.asset.{}", id.get()),
+            Self::AssetGroup(owner) => format!("recording.assets.group.{owner}"),
+            Self::ImportUsername => "recording.audio.import.username".into(),
             Self::Participant(id) => format!("recording.participant.{id}"),
         }
     }
@@ -467,6 +476,8 @@ pub struct RecordingWorkspaceUi {
     pub selected_asset: Option<AudioAssetId>,
     pub renaming_track: Option<AudioTrackId>,
     pub rename_buffer: String,
+    pending_audio_import: Option<PendingAudioImport>,
+    import_username: String,
     pub dragging_asset: Option<AudioAssetId>,
     pub dragging_clip: Option<RecordingClipDrag>,
     pub dragging_track_volume: Option<AudioTrackId>,
@@ -475,6 +486,31 @@ pub struct RecordingWorkspaceUi {
     track_count: usize,
     dragging_track_scrollbar: bool,
     track_scrollbar_drag_offset: f32,
+    asset_scroll: f32,
+    asset_content_height: f32,
+    dragging_asset_scrollbar: bool,
+    asset_scrollbar_drag_offset: f32,
+    expanded_asset_owners: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PendingAudioImport {
+    path: PathBuf,
+    placement: Option<(AudioTrackId, i64)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RecordingTextEditResult {
+    Consumed,
+    RenameTrack {
+        track_id: AudioTrackId,
+        name: String,
+    },
+    ImportAudio {
+        path: PathBuf,
+        username: String,
+        placement: Option<(AudioTrackId, i64)>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -494,6 +530,8 @@ impl Default for RecordingWorkspaceUi {
             selected_asset: None,
             renaming_track: None,
             rename_buffer: String::new(),
+            pending_audio_import: None,
+            import_username: String::new(),
             dragging_asset: None,
             dragging_clip: None,
             dragging_track_volume: None,
@@ -502,6 +540,11 @@ impl Default for RecordingWorkspaceUi {
             track_count: 0,
             dragging_track_scrollbar: false,
             track_scrollbar_drag_offset: 0.0,
+            asset_scroll: 0.0,
+            asset_content_height: 0.0,
+            dragging_asset_scrollbar: false,
+            asset_scrollbar_drag_offset: 0.0,
+            expanded_asset_owners: BTreeSet::new(),
         }
     }
 }
@@ -522,10 +565,12 @@ impl RecordingWorkspaceUi {
         self.editor.clear_selection();
         self.selected_asset = None;
         self.cancel_rename_track();
+        self.cancel_audio_import();
         self.dragging_asset = None;
         self.dragging_clip = None;
         self.dragging_track_volume = None;
         self.track_volumes.clear();
+        self.expanded_asset_owners.clear();
     }
 
     pub fn selected_clips(&self) -> impl Iterator<Item = AudioClipId> + '_ {
@@ -564,7 +609,85 @@ impl RecordingWorkspaceUi {
     }
 
     pub fn is_editing_text(&self) -> bool {
-        self.renaming_track.is_some()
+        self.renaming_track.is_some() || self.pending_audio_import.is_some()
+    }
+
+    pub fn begin_audio_import(
+        &mut self,
+        path: PathBuf,
+        placement: Option<(AudioTrackId, i64)>,
+        username: String,
+    ) {
+        self.cancel_rename_track();
+        self.pending_audio_import = Some(PendingAudioImport { path, placement });
+        self.import_username = username.chars().take(80).collect();
+    }
+
+    fn cancel_audio_import(&mut self) {
+        self.pending_audio_import = None;
+        self.import_username.clear();
+    }
+
+    pub fn handle_text_edit(&mut self, event: &UiEvent) -> Option<RecordingTextEditResult> {
+        let UiEvent::KeyInput { text } = event else {
+            return self
+                .pending_audio_import
+                .as_ref()
+                .map(|_| RecordingTextEditResult::Consumed);
+        };
+
+        if self.pending_audio_import.is_some() {
+            match text.as_str() {
+                "\x1b" => self.cancel_audio_import(),
+                "\r" | "\n" => {
+                    let username = self.import_username.trim().to_owned();
+                    if !username.is_empty() {
+                        let pending = self.pending_audio_import.take().unwrap();
+                        self.import_username.clear();
+                        return Some(RecordingTextEditResult::ImportAudio {
+                            path: pending.path,
+                            username,
+                            placement: pending.placement,
+                        });
+                    }
+                }
+                "\x08" | "\x7f" => {
+                    self.import_username.pop();
+                }
+                value if !value.chars().any(char::is_control) => {
+                    let remaining = 80_usize.saturating_sub(self.import_username.chars().count());
+                    self.import_username.extend(value.chars().take(remaining));
+                }
+                _ => {}
+            }
+            return Some(RecordingTextEditResult::Consumed);
+        }
+
+        let track_id = self.renaming_track?;
+        match text.as_str() {
+            "\x1b" => self.cancel_rename_track(),
+            "\r" | "\n" => {
+                let name = self.rename_buffer.trim().to_owned();
+                self.cancel_rename_track();
+                if !name.is_empty() {
+                    return Some(RecordingTextEditResult::RenameTrack { track_id, name });
+                }
+            }
+            "\x08" | "\x7f" => {
+                self.rename_buffer.pop();
+            }
+            value if !value.chars().any(char::is_control) => {
+                self.rename_buffer.push_str(value);
+                self.rename_buffer.truncate(80);
+            }
+            _ => {}
+        }
+        Some(RecordingTextEditResult::Consumed)
+    }
+
+    pub fn reveal_asset(&mut self, file_name: &str, asset_id: AudioAssetId) {
+        self.expanded_asset_owners.insert(asset_owner(file_name));
+        self.selected_asset = Some(asset_id);
     }
 
     pub fn track_volume(&self, track_id: AudioTrackId) -> f32 {
@@ -610,6 +733,68 @@ impl RecordingWorkspaceUi {
         self.track_count = track_count;
         if track_count == 0 {
             self.track_scroll = 0;
+        }
+    }
+
+    pub fn sync_asset_content(&mut self, project: &RecordingProject) {
+        let groups = grouped_assets(project);
+        self.asset_content_height = groups.len() as f32 * ASSET_GROUP_H
+            + groups
+                .iter()
+                .filter(|(owner, _)| self.expanded_asset_owners.contains(*owner))
+                .map(|(_, assets)| assets.len() as f32 * ASSET_ROW_H)
+                .sum::<f32>();
+    }
+
+    pub fn toggle_asset_group(&mut self, owner: &str) {
+        if !self.expanded_asset_owners.remove(owner) {
+            self.expanded_asset_owners.insert(owner.to_owned());
+        }
+    }
+
+    pub fn handle_asset_scroll(&mut self, event: &UiEvent, layout: RecordingLayout) -> bool {
+        let Some(rect) = layout.assets else {
+            return false;
+        };
+        let Some((track, thumb, max_scroll)) =
+            asset_scrollbar_geometry(rect, self.asset_content_height, self.asset_scroll)
+        else {
+            self.asset_scroll = 0.0;
+            self.dragging_asset_scrollbar = false;
+            return false;
+        };
+        self.asset_scroll = self.asset_scroll.min(max_scroll);
+        match event {
+            UiEvent::MousePress { x, y } if thumb.contains(*x, *y) => {
+                self.dragging_asset_scrollbar = true;
+                self.asset_scrollbar_drag_offset = *y - thumb.y;
+                true
+            }
+            UiEvent::MousePress { x, y } if track.contains(*x, *y) => {
+                let travel = (track.height - thumb.height).max(1.0);
+                self.asset_scroll =
+                    (((*y - track.y - thumb.height / 2.0) / travel).clamp(0.0, 1.0)) * max_scroll;
+                self.dragging_asset_scrollbar = true;
+                self.asset_scrollbar_drag_offset = thumb.height / 2.0;
+                true
+            }
+            UiEvent::MouseMove { y, .. } if self.dragging_asset_scrollbar => {
+                let travel = (track.height - thumb.height).max(1.0);
+                self.asset_scroll = (((*y - self.asset_scrollbar_drag_offset - track.y) / travel)
+                    .clamp(0.0, 1.0))
+                    * max_scroll;
+                true
+            }
+            UiEvent::MouseRelease { .. } if self.dragging_asset_scrollbar => {
+                self.dragging_asset_scrollbar = false;
+                true
+            }
+            UiEvent::Scroll { x, y, delta, .. } if rect.contains(*x, *y) => {
+                self.asset_scroll =
+                    (self.asset_scroll - *delta * ASSET_ROW_H).clamp(0.0, max_scroll);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -697,6 +882,13 @@ impl RecordingWorkspaceUi {
             current_frame,
             countdown_seconds,
         )
+    }
+
+    pub fn audio_import_prompt_scene(&self, screen: Rect) -> Option<RecordingScene> {
+        self.pending_audio_import.as_ref()?;
+        let mut scene = RecordingScene::default();
+        push_audio_import_prompt(&mut scene, self, screen);
+        Some(scene)
     }
 }
 
@@ -883,7 +1075,72 @@ fn timeline_scene(
             _ => {}
         }
     }
+    if let Some(prompt) = ui.audio_import_prompt_scene(layout.content) {
+        scene.controls.extend(prompt.controls);
+    }
     scene
+}
+
+fn push_audio_import_prompt(scene: &mut RecordingScene, ui: &RecordingWorkspaceUi, screen: Rect) {
+    push_quad(
+        &mut scene.quads,
+        screen,
+        [0.0, 0.0, 0.0, 0.72],
+        [0.0; 4],
+        0.0,
+    );
+    let card = Rect {
+        x: screen.x + (screen.width - 480.0).max(0.0) * 0.5,
+        y: screen.y + (screen.height - 190.0).max(0.0) * 0.5,
+        width: 480.0_f32.min(screen.width),
+        height: 190.0_f32.min(screen.height),
+    };
+    push_quad(&mut scene.quads, card, PANEL_ALT, BORDER, 10.0);
+    scene.labels.push(label(
+        crate::i18n::t("recording.audio.username_prompt"),
+        Rect {
+            height: 48.0,
+            ..card
+        },
+        18.0,
+        TEXT,
+    ));
+    let input = Rect {
+        x: card.x + 28.0,
+        y: card.y + 62.0,
+        width: card.width - 56.0,
+        height: 44.0,
+    };
+    push_quad(&mut scene.quads, input, PANEL_BG, ACCENT, 6.0);
+    scene.labels.push(RecordingLabel {
+        text: ui.import_username.clone(),
+        bounds: input,
+        h_align: HAlign::Left,
+        v_align: VAlign::Center,
+        overflow: Overflow::Ellipsis,
+        font_size: 15.0,
+        color: TEXT,
+    });
+    scene.labels.push(label(
+        crate::i18n::t("recording.audio.username_hint"),
+        Rect {
+            x: card.x + 28.0,
+            y: card.y + 120.0,
+            width: card.width - 56.0,
+            height: 42.0,
+        },
+        12.0,
+        MUTED_TEXT,
+    ));
+    scene.controls.push(RecordingControlInfo {
+        control: RecordingControl::ImportUsername,
+        bounds: input,
+        role: AccessibleRole::TextField,
+        label: crate::i18n::t("recording.audio.username_label").into(),
+        value: Some(ui.import_username.clone()),
+        selected: true,
+        enabled: true,
+    });
 }
 
 fn push_tool_controls(
@@ -1463,43 +1720,206 @@ fn push_assets(
         font_size: 15.0,
         color: TEXT,
     });
-    for (index, asset) in project.assets().enumerate() {
-        let bounds = Rect {
+    let viewport_top = rect.y + 40.0;
+    let viewport_bottom = rect.y + rect.height;
+    let max_scroll = (ui.asset_content_height - (rect.height - 40.0).max(1.0)).max(0.0);
+    let mut y = viewport_top - ui.asset_scroll.min(max_scroll);
+    for (owner, assets) in grouped_assets(project) {
+        let expanded = ui.expanded_asset_owners.contains(&owner);
+        let group_bounds = Rect {
             x: rect.x + 10.0,
-            y: rect.y + 44.0 + index as f32 * 42.0,
-            width: rect.width - 20.0,
-            height: 36.0,
+            y,
+            width: rect.width - 24.0,
+            height: ASSET_GROUP_H,
         };
-        if bounds.y + bounds.height > rect.y + rect.height {
-            break;
+        if y >= viewport_top && y + ASSET_GROUP_H <= viewport_bottom {
+            push_asset_chevron(scene, group_bounds, expanded);
+            scene.labels.push(RecordingLabel {
+                text: owner.clone(),
+                bounds: Rect {
+                    x: group_bounds.x + 18.0,
+                    width: group_bounds.width - 18.0,
+                    ..group_bounds
+                },
+                h_align: HAlign::Left,
+                v_align: VAlign::Center,
+                overflow: Overflow::Ellipsis,
+                font_size: 12.0,
+                color: MUTED_TEXT,
+            });
+            scene.controls.push(RecordingControlInfo {
+                control: RecordingControl::AssetGroup(owner.clone()),
+                bounds: group_bounds,
+                role: AccessibleRole::Button,
+                label: owner.clone(),
+                value: None,
+                selected: expanded,
+                enabled: true,
+            });
         }
-        let selected = ui.selected_asset == Some(asset.id);
-        push_quad(
-            &mut scene.quads,
-            bounds,
-            if selected { ACCENT } else { PANEL_BG },
-            BORDER,
-            5.0,
-        );
-        scene.labels.push(RecordingLabel {
-            text: asset.file_name.clone(),
-            bounds,
-            h_align: HAlign::Left,
-            v_align: VAlign::Center,
-            overflow: Overflow::Ellipsis,
-            font_size: 11.0,
-            color: TEXT,
-        });
-        scene.controls.push(RecordingControlInfo {
-            control: RecordingControl::Asset(asset.id),
-            bounds,
-            role: AccessibleRole::ListItem,
-            label: asset.file_name.clone(),
-            value: Some(format!("{:.1} s", asset.duration_seconds())),
-            selected,
-            enabled: true,
+        y += ASSET_GROUP_H;
+        if !expanded {
+            continue;
+        }
+        for asset in assets {
+            let bounds = Rect {
+                x: rect.x + 10.0,
+                y: y + 3.0,
+                width: rect.width - 24.0,
+                height: 36.0,
+            };
+            y += ASSET_ROW_H;
+            if bounds.y < viewport_top || bounds.y + bounds.height > viewport_bottom {
+                continue;
+            }
+            let selected = ui.selected_asset == Some(asset.id);
+            let used = project.clips().any(|clip| clip.asset_id == asset.id);
+            let fill = match (used, selected) {
+                (true, true) => USED_AUDIO_SELECTED,
+                (true, false) => USED_AUDIO,
+                (false, true) => ACCENT,
+                (false, false) => PANEL_BG,
+            };
+            push_quad(&mut scene.quads, bounds, fill, BORDER, 5.0);
+            scene.labels.push(RecordingLabel {
+                text: asset.file_name.clone(),
+                bounds,
+                h_align: HAlign::Left,
+                v_align: VAlign::Center,
+                overflow: Overflow::Ellipsis,
+                font_size: 11.0,
+                color: TEXT,
+            });
+            scene.controls.push(RecordingControlInfo {
+                control: RecordingControl::Asset(asset.id),
+                bounds,
+                role: AccessibleRole::ListItem,
+                label: asset.file_name.clone(),
+                value: Some(format!("{:.1} s", asset.duration_seconds())),
+                selected,
+                enabled: true,
+            });
+        }
+    }
+    push_asset_scrollbar(scene, ui, rect);
+}
+
+fn push_asset_chevron(scene: &mut RecordingScene, bounds: Rect, expanded: bool) {
+    let color = [0.62, 0.63, 0.70, 1.0];
+    let (first_x, first_y, second_x, second_y) = if expanded {
+        (
+            bounds.x + 4.0,
+            bounds.y + 8.0,
+            bounds.x + 9.0,
+            bounds.y + 8.0,
+        )
+    } else {
+        (
+            bounds.x + 5.0,
+            bounds.y + 6.0,
+            bounds.x + 5.0,
+            bounds.y + 11.0,
+        )
+    };
+    for (x, y, rotation) in [
+        (first_x, first_y, std::f32::consts::FRAC_PI_4),
+        (second_x, second_y, -std::f32::consts::FRAC_PI_4),
+    ] {
+        scene.quads.push(QuadInstance {
+            rect: [x, y, 7.0, 1.5],
+            color,
+            color_bottom: color,
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            border_radius: 0.75,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation,
+            _padding: [0.0; 2],
         });
     }
+}
+
+fn grouped_assets(
+    project: &RecordingProject,
+) -> BTreeMap<String, Vec<&crate::recording::AudioAsset>> {
+    let mut groups = BTreeMap::new();
+    for asset in project.assets() {
+        groups
+            .entry(asset_owner(&asset.file_name))
+            .or_insert_with(Vec::new)
+            .push(asset);
+    }
+    groups
+}
+
+fn asset_owner(file_name: &str) -> String {
+    let stem = file_name.strip_suffix(".flac").unwrap_or(file_name);
+    for (index, _) in stem.match_indices('_') {
+        let tail = &stem[index + 1..];
+        let bytes = tail.as_bytes();
+        if bytes.len() >= 19
+            && bytes[0..4].iter().all(u8::is_ascii_digit)
+            && bytes.get(4) == Some(&b'-')
+            && bytes.get(7) == Some(&b'-')
+            && bytes.get(10) == Some(&b'_')
+            && bytes.get(13) == Some(&b'-')
+            && bytes.get(16) == Some(&b'-')
+        {
+            return stem[..index].to_owned();
+        }
+    }
+    crate::i18n::t("recording.assets.other").into()
+}
+
+fn asset_scrollbar_geometry(
+    rect: Rect,
+    content_height: f32,
+    scroll: f32,
+) -> Option<(Rect, Rect, f32)> {
+    let viewport = (rect.height - 40.0).max(1.0);
+    let max_scroll = (content_height - viewport).max(0.0);
+    if max_scroll == 0.0 {
+        return None;
+    }
+    let track = Rect {
+        x: rect.x + rect.width - 9.0,
+        y: rect.y + 42.0,
+        width: 4.0,
+        height: (rect.height - 46.0).max(1.0),
+    };
+    let thumb_h =
+        (track.height * viewport / content_height).clamp(track.height.min(24.0), track.height);
+    let thumb = Rect {
+        x: track.x,
+        y: track.y + scroll.min(max_scroll) / max_scroll * (track.height - thumb_h),
+        width: track.width,
+        height: thumb_h,
+    };
+    Some((track, thumb, max_scroll))
+}
+
+fn push_asset_scrollbar(scene: &mut RecordingScene, ui: &RecordingWorkspaceUi, rect: Rect) {
+    let Some((track, thumb, _)) =
+        asset_scrollbar_geometry(rect, ui.asset_content_height, ui.asset_scroll)
+    else {
+        return;
+    };
+    push_quad(
+        &mut scene.quads,
+        track,
+        [0.12, 0.13, 0.17, 0.9],
+        [0.0; 4],
+        2.0,
+    );
+    push_quad(
+        &mut scene.quads,
+        thumb,
+        [0.48, 0.50, 0.62, 0.95],
+        [0.0; 4],
+        2.0,
+    );
 }
 
 fn push_participants(
@@ -1729,7 +2149,7 @@ fn label(text: impl Into<String>, bounds: Rect, font_size: f32, color: [u8; 3]) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recording::{AudioTrack, RecordingOperation};
+    use crate::recording::{AudioAsset, AudioClip, AudioTrack, RecordingOperation};
 
     #[test]
     fn only_solo_and_director_can_change_the_shared_view() {
@@ -1743,6 +2163,165 @@ mod tests {
     fn countdown_grows_towards_recording() {
         assert!(countdown_font_size(3) < countdown_font_size(2));
         assert!(countdown_font_size(2) < countdown_font_size(1));
+    }
+
+    #[test]
+    fn audio_import_waits_for_a_username_and_keeps_its_drop_target() {
+        let track_id = AudioTrackId::new(7);
+        let mut ui = RecordingWorkspaceUi::default();
+        ui.begin_audio_import(
+            PathBuf::from("voice.wav"),
+            Some((track_id, 42)),
+            String::new(),
+        );
+
+        let layout = RecordingLayout::timeline(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 720.0,
+            },
+            false,
+        );
+        let scene = ui.scene(
+            layout,
+            &RecordingProject::new(24.0).unwrap(),
+            None,
+            &[],
+            None,
+            0.0,
+            None,
+        );
+        let prompt = ui.audio_import_prompt_scene(layout.content).unwrap();
+        let title = crate::i18n::t("recording.audio.username_prompt");
+        assert!(!scene.labels.iter().any(|label| label.text == title));
+        assert!(prompt.labels.iter().any(|label| label.text == title));
+
+        assert_eq!(
+            ui.handle_text_edit(&UiEvent::KeyInput { text: "Bob".into() }),
+            Some(RecordingTextEditResult::Consumed)
+        );
+        assert_eq!(
+            ui.handle_text_edit(&UiEvent::KeyInput { text: "\r".into() }),
+            Some(RecordingTextEditResult::ImportAudio {
+                path: PathBuf::from("voice.wav"),
+                username: "Bob".into(),
+                placement: Some((track_id, 42)),
+            })
+        );
+        assert!(!ui.is_editing_text());
+    }
+
+    #[test]
+    fn audio_library_groups_by_username_and_marks_used_audio_green() {
+        assert_eq!(
+            asset_owner("alice_voice_2026-08-12_14-30-00.flac"),
+            "alice_voice"
+        );
+        assert_eq!(
+            asset_owner("legacy.flac"),
+            crate::i18n::t("recording.assets.other")
+        );
+
+        let mut project = RecordingProject::new(24.0).unwrap();
+        let track_id = project.allocate_track_id();
+        let asset_id = project.allocate_asset_id();
+        let clip_id = project.allocate_clip_id();
+        project
+            .apply(&RecordingOperation::Batch {
+                operations: vec![
+                    RecordingOperation::AddTrack {
+                        track: AudioTrack::new(track_id, "Voix"),
+                    },
+                    RecordingOperation::AddAsset {
+                        asset: AudioAsset {
+                            id: asset_id,
+                            file_name: "alice_2026-08-12_14-30-00.flac".into(),
+                            sample_rate: 48_000,
+                            channels: 1,
+                            sample_count: 48_000,
+                            checksum: "a".repeat(40),
+                            waveform: WaveformData::new(480, vec![0.5]).unwrap(),
+                        },
+                    },
+                    RecordingOperation::AddClip {
+                        clip: AudioClip {
+                            id: clip_id,
+                            asset_id,
+                            track_id,
+                            start_frame: 0,
+                            source_start_frame: 0,
+                            duration_frames: 24,
+                        },
+                    },
+                ],
+            })
+            .unwrap();
+        let layout = RecordingLayout::daw(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1000.0,
+                height: 300.0,
+            },
+            0.3,
+        );
+        let mut ui = RecordingWorkspaceUi {
+            page: RecordingPage::Timeline,
+            ..Default::default()
+        };
+        ui.sync_asset_content(&project);
+        let collapsed = ui.scene(layout, &project, None, &[], None, 0.0, None);
+        assert!(collapsed
+            .controls
+            .iter()
+            .any(|control| { control.control == RecordingControl::AssetGroup("alice".into()) }));
+        assert!(!collapsed
+            .controls
+            .iter()
+            .any(|control| control.control == RecordingControl::Asset(asset_id)));
+
+        ui.toggle_asset_group("alice");
+        ui.sync_asset_content(&project);
+        ui.asset_content_height = 1_000.0;
+        let assets = layout.assets.unwrap();
+        assert!(ui.handle_asset_scroll(
+            &UiEvent::Scroll {
+                x: assets.x + 10.0,
+                y: assets.y + 50.0,
+                delta: -1.0,
+                fast: false,
+                ctrl: false,
+            },
+            layout,
+        ));
+        assert!(ui.asset_scroll > 0.0);
+        let scrolled = ui.scene(layout, &project, None, &[], None, 0.0, None);
+        assert!(scrolled.labels.iter().all(|label| {
+            label.bounds.x < assets.x
+                || label.text == crate::i18n::t("recording.assets.title")
+                || label.bounds.y >= assets.y + 40.0
+        }));
+        ui.asset_scroll = 0.0;
+        ui.sync_asset_content(&project);
+        let scene = ui.scene(layout, &project, None, &[], None, 0.0, None);
+        let control = scene
+            .controls
+            .iter()
+            .find(|control| control.control == RecordingControl::Asset(asset_id))
+            .unwrap();
+        assert!(scene.labels.iter().any(|label| label.text == "alice"));
+        assert!(scene.quads.iter().any(|quad| {
+            quad.rect
+                == [
+                    control.bounds.x,
+                    control.bounds.y,
+                    control.bounds.width,
+                    control.bounds.height,
+                ]
+                && quad.color == USED_AUDIO
+        }));
     }
 
     #[test]

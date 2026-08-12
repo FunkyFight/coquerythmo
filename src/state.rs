@@ -62,10 +62,7 @@ fn recording_playback_waits_for_mix(
     player_is_playing: bool,
     capture_started: bool,
 ) -> bool {
-    workspace == WorkspaceId::Recording
-        && mix_pending
-        && !player_is_playing
-        && !capture_started
+    workspace == WorkspaceId::Recording && mix_pending && !player_is_playing && !capture_started
 }
 
 fn recording_playback_is_blocked_during_countdown(
@@ -75,6 +72,69 @@ fn recording_playback_is_blocked_during_countdown(
         capture,
         Some(crate::recording::CaptureState::Countdown { .. })
     )
+}
+
+fn media_video_item(path: &Path) -> crate::ui::language_modal::MediaVideoItem {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let (summary, audio_summary) = match crate::video_proxy::probe_video(path) {
+        Ok(info) => {
+            let bitrate = if info.bitrate >= 1_000_000 {
+                format!("{:.1} Mb/s", info.bitrate as f64 / 1_000_000.0)
+            } else if info.bitrate > 0 {
+                format!("{} kb/s", info.bitrate / 1_000)
+            } else {
+                "—".to_string()
+            };
+            let size = if info.file_size >= 1_000_000_000 {
+                format!("{:.1} Go", info.file_size as f64 / 1_000_000_000.0)
+            } else {
+                format!("{:.1} Mo", info.file_size as f64 / 1_000_000.0)
+            };
+            let duration = format!(
+                "{:02}:{:02}:{:02}",
+                (info.duration_secs / 3600.0) as u64,
+                ((info.duration_secs % 3600.0) / 60.0) as u64,
+                (info.duration_secs % 60.0) as u64
+            );
+            let audio = info.audio_codec.as_ref().map(|codec| {
+                format!(
+                    "{} • {} canaux • {} kHz",
+                    codec.to_uppercase(),
+                    info.audio_channels.unwrap_or(0),
+                    info.audio_sample_rate.unwrap_or(0) / 1_000
+                )
+            });
+            (
+                format!(
+                    "{} × {} • {} • {:.3} i/s • {} • {} • {}",
+                    info.width,
+                    info.height,
+                    info.video_codec.to_uppercase(),
+                    info.fps,
+                    bitrate,
+                    duration,
+                    size
+                ),
+                audio,
+            )
+        }
+        Err(error) => (
+            format!(
+                "{} ({error})",
+                crate::i18n::t("media_explorer.info_unavailable")
+            ),
+            None,
+        ),
+    };
+    crate::ui::language_modal::MediaVideoItem {
+        name,
+        path: path.display().to_string(),
+        summary,
+        audio_summary,
+    }
 }
 
 fn recording_added_assets<'a>(
@@ -90,6 +150,42 @@ fn recording_added_assets<'a>(
         crate::recording::RecordingOperation::AddAsset { asset } => assets.push(asset),
         _ => {}
     }
+}
+
+fn imported_audio_operation(
+    project: &mut crate::recording::RecordingProject,
+    audio: crate::recording::RecordedAudio,
+    placement: Option<(crate::recording::AudioTrackId, i64)>,
+) -> (
+    crate::recording::AudioAssetId,
+    String,
+    crate::recording::RecordingOperation,
+) {
+    let asset_id = project.allocate_asset_id();
+    let asset = audio.into_asset(asset_id);
+    let file_name = asset.file_name.clone();
+    let operation = if let Some((track_id, start_frame)) = placement {
+        let clip_id = project.allocate_clip_id();
+        let duration_frames = asset.duration_frames(project.timeline_fps());
+        crate::recording::RecordingOperation::Batch {
+            operations: vec![
+                crate::recording::RecordingOperation::AddAsset { asset },
+                crate::recording::RecordingOperation::AddClip {
+                    clip: crate::recording::AudioClip {
+                        id: clip_id,
+                        asset_id,
+                        track_id,
+                        start_frame,
+                        source_start_frame: 0,
+                        duration_frames,
+                    },
+                },
+            ],
+        }
+    } else {
+        crate::recording::RecordingOperation::AddAsset { asset }
+    };
+    (asset_id, file_name, operation)
 }
 
 fn project_load_stage_key(stage: ProjectLoadStage) -> &'static str {
@@ -209,6 +305,48 @@ mod playback_tests {
             &countdown,
         )));
         assert!(!recording_playback_is_blocked_during_countdown(None));
+    }
+}
+
+#[cfg(test)]
+mod recording_import_tests {
+    use super::imported_audio_operation;
+    use crate::recording::{
+        AudioTrack, RecordedAudio, RecordingOperation, RecordingProject, WaveformData,
+    };
+
+    #[test]
+    fn dropped_audio_is_registered_and_placed_in_one_operation() {
+        let mut project = RecordingProject::new(24.0).unwrap();
+        let track_id = project.allocate_track_id();
+        project
+            .apply(&RecordingOperation::AddTrack {
+                track: AudioTrack::new(track_id, "Voix"),
+            })
+            .unwrap();
+        let audio = RecordedAudio {
+            file_name: "Bob_2026-08-12_14-30-00_voice.flac".into(),
+            sample_rate: 48_000,
+            channels: 1,
+            sample_count: 96_000,
+            checksum: "a".repeat(40),
+            waveform: WaveformData::new(480, vec![0.5]).unwrap(),
+        };
+
+        let (asset_id, _, operation) =
+            imported_audio_operation(&mut project, audio, Some((track_id, 42)));
+        assert!(matches!(operation, RecordingOperation::Batch { .. }));
+        project.apply(&operation).unwrap();
+
+        assert_eq!(
+            project.asset(asset_id).unwrap().file_name,
+            "Bob_2026-08-12_14-30-00_voice.flac"
+        );
+        let clip = project.clips().next().unwrap();
+        assert_eq!(
+            (clip.asset_id, clip.track_id, clip.start_frame),
+            (asset_id, track_id, 42)
+        );
     }
 }
 
@@ -635,6 +773,97 @@ impl State {
             })
         {
             self.recording_error(error.to_string());
+        }
+    }
+
+    pub fn recording_begin_audio_import(
+        &mut self,
+        path: std::path::PathBuf,
+        drop_position: Option<(f32, f32)>,
+    ) {
+        if !self.ui_shell.ui.recording_can_edit_timeline() {
+            self.recording_read_only_error();
+            return;
+        }
+        let placement = match drop_position {
+            Some((x, y)) => match self.ui_shell.ui.recording_drop_target(x, y) {
+                Some(target) => Some(target),
+                None => {
+                    self.recording_error(crate::i18n::t("recording.audio.drop_on_track"));
+                    return;
+                }
+            },
+            None => None,
+        };
+        self.recording_prompt_audio_import(path, placement);
+    }
+
+    pub fn recording_begin_daw_audio_import(
+        &mut self,
+        path: std::path::PathBuf,
+        drop_position: (f32, f32),
+    ) {
+        if !self.ui_shell.ui.recording_can_edit_timeline() {
+            self.recording_read_only_error();
+            return;
+        }
+        let Some(placement) = self
+            .ui_shell
+            .ui
+            .recording_daw_drop_target(drop_position.0, drop_position.1)
+        else {
+            self.recording_error(crate::i18n::t("recording.audio.drop_on_track"));
+            return;
+        };
+        self.recording_prompt_audio_import(path, Some(placement));
+    }
+
+    fn recording_prompt_audio_import(
+        &mut self,
+        path: std::path::PathBuf,
+        placement: Option<(crate::recording::AudioTrackId, i64)>,
+    ) {
+        let username = self.recording_username();
+        self.ui_shell
+            .ui
+            .recording_begin_audio_import(path, placement, username);
+        self.sync_recording_workspace_ui();
+        self.announce_open_container(
+            crate::i18n::t("recording.audio.username_prompt"),
+            crate::i18n::t("recording.audio.username_label").to_string(),
+        );
+    }
+
+    pub fn recording_import_audio(
+        &mut self,
+        path: std::path::PathBuf,
+        username: String,
+        placement: Option<(crate::recording::AudioTrackId, i64)>,
+    ) {
+        if !self.ui_shell.ui.recording_can_edit_timeline() {
+            self.recording_read_only_error();
+            return;
+        }
+        match self
+            .recording_runtime
+            .import_external_audio(&path, &username)
+        {
+            Ok(audio) => {
+                let (id, file_name, operation) = imported_audio_operation(
+                    &mut self.project_session.recording_project,
+                    audio,
+                    placement,
+                );
+                match self.apply_recording_operation(operation) {
+                    Ok(()) => {
+                        self.ui_shell.ui.recording_reveal_asset(&file_name, id);
+                        self.sync_recording_workspace_ui();
+                        self.show_toast(crate::i18n::t("recording.audio.imported"), 3.0);
+                    }
+                    Err(error) => self.recording_error(error.to_string()),
+                }
+            }
+            Err(error) => self.recording_error(error.to_string()),
         }
     }
 
@@ -1430,7 +1659,7 @@ impl State {
             if self.start_project_save(
                 path,
                 source_video,
-                self.playback.proxy_video_path.clone(),
+                self.proxy_video_path(),
                 font_asset,
                 SaveContinuation::ProjectTransfer,
             ) {
@@ -1778,8 +2007,10 @@ impl State {
         let recording_transactions = self.project_session.recording_transactions.clone();
         let recording_asset_paths = self.project_session.recording_asset_paths.clone();
         let fps = self.fps();
+        let default_uses_proxy = self.default_media_uses_proxy();
         let worker_path = path.clone();
         let worker_source = source_video.clone();
+        let worker_proxy = proxy_video.clone();
         let worker_font = font_asset.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1798,9 +2029,8 @@ impl State {
                 fps,
                 &worker_path,
                 &worker_source,
-                // The proxy is a disposable local cache. Embedding it beside
-                // the source duplicated the largest project asset.
-                None,
+                worker_proxy.as_deref(),
+                default_uses_proxy,
                 Some(&worker_font),
                 Some(&transaction_journal),
                 Some(crate::project_archive::RecordingBundleInput {
@@ -1819,6 +2049,7 @@ impl State {
             saved_recording_revision,
             source_video,
             proxy_video,
+            default_uses_proxy,
             font_asset,
             continuation,
             receiver,
@@ -2209,11 +2440,9 @@ impl State {
         let mut settings = self.project_session.project.settings().clone();
         settings.scroll_speed = scroll_speed.clamp(0.25, 4.0);
         settings.reading_bar_offset_percent = reading_bar_offset_percent.clamp(-50.0, 50.0);
-        EditExecutor::apply_domain_change(
-            &mut self.project_session,
-            origin,
-            |project| project.set_settings(settings),
-        );
+        EditExecutor::apply_domain_change(&mut self.project_session, origin, |project| {
+            project.set_settings(settings)
+        });
     }
 
     pub fn save_project_view_settings(
@@ -2425,24 +2654,29 @@ impl State {
             .collect()
     }
 
-    pub(crate) fn language_list_initial_accessibility_label(&self) -> Option<String> {
-        let active = self.project_session.project.active_language_id();
-        let languages = self.language_modal_items();
-        languages
-            .iter()
-            .find(|language| language.id == active)
-            .or_else(|| languages.first())
-            .map(|language| language.name.clone())
+    fn media_explorer_data(&self) -> crate::ui::language_modal::MediaExplorerData {
+        let source_path = self.video_path();
+        let proxy_path = self.proxy_video_path();
+        crate::ui::language_modal::MediaExplorerData {
+            source: source_path.as_deref().map(media_video_item),
+            proxy: proxy_path.as_deref().map(media_video_item),
+            active_proxy: self.playback.proxy_video_path.is_some(),
+            default_proxy: self.default_media_uses_proxy(),
+            can_persist_default: self.project_session.project_path.is_some(),
+        }
     }
 
-    pub fn open_languages_modal(&mut self) {
+    pub fn open_media_explorer(&mut self) {
         let active = self.project_session.project.active_language_id();
         let languages = self.language_modal_items();
-        let first_label = self.language_list_initial_accessibility_label();
-        self.ui_shell.ui.open_languages_modal(languages, active);
-        if let Some(label) = first_label {
-            self.announce_open_container(crate::i18n::t("languages.title"), label);
-        }
+        let media = self.media_explorer_data();
+        self.ui_shell
+            .ui
+            .open_media_explorer(languages, active, media);
+        self.announce_open_container(
+            crate::i18n::t("media_explorer.title"),
+            crate::i18n::t("media_explorer.tab.videos").to_string(),
+        );
     }
 
     pub(crate) fn recent_projects_first_accessibility_label(&self) -> Option<String> {
@@ -2480,6 +2714,11 @@ impl State {
         let active = self.project_session.project.active_language_id();
         let languages = self.language_modal_items();
         self.ui_shell.ui.refresh_languages_modal(languages, active);
+    }
+
+    fn refresh_media_explorer(&mut self) {
+        let media = self.media_explorer_data();
+        self.ui_shell.ui.refresh_media_explorer(media);
     }
 
     pub fn create_language(&mut self, name: String) {
@@ -2586,6 +2825,17 @@ impl State {
     }
 
     pub fn set_language_instrumental_audio(&mut self, id: u64, path: Option<String>) {
+        let label = self
+            .project_session
+            .project
+            .language(id)
+            .map(|language| language.name)
+            .unwrap_or_else(|| crate::i18n::t("media_explorer.tab.audios").to_string());
+        let value = path
+            .as_deref()
+            .and_then(|path| Path::new(path).file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| crate::i18n::t("languages.no_instrumental").to_string());
         if self
             .project_session
             .project
@@ -2596,6 +2846,7 @@ impl State {
                 self.sync_audio_settings_to_player();
             }
             self.refresh_languages_modal();
+            self.announce_accessibility(AccessibilityEvent::ValueChanged { label, value });
         }
     }
 
@@ -2733,6 +2984,13 @@ impl State {
 
     pub fn is_secondary_daw(&self) -> bool {
         self.window_manager.secondary_kind == Some(SecondaryWindowKind::Daw)
+    }
+
+    pub fn secondary_cursor_position(&self) -> Option<(f32, f32)> {
+        self.window_manager
+            .secondary_display
+            .as_ref()
+            .and_then(|display| crate::platform::cursor_position(&display.window))
     }
 
     pub fn can_open_recording_daw(&self) -> bool {
@@ -2899,13 +3157,61 @@ impl State {
             .or_else(|| self.playback.video_player.as_ref().and_then(|p| p.path()))
     }
 
+    pub(crate) fn proxy_video_path(&self) -> Option<PathBuf> {
+        let source = self.video_path()?;
+        self.playback
+            .proxy_video_path
+            .clone()
+            .or_else(|| {
+                self.project_session
+                    .loaded_project
+                    .as_ref()
+                    .filter(|loaded| {
+                        loaded
+                            .source_video_path
+                            .as_ref()
+                            .is_some_and(|bundled_source| {
+                                crate::video_proxy::paths_match(&source, bundled_source)
+                            })
+                    })
+                    .and_then(|loaded| loaded.proxy_video_path.clone())
+            })
+            .or_else(|| {
+                self.project_session
+                    .project_path
+                    .as_deref()
+                    .and_then(crate::video_proxy::proxy_link_for_br)
+                    .filter(|link| {
+                        crate::video_proxy::paths_match(&source, &link.source_video_path)
+                    })
+                    .map(|link| link.proxy_video_path)
+            })
+    }
+
+    fn default_media_uses_proxy(&self) -> bool {
+        let fallback = self
+            .project_session
+            .loaded_project
+            .as_ref()
+            .map_or(self.playback.proxy_video_path.is_some(), |loaded| {
+                loaded.default_uses_proxy
+            });
+        self.project_session
+            .project_path
+            .as_deref()
+            .map_or(fallback, |path| {
+                crate::video_proxy::default_uses_proxy_or(path, fallback)
+            })
+            && self.proxy_video_path().is_some()
+    }
+
     pub fn load_video(&mut self, path: &Path) -> bool {
         let proxy_path = self
             .project_session
             .project_path
             .as_ref()
             .and_then(|br_path| crate::video_proxy::linked_proxy_path(br_path, path));
-        let loaded = self.load_video_for_playback(path, proxy_path.as_deref(), None);
+        let loaded = self.load_video_for_playback(path, proxy_path.as_deref(), None, false);
         if loaded {
             self.sync_audio_settings_to_player();
         }
@@ -2942,12 +3248,19 @@ impl State {
     pub fn reload_linked_proxy(&mut self) {
         if let Some(br_path) = &self.project_session.project_path {
             if let Some(link) = crate::video_proxy::proxy_link_for_br(br_path) {
+                let desired_proxy = crate::video_proxy::default_uses_proxy(br_path)
+                    .then_some(link.proxy_video_path.as_path());
                 let source_matches = self.video_path().as_ref().is_some_and(|path| {
                     crate::video_proxy::paths_match(path, &link.source_video_path)
                 });
-                let proxy_matches = self.playback.proxy_video_path.as_ref().is_some_and(|path| {
-                    crate::video_proxy::paths_match(path, &link.proxy_video_path)
-                });
+                let proxy_matches = match (self.playback.proxy_video_path.as_deref(), desired_proxy)
+                {
+                    (None, None) => true,
+                    (Some(current), Some(desired)) => {
+                        crate::video_proxy::paths_match(current, desired)
+                    }
+                    _ => false,
+                };
 
                 if source_matches && proxy_matches {
                     return;
@@ -2960,8 +3273,9 @@ impl State {
                 };
                 self.load_video_for_playback(
                     &link.source_video_path,
-                    Some(&link.proxy_video_path),
+                    desired_proxy,
                     Some(frame),
+                    false,
                 );
                 return;
             }
@@ -2981,7 +3295,106 @@ impl State {
         }
 
         let frame = self.current_frame();
-        self.load_video_for_playback(&source_path, proxy_path.as_deref(), Some(frame));
+        self.load_video_for_playback(&source_path, proxy_path.as_deref(), Some(frame), false);
+    }
+
+    pub fn switch_media_video(&mut self, use_proxy: bool) {
+        let Some(source) = self.video_path() else {
+            return;
+        };
+        let proxy = self.proxy_video_path();
+        if use_proxy && proxy.is_none() {
+            self.show_toast(crate::i18n::t("toast.media_proxy_missing"), 4.0);
+            return;
+        }
+        let frame = self.current_frame();
+        if self.load_video_for_playback(
+            &source,
+            use_proxy.then_some(proxy.as_deref()).flatten(),
+            Some(frame),
+            false,
+        ) {
+            self.refresh_media_explorer();
+            self.announce_accessibility(AccessibilityEvent::ValueChanged {
+                label: crate::i18n::t("media_explorer.active").to_string(),
+                value: crate::i18n::t(if use_proxy {
+                    "media_explorer.video.proxy"
+                } else {
+                    "media_explorer.video.original"
+                })
+                .to_string(),
+            });
+        }
+    }
+
+    pub fn set_default_media_video(&mut self, use_proxy: bool) {
+        let Some(project_path) = self.project_session.project_path.as_deref() else {
+            self.show_toast(crate::i18n::t("toast.media_save_project_first"), 5.0);
+            return;
+        };
+        if use_proxy && self.media_explorer_data().proxy.is_none() {
+            self.show_toast(crate::i18n::t("toast.media_proxy_missing"), 4.0);
+            return;
+        }
+        match crate::video_proxy::set_default_uses_proxy(project_path, use_proxy) {
+            Ok(()) => {
+                if let Some(loaded) = self.project_session.loaded_project.as_mut() {
+                    loaded.default_uses_proxy = use_proxy;
+                }
+                self.project_session.dirty = true;
+                self.show_toast(crate::i18n::t("toast.media_default_saved"), 4.0);
+                self.refresh_media_explorer();
+            }
+            Err(error) => {
+                log::error!("Failed to save default media: {error}");
+                self.show_toast(crate::i18n::t("toast.media_default_failed"), 5.0);
+            }
+        }
+    }
+
+    pub fn delete_media_video(&mut self, use_proxy: bool) {
+        if use_proxy {
+            let Some(project_path) = self.project_session.project_path.clone() else {
+                self.show_toast(crate::i18n::t("toast.media_save_project_first"), 5.0);
+                return;
+            };
+            if self.playback.proxy_video_path.is_some() {
+                let Some(source) = self.video_path() else {
+                    return;
+                };
+                let frame = self.current_frame();
+                if !self.load_video_for_playback(&source, None, Some(frame), false) {
+                    return;
+                }
+            }
+            match crate::video_proxy::delete_proxy(&project_path) {
+                Ok(()) => {
+                    if let Some(loaded) = self.project_session.loaded_project.as_mut() {
+                        loaded.proxy_video_path = None;
+                        loaded.default_uses_proxy = false;
+                    }
+                    self.project_session.dirty = true;
+                    self.show_toast(crate::i18n::t("toast.media_proxy_deleted"), 4.0);
+                }
+                Err(error) => {
+                    log::error!("Failed to delete proxy: {error}");
+                    self.show_toast(crate::i18n::t("toast.media_delete_failed"), 5.0);
+                }
+            }
+        } else {
+            if let Some(project_path) = self.project_session.project_path.clone() {
+                if let Err(error) = crate::video_proxy::delete_proxy(&project_path) {
+                    log::warn!("Failed to remove linked proxy while unlinking video: {error}");
+                }
+                if let Err(error) = crate::video_proxy::set_source_removed(&project_path, true) {
+                    log::warn!("Failed to persist removed source video: {error}");
+                }
+            }
+            self.clear_video_for_new_project();
+            self.project_session.dirty = true;
+            self.show_toast(crate::i18n::t("toast.media_video_unlinked"), 4.0);
+        }
+        self.refresh_media_explorer();
     }
 
     pub fn watch_proxy_job(
@@ -3138,6 +3551,7 @@ impl State {
         source_path: &Path,
         proxy_path: Option<&Path>,
         seek_frame: Option<i64>,
+        resolve_linked_proxy: bool,
     ) -> bool {
         self.clear_recording_mix_preview();
         let (bgl, sampler) = self.renderer_refs();
@@ -3147,10 +3561,16 @@ impl State {
         // recent projects and explicit reloads without requiring each caller to
         // remember the proxy policy.
         let linked_proxy = proxy_path.map(Path::to_path_buf).or_else(|| {
-            self.project_session
-                .project_path
-                .as_deref()
-                .and_then(|br_path| crate::video_proxy::linked_proxy_path(br_path, source_path))
+            resolve_linked_proxy
+                .then(|| {
+                    self.project_session
+                        .project_path
+                        .as_deref()
+                        .and_then(|br_path| {
+                            crate::video_proxy::linked_proxy_path(br_path, source_path)
+                        })
+                })
+                .flatten()
         });
         let mut active_proxy_path = linked_proxy;
         let mut load_path = active_proxy_path.as_deref().unwrap_or(source_path);
@@ -6625,6 +7045,7 @@ impl State {
                         &job.source_path,
                         Some(&proxy_path),
                         Some(frame),
+                        false,
                     ) {
                         self.project_session.dirty = true;
                         self.show_toast(crate::i18n::t("toast.proxy_created"), 4.0);
@@ -6849,10 +7270,21 @@ impl State {
                 let loaded_huuid = loaded.huuid.clone();
                 let loaded_transaction_journal = loaded.transaction_journal.clone();
                 let loaded_recording = loaded.recording.take();
-                let bundled_source = loaded.source_video_path.clone();
-                let bundled_proxy = loaded.proxy_video_path.clone();
+                let loaded_default_uses_proxy = loaded.default_uses_proxy;
+                let source_removed = crate::video_proxy::source_is_removed(&job.br_path);
+                if source_removed {
+                    self.clear_video_for_new_project();
+                }
+                let bundled_source = (!source_removed)
+                    .then(|| loaded.source_video_path.clone())
+                    .flatten();
+                let bundled_proxy = loaded
+                    .proxy_video_path
+                    .clone()
+                    .filter(|_| loaded_default_uses_proxy);
                 if let Some(source) = bundled_source.as_deref() {
-                    if !self.load_video_for_playback(source, bundled_proxy.as_deref(), None) {
+                    if !self.load_video_for_playback(source, bundled_proxy.as_deref(), None, false)
+                    {
                         let message = crate::i18n::t("toast.import_video_failed");
                         log::error!("{message} {}", source.display());
                         self.show_toast(message, 7.0);
@@ -6911,6 +7343,14 @@ impl State {
                     Some(job.br_path.clone())
                 };
                 self.project_session.huuid = if is_legacy_json { None } else { loaded_huuid };
+                if !is_legacy_json {
+                    if let Err(error) = crate::video_proxy::set_default_uses_proxy(
+                        &job.br_path,
+                        loaded_default_uses_proxy,
+                    ) {
+                        log::warn!("Failed to cache the project's default video: {error}");
+                    }
+                }
                 if is_legacy_json {
                     self.show_toast(crate::i18n::t("toast.legacy_project_loaded"), 6.0);
                 }
@@ -7012,11 +7452,17 @@ impl State {
                     == job.saved_revision
                     && self.project_session.recording_revision == job.saved_recording_revision
                     && self.video_path().as_ref() == Some(&job.source_video)
-                    && self.playback.proxy_video_path == job.proxy_video
+                    && self.proxy_video_path() == job.proxy_video
+                    && self.default_media_uses_proxy() == job.default_uses_proxy
                     && current_font.as_ref() == Some(&job.font_asset);
 
                 self.project_session.project_path = Some(job.path.clone());
                 self.project_session.huuid = Some(metadata.huuid);
+                if let Err(error) =
+                    crate::video_proxy::set_default_uses_proxy(&job.path, job.default_uses_proxy)
+                {
+                    log::warn!("Failed to cache the project's default video: {error}");
+                }
                 if snapshot_is_current {
                     if let Some(journal) = metadata.transaction_journal {
                         self.project_session.transaction_journal = journal;
@@ -7636,8 +8082,7 @@ impl State {
 
     fn playback_preparation_redraw_due(&self, now: Instant) -> bool {
         self.playback_preparation_pending()
-            && now.saturating_duration_since(self.render.last_redraw())
-                >= Duration::from_millis(50)
+            && now.saturating_duration_since(self.render.last_redraw()) >= Duration::from_millis(50)
     }
 
     fn periodic_redraw_due(&self, now: Instant) -> bool {

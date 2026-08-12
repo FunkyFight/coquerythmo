@@ -458,6 +458,23 @@ pub fn run(startup: Option<super::StartupInput>) {
                         WindowEvent::RedrawRequested => {
                             state.render_secondary_display(window_id);
                         }
+                        WindowEvent::DroppedFile(path) if is_daw => {
+                            let is_audio = path
+                                .extension()
+                                .and_then(|extension| extension.to_str())
+                                .is_some_and(|extension| {
+                                    ["flac", "wav", "mp3", "ogg", "m4a", "aac", "opus"]
+                                        .contains(&extension.to_ascii_lowercase().as_str())
+                                });
+                            if is_audio && !state.ui_shell.ui.has_active_progress() {
+                                let position = state
+                                    .secondary_cursor_position()
+                                    .unwrap_or(secondary_cursor_pos);
+                                state.recording_begin_daw_audio_import(path, position);
+                                state.request_redraw();
+                                state.request_secondary_redraw();
+                            }
+                        }
                         _ => {}
                     }
                     return;
@@ -876,7 +893,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                             );
                             return;
                         }
-                        // The translation manager is global, but never stack it over an
+                        // The media explorer is global, but never stack it over an
                         // existing modal whose event routing would remain underneath it.
                         if ctrl_held
                             && !event.repeat
@@ -884,7 +901,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                             && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("l"))
                         {
                             dispatch_key_action(
-                                UiAction::OpenLanguages,
+                                UiAction::OpenMediaExplorer,
                                 &event,
                                 keyboard_modifiers,
                                 InputWindow::Main,
@@ -1575,7 +1592,17 @@ pub fn run(startup: Option<super::StartupInput>) {
                         .and_then(|e| e.to_str())
                         .map(|e| e.to_lowercase())
                         .unwrap_or_default();
-                    if ["mp4", "mov", "avi", "mkv", "webm"].contains(&ext.as_str()) {
+                    if state.active_workspace()
+                        == crate::application::workspace_service::WorkspaceId::Recording
+                        && ["flac", "wav", "mp3", "ogg", "m4a", "aac", "opus"]
+                            .contains(&ext.as_str())
+                    {
+                        let position = crate::platform::cursor_position(&window)
+                            .map(|(x, y)| state.window_to_ui_position(x, y))
+                            .unwrap_or(cursor_pos);
+                        state.recording_begin_audio_import(path, Some(position));
+                        state.request_redraw();
+                    } else if ["mp4", "mov", "avi", "mkv", "webm"].contains(&ext.as_str()) {
                         if state.load_video(&path) {
                             state.project_session.dirty = true;
                             state.request_redraw();

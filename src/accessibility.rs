@@ -28,6 +28,11 @@ pub enum AccessibilityEvent {
         label: String,
         value: String,
     },
+    ComboBox {
+        label: String,
+        value: String,
+        expanded: bool,
+    },
     Progress {
         label: String,
         percent: Option<u32>,
@@ -207,7 +212,7 @@ pub fn event_for_action(
         UiAction::RequestActorsCloseProjectTransferWaiting => {
             "recording.actor_requests.close_transfer_waiting"
         }
-        UiAction::OpenLanguages => "languages.title",
+        UiAction::OpenMediaExplorer => "media_explorer.title",
         UiAction::OpenLinesPanel => "menu.panels.lines",
         UiAction::OpenRolesPanel => "menu.panels.roles",
         UiAction::PickProjectInstrumentalAudio => "project_settings.browse",
@@ -552,6 +557,22 @@ fn format_event(event: AccessibilityEvent) -> Announcement {
             AnnouncementPriority::Action,
             true,
         ),
+        Event::ComboBox {
+            label,
+            value,
+            expanded,
+        } => (
+            format!(
+                "{label} : {value}, {}",
+                crate::i18n::t(if expanded {
+                    "accessibility.opened"
+                } else {
+                    "accessibility.collapsed"
+                })
+            ),
+            AnnouncementPriority::Navigation,
+            true,
+        ),
         Event::Progress { label, percent } => (
             percent.map_or(label.clone(), |percent| {
                 format!("{label} : {percent} {}", crate::i18n::t("progress.percent"))
@@ -736,6 +757,11 @@ impl AccessKitTreeState {
             AccessibilityEvent::ValueChanged { label, value } => {
                 self.update_focus(label, accesskit::Role::StaticText, Some(value))
             }
+            AccessibilityEvent::ComboBox {
+                label,
+                value,
+                expanded,
+            } => self.update_combo_box(label, value, expanded),
             AccessibilityEvent::Progress { label, percent } => self.update_progress(label, percent),
             event @ AccessibilityEvent::Error { .. } => {
                 self.update_live(format_event(event).text, true)
@@ -770,6 +796,31 @@ impl AccessKitTreeState {
         if let Some(value) = value {
             node.set_value(words_only(&value));
         }
+        node.add_action(accesskit::Action::Focus);
+        self.focus_id = id;
+        self.focus_node = node.build(&mut self.node_classes);
+        self.live_node = None;
+        accesskit::TreeUpdate {
+            nodes: vec![
+                (ACCESSKIT_ROOT_ID, self.root_node()),
+                (self.focus_id, self.focus_node.clone()),
+            ],
+            tree: None,
+            focus: self.focus_id,
+        }
+    }
+
+    fn update_combo_box(
+        &mut self,
+        label: String,
+        value: String,
+        expanded: bool,
+    ) -> accesskit::TreeUpdate {
+        let id = self.next_id();
+        let mut node = accesskit::NodeBuilder::new(accesskit::Role::ComboBox);
+        node.set_name(words_only(&label));
+        node.set_value(words_only(&value));
+        node.set_expanded(expanded);
         node.add_action(accesskit::Action::Focus);
         self.focus_id = id;
         self.focus_node = node.build(&mut self.node_classes);
@@ -1201,6 +1252,34 @@ mod tests {
         cache.invalidate_line(1);
         assert!(cache.get(&key(1)).is_none());
         assert!(cache.get(&key(2)).is_some());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn combo_box_event_exposes_role_value_and_expanded_state() {
+        let mut state = AccessKitTreeState::new();
+        let _ = state.apply_event(AccessibilityEvent::ComboBox {
+            label: "Encodeur".into(),
+            value: "ProRes Proxy".into(),
+            expanded: true,
+        });
+
+        assert_eq!(state.focus_node.role(), accesskit::Role::ComboBox);
+        assert_eq!(state.focus_node.value(), Some("ProRes Proxy"));
+        assert_eq!(state.focus_node.is_expanded(), Some(true));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn media_tab_focus_reaches_accesskit_with_its_selected_name() {
+        let mut state = AccessKitTreeState::new();
+        let _ = state.apply_event(AccessibilityEvent::Focus {
+            label: "Vidéos, Sélection".into(),
+            role: "tab".into(),
+        });
+
+        assert_eq!(state.focus_node.role(), accesskit::Role::Tab);
+        assert_eq!(state.focus_node.name(), Some("Vidéos Sélection"));
     }
 
     #[cfg(target_os = "windows")]

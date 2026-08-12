@@ -5,9 +5,9 @@ use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent
 use crate::i18n::t;
 
 const CARD_W: f32 = 430.0;
-const CARD_H: f32 = 292.0;
-const PRESETS: [u32; 3] = [720, 1080, 1440];
-const FOCUS_COUNT: usize = 3;
+const CARD_H: f32 = 338.0;
+const PRESETS: [u32; 5] = [360, 480, 720, 1080, 1440];
+const ENCODER_ITEM_H: f32 = 30.0;
 
 pub struct ProxyModal {
     source_width: u32,
@@ -18,13 +18,20 @@ pub struct ProxyModal {
     target_text: String,
     crf: u8,
     crf_text: String,
+    encoder: crate::video_proxy::ProxyEncoder,
+    encoder_menu_open: bool,
     keyboard_focus: usize,
 }
 
 pub enum ProxyModalResult {
     Consumed,
     Close,
-    Create { width: u32, height: u32, crf: u8 },
+    Create {
+        width: u32,
+        height: u32,
+        crf: u8,
+        encoder: crate::video_proxy::ProxyEncoder,
+    },
 }
 
 impl ProxyModal {
@@ -40,6 +47,8 @@ impl ProxyModal {
             target_text: String::new(),
             crf: 24,
             crf_text: String::new(),
+            encoder: crate::video_proxy::ProxyEncoder::default(),
+            encoder_menu_open: false,
             keyboard_focus: 0,
         };
         modal.update_texts();
@@ -76,17 +85,56 @@ impl ProxyModal {
             width: self.target_width,
             height: self.target_height,
             crf: self.crf,
+            encoder: self.encoder,
         }
     }
 
     fn move_focus(&mut self, direction: i32) {
-        self.keyboard_focus = if direction < 0 {
-            self.keyboard_focus
-                .checked_sub(1)
-                .unwrap_or(FOCUS_COUNT - 1)
+        let h264 = [0, 1, 2, 3];
+        let fixed_quality = [0, 1, 3];
+        let order: &[usize] = if self.encoder == crate::video_proxy::ProxyEncoder::H264 {
+            &h264
         } else {
-            (self.keyboard_focus + 1) % FOCUS_COUNT
+            &fixed_quality
         };
+        let current = order
+            .iter()
+            .position(|focus| *focus == self.keyboard_focus)
+            .unwrap_or(0) as i32;
+        self.keyboard_focus = order[(current + direction).rem_euclid(order.len() as i32) as usize];
+    }
+
+    fn encoder_rect(card: Rect) -> Rect {
+        Rect {
+            x: card.x + 140.0,
+            y: card.y + 174.0,
+            width: card.width - 160.0,
+            height: 30.0,
+        }
+    }
+
+    fn encoder_option_rect(card: Rect, index: usize) -> Rect {
+        let trigger = Self::encoder_rect(card);
+        Rect {
+            x: trigger.x,
+            y: trigger.y + trigger.height + 4.0 + index as f32 * ENCODER_ITEM_H,
+            width: trigger.width,
+            height: ENCODER_ITEM_H,
+        }
+    }
+
+    fn adjust_encoder(&mut self, direction: i32) {
+        let current = crate::video_proxy::ProxyEncoder::ALL
+            .iter()
+            .position(|encoder| *encoder == self.encoder)
+            .unwrap_or(0) as i32;
+        let index = (current + direction)
+            .rem_euclid(crate::video_proxy::ProxyEncoder::ALL.len() as i32)
+            as usize;
+        self.encoder = crate::video_proxy::ProxyEncoder::ALL[index];
+        if self.encoder != crate::video_proxy::ProxyEncoder::H264 && self.keyboard_focus == 2 {
+            self.keyboard_focus = 1;
+        }
     }
 
     fn adjust_resolution(&mut self, direction: i32) {
@@ -119,10 +167,14 @@ impl ProxyModal {
                 ProxyModalResult::Consumed
             }
             1 => {
+                self.encoder_menu_open = !self.encoder_menu_open;
+                ProxyModalResult::Consumed
+            }
+            2 => {
                 self.adjust_quality(1);
                 ProxyModalResult::Consumed
             }
-            2 => self.create_result(),
+            3 => self.create_result(),
             _ => ProxyModalResult::Consumed,
         }
     }
@@ -136,10 +188,15 @@ impl ProxyModal {
                 t("proxy_modal.target"),
                 self.target_text
             ),
-            1 => format!("{} : {}", t("proxy_modal.quality"), self.crf_text),
-            2 => t("proxy_modal.create").to_string(),
+            1 => format!("{} : {}", t("proxy_modal.encoder"), self.encoder.label()),
+            2 => format!("{} : {}", t("proxy_modal.quality"), self.crf_text),
+            3 => t("proxy_modal.create").to_string(),
             _ => t("proxy_modal.title").to_string(),
         }
+    }
+
+    pub fn encoder_accessibility_state(&self) -> Option<(crate::video_proxy::ProxyEncoder, bool)> {
+        (self.keyboard_focus == 1).then_some((self.encoder, self.encoder_menu_open))
     }
 
     pub fn handle_event(
@@ -157,6 +214,42 @@ impl ProxyModal {
                 }
             }
             _ => {}
+        }
+
+        if self.encoder_menu_open {
+            match event {
+                UiEvent::KeyInput { text } if text == "\x1b" => {
+                    self.encoder_menu_open = false;
+                    return ProxyModalResult::Consumed;
+                }
+                UiEvent::CursorUp => {
+                    self.adjust_encoder(-1);
+                    return ProxyModalResult::Consumed;
+                }
+                UiEvent::CursorDown => {
+                    self.adjust_encoder(1);
+                    return ProxyModalResult::Consumed;
+                }
+                UiEvent::FocusNext | UiEvent::FocusPrevious => {
+                    self.encoder_menu_open = false;
+                }
+                UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}" => {
+                    self.encoder_menu_open = false;
+                }
+                UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
+                    for (index, encoder) in crate::video_proxy::ProxyEncoder::ALL.iter().enumerate()
+                    {
+                        if Self::encoder_option_rect(card, index).contains(*x, *y) {
+                            self.encoder = *encoder;
+                            self.encoder_menu_open = false;
+                            return ProxyModalResult::Consumed;
+                        }
+                    }
+                    self.encoder_menu_open = false;
+                    return ProxyModalResult::Consumed;
+                }
+                _ => {}
+            }
         }
 
         match event {
@@ -185,7 +278,8 @@ impl ProxyModal {
             UiEvent::CursorLeft | UiEvent::CursorUp => {
                 match self.keyboard_focus {
                     0 => self.adjust_resolution(-1),
-                    1 => self.adjust_quality(-1),
+                    1 => self.adjust_encoder(-1),
+                    2 => self.adjust_quality(-1),
                     _ => self.move_focus(-1),
                 }
                 ProxyModalResult::Consumed
@@ -193,14 +287,15 @@ impl ProxyModal {
             UiEvent::CursorRight | UiEvent::CursorDown => {
                 match self.keyboard_focus {
                     0 => self.adjust_resolution(1),
-                    1 => self.adjust_quality(1),
+                    1 => self.adjust_encoder(1),
+                    2 => self.adjust_quality(1),
                     _ => self.move_focus(1),
                 }
                 ProxyModalResult::Consumed
             }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 let preset_y = card.y + 92.0;
-                let preset_w = 118.0;
+                let preset_w = 70.0;
                 let preset_h = 34.0;
                 for (index, preset) in PRESETS.iter().enumerate() {
                     let rect = Rect {
@@ -217,7 +312,14 @@ impl ProxyModal {
                     }
                 }
 
-                let quality_y = card.y + 170.0;
+                let encoder_rect = Self::encoder_rect(card);
+                if encoder_rect.contains(*x, *y) {
+                    self.keyboard_focus = 1;
+                    self.encoder_menu_open = true;
+                    return ProxyModalResult::Consumed;
+                }
+
+                let quality_y = card.y + 230.0;
                 let btn_size = 36.0;
                 let value_w = 100.0;
                 let minus_rect = Rect {
@@ -232,14 +334,18 @@ impl ProxyModal {
                     width: btn_size,
                     height: 30.0,
                 };
-                if minus_rect.contains(*x, *y) {
-                    self.keyboard_focus = 1;
+                if self.encoder == crate::video_proxy::ProxyEncoder::H264
+                    && minus_rect.contains(*x, *y)
+                {
+                    self.keyboard_focus = 2;
                     self.crf = self.crf.saturating_sub(1).max(18);
                     self.update_texts();
                     return ProxyModalResult::Consumed;
                 }
-                if plus_rect.contains(*x, *y) {
-                    self.keyboard_focus = 1;
+                if self.encoder == crate::video_proxy::ProxyEncoder::H264
+                    && plus_rect.contains(*x, *y)
+                {
+                    self.keyboard_focus = 2;
                     self.crf = (self.crf + 1).min(32);
                     self.update_texts();
                     return ProxyModalResult::Consumed;
@@ -252,7 +358,7 @@ impl ProxyModal {
                     height: 40.0,
                 };
                 if create_rect.contains(*x, *y) {
-                    self.keyboard_focus = 2;
+                    self.keyboard_focus = 3;
                     return self.create_result();
                 }
 
@@ -354,7 +460,7 @@ impl ProxyModal {
         );
 
         let preset_y = card.y + 92.0;
-        let preset_w = 118.0;
+        let preset_w = 70.0;
         let preset_h = 34.0;
         for (index, preset) in PRESETS.iter().enumerate() {
             let rect = Rect {
@@ -364,6 +470,8 @@ impl ProxyModal {
                 height: preset_h,
             };
             let label = match preset {
+                360 => "360p",
+                480 => "480p",
                 720 => "720p",
                 1080 => "1080p",
                 1440 => "1440p",
@@ -409,10 +517,46 @@ impl ProxyModal {
 
         push_label(
             labels,
+            t("proxy_modal.encoder"),
+            Rect {
+                x: card.x + 20.0,
+                y: card.y + 174.0,
+                width: 110.0,
+                height: 30.0,
+            },
+            HAlign::Left,
+            Some(12.0),
+            Some([180, 180, 195]),
+        );
+        push_button(
+            overlay_quads,
+            labels,
+            Self::encoder_rect(card),
+            self.encoder.label(),
+            self.encoder_menu_open,
+            false,
+            self.keyboard_focus == 1,
+        );
+        push_label(
+            labels,
+            if self.encoder_menu_open { "▲" } else { "▼" },
+            Rect {
+                x: Self::encoder_rect(card).x + Self::encoder_rect(card).width - 28.0,
+                y: Self::encoder_rect(card).y,
+                width: 24.0,
+                height: Self::encoder_rect(card).height,
+            },
+            HAlign::Center,
+            Some(10.0),
+            None,
+        );
+
+        push_label(
+            labels,
             t("proxy_modal.quality"),
             Rect {
                 x: card.x + 20.0,
-                y: card.y + 150.0,
+                y: card.y + 212.0,
                 width: card.width - 40.0,
                 height: 18.0,
             },
@@ -421,51 +565,68 @@ impl ProxyModal {
             Some([180, 180, 195]),
         );
 
-        let quality_y = card.y + 170.0;
+        let quality_y = card.y + 230.0;
         let btn_size = 36.0;
         let value_w = 100.0;
-        push_button(
-            overlay_quads,
-            labels,
-            Rect {
-                x: card.x + 20.0,
-                y: quality_y,
-                width: btn_size,
-                height: 30.0,
-            },
-            "-",
-            false,
-            false,
-            self.keyboard_focus == 1,
-        );
+        let adjustable_quality = self.encoder == crate::video_proxy::ProxyEncoder::H264;
+        if adjustable_quality {
+            push_button(
+                overlay_quads,
+                labels,
+                Rect {
+                    x: card.x + 20.0,
+                    y: quality_y,
+                    width: btn_size,
+                    height: 30.0,
+                },
+                "-",
+                false,
+                false,
+                self.keyboard_focus == 2,
+            );
+        }
         push_value_box(
             overlay_quads,
             labels,
             Rect {
-                x: card.x + 20.0 + btn_size,
+                x: card.x + 20.0 + if adjustable_quality { btn_size } else { 0.0 },
                 y: quality_y,
-                width: value_w,
+                width: if adjustable_quality {
+                    value_w
+                } else {
+                    value_w + btn_size * 2.0
+                },
                 height: 30.0,
             },
-            &self.crf_text,
-        );
-        push_button(
-            overlay_quads,
-            labels,
-            Rect {
-                x: card.x + 20.0 + btn_size + value_w,
-                y: quality_y,
-                width: btn_size,
-                height: 30.0,
+            if adjustable_quality {
+                &self.crf_text
+            } else {
+                self.encoder.label()
             },
-            "+",
-            false,
-            false,
-            self.keyboard_focus == 1,
         );
+        if adjustable_quality {
+            push_button(
+                overlay_quads,
+                labels,
+                Rect {
+                    x: card.x + 20.0 + btn_size + value_w,
+                    y: quality_y,
+                    width: btn_size,
+                    height: 30.0,
+                },
+                "+",
+                false,
+                false,
+                self.keyboard_focus == 2,
+            );
+        }
         push_label(
             labels,
-            t("proxy_modal.quality_hint"),
+            if adjustable_quality {
+                t("proxy_modal.quality_hint")
+            } else {
+                t("proxy_modal.quality_fixed_hint")
+            },
             Rect {
                 x: card.x + 20.0,
                 y: quality_y + 34.0,
@@ -489,8 +650,22 @@ impl ProxyModal {
             t("proxy_modal.create"),
             false,
             true,
-            self.keyboard_focus == 2,
+            self.keyboard_focus == 3,
         );
+
+        if self.encoder_menu_open {
+            for (index, encoder) in crate::video_proxy::ProxyEncoder::ALL.iter().enumerate() {
+                push_button(
+                    overlay_quads,
+                    labels,
+                    Self::encoder_option_rect(card, index),
+                    encoder.label(),
+                    self.encoder == *encoder,
+                    false,
+                    false,
+                );
+            }
+        }
     }
 }
 
@@ -584,4 +759,58 @@ fn push_label<'a>(
         color_override: color,
         font_family_override: None,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn low_resolution_proxy_presets_are_selectable() {
+        let mut modal = ProxyModal::new(1920, 1080);
+        modal.adjust_resolution(-1);
+        modal.adjust_resolution(-1);
+        assert_eq!(modal.selected_max_height, 480);
+        assert_eq!((modal.target_width, modal.target_height), (854, 480));
+        modal.adjust_resolution(-1);
+        assert_eq!(modal.selected_max_height, 360);
+        assert_eq!((modal.target_width, modal.target_height), (640, 360));
+    }
+
+    #[test]
+    fn encoder_dropdown_defaults_to_prores_and_selects_mjpeg() {
+        let mut modal = ProxyModal::new(1920, 1080);
+        assert_eq!(modal.encoder, crate::video_proxy::ProxyEncoder::ProResProxy);
+
+        let card = ProxyModal::card_rect(800.0, 600.0);
+        let trigger = ProxyModal::encoder_rect(card);
+        let _ = modal.handle_event(
+            &UiEvent::MousePress {
+                x: trigger.x + 1.0,
+                y: trigger.y + 1.0,
+            },
+            800.0,
+            600.0,
+        );
+        assert_eq!(
+            modal.encoder_accessibility_state(),
+            Some((crate::video_proxy::ProxyEncoder::ProResProxy, true))
+        );
+        let mjpeg = ProxyModal::encoder_option_rect(card, 1);
+        let _ = modal.handle_event(
+            &UiEvent::MousePress {
+                x: mjpeg.x + 1.0,
+                y: mjpeg.y + 1.0,
+            },
+            800.0,
+            600.0,
+        );
+
+        assert_eq!(modal.encoder, crate::video_proxy::ProxyEncoder::Mjpeg);
+        assert!(!modal.encoder_menu_open);
+        assert_eq!(
+            modal.encoder_accessibility_state(),
+            Some((crate::video_proxy::ProxyEncoder::Mjpeg, false))
+        );
+    }
 }

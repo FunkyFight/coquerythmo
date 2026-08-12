@@ -152,7 +152,7 @@ pub(crate) fn save_project_as_with_continuation(
         state.show_toast(i18n::t("toast.save_requires_video"), 5.0);
         return false;
     };
-    let proxy_video = state.playback.proxy_video_path.clone();
+    let proxy_video = state.proxy_video_path();
     let Some((_, font_asset)) = crate::vector_text::selected_font_asset() else {
         state.show_toast(i18n::t("toast.save_font_unavailable"), 6.0);
         return false;
@@ -175,7 +175,7 @@ pub(crate) fn quick_save_existing_with_continuation(
         state.show_toast(i18n::t("toast.save_requires_video"), 5.0);
         return false;
     };
-    let proxy_video = state.playback.proxy_video_path.clone();
+    let proxy_video = state.proxy_video_path();
     let Some((_, font_asset)) = crate::vector_text::selected_font_asset() else {
         state.show_toast(i18n::t("toast.save_font_unavailable"), 6.0);
         return false;

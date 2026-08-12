@@ -34,9 +34,20 @@ pub(crate) fn handle_file_picker_selected(
     match intent {
         FilePickerIntent::AddVideo => {
             if state.load_video(&path) {
+                if let Some(project_path) = state.project_session.project_path.as_deref() {
+                    if let Err(error) = video_proxy::delete_proxy(project_path) {
+                        log::warn!(
+                            "Failed to remove the previous proxy after replacement: {error}"
+                        );
+                    }
+                    if let Err(error) = video_proxy::set_source_removed(project_path, false) {
+                        log::warn!("Failed to link the replacement video: {error}");
+                    }
+                }
                 state.project_session.dirty = true;
             }
         }
+        FilePickerIntent::RecordingAudio => state.recording_begin_audio_import(path, None),
         FilePickerIntent::ImportProject => import_project_from_path(state, path),
         FilePickerIntent::ImportCappelaProject => import_cappela_from_path(state, path),
         FilePickerIntent::ImportSrtProject => import_subtitle_from_path(state, path),
@@ -188,7 +199,7 @@ impl CommandDispatcher {
         let navigates_lines = matches!(&action, UiAction::NavigateLines { .. });
         let container_title = match &action {
             UiAction::OpenRecentProjects => Some(crate::i18n::t("menu.project.recent")),
-            UiAction::OpenLanguages => Some(crate::i18n::t("languages.title")),
+            UiAction::OpenMediaExplorer => Some(crate::i18n::t("media_explorer.title")),
             UiAction::OpenDropdown(crate::ui::primitives::ToolbarDropdown::Respirations) => {
                 Some(crate::i18n::t("toolbar.respirations"))
             }
@@ -212,7 +223,9 @@ impl CommandDispatcher {
         let opened_save_prompt = !save_prompt_was_open && state.is_save_prompt_open();
         let container_first_label = match &action {
             UiAction::OpenRecentProjects => state.recent_projects_first_accessibility_label(),
-            UiAction::OpenLanguages => state.language_modal_focus_label(),
+            UiAction::OpenMediaExplorer => {
+                Some(crate::i18n::t("media_explorer.tab.videos").to_string())
+            }
             UiAction::OpenDropdown(dropdown) => {
                 state.toolbar_dropdown_first_accessibility_label(dropdown)
             }
@@ -403,6 +416,27 @@ impl CommandDispatcher {
                     None,
                 );
             }
+            UiAction::RecordingImportAudio => {
+                let filters = open_dialog_filters(
+                    i18n::t("recording.audio.filter"),
+                    &["flac", "wav", "mp3", "ogg", "m4a", "aac", "opus"],
+                );
+                open_file_picker(
+                    state,
+                    elwt,
+                    i18n::t("recording.audio.import"),
+                    FilePickerMode::Open,
+                    FilePickerIntent::RecordingAudio,
+                    filters,
+                    project_or_video_dir(state),
+                    None,
+                );
+            }
+            UiAction::RecordingConfirmAudioImport {
+                path,
+                username,
+                placement,
+            } => state.recording_import_audio(path, username, placement),
             UiAction::ExportProject => {
                 let filters = save_dialog_filters(
                     "Projet Coquerythmo",
@@ -836,7 +870,7 @@ impl CommandDispatcher {
             UiAction::OpenExportModal => {
                 state.open_export_modal();
             }
-            UiAction::OpenLanguages => state.open_languages_modal(),
+            UiAction::OpenMediaExplorer => state.open_media_explorer(),
             UiAction::CreateLanguage { name } => state.create_language(name),
             UiAction::RenameLanguage { id, name } => state.rename_language(id, name),
             UiAction::DeleteLanguage { id } => state.delete_language(id),
@@ -863,6 +897,11 @@ impl CommandDispatcher {
             UiAction::ClearLanguageInstrumentalAudio { id } => {
                 state.set_language_instrumental_audio(id, None);
             }
+            UiAction::SwitchMediaVideo { use_proxy } => state.switch_media_video(use_proxy),
+            UiAction::SetDefaultMediaVideo { use_proxy } => {
+                state.set_default_media_video(use_proxy)
+            }
+            UiAction::DeleteMediaVideo { use_proxy } => state.delete_media_video(use_proxy),
             UiAction::SaveExportConfiguration { configuration } => {
                 state.save_export_configuration(configuration);
             }
@@ -900,7 +939,12 @@ impl CommandDispatcher {
                     state.open_proxy_modal();
                 }
             }
-            UiAction::CreateProxy { width, height, crf } => {
+            UiAction::CreateProxy {
+                width,
+                height,
+                crf,
+                encoder,
+            } => {
                 let Some(source) = state.video_path() else {
                     log::warn!("No video loaded — cannot create proxy");
                     return false;
@@ -927,6 +971,7 @@ impl CommandDispatcher {
                         width,
                         height,
                         crf,
+                        encoder,
                         cancel_for_job,
                         move |v| {
                             p.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
@@ -1158,6 +1203,10 @@ impl CommandDispatcher {
                 if is_bundle && br_path.exists() {
                     state.start_br_import(br_path);
                     log::info!("Loading recent portable project");
+                } else if br_path.exists() && video_proxy::source_is_removed(&br_path) {
+                    state.clear_video_for_new_project();
+                    state.start_br_import(br_path);
+                    log::info!("Loading recent project without linked video");
                 } else if video_path.exists() && br_path.exists() {
                     let previous_project_path = state.project_session.project_path.clone();
                     state.project_session.project_path = Some(br_path.clone());

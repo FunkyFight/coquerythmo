@@ -8,6 +8,30 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "macos")]
 use winit::platform::macos::WindowBuilderExtMacOS;
 
+#[cfg(target_os = "windows")]
+pub(crate) fn cursor_position(window: &winit::window::Window) -> Option<(f32, f32)> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let mut point = POINT { x: 0, y: 0 };
+    let RawWindowHandle::Win32(handle) = window.window_handle().ok()?.as_raw() else {
+        return None;
+    };
+    if unsafe { GetCursorPos(&mut point) } == 0
+        || unsafe { ScreenToClient(handle.hwnd.get() as _, &mut point) } == 0
+    {
+        return None;
+    }
+    Some((point.x as f32, point.y as f32))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn cursor_position(_window: &winit::window::Window) -> Option<(f32, f32)> {
+    None
+}
+
 pub(crate) fn app_icon() -> Option<winit::window::Icon> {
     parse_ico_to_winit_icon(include_bytes!("icons/app.ico"))
 }

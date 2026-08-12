@@ -47,6 +47,7 @@ pub(crate) struct PendingSaveJob {
     pub saved_recording_revision: u64,
     pub source_video: PathBuf,
     pub proxy_video: Option<PathBuf>,
+    pub default_uses_proxy: bool,
     pub font_asset: PathBuf,
     pub continuation: SaveContinuation,
     pub receiver: Receiver<Result<crate::project_archive::SavedProjectMetadata, String>>,

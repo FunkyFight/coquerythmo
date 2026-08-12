@@ -150,11 +150,12 @@ pub(crate) fn build_topbar(
     };
 
     if active_workspace == WorkspaceId::Recording && recording_daw_enabled {
+        let recording_left = 188.0;
         let actor_requests_offset = if actor_requests_enabled { 164.0 } else { 0.0 };
         let quick_setup_offset = actor_requests_offset + 200.0;
         let daw_button = TextButton::new(
             Rect {
-                x: 88.0 + quick_setup_offset + 164.0,
+                x: recording_left + quick_setup_offset + 164.0,
                 y: 2.0,
                 width: 150.0,
                 height: 28.0,
@@ -165,11 +166,30 @@ pub(crate) fn build_topbar(
         .with_accent()
         .with_tooltip(t("recording.detach_daw"));
         let mut widgets: Vec<Box<dyn Widget>> = vec![Box::new(project_menu)];
+        widgets.push(Box::new(
+            Dropdown::new(
+                Rect {
+                    x: 88.0,
+                    y: 2.0,
+                    width: 96.0,
+                    height: 28.0,
+                },
+                vec![t("recording.audio.import").into()],
+                |index, _| match index {
+                    0 => EventResponse::Action(UiAction::RecordingImportAudio),
+                    _ => EventResponse::Consumed,
+                },
+            )
+            .with_arrow(false)
+            .with_trigger_bg(false)
+            .with_trigger_label(t("recording.audio.menu"))
+            .with_panel_width(260.0),
+        ));
         if actor_requests_enabled {
             widgets.push(Box::new(
                 Dropdown::new(
                     Rect {
-                        x: 88.0,
+                        x: recording_left,
                         y: 2.0,
                         width: 160.0,
                         height: 28.0,
@@ -200,7 +220,7 @@ pub(crate) fn build_topbar(
             widgets.push(Box::new(
                 TextButton::new(
                     Rect {
-                        x: 88.0 + actor_requests_offset,
+                        x: recording_left + actor_requests_offset,
                         y: 2.0,
                         width: 192.0,
                         height: 28.0,
@@ -214,7 +234,7 @@ pub(crate) fn build_topbar(
             widgets.push(Box::new(
                 Dropdown::new(
                     Rect {
-                        x: 88.0 + actor_requests_offset,
+                        x: recording_left + actor_requests_offset,
                         y: 2.0,
                         width: 192.0,
                         height: 28.0,
@@ -235,7 +255,7 @@ pub(crate) fn build_topbar(
                 .with_panel_width(392.0),
             ));
         }
-        widgets.push(microphone_button(88.0 + quick_setup_offset));
+        widgets.push(microphone_button(recording_left + quick_setup_offset));
         widgets.push(Box::new(daw_button));
         return widgets;
     }
@@ -267,15 +287,13 @@ pub(crate) fn build_topbar(
         },
         vec![
             t("menu.tools.automation").into(),
-            t("menu.tools.create_proxy").into(),
             t("menu.tools.secondary_display").into(),
             t("menu.tools.rename_character").into(),
         ],
         |index, _label| match index {
             0 => EventResponse::Action(UiAction::OpenAutomation),
-            1 => EventResponse::Action(UiAction::OpenProxyModal),
-            2 => EventResponse::Action(UiAction::OpenSecondaryDisplay),
-            3 => EventResponse::Action(UiAction::OpenRenameCharacterModal),
+            1 => EventResponse::Action(UiAction::OpenSecondaryDisplay),
+            2 => EventResponse::Action(UiAction::OpenRenameCharacterModal),
             _ => EventResponse::Consumed,
         },
     )
@@ -283,11 +301,11 @@ pub(crate) fn build_topbar(
     .with_trigger_bg(false)
     .with_trigger_label(t("menu.tools"))
     .with_panel_width(280.0)
-    .with_disabled_items(vec![false, !has_video, !has_video, false]);
+    .with_disabled_items(vec![false, !has_video, false]);
 
     let connect_menu = Dropdown::new(
         Rect {
-            x: 340.0,
+            x: 464.0,
             y: 2.0,
             width: 120.0,
             height: 28.0,
@@ -330,6 +348,24 @@ pub(crate) fn build_topbar(
     .with_trigger_label(t("menu.panels"))
     .with_panel_width(240.0);
 
+    let explorers_menu = Dropdown::new(
+        Rect {
+            x: 340.0,
+            y: 2.0,
+            width: 120.0,
+            height: 28.0,
+        },
+        vec![format!("{}    Ctrl+L", t("menu.explorers.media"))],
+        |index, _label| match index {
+            0 => EventResponse::Action(UiAction::OpenMediaExplorer),
+            _ => EventResponse::Consumed,
+        },
+    )
+    .with_arrow(false)
+    .with_trigger_bg(false)
+    .with_trigger_label(t("menu.explorers"))
+    .with_panel_width(300.0);
+
     let settings_size = 24.0;
     let settings_x = screen_w - settings_size - 8.0;
     let settings_y = (TOPBAR_HEIGHT - settings_size) / 2.0;
@@ -364,6 +400,7 @@ pub(crate) fn build_topbar(
         Box::new(export_menu),
         Box::new(tools_menu),
         Box::new(panels_menu),
+        Box::new(explorers_menu),
         Box::new(connect_menu),
     ];
     if active_workspace == WorkspaceId::Recording {

@@ -81,7 +81,7 @@ compris avec `Maj`, sont prioritaires.
 | `Ctrl + N` | Créer un nouveau projet |
 | `Ctrl + I` | Ouvrir le panneau des lignes |
 | `Ctrl + P` | Ouvrir le panneau des rôles |
-| `Ctrl + L` | Ouvrir le sélecteur de langues (hors modale) |
+| `Ctrl + L` | Ouvrir l’Explorateur des médias (hors modale) |
 | `F5` | Afficher l’avertissement Studio lorsqu’une vidéo est chargée |
 
 Dans la liste des projets récents : `↑`/`↓` parcourent les projets, `Entrée`

@@ -41,6 +41,12 @@ pub enum UiAction {
     ActivateWorkspace(crate::application::workspace_service::WorkspaceId),
     RecordingChooseSolo,
     RecordingChooseOnline,
+    RecordingImportAudio,
+    RecordingConfirmAudioImport {
+        path: std::path::PathBuf,
+        username: String,
+        placement: Option<(crate::recording::AudioTrackId, i64)>,
+    },
     RecordingSetTool(crate::recording::RecordingTool),
     RecordingAddTrack,
     RecordingRemoveTrack(crate::recording::AudioTrackId),
@@ -118,7 +124,7 @@ pub enum UiAction {
     ImportSubtitles,
     ExportProject,
     OpenExportModal,
-    OpenLanguages,
+    OpenMediaExplorer,
     CreateLanguage {
         name: String,
     },
@@ -141,6 +147,15 @@ pub enum UiAction {
     },
     ClearLanguageInstrumentalAudio {
         id: u64,
+    },
+    SwitchMediaVideo {
+        use_proxy: bool,
+    },
+    SetDefaultMediaVideo {
+        use_proxy: bool,
+    },
+    DeleteMediaVideo {
+        use_proxy: bool,
     },
     StartExport {
         fps: f64,
@@ -177,6 +192,7 @@ pub enum UiAction {
         width: u32,
         height: u32,
         crf: u8,
+        encoder: crate::video_proxy::ProxyEncoder,
     },
     OpenRenameCharacterModal,
     OpenAutomation,
@@ -678,6 +694,7 @@ pub enum ToolMode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilePickerIntent {
     AddVideo,
+    RecordingAudio,
     ImportProject,
     ImportCappelaProject,
     ImportSrtProject,

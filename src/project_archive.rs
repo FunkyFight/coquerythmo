@@ -110,6 +110,7 @@ pub struct LoadedProject {
     pub transaction_journal: Option<TransactionJournal>,
     pub source_video_path: Option<PathBuf>,
     pub proxy_video_path: Option<PathBuf>,
+    pub default_uses_proxy: bool,
     pub font_asset_path: Option<PathBuf>,
     pub instrumental_audio_paths: BTreeMap<String, PathBuf>,
     pub recording: Option<LoadedRecordingProject>,
@@ -276,6 +277,8 @@ struct BundleAssets {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     proxy_video: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_uses_proxy: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     font: Option<String>,
     #[serde(default)]
     instrumentals: Vec<InstrumentalAssetManifest>,
@@ -364,6 +367,7 @@ pub fn save_bundle_with_metadata(
         bundle_path,
         source_video,
         proxy_video,
+        proxy_video.is_some(),
         font_asset,
         transaction_journal,
         None,
@@ -378,6 +382,7 @@ pub fn save_bundle_with_recording_data(
     bundle_path: &Path,
     source_video: &Path,
     proxy_video: Option<&Path>,
+    default_uses_proxy: bool,
     font_asset: Option<&Path>,
     transaction_journal: Option<&TransactionJournal>,
     recording: Option<RecordingBundleInput<'_>>,
@@ -407,6 +412,7 @@ pub fn save_bundle_with_recording_data(
         source_video,
         &instrumentals,
         proxy_video,
+        default_uses_proxy,
         font_asset,
         transaction_journal,
         recording,
@@ -453,6 +459,7 @@ pub fn save_bundle_with_instrumentals_and_metadata(
         source_video,
         instrumentals,
         proxy_video,
+        proxy_video.is_some(),
         font_asset,
         transaction_journal,
         None,
@@ -466,6 +473,7 @@ pub fn save_bundle_with_instrumentals_and_recording_data(
     source_video: &Path,
     instrumentals: &[InstrumentalAssetInput<'_>],
     proxy_video: Option<&Path>,
+    default_uses_proxy: bool,
     font_asset: Option<&Path>,
     transaction_journal: Option<&TransactionJournal>,
     recording: Option<RecordingBundleInput<'_>>,
@@ -563,6 +571,7 @@ pub fn save_bundle_with_instrumentals_and_recording_data(
         assets: BundleAssets {
             source_video: source_entry,
             proxy_video: proxy.as_ref().map(|entry| entry.name.clone()),
+            default_uses_proxy: Some(default_uses_proxy && proxy.is_some()),
             font: font.as_ref().map(|entry| entry.name.clone()),
             instrumentals: instrumental_manifest,
         },
@@ -700,6 +709,7 @@ fn load_legacy_json(file: File) -> Result<LoadedProject, ProjectArchiveError> {
         transaction_journal: None,
         source_video_path: None,
         proxy_video_path: None,
+        default_uses_proxy: false,
         font_asset_path: None,
         instrumental_audio_paths,
         recording: None,
@@ -878,6 +888,11 @@ fn load_bundle(
                 .ok_or_else(|| ProjectArchiveError::MissingEntry(entry.clone()))
         })
         .transpose()?;
+    let default_uses_proxy = manifest
+        .assets
+        .default_uses_proxy
+        .unwrap_or(proxy_video_path.is_some())
+        && proxy_video_path.is_some();
     let font_asset_path = manifest
         .assets
         .font
@@ -929,6 +944,7 @@ fn load_bundle(
         transaction_journal: manifest.transactions,
         source_video_path: Some(source_video_path),
         proxy_video_path,
+        default_uses_proxy,
         font_asset_path,
         instrumental_audio_paths,
         recording,
@@ -1788,6 +1804,7 @@ mod tests {
         assert_eq!(loaded.project_data.lines[0].text, "Bonjour");
         assert!(loaded.huuid.is_some());
         assert!(loaded.recording.is_none());
+        assert!(loaded.default_uses_proxy);
         assert_eq!(
             fs::read(loaded.source_video_path.as_ref().unwrap()).unwrap(),
             b"source-video-bytes"
@@ -1823,6 +1840,33 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains(dir.0.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn bundle_round_trip_keeps_the_original_as_default_when_a_proxy_is_embedded() {
+        let dir = TestDir::new();
+        let source = dir.path("source.mp4");
+        let proxy = dir.path("proxy.mp4");
+        let bundle = dir.path("project.coquerythmo");
+        fs::write(&source, b"source").unwrap();
+        fs::write(&proxy, b"proxy").unwrap();
+
+        save_bundle_with_recording_data(
+            &sample_project(None),
+            24.0,
+            &bundle,
+            &source,
+            Some(&proxy),
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let loaded = load_project_file(&bundle).unwrap();
+        assert!(loaded.proxy_video_path.is_some());
+        assert!(!loaded.default_uses_proxy);
     }
 
     #[test]
@@ -1960,6 +2004,7 @@ mod tests {
             &bundle,
             &source,
             None,
+            false,
             None,
             None,
             Some(RecordingBundleInput {
@@ -2029,6 +2074,7 @@ mod tests {
             &bundle,
             &source,
             None,
+            false,
             None,
             None,
             Some(RecordingBundleInput {
@@ -2084,6 +2130,7 @@ mod tests {
             assets: BundleAssets {
                 source_video: source_entry.into(),
                 proxy_video: None,
+                default_uses_proxy: None,
                 font: None,
                 instrumentals: Vec::new(),
             },
@@ -2137,6 +2184,7 @@ mod tests {
             &bundle,
             &source,
             None,
+            false,
             None,
             None,
             Some(RecordingBundleInput {
@@ -2303,6 +2351,7 @@ mod tests {
             assets: BundleAssets {
                 source_video: "../escape.mp4".into(),
                 proxy_video: None,
+                default_uses_proxy: None,
                 font: None,
                 instrumentals: Vec::new(),
             },

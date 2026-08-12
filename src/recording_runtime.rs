@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::audio_transfer::{AudioTransferMetadata, AudioTransferReceiver, ReceivedAudio};
-use crate::media_recording::FfmpegFlacRecorder;
+use crate::media_recording::{import_audio, FfmpegFlacRecorder};
 use crate::recording::{
-    CaptureController, CaptureEvent, CaptureState, CaptureTarget, CompletedCapture, RecordingError,
-    RecordingProject, SystemClock, WaveformData,
+    CaptureController, CaptureEvent, CaptureState, CaptureTarget, CompletedCapture, RecordedAudio,
+    RecordingError, RecordingProject, SystemClock, WaveformData,
 };
 
 static RECORDING_NONCE: AtomicU64 = AtomicU64::new(0);
@@ -295,6 +295,36 @@ impl RecordingRuntime {
     pub fn remember_audio_path(&mut self, checksum: &str, path: &Path) {
         self.audio_paths_by_checksum
             .insert(checksum.to_owned(), path.to_owned());
+    }
+
+    pub fn import_external_audio(
+        &mut self,
+        source: &Path,
+        username: &str,
+    ) -> Result<RecordedAudio, RecordingError> {
+        self.refresh_temporary_directory();
+        let nonce = RECORDING_NONCE.fetch_add(1, Ordering::Relaxed);
+        let stem = source
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(portable_username)
+            .unwrap_or_else(|| "audio".into());
+        let output = self.temporary_dir.join(format!(
+            "{}_{}_{}-{nonce}.flac",
+            portable_username(username),
+            recording_timestamp(),
+            stem
+        ));
+        let audio = match import_audio(source, &output) {
+            Ok(audio) => audio,
+            Err(error) => {
+                let _ = std::fs::remove_file(&output);
+                return Err(error);
+            }
+        };
+        self.owned_files.push(output.clone());
+        self.remember_audio_path(&audio.checksum, &output);
+        Ok(audio)
     }
 
     pub fn audio_path(&self, checksum: &str) -> Option<&PathBuf> {

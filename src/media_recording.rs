@@ -23,6 +23,49 @@ const MIN_RECORDING_SAMPLE_RATE: u32 = 48_000;
 
 static TEMP_FILE_NONCE: AtomicU64 = AtomicU64::new(0);
 
+pub fn import_audio(source: &Path, output: &Path) -> Result<RecordedAudio, RecordingError> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            recorder_error(format!("cannot create audio import directory: {error}"))
+        })?;
+    }
+    let status = crate::media_binary::command("ffmpeg")
+        .args(["-y", "-v", "error", "-i"])
+        .arg(source)
+        .args(["-vn", "-ar", "48000", "-ac", "1", "-c:a", "flac"])
+        .arg(output)
+        .status()
+        .map_err(|error| recorder_error(format!("cannot import audio: {error}")))?;
+    if !status.success() {
+        remove_if_present(output);
+        return Err(recorder_error("FFmpeg could not import this audio file"));
+    }
+
+    let samples = crate::recording_mix::decode_realtime_asset(
+        output,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .map_err(recorder_error)?;
+    if samples.is_empty() {
+        remove_if_present(output);
+        return Err(recorder_error("imported audio is empty"));
+    }
+    let mut waveform = WaveformAccumulator::new(1, 480);
+    waveform.push_interleaved(&samples);
+    Ok(RecordedAudio {
+        file_name: output
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("import.flac")
+            .to_owned(),
+        sample_rate: 48_000,
+        channels: 1,
+        sample_count: samples.len() as u64,
+        checksum: sha1_file(output)?,
+        waveform: waveform.finish(),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputDeviceIssue {
     DefaultConfigUnavailable,
@@ -757,6 +800,47 @@ fn recorder_error(message: impl Into<String>) -> RecordingError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_wav_is_imported_as_portable_flac() {
+        if !crate::media_binary::can_run("ffmpeg") {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "coquerythmo-audio-import-{}-{}",
+            std::process::id(),
+            TEMP_FILE_NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.wav");
+        let output = dir
+            .join("missing-output-directory")
+            .join("alice_2026-08-12_14-30-00.flac");
+        let samples = [0_i16; 800];
+        let data_len = (samples.len() * 2) as u32;
+        let mut wav = Vec::with_capacity(44 + data_len as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&8_000_u32.to_le_bytes());
+        wav.extend_from_slice(&16_000_u32.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        wav.extend(samples.iter().flat_map(|sample| sample.to_le_bytes()));
+        fs::write(&source, wav).unwrap();
+
+        let audio = import_audio(&source, &output).unwrap();
+        assert_eq!(audio.file_name, "alice_2026-08-12_14-30-00.flac");
+        assert_eq!((audio.sample_rate, audio.channels), (48_000, 1));
+        assert!(audio.sample_count > 0 && output.is_file());
+        assert_eq!(audio.checksum.len(), 40);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn waveform_uses_loudest_channel_and_exact_frame_buckets() {
