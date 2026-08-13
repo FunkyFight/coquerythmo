@@ -65,6 +65,7 @@ pub enum ExportModalResult {
 pub struct ExportModal {
     configuration: ExportConfiguration,
     languages: Vec<ExportLanguageOption>,
+    video_only: bool,
     page: ExportPage,
     language_scroll: f32,
     source_width: u32,
@@ -105,6 +106,7 @@ impl ExportModal {
         let mut modal = Self {
             configuration,
             languages,
+            video_only: false,
             page: ExportPage::Video,
             language_scroll: 0.0,
             source_width: video_width.max(16),
@@ -126,6 +128,21 @@ impl ExportModal {
         modal
     }
 
+    pub fn new_video_only(
+        video_width: u32,
+        video_height: u32,
+        configuration: ExportConfiguration,
+    ) -> Self {
+        let mut modal = Self::new(video_width, video_height, Vec::new(), configuration);
+        modal.video_only = true;
+        modal.configuration.video_enabled = true;
+        modal
+    }
+
+    pub fn video_only(&self) -> bool {
+        self.video_only
+    }
+
     fn focus_order(&self) -> Vec<ExportFocus> {
         let page_index = match self.page {
             ExportPage::Video => 0,
@@ -133,25 +150,33 @@ impl ExportModal {
             ExportPage::Audio => 2,
             ExportPage::Reports => 3,
         };
-        let mut order = vec![ExportFocus::Page(page_index)];
+        let mut order = if self.video_only {
+            Vec::new()
+        } else {
+            vec![ExportFocus::Page(page_index)]
+        };
         match self.page {
             ExportPage::Video => {
-                order.push(ExportFocus::VideoToggle);
+                if !self.video_only {
+                    order.push(ExportFocus::VideoToggle);
+                }
                 order.extend((0..3).map(ExportFocus::VideoAspect));
                 order.extend((0..5).map(ExportFocus::VideoQuality));
                 if self.configuration.video_quality == VideoExportQuality::Custom {
                     order.push(ExportFocus::VideoWidth);
                     order.push(ExportFocus::VideoHeight);
                 }
-                order.extend([
-                    ExportFocus::VideoFps,
-                    ExportFocus::VideoBrScale,
-                    ExportFocus::VideoKaraokeScale,
-                    ExportFocus::VideoPreroll,
-                    ExportFocus::VideoCountdown,
-                ]);
-                if self.configuration.countdown_enabled {
-                    order.push(ExportFocus::VideoCountdownStart);
+                order.push(ExportFocus::VideoFps);
+                if !self.video_only {
+                    order.extend([
+                        ExportFocus::VideoBrScale,
+                        ExportFocus::VideoKaraokeScale,
+                        ExportFocus::VideoPreroll,
+                        ExportFocus::VideoCountdown,
+                    ]);
+                    if self.configuration.countdown_enabled {
+                        order.push(ExportFocus::VideoCountdownStart);
+                    }
                 }
             }
             ExportPage::Subtitles => order.extend((0..4).map(ExportFocus::Format)),
@@ -203,6 +228,9 @@ impl ExportModal {
     }
 
     fn move_page(&mut self, direction: i32) {
+        if self.video_only {
+            return;
+        }
         self.finish_numeric();
         let current = match self.page {
             ExportPage::Video => 0,
@@ -505,7 +533,15 @@ impl ExportModal {
         }
     }
 
-    fn content_rect(card: Rect) -> Rect {
+    fn content_rect(&self, card: Rect) -> Rect {
+        if self.video_only {
+            return Rect {
+                x: card.x + (card.width - 620.0) * 0.5,
+                y: card.y + 68.0,
+                width: 620.0,
+                height: card.height - 132.0,
+            };
+        }
         let nav = Self::nav_rect(card);
         let languages = Self::language_rect(card);
         Rect {
@@ -641,7 +677,9 @@ impl ExportModal {
         }
         match self.current_focus() {
             ExportFocus::VideoToggle => {
-                self.configuration.video_enabled = !self.configuration.video_enabled
+                if !self.video_only {
+                    self.configuration.video_enabled = !self.configuration.video_enabled;
+                }
             }
             ExportFocus::VideoAspect(index) => {
                 let next = (index as i32 + direction).rem_euclid(3) as usize;
@@ -798,9 +836,7 @@ impl ExportModal {
                 });
             }
             ExportFocus::Export => {
-                if self.any_format_selected()
-                    && !self.configuration.selected_language_ids.is_empty()
-                {
+                if self.can_export() {
                     self.finish_numeric();
                     return Some(ExportModalResult::Export {
                         configuration: self.configuration.clone(),
@@ -830,6 +866,14 @@ impl ExportModal {
             || cfg.cross_reference_formats.csv
             || cfg.cross_reference_formats.pdf
             || cfg.presence_grid_pdf
+    }
+
+    fn can_export(&self) -> bool {
+        if self.video_only {
+            self.configuration.video_enabled
+        } else {
+            self.any_format_selected() && !self.configuration.selected_language_ids.is_empty()
+        }
     }
 
     fn format_name(&self, index: usize) -> &'static str {
@@ -966,7 +1010,7 @@ impl ExportModal {
         screen_h: f32,
     ) -> ExportModalResult {
         let card = Self::card(screen_w, screen_h);
-        let content = Self::content_rect(card);
+        let content = self.content_rect(card);
         let language_viewport = Self::language_list_viewport(card);
 
         match event {
@@ -1045,7 +1089,9 @@ impl ExportModal {
                 }
                 ExportModalResult::Consumed
             }
-            UiEvent::Scroll { x, y, delta, .. } if language_viewport.contains(*x, *y) => {
+            UiEvent::Scroll { x, y, delta, .. }
+                if !self.video_only && language_viewport.contains(*x, *y) =>
+            {
                 let max = self.max_language_scroll(language_viewport);
                 self.language_scroll = (self.language_scroll - *delta * 34.0).clamp(0.0, max);
                 ExportModalResult::Consumed
@@ -1059,9 +1105,7 @@ impl ExportModal {
                 }
                 if Self::export_button(card).contains(*x, *y) {
                     self.set_focus(ExportFocus::Export);
-                    if self.any_format_selected()
-                        && !self.configuration.selected_language_ids.is_empty()
-                    {
+                    if self.can_export() {
                         self.finish_numeric();
                         return ExportModalResult::Export {
                             configuration: self.configuration.clone(),
@@ -1070,16 +1114,18 @@ impl ExportModal {
                     return ExportModalResult::Consumed;
                 }
 
-                for index in 0..4 {
-                    if Self::nav_item(card, index).contains(*x, *y) {
-                        self.finish_numeric();
-                        self.page = Self::page_for_index(index);
-                        self.set_focus(ExportFocus::Page(index));
-                        return ExportModalResult::Consumed;
+                if !self.video_only {
+                    for index in 0..4 {
+                        if Self::nav_item(card, index).contains(*x, *y) {
+                            self.finish_numeric();
+                            self.page = Self::page_for_index(index);
+                            self.set_focus(ExportFocus::Page(index));
+                            return ExportModalResult::Consumed;
+                        }
                     }
                 }
 
-                if language_viewport.contains(*x, *y) {
+                if !self.video_only && language_viewport.contains(*x, *y) {
                     let row_index = ((*y - language_viewport.y + self.language_scroll) / ROW_H)
                         .floor()
                         .max(0.0) as usize;
@@ -1140,7 +1186,7 @@ impl ExportModal {
     }
 
     fn handle_video_click(&mut self, content: Rect, x: f32, y: f32) {
-        if option_rect(content, 0).contains(x, y) {
+        if !self.video_only && option_rect(content, 0).contains(x, y) {
             self.set_focus(ExportFocus::VideoToggle);
             self.configuration.video_enabled = !self.configuration.video_enabled;
             return;
@@ -1277,7 +1323,7 @@ impl ExportModal {
     ) {
         let card = Self::card(screen_w, screen_h);
         let nav = Self::nav_rect(card);
-        let content = Self::content_rect(card);
+        let content = self.content_rect(card);
         let language_panel = Self::language_rect(card);
 
         panel(
@@ -1300,7 +1346,11 @@ impl ExportModal {
             [0.28, 0.32, 0.41, 1.0],
         );
         labels.push(text(
-            t("export_modal.title"),
+            t(if self.video_only {
+                "comic_dubs.export.title"
+            } else {
+                "export_modal.title"
+            }),
             Rect {
                 x: card.x + 22.0,
                 y: card.y + 13.0,
@@ -1312,7 +1362,11 @@ impl ExportModal {
             Some([240, 242, 249]),
         ));
         labels.push(text(
-            t("export_hub.subtitle"),
+            t(if self.video_only {
+                "comic_dubs.export.subtitle"
+            } else {
+                "export_hub.subtitle"
+            }),
             Rect {
                 x: card.x + 22.0,
                 y: card.y + 42.0,
@@ -1323,13 +1377,15 @@ impl ExportModal {
             HAlign::Left,
             Some([141, 148, 168]),
         ));
-        panel(
-            quads,
-            nav,
-            [0.06, 0.065, 0.085, 1.0],
-            10.0,
-            [0.17, 0.19, 0.25, 1.0],
-        );
+        if !self.video_only {
+            panel(
+                quads,
+                nav,
+                [0.06, 0.065, 0.085, 1.0],
+                10.0,
+                [0.17, 0.19, 0.25, 1.0],
+            );
+        }
         panel(
             quads,
             content,
@@ -1337,13 +1393,15 @@ impl ExportModal {
             10.0,
             [0.17, 0.19, 0.25, 1.0],
         );
-        panel(
-            quads,
-            language_panel,
-            [0.06, 0.065, 0.085, 1.0],
-            10.0,
-            [0.17, 0.19, 0.25, 1.0],
-        );
+        if !self.video_only {
+            panel(
+                quads,
+                language_panel,
+                [0.06, 0.065, 0.085, 1.0],
+                10.0,
+                [0.17, 0.19, 0.25, 1.0],
+            );
+        }
 
         let pages = [
             (ExportPage::Video, t("export_hub.video")),
@@ -1351,7 +1409,7 @@ impl ExportModal {
             (ExportPage::Audio, t("export_hub.audio")),
             (ExportPage::Reports, t("export_hub.reports")),
         ];
-        for (index, (page, name)) in pages.iter().enumerate() {
+        for (index, (page, name)) in pages.iter().enumerate().filter(|_| !self.video_only) {
             let rect = Self::nav_item(card, index);
             if *page == self.page {
                 panel(
@@ -1448,7 +1506,9 @@ impl ExportModal {
                 ],
             ),
         }
-        self.render_languages(quads, labels, card);
+        if !self.video_only {
+            self.render_languages(quads, labels, card);
+        }
 
         let close = Self::close_button(card);
         button(
@@ -1466,7 +1526,7 @@ impl ExportModal {
             export,
             t("export_modal.export"),
             [0.13, 0.42, 0.28, 1.0],
-            self.any_format_selected() && !self.configuration.selected_language_ids.is_empty(),
+            self.can_export(),
         );
         if let Some(rect) = self.focus_rect(card) {
             focus_outline(quads, rect);
@@ -1474,7 +1534,7 @@ impl ExportModal {
     }
 
     fn focus_rect(&self, card: Rect) -> Option<Rect> {
-        let content = Self::content_rect(card);
+        let content = self.content_rect(card);
         let rect = match self.current_focus() {
             ExportFocus::Page(_) => return None,
             ExportFocus::VideoToggle => option_rect(content, 0),
@@ -1535,14 +1595,18 @@ impl ExportModal {
         labels: &mut Vec<LabelInfo<'a>>,
         content: Rect,
     ) {
-        checkbox_row(
-            quads,
-            labels,
-            option_rect(content, 0),
-            self.configuration.video_enabled,
-            t("export_hub.video_mp4"),
-            true,
-        );
+        if self.video_only {
+            section_label(labels, content, 24.0, t("comic_dubs.export.video"));
+        } else {
+            checkbox_row(
+                quads,
+                labels,
+                option_rect(content, 0),
+                self.configuration.video_enabled,
+                t("export_hub.video_mp4"),
+                true,
+            );
+        }
         section_label(labels, content, 84.0, t("export_hub.aspect"));
         let aspects = [
             (VideoExportAspect::Source, t("export_hub.source_aspect")),
@@ -1634,6 +1698,9 @@ impl ExportModal {
             t("export_modal.fps"),
             &self.fps_display,
         );
+        if self.video_only {
+            return;
+        }
         stepper(
             quads,
             labels,
@@ -2369,6 +2436,47 @@ mod tests {
             .contains(t("accessibility.checked")));
         modal.handle_event(&UiEvent::CursorLeft, 1280.0, 720.0);
         assert_eq!(modal.current_focus(), ExportFocus::VideoQuality(1));
+    }
+
+    #[test]
+    fn comic_dubs_mode_only_exposes_mp4_settings() {
+        let mut configuration = ExportConfiguration::default();
+        configuration.subtitle_formats.srt = true;
+        configuration.audio_formats.wav = true;
+        let mut modal = ExportModal::new_video_only(1200, 800, configuration);
+
+        assert!(modal.can_export());
+        assert!(modal.configuration.video_enabled);
+        assert!(modal.configuration.subtitle_formats.srt);
+        assert!(modal.configuration.audio_formats.wav);
+        assert!(modal.focus_order().iter().all(|focus| !matches!(
+            focus,
+            ExportFocus::Page(_)
+                | ExportFocus::VideoToggle
+                | ExportFocus::Format(_)
+                | ExportFocus::Language(_)
+        )));
+        let mut quads = Vec::new();
+        let mut labels = Vec::new();
+        modal.render(&mut quads, &mut labels, 1280.0, 720.0);
+        assert!(labels
+            .iter()
+            .any(|label| label.text == t("comic_dubs.export.title")));
+        assert!(labels
+            .iter()
+            .any(|label| label.text == t("comic_dubs.export.video")));
+        let content = modal.content_rect(ExportModal::card(1280.0, 720.0));
+        let plus = stepper_plus(content, 276.0);
+        let previous_fps = modal.configuration.fps;
+        modal.handle_event(
+            &UiEvent::MousePress {
+                x: plus.x + 1.0,
+                y: plus.y + 1.0,
+            },
+            1280.0,
+            720.0,
+        );
+        assert_eq!(modal.configuration.fps, previous_fps + 1.0);
     }
 
     #[test]

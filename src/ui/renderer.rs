@@ -266,12 +266,103 @@ impl StretchedText {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum UiLayer {
+    /// Persistent surfaces above the workspace (side panels, selections).
+    Overlay,
+    /// Menus, dropdowns, autocomplete and color pickers.
+    Popup,
+    /// Hover help above every popup.
+    Tooltip,
+    /// Notifications above transient workspace UI but below dialogs.
+    Toast,
+    /// Primary blocking dialogs.
+    Modal,
+    /// Prompts and errors attached to a dialog.
+    ModalOverlay,
+    /// Context menus plus loading, transfer and export blockers.
+    System,
+    /// Safety-critical foreground surfaces such as detection controls.
+    Topmost,
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::UiLayer;
+
+    #[test]
+    fn semantic_layers_have_one_stable_back_to_front_order() {
+        let mut layers = [
+            UiLayer::Topmost,
+            UiLayer::Popup,
+            UiLayer::Modal,
+            UiLayer::Overlay,
+            UiLayer::System,
+            UiLayer::Toast,
+            UiLayer::Tooltip,
+            UiLayer::ModalOverlay,
+        ];
+        layers.sort();
+        assert_eq!(
+            layers,
+            [
+                UiLayer::Overlay,
+                UiLayer::Popup,
+                UiLayer::Tooltip,
+                UiLayer::Toast,
+                UiLayer::Modal,
+                UiLayer::ModalOverlay,
+                UiLayer::System,
+                UiLayer::Topmost,
+            ]
+        );
+    }
+}
+
+pub struct UiLayerBatch<'a> {
+    pub layer: UiLayer,
+    pub quads: &'a [QuadInstance],
+    pub textured: &'a [(IconInstance, &'a wgpu::BindGroup)],
+    pub foreground_quads: &'a [QuadInstance],
+    pub icons: &'a [IconInstance],
+    pub labels: &'a [LabelInfo<'a>],
+}
+
+impl<'a> UiLayerBatch<'a> {
+    pub fn new(layer: UiLayer, quads: &'a [QuadInstance], labels: &'a [LabelInfo<'a>]) -> Self {
+        Self {
+            layer,
+            quads,
+            textured: &[],
+            foreground_quads: &[],
+            icons: &[],
+            labels,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum TextLayer {
     Base,
-    Overlay,
-    Modal,
-    ModalOverlay,
+    Batch(usize),
+}
+
+struct LayerBuffers {
+    quads: DynamicBuffer,
+    textured: DynamicBuffer,
+    foreground_quads: DynamicBuffer,
+    icons: DynamicBuffer,
+}
+
+impl LayerBuffers {
+    fn new() -> Self {
+        Self {
+            quads: DynamicBuffer::new(),
+            textured: DynamicBuffer::new(),
+            foreground_quads: DynamicBuffer::new(),
+            icons: DynamicBuffer::new(),
+        }
+    }
 }
 
 pub struct UiRenderer {
@@ -288,9 +379,7 @@ pub struct UiRenderer {
     swash_cache: SwashCache,
     text_atlas: TextAtlas,
     text_renderer: TextRenderer,
-    overlay_text_renderer: TextRenderer,
-    modal_text_renderer: TextRenderer,
-    modal_overlay_text_renderer: TextRenderer,
+    layer_text_renderers: Vec<TextRenderer>,
     viewport: Viewport,
 
     text_texture_cache: HashMap<u64, CachedTextTexture>,
@@ -305,12 +394,7 @@ pub struct UiRenderer {
     stretched_text_buffer: DynamicBuffer,
     post_stretched_quad_buffer: DynamicBuffer,
     base_textured_buffer: DynamicBuffer,
-    overlay_quad_buffer: DynamicBuffer,
-    modal_quad_buffer: DynamicBuffer,
-    modal_overlay_quad_buffer: DynamicBuffer,
-    modal_textured_buffer: DynamicBuffer,
-    extra_textured_buffer: DynamicBuffer,
-    post_texture_quad_buffer: DynamicBuffer,
+    layer_buffers: Vec<LayerBuffers>,
 }
 
 impl UiRenderer {
@@ -578,12 +662,6 @@ impl UiRenderer {
         let mut text_atlas = TextAtlas::new(device, queue, &cache, format);
         let text_renderer =
             TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
-        let overlay_text_renderer =
-            TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
-        let modal_text_renderer =
-            TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
-        let modal_overlay_text_renderer =
-            TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
         let (text_raster_requests, text_raster_results) = spawn_text_raster_worker();
 
         Self {
@@ -598,9 +676,7 @@ impl UiRenderer {
             swash_cache,
             text_atlas,
             text_renderer,
-            overlay_text_renderer,
-            modal_text_renderer,
-            modal_overlay_text_renderer,
+            layer_text_renderers: Vec::new(),
             viewport,
             text_texture_cache: HashMap::new(),
             text_raster_requests,
@@ -614,12 +690,7 @@ impl UiRenderer {
             stretched_text_buffer: DynamicBuffer::new(),
             post_stretched_quad_buffer: DynamicBuffer::new(),
             base_textured_buffer: DynamicBuffer::new(),
-            overlay_quad_buffer: DynamicBuffer::new(),
-            modal_quad_buffer: DynamicBuffer::new(),
-            modal_overlay_quad_buffer: DynamicBuffer::new(),
-            modal_textured_buffer: DynamicBuffer::new(),
-            extra_textured_buffer: DynamicBuffer::new(),
-            post_texture_quad_buffer: DynamicBuffer::new(),
+            layer_buffers: Vec::new(),
         }
     }
 
@@ -1093,8 +1164,8 @@ impl UiRenderer {
 
     /// Build glyph geometry for the given labels and upload it to the text
     /// renderer. Each semantic layer owns a distinct glyphon `TextRenderer`,
-    /// because a renderer has a single prepared vertex buffer. This preserves
-    /// every label while enforcing base/overlay/modal ordering.
+    /// because a renderer has a single prepared vertex buffer. This keeps text
+    /// inside the same ordered layer as its backgrounds.
     fn prepare_text_layer(
         &mut self,
         device: &wgpu::Device,
@@ -1194,32 +1265,7 @@ impl UiRenderer {
                     &mut self.swash_cache,
                 )
                 .unwrap(),
-            TextLayer::Overlay => self
-                .overlay_text_renderer
-                .prepare(
-                    device,
-                    queue,
-                    &mut self.font_system,
-                    &mut self.text_atlas,
-                    &self.viewport,
-                    text_areas,
-                    &mut self.swash_cache,
-                )
-                .unwrap(),
-            TextLayer::Modal => self
-                .modal_text_renderer
-                .prepare(
-                    device,
-                    queue,
-                    &mut self.font_system,
-                    &mut self.text_atlas,
-                    &self.viewport,
-                    text_areas,
-                    &mut self.swash_cache,
-                )
-                .unwrap(),
-            TextLayer::ModalOverlay => self
-                .modal_overlay_text_renderer
+            TextLayer::Batch(index) => self.layer_text_renderers[index]
                 .prepare(
                     device,
                     queue,
@@ -1233,6 +1279,18 @@ impl UiRenderer {
         }
     }
 
+    fn ensure_layer_capacity(&mut self, device: &wgpu::Device, count: usize) {
+        while self.layer_text_renderers.len() < count {
+            self.layer_text_renderers.push(TextRenderer::new(
+                &mut self.text_atlas,
+                device,
+                MultisampleState::default(),
+                None,
+            ));
+            self.layer_buffers.push(LayerBuffers::new());
+        }
+    }
+
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -1242,22 +1300,14 @@ impl UiRenderer {
         screen_width: u32,
         screen_height: u32,
         ui_scale: f32,
-        quads: &[QuadInstance],         // base layer (behind video)
-        overlay_quads: &[QuadInstance], // overlay layer (on top of video)
+        quads: &[QuadInstance], // base layer (behind video)
         icons: &[IconInstance],
-        labels: &[LabelInfo],         // text paired with the base layer
-        overlay_labels: &[LabelInfo], // text paired with overlay quads
+        labels: &[LabelInfo], // text paired with the base layer
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         stretched_quads: &[(IconInstance, u64)],
         post_stretched_quads: &[QuadInstance],
         base_textured: &[(IconInstance, &wgpu::BindGroup)],
-        extra_textured: &[(IconInstance, &wgpu::BindGroup)],
-        post_texture_quads: &[QuadInstance], // drawn after textured quads (e.g. color picker indicators)
-        modal_textured: &[(IconInstance, &wgpu::BindGroup)],
-        modal_quads: &[QuadInstance], // modal backgrounds (above normal text)
-        modal_labels: &[LabelInfo],   // modal text (above modal backgrounds)
-        modal_overlay_quads: &[QuadInstance], // popups above modal content
-        modal_overlay_labels: &[LabelInfo], // popup text above popup backgrounds
+        layers: &[UiLayerBatch<'_>],
     ) {
         let ui_scale = ui_scale.max(1.0);
         let uniforms = Uniforms {
@@ -1276,8 +1326,20 @@ impl UiRenderer {
             },
         );
 
+        let mut layers: Vec<_> = layers.iter().collect();
+        layers.sort_by_key(|batch| batch.layer);
+        debug_assert!(layers.windows(2).all(|pair| pair[0].layer != pair[1].layer));
+        self.ensure_layer_capacity(device, layers.len());
         self.prepare_text_layer(device, queue, labels, ui_scale, TextLayer::Base);
-        self.prepare_text_layer(device, queue, overlay_labels, ui_scale, TextLayer::Overlay);
+        for (index, batch) in layers.iter().enumerate() {
+            self.prepare_text_layer(
+                device,
+                queue,
+                batch.labels,
+                ui_scale,
+                TextLayer::Batch(index),
+            );
+        }
 
         // Upload dynamic instance buffers once per group. Draws that need different
         // bind groups reuse the same uploaded instance buffer with instance ranges.
@@ -1320,42 +1382,28 @@ impl UiRenderer {
             "UI Base Textured Quad Buffer",
             &base_textured_instances,
         );
-        self.overlay_quad_buffer
-            .upload(device, queue, "UI Overlay Quad Buffer", overlay_quads);
-        let extra_textured_instances: Vec<IconInstance> = extra_textured
-            .iter()
-            .map(|(instance, _)| *instance)
-            .collect();
-        self.extra_textured_buffer.upload(
-            device,
-            queue,
-            "UI Extra Textured Quad Buffer",
-            &extra_textured_instances,
-        );
-        self.post_texture_quad_buffer.upload(
-            device,
-            queue,
-            "UI Post-Texture Quad Buffer",
-            post_texture_quads,
-        );
-        self.modal_quad_buffer
-            .upload(device, queue, "UI Modal Quad Buffer", modal_quads);
-        self.modal_overlay_quad_buffer.upload(
-            device,
-            queue,
-            "UI Modal Overlay Quad Buffer",
-            modal_overlay_quads,
-        );
-        let modal_textured_instances: Vec<IconInstance> = modal_textured
-            .iter()
-            .map(|(instance, _)| *instance)
-            .collect();
-        self.modal_textured_buffer.upload(
-            device,
-            queue,
-            "UI Modal Textured Quad Buffer",
-            &modal_textured_instances,
-        );
+        for (buffers, batch) in self.layer_buffers.iter_mut().zip(&layers) {
+            let textured: Vec<_> = batch
+                .textured
+                .iter()
+                .map(|(instance, _)| *instance)
+                .collect();
+            buffers
+                .quads
+                .upload(device, queue, "UI Layer Quads", batch.quads);
+            buffers
+                .textured
+                .upload(device, queue, "UI Layer Textures", &textured);
+            buffers.foreground_quads.upload(
+                device,
+                queue,
+                "UI Layer Foreground Quads",
+                batch.foreground_quads,
+            );
+            buffers
+                .icons
+                .upload(device, queue, "UI Layer Icons", batch.icons);
+        }
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1457,126 +1505,52 @@ impl UiRenderer {
                     .unwrap();
             }
 
-            // Draw overlay quads (on top of video, icons, stretched text)
-            if !overlay_quads.is_empty() {
-                pass.set_pipeline(&self.quad_pipeline);
-                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                if let Some(buffer) = self.overlay_quad_buffer.buffer() {
-                    pass.set_vertex_buffer(0, buffer.slice(..));
-                    pass.draw(0..6, 0..overlay_quads.len() as u32);
-                }
-            }
-
-            // Draw extra textured quads (color picker gradients — after overlay background)
-            if !extra_textured.is_empty() {
-                pass.set_pipeline(&self.icon_pipeline);
-                pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
-                if let Some(buffer) = self.extra_textured_buffer.buffer() {
-                    pass.set_vertex_buffer(0, buffer.slice(..));
-                    for (index, (_, bind_group)) in extra_textured.iter().enumerate() {
-                        let index = index as u32;
-                        pass.set_bind_group(1, *bind_group, &[]);
-                        pass.draw(0..6, index..index + 1);
+            // Each layer is a closed compositing group: geometry first, text
+            // last, then the next layer covers the whole group.
+            for (index, batch) in layers.iter().enumerate() {
+                let buffers = &self.layer_buffers[index];
+                if !batch.quads.is_empty() {
+                    pass.set_pipeline(&self.quad_pipeline);
+                    pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                    if let Some(buffer) = buffers.quads.buffer() {
+                        pass.set_vertex_buffer(0, buffer.slice(..));
+                        pass.draw(0..6, 0..batch.quads.len() as u32);
                     }
                 }
-            }
-
-            // Draw post-texture quads (color picker indicators on top of gradients)
-            if !post_texture_quads.is_empty() {
-                pass.set_pipeline(&self.quad_pipeline);
-                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                if let Some(buffer) = self.post_texture_quad_buffer.buffer() {
-                    pass.set_vertex_buffer(0, buffer.slice(..));
-                    pass.draw(0..6, 0..post_texture_quads.len() as u32);
-                }
-            }
-
-            // Overlay text is prepared independently and is drawn only after
-            // every overlay background and texture in this layer.
-            if !overlay_labels.is_empty() {
-                self.overlay_text_renderer
-                    .render(&self.text_atlas, &self.viewport, &mut pass)
-                    .unwrap();
-            }
-        }
-
-        // Second pass: modals on top of everything (quads + text). LoadOp::Load
-        // preserves the first pass's output.
-        if !modal_quads.is_empty()
-            || !modal_labels.is_empty()
-            || !modal_overlay_quads.is_empty()
-            || !modal_overlay_labels.is_empty()
-        {
-            self.prepare_text_layer(device, queue, modal_labels, ui_scale, TextLayer::Modal);
-            self.prepare_text_layer(
-                device,
-                queue,
-                modal_overlay_labels,
-                ui_scale,
-                TextLayer::ModalOverlay,
-            );
-
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("UI Modal Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            // Draw modal quads (dim + cards), above the normal text layer.
-            if !modal_quads.is_empty() {
-                pass.set_pipeline(&self.quad_pipeline);
-                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                if let Some(buffer) = self.modal_quad_buffer.buffer() {
-                    pass.set_vertex_buffer(0, buffer.slice(..));
-                    pass.draw(0..6, 0..modal_quads.len() as u32);
-                }
-            }
-
-            if !modal_textured.is_empty() {
-                pass.set_pipeline(&self.icon_pipeline);
-                pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
-                if let Some(buffer) = self.modal_textured_buffer.buffer() {
-                    pass.set_vertex_buffer(0, buffer.slice(..));
-                    for (index, (_, bind_group)) in modal_textured.iter().enumerate() {
-                        let index = index as u32;
-                        pass.set_bind_group(1, *bind_group, &[]);
-                        pass.draw(0..6, index..index + 1);
+                if !batch.icons.is_empty() {
+                    pass.set_pipeline(&self.icon_pipeline);
+                    pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
+                    pass.set_bind_group(1, &self.icon_atlas.bind_group, &[]);
+                    if let Some(buffer) = buffers.icons.buffer() {
+                        pass.set_vertex_buffer(0, buffer.slice(..));
+                        pass.draw(0..6, 0..batch.icons.len() as u32);
                     }
                 }
-            }
-
-            // Draw modal text only when this frame prepared that layer; this
-            // prevents glyphon's previous modal buffer from leaking forward.
-            if !modal_labels.is_empty() {
-                self.modal_text_renderer
-                    .render(&self.text_atlas, &self.viewport, &mut pass)
-                    .unwrap();
-            }
-
-            if !modal_overlay_quads.is_empty() {
-                pass.set_pipeline(&self.quad_pipeline);
-                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                if let Some(buffer) = self.modal_overlay_quad_buffer.buffer() {
-                    pass.set_vertex_buffer(0, buffer.slice(..));
-                    pass.draw(0..6, 0..modal_overlay_quads.len() as u32);
+                if !batch.textured.is_empty() {
+                    pass.set_pipeline(&self.icon_pipeline);
+                    pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
+                    if let Some(buffer) = buffers.textured.buffer() {
+                        pass.set_vertex_buffer(0, buffer.slice(..));
+                        for (texture_index, (_, bind_group)) in batch.textured.iter().enumerate() {
+                            let texture_index = texture_index as u32;
+                            pass.set_bind_group(1, *bind_group, &[]);
+                            pass.draw(0..6, texture_index..texture_index + 1);
+                        }
+                    }
                 }
-            }
-
-            if !modal_overlay_labels.is_empty() {
-                self.modal_overlay_text_renderer
-                    .render(&self.text_atlas, &self.viewport, &mut pass)
-                    .unwrap();
+                if !batch.foreground_quads.is_empty() {
+                    pass.set_pipeline(&self.quad_pipeline);
+                    pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                    if let Some(buffer) = buffers.foreground_quads.buffer() {
+                        pass.set_vertex_buffer(0, buffer.slice(..));
+                        pass.draw(0..6, 0..batch.foreground_quads.len() as u32);
+                    }
+                }
+                if !batch.labels.is_empty() {
+                    self.layer_text_renderers[index]
+                        .render(&self.text_atlas, &self.viewport, &mut pass)
+                        .unwrap();
+                }
             }
         }
 

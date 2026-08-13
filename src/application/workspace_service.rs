@@ -6,6 +6,7 @@ pub enum WorkspaceId {
     Rythmo,
     Recording,
     Voicelines,
+    ComicDubs,
 }
 
 /// Commands a workspace can ask the shell to execute.
@@ -126,6 +127,7 @@ mod tests {
                 WorkspaceId::Rythmo => "rythmo",
                 WorkspaceId::Recording => "recording",
                 WorkspaceId::Voicelines => "voicelines",
+                WorkspaceId::ComicDubs => "comic_dubs",
             }
         }
 
@@ -149,6 +151,7 @@ mod tests {
                 Box::new(IdentifiedWorkspace(WorkspaceId::Rythmo)),
                 Box::new(IdentifiedWorkspace(WorkspaceId::Recording)),
                 Box::new(IdentifiedWorkspace(WorkspaceId::Voicelines)),
+                Box::new(IdentifiedWorkspace(WorkspaceId::ComicDubs)),
             ],
             WorkspaceId::Rythmo,
         );

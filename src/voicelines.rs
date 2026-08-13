@@ -23,10 +23,14 @@ pub enum NamingMode {
 impl Default for NamingMode {
     fn default() -> Self {
         Self::Automatic {
-            pattern: "voiceline_{num}".into(),
+            pattern: default_automatic_pattern(),
             next: 1,
         }
     }
+}
+
+fn default_automatic_pattern() -> String {
+    "voiceline_{num}".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +73,8 @@ pub struct VoicelinesProject {
     active_audio: Option<AudioId>,
     #[serde(default)]
     naming: NamingMode,
+    #[serde(default = "default_automatic_pattern")]
+    automatic_pattern: String,
     #[serde(default = "first_id")]
     next_id: u64,
 }
@@ -83,6 +89,7 @@ impl Default for VoicelinesProject {
             audios: Vec::new(),
             active_audio: None,
             naming: NamingMode::default(),
+            automatic_pattern: default_automatic_pattern(),
             next_id: first_id(),
         }
     }
@@ -182,10 +189,14 @@ impl VoicelinesProject {
     }
 
     pub fn set_automatic_naming(&mut self, pattern: &str) -> Result<(), String> {
-        let pattern = clean_name(pattern);
-        if !pattern.contains("{num}") {
-            return Err("Le pattern doit contenir {num}".into());
+        let mut pattern = clean_name(pattern);
+        if pattern.is_empty() {
+            return Err("Indiquez un nom de base".into());
         }
+        if !pattern.contains("{num}") {
+            pattern.push_str("_{num}");
+        }
+        self.automatic_pattern.clone_from(&pattern);
         self.naming = NamingMode::Automatic {
             pattern,
             next: self.next_automatic_number(),
@@ -194,10 +205,7 @@ impl VoicelinesProject {
     }
 
     pub fn automatic_pattern(&self) -> &str {
-        match &self.naming {
-            NamingMode::Automatic { pattern, .. } => pattern,
-            NamingMode::Manual => "voiceline_{num}",
-        }
+        &self.automatic_pattern
     }
 
     pub fn add_region(&mut self, start_ms: u64, end_ms: u64) -> Option<RegionId> {
@@ -326,9 +334,15 @@ impl VoicelinesProject {
     }
 
     pub(crate) fn validate(&mut self) -> Result<(), String> {
-        if matches!(&self.naming, NamingMode::Automatic { pattern, .. } if !pattern.contains("{num}"))
-        {
-            return Err("invalid voicelines naming pattern".into());
+        match &self.naming {
+            NamingMode::Automatic { pattern, .. } if !pattern.contains("{num}") => {
+                return Err("invalid voicelines naming pattern".into());
+            }
+            NamingMode::Automatic { pattern, .. } => self.automatic_pattern.clone_from(pattern),
+            NamingMode::Manual if !self.automatic_pattern.contains("{num}") => {
+                self.automatic_pattern = default_automatic_pattern();
+            }
+            NamingMode::Manual => {}
         }
         let mut ids = HashSet::new();
         for audio in &mut self.audios {
@@ -367,20 +381,22 @@ pub fn export_region(audio: &Audio, region: &Region, output: &Path) -> Result<()
             .map_err(|error| format!("cannot create voicelines export directory: {error}"))?;
     }
     let duration = (region.end_ms - region.start_ms) as f64 / 1_000.0;
-    let status = crate::media_binary::command("ffmpeg")
+    let mut command = crate::media_binary::command("ffmpeg");
+    command
         .args(["-y", "-v", "error", "-ss"])
         .arg(format!("{:.3}", region.start_ms as f64 / 1_000.0))
         .arg("-i")
         .arg(&audio.playback_path)
-        .args([
-            "-t",
-            &format!("{duration:.3}"),
-            "-vn",
-            "-c:a",
-            "libvorbis",
-            "-q:a",
-            "6",
-        ])
+        .args(["-t", &format!("{duration:.3}"), "-vn", "-c:a"]);
+    if output
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("flac"))
+    {
+        command.arg("flac");
+    } else {
+        command.args(["libvorbis", "-q:a", "6"]);
+    }
+    let status = command
         .arg(output)
         .status()
         .map_err(|error| format!("cannot start FFmpeg voiceline export: {error}"))?;
@@ -639,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_naming_requires_and_expands_num() {
+    fn automatic_naming_accepts_a_plain_base_name_or_a_pattern() {
         let mut project = VoicelinesProject::default();
         project.add_audio("one.wav".into(), "one.flac".into(), recorded(vec![1.0; 20]));
         assert!(project.set_automatic_naming("réplique-{num}").is_ok());
@@ -648,6 +664,21 @@ mod tests {
             project.active_audio().unwrap().regions[0].name,
             "réplique-001"
         );
-        assert!(project.set_automatic_naming("réplique").is_err());
+        assert!(project.set_automatic_naming("autre").is_ok());
+        project.add_region(200, 300).unwrap();
+        assert_eq!(project.active_audio().unwrap().regions[1].name, "autre_002");
+        project.set_manual_naming();
+        assert_eq!(project.automatic_pattern(), "autre_{num}");
+        assert!(project.set_automatic_naming("  ").is_err());
+
+        project.set_automatic_naming("archive-{num}").unwrap();
+        let mut old_json = serde_json::to_value(&project).unwrap();
+        old_json
+            .as_object_mut()
+            .unwrap()
+            .remove("automatic_pattern");
+        let mut loaded: VoicelinesProject = serde_json::from_value(old_json).unwrap();
+        loaded.validate().unwrap();
+        assert_eq!(loaded.automatic_pattern(), "archive-{num}");
     }
 }

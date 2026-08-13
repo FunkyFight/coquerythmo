@@ -75,6 +75,10 @@
 "workspace_tabs.rythmo" = "Rythmo Band"
 "workspace_tabs.recording" = "Recording"
 "workspace_tabs.voicelines" = "Voicelines"
+"workspace_tabs.comic_dubs" = "Comic Dubs"
+"comic_dubs.export.title" = "Export Comic Dub"
+"comic_dubs.export.subtitle" = "Create an MP4 video from the Comic Dub pages, bubbles, and audio."
+"comic_dubs.export.video" = "Comic Dubs video (MP4)"
 "recording.choice.solo" = "Record solo"
 "recording.choice.solo_hint" = "Record and edit your takes locally, without connecting."
 "recording.choice.online" = "Record online"
@@ -241,6 +245,7 @@
 
 "menu.export" = "Export"
 "menu.export.mp4" = "Export…"
+"menu.export.voicelines_audio" = "Export voicelines as audio…"
 
 "menu.tools" = "Tools"
 "menu.tools.automation" = "Automation"
@@ -443,7 +448,7 @@
 "loading_project.preparing_project" = "Preparing the video and timeline"
 "loading_project.ready" = "Project ready"
 "toast.no_audio_export_selected" = "Select at least one audio output to export."
-"toast.no_instrumental_audio" = "No instrumental audio is configured in project settings."
+"toast.no_instrumental_audio" = "No instrumental audio is configured in the rythmo band settings."
 
 # What's new modal
 "whats_new.title" = "What's New"
@@ -549,7 +554,7 @@
 "export_modal.export_original_audio" = "Export with original audio"
 "export_modal.export_instrumental_audio" = "Export with instrumental audio"
 "export_modal.audio_outputs_hint" = "When both are checked, the instrumental file is written with the _instrumental suffix."
-"export_modal.no_project_instrumental_audio" = "No instrumental audio is configured in project settings."
+"export_modal.no_project_instrumental_audio" = "No instrumental audio is configured in the rythmo band settings."
 "export_modal.export" = "Export"
 
 # Languages / translations
@@ -620,8 +625,14 @@
 "settings.temporary_directory" = "Application temporary directory"
 "settings.browse" = "Browse"
 "settings.tooltip" = "Settings"
-"project_settings.title" = "Project settings"
-"project_settings.tooltip" = "Project settings"
+"project_settings.title" = "Rythmo band settings"
+"project_settings.tooltip" = "Rythmo band settings"
+"comic_dubs_settings.title" = "Comic Dub settings"
+"comic_dubs_settings.tooltip" = "Comic Dub settings"
+"comic_dubs_settings.font" = "Font"
+"comic_dubs_settings.bubble_duration" = "Bubble duration"
+"comic_dubs_settings.page_duration" = "Page duration"
+"comic_dubs_settings.default_text_size" = "Default text size"
 "project_settings.instrumental_version" = "Instrumental version"
 "project_settings.no_file" = "No file selected"
 "project_settings.browse" = "Browse"

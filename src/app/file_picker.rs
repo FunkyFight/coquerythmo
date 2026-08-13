@@ -177,15 +177,9 @@ pub(crate) fn save_project_as_with_continuation(
     } else {
         path.with_extension(crate::project_archive::PROJECT_EXTENSION)
     };
-    let Some(source_video) = state.video_path() else {
-        state.show_toast(i18n::t("toast.save_requires_video"), 5.0);
-        return false;
-    };
-    let proxy_video = state.proxy_video_path();
-    let Some((_, font_asset)) = crate::vector_text::selected_font_asset() else {
-        state.show_toast(i18n::t("toast.save_font_unavailable"), 6.0);
-        return false;
-    };
+    let source_video = state.video_path();
+    let proxy_video = source_video.as_ref().and_then(|_| state.proxy_video_path());
+    let font_asset = crate::vector_text::selected_font_asset().map(|(_, path)| path);
     state.start_project_save(path, source_video, proxy_video, font_asset, continuation)
 }
 
@@ -200,15 +194,9 @@ pub(crate) fn quick_save_existing_with_continuation(
     let Some(path) = state.project_session.project_path.clone() else {
         return false;
     };
-    let Some(source_video) = state.video_path() else {
-        state.show_toast(i18n::t("toast.save_requires_video"), 5.0);
-        return false;
-    };
-    let proxy_video = state.proxy_video_path();
-    let Some((_, font_asset)) = crate::vector_text::selected_font_asset() else {
-        state.show_toast(i18n::t("toast.save_font_unavailable"), 6.0);
-        return false;
-    };
+    let source_video = state.video_path();
+    let proxy_video = source_video.as_ref().and_then(|_| state.proxy_video_path());
+    let font_asset = crate::vector_text::selected_font_asset().map(|(_, path)| path);
     state.start_project_save(path, source_video, proxy_video, font_asset, continuation)
 }
 

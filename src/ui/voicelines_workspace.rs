@@ -4,7 +4,7 @@ use crate::ui::focus::AccessibleRole;
 use crate::ui::primitives::{
     EventResponse, HAlign, Overflow, QuadInstance, Rect, UiAction, UiEvent, VAlign,
 };
-use crate::voicelines::{Audio, NamingMode, Region, RegionId, VoicelinesProject};
+use crate::voicelines::{Audio, Region, RegionId, VoicelinesProject};
 
 const SIDEBAR_W: f32 = 270.0;
 const HEADER_H: f32 = 54.0;
@@ -13,6 +13,8 @@ const REGIONS_H: f32 = 150.0;
 const AUDIO_ROW_H: f32 = 46.0;
 const REGION_ROW_H: f32 = 30.0;
 const HANDLE_W: f32 = 7.0;
+const AUDIO_MENU_W: f32 = 220.0;
+const AUDIO_MENU_ITEM_H: f32 = 34.0;
 
 const BG: [f32; 4] = [0.055, 0.058, 0.072, 1.0];
 const PANEL: [f32; 4] = [0.085, 0.09, 0.11, 1.0];
@@ -78,17 +80,16 @@ impl VoicelinesLayout {
         }
     }
 
-    fn buttons(self) -> [(Rect, HeaderAction); 6] {
+    fn buttons(self) -> [(Rect, HeaderAction); 5] {
         let gap = 6.0;
         let y = self.header.y + 9.0;
         let height = self.header.height - 18.0;
-        let widths = [118.0, 106.0, 108.0, 128.0, 92.0, 92.0];
+        let widths = [118.0, 106.0, 184.0, 92.0, 92.0];
         let scale =
-            ((self.header.width - 20.0 - gap * 5.0).max(0.0) / widths.iter().sum::<f32>()).min(1.0);
+            ((self.header.width - 20.0 - gap * 4.0).max(0.0) / widths.iter().sum::<f32>()).min(1.0);
         let actions = [
             HeaderAction::Import,
             HeaderAction::Detect,
-            HeaderAction::Export,
             HeaderAction::Naming,
             HeaderAction::Save,
             HeaderAction::Load,
@@ -111,7 +112,6 @@ impl VoicelinesLayout {
 enum HeaderAction {
     Import,
     Detect,
-    Export,
     Naming,
     Save,
     Load,
@@ -139,6 +139,8 @@ pub struct SceneControl {
 pub struct VoicelinesScene {
     pub quads: Vec<QuadInstance>,
     pub labels: Vec<SceneLabel>,
+    pub system_quads: Vec<QuadInstance>,
+    pub system_labels: Vec<SceneLabel>,
     pub controls: Vec<SceneControl>,
 }
 
@@ -167,6 +169,16 @@ enum Drag {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AudioContextMenu {
+    audio_id: u64,
+    x: f32,
+    y: f32,
+    submenu_open: bool,
+    hover_parent: bool,
+    hover_target: Option<crate::application::workspace_service::WorkspaceId>,
+}
+
 #[derive(Debug, Default)]
 pub struct VoicelinesWorkspaceUi {
     view_start_ms: u64,
@@ -179,6 +191,8 @@ pub struct VoicelinesWorkspaceUi {
     drag: Option<Drag>,
     rename: Option<(RegionId, String)>,
     naming_pattern: Option<String>,
+    audio_context_menu: Option<AudioContextMenu>,
+    recording_transfer_disabled: bool,
 }
 
 impl VoicelinesWorkspaceUi {
@@ -188,6 +202,20 @@ impl VoicelinesWorkspaceUi {
 
     pub fn set_selected_region(&mut self, selected: Option<RegionId>) {
         self.selected_region = selected;
+    }
+
+    pub fn set_recording_transfer_disabled(&mut self, disabled: bool) {
+        self.recording_transfer_disabled = disabled;
+        if disabled {
+            if let Some(menu) = &mut self.audio_context_menu {
+                if menu.hover_target
+                    == Some(crate::application::workspace_service::WorkspaceId::Recording)
+                {
+                    menu.hover_target =
+                        Some(crate::application::workspace_service::WorkspaceId::ComicDubs);
+                }
+            }
+        }
     }
 
     pub fn begin_rename(&mut self, region_id: RegionId, name: String) {
@@ -247,6 +275,9 @@ impl VoicelinesWorkspaceUi {
         layout: VoicelinesLayout,
     ) -> EventResponse {
         self.sync(project, layout);
+        if let Some(response) = self.handle_audio_context_menu(event, project, layout) {
+            return response;
+        }
         if let Some(response) = self.handle_naming_pattern(event) {
             return response;
         }
@@ -257,11 +288,16 @@ impl VoicelinesWorkspaceUi {
         if let UiEvent::MousePress { x, y } = event {
             for (rect, action) in layout.buttons() {
                 if rect.contains(*x, *y) {
+                    if matches!(action, HeaderAction::Naming) {
+                        self.begin_naming_pattern(editable_automatic_name(
+                            project.automatic_pattern(),
+                        ));
+                        return EventResponse::Consumed;
+                    }
                     return EventResponse::Action(match action {
                         HeaderAction::Import => UiAction::VoicelinesImportAudio,
                         HeaderAction::Detect => UiAction::VoicelinesAutoDetect,
-                        HeaderAction::Export => UiAction::VoicelinesExportAll,
-                        HeaderAction::Naming => UiAction::VoicelinesToggleAutomaticNaming,
+                        HeaderAction::Naming => unreachable!(),
                         HeaderAction::Save => UiAction::QuickSave,
                         HeaderAction::Load => UiAction::VoicelinesLoadSession,
                     });
@@ -479,6 +515,133 @@ impl VoicelinesWorkspaceUi {
         EventResponse::Ignored
     }
 
+    fn handle_audio_context_menu(
+        &mut self,
+        event: &UiEvent,
+        project: &VoicelinesProject,
+        layout: VoicelinesLayout,
+    ) -> Option<EventResponse> {
+        if let UiEvent::ContextMenu { x, y } = event {
+            let Some((audio_id, _)) = audio_hit(project, layout, self.audio_scroll, *x, *y) else {
+                self.audio_context_menu = None;
+                return None;
+            };
+            let (x, y) = super::context_menu::clamped_origin(
+                *x,
+                *y,
+                AUDIO_MENU_W * 2.0 - 2.0,
+                AUDIO_MENU_ITEM_H * 2.0,
+                layout.content.x + layout.content.width,
+                layout.content.y + layout.content.height,
+            );
+            self.audio_context_menu = Some(AudioContextMenu {
+                audio_id,
+                x,
+                y,
+                submenu_open: false,
+                hover_parent: false,
+                hover_target: None,
+            });
+            return Some(EventResponse::Consumed);
+        }
+
+        let recording_transfer_disabled = self.recording_transfer_disabled;
+        let menu = self.audio_context_menu.as_mut()?;
+        let parent = Rect {
+            x: menu.x,
+            y: menu.y,
+            width: AUDIO_MENU_W,
+            height: AUDIO_MENU_ITEM_H,
+        };
+        let submenu = Rect {
+            x: menu.x + AUDIO_MENU_W - 2.0,
+            height: AUDIO_MENU_ITEM_H * 2.0,
+            ..parent
+        };
+        let target_at = |x, y| {
+            if !submenu.contains(x, y) {
+                return None;
+            }
+            if y < submenu.y + AUDIO_MENU_ITEM_H {
+                Some(crate::application::workspace_service::WorkspaceId::ComicDubs)
+            } else if recording_transfer_disabled {
+                None
+            } else {
+                Some(crate::application::workspace_service::WorkspaceId::Recording)
+            }
+        };
+        match event {
+            UiEvent::MouseMove { x, y } => {
+                menu.hover_parent = parent.contains(*x, *y);
+                if menu.hover_parent {
+                    menu.submenu_open = true;
+                }
+                menu.hover_target = menu.submenu_open.then(|| target_at(*x, *y)).flatten();
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::MousePress { x, y } if menu.submenu_open => {
+                if let Some(workspace) = target_at(*x, *y) {
+                    let audio_id = menu.audio_id;
+                    self.audio_context_menu = None;
+                    return Some(EventResponse::Action(UiAction::VoicelinesSendAudio {
+                        audio_id,
+                        workspace,
+                    }));
+                }
+                if parent.contains(*x, *y) {
+                    return Some(EventResponse::Consumed);
+                }
+                self.audio_context_menu = None;
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::MousePress { x, y } if parent.contains(*x, *y) => {
+                menu.submenu_open = true;
+                menu.hover_target =
+                    Some(crate::application::workspace_service::WorkspaceId::ComicDubs);
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::CursorRight => {
+                menu.submenu_open = true;
+                menu.hover_target =
+                    Some(crate::application::workspace_service::WorkspaceId::ComicDubs);
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::CursorUp | UiEvent::CursorDown if menu.submenu_open => {
+                menu.hover_target = Some(if recording_transfer_disabled {
+                    crate::application::workspace_service::WorkspaceId::ComicDubs
+                } else {
+                    match menu.hover_target {
+                        Some(crate::application::workspace_service::WorkspaceId::ComicDubs) => {
+                            crate::application::workspace_service::WorkspaceId::Recording
+                        }
+                        _ => crate::application::workspace_service::WorkspaceId::ComicDubs,
+                    }
+                });
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::Activate if menu.submenu_open => {
+                let audio_id = menu.audio_id;
+                let workspace = menu
+                    .hover_target
+                    .unwrap_or(crate::application::workspace_service::WorkspaceId::ComicDubs);
+                self.audio_context_menu = None;
+                Some(EventResponse::Action(UiAction::VoicelinesSendAudio {
+                    audio_id,
+                    workspace,
+                }))
+            }
+            UiEvent::KeyInput { text } if text == "\x1b" => {
+                self.audio_context_menu = None;
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::MousePress { .. } | UiEvent::OpenContextMenu => {
+                self.audio_context_menu = None;
+                Some(EventResponse::Consumed)
+            }
+            _ => Some(EventResponse::Consumed),
+        }
+    }
+
     fn handle_region_scrollbar(
         &mut self,
         region_count: usize,
@@ -622,15 +785,18 @@ impl VoicelinesWorkspaceUi {
             });
         }
 
-        let naming = match (&self.naming_pattern, project.naming()) {
-            (Some(pattern), _) => format!("Pattern : {pattern}|"),
-            (None, NamingMode::Manual) => "Nommage : manuel".into(),
-            (None, NamingMode::Automatic { pattern, .. }) => format!("Auto : {pattern}"),
+        let automatic_name = self
+            .naming_pattern
+            .clone()
+            .unwrap_or_else(|| editable_automatic_name(project.automatic_pattern()));
+        let naming = if self.naming_pattern.is_some() {
+            format!("Nom auto : {automatic_name}|")
+        } else {
+            format!("Nom auto : {automatic_name}")
         };
         let button_labels = [
             "+ Ajouter",
             "Détection auto",
-            "Tout exporter",
             &naming,
             "Sauvegarder",
             "Charger",
@@ -741,6 +907,9 @@ impl VoicelinesWorkspaceUi {
                 .quads
                 .push(quad(thumb, [0.36, 0.37, 0.44, 1.0], [0.0; 4], 4.0));
         }
+        if let Some(menu) = self.audio_context_menu {
+            push_audio_context_menu(&mut scene, menu, self.recording_transfer_disabled);
+        }
         scene
     }
 
@@ -804,12 +973,14 @@ impl VoicelinesWorkspaceUi {
         }
     }
 
-    pub fn control_action(&mut self, id: &str) -> Option<UiAction> {
+    pub fn control_action(&mut self, id: &str, project: &VoicelinesProject) -> Option<UiAction> {
         let action = match id {
             "voicelines.header.Import" => UiAction::VoicelinesImportAudio,
             "voicelines.header.Detect" => UiAction::VoicelinesAutoDetect,
-            "voicelines.header.Export" => UiAction::VoicelinesExportAll,
-            "voicelines.header.Naming" => UiAction::VoicelinesToggleAutomaticNaming,
+            "voicelines.header.Naming" => {
+                self.begin_naming_pattern(editable_automatic_name(project.automatic_pattern()));
+                return None;
+            }
             "voicelines.header.Save" => UiAction::QuickSave,
             "voicelines.header.Load" => UiAction::VoicelinesLoadSession,
             _ => {
@@ -847,6 +1018,10 @@ impl VoicelinesWorkspaceUi {
             duration_ms,
         )
     }
+}
+
+fn editable_automatic_name(pattern: &str) -> String {
+    pattern.strip_suffix("_{num}").unwrap_or(pattern).to_owned()
 }
 
 fn render_waveform(
@@ -1025,6 +1200,102 @@ fn render_waveform(
             9.0,
             MUTED,
         );
+    }
+}
+
+fn push_audio_context_menu(
+    scene: &mut VoicelinesScene,
+    menu: AudioContextMenu,
+    recording_transfer_disabled: bool,
+) {
+    let parent = Rect {
+        x: menu.x,
+        y: menu.y,
+        width: AUDIO_MENU_W,
+        height: AUDIO_MENU_ITEM_H,
+    };
+    scene
+        .system_quads
+        .push(quad(parent, [0.13, 0.13, 0.16, 0.99], BORDER, 0.0));
+    if menu.hover_parent {
+        scene.system_quads.push(quad(
+            inset(parent, 3.0, 2.0),
+            [0.31, 0.40, 0.72, 0.85],
+            [0.0; 4],
+            0.0,
+        ));
+    }
+    system_label(
+        scene,
+        "Envoyer les voicelines vers",
+        Rect {
+            x: parent.x + 10.0,
+            width: parent.width - 38.0,
+            ..parent
+        },
+        HAlign::Left,
+        12.0,
+        TEXT,
+    );
+    system_label(
+        scene,
+        ">",
+        Rect {
+            x: parent.x + parent.width - 24.0,
+            width: 18.0,
+            ..parent
+        },
+        HAlign::Center,
+        12.0,
+        MUTED,
+    );
+
+    if menu.submenu_open {
+        let submenu = Rect {
+            x: parent.x + parent.width - 2.0,
+            height: AUDIO_MENU_ITEM_H * 2.0,
+            ..parent
+        };
+        scene
+            .system_quads
+            .push(quad(submenu, [0.13, 0.13, 0.16, 0.99], BORDER, 0.0));
+        for (index, (text, workspace, enabled)) in [
+            (
+                "Comic Dubs",
+                crate::application::workspace_service::WorkspaceId::ComicDubs,
+                true,
+            ),
+            (
+                "Enregistrement",
+                crate::application::workspace_service::WorkspaceId::Recording,
+                !recording_transfer_disabled,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let rect = Rect {
+                y: submenu.y + index as f32 * AUDIO_MENU_ITEM_H,
+                height: AUDIO_MENU_ITEM_H,
+                ..submenu
+            };
+            if enabled && menu.hover_target == Some(workspace) {
+                scene.system_quads.push(quad(
+                    inset(rect, 3.0, 2.0),
+                    [0.31, 0.40, 0.72, 0.85],
+                    [0.0; 4],
+                    0.0,
+                ));
+            }
+            system_label(
+                scene,
+                text,
+                inset(rect, 10.0, 0.0),
+                HAlign::Left,
+                12.0,
+                if enabled { TEXT } else { MUTED },
+            );
+        }
     }
 }
 
@@ -1320,6 +1591,23 @@ fn label(
     });
 }
 
+fn system_label(
+    scene: &mut VoicelinesScene,
+    text: &str,
+    bounds: Rect,
+    h_align: HAlign,
+    font_size: f32,
+    color: [u8; 3],
+) {
+    scene.system_labels.push(SceneLabel {
+        text: text.into(),
+        bounds,
+        h_align,
+        font_size,
+        color,
+    });
+}
+
 pub fn append_scene<'a>(
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<crate::ui::primitives::LabelInfo<'a>>,
@@ -1329,6 +1617,30 @@ pub fn append_scene<'a>(
     labels.extend(
         scene
             .labels
+            .iter()
+            .map(|label| crate::ui::primitives::LabelInfo {
+                text: label.text.as_str(),
+                bounds: label.bounds,
+                h_align: label.h_align,
+                v_align: VAlign::Center,
+                overflow: Overflow::Ellipsis,
+                padding: 0.0,
+                font_size_override: Some(label.font_size),
+                color_override: Some(label.color),
+                font_family_override: None,
+            }),
+    );
+}
+
+pub fn append_system<'a>(
+    quads: &mut Vec<QuadInstance>,
+    labels: &mut Vec<crate::ui::primitives::LabelInfo<'a>>,
+    scene: &'a VoicelinesScene,
+) {
+    quads.extend_from_slice(&scene.system_quads);
+    labels.extend(
+        scene
+            .system_labels
             .iter()
             .map(|label| crate::ui::primitives::LabelInfo {
                 text: label.text.as_str(),
@@ -1385,7 +1697,7 @@ mod tests {
             width: 1_200.0,
             height: 700.0,
         });
-        let load = layout.buttons()[5].0;
+        let load = layout.buttons()[4].0;
         let mut ui = VoicelinesWorkspaceUi::default();
         assert_eq!(
             ui.handle_event(
@@ -1408,7 +1720,7 @@ mod tests {
             width: 1_200.0,
             height: 700.0,
         });
-        let save = layout.buttons()[4].0;
+        let save = layout.buttons()[3].0;
         let mut ui = VoicelinesWorkspaceUi::default();
         assert_eq!(
             ui.handle_event(
@@ -1420,6 +1732,202 @@ mod tests {
                 layout,
             ),
             EventResponse::Action(UiAction::QuickSave)
+        );
+    }
+
+    #[test]
+    fn automatic_naming_is_one_non_overlapping_control() {
+        let layout = VoicelinesLayout::compute(Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1_200.0,
+            height: 700.0,
+        });
+        let project = VoicelinesProject::default();
+        let mut ui = VoicelinesWorkspaceUi::default();
+        let naming = layout.buttons()[2].0;
+        let scene = ui.scene(&project, 0, layout);
+
+        for pair in layout.buttons().windows(2) {
+            assert!(pair[0].0.x + pair[0].0.width <= pair[1].0.x);
+        }
+        assert!(naming.y + naming.height <= layout.toolbar.y);
+        assert!(scene
+            .labels
+            .iter()
+            .any(|label| label.text == "Nom auto : voiceline"));
+
+        assert_eq!(
+            ui.handle_event(
+                &UiEvent::MousePress {
+                    x: naming.x + 1.0,
+                    y: naming.y + 1.0,
+                },
+                &project,
+                layout,
+            ),
+            EventResponse::Consumed
+        );
+        assert_eq!(ui.naming_pattern.as_deref(), Some("voiceline"));
+        for _ in 0..9 {
+            ui.handle_event(
+                &UiEvent::KeyInput {
+                    text: "\x08".into(),
+                },
+                &project,
+                layout,
+            );
+        }
+        ui.handle_event(
+            &UiEvent::KeyInput {
+                text: "dialogue".into(),
+            },
+            &project,
+            layout,
+        );
+        assert_eq!(
+            ui.handle_event(&UiEvent::KeyInput { text: "\r".into() }, &project, layout,),
+            EventResponse::Action(UiAction::VoicelinesSetNamingPattern("dialogue".into()))
+        );
+    }
+
+    #[test]
+    fn audio_context_menu_sends_voicelines_to_both_destinations() {
+        let layout = VoicelinesLayout::compute(Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1_200.0,
+            height: 700.0,
+        });
+        let mut project = VoicelinesProject::default();
+        let audio_id = project.add_audio(
+            "voice.wav".into(),
+            "voice.flac".into(),
+            RecordedAudio {
+                file_name: "voice.flac".into(),
+                sample_rate: 48_000,
+                channels: 1,
+                sample_count: 48_000,
+                checksum: "a".repeat(40),
+                waveform: WaveformData::default(),
+            },
+        );
+        let row = audio_row_rect(layout, 0);
+
+        for (index, workspace) in [
+            crate::application::workspace_service::WorkspaceId::ComicDubs,
+            crate::application::workspace_service::WorkspaceId::Recording,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut ui = VoicelinesWorkspaceUi::default();
+            assert_eq!(
+                ui.handle_event(
+                    &UiEvent::ContextMenu {
+                        x: row.x + 10.0,
+                        y: row.y + 10.0,
+                    },
+                    &project,
+                    layout,
+                ),
+                EventResponse::Consumed
+            );
+            let menu = ui.audio_context_menu.unwrap();
+            let rendered = ui.scene(&project, 0, layout);
+            assert!(!rendered
+                .labels
+                .iter()
+                .any(|label| label.text == "Envoyer les voicelines vers"));
+            assert!(rendered
+                .system_labels
+                .iter()
+                .any(|label| label.text == "Envoyer les voicelines vers"));
+            ui.handle_event(
+                &UiEvent::MousePress {
+                    x: menu.x + 10.0,
+                    y: menu.y + 10.0,
+                },
+                &project,
+                layout,
+            );
+            assert_eq!(
+                ui.handle_event(
+                    &UiEvent::MousePress {
+                        x: menu.x + AUDIO_MENU_W + 10.0,
+                        y: menu.y + AUDIO_MENU_ITEM_H * index as f32 + 10.0,
+                    },
+                    &project,
+                    layout,
+                ),
+                EventResponse::Action(UiAction::VoicelinesSendAudio {
+                    audio_id,
+                    workspace,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn server_session_disables_sending_voicelines_to_recording() {
+        let layout = VoicelinesLayout::compute(Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1_200.0,
+            height: 700.0,
+        });
+        let mut project = VoicelinesProject::default();
+        project.add_audio(
+            "voice.wav".into(),
+            "voice.flac".into(),
+            RecordedAudio {
+                file_name: "voice.flac".into(),
+                sample_rate: 48_000,
+                channels: 1,
+                sample_count: 48_000,
+                checksum: "a".repeat(40),
+                waveform: WaveformData::default(),
+            },
+        );
+        let row = audio_row_rect(layout, 0);
+        let mut ui = VoicelinesWorkspaceUi::default();
+        ui.set_recording_transfer_disabled(true);
+        ui.handle_event(
+            &UiEvent::ContextMenu {
+                x: row.x + 10.0,
+                y: row.y + 10.0,
+            },
+            &project,
+            layout,
+        );
+        let menu = ui.audio_context_menu.unwrap();
+        ui.handle_event(
+            &UiEvent::MousePress {
+                x: menu.x + 10.0,
+                y: menu.y + 10.0,
+            },
+            &project,
+            layout,
+        );
+        assert_eq!(
+            ui.scene(&project, 0, layout)
+                .system_labels
+                .iter()
+                .find(|label| label.text == "Enregistrement")
+                .unwrap()
+                .color,
+            MUTED
+        );
+        assert_eq!(
+            ui.handle_event(
+                &UiEvent::MousePress {
+                    x: menu.x + AUDIO_MENU_W + 10.0,
+                    y: menu.y + AUDIO_MENU_ITEM_H + 10.0,
+                },
+                &project,
+                layout,
+            ),
+            EventResponse::Consumed
         );
     }
 

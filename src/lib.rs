@@ -9,6 +9,8 @@ pub mod app;
 pub mod application;
 pub mod audio_transfer;
 pub mod automation;
+pub mod comic_dubs;
+pub mod comic_dubs_export;
 pub mod command;
 pub mod config;
 pub mod configured_export;

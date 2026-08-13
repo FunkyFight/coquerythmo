@@ -47,6 +47,11 @@ pub(crate) fn handle_file_picker_selected(
                 state.project_session.dirty = true;
             }
         }
+        FilePickerIntent::ComicDubsImage => state.comic_dubs_begin_image_import(path),
+        FilePickerIntent::ComicDubsAudio => state.comic_dubs_begin_audio_import(path),
+        FilePickerIntent::ComicDubsExport { configuration } => {
+            state.start_comic_dubs_export(path, configuration)
+        }
         FilePickerIntent::RecordingAudio => state.recording_begin_audio_import(path, None),
         FilePickerIntent::VoicelinesAudio => state.voicelines_begin_audio_import(path),
         FilePickerIntent::VoicelinesExportRegion {
@@ -79,21 +84,19 @@ pub(crate) fn handle_file_picker_selected(
         FilePickerIntent::ProjectInstrumentalAudio => {
             let path = path.to_string_lossy().into_owned();
             state.set_project_instrumental_audio_path(path.clone());
-            let highlight_read_word = state.project_session.project.settings().highlight_read_word;
-            let scrolling_text_uses_character_color = state
-                .project_session
-                .project
-                .settings()
-                .scrolling_text_uses_character_color;
+            let settings = state.project_session.project.settings();
+            let scroll_speed = settings.scroll_speed;
+            let reading_bar_offset_percent = settings.reading_bar_offset_percent;
+            let highlight_read_word = settings.highlight_read_word;
+            let scrolling_text_uses_character_color = settings.scrolling_text_uses_character_color;
+            let show_text_emotion_lanes = settings.show_text_emotion_lanes;
             state.save_project_settings(
+                scroll_speed,
+                reading_bar_offset_percent,
                 Some(path),
                 highlight_read_word,
                 scrolling_text_uses_character_color,
-                state
-                    .project_session
-                    .project
-                    .settings()
-                    .show_text_emotion_lanes,
+                show_text_emotion_lanes,
             );
             state.close_project_settings_modal();
         }
@@ -218,7 +221,15 @@ impl CommandDispatcher {
             }
             UiAction::OpenProxyModal => Some(crate::i18n::t("menu.tools.create_proxy")),
             UiAction::OpenSettings => Some(crate::i18n::t("settings.title")),
-            UiAction::OpenProjectSettings => Some(crate::i18n::t("project_settings.title")),
+            UiAction::OpenProjectSettings => Some(crate::i18n::t(
+                if state.active_workspace()
+                    == crate::application::workspace_service::WorkspaceId::ComicDubs
+                {
+                    "comic_dubs_settings.title"
+                } else {
+                    "project_settings.title"
+                },
+            )),
             UiAction::OpenExportModal => Some(crate::i18n::t("export_modal.title")),
             UiAction::OpenRenameCharacterModal => {
                 Some(crate::i18n::t("rename_character_modal.title"))
@@ -295,12 +306,14 @@ impl CommandDispatcher {
         elwt: &EventLoopWindowTarget<AppEvent>,
         announce_action: bool,
     ) -> bool {
-        let voicelines_history = state.active_workspace()
-            == crate::application::workspace_service::WorkspaceId::Voicelines
-            && matches!(action, UiAction::Undo | UiAction::Redo);
+        let workspace_history = matches!(
+            state.active_workspace(),
+            crate::application::workspace_service::WorkspaceId::Voicelines
+                | crate::application::workspace_service::WorkspaceId::ComicDubs
+        ) && matches!(action, UiAction::Undo | UiAction::Redo);
         if state.active_workspace() != crate::application::workspace_service::WorkspaceId::Rythmo
             && action.mutates_rythmo_project()
-            && !voicelines_history
+            && !workspace_history
         {
             state.announce_accessibility(crate::accessibility::AccessibilityEvent::Error {
                 message: crate::i18n::t("accessibility.rythmo_read_only").to_string(),
@@ -325,6 +338,62 @@ impl CommandDispatcher {
                 }
             }
             UiAction::ActivateWorkspace(workspace) => state.activate_workspace(workspace),
+            UiAction::ComicDubsImportImages => {
+                open_multiple_file_picker(
+                    state,
+                    elwt,
+                    "Importer des images Comic Dubs",
+                    FilePickerIntent::ComicDubsImage,
+                    open_dialog_filters(
+                        "Images",
+                        &["png", "jpg", "jpeg", "webp", "bmp", "gif", "ico"],
+                    ),
+                    project_or_video_dir(state),
+                );
+            }
+            UiAction::ComicDubsImportAudios => {
+                open_multiple_file_picker(
+                    state,
+                    elwt,
+                    "Importer des audios Comic Dubs",
+                    FilePickerIntent::ComicDubsAudio,
+                    open_dialog_filters(
+                        "Audio",
+                        &["flac", "wav", "mp3", "ogg", "m4a", "aac", "opus"],
+                    ),
+                    project_or_video_dir(state),
+                );
+            }
+            UiAction::ComicDubsSelectPage(page_id) => state.comic_dubs_select_page(page_id),
+            UiAction::ComicDubsRemovePage(page_id) => state.comic_dubs_remove_page(page_id),
+            UiAction::ComicDubsMovePage { page_id, delta } => {
+                state.comic_dubs_move_page(page_id, delta)
+            }
+            UiAction::ComicDubsRemoveAudio(audio_id) => state.comic_dubs_remove_audio(audio_id),
+            UiAction::ComicDubsAddBubble { page_id, points } => {
+                state.comic_dubs_add_bubble(page_id, points)
+            }
+            UiAction::ComicDubsSetBubbleText { bubble_id, text } => {
+                state.comic_dubs_set_bubble_text(bubble_id, text)
+            }
+            UiAction::ComicDubsSetBubbleColor { bubble_id, color } => {
+                state.comic_dubs_set_bubble_color(bubble_id, color)
+            }
+            UiAction::ComicDubsSetBubbleFontSize {
+                bubble_id,
+                font_size,
+            } => state.comic_dubs_set_bubble_font_size(bubble_id, font_size),
+            UiAction::ComicDubsSetBubblePoints { bubble_id, points } => {
+                state.comic_dubs_set_bubble_points(bubble_id, points)
+            }
+            UiAction::ComicDubsAssignAudio {
+                bubble_id,
+                audio_id,
+            } => state.comic_dubs_assign_audio(bubble_id, audio_id),
+            UiAction::ComicDubsRemoveBubble(bubble_id) => state.comic_dubs_remove_bubble(bubble_id),
+            UiAction::ComicDubsMoveBubble { bubble_id, delta } => {
+                state.comic_dubs_move_bubble(bubble_id, delta)
+            }
             UiAction::VoicelinesImportAudio => {
                 let filters = open_dialog_filters(
                     "Audio",
@@ -358,7 +427,6 @@ impl CommandDispatcher {
             UiAction::VoicelinesDeleteRegion(region_id) => {
                 state.voicelines_delete_region(region_id)
             }
-            UiAction::VoicelinesToggleAutomaticNaming => state.voicelines_toggle_automatic_naming(),
             UiAction::VoicelinesSetNamingPattern(pattern) => {
                 state.voicelines_set_naming_pattern(pattern)
             }
@@ -374,6 +442,10 @@ impl CommandDispatcher {
                     open_file_picker_request(state, elwt, request);
                 }
             }
+            UiAction::VoicelinesSendAudio {
+                audio_id,
+                workspace,
+            } => state.voicelines_send_audio(audio_id, workspace),
             UiAction::VoicelinesSaveSession => {
                 if state.project_session.project_path.is_some() {
                     quick_save_existing(state);
@@ -484,6 +556,10 @@ impl CommandDispatcher {
                     == crate::application::workspace_service::WorkspaceId::Voicelines
                 {
                     state.voicelines_undo();
+                } else if state.active_workspace()
+                    == crate::application::workspace_service::WorkspaceId::ComicDubs
+                {
+                    state.comic_dubs_undo();
                 } else {
                     state.undo();
                 }
@@ -493,6 +569,10 @@ impl CommandDispatcher {
                     == crate::application::workspace_service::WorkspaceId::Voicelines
                 {
                     state.voicelines_redo();
+                } else if state.active_workspace()
+                    == crate::application::workspace_service::WorkspaceId::ComicDubs
+                {
+                    state.comic_dubs_redo();
                 } else {
                     state.redo();
                 }
@@ -1000,6 +1080,21 @@ impl CommandDispatcher {
                 state.save_export_configuration(configuration);
             }
             UiAction::StartConfiguredExport { configuration } => {
+                if state.active_workspace()
+                    == crate::application::workspace_service::WorkspaceId::ComicDubs
+                {
+                    open_file_picker(
+                        state,
+                        elwt,
+                        i18n::t("picker.delivery_export.title"),
+                        FilePickerMode::Save,
+                        FilePickerIntent::ComicDubsExport { configuration },
+                        save_dialog_filters("Vidéo MP4", &["mp4"]),
+                        project_or_video_dir(state),
+                        None,
+                    );
+                    return false;
+                }
                 state.save_export_configuration(configuration.clone());
                 let filters = save_dialog_filters(
                     "Export Coquerythmo",
@@ -1491,35 +1586,56 @@ impl CommandDispatcher {
             }
             UiAction::SaveSettings {
                 lang,
-                rythmo_font,
-                scroll_speed,
-                reading_bar_offset_percent,
                 temporary_directory,
             } => {
-                let font_changed = crate::config::get().ui.rythmo_font != rythmo_font;
+                let rythmo_font = crate::config::get().ui.rythmo_font.clone();
                 crate::config::save_settings(lang, rythmo_font, temporary_directory);
                 state.recording_runtime.refresh_temporary_directory();
-                state.save_project_view_settings(scroll_speed, reading_bar_offset_percent);
-                if font_changed {
-                    crate::vector_text::clear_project_font();
-                    state.render.ui_renderer.clear_text_cache();
-                    state.project_session.dirty = true;
-                }
                 state.close_settings_modal();
             }
             UiAction::SaveProjectSettings {
+                rythmo_font,
+                scroll_speed,
+                reading_bar_offset_percent,
                 instrumental_audio_path,
                 highlight_read_word,
                 scrolling_text_uses_character_color,
                 show_text_emotion_lanes,
             } => {
+                let (lang, old_font) = {
+                    let config = crate::config::get();
+                    (config.lang.clone(), config.ui.rythmo_font.clone())
+                };
+                let font_changed = old_font != rythmo_font;
+                crate::config::save_settings(
+                    lang,
+                    rythmo_font,
+                    crate::config::temporary_directory(),
+                );
                 state.save_project_settings(
+                    scroll_speed,
+                    reading_bar_offset_percent,
                     instrumental_audio_path,
                     highlight_read_word,
                     scrolling_text_uses_character_color,
                     show_text_emotion_lanes,
                 );
+                if font_changed {
+                    crate::vector_text::clear_project_font();
+                    state.render.ui_renderer.clear_text_cache();
+                }
             }
+            UiAction::SaveComicDubsSettings {
+                font_family,
+                bubble_duration_ms,
+                page_duration_ms,
+                default_font_size,
+            } => state.save_comic_dubs_settings(
+                font_family,
+                bubble_duration_ms,
+                page_duration_ms,
+                default_font_size,
+            ),
             UiAction::ToggleActiveAudio => {
                 if state.active_workspace()
                     == crate::application::workspace_service::WorkspaceId::Recording

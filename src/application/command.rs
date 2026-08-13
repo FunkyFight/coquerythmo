@@ -40,6 +40,44 @@ pub struct FilePickerRequest {
 pub enum UiAction {
     Accessibility(crate::accessibility::AccessibilityEvent),
     ActivateWorkspace(crate::application::workspace_service::WorkspaceId),
+    ComicDubsImportImages,
+    ComicDubsImportAudios,
+    ComicDubsSelectPage(crate::comic_dubs::PageId),
+    ComicDubsRemovePage(crate::comic_dubs::PageId),
+    ComicDubsMovePage {
+        page_id: crate::comic_dubs::PageId,
+        delta: isize,
+    },
+    ComicDubsRemoveAudio(crate::comic_dubs::ComicAudioId),
+    ComicDubsAddBubble {
+        page_id: crate::comic_dubs::PageId,
+        points: Vec<crate::comic_dubs::Point>,
+    },
+    ComicDubsSetBubbleText {
+        bubble_id: crate::comic_dubs::BubbleId,
+        text: String,
+    },
+    ComicDubsSetBubbleColor {
+        bubble_id: crate::comic_dubs::BubbleId,
+        color: [u8; 4],
+    },
+    ComicDubsSetBubbleFontSize {
+        bubble_id: crate::comic_dubs::BubbleId,
+        font_size: f32,
+    },
+    ComicDubsSetBubblePoints {
+        bubble_id: crate::comic_dubs::BubbleId,
+        points: Vec<crate::comic_dubs::Point>,
+    },
+    ComicDubsAssignAudio {
+        bubble_id: crate::comic_dubs::BubbleId,
+        audio_id: Option<crate::comic_dubs::ComicAudioId>,
+    },
+    ComicDubsRemoveBubble(crate::comic_dubs::BubbleId),
+    ComicDubsMoveBubble {
+        bubble_id: crate::comic_dubs::BubbleId,
+        delta: isize,
+    },
     VoicelinesImportAudio,
     VoicelinesSelectAudio(crate::voicelines::AudioId),
     VoicelinesRemoveAudio(crate::voicelines::AudioId),
@@ -58,12 +96,15 @@ pub enum UiAction {
         name: String,
     },
     VoicelinesDeleteRegion(crate::voicelines::RegionId),
-    VoicelinesToggleAutomaticNaming,
     VoicelinesSetNamingPattern(String),
     VoicelinesAutoDetect,
     VoicelinesPlayRegion(crate::voicelines::RegionId),
     VoicelinesExportRegion(crate::voicelines::RegionId),
     VoicelinesExportAll,
+    VoicelinesSendAudio {
+        audio_id: crate::voicelines::AudioId,
+        workspace: crate::application::workspace_service::WorkspaceId,
+    },
     VoicelinesSaveSession,
     VoicelinesLoadSession,
     RecordingChooseSolo,
@@ -494,16 +535,22 @@ pub enum UiAction {
     PickTemporaryDirectory,
     SaveSettings {
         lang: String,
-        rythmo_font: Option<String>,
-        scroll_speed: f32,
-        reading_bar_offset_percent: f32,
         temporary_directory: std::path::PathBuf,
     },
     SaveProjectSettings {
+        rythmo_font: Option<String>,
+        scroll_speed: f32,
+        reading_bar_offset_percent: f32,
         instrumental_audio_path: Option<String>,
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
         show_text_emotion_lanes: bool,
+    },
+    SaveComicDubsSettings {
+        font_family: Option<String>,
+        bubble_duration_ms: u64,
+        page_duration_ms: u64,
+        default_font_size: f32,
     },
     ToggleActiveAudio,
     OffsetActiveAudioBy(i64),
@@ -722,6 +769,11 @@ pub enum ToolMode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilePickerIntent {
     AddVideo,
+    ComicDubsImage,
+    ComicDubsAudio,
+    ComicDubsExport {
+        configuration: crate::project::ExportConfiguration,
+    },
     RecordingAudio,
     VoicelinesAudio,
     VoicelinesExportRegion {

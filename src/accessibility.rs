@@ -217,6 +217,7 @@ pub fn event_for_action(
         UiAction::OpenRolesPanel => "menu.panels.roles",
         UiAction::PickProjectInstrumentalAudio => "project_settings.browse",
         UiAction::SaveProjectSettings { .. } => "settings.save",
+        UiAction::SaveComicDubsSettings { .. } => "settings.save",
         UiAction::Undo | UiAction::Text(TextCommand::Undo) => "accessibility.undo",
         UiAction::Redo => "accessibility.redo",
         UiAction::SelectAll | UiAction::Text(TextCommand::SelectAll) => "accessibility.select_all",

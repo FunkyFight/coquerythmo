@@ -75,6 +75,10 @@
 "workspace_tabs.rythmo" = "Banda rythmo"
 "workspace_tabs.recording" = "Grabación"
 "workspace_tabs.voicelines" = "Voicelines"
+"workspace_tabs.comic_dubs" = "Comic Dubs"
+"comic_dubs.export.title" = "Exportar Comic Dub"
+"comic_dubs.export.subtitle" = "Crea un vídeo MP4 con las páginas, bocadillos y audios del Comic Dub."
+"comic_dubs.export.video" = "Vídeo Comic Dubs (MP4)"
 "recording.choice.solo" = "Grabar en solitario"
 "recording.choice.solo_hint" = "Graba y edita tus tomas localmente, sin conexión."
 "recording.choice.online" = "Grabar en línea"
@@ -241,6 +245,7 @@
 
 "menu.export" = "Exportar"
 "menu.export.mp4" = "Exportar…"
+"menu.export.voicelines_audio" = "Exportar voicelines como audio…"
 
 "menu.tools" = "Herramientas"
 "menu.tools.automation" = "Automatización"
@@ -442,7 +447,7 @@
 "loading_project.preparing_project" = "Preparando el vídeo y la línea de tiempo"
 "loading_project.ready" = "Proyecto listo"
 "toast.no_audio_export_selected" = "Selecciona al menos una salida de audio para exportar."
-"toast.no_instrumental_audio" = "No hay audio instrumental configurado en los ajustes del proyecto."
+"toast.no_instrumental_audio" = "No hay audio instrumental configurado en los ajustes de la banda rythmo."
 
 # What's new modal
 "whats_new.title" = "Novedades"
@@ -548,7 +553,7 @@
 "export_modal.export_original_audio" = "Exportar con audio original"
 "export_modal.export_instrumental_audio" = "Exportar con audio instrumental"
 "export_modal.audio_outputs_hint" = "Si se marcan ambas, el archivo instrumental se escribe con el sufijo _instrumental."
-"export_modal.no_project_instrumental_audio" = "No hay audio instrumental configurado en los ajustes del proyecto."
+"export_modal.no_project_instrumental_audio" = "No hay audio instrumental configurado en los ajustes de la banda rythmo."
 "export_modal.export" = "Exportar"
 
 # Idiomas / traducciones
@@ -619,8 +624,14 @@
 "settings.temporary_directory" = "Carpeta temporal de la aplicación"
 "settings.browse" = "Examinar"
 "settings.tooltip" = "Ajustes"
-"project_settings.title" = "Ajustes del proyecto"
-"project_settings.tooltip" = "Ajustes del proyecto"
+"project_settings.title" = "Ajustes de la banda rythmo"
+"project_settings.tooltip" = "Ajustes de la banda rythmo"
+"comic_dubs_settings.title" = "Ajustes de Comic Dub"
+"comic_dubs_settings.tooltip" = "Ajustes de Comic Dub"
+"comic_dubs_settings.font" = "Fuente"
+"comic_dubs_settings.bubble_duration" = "Duración de las burbujas"
+"comic_dubs_settings.page_duration" = "Duración de las páginas"
+"comic_dubs_settings.default_text_size" = "Tamaño de texto predeterminado"
 "project_settings.instrumental_version" = "Versión instrumental"
 "project_settings.no_file" = "Ningún archivo seleccionado"
 "project_settings.browse" = "Examinar"

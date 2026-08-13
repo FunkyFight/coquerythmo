@@ -150,6 +150,8 @@ pub struct RecordingLabel {
 pub struct RecordingScene {
     pub quads: Vec<QuadInstance>,
     pub labels: Vec<RecordingLabel>,
+    pub system_quads: Vec<QuadInstance>,
+    pub system_labels: Vec<RecordingLabel>,
     pub controls: Vec<RecordingControlInfo>,
 }
 
@@ -1232,7 +1234,7 @@ fn push_asset_context_menu(scene: &mut RecordingScene, menu: AssetContextMenu) {
         height: ASSET_MENU_ITEM_H,
     };
     push_quad(
-        &mut scene.quads,
+        &mut scene.system_quads,
         parent,
         [0.13, 0.13, 0.16, 0.99],
         BORDER,
@@ -1240,14 +1242,14 @@ fn push_asset_context_menu(scene: &mut RecordingScene, menu: AssetContextMenu) {
     );
     if menu.hover_parent {
         push_quad(
-            &mut scene.quads,
+            &mut scene.system_quads,
             inset_rect(parent, 3.0),
             [0.31, 0.40, 0.72, 0.85],
             [0.0; 4],
             0.0,
         );
     }
-    scene.labels.push(RecordingLabel {
+    scene.system_labels.push(RecordingLabel {
         text: "Envoyer vers".into(),
         bounds: Rect {
             x: parent.x + 10.0,
@@ -1260,7 +1262,7 @@ fn push_asset_context_menu(scene: &mut RecordingScene, menu: AssetContextMenu) {
         font_size: 12.0,
         color: TEXT,
     });
-    scene.labels.push(label(
+    scene.system_labels.push(label(
         ">",
         Rect {
             x: parent.x + parent.width - 24.0,
@@ -1277,7 +1279,7 @@ fn push_asset_context_menu(scene: &mut RecordingScene, menu: AssetContextMenu) {
             ..parent
         };
         push_quad(
-            &mut scene.quads,
+            &mut scene.system_quads,
             submenu,
             [0.13, 0.13, 0.16, 0.99],
             BORDER,
@@ -1285,14 +1287,14 @@ fn push_asset_context_menu(scene: &mut RecordingScene, menu: AssetContextMenu) {
         );
         if menu.hover_voicelines {
             push_quad(
-                &mut scene.quads,
+                &mut scene.system_quads,
                 inset_rect(submenu, 3.0),
                 [0.31, 0.40, 0.72, 0.85],
                 [0.0; 4],
                 0.0,
             );
         }
-        scene.labels.push(RecordingLabel {
+        scene.system_labels.push(RecordingLabel {
             text: "Voicelines".into(),
             bounds: Rect {
                 x: submenu.x + 10.0,
@@ -2921,5 +2923,29 @@ mod tests {
                 UiAction::RecordingSendAssetToVoicelines(asset_id)
             ))
         );
+    }
+
+    #[test]
+    fn recording_asset_context_menu_uses_the_system_layer() {
+        let mut scene = RecordingScene::default();
+        push_asset_context_menu(
+            &mut scene,
+            AssetContextMenu {
+                asset_id: AudioAssetId::new(7),
+                x: 20.0,
+                y: 30.0,
+                submenu_open: true,
+                hover_parent: false,
+                hover_voicelines: false,
+            },
+        );
+
+        assert!(scene.quads.is_empty());
+        assert!(scene.labels.is_empty());
+        assert!(!scene.system_quads.is_empty());
+        assert!(scene
+            .system_labels
+            .iter()
+            .any(|label| label.text == "Voicelines"));
     }
 }

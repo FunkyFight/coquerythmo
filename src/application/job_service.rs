@@ -46,10 +46,11 @@ pub(crate) struct PendingSaveJob {
     pub saved_revision: u64,
     pub saved_recording_revision: u64,
     pub saved_voicelines_revision: u64,
-    pub source_video: PathBuf,
+    pub saved_comic_dubs_revision: u64,
+    pub source_video: Option<PathBuf>,
     pub proxy_video: Option<PathBuf>,
     pub default_uses_proxy: bool,
-    pub font_asset: PathBuf,
+    pub font_asset: Option<PathBuf>,
     pub continuation: SaveContinuation,
     pub receiver: Receiver<Result<crate::project_archive::SavedProjectMetadata, String>>,
 }

@@ -330,6 +330,26 @@ impl RecordingRuntime {
         ))
     }
 
+    pub fn allocate_external_image_path(&mut self, source: &Path, label: &str) -> PathBuf {
+        self.refresh_temporary_directory();
+        let nonce = RECORDING_NONCE.fetch_add(1, Ordering::Relaxed);
+        let stem = source
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(portable_username)
+            .unwrap_or_else(|| "image".into());
+        self.temporary_dir.join(format!(
+            "{}_{}_{}-{nonce}.png",
+            portable_username(label),
+            recording_timestamp(),
+            stem
+        ))
+    }
+
+    pub fn remember_owned_file(&mut self, path: PathBuf) {
+        self.owned_files.push(path);
+    }
+
     pub fn remember_external_audio(&mut self, audio: &RecordedAudio, path: PathBuf) {
         self.owned_files.push(path.clone());
         self.remember_audio_path(&audio.checksum, &path);

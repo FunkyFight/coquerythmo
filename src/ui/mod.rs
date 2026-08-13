@@ -8,11 +8,14 @@ pub use crate::application::command::ToolMode;
 pub mod actor_icon_cache;
 pub mod automation;
 pub mod color_picker;
+pub mod comic_dubs_settings_modal;
+pub mod comic_dubs_workspace;
 pub mod connect_modal;
 pub mod context_menu;
 pub mod dropdown;
 pub mod export_modal;
 pub mod focus;
+pub mod font_dropdown;
 pub mod icon_button;
 pub mod icons;
 pub mod interactive;
@@ -57,7 +60,7 @@ use primitives::{
     EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction,
     UiEvent, VAlign, Widget,
 };
-use renderer::StretchedText;
+use renderer::{StretchedText, UiLayer, UiLayerBatch};
 use tooltip::{LintTooltipState, TooltipState};
 
 use crate::application::workspace_service::WorkspaceId;
@@ -157,6 +160,10 @@ pub struct Ui {
     voicelines_ui: voicelines_workspace::VoicelinesWorkspaceUi,
     voicelines_layout: voicelines_workspace::VoicelinesLayout,
     voicelines_scene: voicelines_workspace::VoicelinesScene,
+    comic_dubs_ui: comic_dubs_workspace::ComicDubsWorkspaceUi,
+    comic_dubs_layout: comic_dubs_workspace::ComicDubsLayout,
+    comic_dubs_scene: comic_dubs_workspace::ComicDubsScene,
+    comic_dubs_texture: Option<ComicDubsTexture>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -182,11 +189,26 @@ fn shows_rythmo(workspace: WorkspaceId, recording_page: RecordingPage, zone: Rec
             && zone.height > 0.0)
 }
 
+fn playback_progress(current_frame: i64, total_frames: i64) -> f32 {
+    match total_frames {
+        ..=0 => 0.0,
+        1 => 1.0,
+        _ => (current_frame as f32 / (total_frames - 1) as f32).clamp(0.0, 1.0),
+    }
+}
+
 struct WhatsNewThumbnailTexture {
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     width: u32,
     height: u32,
+}
+
+struct ComicDubsTexture {
+    page_id: crate::comic_dubs::PageId,
+    path: std::path::PathBuf,
+    _texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
 }
 
 fn recording_drop_target(
@@ -352,6 +374,15 @@ impl Ui {
                 height: (sh - TOPBAR_H - TABBAR_H).max(0.0),
             }),
             voicelines_scene: voicelines_workspace::VoicelinesScene::default(),
+            comic_dubs_ui: comic_dubs_workspace::ComicDubsWorkspaceUi::default(),
+            comic_dubs_layout: comic_dubs_workspace::ComicDubsLayout::compute(Rect {
+                x: 0.0,
+                y: TOPBAR_H + TABBAR_H,
+                width: sw,
+                height: (sh - TOPBAR_H - TABBAR_H).max(0.0),
+            }),
+            comic_dubs_scene: comic_dubs_workspace::ComicDubsScene::default(),
+            comic_dubs_texture: None,
             active_mode: Some(ToolMode::Select),
             brush_color: [1.0, 1.0, 1.0, 1.0],
             brush_radius_index: 0,
@@ -444,6 +475,11 @@ impl Ui {
                 AccessibleNode::focusable(control.id.clone(), control.role, control.label.clone())
                     .with_selected(Some(control.selected))
             }));
+        } else if self.active_workspace == WorkspaceId::ComicDubs {
+            nodes.extend(self.comic_dubs_scene.controls.iter().map(|control| {
+                AccessibleNode::focusable(control.id.clone(), control.role, control.label.clone())
+                    .with_selected(Some(control.selected))
+            }));
         }
         self.focus.replace_root(nodes);
     }
@@ -527,6 +563,16 @@ impl Ui {
                 self.focus.focus(&FocusId::new(control.control.stable_id()));
                 return;
             }
+        } else if self.active_workspace == WorkspaceId::ComicDubs {
+            if let Some(control) = self
+                .comic_dubs_scene
+                .controls
+                .iter()
+                .find(|control| control.bounds.contains(x, y))
+            {
+                self.focus.focus(&FocusId::new(control.id.clone()));
+                return;
+            }
         }
         self.focus.clear();
     }
@@ -541,6 +587,8 @@ impl Ui {
         );
         self.voicelines_layout =
             voicelines_workspace::VoicelinesLayout::compute(self.workspace_content_rect());
+        self.comic_dubs_layout =
+            comic_dubs_workspace::ComicDubsLayout::compute(self.workspace_content_rect());
         self.tab_widgets = shell::build_workspace_tabs(&self.layout, self.active_workspace);
         self.toolbar_widgets = if self.active_workspace == WorkspaceId::Recording
             && (self.recording_ui.page == RecordingPage::Choice
@@ -556,6 +604,7 @@ impl Ui {
 
     pub fn rebuild_topbar(&mut self, in_room: bool) {
         self.network_in_room = in_room;
+        self.voicelines_ui.set_recording_transfer_disabled(in_room);
         self.topbar_widgets = shell::build_topbar(
             in_room,
             self.has_video,
@@ -662,6 +711,7 @@ impl Ui {
         match self.active_workspace {
             WorkspaceId::Recording => self.recording_layout.toolbar.unwrap_or(self.layout.toolbar),
             WorkspaceId::Voicelines => self.voicelines_layout.toolbar,
+            WorkspaceId::ComicDubs => self.comic_dubs_layout.toolbar,
             WorkspaceId::Rythmo => self.layout.toolbar,
         }
     }
@@ -1353,6 +1403,7 @@ impl Ui {
         event: &UiEvent,
         project: &Project,
         voicelines_project: &crate::voicelines::VoicelinesProject,
+        comic_dubs_project: &crate::comic_dubs::ComicDubsProject,
         render_index: &ProjectRenderIndex,
         render_frame: f64,
         fps: f64,
@@ -1613,7 +1664,17 @@ impl Ui {
                 }
                 if self.active_workspace == WorkspaceId::Voicelines {
                     if let Some(id) = self.focus.current_id().map(|id| id.0.clone()) {
-                        if let Some(action) = self.voicelines_ui.control_action(&id) {
+                        if let Some(action) =
+                            self.voicelines_ui.control_action(&id, voicelines_project)
+                        {
+                            return EventResponse::Action(action);
+                        }
+                    }
+                } else if self.active_workspace == WorkspaceId::ComicDubs {
+                    if let Some(id) = self.focus.current_id().map(|id| id.0.clone()) {
+                        if let Some(action) =
+                            self.comic_dubs_ui.control_action(&id, comic_dubs_project)
+                        {
                             return EventResponse::Action(action);
                         }
                     }
@@ -1627,15 +1688,16 @@ impl Ui {
                     .and_then(|index| index.parse::<usize>().ok())
                     .unwrap_or(0);
                 let index = if matches!(event, UiEvent::CursorRight) {
-                    (current + 1) % 3
+                    (current + 1) % 4
                 } else {
-                    (current + 2) % 3
+                    (current + 3) % 4
                 };
                 self.focus.focus(&FocusId::new(format!("tabs.{index}")));
                 let workspace = match index {
                     0 => WorkspaceId::Rythmo,
                     1 => WorkspaceId::Recording,
-                    _ => WorkspaceId::Voicelines,
+                    2 => WorkspaceId::Voicelines,
+                    _ => WorkspaceId::ComicDubs,
                 };
                 return EventResponse::Action(UiAction::ActivateWorkspace(workspace));
             }
@@ -1752,6 +1814,15 @@ impl Ui {
             }
         }
 
+        if self.active_workspace == WorkspaceId::ComicDubs {
+            let response =
+                self.comic_dubs_ui
+                    .handle_event(event, comic_dubs_project, self.comic_dubs_layout);
+            if response != EventResponse::Ignored {
+                return response;
+            }
+        }
+
         if let Some(response) = self.handle_recording_split_drag(event) {
             return response;
         }
@@ -1820,6 +1891,34 @@ impl Ui {
                     self.update_tooltip();
                     return response;
                 }
+            }
+        }
+
+        if matches!(
+            self.active_workspace,
+            WorkspaceId::Voicelines | WorkspaceId::ComicDubs
+        ) && self.total_frames > 0
+        {
+            let hit = shell::progress_bar_hit_rect(&self.active_toolbar_rect(), false);
+            match event {
+                UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y }
+                    if hit.contains(*x, *y) =>
+                {
+                    self.scrubbing = true;
+                    let frame = (((*x - hit.x) / hit.width).clamp(0.0, 1.0)
+                        * self.total_frames as f32) as i64;
+                    return EventResponse::Action(UiAction::SeekAbsolute(frame));
+                }
+                UiEvent::MouseMove { x, .. } if self.scrubbing => {
+                    let frame = (((*x - hit.x) / hit.width).clamp(0.0, 1.0)
+                        * self.total_frames as f32) as i64;
+                    return EventResponse::Action(UiAction::SeekAbsolute(frame));
+                }
+                UiEvent::MouseRelease { .. } if self.scrubbing => {
+                    self.scrubbing = false;
+                    return EventResponse::Action(UiAction::FinishSeek);
+                }
+                _ => {}
             }
         }
 
@@ -2786,6 +2885,7 @@ impl Ui {
             || self.side_panel.is_editing_text()
             || self.recording_ui.is_editing_text()
             || self.voicelines_ui.is_editing_text()
+            || self.comic_dubs_ui.is_editing_text()
     }
 
     pub fn voicelines_audio_selected(&mut self, duration_ms: u64, audio_index: usize) {
@@ -2811,6 +2911,36 @@ impl Ui {
         self.voicelines_ui.begin_naming_pattern(pattern);
     }
 
+    pub fn comic_dubs_drop_accepts(&self, x: f32, y: f32) -> bool {
+        self.comic_dubs_ui
+            .drop_accepts(self.comic_dubs_layout, x, y)
+    }
+
+    pub fn begin_comic_dubs_text_edit(
+        &mut self,
+        bubble_id: crate::comic_dubs::BubbleId,
+        text: String,
+    ) {
+        self.comic_dubs_ui.begin_text_edit(bubble_id, text);
+    }
+
+    pub fn cancel_comic_dubs_draft(&mut self) -> bool {
+        self.comic_dubs_ui.cancel_draft()
+    }
+
+    pub fn set_comic_dubs_playback(
+        &mut self,
+        page_id: Option<crate::comic_dubs::PageId>,
+        visible_bubbles: usize,
+    ) {
+        self.comic_dubs_ui.set_playback(page_id, visible_bubbles);
+    }
+
+    pub fn reset_comic_dubs_workspace(&mut self) {
+        self.comic_dubs_ui.clear_document_state();
+        self.comic_dubs_texture = None;
+    }
+
     pub fn open_export_modal(
         &mut self,
         video_width: u32,
@@ -2820,6 +2950,16 @@ impl Ui {
     ) {
         self.modal_host
             .open_export(video_width, video_height, languages, configuration);
+    }
+
+    pub fn open_video_only_export_modal(
+        &mut self,
+        video_width: u32,
+        video_height: u32,
+        configuration: crate::project::ExportConfiguration,
+    ) {
+        self.modal_host
+            .open_video_only_export(video_width, video_height, configuration);
     }
 
     pub fn open_media_explorer(
@@ -2936,31 +3076,48 @@ impl Ui {
 
     pub fn open_settings_modal(
         &mut self,
-        fonts: Vec<String>,
-        scroll_speed: f32,
-        reading_bar_offset_percent: f32,
         temporary_directory: std::path::PathBuf,
     ) {
-        self.modal_host.open_settings(
-            fonts,
-            scroll_speed,
-            reading_bar_offset_percent,
-            temporary_directory,
-        );
+        self.modal_host.open_settings(temporary_directory);
     }
 
     pub fn open_project_settings_modal(
         &mut self,
+        fonts: Vec<String>,
+        rythmo_font: Option<String>,
+        scroll_speed: f32,
+        reading_bar_offset_percent: f32,
         instrumental_audio_path: Option<String>,
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
         show_text_emotion_lanes: bool,
     ) {
         self.modal_host.open_project_settings(
+            fonts,
+            rythmo_font,
+            scroll_speed,
+            reading_bar_offset_percent,
             instrumental_audio_path,
             highlight_read_word,
             scrolling_text_uses_character_color,
             show_text_emotion_lanes,
+        );
+    }
+
+    pub fn open_comic_dubs_settings_modal(
+        &mut self,
+        fonts: Vec<String>,
+        font_family: Option<String>,
+        bubble_duration_ms: u64,
+        page_duration_ms: u64,
+        default_font_size: f32,
+    ) {
+        self.modal_host.open_comic_dubs_settings(
+            fonts,
+            font_family,
+            bubble_duration_ms,
+            page_duration_ms,
+            default_font_size,
         );
     }
 
@@ -3037,6 +3194,7 @@ impl Ui {
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         project: &Project,
         voicelines_project: &crate::voicelines::VoicelinesProject,
+        comic_dubs_project: &crate::comic_dubs::ComicDubsProject,
         render_index: &ProjectRenderIndex,
         current_frame: i64,
         render_frame: f64,
@@ -3053,6 +3211,13 @@ impl Ui {
                 (render_frame.max(0.0) * 10.0).round() as u64,
                 self.voicelines_layout,
             );
+            self.refresh_root_focus_nodes();
+        } else if self.active_workspace == WorkspaceId::ComicDubs {
+            self.comic_dubs_ui
+                .sync(comic_dubs_project, self.comic_dubs_layout);
+            self.comic_dubs_scene = self
+                .comic_dubs_ui
+                .scene(comic_dubs_project, self.comic_dubs_layout);
             self.refresh_root_focus_nodes();
         }
         if let Some(modal) = self.project_transfer_modal.as_mut() {
@@ -3074,6 +3239,7 @@ impl Ui {
             })
             .flatten();
         self.ensure_whats_new_thumbnail_texture(device, queue, renderer);
+        self.ensure_comic_dubs_texture(device, queue, renderer, comic_dubs_project);
         // Update frame info for progress bar
         self.current_frame = current_frame;
 
@@ -3093,6 +3259,14 @@ impl Ui {
             renderer.texture_bind_group_layout(),
             renderer.texture_sampler(),
         );
+        if self.active_workspace == WorkspaceId::ComicDubs {
+            self.comic_dubs_ui.ensure_color_picker_textures(
+                device,
+                queue,
+                renderer.texture_bind_group_layout(),
+                renderer.texture_sampler(),
+            );
+        }
         self.actor_icon_cache.sync(
             project,
             device,
@@ -3151,11 +3325,22 @@ impl Ui {
         let mut icons: Vec<IconInstance> = Vec::new();
         let mut labels: Vec<LabelInfo> = Vec::new();
         let mut overlay_labels: Vec<LabelInfo> = Vec::new();
+        let mut popup_quads: Vec<QuadInstance> = Vec::new();
+        let mut popup_labels: Vec<LabelInfo> = Vec::new();
+        let mut popup_icons: Vec<IconInstance> = Vec::new();
+        let mut tooltip_quads: Vec<QuadInstance> = Vec::new();
+        let mut tooltip_labels: Vec<LabelInfo> = Vec::new();
+        let mut toast_quads: Vec<QuadInstance> = Vec::new();
+        let mut toast_labels: Vec<LabelInfo> = Vec::new();
         let mut modal_quads: Vec<QuadInstance> = Vec::new(); // modal backgrounds (above normal text)
         let mut modal_labels: Vec<LabelInfo> = Vec::new(); // modal text (above modal backgrounds)
         let mut modal_overlay_quads: Vec<QuadInstance> = Vec::new();
         let mut modal_overlay_labels: Vec<LabelInfo> = Vec::new();
-        let mut modal_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
+        let mut system_quads: Vec<QuadInstance> = Vec::new();
+        let mut system_labels: Vec<LabelInfo> = Vec::new();
+        let mut topmost_quads: Vec<QuadInstance> = Vec::new();
+        let mut topmost_labels: Vec<LabelInfo> = Vec::new();
+        let mut modal_overlay_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
 
         // Pricing / support page replaces the entire layout while active.
         if self.modal_host.pricing_page.is_some() {
@@ -3172,16 +3357,24 @@ impl Ui {
             );
             // Toasts (e.g. confirmation after subscribing / activating)
             self.toasts.render(
-                &mut overlay_quads,
-                &mut overlay_labels,
+                &mut toast_quads,
+                &mut toast_labels,
                 self.screen_w,
                 self.screen_h,
             );
             let stretched_quads: Vec<(IconInstance, u64)> = Vec::new();
             let syllable_quads: Vec<QuadInstance> = Vec::new();
             let base_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
-            let extra_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
-            let color_picker_fg_quads: Vec<QuadInstance> = Vec::new();
+            let layers = [
+                UiLayerBatch::new(UiLayer::Overlay, &overlay_quads, &overlay_labels),
+                UiLayerBatch::new(UiLayer::Toast, &toast_quads, &toast_labels),
+                UiLayerBatch::new(UiLayer::Modal, &modal_quads, &modal_labels),
+                UiLayerBatch::new(
+                    UiLayer::ModalOverlay,
+                    &modal_overlay_quads,
+                    &modal_overlay_labels,
+                ),
+            ];
             renderer.render(
                 device,
                 queue,
@@ -3191,21 +3384,13 @@ impl Ui {
                 screen_height,
                 ui_scale,
                 &quads,
-                &overlay_quads,
                 &icons,
                 &labels,
-                &overlay_labels,
                 None,
                 &stretched_quads,
                 &syllable_quads,
                 &base_textured,
-                &extra_textured,
-                &color_picker_fg_quads,
-                &[],
-                &modal_quads,
-                &modal_labels,
-                &modal_overlay_quads,
-                &modal_overlay_labels,
+                &layers,
             );
             return;
         }
@@ -3270,6 +3455,27 @@ impl Ui {
             rythmo_zone,
             recording_scene.as_ref(),
         );
+        if self.active_workspace == WorkspaceId::ComicDubs {
+            if let (Some(rect), Some(texture)) = (
+                self.comic_dubs_scene.page_rect,
+                self.comic_dubs_texture.as_ref(),
+            ) {
+                base_textured.push((
+                    IconInstance {
+                        rect: [rect.x, rect.y, rect.width, rect.height],
+                        uv_rect: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0; 4],
+                        transform: [0.0, 0.0, 0.5, 0.5],
+                    },
+                    &texture.bind_group,
+                ));
+            }
+            comic_dubs_workspace::append_overlay(
+                &mut overlay_quads,
+                &mut overlay_labels,
+                &self.comic_dubs_scene,
+            );
+        }
         if self.active_workspace == WorkspaceId::Rythmo {
             self.automation_editor.render(
                 &self.layout.video_preview,
@@ -3278,6 +3484,8 @@ impl Ui {
                 self.cursor_pos,
                 &mut quads,
                 &mut labels,
+                &mut system_quads,
+                &mut system_labels,
             );
         }
 
@@ -3578,6 +3786,14 @@ impl Ui {
                     .iter()
                     .find(|control| control.id == id)
                     .map(|control| control.bounds)
+            })
+            .or_else(|| {
+                let id = self.focus.current_id()?.0.as_str();
+                self.comic_dubs_scene
+                    .controls
+                    .iter()
+                    .find(|control| control.id == id)
+                    .map(|control| control.bounds)
             });
         if let Some(bounds) = focused_bounds {
             overlay_quads.push(QuadInstance {
@@ -3600,16 +3816,15 @@ impl Ui {
             });
         }
 
-        // Capturing widgets → overlay (on top of video)
-        // Autocomplete dropdown (on top of all lines)
+        // Transient workspace surfaces use the popup layer.
         if self.active_workspace == WorkspaceId::Rythmo {
             rythmo::render_autocomplete(
                 &rythmo_zone,
                 project,
                 render_frame,
                 &self.rythmo_state,
-                &mut overlay_quads,
-                &mut overlay_labels,
+                &mut popup_quads,
+                &mut popup_labels,
                 fps,
             );
         }
@@ -3625,7 +3840,7 @@ impl Ui {
 
         if self.active_workspace == WorkspaceId::Rythmo {
             self.side_panel
-                .render_menus(project, &mut modal_quads, &mut modal_labels);
+                .render_menus(project, &mut system_quads, &mut system_labels);
         }
 
         // Capturing dropdowns belong above persistent overlays such as the
@@ -3638,9 +3853,9 @@ impl Ui {
                 .chain(self.toolbar_widgets.iter())
             {
                 if widget.captures_all() {
-                    modal_quads.extend(widget.render_quads());
-                    icons.extend(widget.render_icons());
-                    modal_labels.extend(widget.labels());
+                    popup_quads.extend(widget.render_quads());
+                    popup_icons.extend(widget.render_icons());
+                    popup_labels.extend(widget.labels());
                 }
             }
         }
@@ -3656,14 +3871,20 @@ impl Ui {
                 &mut extra_textured,
                 &mut color_picker_fg_quads,
             );
+        } else if self.active_workspace == WorkspaceId::ComicDubs {
+            self.comic_dubs_ui.render_color_picker(
+                &mut color_picker_bg_quads,
+                &mut extra_textured,
+                &mut color_picker_fg_quads,
+            );
         }
 
         // Color picker quads → overlay
-        overlay_quads.extend(color_picker_bg_quads);
+        popup_quads.extend(color_picker_bg_quads);
 
         // Toolbar dropdown → overlay
         if self.active_workspace == WorkspaceId::Rythmo {
-            self.render_toolbar_dropdown(&mut overlay_quads, &mut overlay_labels);
+            self.render_toolbar_dropdown(&mut popup_quads, &mut popup_labels);
         }
 
         if self.active_workspace == WorkspaceId::Rythmo {
@@ -3672,22 +3893,23 @@ impl Ui {
                 self.screen_w,
                 self.screen_h,
                 &self.rythmo_state,
-                &mut overlay_quads,
-                &mut overlay_labels,
+                &mut system_quads,
+                &mut system_labels,
             );
         }
 
         // Tooltip → overlay
         if let Some(tooltip) = lint_tooltip.as_ref() {
-            overlay_quads.extend(tooltip.render_quads(self.screen_w));
-            overlay_labels.extend(tooltip.render_labels(self.screen_w));
+            tooltip_quads.extend(tooltip.render_quads(self.screen_w));
+            tooltip_labels.extend(tooltip.render_labels(self.screen_w));
         } else if let Some(tooltip) = &self.tooltip {
-            overlay_quads.extend(tooltip.render_quads(self.screen_w));
-            overlay_labels.extend(tooltip.render_labels(self.screen_w));
+            tooltip_quads.extend(tooltip.render_quads(self.screen_w));
+            tooltip_labels.extend(tooltip.render_labels(self.screen_w));
         }
 
         // Sync overlay (blocks UI during video transfer)
         if let Some(msg) = &self.sync_overlay {
+            let (overlay_quads, overlay_labels) = (&mut system_quads, &mut system_labels);
             let dw = 420.0;
             let has_progress = self.sync_progress > 0.0;
             let dh = if has_progress { 100.0 } else { 64.0 };
@@ -3796,6 +4018,7 @@ impl Ui {
 
         // Bande rythmo import loading modal (on top while a background parse runs)
         if let Some(load) = &self.loading_project {
+            let (overlay_quads, overlay_labels) = (&mut system_quads, &mut system_labels);
             let dw = 520.0;
             let dh = 190.0;
             let dx = (self.screen_w - dw) / 2.0;
@@ -3923,6 +4146,7 @@ impl Ui {
             .map(|p| f32::from_bits(p.load(std::sync::atomic::Ordering::Relaxed)))
             .unwrap_or(0.0);
         if self.export_progress.is_some() && export_progress_val > 0.0 {
+            let (overlay_quads, overlay_labels) = (&mut system_quads, &mut system_labels);
             let progress = export_progress_val;
 
             let dw = 420.0;
@@ -4045,17 +4269,31 @@ impl Ui {
 
         // Toasts
         self.toasts.render(
-            &mut overlay_quads,
-            &mut overlay_labels,
+            &mut toast_quads,
+            &mut toast_labels,
             self.screen_w,
             self.screen_h,
         );
+
+        if self.active_workspace == WorkspaceId::Recording {
+            if let Some(scene) = recording_scene.as_ref() {
+                Self::append_recording_system(&mut system_quads, &mut system_labels, scene);
+            }
+        } else if self.active_workspace == WorkspaceId::Voicelines {
+            voicelines_workspace::append_system(
+                &mut system_quads,
+                &mut system_labels,
+                &self.voicelines_scene,
+            );
+        }
 
         self.modal_host.render_top(
             &mut modal_quads,
             &mut modal_labels,
             &mut modal_overlay_quads,
             &mut modal_overlay_labels,
+            &mut topmost_quads,
+            &mut topmost_labels,
             self.screen_w,
             self.screen_h,
         );
@@ -4075,7 +4313,7 @@ impl Ui {
             self.whats_new_thumbnail_texture.as_ref(),
         ) {
             if let Some(rect) = modal.attachment_rect(self.screen_w, self.screen_h) {
-                modal_textured.push((
+                modal_overlay_textured.push((
                     IconInstance {
                         rect: [rect.x, rect.y, rect.width, rect.height],
                         uv_rect: [0.0, 0.0, 1.0, 1.0],
@@ -4087,6 +4325,38 @@ impl Ui {
             }
         }
 
+        let layers = [
+            UiLayerBatch::new(UiLayer::Overlay, &overlay_quads, &overlay_labels),
+            UiLayerBatch {
+                layer: UiLayer::Popup,
+                quads: &popup_quads,
+                textured: &extra_textured,
+                foreground_quads: &color_picker_fg_quads,
+                icons: &popup_icons,
+                labels: &popup_labels,
+            },
+            UiLayerBatch::new(UiLayer::Tooltip, &tooltip_quads, &tooltip_labels),
+            UiLayerBatch::new(UiLayer::Toast, &toast_quads, &toast_labels),
+            UiLayerBatch {
+                layer: UiLayer::Modal,
+                quads: &modal_quads,
+                textured: &[],
+                foreground_quads: &[],
+                icons: &[],
+                labels: &modal_labels,
+            },
+            UiLayerBatch {
+                layer: UiLayer::ModalOverlay,
+                quads: &modal_overlay_quads,
+                textured: &modal_overlay_textured,
+                foreground_quads: &[],
+                icons: &[],
+                labels: &modal_overlay_labels,
+            },
+            UiLayerBatch::new(UiLayer::System, &system_quads, &system_labels),
+            UiLayerBatch::new(UiLayer::Topmost, &topmost_quads, &topmost_labels),
+        ];
+
         renderer.render(
             device,
             queue,
@@ -4096,21 +4366,13 @@ impl Ui {
             screen_height,
             ui_scale,
             &quads,
-            &overlay_quads,
             &icons,
             &labels,
-            &overlay_labels,
             video_quad,
             &stretched_quads,
             &syllable_quads,
             &base_textured,
-            &extra_textured,
-            &color_picker_fg_quads,
-            &modal_textured,
-            &modal_quads,
-            &modal_labels,
-            &modal_overlay_quads,
-            &modal_overlay_labels,
+            &layers,
         );
     }
 
@@ -4206,6 +4468,13 @@ impl Ui {
         if let Some(prompt) = audio_import_prompt.as_ref() {
             Self::append_recording_scene(&mut modal_quads, &mut modal_labels, prompt);
         }
+        let mut system_quads = Vec::new();
+        let mut system_labels = Vec::new();
+        Self::append_recording_system(&mut system_quads, &mut system_labels, scene);
+        let layers = [
+            UiLayerBatch::new(UiLayer::Modal, &modal_quads, &modal_labels),
+            UiLayerBatch::new(UiLayer::System, &system_quads, &system_labels),
+        ];
         renderer.render(
             device,
             queue,
@@ -4215,22 +4484,103 @@ impl Ui {
             height,
             1.0,
             &quads,
-            &[],
             &icons,
             &labels,
-            &[],
             None,
             &[],
             &[],
             &[],
-            &[],
-            &[],
-            &[],
-            &modal_quads,
-            &modal_labels,
-            &[],
-            &[],
+            &layers,
         );
+    }
+
+    fn ensure_comic_dubs_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        renderer: &UiRenderer,
+        project: &crate::comic_dubs::ComicDubsProject,
+    ) {
+        if self.active_workspace != WorkspaceId::ComicDubs {
+            return;
+        }
+        let Some(page) = project.active_page() else {
+            self.comic_dubs_texture = None;
+            return;
+        };
+        if self
+            .comic_dubs_texture
+            .as_ref()
+            .is_some_and(|texture| texture.page_id == page.id && texture.path == page.image_path)
+        {
+            return;
+        }
+        let image = match image::open(&page.image_path) {
+            Ok(image) => image.to_rgba8(),
+            Err(error) => {
+                log::warn!(
+                    "Could not render Comic Dubs page {}: {error}",
+                    page.image_path.display()
+                );
+                self.comic_dubs_texture = None;
+                return;
+            }
+        };
+        let (width, height) = image.dimensions();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Comic Dubs page"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            image.as_raw(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Comic Dubs page bind group"),
+            layout: renderer.texture_bind_group_layout(),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(renderer.texture_sampler()),
+                },
+            ],
+        });
+        self.comic_dubs_texture = Some(ComicDubsTexture {
+            page_id: page.id,
+            path: page.image_path.clone(),
+            _texture: texture,
+            bind_group,
+        });
     }
 
     fn ensure_whats_new_thumbnail_texture(
@@ -4321,6 +4671,25 @@ impl Ui {
     ) {
         quads.extend(scene.quads.iter().copied());
         labels.extend(scene.labels.iter().map(|label| LabelInfo {
+            text: &label.text,
+            bounds: label.bounds,
+            h_align: label.h_align,
+            v_align: label.v_align,
+            overflow: label.overflow,
+            padding: 0.0,
+            font_size_override: Some(label.font_size),
+            color_override: Some(label.color),
+            font_family_override: None,
+        }));
+    }
+
+    fn append_recording_system<'a>(
+        quads: &mut Vec<QuadInstance>,
+        labels: &mut Vec<LabelInfo<'a>>,
+        scene: &'a RecordingScene,
+    ) {
+        quads.extend(scene.system_quads.iter().copied());
+        labels.extend(scene.system_labels.iter().map(|label| LabelInfo {
             text: &label.text,
             bounds: label.bounds,
             h_align: label.h_align,
@@ -4531,11 +4900,11 @@ impl Ui {
             rotation: 0.0,
             _padding: [0.0; 2],
         });
-        if self.total_frames <= 0 || !playback_enabled {
+        if !playback_enabled {
             return;
         }
         let pb = shell::progress_bar_rect(&toolbar, editable);
-        let progress = (self.current_frame as f32 / self.total_frames as f32).clamp(0.0, 1.0);
+        let progress = playback_progress(self.current_frame, self.total_frames);
         quads.push(QuadInstance {
             rect: [pb.x, pb.y, pb.width, pb.height],
             color: [0.10, 0.10, 0.13, 1.0],
@@ -4549,6 +4918,9 @@ impl Ui {
             rotation: 0.0,
             _padding: [0.0; 2],
         });
+        if self.total_frames <= 0 {
+            return;
+        }
         let fill_w = (pb.width - 2.0) * progress;
         if fill_w > 1.0 {
             quads.push(QuadInstance {
@@ -4830,6 +5202,12 @@ impl Ui {
             return;
         }
 
+        if self.active_workspace == WorkspaceId::ComicDubs {
+            comic_dubs_workspace::append_scene(quads, labels, &self.comic_dubs_scene);
+            self.push_toolbar_zone(quads, self.comic_dubs_layout.toolbar, false, true);
+            return;
+        }
+
         // Video preview
         quads.push(QuadInstance {
             rect: [
@@ -5084,6 +5462,17 @@ pub(crate) struct DrawingOverlayCache {
     key: (i64, u32, u32, u64, usize),
     zw: u32,
     zh: u32,
+}
+
+#[cfg(test)]
+mod playback_progress_tests {
+    use super::playback_progress;
+
+    #[test]
+    fn final_frame_fills_even_a_short_progress_bar() {
+        assert_eq!(playback_progress(19, 20), 1.0);
+        assert_eq!(playback_progress(0, 0), 0.0);
+    }
 }
 
 #[cfg(test)]

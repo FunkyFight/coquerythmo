@@ -6,7 +6,7 @@
 
 use super::layout::Layout;
 use super::primitives::{EventResponse, LabelInfo, QuadInstance, Rect, UiAction, UiEvent, Widget};
-use super::theme::{SLIDER_W, TOOLBAR_BTN_SIZE, TOOLBAR_HEIGHT, TOPBAR_HEIGHT};
+use super::theme::{SLIDER_W, TOOLBAR_BTN_SIZE, TOPBAR_HEIGHT};
 use super::{
     dropdown::Dropdown, icon_button::IconButton, slider::Slider, tab_button::TabButton,
     text_button::TextButton,
@@ -75,6 +75,13 @@ pub(crate) fn build_topbar(
         .collect();
 
     let recents_clone = recents.clone();
+    let comic_dubs = active_workspace == WorkspaceId::ComicDubs;
+    let voicelines = active_workspace == WorkspaceId::Voicelines;
+    let import_label = if comic_dubs {
+        t("menu.project.import.coquerythmo")
+    } else {
+        t("menu.project.import")
+    };
     let mut project_menu = Dropdown::new(
         Rect {
             x: 4.0,
@@ -84,15 +91,19 @@ pub(crate) fn build_topbar(
         },
         vec![
             t("menu.project.add_video").into(),
-            t("menu.project.import").into(),
+            import_label.into(),
             t("menu.project.export").into(),
             t("menu.project.restore_backup").into(),
             format!("{} ▸", t("menu.project.recent")),
             t("menu.project.close").into(),
         ],
-        |index, _label| match index {
+        move |index, _label| match index {
             0 => EventResponse::Action(UiAction::AddVideo),
-            1 => EventResponse::Action(UiAction::ImportSubtitles),
+            1 => EventResponse::Action(if comic_dubs {
+                UiAction::ImportProject
+            } else {
+                UiAction::ImportSubtitles
+            }),
             2 => EventResponse::Action(UiAction::ExportProject),
             3 => EventResponse::Action(UiAction::RestoreBackup),
             5 => EventResponse::Action(UiAction::CloseProject),
@@ -262,14 +273,23 @@ pub(crate) fn build_topbar(
 
     let export_menu = Dropdown::new(
         Rect {
-            x: 88.0,
+            x: if comic_dubs { 188.0 } else { 88.0 },
             y: 2.0,
             width: 80.0,
             height: 28.0,
         },
-        vec![t("menu.export.mp4").into()],
-        |index, _label| match index {
-            0 => EventResponse::Action(UiAction::OpenExportModal),
+        vec![t(if voicelines {
+            "menu.export.voicelines_audio"
+        } else {
+            "menu.export.mp4"
+        })
+        .into()],
+        move |index, _label| match index {
+            0 => EventResponse::Action(if voicelines {
+                UiAction::VoicelinesExportAll
+            } else {
+                UiAction::OpenExportModal
+            }),
             _ => EventResponse::Consumed,
         },
     )
@@ -381,7 +401,11 @@ pub(crate) fn build_topbar(
         project_uv,
         || EventResponse::Action(UiAction::OpenProjectSettings),
     )
-    .with_tooltip(t("project_settings.tooltip"));
+    .with_tooltip(if comic_dubs {
+        t("comic_dubs_settings.tooltip")
+    } else {
+        t("project_settings.tooltip")
+    });
     let settings_btn = IconButton::new(
         Rect {
             x: settings_x,
@@ -395,14 +419,43 @@ pub(crate) fn build_topbar(
     )
     .with_tooltip(t("settings.tooltip"));
 
-    let mut topbar_widgets: Vec<Box<dyn Widget>> = vec![
-        Box::new(project_menu),
-        Box::new(export_menu),
-        Box::new(tools_menu),
-        Box::new(panels_menu),
-        Box::new(explorers_menu),
-        Box::new(connect_menu),
-    ];
+    let mut topbar_widgets: Vec<Box<dyn Widget>> = if comic_dubs {
+        vec![
+            Box::new(project_menu),
+            Box::new(
+                Dropdown::new(
+                    Rect {
+                        x: 88.0,
+                        y: 2.0,
+                        width: 96.0,
+                        height: 28.0,
+                    },
+                    vec!["Importer des images".into(), "Importer des audios".into()],
+                    |index, _| match index {
+                        0 => EventResponse::Action(UiAction::ComicDubsImportImages),
+                        1 => EventResponse::Action(UiAction::ComicDubsImportAudios),
+                        _ => EventResponse::Consumed,
+                    },
+                )
+                .with_arrow(false)
+                .with_trigger_bg(false)
+                .with_trigger_label("Imports")
+                .with_panel_width(260.0),
+            ),
+            Box::new(export_menu),
+        ]
+    } else if voicelines {
+        vec![Box::new(project_menu), Box::new(export_menu)]
+    } else {
+        vec![
+            Box::new(project_menu),
+            Box::new(export_menu),
+            Box::new(tools_menu),
+            Box::new(panels_menu),
+            Box::new(explorers_menu),
+            Box::new(connect_menu),
+        ]
+    };
     if active_workspace == WorkspaceId::Recording {
         topbar_widgets.push(microphone_button(464.0));
         if in_room {
@@ -499,6 +552,7 @@ pub(crate) fn build_workspace_tabs(
         (WorkspaceId::Rythmo, t("workspace_tabs.rythmo")),
         (WorkspaceId::Recording, t("workspace_tabs.recording")),
         (WorkspaceId::Voicelines, t("workspace_tabs.voicelines")),
+        (WorkspaceId::ComicDubs, t("workspace_tabs.comic_dubs")),
     ]
     .into_iter()
     .enumerate()
@@ -524,7 +578,12 @@ pub(crate) fn build_toolbar(ctx: ToolbarBuildContext<'_>) -> Vec<Box<dyn Widget>
 
     let tb = &ctx.toolbar;
     let s = TOOLBAR_BTN_SIZE;
-    let y1 = tb.y + (TOOLBAR_BTN_SIZE - s) / 2.0;
+    let y1 = tb.y
+        + if ctx.editable {
+            0.0
+        } else {
+            (tb.height - s) / 2.0
+        };
     let gap = 4.0;
     let mut x = tb.x + 8.0;
 
@@ -651,7 +710,12 @@ pub(crate) fn build_toolbar(ctx: ToolbarBuildContext<'_>) -> Vec<Box<dyn Widget>
     let slider_w = SLIDER_W;
     let slider_h = 24.0;
     let slider_x = tb.x + tb.width - slider_w - 8.0;
-    let slider_y = tb.y + (TOOLBAR_BTN_SIZE - slider_h) / 2.0;
+    let slider_y = tb.y
+        + if ctx.editable {
+            (TOOLBAR_BTN_SIZE - slider_h) / 2.0
+        } else {
+            (tb.height - slider_h) / 2.0
+        };
     let mute_x = slider_x - s - gap;
     let mute_icon = if ctx.volume <= 0.001 { "mute" } else { "sound" };
     let mute_tip = if ctx.volume <= 0.001 {
@@ -873,7 +937,7 @@ pub(crate) fn progress_bar_rect(tb: &Rect, editable: bool) -> Rect {
     let h = 6.0;
     Rect {
         x: left,
-        y: tb.y + (TOOLBAR_HEIGHT - h) / 2.0,
+        y: tb.y + (tb.height - h) / 2.0,
         width: w,
         height: h,
     }
@@ -911,5 +975,89 @@ mod tests {
             let right = pair[1].bounds();
             assert!(left.x + left.width <= right.x);
         }
+    }
+
+    #[test]
+    fn comic_dubs_topbar_has_room_for_imports_and_export() {
+        crate::config::init();
+        let widgets = build_topbar(
+            false,
+            false,
+            1280.0,
+            [0.0; 4],
+            [0.0; 4],
+            WorkspaceId::ComicDubs,
+            false,
+            false,
+        );
+        assert!(widgets.len() >= 5);
+        for pair in widgets.windows(2) {
+            let left = pair[0].bounds();
+            let right = pair[1].bounds();
+            assert!(left.x + left.width <= right.x);
+        }
+    }
+
+    #[test]
+    fn voicelines_topbar_only_keeps_project_and_audio_export_on_the_left() {
+        crate::config::init();
+        let mut widgets = build_topbar(
+            false,
+            false,
+            1280.0,
+            [0.0; 4],
+            [0.0; 4],
+            WorkspaceId::Voicelines,
+            false,
+            false,
+        );
+        assert_eq!(widgets[0].bounds().x, 4.0);
+        assert_eq!(widgets[1].bounds().x, 88.0);
+        assert_eq!(
+            widgets
+                .iter()
+                .filter(|widget| widget.bounds().x < 500.0)
+                .count(),
+            2
+        );
+        widgets[1].handle_event(&UiEvent::Activate);
+        assert!(matches!(
+            widgets[1].handle_event(&UiEvent::Activate),
+            EventResponse::Actions(actions)
+                if actions.iter().any(|action| action == &UiAction::VoicelinesExportAll)
+        ));
+    }
+
+    #[test]
+    fn compact_playback_bar_is_vertically_centered() {
+        let toolbar = Rect {
+            x: 0.0,
+            y: 100.0,
+            width: 800.0,
+            height: 42.0,
+        };
+        let progress = progress_bar_rect(&toolbar, false);
+        assert_eq!(progress.y + progress.height / 2.0, 121.0);
+        let icon_uvs = HashMap::new();
+        let presets = [[0.0; 4]; 8];
+        let widgets = build_toolbar(ToolbarBuildContext {
+            toolbar,
+            icon_uvs: &icon_uvs,
+            playing: false,
+            volume: 0.75,
+            active_mode: None,
+            brush_color: [0.0; 4],
+            brush_radius_index: 0,
+            brush_color_preset_index: 0,
+            erasing: false,
+            brush_color_presets: &presets,
+            ctrl_held: false,
+            editable: false,
+            playback_enabled: true,
+        });
+        assert!(widgets.iter().all(|widget| {
+            let bounds = widget.bounds();
+            bounds.y + bounds.height / 2.0 == 121.0
+        }));
     }
 }

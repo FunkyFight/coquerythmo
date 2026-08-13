@@ -6,10 +6,10 @@
 
 use super::primitives::{EventResponse, LabelInfo, QuadInstance, UiEvent};
 use super::{
-    connect_modal, export_modal, invitation_modal, language_modal, microphone_modal,
-    pricing_license_modal, pricing_page, pricing_plan_modal, primitives, project_settings_modal,
-    proxy_error_modal, proxy_modal, rename_character_modal, save_prompt_modal, server_browser,
-    settings_modal, voice_actor_modal, whats_new_modal,
+    comic_dubs_settings_modal, connect_modal, export_modal, invitation_modal, language_modal,
+    microphone_modal, pricing_license_modal, pricing_page, pricing_plan_modal, primitives,
+    project_settings_modal, proxy_error_modal, proxy_modal, rename_character_modal,
+    save_prompt_modal, server_browser, settings_modal, voice_actor_modal, whats_new_modal,
 };
 use std::ops::{Deref, DerefMut};
 
@@ -53,15 +53,16 @@ impl ModalHost {
         self.0.handle_topmost_event(event, screen_w, screen_h)
     }
 
-    /// Render every established top-level modal first, then append the detector
-    /// surface to the final overlay arrays. Its backgrounds, mouth image,
-    /// glyphs and labels therefore share one coherent highest z-layer.
+    /// Render established modal overlays, then append the detector surface to
+    /// the dedicated topmost layer.
     pub fn render_top<'a>(
         &'a self,
         modal_quads: &mut Vec<QuadInstance>,
         modal_labels: &mut Vec<LabelInfo<'a>>,
         modal_overlay_quads: &mut Vec<QuadInstance>,
         modal_overlay_labels: &mut Vec<LabelInfo<'a>>,
+        topmost_quads: &mut Vec<QuadInstance>,
+        topmost_labels: &mut Vec<LabelInfo<'a>>,
         screen_w: f32,
         screen_h: f32,
     ) {
@@ -74,8 +75,8 @@ impl ModalHost {
             screen_h,
         );
         crate::detection_foreground::append_foreground(
-            modal_overlay_quads,
-            modal_overlay_labels,
+            topmost_quads,
+            topmost_labels,
             screen_w,
             screen_h,
         );

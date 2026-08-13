@@ -461,6 +461,8 @@ impl AutomationEditor {
         cursor: (f32, f32),
         quads: &mut Vec<QuadInstance>,
         labels: &mut Vec<LabelInfo<'a>>,
+        system_quads: &mut Vec<QuadInstance>,
+        system_labels: &mut Vec<LabelInfo<'a>>,
     ) {
         if !self.open {
             return;
@@ -562,7 +564,7 @@ impl AutomationEditor {
 
         clip_added_to_zone(quads, labels, quad_start, label_start, &content);
         self.render_close_button(zone, labels);
-        self.render_context_menu(graph, quads, labels);
+        self.render_context_menu(graph, system_quads, system_labels);
     }
 
     fn render_close_button<'a>(&'a self, zone: &Rect, labels: &mut Vec<LabelInfo<'a>>) {
@@ -1548,7 +1550,16 @@ mod tests {
         let mut quads = Vec::new();
         let mut labels = Vec::new();
 
-        editor.render(&zone, &graph, &project, (0.0, 0.0), &mut quads, &mut labels);
+        editor.render(
+            &zone,
+            &graph,
+            &project,
+            (0.0, 0.0),
+            &mut quads,
+            &mut labels,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
 
         assert!(!labels
             .iter()
@@ -1698,6 +1709,24 @@ mod tests {
             Some(EventResponse::Consumed)
         );
         let menu = editor.context_menu.as_ref().unwrap().rect;
+        let (mut quads, mut labels, mut system_quads, mut system_labels) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        editor.render(
+            &zone,
+            &graph,
+            &project,
+            (300.0, 180.0),
+            &mut quads,
+            &mut labels,
+            &mut system_quads,
+            &mut system_labels,
+        );
+        assert!(!labels
+            .iter()
+            .any(|label| label.text == t("automation.add_entry")));
+        assert!(system_labels
+            .iter()
+            .any(|label| label.text == t("automation.add_entry")));
         assert!(matches!(
             editor.handle_event(
                 &press(Rect {
@@ -1843,7 +1872,16 @@ mod tests {
         editor.open();
         let mut quads = Vec::new();
         let mut labels = Vec::new();
-        editor.render(&zone, &graph, &project, (0.0, 0.0), &mut quads, &mut labels);
+        editor.render(
+            &zone,
+            &graph,
+            &project,
+            (0.0, 0.0),
+            &mut quads,
+            &mut labels,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
 
         for quad in quads
             .iter()

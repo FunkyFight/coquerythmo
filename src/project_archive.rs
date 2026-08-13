@@ -14,6 +14,7 @@
 //! chunks and protected by CRC-32, so source videos and other large media never
 //! need to be held in memory.
 
+use crate::comic_dubs::{ComicAudioId, ComicDubsProject, PageId};
 use crate::export::ProjectData;
 use crate::integrity::Sha1;
 use crate::project::Project;
@@ -105,6 +106,12 @@ pub struct LoadedBundledVoicelines {
     pub audio_paths: BTreeMap<AudioId, PathBuf>,
 }
 
+pub struct LoadedBundledComicDubs {
+    pub project: ComicDubsProject,
+    pub image_paths: BTreeMap<PageId, PathBuf>,
+    pub audio_paths: BTreeMap<ComicAudioId, PathBuf>,
+}
+
 /// A loaded project plus the filesystem paths required by media decoders.
 ///
 /// Bundle assets are extracted into a private temporary directory. Keep this
@@ -122,6 +129,7 @@ pub struct LoadedProject {
     pub instrumental_audio_paths: BTreeMap<String, PathBuf>,
     pub recording: Option<LoadedRecordingProject>,
     pub voicelines: Option<LoadedBundledVoicelines>,
+    pub comic_dubs: Option<LoadedBundledComicDubs>,
     extraction: Option<ExtractionGuard>,
 }
 
@@ -274,6 +282,8 @@ struct BundleManifest {
     recording: Option<BundleRecordingManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     voicelines: Option<BundleVoicelinesManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    comic_dubs: Option<BundleComicDubsManifest>,
 }
 
 /// Metadata created only after a complete bundle has been installed at its
@@ -289,7 +299,8 @@ pub struct SavedProjectMetadata {
 
 #[derive(Serialize, Deserialize)]
 struct BundleAssets {
-    source_video: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_video: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     proxy_video: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -338,6 +349,27 @@ struct BundleVoicelinesManifest {
 #[derive(Serialize, Deserialize)]
 struct VoicelinesAudioManifest {
     audio_id: AudioId,
+    entry: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BundleComicDubsManifest {
+    project: ComicDubsProject,
+    #[serde(default)]
+    pages: Vec<ComicPageManifest>,
+    #[serde(default)]
+    audios: Vec<ComicAudioManifest>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ComicPageManifest {
+    page_id: PageId,
+    entry: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ComicAudioManifest {
+    audio_id: ComicAudioId,
     entry: String,
 }
 
@@ -450,6 +482,34 @@ pub fn save_bundle_with_recording_and_voicelines_data(
     recording: Option<RecordingBundleInput<'_>>,
     voicelines: Option<&VoicelinesProject>,
 ) -> Result<SavedProjectMetadata, ProjectArchiveError> {
+    save_bundle_with_recording_voicelines_and_comic_dubs_data(
+        project,
+        fps,
+        bundle_path,
+        Some(source_video),
+        proxy_video,
+        default_uses_proxy,
+        font_asset,
+        transaction_journal,
+        recording,
+        voicelines,
+        None,
+    )
+}
+
+pub fn save_bundle_with_recording_voicelines_and_comic_dubs_data(
+    project: &Project,
+    fps: f64,
+    bundle_path: &Path,
+    source_video: Option<&Path>,
+    proxy_video: Option<&Path>,
+    default_uses_proxy: bool,
+    font_asset: Option<&Path>,
+    transaction_journal: Option<&TransactionJournal>,
+    recording: Option<RecordingBundleInput<'_>>,
+    voicelines: Option<&VoicelinesProject>,
+    comic_dubs: Option<&ComicDubsProject>,
+) -> Result<SavedProjectMetadata, ProjectArchiveError> {
     let instrumental_paths: Vec<(String, PathBuf)> = project
         .language_snapshots()
         .into_iter()
@@ -468,7 +528,7 @@ pub fn save_bundle_with_recording_and_voicelines_data(
         .map(|(language_id, path)| InstrumentalAssetInput { language_id, path })
         .collect();
 
-    save_bundle_with_instrumentals_recording_and_voicelines_data(
+    save_bundle_with_instrumentals_recording_voicelines_and_comic_dubs_data(
         project,
         fps,
         bundle_path,
@@ -480,6 +540,7 @@ pub fn save_bundle_with_recording_and_voicelines_data(
         transaction_journal,
         recording,
         voicelines,
+        comic_dubs,
     )
 }
 
@@ -570,6 +631,36 @@ fn save_bundle_with_instrumentals_recording_and_voicelines_data(
     recording: Option<RecordingBundleInput<'_>>,
     voicelines: Option<&VoicelinesProject>,
 ) -> Result<SavedProjectMetadata, ProjectArchiveError> {
+    save_bundle_with_instrumentals_recording_voicelines_and_comic_dubs_data(
+        project,
+        fps,
+        bundle_path,
+        Some(source_video),
+        instrumentals,
+        proxy_video,
+        default_uses_proxy,
+        font_asset,
+        transaction_journal,
+        recording,
+        voicelines,
+        None,
+    )
+}
+
+fn save_bundle_with_instrumentals_recording_voicelines_and_comic_dubs_data(
+    project: &Project,
+    fps: f64,
+    bundle_path: &Path,
+    source_video: Option<&Path>,
+    instrumentals: &[InstrumentalAssetInput<'_>],
+    proxy_video: Option<&Path>,
+    default_uses_proxy: bool,
+    font_asset: Option<&Path>,
+    transaction_journal: Option<&TransactionJournal>,
+    recording: Option<RecordingBundleInput<'_>>,
+    voicelines: Option<&VoicelinesProject>,
+    comic_dubs: Option<&ComicDubsProject>,
+) -> Result<SavedProjectMetadata, ProjectArchiveError> {
     let transaction_journal = if let Some(journal) = transaction_journal {
         journal
             .validate_integrity()
@@ -588,7 +679,9 @@ fn save_bundle_with_instrumentals_recording_and_voicelines_data(
     } else {
         None
     };
-    ensure_destination_is_not_asset(bundle_path, source_video)?;
+    if let Some(path) = source_video {
+        ensure_destination_is_not_asset(bundle_path, path)?;
+    }
     if let Some(path) = proxy_video {
         ensure_destination_is_not_asset(bundle_path, path)?;
     }
@@ -599,8 +692,9 @@ fn save_bundle_with_instrumentals_recording_and_voicelines_data(
         ensure_destination_is_not_asset(bundle_path, instrumental.path)?;
     }
 
-    let source_entry = entry_name_for_asset("media/source", source_video);
-    let source = file_entry(source_entry.clone(), source_video)?;
+    let source = source_video
+        .map(|path| file_entry(entry_name_for_asset("media/source", path), path))
+        .transpose()?;
     let proxy = proxy_video
         .map(|path| file_entry(entry_name_for_asset("media/proxy", path), path))
         .transpose()?;
@@ -646,6 +740,13 @@ fn save_bundle_with_instrumentals_recording_and_voicelines_data(
         Some((manifest, entries)) => (Some(manifest), entries),
         None => (None, Vec::new()),
     };
+    let prepared_comic_dubs = comic_dubs
+        .map(|project| prepare_comic_dubs_bundle(bundle_path, project))
+        .transpose()?;
+    let (comic_dubs_manifest, comic_dubs_entries) = match prepared_comic_dubs {
+        Some((manifest, entries)) => (Some(manifest), entries),
+        None => (None, Vec::new()),
+    };
 
     let mut project_data = ProjectData::from_project(project, fps);
     // Never leave a machine-specific path in a portable manifest.
@@ -668,7 +769,7 @@ fn save_bundle_with_instrumentals_recording_and_voicelines_data(
         transactions: stored_journal,
         project: project_data,
         assets: BundleAssets {
-            source_video: source_entry,
+            source_video: source.as_ref().map(|entry| entry.name.clone()),
             proxy_video: proxy.as_ref().map(|entry| entry.name.clone()),
             default_uses_proxy: Some(default_uses_proxy && proxy.is_some()),
             font: font.as_ref().map(|entry| entry.name.clone()),
@@ -676,6 +777,7 @@ fn save_bundle_with_instrumentals_recording_and_voicelines_data(
         },
         recording: recording_manifest,
         voicelines: voicelines_manifest,
+        comic_dubs: comic_dubs_manifest,
     };
     let manifest_bytes = serde_json::to_vec(&manifest)?;
     if manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
@@ -687,9 +789,15 @@ fn save_bundle_with_instrumentals_recording_and_voicelines_data(
     }
 
     let mut entries = Vec::with_capacity(
-        1 + instrumentals.len() + recording_entries.len() + voicelines_entries.len() + 3,
+        1 + instrumentals.len()
+            + recording_entries.len()
+            + voicelines_entries.len()
+            + comic_dubs_entries.len()
+            + 3,
     );
-    entries.push(source);
+    if let Some(source) = source {
+        entries.push(source);
+    }
     if let Some(proxy) = proxy {
         entries.push(proxy);
     }
@@ -699,6 +807,7 @@ fn save_bundle_with_instrumentals_recording_and_voicelines_data(
     entries.extend(instrumental_entries);
     entries.extend(recording_entries);
     entries.extend(voicelines_entries);
+    entries.extend(comic_dubs_entries);
 
     let entry_count = u32::try_from(entries.len() + 1)
         .map_err(|_| ProjectArchiveError::TooManyEntries(u32::MAX))?;
@@ -816,6 +925,51 @@ fn prepare_voicelines_bundle(
         });
     }
     Ok((BundleVoicelinesManifest { project, audios }, entries))
+}
+
+fn prepare_comic_dubs_bundle(
+    bundle_path: &Path,
+    project: &ComicDubsProject,
+) -> Result<(BundleComicDubsManifest, Vec<FileEntryToWrite>), ProjectArchiveError> {
+    let mut project = project.clone();
+    project
+        .validate()
+        .map_err(ProjectArchiveError::InvalidFormat)?;
+    let mut pages = Vec::with_capacity(project.pages().len());
+    let mut audios = Vec::with_capacity(project.audios().len());
+    let mut entries = Vec::with_capacity(project.pages().len() + project.audios().len());
+    for (index, page) in project.pages().iter().enumerate() {
+        ensure_destination_is_not_asset(bundle_path, &page.image_path)?;
+        let entry = entry_name_for_asset(
+            &format!("comic-dubs/images/page-{index:04}"),
+            &page.image_path,
+        );
+        entries.push(file_entry(entry.clone(), &page.image_path)?);
+        pages.push(ComicPageManifest {
+            page_id: page.id,
+            entry,
+        });
+    }
+    for (index, audio) in project.audios().iter().enumerate() {
+        ensure_destination_is_not_asset(bundle_path, &audio.playback_path)?;
+        let entry = entry_name_for_asset(
+            &format!("comic-dubs/audio/audio-{index:04}"),
+            &audio.playback_path,
+        );
+        entries.push(file_entry(entry.clone(), &audio.playback_path)?);
+        audios.push(ComicAudioManifest {
+            audio_id: audio.id,
+            entry,
+        });
+    }
+    Ok((
+        BundleComicDubsManifest {
+            project,
+            pages,
+            audios,
+        },
+        entries,
+    ))
 }
 
 pub fn load_voicelines_file(path: &Path) -> Result<LoadedVoicelinesProject, ProjectArchiveError> {
@@ -996,6 +1150,7 @@ fn load_legacy_json(file: File) -> Result<LoadedProject, ProjectArchiveError> {
         instrumental_audio_paths,
         recording: None,
         voicelines: None,
+        comic_dubs: None,
         extraction: None,
     })
 }
@@ -1075,6 +1230,12 @@ fn load_bundle(
             .validate()
             .map_err(ProjectArchiveError::InvalidFormat)?;
     }
+    if let Some(comic_dubs) = &mut manifest.comic_dubs {
+        comic_dubs
+            .project
+            .validate()
+            .map_err(ProjectArchiveError::InvalidFormat)?;
+    }
 
     report(ProjectLoadProgress {
         stage: ProjectLoadStage::ReadingManifest,
@@ -1086,6 +1247,7 @@ fn load_bundle(
         &manifest.assets,
         manifest.recording.as_ref(),
         manifest.voicelines.as_ref(),
+        manifest.comic_dubs.as_ref(),
     )?;
     let mut remaining = expected_names;
     let mut extracted_paths = HashMap::new();
@@ -1166,10 +1328,17 @@ fn load_bundle(
         ));
     }
 
-    let source_video_path = extracted_paths
-        .get(&manifest.assets.source_video)
-        .cloned()
-        .ok_or_else(|| ProjectArchiveError::MissingEntry(manifest.assets.source_video.clone()))?;
+    let source_video_path = manifest
+        .assets
+        .source_video
+        .as_ref()
+        .map(|entry| {
+            extracted_paths
+                .get(entry)
+                .cloned()
+                .ok_or_else(|| ProjectArchiveError::MissingEntry(entry.clone()))
+        })
+        .transpose()?;
     let proxy_video_path = manifest
         .assets
         .proxy_video
@@ -1247,19 +1416,47 @@ fn load_bundle(
             })
         })
         .transpose()?;
+    let comic_dubs = manifest
+        .comic_dubs
+        .take()
+        .map(|comic_dubs| {
+            let mut image_paths = BTreeMap::new();
+            let mut audio_paths = BTreeMap::new();
+            for page in &comic_dubs.pages {
+                let path = extracted_paths
+                    .get(&page.entry)
+                    .cloned()
+                    .ok_or_else(|| ProjectArchiveError::MissingEntry(page.entry.clone()))?;
+                image_paths.insert(page.page_id, path);
+            }
+            for audio in &comic_dubs.audios {
+                let path = extracted_paths
+                    .get(&audio.entry)
+                    .cloned()
+                    .ok_or_else(|| ProjectArchiveError::MissingEntry(audio.entry.clone()))?;
+                audio_paths.insert(audio.audio_id, path);
+            }
+            Ok::<_, ProjectArchiveError>(LoadedBundledComicDubs {
+                project: comic_dubs.project,
+                image_paths,
+                audio_paths,
+            })
+        })
+        .transpose()?;
 
     Ok(LoadedProject {
         kind: ProjectFileKind::Bundle,
         project_data: manifest.project,
         huuid: manifest.huuid,
         transaction_journal: manifest.transactions,
-        source_video_path: Some(source_video_path),
+        source_video_path,
         proxy_video_path,
         default_uses_proxy,
         font_asset_path,
         instrumental_audio_paths,
         recording,
         voicelines,
+        comic_dubs,
         extraction: Some(extraction),
     })
 }
@@ -1333,6 +1530,7 @@ fn validate_manifest(
         &manifest.assets,
         manifest.recording.as_ref(),
         manifest.voicelines.as_ref(),
+        manifest.comic_dubs.as_ref(),
     )?;
     let expected_count = u32::try_from(names.len() + 1)
         .map_err(|_| ProjectArchiveError::TooManyEntries(u32::MAX))?;
@@ -1348,9 +1546,12 @@ fn manifest_asset_names(
     assets: &BundleAssets,
     recording: Option<&BundleRecordingManifest>,
     voicelines: Option<&BundleVoicelinesManifest>,
+    comic_dubs: Option<&BundleComicDubsManifest>,
 ) -> Result<HashSet<String>, ProjectArchiveError> {
     let mut names = HashSet::new();
-    insert_manifest_name(&mut names, &assets.source_video)?;
+    if let Some(name) = &assets.source_video {
+        insert_manifest_name(&mut names, name)?;
+    }
     if let Some(name) = &assets.proxy_video {
         insert_manifest_name(&mut names, name)?;
     }
@@ -1404,6 +1605,34 @@ fn manifest_asset_names(
             {
                 return Err(ProjectArchiveError::InvalidFormat(format!(
                     "invalid voicelines audio {}",
+                    audio.audio_id
+                )));
+            }
+            insert_manifest_name(&mut names, &audio.entry)?;
+        }
+    }
+    if let Some(comic_dubs) = comic_dubs {
+        if comic_dubs.pages.len() != comic_dubs.project.pages().len()
+            || comic_dubs.audios.len() != comic_dubs.project.audios().len()
+        {
+            return Err(ProjectArchiveError::InvalidFormat(
+                "Comic Dubs media manifest does not match the project".into(),
+            ));
+        }
+        let mut ids = HashSet::new();
+        for page in &comic_dubs.pages {
+            if !ids.insert(page.page_id) || comic_dubs.project.page(page.page_id).is_none() {
+                return Err(ProjectArchiveError::InvalidFormat(format!(
+                    "invalid Comic Dubs page {}",
+                    page.page_id
+                )));
+            }
+            insert_manifest_name(&mut names, &page.entry)?;
+        }
+        for audio in &comic_dubs.audios {
+            if !ids.insert(audio.audio_id) || comic_dubs.project.audio(audio.audio_id).is_none() {
+                return Err(ProjectArchiveError::InvalidFormat(format!(
+                    "invalid Comic Dubs audio {}",
                     audio.audio_id
                 )));
             }
@@ -2227,14 +2456,21 @@ mod tests {
     }
 
     #[test]
-    fn project_bundle_round_trip_preserves_voicelines() {
+    fn project_bundle_round_trip_preserves_every_workspace() {
         let dir = TestDir::new();
         let source = dir.path("source.mp4");
         let voice = dir.path("voice.flac");
         let bundle = dir.path("voicelines.coquerythmo");
         let voice_bytes = b"fLaC\0voiceline";
+        let comic_image = dir.path("page.png");
+        let comic_audio = dir.path("bubble.flac");
+        let comic_audio_bytes = b"fLaC\0comic-dub";
         fs::write(&source, b"video").unwrap();
         fs::write(&voice, voice_bytes).unwrap();
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255]))
+            .save(&comic_image)
+            .unwrap();
+        fs::write(&comic_audio, comic_audio_bytes).unwrap();
         let mut voicelines = VoicelinesProject::default();
         let audio_id = voicelines.add_audio(
             PathBuf::from("dialogue.wav"),
@@ -2251,12 +2487,37 @@ mod tests {
         voicelines.add_region(100, 500).unwrap();
         let recording = RecordingProject::new(24.0).unwrap();
         let recording_log = TransactionLog::default();
+        let mut comic_dubs = ComicDubsProject::default();
+        let page_id = comic_dubs.add_page("page.jpg".into(), comic_image, 2, 2);
+        let bubble_id = comic_dubs
+            .add_bubble(
+                page_id,
+                vec![
+                    crate::comic_dubs::Point { x: 0.1, y: 0.1 },
+                    crate::comic_dubs::Point { x: 0.9, y: 0.1 },
+                    crate::comic_dubs::Point { x: 0.5, y: 0.9 },
+                ],
+            )
+            .unwrap();
+        let comic_audio_id = comic_dubs.add_audio(
+            "bubble.wav".into(),
+            comic_audio,
+            RecordedAudio {
+                file_name: "bubble.flac".into(),
+                sample_rate: 48_000,
+                channels: 1,
+                sample_count: 48_000,
+                checksum: "b".repeat(40),
+                waveform: WaveformData::default(),
+            },
+        );
+        comic_dubs.assign_audio(bubble_id, Some(comic_audio_id));
 
-        save_bundle_with_recording_and_voicelines_data(
+        save_bundle_with_recording_voicelines_and_comic_dubs_data(
             &sample_project(None),
             24.0,
             &bundle,
-            &source,
+            Some(&source),
             None,
             false,
             None,
@@ -2267,6 +2528,7 @@ mod tests {
                 assets: &[],
             }),
             Some(&voicelines),
+            Some(&comic_dubs),
         )
         .unwrap();
 
@@ -2287,6 +2549,72 @@ mod tests {
             fs::read(loaded_voicelines.audio_paths.get(&audio_id).unwrap()).unwrap(),
             voice_bytes
         );
+        let loaded_comic = loaded.comic_dubs.as_ref().unwrap();
+        assert_eq!(
+            loaded_comic.project.bubble(bubble_id).unwrap().audio_id,
+            Some(comic_audio_id)
+        );
+        assert!(loaded_comic.image_paths[&page_id].ends_with("page-0000.png"));
+        assert_eq!(
+            fs::read(&loaded_comic.audio_paths[&comic_audio_id]).unwrap(),
+            comic_audio_bytes
+        );
+    }
+
+    #[test]
+    fn comic_dubs_and_voicelines_save_without_source_video() {
+        let dir = TestDir::new();
+        let bundle = dir.path("standalone.coquerythmo");
+        let voice = dir.path("voice.flac");
+        let page = dir.path("page.png");
+        fs::write(&voice, b"fLaC\0voice").unwrap();
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255]))
+            .save(&page)
+            .unwrap();
+
+        let mut voicelines = VoicelinesProject::default();
+        let audio_id = voicelines.add_audio(
+            "voice.wav".into(),
+            voice,
+            RecordedAudio {
+                file_name: "voice.flac".into(),
+                sample_rate: 1_000,
+                channels: 1,
+                sample_count: 1_000,
+                checksum: "a".repeat(40),
+                waveform: WaveformData::default(),
+            },
+        );
+        voicelines.add_region(100, 500).unwrap();
+        let mut comic_dubs = ComicDubsProject::default();
+        let page_id = comic_dubs.add_page("page.png".into(), page, 2, 2);
+        save_bundle_with_recording_voicelines_and_comic_dubs_data(
+            &sample_project(None),
+            25.0,
+            &bundle,
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            Some(&voicelines),
+            Some(&comic_dubs),
+        )
+        .unwrap();
+
+        let loaded = load_project_file(&bundle).unwrap();
+        assert!(loaded.source_video_path.is_none());
+        assert!(loaded
+            .voicelines
+            .unwrap()
+            .audio_paths
+            .contains_key(&audio_id));
+        assert!(loaded
+            .comic_dubs
+            .unwrap()
+            .image_paths
+            .contains_key(&page_id));
     }
 
     #[test]
@@ -2527,7 +2855,7 @@ mod tests {
             transactions: None,
             project: ProjectData::from_project(&sample_project(None), 24.0),
             assets: BundleAssets {
-                source_video: source_entry.into(),
+                source_video: Some(source_entry.into()),
                 proxy_video: None,
                 default_uses_proxy: None,
                 font: None,
@@ -2542,6 +2870,7 @@ mod tests {
                 }],
             }),
             voicelines: None,
+            comic_dubs: None,
         };
         let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
         let mut writer = BufWriter::new(File::create(&bundle).unwrap());
@@ -2749,7 +3078,7 @@ mod tests {
             transactions: None,
             project: ProjectData::from_project(&sample_project(None), 24.0),
             assets: BundleAssets {
-                source_video: "../escape.mp4".into(),
+                source_video: Some("../escape.mp4".into()),
                 proxy_video: None,
                 default_uses_proxy: None,
                 font: None,
@@ -2757,6 +3086,7 @@ mod tests {
             },
             recording: None,
             voicelines: None,
+            comic_dubs: None,
         };
         let bytes = serde_json::to_vec(&manifest).unwrap();
         let mut writer = BufWriter::new(File::create(&bundle).unwrap());

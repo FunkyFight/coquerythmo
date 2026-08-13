@@ -5,6 +5,7 @@
 //! modal captures input; migration of individual event/render branches can
 //! therefore happen without changing modal state ownership again.
 
+use super::comic_dubs_settings_modal::ComicDubsSettingsModal;
 use super::connect_modal::ConnectModal;
 use super::export_modal::ExportModal;
 use super::invitation_modal::InvitationModal;
@@ -85,6 +86,7 @@ pub struct ModalHost {
     pub connect: Option<ConnectModal>,
     pub settings: Option<SettingsModal>,
     pub project_settings: Option<ProjectSettingsModal>,
+    pub comic_dubs_settings: Option<ComicDubsSettingsModal>,
     pub export: Option<ExportModal>,
     pub invitation: Option<InvitationModal>,
     pub languages: Option<LanguageModal>,
@@ -109,6 +111,7 @@ impl ModalHost {
             connect: None,
             settings: None,
             project_settings: None,
+            comic_dubs_settings: None,
             export: None,
             invitation: None,
             languages: None,
@@ -132,6 +135,7 @@ impl ModalHost {
         self.connect.is_some()
             || self.settings.is_some()
             || self.project_settings.is_some()
+            || self.comic_dubs_settings.is_some()
             || self.export.is_some()
             || self.invitation.is_some()
             || self.languages.is_some()
@@ -153,6 +157,7 @@ impl ModalHost {
     pub fn is_editing_text(&self) -> bool {
         self.settings.is_some()
             || self.project_settings.is_some()
+            || self.comic_dubs_settings.is_some()
             || self.connect.is_some()
             || self.export.is_some()
             || self.languages.is_some()
@@ -236,6 +241,9 @@ impl ModalHost {
         }
         if self.project_settings.is_some() {
             return Some(self.handle_project_settings_event(event, screen_w, screen_h));
+        }
+        if self.comic_dubs_settings.is_some() {
+            return Some(self.handle_comic_dubs_settings_event(event, screen_w, screen_h));
         }
         if self.save_prompt.is_some() {
             return Some(self.handle_save_prompt_event(event, screen_w, screen_h));
@@ -516,17 +524,11 @@ impl ModalHost {
             }
             super::settings_modal::SettingsModalResult::Save {
                 lang,
-                rythmo_font,
-                scroll_speed,
-                reading_bar_offset_percent,
                 temporary_directory,
             } => {
                 self.settings = None;
                 ModalOutcome::Action(UiAction::SaveSettings {
                     lang,
-                    rythmo_font,
-                    scroll_speed,
-                    reading_bar_offset_percent,
                     temporary_directory,
                 })
             }
@@ -593,6 +595,9 @@ impl ModalHost {
                 ModalOutcome::Action(UiAction::PickProjectInstrumentalAudio)
             }
             super::project_settings_modal::ProjectSettingsModalResult::Save {
+                rythmo_font,
+                scroll_speed,
+                reading_bar_offset_percent,
                 instrumental_audio_path,
                 highlight_read_word,
                 scrolling_text_uses_character_color,
@@ -601,12 +606,70 @@ impl ModalHost {
                 self.project_settings = None;
                 action_closed_modal(
                     UiAction::SaveProjectSettings {
+                        rythmo_font,
+                        scroll_speed,
+                        reading_bar_offset_percent,
                         instrumental_audio_path,
                         highlight_read_word,
                         scrolling_text_uses_character_color,
                         show_text_emotion_lanes,
                     },
                     crate::i18n::t("project_settings.title"),
+                )
+            }
+        }
+    }
+
+    fn handle_comic_dubs_settings_event(
+        &mut self,
+        event: &UiEvent,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> ModalOutcome {
+        use super::comic_dubs_settings_modal::ComicDubsSettingsModalResult;
+
+        let focus_navigation = matches!(
+            event,
+            UiEvent::CursorUp | UiEvent::CursorDown | UiEvent::CursorLeft | UiEvent::CursorRight
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let result = self
+            .comic_dubs_settings
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h);
+        if focus_navigation {
+            return ModalOutcome::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Focus {
+                    label: self
+                        .comic_dubs_settings
+                        .as_ref()
+                        .unwrap()
+                        .keyboard_focus_label(),
+                    role: "control".to_string(),
+                },
+            ));
+        }
+        match result {
+            ComicDubsSettingsModalResult::Consumed => ModalOutcome::Consumed,
+            ComicDubsSettingsModalResult::Close => {
+                self.comic_dubs_settings = None;
+                closed_modal(crate::i18n::t("comic_dubs_settings.title"))
+            }
+            ComicDubsSettingsModalResult::Save {
+                font_family,
+                bubble_duration_ms,
+                page_duration_ms,
+                default_font_size,
+            } => {
+                self.comic_dubs_settings = None;
+                action_closed_modal(
+                    UiAction::SaveComicDubsSettings {
+                        font_family,
+                        bubble_duration_ms,
+                        page_duration_ms,
+                        default_font_size,
+                    },
+                    crate::i18n::t("comic_dubs_settings.title"),
                 )
             }
         }
@@ -635,6 +698,10 @@ impl ModalHost {
             .as_mut()
             .unwrap()
             .handle_event(event, screen_w, screen_h);
+        let video_only = self
+            .export
+            .as_ref()
+            .is_some_and(super::export_modal::ExportModal::video_only);
         if focus_navigation {
             if let Some(modal) = self.export.as_ref() {
                 let event = modal
@@ -663,10 +730,14 @@ impl ModalHost {
             super::export_modal::ExportModalResult::Consumed => ModalOutcome::Consumed,
             super::export_modal::ExportModalResult::Close { configuration } => {
                 self.export = None;
-                action_closed_modal(
-                    UiAction::SaveExportConfiguration { configuration },
-                    crate::i18n::t("export_modal.title"),
-                )
+                if video_only {
+                    closed_modal(crate::i18n::t("export_modal.title"))
+                } else {
+                    action_closed_modal(
+                        UiAction::SaveExportConfiguration { configuration },
+                        crate::i18n::t("export_modal.title"),
+                    )
+                }
             }
             super::export_modal::ExportModalResult::Export { configuration } => {
                 self.export = None;
@@ -1396,6 +1467,19 @@ impl ModalHost {
         ));
     }
 
+    pub fn open_video_only_export(
+        &mut self,
+        video_width: u32,
+        video_height: u32,
+        configuration: crate::project::ExportConfiguration,
+    ) {
+        self.export = Some(super::export_modal::ExportModal::new_video_only(
+            video_width,
+            video_height,
+            configuration,
+        ));
+    }
+
     pub fn open_media_explorer(
         &mut self,
         languages: Vec<LanguageListItem>,
@@ -1519,17 +1603,9 @@ impl ModalHost {
 
     pub fn open_settings(
         &mut self,
-        fonts: Vec<String>,
-        scroll_speed: f32,
-        reading_bar_offset_percent: f32,
         temporary_directory: std::path::PathBuf,
     ) {
-        self.settings = Some(super::settings_modal::SettingsModal::new(
-            fonts,
-            scroll_speed,
-            reading_bar_offset_percent,
-            temporary_directory,
-        ));
+        self.settings = Some(super::settings_modal::SettingsModal::new(temporary_directory));
     }
 
     pub fn set_settings_temporary_directory(&mut self, path: std::path::PathBuf) {
@@ -1540,16 +1616,41 @@ impl ModalHost {
 
     pub fn open_project_settings(
         &mut self,
+        fonts: Vec<String>,
+        rythmo_font: Option<String>,
+        scroll_speed: f32,
+        reading_bar_offset_percent: f32,
         instrumental_audio_path: Option<String>,
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
         show_text_emotion_lanes: bool,
     ) {
         self.project_settings = Some(super::project_settings_modal::ProjectSettingsModal::new(
+            fonts,
+            rythmo_font,
+            scroll_speed,
+            reading_bar_offset_percent,
             instrumental_audio_path,
             highlight_read_word,
             scrolling_text_uses_character_color,
             show_text_emotion_lanes,
+        ));
+    }
+
+    pub fn open_comic_dubs_settings(
+        &mut self,
+        fonts: Vec<String>,
+        font_family: Option<String>,
+        bubble_duration_ms: u64,
+        page_duration_ms: u64,
+        default_font_size: f32,
+    ) {
+        self.comic_dubs_settings = Some(ComicDubsSettingsModal::new(
+            fonts,
+            font_family,
+            bubble_duration_ms,
+            page_duration_ms,
+            default_font_size,
         ));
     }
 
@@ -1602,6 +1703,9 @@ impl ModalHost {
         if let Some(modal) = &self.project_settings {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
+        if let Some(modal) = &self.comic_dubs_settings {
+            modal.render(modal_quads, modal_labels, screen_w, screen_h);
+        }
         if let Some(modal) = &self.connect {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
@@ -1635,26 +1739,41 @@ impl ModalHost {
         if let Some(modal) = &self.proxy {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
-        if let Some(modal) = &self.save_prompt {
-            modal.render(modal_quads, modal_labels, screen_w, screen_h);
-        }
     }
 
     /// Render the modal layers that must remain above transient overlays.
     pub fn render_top<'a>(
         &'a self,
-        modal_quads: &mut Vec<QuadInstance>,
-        modal_labels: &mut Vec<LabelInfo<'a>>,
-        _modal_overlay_quads: &mut Vec<QuadInstance>,
-        _modal_overlay_labels: &mut Vec<LabelInfo<'a>>,
+        _modal_quads: &mut Vec<QuadInstance>,
+        _modal_labels: &mut Vec<LabelInfo<'a>>,
+        modal_overlay_quads: &mut Vec<QuadInstance>,
+        modal_overlay_labels: &mut Vec<LabelInfo<'a>>,
         screen_w: f32,
         screen_h: f32,
     ) {
+        if let Some(modal) = &self.save_prompt {
+            modal.render(
+                modal_overlay_quads,
+                modal_overlay_labels,
+                screen_w,
+                screen_h,
+            );
+        }
         if let Some(modal) = &self.whats_new {
-            modal.render(modal_quads, modal_labels, screen_w, screen_h);
+            modal.render(
+                modal_overlay_quads,
+                modal_overlay_labels,
+                screen_w,
+                screen_h,
+            );
         }
         if let Some(modal) = &self.proxy_error {
-            modal.render(modal_quads, modal_labels, screen_w, screen_h);
+            modal.render(
+                modal_overlay_quads,
+                modal_overlay_labels,
+                screen_w,
+                screen_h,
+            );
         }
     }
 }
@@ -1782,5 +1901,27 @@ mod tests {
                 crate::accessibility::AccessibilityEvent::Focus { label, role }
             )) if label.contains(crate::i18n::t("accessibility.selected")) && role == "tab"
         ));
+    }
+
+    #[test]
+    fn save_prompt_renders_above_the_dialog_that_opened_it() {
+        let mut host = ModalHost::new();
+        host.open_save_prompt(super::super::save_prompt_modal::SavePromptKind::CloseProject);
+        let (mut modal_quads, mut modal_labels) = (Vec::new(), Vec::new());
+        host.render_base(&mut modal_quads, &mut modal_labels, 1280.0, 720.0);
+        let (mut overlay_quads, mut overlay_labels) = (Vec::new(), Vec::new());
+        host.render_top(
+            &mut modal_quads,
+            &mut modal_labels,
+            &mut overlay_quads,
+            &mut overlay_labels,
+            1280.0,
+            720.0,
+        );
+
+        assert!(modal_quads.is_empty());
+        assert!(modal_labels.is_empty());
+        assert!(!overlay_quads.is_empty());
+        assert!(!overlay_labels.is_empty());
     }
 }

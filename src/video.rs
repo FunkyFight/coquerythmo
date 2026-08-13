@@ -17,6 +17,10 @@ const VIDEO_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unor
 const AUDIO_DECODE_CHANNELS: usize = 2;
 const AUDIO_CHUNK_FRAMES: usize = 1024;
 
+fn playback_end_frame(target_frame: f64, total_frames: i64) -> Option<i64> {
+    (total_frames > 0 && target_frame >= total_frames as f64).then_some(total_frames - 1)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioTrack {
     Source,
@@ -509,9 +513,8 @@ impl VideoPlayer {
         self.playback_start_time = None;
     }
 
-    /// Start a seek decoder without blocking the UI on a one-shot FFmpeg
-    /// process. The first decoded frame becomes the paused preview and the
-    /// following buffered frames stay warm for an immediate Play.
+    /// Warm both decoders after a seek. The first video frame becomes the
+    /// paused preview and buffered video/audio make the next Play immediate.
     pub fn prepare_current_frame(&mut self) {
         if self.path.is_none() {
             return;
@@ -519,7 +522,7 @@ impl VideoPlayer {
         self.stop_decoders();
         self.finished = false;
         let timestamp = self.current_frame as f64 / self.fps.max(1.0);
-        self.start_decoders_at(timestamp, false);
+        self.start_decoders_at(timestamp, true);
     }
 
     pub fn is_preparing_frame(&self) -> bool {
@@ -637,14 +640,8 @@ impl VideoPlayer {
         let target_render_frame = self.clamp_render_frame(target_playback_frame);
         let target_frame = target_render_frame.floor() as i64;
 
-        let wall_clock_frame = self.playback_start_time.map(|start| {
-            self.playback_start_frame as f64
-                + now.saturating_duration_since(start).as_secs_f64() * self.fps
-        });
-        if self.total_frames > 0
-            && (target_playback_frame >= self.total_frames as f64
-                || wall_clock_frame.is_some_and(|frame| frame >= self.total_frames as f64))
-        {
+        if let Some(last_frame) = playback_end_frame(target_playback_frame, self.total_frames) {
+            self.current_frame = last_frame;
             self.playing = false;
             self.finished = true;
             self.stop_decoders();
@@ -1655,8 +1652,11 @@ fn decode_audio_stream_from(
     let chunk_bytes = chunk_samples * 4;
     let mut buf = vec![0u8; chunk_bytes];
 
-    while let Ok(()) = reader.read_exact(&mut buf) {
-        let samples: Vec<f32> = buf
+    while let Ok(len) = read_pcm_chunk(&mut reader, &mut buf) {
+        if len == 0 {
+            break;
+        }
+        let samples: Vec<f32> = buf[..len]
             .chunks_exact(4)
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
@@ -1664,11 +1664,27 @@ fn decode_audio_stream_from(
             break;
         }
         ready.store(true, Ordering::Release);
+        if len < buf.len() {
+            break;
+        }
     }
 
     ready.store(true, Ordering::Release);
     let _ = child.kill();
     let _ = child.wait();
+}
+
+fn read_pcm_chunk(reader: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
+    let mut len = 0;
+    while len < buffer.len() {
+        match reader.read(&mut buffer[len..]) {
+            Ok(0) => break,
+            Ok(read) => len += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(len - len % (AUDIO_CHANNELS as usize * std::mem::size_of::<f32>()))
 }
 
 /// Decode entire audio track and compute peak amplitude.
@@ -1742,10 +1758,29 @@ fn decode_waveform_peaks(path: &Path, fps: f64, total_frames: usize) -> Result<V
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
     use std::sync::{mpsc, Arc};
     use std::time::{Duration, Instant};
 
-    use super::{AudioOutputState, AudioSampleReader, AudioTrack, VideoPlayer};
+    use super::{
+        playback_end_frame, read_pcm_chunk, AudioOutputState, AudioSampleReader, AudioTrack,
+        VideoPlayer,
+    };
+
+    #[test]
+    fn hardware_latency_cannot_end_playback_before_the_last_audio_frame() {
+        assert_eq!(playback_end_frame(95.0, 100), None);
+        assert_eq!(playback_end_frame(100.0, 100), Some(99));
+    }
+
+    #[test]
+    fn audio_decoder_keeps_the_final_partial_chunk() {
+        let bytes = vec![1_u8; 3 * 2 * std::mem::size_of::<f32>()];
+        let mut reader = Cursor::new(bytes);
+        let mut buffer = vec![0_u8; 4 * 2 * std::mem::size_of::<f32>()];
+        assert_eq!(read_pcm_chunk(&mut reader, &mut buffer).unwrap(), 24);
+        assert_eq!(read_pcm_chunk(&mut reader, &mut buffer).unwrap(), 0);
+    }
 
     #[test]
     fn interactive_seek_pauses_active_playback() {

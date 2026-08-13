@@ -424,12 +424,21 @@ pub fn measure_rythmo_text_char_ratios_standalone(text: &str, font_size: f32) ->
 /// A font embedded with the active project is preferred; otherwise the system
 /// sans-serif fallback chain is used.
 pub fn measure_project_text_width_standalone(text: &str, font_size: f32) -> Option<f32> {
-    if text.is_empty() {
-        return None;
-    }
     let font_family = project_font()
         .map(|font| font.family)
         .unwrap_or_else(|| "sans-serif".to_string());
+    measure_text_width_with_family_standalone(text, font_size, Some(&font_family))
+}
+
+pub fn measure_text_width_with_family_standalone(
+    text: &str,
+    font_size: f32,
+    font_family: Option<&str>,
+) -> Option<f32> {
+    if text.is_empty() {
+        return None;
+    }
+    let font_family = font_family.unwrap_or("sans-serif");
     let line_height = (font_size * 1.4).ceil().max(1.0);
     MEASURE_FONT_SYSTEM.with(|font_system| {
         Some(measure_text_visual_bounds(
@@ -437,7 +446,7 @@ pub fn measure_project_text_width_standalone(text: &str, font_size: f32) -> Opti
             text,
             font_size,
             line_height,
-            &font_family,
+            font_family,
         ))
     })
 }
@@ -451,16 +460,27 @@ pub fn render_project_text_natural_standalone(
     dest_w: u32,
     dest_h: u32,
 ) -> Option<VectorTextPixmap> {
-    if text.is_empty() || dest_w == 0 || dest_h == 0 {
-        return None;
-    }
     let font_family = project_font()
         .map(|font| font.family)
         .unwrap_or_else(|| "sans-serif".to_string());
+    render_text_natural_with_family_standalone(text, font_size, dest_w, dest_h, Some(&font_family))
+}
+
+pub fn render_text_natural_with_family_standalone(
+    text: &str,
+    font_size: f32,
+    dest_w: u32,
+    dest_h: u32,
+    font_family: Option<&str>,
+) -> Option<VectorTextPixmap> {
+    if text.is_empty() || dest_w == 0 || dest_h == 0 {
+        return None;
+    }
+    let font_family = font_family.unwrap_or("sans-serif");
     let line_height = (font_size * 1.4).ceil().max(1.0);
     let svg = build_svg(
         text,
-        &font_family,
+        font_family,
         font_size,
         line_height,
         dest_w,
@@ -468,7 +488,7 @@ pub fn render_project_text_natural_standalone(
         false,
     );
     let mut options = resvg::usvg::Options::default();
-    options.font_family = font_family;
+    options.font_family = font_family.to_string();
     options.font_size = font_size;
     options.fontdb = system_fontdb();
 

@@ -101,6 +101,7 @@ pub(crate) fn new_project_reset_and_pick_video(
     EditExecutor::reset(&mut state.project_session);
     state.recording_runtime = crate::recording_runtime::RecordingRuntime::new();
     state.reset_voicelines_document();
+    state.reset_comic_dubs_document();
     state.ui_shell.ui.reset_recording_workspace();
     crate::vector_text::clear_project_font();
     state.render.ui_renderer.clear_text_cache();
@@ -112,6 +113,7 @@ pub(crate) fn close_project_reset(state: &mut State) {
     EditExecutor::reset(&mut state.project_session);
     state.recording_runtime = crate::recording_runtime::RecordingRuntime::new();
     state.reset_voicelines_document();
+    state.reset_comic_dubs_document();
     state.ui_shell.ui.reset_recording_workspace();
     crate::vector_text::clear_project_font();
     state.render.ui_renderer.clear_text_cache();
@@ -1040,6 +1042,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                                 WorkspaceId::Rythmo => contexts.push(InputContext::Workspace),
                                 WorkspaceId::Recording => contexts.push(InputContext::Recording),
                                 WorkspaceId::Voicelines => contexts.push(InputContext::Workspace),
+                                WorkspaceId::ComicDubs => contexts.push(InputContext::Workspace),
                             }
                             contexts.push(InputContext::Global);
                         }
@@ -1597,7 +1600,36 @@ pub fn run(startup: Option<super::StartupInput>) {
                         .unwrap_or_default();
                     let is_audio = ["flac", "wav", "mp3", "ogg", "m4a", "aac", "opus"]
                         .contains(&ext.as_str());
+                    let is_image = ["png", "jpg", "jpeg", "webp", "bmp", "gif", "ico"]
+                        .contains(&ext.as_str());
                     if state.active_workspace()
+                        == crate::application::workspace_service::WorkspaceId::ComicDubs
+                    {
+                        if ext == crate::project_archive::PROJECT_EXTENSION {
+                            state.start_br_import(path);
+                        } else {
+                            let position = crate::platform::cursor_position(&window)
+                                .map(|(x, y)| state.window_to_ui_position(x, y))
+                                .unwrap_or(cursor_pos);
+                            if !state
+                                .ui_shell
+                                .ui
+                                .comic_dubs_drop_accepts(position.0, position.1)
+                            {
+                                state.show_toast(
+                                    "Déposez les médias dans l’explorateur à gauche",
+                                    4.0,
+                                );
+                            } else if is_audio {
+                                state.comic_dubs_begin_audio_import(path);
+                            } else if is_image {
+                                state.comic_dubs_begin_image_import(path);
+                            } else {
+                                state.show_toast("Déposez une image ou un audio", 4.0);
+                            }
+                        }
+                        state.request_redraw();
+                    } else if state.active_workspace()
                         == crate::application::workspace_service::WorkspaceId::Voicelines
                     {
                         if is_audio {
