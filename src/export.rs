@@ -261,12 +261,11 @@ impl ProjectData {
             return;
         }
 
-        let mut snapshots = Vec::with_capacity(self.languages.len());
-        for serialized in &self.languages {
+        let build_snapshot = |serialized: &LanguageProjectData| {
             let name = serialized.name.trim();
             if name.is_empty() {
                 log::warn!("Skipping language {} with an empty name", serialized.id);
-                continue;
+                return None;
             }
             let code = if serialized.code.trim().is_empty() {
                 name
@@ -278,20 +277,52 @@ impl ProjectData {
                 .project
                 .apply_single_to_project(&mut language_project, target_fps)
             {
-                continue;
+                return None;
             }
             let mut settings = language_project.settings().clone();
             settings.export_configuration = self.settings.export_configuration.clone();
             language_project.set_settings(settings);
-            snapshots.push(LanguageSnapshot {
+            Some(LanguageSnapshot {
                 language: ProjectLanguage {
                     id: serialized.id,
                     name: name.to_string(),
                     code: code.to_string(),
                 },
                 project: language_project,
-            });
-        }
+            })
+        };
+        let line_count: usize = self
+            .languages
+            .iter()
+            .map(|language| language.project.lines.len())
+            .sum();
+        let parallel = self.languages.len() > 1
+            && line_count >= 2_000
+            && std::thread::available_parallelism().is_ok_and(|cores| cores.get() > 1);
+        let snapshots: Vec<_> = if parallel {
+            // ponytail: one scoped worker per language; use a pool if projects
+            // ever contain hundreds of languages.
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = self
+                    .languages
+                    .iter()
+                    .map(|serialized| {
+                        let build_snapshot = &build_snapshot;
+                        scope.spawn(move || build_snapshot(serialized))
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .filter_map(|handle| {
+                        handle
+                            .join()
+                            .expect("language project worker must not panic")
+                    })
+                    .collect()
+            })
+        } else {
+            self.languages.iter().filter_map(build_snapshot).collect()
+        };
 
         let requested_active = self
             .active_language_id
@@ -425,6 +456,9 @@ impl ProjectData {
             .collect();
         project.set_voice_actors(voice_actors);
 
+        let mut used_ids: std::collections::HashSet<u64> =
+            self.lines.iter().filter_map(|line| line.id).collect();
+        let mut lines = Vec::with_capacity(self.lines.len());
         for l in &self.lines {
             let adjusted_start = (l.start_frame as f64 * fps_ratio) as i64;
             let adjusted_duration = (l.duration_frames as f64 * fps_ratio) as i64;
@@ -446,12 +480,21 @@ impl ProjectData {
             }
             let (id, voice_actor_names) = match l.id {
                 Some(id) => (id, l.voice_actor_names.clone()),
-                None => (
-                    project.generate_line_id(),
-                    Project::normalized_voice_actor_names(l.voice_actor_names.clone()),
-                ),
+                None => {
+                    let id = loop {
+                        let candidate =
+                            rand::random::<u64>() % crate::constants::JS_MAX_SAFE_INTEGER;
+                        if used_ids.insert(candidate) {
+                            break candidate;
+                        }
+                    };
+                    (
+                        id,
+                        Project::normalized_voice_actor_names(l.voice_actor_names.clone()),
+                    )
+                }
             };
-            project.insert_line(crate::rythmo_line::RythmoLine {
+            lines.push(crate::rythmo_line::RythmoLine {
                 id,
                 start_frame: adjusted_start,
                 duration_frames: adjusted_duration,
@@ -468,6 +511,7 @@ impl ProjectData {
                 text_emotions: l.text_emotions.clone(),
             });
         }
+        project.replace_lines(lines);
 
         for m in &self.markers {
             let kind = match m.kind.as_str() {
@@ -498,7 +542,6 @@ impl ProjectData {
             });
         }
         project.set_drawing(drawing);
-        project.prune_unused_characters();
         true
     }
 }
@@ -1278,6 +1321,48 @@ mod tests {
         assert!(ids
             .iter()
             .all(|id| *id <= crate::constants::JS_MAX_SAFE_INTEGER));
+    }
+
+    #[test]
+    fn large_multilingual_import_preserves_every_line() {
+        let mut source = Project::new();
+        source.add_line_full(0, 24, 0.5, "Line".into(), "Alice".into(), [1.0; 4]);
+        let mut band = ProjectData::from_project(&source, 24.0);
+        band.languages.clear();
+        band.active_language_id = None;
+        let template = band.lines[0].clone();
+        band.lines = (1..=10_000)
+            .map(|id| LineData {
+                id: Some(id),
+                start_frame: id as i64 * 24,
+                ..template.clone()
+            })
+            .collect();
+        let mut data = band.clone();
+        data.lines.clear();
+        data.languages = vec![
+            LanguageProjectData {
+                id: 1,
+                name: "French".into(),
+                code: "fr".into(),
+                project: Box::new(band.clone()),
+            },
+            LanguageProjectData {
+                id: 2,
+                name: "English".into(),
+                code: "en".into(),
+                project: Box::new(band),
+            },
+        ];
+        data.active_language_id = Some(1);
+
+        let mut restored = Project::new();
+        data.try_apply_to_project(&mut restored, 24.0).unwrap();
+
+        assert_eq!(restored.line_count(), 10_000);
+        assert_eq!(restored.languages().len(), 2);
+        assert!(restored.select_language(2));
+        assert_eq!(restored.line_count(), 10_000);
     }
 
     #[test]

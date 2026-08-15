@@ -1,6 +1,6 @@
 [package]
 name = "coquerythmo"
-version = "4.2.5"
+version = "5.0.1"
 edition = "2021"
 license = "GPL-3.0-only"
 
@@ -28,11 +28,12 @@ open = "5"
 quick-xml = "0.37"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "ico", "gif"] }
 unicode-segmentation = "1"
+zip = { version = "2.4.2", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 accesskit = "0.12.3"
 accesskit_winit = { version = "0.18.7", default-features = false, features = ["rwh_06"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 winres = "0.1"

@@ -307,6 +307,8 @@ impl Ui {
                 WorkspaceId::Rythmo,
                 true,
                 false,
+                Vec::new(),
+                None,
             ),
             tab_widgets: vec![],
             toolbar_widgets: vec![],
@@ -605,6 +607,8 @@ impl Ui {
     pub fn rebuild_topbar(&mut self, in_room: bool) {
         self.network_in_room = in_room;
         self.voicelines_ui.set_recording_transfer_disabled(in_room);
+        let selected_regions = self.voicelines_ui.selected_regions().to_vec();
+        let selected_bubble = self.comic_dubs_ui.selected_bubble();
         self.topbar_widgets = shell::build_topbar(
             in_room,
             self.has_video,
@@ -614,6 +618,8 @@ impl Ui {
             self.active_workspace,
             self.recording_daw_enabled(),
             self.recording_actor_requests_enabled(),
+            selected_regions,
+            selected_bubble,
         );
         self.refresh_root_focus_nodes();
     }
@@ -665,6 +671,8 @@ impl Ui {
         self.props_visible = false;
         self.brush_picking = false;
         self.rythmo_state.cancel_active_interaction();
+        let selected_regions = self.voicelines_ui.selected_regions().to_vec();
+        let selected_bubble = self.comic_dubs_ui.selected_bubble();
         self.topbar_widgets = shell::build_topbar(
             self.network_in_room,
             self.has_video,
@@ -674,6 +682,8 @@ impl Ui {
             self.active_workspace,
             self.recording_daw_enabled(),
             self.recording_actor_requests_enabled(),
+            selected_regions,
+            selected_bubble,
         );
         self.rebuild_layout();
     }
@@ -1805,19 +1815,39 @@ impl Ui {
             }
         }
 
+        // Top-bar triggers sit above every workspace. Handle them before the
+        // Comic Dubs canvas can clear its selection on an unrelated click.
+        for widget in self.topbar_widgets.iter_mut() {
+            if !widget.captures_all() {
+                let response = widget.handle_event(event);
+                if response != EventResponse::Ignored {
+                    self.update_tooltip();
+                    return response;
+                }
+            }
+        }
+
         if self.active_workspace == WorkspaceId::Voicelines {
+            let selection_before = self.voicelines_ui.selected_regions().to_vec();
             let response =
                 self.voicelines_ui
                     .handle_event(event, voicelines_project, self.voicelines_layout);
+            if self.voicelines_ui.selected_regions() != selection_before {
+                self.rebuild_topbar(self.network_in_room);
+            }
             if response != EventResponse::Ignored {
                 return response;
             }
         }
 
         if self.active_workspace == WorkspaceId::ComicDubs {
+            let selection_before = self.comic_dubs_ui.selected_bubble();
             let response =
                 self.comic_dubs_ui
                     .handle_event(event, comic_dubs_project, self.comic_dubs_layout);
+            if self.comic_dubs_ui.selected_bubble() != selection_before {
+                self.rebuild_topbar(self.network_in_room);
+            }
             if response != EventResponse::Ignored {
                 return response;
             }
@@ -1880,9 +1910,8 @@ impl Ui {
             }
         }
         for widget in self
-            .topbar_widgets
+            .tab_widgets
             .iter_mut()
-            .chain(self.tab_widgets.iter_mut())
             .chain(self.toolbar_widgets.iter_mut())
         {
             if !widget.captures_all() {
@@ -2670,6 +2699,7 @@ impl Ui {
             || self.scrubbing
             || self.toasts.has_active()
             || self.project_transfer_modal.is_some()
+            || self.comic_dubs_ui.vertex_editor_playing()
             || self.rythmo_state.needs_animation_or_interaction()
     }
 
@@ -2890,6 +2920,7 @@ impl Ui {
 
     pub fn voicelines_audio_selected(&mut self, duration_ms: u64, audio_index: usize) {
         self.voicelines_ui.audio_selected(duration_ms, audio_index);
+        self.rebuild_topbar(self.network_in_room);
     }
 
     pub fn set_voicelines_selected_region(
@@ -2897,6 +2928,7 @@ impl Ui {
         selected: Option<crate::voicelines::RegionId>,
     ) {
         self.voicelines_ui.set_selected_region(selected);
+        self.rebuild_topbar(self.network_in_room);
     }
 
     pub fn begin_voicelines_region_rename(
@@ -2905,6 +2937,7 @@ impl Ui {
         name: String,
     ) {
         self.voicelines_ui.begin_rename(region_id, name);
+        self.rebuild_topbar(self.network_in_room);
     }
 
     pub fn begin_voicelines_naming_pattern(&mut self, pattern: String) {
@@ -2922,6 +2955,42 @@ impl Ui {
         text: String,
     ) {
         self.comic_dubs_ui.begin_text_edit(bubble_id, text);
+        self.rebuild_topbar(self.network_in_room);
+    }
+
+    pub fn open_comic_dubs_vertex_editor(
+        &mut self,
+        bubble_id: crate::comic_dubs::BubbleId,
+    ) {
+        self.comic_dubs_ui.open_vertex_editor(bubble_id);
+    }
+
+    pub fn close_comic_dubs_vertex_editor(&mut self) -> bool {
+        self.comic_dubs_ui.close_vertex_editor()
+    }
+
+    pub fn set_comic_dubs_vertex_editor_playhead(
+        &mut self,
+        at_ms: u64,
+        project: &crate::comic_dubs::ComicDubsProject,
+    ) {
+        self.comic_dubs_ui
+            .set_vertex_editor_playhead(at_ms, project);
+    }
+
+    pub fn toggle_comic_dubs_vertex_editor_preview(
+        &mut self,
+        project: &crate::comic_dubs::ComicDubsProject,
+    ) -> bool {
+        self.comic_dubs_ui.toggle_vertex_editor_preview(project)
+    }
+
+    pub fn nudge_comic_dubs_vertex_editor(
+        &mut self,
+        delta_ms: i64,
+        project: &crate::comic_dubs::ComicDubsProject,
+    ) -> bool {
+        self.comic_dubs_ui.nudge_vertex_editor(delta_ms, project)
     }
 
     pub fn cancel_comic_dubs_draft(&mut self) -> bool {
@@ -2932,8 +3001,14 @@ impl Ui {
         &mut self,
         page_id: Option<crate::comic_dubs::PageId>,
         visible_bubbles: usize,
+        bubble_elapsed_ms: u64,
     ) {
-        self.comic_dubs_ui.set_playback(page_id, visible_bubbles);
+        self.comic_dubs_ui
+            .set_playback(page_id, visible_bubbles, bubble_elapsed_ms);
+    }
+
+    pub fn set_comic_dubs_pending_audio_imports(&mut self, count: usize) {
+        self.comic_dubs_ui.set_pending_audio_imports(count);
     }
 
     pub fn reset_comic_dubs_workspace(&mut self) {
@@ -3168,6 +3243,8 @@ impl Ui {
     pub fn resize(&mut self, screen_width: u32, screen_height: u32) {
         self.screen_w = screen_width as f32;
         self.screen_h = screen_height as f32;
+        let selected_regions = self.voicelines_ui.selected_regions().to_vec();
+        let selected_bubble = self.comic_dubs_ui.selected_bubble();
         self.topbar_widgets = shell::build_topbar(
             self.network_in_room,
             self.has_video,
@@ -3177,6 +3254,8 @@ impl Ui {
             self.active_workspace,
             self.recording_daw_enabled(),
             self.recording_actor_requests_enabled(),
+            selected_regions,
+            selected_bubble,
         );
         self.rebuild_layout();
     }
@@ -3204,8 +3283,12 @@ impl Ui {
         waveform_is_instrumental: bool,
     ) {
         if self.active_workspace == WorkspaceId::Voicelines {
+            let selection_before = self.voicelines_ui.selected_regions().to_vec();
             self.voicelines_ui
                 .sync(voicelines_project, self.voicelines_layout);
+            if self.voicelines_ui.selected_regions() != selection_before {
+                self.rebuild_topbar(self.network_in_room);
+            }
             self.voicelines_scene = self.voicelines_ui.scene(
                 voicelines_project,
                 (render_frame.max(0.0) * 10.0).round() as u64,

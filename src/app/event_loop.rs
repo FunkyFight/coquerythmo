@@ -1654,11 +1654,9 @@ pub fn run(startup: Option<super::StartupInput>) {
                             state.project_session.dirty = true;
                             state.request_redraw();
                         }
-                    } else if [crate::project_archive::PROJECT_EXTENSION, "json"]
-                        .contains(&ext.as_str())
-                    {
+                    } else if ext == crate::project_archive::PROJECT_EXTENSION {
                         state.start_br_import(path);
-                    } else if ["srt", "ass", "detx"].contains(&ext.as_str()) {
+                    } else if ["json", "srt", "ass", "detx"].contains(&ext.as_str()) {
                         super::file_picker::import_subtitle_from_path(&mut state, path);
                         state.request_redraw();
                     }

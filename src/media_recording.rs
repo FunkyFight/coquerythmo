@@ -41,6 +41,10 @@ pub fn import_audio(source: &Path, output: &Path) -> Result<RecordedAudio, Recor
         return Err(recorder_error("FFmpeg could not import this audio file"));
     }
 
+    inspect_normalized_audio(output)
+}
+
+pub fn inspect_normalized_audio(output: &Path) -> Result<RecordedAudio, RecordingError> {
     let samples = crate::recording_mix::decode_realtime_asset(
         output,
         &std::sync::atomic::AtomicBool::new(false),
@@ -56,7 +60,7 @@ pub fn import_audio(source: &Path, output: &Path) -> Result<RecordedAudio, Recor
         file_name: output
             .file_name()
             .and_then(|name| name.to_str())
-            .unwrap_or("import.flac")
+            .unwrap_or("audio.flac")
             .to_owned(),
         sample_rate: 48_000,
         channels: 1,

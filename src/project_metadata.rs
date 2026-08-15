@@ -1607,4 +1607,19 @@ mod tests {
         assert_ne!(journal.entries()[0].hash(), old_entry_hash);
         journal.validate_integrity().unwrap();
     }
+
+    #[test]
+    fn disabled_comic_export_modes_preserve_legacy_checkpoint_hashes() {
+        let (project, _) = project_with_line();
+        let journal = TransactionJournal::from_project(&project, 24.0).unwrap();
+        let json = serde_json::to_value(&journal).unwrap();
+        let export = json
+            .pointer("/checkpoint/settings/export_configuration")
+            .unwrap();
+        assert!(export.get("comic_dubs_alpha").is_none());
+        assert!(export.get("comic_dubs_pages_zip").is_none());
+
+        let restored: TransactionJournal = serde_json::from_value(json).unwrap();
+        restored.validate_integrity().unwrap();
+    }
 }

@@ -203,7 +203,7 @@ pub fn handle_rythmo_event(
     if let UiEvent::MiddleRelease { .. } = event {
         if state.panning {
             state.panning = false;
-            return EventResponse::Consumed;
+            return EventResponse::Action(UiAction::FinishSeek);
         }
     }
     if let UiEvent::MouseMove { x, .. } = event {
@@ -349,7 +349,7 @@ fn handle_read_only_event(
         }
         UiEvent::MiddleRelease { .. } if state.panning => {
             state.panning = false;
-            EventResponse::Consumed
+            EventResponse::Action(UiAction::FinishSeek)
         }
         UiEvent::MouseMove { x, .. } if state.panning => {
             let dx = *x - state.pan_last_x;

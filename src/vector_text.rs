@@ -473,12 +473,54 @@ pub fn render_text_natural_with_family_standalone(
     dest_h: u32,
     font_family: Option<&str>,
 ) -> Option<VectorTextPixmap> {
+    render_text_natural_with_family_and_spacing_standalone(
+        text,
+        font_size,
+        dest_w,
+        dest_h,
+        font_family,
+        0.0,
+    )
+}
+
+pub fn render_text_natural_with_family_and_spacing_standalone(
+    text: &str,
+    font_size: f32,
+    dest_w: u32,
+    dest_h: u32,
+    font_family: Option<&str>,
+    letter_spacing: f32,
+) -> Option<VectorTextPixmap> {
+    render_text_natural_with_family_spacing_and_style_standalone(
+        text,
+        font_size,
+        dest_w,
+        dest_h,
+        font_family,
+        letter_spacing,
+        false,
+        false,
+        false,
+    )
+}
+
+pub fn render_text_natural_with_family_spacing_and_style_standalone(
+    text: &str,
+    font_size: f32,
+    dest_w: u32,
+    dest_h: u32,
+    font_family: Option<&str>,
+    letter_spacing: f32,
+    bold: bool,
+    strikethrough: bool,
+    underline: bool,
+) -> Option<VectorTextPixmap> {
     if text.is_empty() || dest_w == 0 || dest_h == 0 {
         return None;
     }
     let font_family = font_family.unwrap_or("sans-serif");
     let line_height = (font_size * 1.4).ceil().max(1.0);
-    let svg = build_svg(
+    let svg = build_svg_styled(
         text,
         font_family,
         font_size,
@@ -486,6 +528,11 @@ pub fn render_text_natural_with_family_standalone(
         dest_w,
         dest_h,
         false,
+        false,
+        letter_spacing,
+        bold,
+        strikethrough,
+        underline,
     );
     let mut options = resvg::usvg::Options::default();
     options.font_family = font_family.to_string();
@@ -535,6 +582,10 @@ fn render_rythmo_text_impl(
         dest_h,
         stretch,
         emphasized,
+        0.0,
+        false,
+        false,
+        false,
     );
     let mut options = resvg::usvg::Options::default();
     options.font_family = font_family;
@@ -715,27 +766,6 @@ fn measure_text_visual_bounds(
     widest.max(1.0)
 }
 
-fn build_svg(
-    text: &str,
-    font_family: &str,
-    font_size: f32,
-    line_height: f32,
-    dest_w: u32,
-    dest_h: u32,
-    stretch: bool,
-) -> String {
-    build_svg_styled(
-        text,
-        font_family,
-        font_size,
-        line_height,
-        dest_w,
-        dest_h,
-        stretch,
-        false,
-    )
-}
-
 fn build_svg_styled(
     text: &str,
     font_family: &str,
@@ -745,6 +775,10 @@ fn build_svg_styled(
     dest_h: u32,
     stretch: bool,
     emphasized: bool,
+    letter_spacing: f32,
+    bold: bool,
+    strikethrough: bool,
+    underline: bool,
 ) -> String {
     let escaped_text = escape_xml(text);
     let escaped_family = escape_xml(font_family);
@@ -754,11 +788,18 @@ fn build_svg_styled(
     } else {
         String::new()
     };
-    let emphasis = if emphasized {
-        r#" font-style="italic" font-weight="700""#
-    } else {
-        ""
+    let emphasis = format!(
+        "{}{}",
+        if emphasized { r#" font-style="italic""# } else { "" },
+        if emphasized || bold { r#" font-weight="700""# } else { "" },
+    );
+    let decoration = match (underline, strikethrough) {
+        (true, true) => r#" text-decoration="underline line-through""#,
+        (true, false) => r#" text-decoration="underline""#,
+        (false, true) => r#" text-decoration="line-through""#,
+        (false, false) => "",
     };
+    let spacing = format!(r#" letter-spacing="{letter_spacing:.3}""#);
     // Bold italic glyphs commonly overhang to the left of their advance.
     // Starting at x=0 clips the first grapheme regardless of destination
     // width, so reserve explicit ink space inside emphasized label textures.
@@ -766,7 +807,7 @@ fn build_svg_styled(
 
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{dest_w}" height="{dest_h}" viewBox="0 0 {dest_w} {line_height:.3}" preserveAspectRatio="none">
-<text x="{text_x:.3}" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white"{emphasis}{stretch_attrs} xml:space="preserve">{escaped_text}</text>
+<text x="{text_x:.3}" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white"{emphasis}{decoration}{spacing}{stretch_attrs} xml:space="preserve">{escaped_text}</text>
 </svg>"#
     )
 }
@@ -836,5 +877,26 @@ mod tests {
 
         let long = measure_rythmo_text_char_ratios_standalone(&"W".repeat(2_000), 16.0).unwrap();
         assert!(long.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+
+    #[test]
+    fn comic_text_style_is_encoded_in_svg() {
+        let svg = build_svg_styled(
+            "Texte",
+            "sans-serif",
+            24.0,
+            34.0,
+            200,
+            40,
+            false,
+            false,
+            1.5,
+            true,
+            true,
+            true,
+        );
+        assert!(svg.contains(r#"font-weight="700""#));
+        assert!(svg.contains(r#"text-decoration="underline line-through""#));
+        assert!(svg.contains(r#"letter-spacing="1.500""#));
     }
 }

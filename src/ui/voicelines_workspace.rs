@@ -169,14 +169,22 @@ enum Drag {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioMenuMode {
+    Send,
+    Update,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct AudioContextMenu {
     audio_id: u64,
     x: f32,
     y: f32,
-    submenu_open: bool,
-    hover_parent: bool,
+    open_mode: Option<AudioMenuMode>,
+    hover_parent: Option<AudioMenuMode>,
     hover_target: Option<crate::application::workspace_service::WorkspaceId>,
+    delivered_comic_dubs: bool,
+    delivered_recording: bool,
 }
 
 #[derive(Debug, Default)]
@@ -184,7 +192,7 @@ pub struct VoicelinesWorkspaceUi {
     view_start_ms: u64,
     view_duration_ms: u64,
     audio_scroll: usize,
-    selected_region: Option<RegionId>,
+    selected_regions: Vec<RegionId>,
     region_scroll: usize,
     dragging_region_scrollbar: bool,
     region_scrollbar_drag_offset: f32,
@@ -201,7 +209,11 @@ impl VoicelinesWorkspaceUi {
     }
 
     pub fn set_selected_region(&mut self, selected: Option<RegionId>) {
-        self.selected_region = selected;
+        self.selected_regions = selected.into_iter().collect();
+    }
+
+    pub fn selected_regions(&self) -> &[RegionId] {
+        &self.selected_regions
     }
 
     pub fn set_recording_transfer_disabled(&mut self, disabled: bool) {
@@ -220,7 +232,7 @@ impl VoicelinesWorkspaceUi {
 
     pub fn begin_rename(&mut self, region_id: RegionId, name: String) {
         self.naming_pattern = None;
-        self.selected_region = Some(region_id);
+        self.selected_regions = vec![region_id];
         self.rename = Some((region_id, name));
     }
 
@@ -233,7 +245,7 @@ impl VoicelinesWorkspaceUi {
         self.view_start_ms = 0;
         self.view_duration_ms = duration_ms.clamp(1, 10_000);
         self.audio_scroll = audio_index.saturating_sub(3);
-        self.selected_region = None;
+        self.selected_regions.clear();
         self.region_scroll = 0;
         self.drag = None;
         self.rename = None;
@@ -257,12 +269,8 @@ impl VoicelinesWorkspaceUi {
         self.view_start_ms = self
             .view_start_ms
             .min(duration.saturating_sub(self.view_duration_ms));
-        if self
-            .selected_region
-            .is_some_and(|id| !audio.regions.iter().any(|region| region.id == id))
-        {
-            self.selected_region = None;
-        }
+        self.selected_regions
+            .retain(|id| audio.regions.iter().any(|region| region.id == *id));
         let visible = visible_region_rows(layout);
         let max_scroll = audio.regions.len().saturating_sub(visible);
         self.region_scroll = self.region_scroll.min(max_scroll);
@@ -326,7 +334,7 @@ impl VoicelinesWorkspaceUi {
                     });
                 }
                 if let Some(region) = region_row_hit(audio, layout, self.region_scroll, *x, *y) {
-                    self.selected_region = Some(region.id);
+                    self.selected_regions = vec![region.id];
                     return EventResponse::Consumed;
                 }
                 if layout.waveform.contains(*x, *y) {
@@ -338,7 +346,7 @@ impl VoicelinesWorkspaceUi {
                         self.view_duration_ms,
                         *x,
                     ) {
-                        self.selected_region = Some(region.id);
+                        self.selected_regions = vec![region.id];
                         self.drag = Some(match part {
                             RegionPart::Start => Drag::Start {
                                 region_id: region.id,
@@ -359,7 +367,7 @@ impl VoicelinesWorkspaceUi {
                             },
                         });
                     } else {
-                        self.selected_region = None;
+                        self.selected_regions.clear();
                         self.drag = Some(Drag::Create {
                             anchor_ms: pointer_ms,
                             current_ms: pointer_ms,
@@ -404,7 +412,7 @@ impl VoicelinesWorkspaceUi {
                         .map(|(region, _)| region)
                     });
                 if let Some(region) = region {
-                    self.selected_region = Some(region.id);
+                    self.selected_regions = vec![region.id];
                     self.rename = Some((region.id, region.name.clone()));
                     return EventResponse::Consumed;
                 }
@@ -431,6 +439,36 @@ impl VoicelinesWorkspaceUi {
                     return EventResponse::Action(UiAction::VoicelinesExportRegion(region.id));
                 }
             }
+            UiEvent::CtrlClick { x, y } => {
+                let region = region_row_hit(audio, layout, self.region_scroll, *x, *y).or_else(|| {
+                    layout
+                        .waveform
+                        .contains(*x, *y)
+                        .then(|| {
+                            region_hit(
+                                audio,
+                                layout.waveform,
+                                self.view_start_ms,
+                                self.view_duration_ms,
+                                *x,
+                            )
+                            .map(|(region, _)| region)
+                        })
+                        .flatten()
+                });
+                if let Some(region) = region {
+                    if let Some(index) = self
+                        .selected_regions
+                        .iter()
+                        .position(|id| *id == region.id)
+                    {
+                        self.selected_regions.remove(index);
+                    } else {
+                        self.selected_regions.push(region.id);
+                    }
+                    return EventResponse::Consumed;
+                }
+            }
             UiEvent::ContextMenu { x, y } => {
                 let region =
                     region_row_hit(audio, layout, self.region_scroll, *x, *y).or_else(|| {
@@ -455,7 +493,7 @@ impl VoicelinesWorkspaceUi {
                 if matches!(event, UiEvent::Delete)
                     || matches!(event, UiEvent::KeyInput { text } if text == "\x7f") =>
             {
-                if let Some(region_id) = self.selected_region {
+                if let Some(region_id) = self.selected_regions.last().copied() {
                     return EventResponse::Action(UiAction::VoicelinesDeleteRegion(region_id));
                 }
             }
@@ -526,6 +564,7 @@ impl VoicelinesWorkspaceUi {
                 self.audio_context_menu = None;
                 return None;
             };
+            let audio = project.audio(audio_id).expect("hit-tested audio");
             let (x, y) = super::context_menu::clamped_origin(
                 *x,
                 *y,
@@ -538,96 +577,154 @@ impl VoicelinesWorkspaceUi {
                 audio_id,
                 x,
                 y,
-                submenu_open: false,
-                hover_parent: false,
+                open_mode: None,
+                hover_parent: None,
                 hover_target: None,
+                delivered_comic_dubs: audio.has_delivery(
+                    crate::voicelines::DeliveryDestination::ComicDubs,
+                ),
+                delivered_recording: audio.has_delivery(
+                    crate::voicelines::DeliveryDestination::Recording,
+                ),
             });
             return Some(EventResponse::Consumed);
         }
 
         let recording_transfer_disabled = self.recording_transfer_disabled;
         let menu = self.audio_context_menu.as_mut()?;
-        let parent = Rect {
+        let send_parent = Rect {
             x: menu.x,
             y: menu.y,
             width: AUDIO_MENU_W,
             height: AUDIO_MENU_ITEM_H,
         };
+        let has_update = menu.delivered_comic_dubs || menu.delivered_recording;
+        let delivered_comic_dubs = menu.delivered_comic_dubs;
+        let delivered_recording = menu.delivered_recording;
+        let update_parent = Rect {
+            y: menu.y + AUDIO_MENU_ITEM_H,
+            ..send_parent
+        };
         let submenu = Rect {
             x: menu.x + AUDIO_MENU_W - 2.0,
             height: AUDIO_MENU_ITEM_H * 2.0,
-            ..parent
+            ..send_parent
         };
-        let target_at = |x, y| {
+        let target_at = |mode, x, y| {
             if !submenu.contains(x, y) {
                 return None;
             }
             if y < submenu.y + AUDIO_MENU_ITEM_H {
-                Some(crate::application::workspace_service::WorkspaceId::ComicDubs)
-            } else if recording_transfer_disabled {
-                None
-            } else {
+                (!matches!(mode, AudioMenuMode::Update) || delivered_comic_dubs)
+                    .then_some(crate::application::workspace_service::WorkspaceId::ComicDubs)
+            } else if !recording_transfer_disabled
+                && (!matches!(mode, AudioMenuMode::Update) || delivered_recording)
+            {
                 Some(crate::application::workspace_service::WorkspaceId::Recording)
+            } else {
+                None
+            }
+        };
+        let first_target = |mode| {
+            if !matches!(mode, AudioMenuMode::Update) || delivered_comic_dubs {
+                crate::application::workspace_service::WorkspaceId::ComicDubs
+            } else {
+                crate::application::workspace_service::WorkspaceId::Recording
             }
         };
         match event {
             UiEvent::MouseMove { x, y } => {
-                menu.hover_parent = parent.contains(*x, *y);
-                if menu.hover_parent {
-                    menu.submenu_open = true;
+                menu.hover_parent = if send_parent.contains(*x, *y) {
+                    Some(AudioMenuMode::Send)
+                } else if has_update && update_parent.contains(*x, *y) {
+                    Some(AudioMenuMode::Update)
+                } else {
+                    None
+                };
+                if let Some(mode) = menu.hover_parent {
+                    menu.open_mode = Some(mode);
                 }
-                menu.hover_target = menu.submenu_open.then(|| target_at(*x, *y)).flatten();
+                menu.hover_target = menu.open_mode.and_then(|mode| target_at(mode, *x, *y));
                 Some(EventResponse::Consumed)
             }
-            UiEvent::MousePress { x, y } if menu.submenu_open => {
-                if let Some(workspace) = target_at(*x, *y) {
+            UiEvent::MousePress { x, y } if menu.open_mode.is_some() => {
+                let mode = menu.open_mode.unwrap();
+                if let Some(workspace) = target_at(mode, *x, *y) {
                     let audio_id = menu.audio_id;
                     self.audio_context_menu = None;
-                    return Some(EventResponse::Action(UiAction::VoicelinesSendAudio {
-                        audio_id,
-                        workspace,
-                    }));
+                    let action = match mode {
+                        AudioMenuMode::Send => UiAction::VoicelinesSendAudio {
+                            audio_id,
+                            workspace,
+                        },
+                        AudioMenuMode::Update => UiAction::VoicelinesUpdateAudio {
+                            audio_id,
+                            workspace,
+                        },
+                    };
+                    return Some(EventResponse::Action(action));
                 }
-                if parent.contains(*x, *y) {
+                if send_parent.contains(*x, *y) {
+                    menu.open_mode = Some(AudioMenuMode::Send);
+                    menu.hover_target = Some(first_target(AudioMenuMode::Send));
+                    return Some(EventResponse::Consumed);
+                }
+                if has_update && update_parent.contains(*x, *y) {
+                    menu.open_mode = Some(AudioMenuMode::Update);
+                    menu.hover_target = Some(first_target(AudioMenuMode::Update));
                     return Some(EventResponse::Consumed);
                 }
                 self.audio_context_menu = None;
                 Some(EventResponse::Consumed)
             }
-            UiEvent::MousePress { x, y } if parent.contains(*x, *y) => {
-                menu.submenu_open = true;
-                menu.hover_target =
-                    Some(crate::application::workspace_service::WorkspaceId::ComicDubs);
+            UiEvent::MousePress { x, y } if send_parent.contains(*x, *y) => {
+                menu.open_mode = Some(AudioMenuMode::Send);
+                menu.hover_target = Some(first_target(AudioMenuMode::Send));
+                Some(EventResponse::Consumed)
+            }
+            UiEvent::MousePress { x, y } if has_update && update_parent.contains(*x, *y) => {
+                menu.open_mode = Some(AudioMenuMode::Update);
+                menu.hover_target = Some(first_target(AudioMenuMode::Update));
                 Some(EventResponse::Consumed)
             }
             UiEvent::CursorRight => {
-                menu.submenu_open = true;
-                menu.hover_target =
-                    Some(crate::application::workspace_service::WorkspaceId::ComicDubs);
+                let mode = menu.hover_parent.unwrap_or(AudioMenuMode::Send);
+                menu.open_mode = Some(mode);
+                menu.hover_target = Some(first_target(mode));
                 Some(EventResponse::Consumed)
             }
-            UiEvent::CursorUp | UiEvent::CursorDown if menu.submenu_open => {
-                menu.hover_target = Some(if recording_transfer_disabled {
-                    crate::application::workspace_service::WorkspaceId::ComicDubs
-                } else {
+            UiEvent::CursorUp | UiEvent::CursorDown if menu.open_mode.is_some() => {
+                let mode = menu.open_mode.unwrap();
+                let comic_enabled = !matches!(mode, AudioMenuMode::Update)
+                    || delivered_comic_dubs;
+                let recording_enabled = !recording_transfer_disabled
+                    && (!matches!(mode, AudioMenuMode::Update) || delivered_recording);
+                menu.hover_target = Some(if comic_enabled && recording_enabled {
                     match menu.hover_target {
                         Some(crate::application::workspace_service::WorkspaceId::ComicDubs) => {
                             crate::application::workspace_service::WorkspaceId::Recording
                         }
                         _ => crate::application::workspace_service::WorkspaceId::ComicDubs,
                     }
+                } else {
+                    first_target(mode)
                 });
                 Some(EventResponse::Consumed)
             }
-            UiEvent::Activate if menu.submenu_open => {
+            UiEvent::Activate if menu.open_mode.is_some() => {
+                let mode = menu.open_mode.unwrap();
                 let audio_id = menu.audio_id;
-                let workspace = menu
-                    .hover_target
-                    .unwrap_or(crate::application::workspace_service::WorkspaceId::ComicDubs);
+                let workspace = menu.hover_target.unwrap_or_else(|| first_target(mode));
                 self.audio_context_menu = None;
-                Some(EventResponse::Action(UiAction::VoicelinesSendAudio {
-                    audio_id,
-                    workspace,
+                Some(EventResponse::Action(match mode {
+                    AudioMenuMode::Send => UiAction::VoicelinesSendAudio {
+                        audio_id,
+                        workspace,
+                    },
+                    AudioMenuMode::Update => UiAction::VoicelinesUpdateAudio {
+                        audio_id,
+                        workspace,
+                    },
                 }))
             }
             UiEvent::KeyInput { text } if text == "\x1b" => {
@@ -828,7 +925,7 @@ impl VoicelinesWorkspaceUi {
         render_waveform(&mut scene, audio, self, current_ms, layout);
         label(
             &mut scene,
-            "Zones de découpe  •  glisser pour créer  •  double-clic pour renommer  •  clic droit pour écouter  •  Maj+clic pour exporter  •  Ctrl+molette pour zoomer",
+            "Zones de découpe  •  Ctrl+clic pour sélectionner  •  double-clic pour renommer  •  clic droit pour écouter  •  Maj+clic pour exporter  •  Ctrl+molette pour zoomer",
             Rect { x: layout.regions.x + 12.0, y: layout.regions.y + 6.0, width: layout.regions.width - 24.0, height: 24.0 },
             HAlign::Left,
             12.0,
@@ -842,7 +939,7 @@ impl VoicelinesWorkspaceUi {
             .enumerate()
         {
             let rect = region_row_rect(layout, row);
-            let selected = self.selected_region == Some(region.id);
+            let selected = self.selected_regions.contains(&region.id);
             scene.quads.push(quad(
                 rect,
                 if selected {
@@ -941,6 +1038,18 @@ impl VoicelinesWorkspaceUi {
                 );
                 Some(EventResponse::Consumed)
             }
+            UiEvent::MousePress { .. }
+            | UiEvent::CtrlClick { .. }
+            | UiEvent::ShiftMousePress { .. }
+            | UiEvent::DoubleClick { .. }
+            | UiEvent::ContextMenu { .. } => {
+                let action = UiAction::VoicelinesRenameRegion {
+                    region_id: *region_id,
+                    name: text.clone(),
+                };
+                self.rename = None;
+                Some(EventResponse::Action(action))
+            }
             _ => Some(EventResponse::Consumed),
         }
     }
@@ -968,6 +1077,15 @@ impl VoicelinesWorkspaceUi {
                         .take(120 - pattern.chars().count().min(120)),
                 );
                 Some(EventResponse::Consumed)
+            }
+            UiEvent::MousePress { .. }
+            | UiEvent::CtrlClick { .. }
+            | UiEvent::ShiftMousePress { .. }
+            | UiEvent::DoubleClick { .. }
+            | UiEvent::ContextMenu { .. } => {
+                let action = UiAction::VoicelinesSetNamingPattern(pattern.clone());
+                self.naming_pattern = None;
+                Some(EventResponse::Action(action))
             }
             _ => Some(EventResponse::Consumed),
         }
@@ -1000,7 +1118,7 @@ impl VoicelinesWorkspaceUi {
                     .strip_prefix("voicelines.region.")
                     .and_then(|id| id.parse().ok())
                 {
-                    self.selected_region = Some(id);
+                    self.selected_regions = vec![id];
                     return Some(UiAction::VoicelinesSelectRegion(Some(id)));
                 }
                 return None;
@@ -1085,7 +1203,7 @@ fn render_waveform(
         }
         let x1 = x_at_ms(wave, ui.view_start_ms, ui.view_duration_ms, start_ms);
         let x2 = x_at_ms(wave, ui.view_start_ms, ui.view_duration_ms, end_ms);
-        let color = region_color(region.id, ui.selected_region == Some(region.id));
+        let color = region_color(region.id, ui.selected_regions.contains(&region.id));
         let rect = Rect {
             x: x1,
             y: wave.y + 22.0,
@@ -1095,7 +1213,7 @@ fn render_waveform(
         scene.quads.push(quad(
             rect,
             color,
-            if ui.selected_region == Some(region.id) {
+            if ui.selected_regions.contains(&region.id) {
                 [0.82, 0.78, 1.0, 1.0]
             } else {
                 color
@@ -1214,43 +1332,61 @@ fn push_audio_context_menu(
         width: AUDIO_MENU_W,
         height: AUDIO_MENU_ITEM_H,
     };
+    let has_update = menu.delivered_comic_dubs || menu.delivered_recording;
+    let menu_rect = Rect {
+        height: AUDIO_MENU_ITEM_H * if has_update { 2.0 } else { 1.0 },
+        ..parent
+    };
     scene
         .system_quads
-        .push(quad(parent, [0.13, 0.13, 0.16, 0.99], BORDER, 0.0));
-    if menu.hover_parent {
-        scene.system_quads.push(quad(
-            inset(parent, 3.0, 2.0),
-            [0.31, 0.40, 0.72, 0.85],
-            [0.0; 4],
-            0.0,
-        ));
+        .push(quad(menu_rect, [0.13, 0.13, 0.16, 0.99], BORDER, 0.0));
+    for (index, (mode, text)) in [
+        (AudioMenuMode::Send, "Envoyer les voicelines vers"),
+        (AudioMenuMode::Update, "Mettre à jour chez"),
+    ]
+    .into_iter()
+    .take(if has_update { 2 } else { 1 })
+    .enumerate()
+    {
+        let row = Rect {
+            y: parent.y + index as f32 * AUDIO_MENU_ITEM_H,
+            ..parent
+        };
+        if menu.hover_parent == Some(mode) {
+            scene.system_quads.push(quad(
+                inset(row, 3.0, 2.0),
+                [0.31, 0.40, 0.72, 0.85],
+                [0.0; 4],
+                0.0,
+            ));
+        }
+        system_label(
+            scene,
+            text,
+            Rect {
+                x: row.x + 10.0,
+                width: row.width - 38.0,
+                ..row
+            },
+            HAlign::Left,
+            12.0,
+            TEXT,
+        );
+        system_label(
+            scene,
+            ">",
+            Rect {
+                x: row.x + row.width - 24.0,
+                width: 18.0,
+                ..row
+            },
+            HAlign::Center,
+            12.0,
+            MUTED,
+        );
     }
-    system_label(
-        scene,
-        "Envoyer les voicelines vers",
-        Rect {
-            x: parent.x + 10.0,
-            width: parent.width - 38.0,
-            ..parent
-        },
-        HAlign::Left,
-        12.0,
-        TEXT,
-    );
-    system_label(
-        scene,
-        ">",
-        Rect {
-            x: parent.x + parent.width - 24.0,
-            width: 18.0,
-            ..parent
-        },
-        HAlign::Center,
-        12.0,
-        MUTED,
-    );
 
-    if menu.submenu_open {
+    if let Some(mode) = menu.open_mode {
         let submenu = Rect {
             x: parent.x + parent.width - 2.0,
             height: AUDIO_MENU_ITEM_H * 2.0,
@@ -1263,12 +1399,13 @@ fn push_audio_context_menu(
             (
                 "Comic Dubs",
                 crate::application::workspace_service::WorkspaceId::ComicDubs,
-                true,
+                !matches!(mode, AudioMenuMode::Update) || menu.delivered_comic_dubs,
             ),
             (
                 "Enregistrement",
                 crate::application::workspace_service::WorkspaceId::Recording,
-                !recording_transfer_disabled,
+                !recording_transfer_disabled
+                    && (!matches!(mode, AudioMenuMode::Update) || menu.delivered_recording),
             ),
         ]
         .into_iter()
@@ -1689,6 +1826,80 @@ mod tests {
         assert_eq!(ms_at_x(wave, 2_000, 10_000, 600.0, 20_000), 7_000);
     }
 
+    fn project_with_two_regions() -> (VoicelinesProject, RegionId, RegionId) {
+        let mut project = VoicelinesProject::default();
+        project.add_audio(
+            "voice.wav".into(),
+            "voice.flac".into(),
+            RecordedAudio {
+                file_name: "voice.flac".into(),
+                sample_rate: 48_000,
+                channels: 1,
+                sample_count: 48_000,
+                checksum: "a".repeat(40),
+                waveform: WaveformData::default(),
+            },
+        );
+        let first = project.add_region(100, 200).unwrap();
+        let second = project.add_region(300, 400).unwrap();
+        (project, first, second)
+    }
+
+    #[test]
+    fn ctrl_click_exposes_join_action_in_selection_order() {
+        let (project, first, second) = project_with_two_regions();
+        let layout = VoicelinesLayout::compute(Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1_200.0,
+            height: 700.0,
+        });
+        let mut ui = VoicelinesWorkspaceUi::default();
+        for row in 0..2 {
+            let rect = region_row_rect(layout, row);
+            assert_eq!(
+                ui.handle_event(
+                    &UiEvent::CtrlClick {
+                        x: rect.x + 4.0,
+                        y: rect.y + 4.0,
+                    },
+                    &project,
+                    layout,
+                ),
+                EventResponse::Consumed
+            );
+        }
+        assert_eq!(ui.selected_regions(), &[first, second]);
+    }
+
+    #[test]
+    fn clicking_away_commits_region_rename() {
+        let (project, first, _) = project_with_two_regions();
+        let layout = VoicelinesLayout::compute(Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1_200.0,
+            height: 700.0,
+        });
+        let mut ui = VoicelinesWorkspaceUi::default();
+        ui.sync(&project, layout);
+        ui.begin_rename(first, "nouveau nom".into());
+        assert_eq!(
+            ui.handle_event(
+                &UiEvent::MousePress {
+                    x: layout.header.x + 2.0,
+                    y: layout.header.y + 2.0,
+                },
+                &project,
+                layout,
+            ),
+            EventResponse::Action(UiAction::VoicelinesRenameRegion {
+                region_id: first,
+                name: "nouveau nom".into(),
+            })
+        );
+    }
+
     #[test]
     fn empty_workspace_keeps_session_loading_available() {
         let layout = VoicelinesLayout::compute(Rect {
@@ -1866,6 +2077,74 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn audio_context_menu_updates_an_existing_delivery() {
+        let layout = VoicelinesLayout::compute(Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1_200.0,
+            height: 700.0,
+        });
+        let mut project = VoicelinesProject::default();
+        let audio_id = project.add_audio(
+            "voice.wav".into(),
+            "voice.flac".into(),
+            RecordedAudio {
+                file_name: "voice.flac".into(),
+                sample_rate: 48_000,
+                channels: 1,
+                sample_count: 48_000,
+                checksum: "a".repeat(40),
+                waveform: WaveformData::default(),
+            },
+        );
+        let region_id = project.add_region(0, 500).unwrap();
+        project.set_delivery_target(
+            audio_id,
+            crate::voicelines::DeliveryDestination::ComicDubs,
+            region_id,
+            42,
+        );
+        let row = audio_row_rect(layout, 0);
+        let mut ui = VoicelinesWorkspaceUi::default();
+        ui.handle_event(
+            &UiEvent::ContextMenu {
+                x: row.x + 10.0,
+                y: row.y + 10.0,
+            },
+            &project,
+            layout,
+        );
+        let menu = ui.audio_context_menu.unwrap();
+        assert!(ui
+            .scene(&project, 0, layout)
+            .system_labels
+            .iter()
+            .any(|label| label.text == "Mettre à jour chez"));
+        ui.handle_event(
+            &UiEvent::MousePress {
+                x: menu.x + 10.0,
+                y: menu.y + AUDIO_MENU_ITEM_H + 10.0,
+            },
+            &project,
+            layout,
+        );
+        assert_eq!(
+            ui.handle_event(
+                &UiEvent::MousePress {
+                    x: menu.x + AUDIO_MENU_W + 10.0,
+                    y: menu.y + 10.0,
+                },
+                &project,
+                layout,
+            ),
+            EventResponse::Action(UiAction::VoicelinesUpdateAudio {
+                audio_id,
+                workspace: crate::application::workspace_service::WorkspaceId::ComicDubs,
+            })
+        );
     }
 
     #[test]

@@ -32,6 +32,63 @@ pub(crate) fn cursor_position(_window: &winit::window::Window) -> Option<(f32, f
     None
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn begin_screen_color_pick() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetCapture;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    let window = unsafe { GetForegroundWindow() };
+    if !window.is_null() {
+        unsafe { SetCapture(window) };
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn begin_screen_color_pick() {}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn sample_screen_color() -> Option<[f32; 4]> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    unsafe { ReleaseCapture() };
+    let mut point = POINT { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut point) } == 0 {
+        return None;
+    }
+    let dc = unsafe { GetDC(std::ptr::null_mut()) };
+    if dc.is_null() {
+        return None;
+    }
+    let color = unsafe { GetPixel(dc, point.x, point.y) };
+    unsafe { ReleaseDC(std::ptr::null_mut(), dc) };
+    (color != u32::MAX).then(|| colorref_to_rgba(color))
+}
+
+fn colorref_to_rgba(color: u32) -> [f32; 4] {
+    [
+        (color & 0xff) as f32 / 255.0,
+        ((color >> 8) & 0xff) as f32 / 255.0,
+        ((color >> 16) & 0xff) as f32 / 255.0,
+        1.0,
+    ]
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn sample_screen_color() -> Option<[f32; 4]> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn cancel_screen_color_pick() {
+    unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture() };
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn cancel_screen_color_pick() {}
+
 pub(crate) fn app_icon() -> Option<winit::window::Icon> {
     parse_ico_to_winit_icon(include_bytes!("icons/app.ico"))
 }
@@ -387,3 +444,16 @@ pub(crate) fn show_untested_platform_warning() {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn show_untested_platform_warning() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_colorref_uses_red_green_blue_byte_order() {
+        assert_eq!(
+            colorref_to_rgba(0x00_33_22_11),
+            [0x11 as f32 / 255.0, 0x22 as f32 / 255.0, 0x33 as f32 / 255.0, 1.0]
+        );
+    }
+}

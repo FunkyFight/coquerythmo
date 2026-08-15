@@ -40,6 +40,7 @@ pub enum VAlign {
 pub enum Overflow {
     #[default]
     Clip,
+    ClipWithLetterSpacing(f32),
     Ellipsis,
     Visible,
 }

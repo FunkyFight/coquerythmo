@@ -65,9 +65,44 @@ pub enum UiAction {
         bubble_id: crate::comic_dubs::BubbleId,
         font_size: f32,
     },
+    ComicDubsSetBubbleLetterSpacing {
+        bubble_id: crate::comic_dubs::BubbleId,
+        spacing: f32,
+    },
+    ComicDubsSetBubbleLineSpacing {
+        bubble_id: crate::comic_dubs::BubbleId,
+        spacing: f32,
+    },
+    ComicDubsSetBubbleTextColor {
+        bubble_id: crate::comic_dubs::BubbleId,
+        color: [u8; 4],
+    },
+    ComicDubsSetBubbleTextAlignment {
+        bubble_id: crate::comic_dubs::BubbleId,
+        alignment: crate::comic_dubs::TextAlignment,
+    },
+    ComicDubsSetBubbleTextStyle {
+        bubble_id: crate::comic_dubs::BubbleId,
+        bold: bool,
+        strikethrough: bool,
+        underline: bool,
+    },
     ComicDubsSetBubblePoints {
         bubble_id: crate::comic_dubs::BubbleId,
         points: Vec<crate::comic_dubs::Point>,
+    },
+    ComicDubsOpenVertexEditor(crate::comic_dubs::BubbleId),
+    ComicDubsCloseVertexEditor,
+    ComicDubsSetVertexEditorPlayhead(u64),
+    ComicDubsToggleVertexEditorPreview,
+    ComicDubsSetBubbleVertexKeyframe {
+        bubble_id: crate::comic_dubs::BubbleId,
+        at_ms: u64,
+        points: Vec<crate::comic_dubs::Point>,
+    },
+    ComicDubsRemoveBubbleVertexKeyframe {
+        bubble_id: crate::comic_dubs::BubbleId,
+        at_ms: u64,
     },
     ComicDubsAssignAudio {
         bubble_id: crate::comic_dubs::BubbleId,
@@ -95,6 +130,7 @@ pub enum UiAction {
         region_id: crate::voicelines::RegionId,
         name: String,
     },
+    VoicelinesJoinRegions(Vec<crate::voicelines::RegionId>),
     VoicelinesDeleteRegion(crate::voicelines::RegionId),
     VoicelinesSetNamingPattern(String),
     VoicelinesAutoDetect,
@@ -102,6 +138,10 @@ pub enum UiAction {
     VoicelinesExportRegion(crate::voicelines::RegionId),
     VoicelinesExportAll,
     VoicelinesSendAudio {
+        audio_id: crate::voicelines::AudioId,
+        workspace: crate::application::workspace_service::WorkspaceId,
+    },
+    VoicelinesUpdateAudio {
         audio_id: crate::voicelines::AudioId,
         workspace: crate::application::workspace_service::WorkspaceId,
     },

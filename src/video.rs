@@ -259,10 +259,16 @@ impl VideoPlayer {
             audio_path.display()
         );
 
-        let first_frame = decode_frame_at(video_path, width, height, 0.0)?;
-        self.upload_frame(&first_frame, device, queue, bind_group_layout, sampler);
-
         self.start_decoders_at(0.0, true);
+        let first_frame = self
+            .receiver
+            .as_ref()
+            .ok_or_else(|| "video decoder did not start".to_string())?
+            .recv()
+            .map_err(|_| "video decoder stopped before its first frame".to_string())?;
+        self.upload_frame(&first_frame, device, queue, bind_group_layout, sampler);
+        recycle_frame(first_frame, self.frame_recycler.as_ref());
+        self.receiver_has_current_frame = false;
 
         self.decode_source_waveform();
 
@@ -478,13 +484,18 @@ impl VideoPlayer {
     /// otherwise pressing play before the debounced frame decode can reuse the
     /// old audio stream and start it at the previous video position.
     pub fn seek_frame_instant(&mut self, delta: i32) {
+        self.seek_to_frame_instant(self.current_frame.saturating_add(delta as i64));
+    }
+
+    /// Move to an absolute frame without narrowing long timelines to `i32`.
+    pub fn seek_to_frame_instant(&mut self, target: i64) {
         let was_playing = self.playing;
         // The decoder FIFOs still contain frames/audio from the old position.
         // Drop them now and let the debounced seek callback (or the next play)
         // start fresh streams from the new position.
         self.stop_decoders();
 
-        let target = (self.current_frame + delta as i64).max(0);
+        let target = target.max(0);
         let target = if self.total_frames > 0 {
             target.min(self.total_frames - 1)
         } else {
@@ -1817,6 +1828,16 @@ mod tests {
         assert_eq!(player.current_frame(), 90);
         assert!(player.receiver.is_none());
         assert!(player.audio_clock.is_none());
+    }
+
+    #[test]
+    fn absolute_seek_does_not_wrap_on_long_timelines() {
+        let mut player = VideoPlayer::new();
+        player.total_frames = i32::MAX as i64 + 100;
+
+        player.seek_to_frame_instant(i32::MAX as i64 + 50);
+
+        assert_eq!(player.current_frame(), i32::MAX as i64 + 50);
     }
 
     #[test]

@@ -9,6 +9,14 @@ pub type PageId = u64;
 pub type BubbleId = u64;
 pub type ComicAudioId = u64;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextAlignment {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
 pub(crate) fn bubble_playback_state(
     bubble: &Bubble,
     index: usize,
@@ -26,6 +34,12 @@ pub struct Point {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VertexKeyframe {
+    pub at_ms: u64,
+    pub points: Vec<Point>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Bubble {
     pub id: BubbleId,
     pub points: Vec<Point>,
@@ -34,7 +48,41 @@ pub struct Bubble {
     #[serde(default = "default_bubble_font_size")]
     pub font_size: f32,
     #[serde(default)]
+    pub letter_spacing: f32,
+    #[serde(default = "default_line_spacing")]
+    pub line_spacing: f32,
+    #[serde(default)]
+    pub text_color: Option<[u8; 4]>,
+    #[serde(default)]
+    pub text_alignment: TextAlignment,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub strikethrough: bool,
+    #[serde(default)]
+    pub underline: bool,
+    #[serde(default)]
     pub audio_id: Option<ComicAudioId>,
+    #[serde(default)]
+    pub vertex_keyframes: Vec<VertexKeyframe>,
+}
+
+impl Bubble {
+    /// Vertex animation is deliberately stepped: the last pose at or before
+    /// `at_ms` wins, with no interpolation between poses.
+    pub fn points_at(&self, at_ms: u64) -> &[Point] {
+        self.vertex_keyframes
+            .iter()
+            .rev()
+            .find(|keyframe| keyframe.at_ms <= at_ms)
+            .map_or(&self.points, |keyframe| &keyframe.points)
+    }
+
+    pub fn vertex_animation_duration_ms(&self) -> u64 {
+        self.vertex_keyframes
+            .last()
+            .map_or(0, |keyframe| keyframe.at_ms)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -104,6 +152,10 @@ const fn default_page_gap_ms() -> u64 {
 
 const fn default_bubble_font_size() -> f32 {
     24.0
+}
+
+const fn default_line_spacing() -> f32 {
+    1.18
 }
 
 impl Default for ComicDubsProject {
@@ -345,7 +397,15 @@ impl ComicDubsProject {
             text: String::new(),
             color: [255, 255, 255, 255],
             font_size,
+            letter_spacing: 0.0,
+            line_spacing: default_line_spacing(),
+            text_color: None,
+            text_alignment: TextAlignment::Center,
+            bold: false,
+            strikethrough: false,
+            underline: false,
             audio_id: None,
+            vertex_keyframes: Vec::new(),
         });
         Some(id)
     }
@@ -363,7 +423,12 @@ impl ComicDubsProject {
     }
 
     pub fn set_bubble_color(&mut self, id: BubbleId, color: [u8; 4]) -> bool {
-        let color = [color[0], color[1], color[2], 255];
+        let color = [
+            color[0],
+            color[1],
+            color[2],
+            if color[3] == 0 { 0 } else { 255 },
+        ];
         let Some(bubble) = self.bubble_mut(id) else {
             return false;
         };
@@ -389,6 +454,84 @@ impl ComicDubsProject {
         true
     }
 
+    pub fn set_bubble_letter_spacing(&mut self, id: BubbleId, spacing: f32) -> bool {
+        if !spacing.is_finite() {
+            return false;
+        }
+        let spacing = spacing.clamp(0.0, 12.0);
+        let Some(bubble) = self.bubble_mut(id) else {
+            return false;
+        };
+        if bubble.letter_spacing == spacing {
+            return false;
+        }
+        bubble.letter_spacing = spacing;
+        true
+    }
+
+    pub fn set_bubble_line_spacing(&mut self, id: BubbleId, spacing: f32) -> bool {
+        if !spacing.is_finite() {
+            return false;
+        }
+        let spacing = spacing.clamp(0.8, 2.0);
+        let Some(bubble) = self.bubble_mut(id) else {
+            return false;
+        };
+        if bubble.line_spacing == spacing {
+            return false;
+        }
+        bubble.line_spacing = spacing;
+        true
+    }
+
+    pub fn set_bubble_text_color(&mut self, id: BubbleId, color: [u8; 4]) -> bool {
+        let color = Some([color[0], color[1], color[2], 255]);
+        let Some(bubble) = self.bubble_mut(id) else {
+            return false;
+        };
+        if bubble.text_color == color {
+            return false;
+        }
+        bubble.text_color = color;
+        true
+    }
+
+    pub fn set_bubble_text_alignment(
+        &mut self,
+        id: BubbleId,
+        alignment: TextAlignment,
+    ) -> bool {
+        let Some(bubble) = self.bubble_mut(id) else {
+            return false;
+        };
+        if bubble.text_alignment == alignment {
+            return false;
+        }
+        bubble.text_alignment = alignment;
+        true
+    }
+
+    pub fn set_bubble_text_style(
+        &mut self,
+        id: BubbleId,
+        bold: bool,
+        strikethrough: bool,
+        underline: bool,
+    ) -> bool {
+        let Some(bubble) = self.bubble_mut(id) else {
+            return false;
+        };
+        if (bubble.bold, bubble.strikethrough, bubble.underline)
+            == (bold, strikethrough, underline)
+        {
+            return false;
+        }
+        bubble.bold = bold;
+        bubble.strikethrough = strikethrough;
+        bubble.underline = underline;
+        true
+    }
+
     pub fn set_bubble_points(&mut self, id: BubbleId, points: Vec<Point>) -> bool {
         if !valid_polygon(&points) {
             return false;
@@ -401,6 +544,48 @@ impl ComicDubsProject {
         }
         bubble.points = points;
         true
+    }
+
+    pub fn set_bubble_vertex_keyframe(
+        &mut self,
+        id: BubbleId,
+        at_ms: u64,
+        points: Vec<Point>,
+    ) -> bool {
+        let Some(bubble) = self.bubble_mut(id) else {
+            return false;
+        };
+        if points.len() != bubble.points.len() || !valid_polygon(&points) {
+            return false;
+        }
+        let at_ms = at_ms.min(86_400_000);
+        match bubble
+            .vertex_keyframes
+            .binary_search_by_key(&at_ms, |keyframe| keyframe.at_ms)
+        {
+            Ok(index) if bubble.vertex_keyframes[index].points == points => false,
+            Ok(index) => {
+                bubble.vertex_keyframes[index].points = points;
+                true
+            }
+            Err(index) => {
+                bubble
+                    .vertex_keyframes
+                    .insert(index, VertexKeyframe { at_ms, points });
+                true
+            }
+        }
+    }
+
+    pub fn remove_bubble_vertex_keyframe(&mut self, id: BubbleId, at_ms: u64) -> bool {
+        let Some(bubble) = self.bubble_mut(id) else {
+            return false;
+        };
+        let before = bubble.vertex_keyframes.len();
+        bubble
+            .vertex_keyframes
+            .retain(|keyframe| keyframe.at_ms != at_ms);
+        bubble.vertex_keyframes.len() != before
     }
 
     pub fn assign_audio(&mut self, bubble_id: BubbleId, audio_id: Option<ComicAudioId>) -> bool {
@@ -468,12 +653,30 @@ impl ComicDubsProject {
                 return Err("invalid Comic Dubs page".into());
             }
             for bubble in &mut page.bubbles {
-                bubble.color[3] = 255;
+                bubble.color[3] = if bubble.color[3] == 0 { 0 } else { 255 };
+                if let Some(color) = &mut bubble.text_color {
+                    color[3] = 255;
+                }
+                bubble
+                    .vertex_keyframes
+                    .sort_by_key(|keyframe| keyframe.at_ms);
                 if !ids.insert(bubble.id)
                     || !valid_polygon(&bubble.points)
                     || !bubble.font_size.is_finite()
                     || !(6.0..=72.0).contains(&bubble.font_size)
+                    || !bubble.letter_spacing.is_finite()
+                    || !(0.0..=12.0).contains(&bubble.letter_spacing)
+                    || !bubble.line_spacing.is_finite()
+                    || !(0.8..=2.0).contains(&bubble.line_spacing)
                     || bubble.audio_id.is_some_and(|id| !audio_ids.contains(&id))
+                    || bubble.vertex_keyframes.windows(2).any(|pair| {
+                        pair[0].at_ms == pair[1].at_ms
+                    })
+                    || bubble.vertex_keyframes.iter().any(|keyframe| {
+                        keyframe.at_ms > 86_400_000
+                            || keyframe.points.len() != bubble.points.len()
+                            || !valid_polygon(&keyframe.points)
+                    })
                 {
                     return Err("invalid Comic Dubs bubble".into());
                 }
@@ -612,14 +815,37 @@ mod tests {
     }
 
     #[test]
-    fn bubble_style_is_per_bubble_and_always_opaque() {
+    fn bubble_style_is_per_bubble_and_text_stays_opaque() {
         let mut project = ComicDubsProject::default();
         let page = project.add_page("1.png".into(), "1.png".into(), 10, 10);
         let bubble = project.add_bubble(page, triangle()).unwrap();
         assert!(project.set_bubble_font_size(bubble, 36.0));
         assert!(project.set_bubble_color(bubble, [10, 20, 30, 1]));
+        assert!(project.set_bubble_letter_spacing(bubble, 2.5));
+        assert!(project.set_bubble_line_spacing(bubble, 1.4));
+        assert!(project.set_bubble_text_color(bubble, [40, 50, 60, 1]));
+        assert!(project.set_bubble_text_alignment(bubble, TextAlignment::Left));
+        assert!(project.set_bubble_text_style(bubble, true, true, true));
         assert_eq!(project.bubble(bubble).unwrap().font_size, 36.0);
         assert_eq!(project.bubble(bubble).unwrap().color, [10, 20, 30, 255]);
+        assert!(project.set_bubble_color(bubble, [10, 20, 30, 0]));
+        assert_eq!(project.bubble(bubble).unwrap().color, [10, 20, 30, 0]);
+        assert_eq!(project.bubble(bubble).unwrap().letter_spacing, 2.5);
+        assert_eq!(project.bubble(bubble).unwrap().line_spacing, 1.4);
+        assert_eq!(project.bubble(bubble).unwrap().text_color, Some([40, 50, 60, 255]));
+        assert_eq!(project.bubble(bubble).unwrap().text_alignment, TextAlignment::Left);
+        assert_eq!(
+            (
+                project.bubble(bubble).unwrap().bold,
+                project.bubble(bubble).unwrap().strikethrough,
+                project.bubble(bubble).unwrap().underline,
+            ),
+            (true, true, true)
+        );
+        let restored: ComicDubsProject =
+            serde_json::from_str(&serde_json::to_string(&project).unwrap()).unwrap();
+        let restored = restored.bubble(bubble).unwrap();
+        assert!((restored.bold, restored.strikethrough, restored.underline) == (true, true, true));
     }
 
     #[test]
@@ -667,5 +893,28 @@ mod tests {
             bubble_playback_state(project.bubble(bubble).unwrap(), 0, 1),
             (false, false)
         );
+    }
+
+    #[test]
+    fn vertex_keyframes_are_sorted_and_use_step_interpolation() {
+        let mut project = ComicDubsProject::default();
+        let page = project.add_page("1.png".into(), "1.png".into(), 10, 10);
+        let bubble = project.add_bubble(page, triangle()).unwrap();
+        let middle = vec![
+            Point { x: 0.2, y: 0.2 },
+            Point { x: 0.8, y: 0.2 },
+            Point { x: 0.5, y: 0.8 },
+        ];
+        let start = vec![
+            Point { x: 0.3, y: 0.3 },
+            Point { x: 0.7, y: 0.3 },
+            Point { x: 0.5, y: 0.7 },
+        ];
+        assert!(project.set_bubble_vertex_keyframe(bubble, 1_000, middle.clone()));
+        assert!(project.set_bubble_vertex_keyframe(bubble, 0, start.clone()));
+        let bubble = project.bubble(bubble).unwrap();
+        assert_eq!(bubble.points_at(999), start);
+        assert_eq!(bubble.points_at(1_000), middle);
+        assert_eq!(bubble.vertex_animation_duration_ms(), 1_000);
     }
 }

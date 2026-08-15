@@ -1,6 +1,6 @@
 //! MP4 rendering for the ordered Comic Dubs playback.
 
-use crate::comic_dubs::{Bubble, ComicDubsProject, Page, Point};
+use crate::comic_dubs::{Bubble, ComicDubsProject, Page, Point, TextAlignment};
 use crate::project::ExportConfiguration;
 use image::{imageops, Rgba, RgbaImage};
 use std::fmt::Write as _;
@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 struct FrameStep {
     page_index: usize,
     visible_bubbles: usize,
+    bubble_elapsed_ms: u64,
     duration_ms: u64,
     audio: Option<(PathBuf, u64)>,
 }
@@ -26,9 +27,43 @@ pub fn export_mp4(
     progress: Arc<AtomicU32>,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), String> {
+    export_video(project, output, configuration, progress, cancel, None, false)
+}
+
+pub fn export(
+    project: &ComicDubsProject,
+    output: &Path,
+    configuration: &ExportConfiguration,
+    progress: Arc<AtomicU32>,
+    cancel: Arc<AtomicBool>,
+) -> Result<(), String> {
+    if configuration.comic_dubs_pages_zip {
+        export_pages_zip(project, output, configuration, progress, cancel)
+    } else {
+        export_video(
+            project,
+            output,
+            configuration,
+            progress,
+            cancel,
+            None,
+            configuration.comic_dubs_alpha,
+        )
+    }
+}
+
+fn export_video(
+    project: &ComicDubsProject,
+    output: &Path,
+    configuration: &ExportConfiguration,
+    progress: Arc<AtomicU32>,
+    cancel: Arc<AtomicBool>,
+    page_filter: Option<usize>,
+    alpha: bool,
+) -> Result<(), String> {
     let first_page = project
         .pages()
-        .first()
+        .get(page_filter.unwrap_or(0))
         .ok_or_else(|| "Aucune page Comic Dubs à exporter".to_string())?;
     let fps = configuration.fps.clamp(1.0, 480.0);
     let (width, height) = crate::configured_export::resolve_video_dimensions(
@@ -36,7 +71,7 @@ pub fn export_mp4(
         first_page.width,
         first_page.height,
     );
-    let steps = playback_steps(project, fps);
+    let steps = playback_steps(project, fps, page_filter);
     if steps.is_empty() {
         return Err("Aucune bulle Comic Dubs à exporter".into());
     }
@@ -54,10 +89,108 @@ pub fn export_mp4(
     std::fs::create_dir_all(&temp_dir)
         .map_err(|error| format!("Dossier temporaire Comic Dubs : {error}"))?;
     let result = export_in_temp(
-        project, output, fps, width, height, &steps, &temp_dir, &progress, &cancel,
+        project, output, fps, width, height, &steps, &temp_dir, &progress, &cancel, alpha,
     );
     let _ = std::fs::remove_dir_all(&temp_dir);
     result
+}
+
+fn export_pages_zip(
+    project: &ComicDubsProject,
+    output: &Path,
+    configuration: &ExportConfiguration,
+    progress: Arc<AtomicU32>,
+    cancel: Arc<AtomicBool>,
+) -> Result<(), String> {
+    let pages = project
+        .pages()
+        .iter()
+        .enumerate()
+        .collect::<Vec<_>>();
+    if pages.is_empty() {
+        return Err("Aucune page Comic Dubs à exporter".into());
+    }
+    if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let temp_dir = crate::media_binary::installation_temp_dir()
+        .join(format!("comic-dubs-pages-{stamp}"));
+    std::fs::create_dir_all(&temp_dir).map_err(|error| error.to_string())?;
+    let result = (|| {
+        let mut videos = Vec::with_capacity(pages.len());
+        for (position, (page_index, page)) in pages.iter().enumerate() {
+            check_cancel(&cancel)?;
+            let extension = if configuration.comic_dubs_alpha { "mov" } else { "mp4" };
+            let name = format!(
+                "{:03}-{}.{}",
+                position + 1,
+                safe_page_name(&page.file_name),
+                extension,
+            );
+            let path = temp_dir.join(&name);
+            export_video(
+                project,
+                &path,
+                configuration,
+                Arc::new(AtomicU32::new(0)),
+                cancel.clone(),
+                Some(*page_index),
+                configuration.comic_dubs_alpha,
+            )?;
+            videos.push((name, path));
+            progress.store(
+                (0.9 * (position + 1) as f32 / pages.len() as f32).to_bits(),
+                Ordering::Relaxed,
+            );
+        }
+        let file = std::fs::File::create(output)
+            .map_err(|error| format!("Création du ZIP Comic Dubs : {error}"))?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, path) in videos {
+            check_cancel(&cancel)?;
+            zip.start_file(name, options)
+                .map_err(|error| format!("Écriture du ZIP Comic Dubs : {error}"))?;
+            let mut video = std::fs::File::open(path).map_err(|error| error.to_string())?;
+            std::io::copy(&mut video, &mut zip).map_err(|error| error.to_string())?;
+        }
+        zip.finish()
+            .map_err(|error| format!("Finalisation du ZIP Comic Dubs : {error}"))?;
+        progress.store(1.0_f32.to_bits(), Ordering::Relaxed);
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(temp_dir);
+    if result.is_err() {
+        let _ = std::fs::remove_file(output);
+    }
+    result
+}
+
+fn safe_page_name(name: &str) -> String {
+    let stem = Path::new(name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("page");
+    let safe = stem
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if safe.trim_matches('-').is_empty() {
+        "page".into()
+    } else {
+        safe
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -71,6 +204,7 @@ fn export_in_temp(
     temp_dir: &Path,
     progress: &AtomicU32,
     cancel: &AtomicBool,
+    alpha: bool,
 ) -> Result<(), String> {
     let mut concat = String::from("ffconcat version 1.0\n");
     let mut previous_page = usize::MAX;
@@ -83,29 +217,47 @@ fn export_in_temp(
         check_cancel(cancel)?;
         if step.page_index != previous_page {
             let page = &project.pages()[step.page_index];
-            (page_canvas, page_rect) = render_page(page, width, height)?;
+            (page_canvas, page_rect) = render_page(page, width, height, alpha)?;
             previous_page = step.page_index;
         }
         let page = &project.pages()[step.page_index];
         let mut canvas = page_canvas.clone();
         for (bubble_index, bubble) in page.bubbles.iter().enumerate() {
+            let at_ms = if bubble_index + 1 < step.visible_bubbles {
+                u64::MAX
+            } else if bubble_index + 1 == step.visible_bubbles {
+                step.bubble_elapsed_ms
+            } else {
+                0
+            };
             let (show_background, _) = crate::comic_dubs::bubble_playback_state(
                 bubble,
                 bubble_index,
                 step.visible_bubbles,
             );
             if show_background {
-                render_bubble_background(&mut canvas, bubble, page_rect);
+                render_bubble_background(&mut canvas, bubble, bubble.points_at(at_ms), page_rect);
             }
         }
         for (bubble_index, bubble) in page.bubbles.iter().enumerate() {
+            let at_ms = if bubble_index + 1 < step.visible_bubbles {
+                u64::MAX
+            } else {
+                step.bubble_elapsed_ms
+            };
             let (_, show_text) = crate::comic_dubs::bubble_playback_state(
                 bubble,
                 bubble_index,
                 step.visible_bubbles,
             );
             if show_text {
-                render_bubble_text(&mut canvas, bubble, page_rect, project.font_family());
+                render_bubble_text(
+                    &mut canvas,
+                    bubble,
+                    bubble.points_at(at_ms),
+                    page_rect,
+                    project.font_family(),
+                );
             }
         }
         let frame_path = temp_dir.join(format!("frame-{index:06}.png"));
@@ -156,30 +308,28 @@ fn export_in_temp(
         }
         write!(
             filter,
-            "amix=inputs={}:normalize=0:duration=longest[a]",
-            cues.len()
+            "amix=inputs={}:normalize=0:duration=longest,apad=whole_dur={:.6}[a]",
+            cues.len(),
+            total_ms as f64 / 1_000.0,
         )
         .unwrap();
         command.args(["-filter_complex", &filter, "-map", "0:v:0", "-map", "[a]"]);
     } else {
         command.args(["-map", "0:v:0", "-an"]);
     }
-    command.args([
-        "-r",
-        &fps.to_string(),
-        "-t",
-        &format!("{:.6}", total_ms as f64 / 1_000.0),
-        "-fps_mode",
-        "cfr",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "18",
-        "-pix_fmt",
-        "yuv420p",
-    ]);
+    command
+        .arg("-vf")
+        .arg(format!("fps={fps}"))
+        .args(["-t", &format!("{:.6}", total_ms as f64 / 1_000.0)]);
+    // `-fps_mode` is intentionally banned here: our supported FFmpeg build does not expose it.
+    // The `fps` filter above preserves every concat duration while producing constant frame rate.
+    if alpha {
+        command.args(["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le"]);
+    } else {
+        command.args([
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+        ]);
+    }
     if !cues.is_empty() {
         command.args(["-c:a", "aac", "-b:a", "192k"]);
     }
@@ -230,19 +380,35 @@ fn export_in_temp(
     Ok(())
 }
 
-fn playback_steps(project: &ComicDubsProject, fps: f64) -> Vec<FrameStep> {
+fn playback_steps(
+    project: &ComicDubsProject,
+    fps: f64,
+    page_filter: Option<usize>,
+) -> Vec<FrameStep> {
     let playable_pages = project
         .pages()
         .iter()
         .enumerate()
-        .filter(|(_, page)| !page.bubbles.is_empty())
+        .filter(|(index, page)| {
+            page_filter.map_or(!page.bubbles.is_empty(), |page| page == *index)
+        })
         .collect::<Vec<_>>();
     let minimum_ms = (1_000.0 / fps.max(1.0)).ceil() as u64;
     let mut elapsed_ms = 0_u64;
     let mut steps = Vec::new();
     for (playable_index, (page_index, page)) in playable_pages.iter().enumerate() {
+        if page.bubbles.is_empty() {
+            steps.push(FrameStep {
+                page_index: *page_index,
+                visible_bubbles: 0,
+                bubble_elapsed_ms: 0,
+                duration_ms: project.page_gap_ms().max(1_000),
+                audio: None,
+            });
+            continue;
+        }
         for (bubble_index, bubble) in page.bubbles.iter().enumerate() {
-            let audio = bubble
+            let mut audio = bubble
                 .audio_id
                 .and_then(|id| project.audio(id))
                 .map(|audio| (audio.playback_path.clone(), elapsed_ms));
@@ -257,14 +423,32 @@ fn playback_steps(project: &ComicDubsProject, fps: f64) -> Vec<FrameStep> {
             } else {
                 project.page_gap_ms().max(1_000)
             };
-            let duration_ms = audio_ms.saturating_add(gap_ms).max(minimum_ms);
-            steps.push(FrameStep {
-                page_index: *page_index,
-                visible_bubbles: bubble_index + 1,
-                duration_ms,
-                audio,
-            });
-            elapsed_ms = elapsed_ms.saturating_add(duration_ms);
+            let duration_ms = audio_ms
+                .max(bubble.vertex_animation_duration_ms())
+                .saturating_add(gap_ms)
+                .max(minimum_ms);
+            let mut boundaries = vec![0];
+            boundaries.extend(
+                bubble
+                    .vertex_keyframes
+                    .iter()
+                    .map(|keyframe| keyframe.at_ms)
+                    .filter(|at_ms| *at_ms > 0 && *at_ms < duration_ms),
+            );
+            boundaries.push(duration_ms);
+            boundaries.sort_unstable();
+            boundaries.dedup();
+            for window in boundaries.windows(2) {
+                let part_duration_ms = window[1] - window[0];
+                steps.push(FrameStep {
+                    page_index: *page_index,
+                    visible_bubbles: bubble_index + 1,
+                    bubble_elapsed_ms: window[0],
+                    duration_ms: part_duration_ms,
+                    audio: audio.take(),
+                });
+                elapsed_ms = elapsed_ms.saturating_add(part_duration_ms);
+            }
         }
     }
     steps
@@ -274,6 +458,7 @@ fn render_page(
     page: &Page,
     width: u32,
     height: u32,
+    alpha: bool,
 ) -> Result<(RgbaImage, (u32, u32, u32, u32)), String> {
     let source = image::open(&page.image_path)
         .map_err(|error| format!("Page {} illisible : {error}", page.file_name))?
@@ -289,14 +474,22 @@ fn render_page(
         page_height,
         imageops::FilterType::Lanczos3,
     );
-    let mut canvas = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 255]));
+    let mut canvas = RgbaImage::from_pixel(
+        width,
+        height,
+        if alpha { Rgba([0, 0, 0, 0]) } else { Rgba([0, 0, 0, 255]) },
+    );
     imageops::overlay(&mut canvas, &resized, i64::from(x), i64::from(y));
     Ok((canvas, (x, y, page_width, page_height)))
 }
 
-fn render_bubble_background(canvas: &mut RgbaImage, bubble: &Bubble, rect: (u32, u32, u32, u32)) {
-    let points = bubble
-        .points
+fn render_bubble_background(
+    canvas: &mut RgbaImage,
+    bubble: &Bubble,
+    bubble_points: &[Point],
+    rect: (u32, u32, u32, u32),
+) {
+    let points = bubble_points
         .iter()
         .map(|point| {
             (
@@ -305,7 +498,9 @@ fn render_bubble_background(canvas: &mut RgbaImage, bubble: &Bubble, rect: (u32,
             )
         })
         .collect::<Vec<_>>();
-    fill_polygon(canvas, &points, Rgba(bubble.color));
+    if bubble.color[3] != 0 {
+        fill_polygon(canvas, &points, Rgba(bubble.color));
+    }
     for (a, b) in points
         .iter()
         .zip(points.iter().cycle().skip(1))
@@ -318,10 +513,11 @@ fn render_bubble_background(canvas: &mut RgbaImage, bubble: &Bubble, rect: (u32,
 fn render_bubble_text(
     canvas: &mut RgbaImage,
     bubble: &Bubble,
+    points: &[Point],
     rect: (u32, u32, u32, u32),
     font_family: Option<&str>,
 ) {
-    let bounds = polygon_text_bounds(&bubble.points);
+    let bounds = polygon_text_bounds(points);
     let text_rect = (
         rect.0 as f32 + bounds.0 * rect.2 as f32,
         rect.1 as f32 + bounds.1 * rect.3 as f32,
@@ -329,31 +525,54 @@ fn render_bubble_text(
         (bounds.3 - bounds.1) * rect.3 as f32,
     );
     let preferred = bubble.font_size * canvas.height() as f32 / 1080.0;
-    let (lines, font_size) = fit_text(&bubble.text, text_rect.2, text_rect.3, preferred);
-    let line_height = font_size * 1.18;
+    let (lines, font_size) = fit_text(
+        &bubble.text,
+        text_rect.2,
+        text_rect.3,
+        preferred,
+        bubble.letter_spacing,
+        bubble.line_spacing,
+        font_family,
+    );
+    let line_height = font_size * bubble.line_spacing;
     let mut y = text_rect.1 + (text_rect.3 - line_height * lines.len() as f32) * 0.5;
-    let color = if luminance(bubble.color) > 0.55 {
-        [24, 24, 30]
-    } else {
-        [244, 244, 248]
-    };
+    let color = bubble.text_color.map_or_else(
+        || {
+            if luminance(bubble.color) > 0.55 {
+                [24, 24, 30]
+            } else {
+                [244, 244, 248]
+            }
+        },
+        |color| [color[0], color[1], color[2]],
+    );
     for line in lines {
-        let measured = crate::vector_text::measure_text_width_with_family_standalone(
+        let measured = measured_line_width(
             &line,
             font_size,
+            bubble.letter_spacing,
             font_family,
         )
-        .unwrap_or(text_rect.2)
         .ceil()
+        + 2.0;
+        let measured = measured
         .clamp(1.0, text_rect.2.max(1.0)) as u32;
-        if let Some(pixmap) = crate::vector_text::render_text_natural_with_family_standalone(
+        if let Some(pixmap) = crate::vector_text::render_text_natural_with_family_spacing_and_style_standalone(
             &line,
             font_size,
             measured,
             line_height.ceil().max(1.0) as u32,
             font_family,
+            bubble.letter_spacing,
+            bubble.bold,
+            bubble.strikethrough,
+            bubble.underline,
         ) {
-            let x = text_rect.0 + (text_rect.2 - pixmap.width as f32) * 0.5;
+            let x = match bubble.text_alignment {
+                TextAlignment::Left => text_rect.0,
+                TextAlignment::Center => text_rect.0 + (text_rect.2 - pixmap.width as f32) * 0.5,
+                TextAlignment::Right => text_rect.0 + text_rect.2 - pixmap.width as f32,
+            };
             blend_text(
                 canvas,
                 &pixmap.pixels,
@@ -470,19 +689,46 @@ fn polygon_text_bounds(points: &[Point]) -> (f32, f32, f32, f32) {
     )
 }
 
-fn fit_text(text: &str, width: f32, height: f32, preferred: f32) -> (Vec<String>, f32) {
+fn fit_text(
+    text: &str,
+    width: f32,
+    height: f32,
+    preferred: f32,
+    letter_spacing: f32,
+    line_spacing: f32,
+    font_family: Option<&str>,
+) -> (Vec<String>, f32) {
     let maximum = preferred.clamp(6.0, 144.0).floor() as u32;
     for font in (6..=maximum).rev().map(|size| size as f32) {
-        let max_chars = (width / (font * 0.56)).floor().max(1.0) as usize;
+        let max_chars = (width / (font * 0.56 + letter_spacing)).floor().max(1.0) as usize;
         let lines = wrap_text(text, max_chars);
-        if lines.len() as f32 * font * 1.18 <= height {
+        if lines.len() as f32 * font * line_spacing <= height
+            && lines.iter().all(|line| {
+                measured_line_width(line, font, letter_spacing, font_family) + 2.0 <= width
+            })
+        {
             return (lines, font);
         }
     }
     (
-        wrap_text(text, (width / 3.36).floor().max(1.0) as usize),
+        wrap_text(
+            text,
+            (width / (3.36 + letter_spacing)).floor().max(1.0) as usize,
+        ),
         6.0,
     )
+}
+
+fn measured_line_width(
+    line: &str,
+    font_size: f32,
+    letter_spacing: f32,
+    font_family: Option<&str>,
+) -> f32 {
+    use unicode_segmentation::UnicodeSegmentation;
+    crate::vector_text::measure_text_width_with_family_standalone(line, font_size, font_family)
+        .unwrap_or(0.0)
+        + letter_spacing * line.graphemes(true).count().saturating_sub(1) as f32
 }
 
 fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
@@ -557,7 +803,7 @@ mod tests {
         project.assign_audio(first, Some(audio));
         project.add_bubble(page, points).unwrap();
 
-        let steps = playback_steps(&project, 25.0);
+        let steps = playback_steps(&project, 25.0, None);
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[0].duration_ms, 750);
         assert_eq!(steps[0].audio.as_ref().unwrap().1, 0);
@@ -565,7 +811,68 @@ mod tests {
     }
 
     #[test]
-    fn exports_a_playable_mp4() {
+    fn playback_plan_emits_one_frame_per_step_pose() {
+        let mut project = ComicDubsProject::default();
+        let page = project.add_page("page.png".into(), "page.png".into(), 100, 100);
+        let points = vec![
+            Point { x: 0.1, y: 0.1 },
+            Point { x: 0.9, y: 0.1 },
+            Point { x: 0.5, y: 0.9 },
+        ];
+        let bubble = project.add_bubble(page, points.clone()).unwrap();
+        project.set_bubble_vertex_keyframe(bubble, 400, points.clone());
+        project.set_bubble_vertex_keyframe(bubble, 800, points);
+
+        let steps = playback_steps(&project, 25.0, None);
+        assert_eq!(
+            steps
+                .iter()
+                .map(|step| (step.bubble_elapsed_ms, step.duration_ms))
+                .collect::<Vec<_>>(),
+            vec![(0, 400), (400, 400), (800, 1_000)]
+        );
+    }
+
+    #[test]
+    fn page_export_keeps_pages_without_bubbles() {
+        let mut project = ComicDubsProject::default();
+        let page = project.add_page("empty.png".into(), "empty.png".into(), 100, 100);
+        let page_index = project.pages().iter().position(|candidate| candidate.id == page).unwrap();
+        let steps = playback_steps(&project, 25.0, Some(page_index));
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].page_index, page_index);
+        assert_eq!(steps[0].visible_bubbles, 0);
+        assert!(steps[0].duration_ms >= 1_000);
+    }
+
+    #[test]
+    fn alpha_export_keeps_the_letterbox_transparent() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("comic-alpha-{stamp}.png"));
+        RgbaImage::from_pixel(4, 2, Rgba([20, 30, 40, 255]))
+            .save(&path)
+            .unwrap();
+        let page = Page {
+            id: 1,
+            file_name: "page.png".into(),
+            width: 4,
+            height: 2,
+            image_path: path.clone(),
+            bubbles: Vec::new(),
+        };
+        let (alpha, _) = render_page(&page, 4, 4, true).unwrap();
+        let (opaque, _) = render_page(&page, 4, 4, false).unwrap();
+        let _ = std::fs::remove_file(path);
+        assert_eq!(alpha.get_pixel(0, 0)[3], 0);
+        assert_eq!(alpha.get_pixel(0, 1)[3], 255);
+        assert_eq!(opaque.get_pixel(0, 0)[3], 255);
+    }
+
+    #[test]
+    fn exports_every_bubble_and_later_page_with_audio() {
         if !crate::media_binary::can_run("ffmpeg") {
             return;
         }
@@ -599,10 +906,31 @@ mod tests {
         wav.extend(samples.iter().flat_map(|sample| sample.to_le_bytes()));
         std::fs::write(&audio_path, wav).unwrap();
         let mut project = ComicDubsProject::default();
-        let page = project.add_page("page.png".into(), page_path, 64, 64);
-        let bubble = project
+        let first_page = project.add_page("page-1.png".into(), page_path.clone(), 64, 64);
+        let first = project
             .add_bubble(
-                page,
+                first_page,
+                vec![
+                    Point { x: 0.1, y: 0.1 },
+                    Point { x: 0.9, y: 0.1 },
+                    Point { x: 0.5, y: 0.9 },
+                ],
+            )
+            .unwrap();
+        let second = project
+            .add_bubble(
+                first_page,
+                vec![
+                    Point { x: 0.1, y: 0.1 },
+                    Point { x: 0.9, y: 0.1 },
+                    Point { x: 0.5, y: 0.9 },
+                ],
+            )
+            .unwrap();
+        let later_page = project.add_page("page-2.png".into(), page_path, 64, 64);
+        let third = project
+            .add_bubble(
+                later_page,
                 vec![
                     Point { x: 0.1, y: 0.1 },
                     Point { x: 0.9, y: 0.1 },
@@ -622,7 +950,15 @@ mod tests {
                 waveform: WaveformData::default(),
             },
         );
-        project.assign_audio(bubble, Some(audio));
+        for (bubble, text) in [(first, "Un"), (second, "Deux"), (third, "Trois")] {
+            project.set_bubble_text(bubble, text.into());
+            project.assign_audio(bubble, Some(audio));
+        }
+        let expected_duration = playback_steps(&project, 25.0, None)
+            .iter()
+            .map(|step| step.duration_ms)
+            .sum::<u64>() as f64
+            / 1_000.0;
         export_mp4(
             &project,
             &output,
@@ -647,6 +983,32 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "audio");
+        let duration = |stream: Option<&str>| {
+            let mut command = crate::media_binary::command("ffprobe");
+            command.args(["-v", "error"]);
+            if let Some(stream) = stream {
+                command.args(["-select_streams", stream]);
+            }
+            command
+                .args([
+                    "-show_entries",
+                    if stream.is_some() {
+                        "stream=duration"
+                    } else {
+                        "format=duration"
+                    },
+                    "-of",
+                    "default=nw=1:nk=1",
+                ])
+                .arg(&output)
+                .output()
+                .ok()
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .and_then(|duration| duration.trim().parse::<f64>().ok())
+                .unwrap()
+        };
+        assert!(duration(Some("a:0")) >= expected_duration - 0.1);
+        assert!(duration(None) >= expected_duration - 0.1);
         let _ = std::fs::remove_dir_all(directory);
     }
 }

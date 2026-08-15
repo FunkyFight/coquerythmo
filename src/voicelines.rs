@@ -2,12 +2,27 @@
 
 use crate::recording::{RecordedAudio, WaveformData};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub type AudioId = u64;
 pub type RegionId = u64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryDestination {
+    ComicDubs,
+    Recording,
+}
+
+#[derive(Debug, Clone)]
+pub struct RegionJoin {
+    pub audio_id: AudioId,
+    pub region_id: RegionId,
+    pub ranges_ms: Vec<(u64, u64)>,
+    pub destination_ms: u64,
+    pub output_duration_ms: u64,
+}
 
 const MIN_REGION_MS: u64 = 20;
 const AUTO_SILENCE_MS: u64 = 200;
@@ -39,6 +54,8 @@ pub struct Region {
     pub name: String,
     pub start_ms: u64,
     pub end_ms: u64,
+    #[serde(default)]
+    pub manually_renamed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,6 +71,10 @@ pub struct Audio {
     pub waveform: WaveformData,
     #[serde(default)]
     pub regions: Vec<Region>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    comic_dubs_deliveries: BTreeMap<RegionId, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    recording_deliveries: BTreeMap<RegionId, u64>,
 }
 
 impl Audio {
@@ -62,6 +83,35 @@ impl Audio {
             .saturating_mul(1_000)
             .checked_div(u64::from(self.sample_rate.max(1)))
             .unwrap_or(0)
+    }
+
+    pub fn has_delivery(&self, destination: DeliveryDestination) -> bool {
+        !self.deliveries(destination).is_empty()
+    }
+
+    pub fn delivery_target(
+        &self,
+        destination: DeliveryDestination,
+        region_id: RegionId,
+    ) -> Option<u64> {
+        self.deliveries(destination).get(&region_id).copied()
+    }
+
+    fn deliveries(&self, destination: DeliveryDestination) -> &BTreeMap<RegionId, u64> {
+        match destination {
+            DeliveryDestination::ComicDubs => &self.comic_dubs_deliveries,
+            DeliveryDestination::Recording => &self.recording_deliveries,
+        }
+    }
+
+    fn deliveries_mut(
+        &mut self,
+        destination: DeliveryDestination,
+    ) -> &mut BTreeMap<RegionId, u64> {
+        match destination {
+            DeliveryDestination::ComicDubs => &mut self.comic_dubs_deliveries,
+            DeliveryDestination::Recording => &mut self.recording_deliveries,
+        }
     }
 }
 
@@ -113,6 +163,22 @@ impl VoicelinesProject {
         self.audios.iter().find(|audio| audio.id == id)
     }
 
+    pub fn set_delivery_target(
+        &mut self,
+        audio_id: AudioId,
+        destination: DeliveryDestination,
+        region_id: RegionId,
+        target_id: u64,
+    ) -> bool {
+        let Some(audio) = self.audios.iter_mut().find(|audio| audio.id == audio_id) else {
+            return false;
+        };
+        audio
+            .deliveries_mut(destination)
+            .insert(region_id, target_id)
+            != Some(target_id)
+    }
+
     pub fn naming(&self) -> &NamingMode {
         &self.naming
     }
@@ -137,6 +203,8 @@ impl VoicelinesProject {
             sample_count: recorded.sample_count,
             waveform: recorded.waveform,
             regions: Vec::new(),
+            comic_dubs_deliveries: BTreeMap::new(),
+            recording_deliveries: BTreeMap::new(),
         });
         self.active_audio = Some(id);
         id
@@ -196,10 +264,17 @@ impl VoicelinesProject {
         if !pattern.contains("{num}") {
             pattern.push_str("_{num}");
         }
+        let mut next = 1u32;
+        for region in self.audios.iter_mut().flat_map(|audio| &mut audio.regions) {
+            if !region.manually_renamed {
+                region.name = pattern.replace("{num}", &format!("{:03}", next));
+                next = next.saturating_add(1);
+            }
+        }
         self.automatic_pattern.clone_from(&pattern);
         self.naming = NamingMode::Automatic {
             pattern,
-            next: self.next_automatic_number(),
+            next,
         };
         Ok(())
     }
@@ -219,6 +294,7 @@ impl VoicelinesProject {
             name,
             start_ms,
             end_ms,
+            manually_renamed: false,
         });
         audio
             .regions
@@ -258,20 +334,76 @@ impl VoicelinesProject {
         else {
             return false;
         };
-        if region.name == name {
-            return false;
-        }
+        let changed = region.name != name || !region.manually_renamed;
         region.name = name;
-        true
+        region.manually_renamed = true;
+        changed
     }
 
     pub fn remove_region(&mut self, id: RegionId) -> bool {
         let Some(audio) = self.active_audio_mut() else {
             return false;
         };
+        // ponytail: keep delivered media when a cut is deleted; add explicit destination cleanup
+        // only when we can safely handle assets already used by bubbles or recording clips.
         let before = audio.regions.len();
         audio.regions.retain(|region| region.id != id);
         audio.regions.len() != before
+    }
+
+    pub fn join_regions(&mut self, ids: &[RegionId]) -> Option<RegionJoin> {
+        if ids.len() < 2 {
+            return None;
+        }
+        let audio_id = self.active_audio?;
+        let audio = self.active_audio()?;
+        let mut regions = Vec::with_capacity(ids.len());
+        for id in ids {
+            let region = audio.regions.iter().find(|region| region.id == *id)?;
+            if regions.iter().any(|existing: &Region| existing.id == region.id) {
+                return None;
+            }
+            regions.push(region.clone());
+        }
+        let destination_ms = regions[0].start_ms;
+        let duration_ms = regions
+            .iter()
+            .map(|region| region.end_ms - region.start_ms)
+            .sum::<u64>();
+        let end_ms = destination_ms.checked_add(duration_ms)?;
+        let output_duration_ms = audio.duration_ms().checked_add(duration_ms)?;
+        let ranges_ms = regions
+            .iter()
+            .map(|region| (region.start_ms, region.end_ms))
+            .collect();
+        let first = regions.remove(0);
+        let selected: HashSet<_> = ids.iter().copied().collect();
+        let region_id = self.allocate_id();
+        let audio = self.active_audio_mut()?;
+        audio.regions.retain(|region| !selected.contains(&region.id));
+        for region in &mut audio.regions {
+            if region.start_ms >= destination_ms {
+                region.start_ms = region.start_ms.saturating_add(duration_ms);
+                region.end_ms = region.end_ms.saturating_add(duration_ms);
+            } else if region.end_ms > destination_ms {
+                region.end_ms = region.end_ms.saturating_add(duration_ms);
+            }
+        }
+        audio.regions.push(Region {
+            id: region_id,
+            name: first.name,
+            start_ms: destination_ms,
+            end_ms,
+            manually_renamed: first.manually_renamed,
+        });
+        audio.regions.sort_by_key(|region| (region.start_ms, region.id));
+        Some(RegionJoin {
+            audio_id,
+            region_id,
+            ranges_ms,
+            destination_ms,
+            output_duration_ms,
+        })
     }
 
     pub fn auto_detect_regions(&mut self) -> usize {
@@ -325,14 +457,6 @@ impl VoicelinesProject {
         }
     }
 
-    fn next_automatic_number(&self) -> u32 {
-        self.audios
-            .iter()
-            .map(|audio| audio.regions.len() as u32)
-            .sum::<u32>()
-            .saturating_add(1)
-    }
-
     pub(crate) fn validate(&mut self) -> Result<(), String> {
         match &self.naming {
             NamingMode::Automatic { pattern, .. } if !pattern.contains("{num}") => {
@@ -344,18 +468,24 @@ impl VoicelinesProject {
             }
             NamingMode::Manual => {}
         }
+        let automatic_pattern = self.automatic_pattern.clone();
         let mut ids = HashSet::new();
         for audio in &mut self.audios {
             if audio.sample_rate == 0 || audio.sample_count == 0 || !ids.insert(audio.id) {
                 return Err("invalid voicelines audio metadata".into());
             }
             let duration = audio.duration_ms();
-            for region in &audio.regions {
+            for region in &mut audio.regions {
                 if !ids.insert(region.id)
                     || valid_bounds(region.start_ms, region.end_ms, duration).is_none()
                     || clean_name(&region.name).is_empty()
                 {
                     return Err("invalid voicelines region".into());
+                }
+                if !region.manually_renamed
+                    && !name_matches_pattern(&region.name, &automatic_pattern)
+                {
+                    region.manually_renamed = true;
                 }
             }
             audio
@@ -373,6 +503,89 @@ impl VoicelinesProject {
             .max(ids.into_iter().max().unwrap_or(0).saturating_add(1));
         Ok(())
     }
+}
+
+fn name_matches_pattern(name: &str, pattern: &str) -> bool {
+    let Some((prefix, suffix)) = pattern.split_once("{num}") else {
+        return false;
+    };
+    name.strip_prefix(prefix)
+        .and_then(|name| name.strip_suffix(suffix))
+        .is_some_and(|number| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+pub fn join_audio_regions(
+    input: &Path,
+    output: &Path,
+    join: &RegionJoin,
+) -> Result<RecordedAudio, String> {
+    let moved_duration_ms = join
+        .ranges_ms
+        .iter()
+        .map(|(start, end)| end - start)
+        .sum::<u64>();
+    let original_duration_ms = join.output_duration_ms.saturating_sub(moved_duration_ms);
+    let mut filters = format!(
+        "[0:a]apad,atrim=duration={:.3},",
+        original_duration_ms as f64 / 1_000.0,
+    );
+    for (start, end) in join.ranges_ms.iter().copied() {
+        filters.push_str(&format!(
+            "volume=0:enable='between(t,{:.3},{:.3})',",
+            start as f64 / 1000.0,
+            end as f64 / 1000.0
+        ));
+    }
+    filters.push_str("anull[clean];");
+    if join.destination_ms == 0 {
+        filters.push_str(&format!(
+            "[clean]asetpts=PTS-STARTPTS,adelay={moved_duration_ms}:all=1[base];"
+        ));
+    } else {
+        filters.push_str(&format!(
+            "[clean]asplit=2[before_in][after_in];\
+             [before_in]atrim=end={:.3},asetpts=PTS-STARTPTS[before];\
+             [after_in]atrim=start={:.3},asetpts=PTS-STARTPTS,adelay={}:all=1[after];\
+             [before][after]amix=inputs=2:normalize=0:duration=longest[base];",
+            join.destination_ms as f64 / 1_000.0,
+            join.destination_ms as f64 / 1_000.0,
+            join.destination_ms.saturating_add(moved_duration_ms),
+        ));
+    }
+    for (index, (start, end)) in join.ranges_ms.iter().copied().enumerate() {
+        filters.push_str(&format!(
+            "[0:a]atrim=start={:.3}:end={:.3},asetpts=PTS-STARTPTS[c{index}];",
+            start as f64 / 1000.0,
+            end as f64 / 1000.0
+        ));
+    }
+    for index in 0..join.ranges_ms.len() {
+        filters.push_str(&format!("[c{index}]"));
+    }
+    filters.push_str(&format!(
+        "concat=n={}:v=0:a=1,adelay={}:all=1[moved];[base][moved]amix=inputs=2:normalize=0:duration=longest[out]",
+        join.ranges_ms.len(),
+        join.destination_ms
+    ));
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let status = crate::media_binary::command("ffmpeg")
+        .args(["-y", "-v", "error", "-i"])
+        .arg(input)
+        .args(["-filter_complex", &filters, "-map", "[out]", "-ar"])
+        .arg(crate::recording_mix::REALTIME_SAMPLE_RATE.to_string())
+        .args(["-ac", "1", "-c:a", "flac"])
+        .arg("-t")
+        .arg(format!("{:.3}", join.output_duration_ms as f64 / 1_000.0))
+        .arg(output)
+        .status()
+        .map_err(|error| format!("Impossible de raccorder l'audio : {error}"))?;
+    if !status.success() {
+        let _ = fs::remove_file(output);
+        return Err("FFmpeg n'a pas pu raccorder les zones".into());
+    }
+    crate::media_recording::inspect_normalized_audio(output).map_err(|error| error.to_string())
 }
 
 pub fn export_region(audio: &Audio, region: &Region, output: &Path) -> Result<(), String> {
@@ -680,5 +893,33 @@ mod tests {
         let mut loaded: VoicelinesProject = serde_json::from_value(old_json).unwrap();
         loaded.validate().unwrap();
         assert_eq!(loaded.automatic_pattern(), "archive-{num}");
+    }
+
+    #[test]
+    fn automatic_naming_preserves_manual_names_and_join_uses_selection_order() {
+        let mut project = VoicelinesProject::default();
+        project.add_audio("one.wav".into(), "one.flac".into(), recorded(vec![1.0; 30]));
+        let first = project.add_region(100, 300).unwrap();
+        let automatic = project.add_region(400, 500).unwrap();
+        let second = project.add_region(1_900, 2_000).unwrap();
+        let tail = project.add_region(2_200, 2_300).unwrap();
+        assert!(project.rename_region(first, "voiceline_001"));
+        assert!(project.rename_region(second, "héros"));
+
+        project.set_automatic_naming("prise-{num}").unwrap();
+        let audio = project.active_audio().unwrap();
+        assert_eq!(audio.regions.iter().find(|region| region.id == first).unwrap().name, "voiceline_001");
+        assert_eq!(audio.regions.iter().find(|region| region.id == automatic).unwrap().name, "prise-001");
+        assert_eq!(audio.regions.iter().find(|region| region.id == second).unwrap().name, "héros");
+        assert_eq!(audio.regions.iter().find(|region| region.id == tail).unwrap().name, "prise-002");
+
+        let join = project.join_regions(&[second, first]).unwrap();
+        assert_eq!(join.destination_ms, 1_900);
+        assert_eq!(join.ranges_ms, vec![(1_900, 2_000), (100, 300)]);
+        assert_eq!(join.output_duration_ms, 3_300);
+        let region = project.active_audio().unwrap().regions.iter().find(|region| region.id == join.region_id).unwrap();
+        assert_eq!((region.start_ms, region.end_ms, region.name.as_str()), (1_900, 2_200, "héros"));
+        let tail = project.active_audio().unwrap().regions.iter().find(|region| region.id == tail).unwrap();
+        assert_eq!((tail.start_ms, tail.end_ms), (2_500, 2_600));
     }
 }

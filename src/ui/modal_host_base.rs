@@ -698,10 +698,6 @@ impl ModalHost {
             .as_mut()
             .unwrap()
             .handle_event(event, screen_w, screen_h);
-        let video_only = self
-            .export
-            .as_ref()
-            .is_some_and(super::export_modal::ExportModal::video_only);
         if focus_navigation {
             if let Some(modal) = self.export.as_ref() {
                 let event = modal
@@ -730,14 +726,10 @@ impl ModalHost {
             super::export_modal::ExportModalResult::Consumed => ModalOutcome::Consumed,
             super::export_modal::ExportModalResult::Close { configuration } => {
                 self.export = None;
-                if video_only {
-                    closed_modal(crate::i18n::t("export_modal.title"))
-                } else {
-                    action_closed_modal(
-                        UiAction::SaveExportConfiguration { configuration },
-                        crate::i18n::t("export_modal.title"),
-                    )
-                }
+                action_closed_modal(
+                    UiAction::SaveExportConfiguration { configuration },
+                    crate::i18n::t("export_modal.title"),
+                )
             }
             super::export_modal::ExportModalResult::Export { configuration } => {
                 self.export = None;

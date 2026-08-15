@@ -110,6 +110,7 @@ struct UiTextKey {
     height_bits: u32,
     h_align: u8,
     overflow: u8,
+    letter_spacing_bits: u32,
     font_family_hash: u64,
     font_family_len: usize,
 }
@@ -288,7 +289,8 @@ pub enum UiLayer {
 
 #[cfg(test)]
 mod layer_tests {
-    use super::UiLayer;
+    use super::{FontSystem, UiLayer, UiRenderer};
+    use crate::ui::primitives::{HAlign, LabelInfo, Overflow, Rect, VAlign};
 
     #[test]
     fn semantic_layers_have_one_stable_back_to_front_order() {
@@ -316,6 +318,39 @@ mod layer_tests {
                 UiLayer::Topmost,
             ]
         );
+    }
+
+    #[test]
+    fn letter_spacing_keeps_each_pixel_value_distinct() {
+        fn width(font_system: &mut FontSystem, spacing: f32) -> f32 {
+            let label = LabelInfo {
+                text: "Comic Dubs",
+                bounds: Rect {
+                    width: 1_000.0,
+                    height: 40.0,
+                    ..Rect::default()
+                },
+                h_align: HAlign::Left,
+                v_align: VAlign::Center,
+                overflow: Overflow::ClipWithLetterSpacing(spacing),
+                padding: 0.0,
+                font_size_override: Some(24.0),
+                color_override: None,
+                font_family_override: None,
+            };
+            let cached =
+                UiRenderer::build_ui_text_buffer(font_system, &label, 1_000.0, 24.0, 32.0, 0);
+            cached
+                .buffer
+                .layout_runs()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| glyph.x + glyph.w)
+                .fold(0.0, f32::max)
+        }
+
+        let mut font_system = FontSystem::new();
+        let widths = [5.0, 6.0, 7.0].map(|spacing| width(&mut font_system, spacing));
+        assert!(widths[0] < widths[1] && widths[1] < widths[2], "{widths:?}");
     }
 }
 
@@ -1047,6 +1082,7 @@ impl UiRenderer {
     fn overflow_key(overflow: Overflow) -> u8 {
         match overflow {
             Overflow::Clip => 0,
+            Overflow::ClipWithLetterSpacing(_) => 0,
             Overflow::Ellipsis => 1,
             Overflow::Visible => 2,
         }
@@ -1068,6 +1104,10 @@ impl UiRenderer {
             height_bits: rect.height.max(0.0).to_bits(),
             h_align: Self::h_align_key(label.h_align),
             overflow: Self::overflow_key(label.overflow),
+            letter_spacing_bits: match label.overflow {
+                Overflow::ClipWithLetterSpacing(spacing) => spacing.to_bits(),
+                _ => 0,
+            },
             font_family_hash: Self::hash_text(family),
             font_family_len: family.len(),
         };
@@ -1093,7 +1133,7 @@ impl UiRenderer {
         };
 
         match label.overflow {
-            Overflow::Clip | Overflow::Visible => {
+            Overflow::Clip | Overflow::ClipWithLetterSpacing(_) | Overflow::Visible => {
                 buffer.set_wrap(font_system, Wrap::None);
             }
             Overflow::Ellipsis => {
@@ -1106,13 +1146,12 @@ impl UiRenderer {
             Some(name) => Family::Name(name),
             None => Family::SansSerif,
         };
-        buffer.set_text(
-            font_system,
-            label.text,
-            &Attrs::new().family(label_family),
-            Shaping::Advanced,
-            None,
-        );
+        let attrs = Attrs::new().family(label_family);
+        let attrs = match label.overflow {
+            Overflow::ClipWithLetterSpacing(spacing) => attrs.letter_spacing(spacing / fs),
+            _ => attrs,
+        };
+        buffer.set_text(font_system, label.text, &attrs, Shaping::Advanced, None);
 
         for line in buffer.lines.iter_mut() {
             line.set_align(Some(cosmic_align));

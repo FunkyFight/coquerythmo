@@ -531,6 +531,13 @@ impl RecordingProject {
                 self.observe_id(asset.id.get());
                 self.assets.insert(asset.id, asset.clone());
             }
+            RecordingOperation::ReplaceAsset { asset } => {
+                if !self.assets.contains_key(&asset.id) {
+                    return Err(RecordingError::MissingAsset(asset.id));
+                }
+                asset.validate()?;
+                self.assets.insert(asset.id, asset.clone());
+            }
             RecordingOperation::RemoveAsset { asset_id } => {
                 if self.clips.values().any(|clip| clip.asset_id == *asset_id) {
                     return Err(RecordingError::AssetInUse(*asset_id));
@@ -778,6 +785,9 @@ pub enum RecordingOperation {
         operations: Vec<RecordingOperation>,
     },
     AddAsset {
+        asset: AudioAsset,
+    },
+    ReplaceAsset {
         asset: AudioAsset,
     },
     RemoveAsset {
@@ -1567,6 +1577,28 @@ mod tests {
             })
             .unwrap();
         (project, track_id, clip_id)
+    }
+
+    #[test]
+    fn replacing_an_asset_keeps_its_id_and_does_not_duplicate_it() {
+        let mut project = RecordingProject::new(24.0).unwrap();
+        let original = asset(1);
+        project
+            .apply(&RecordingOperation::AddAsset {
+                asset: original.clone(),
+            })
+            .unwrap();
+        let mut replacement = original;
+        replacement.checksum = "f".repeat(40);
+
+        project
+            .apply(&RecordingOperation::ReplaceAsset {
+                asset: replacement.clone(),
+            })
+            .unwrap();
+
+        assert_eq!(project.assets().len(), 1);
+        assert_eq!(project.asset(replacement.id), Some(&replacement));
     }
 
     #[test]

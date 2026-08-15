@@ -79,6 +79,8 @@
 "comic_dubs.export.title" = "Export Comic Dub"
 "comic_dubs.export.subtitle" = "Create an MP4 video from the Comic Dub pages, bubbles, and audio."
 "comic_dubs.export.video" = "Comic Dubs video (MP4)"
+"comic_dubs.export.alpha" = "Transparent background (MOV ProRes 4444)"
+"comic_dubs.export.pages_zip" = "One MP4 per page (ZIP archive)"
 "recording.choice.solo" = "Record solo"
 "recording.choice.solo_hint" = "Record and edit your takes locally, without connecting."
 "recording.choice.online" = "Record online"

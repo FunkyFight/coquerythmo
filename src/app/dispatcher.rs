@@ -383,8 +383,50 @@ impl CommandDispatcher {
                 bubble_id,
                 font_size,
             } => state.comic_dubs_set_bubble_font_size(bubble_id, font_size),
+            UiAction::ComicDubsSetBubbleLetterSpacing { bubble_id, spacing } => {
+                state.comic_dubs_set_bubble_letter_spacing(bubble_id, spacing)
+            }
+            UiAction::ComicDubsSetBubbleLineSpacing { bubble_id, spacing } => {
+                state.comic_dubs_set_bubble_line_spacing(bubble_id, spacing)
+            }
+            UiAction::ComicDubsSetBubbleTextColor { bubble_id, color } => {
+                state.comic_dubs_set_bubble_text_color(bubble_id, color)
+            }
+            UiAction::ComicDubsSetBubbleTextAlignment {
+                bubble_id,
+                alignment,
+            } => state.comic_dubs_set_bubble_text_alignment(bubble_id, alignment),
+            UiAction::ComicDubsSetBubbleTextStyle {
+                bubble_id,
+                bold,
+                strikethrough,
+                underline,
+            } => state.comic_dubs_set_bubble_text_style(
+                bubble_id,
+                bold,
+                strikethrough,
+                underline,
+            ),
             UiAction::ComicDubsSetBubblePoints { bubble_id, points } => {
                 state.comic_dubs_set_bubble_points(bubble_id, points)
+            }
+            UiAction::ComicDubsOpenVertexEditor(bubble_id) => {
+                state.open_comic_dubs_vertex_editor(bubble_id)
+            }
+            UiAction::ComicDubsCloseVertexEditor => state.close_comic_dubs_vertex_editor(),
+            UiAction::ComicDubsSetVertexEditorPlayhead(at_ms) => {
+                state.set_comic_dubs_vertex_editor_playhead(at_ms)
+            }
+            UiAction::ComicDubsToggleVertexEditorPreview => {
+                state.toggle_comic_dubs_vertex_editor_preview();
+            }
+            UiAction::ComicDubsSetBubbleVertexKeyframe {
+                bubble_id,
+                at_ms,
+                points,
+            } => state.comic_dubs_set_bubble_vertex_keyframe(bubble_id, at_ms, points),
+            UiAction::ComicDubsRemoveBubbleVertexKeyframe { bubble_id, at_ms } => {
+                state.comic_dubs_remove_bubble_vertex_keyframe(bubble_id, at_ms)
             }
             UiAction::ComicDubsAssignAudio {
                 bubble_id,
@@ -424,6 +466,9 @@ impl CommandDispatcher {
             UiAction::VoicelinesRenameRegion { region_id, name } => {
                 state.voicelines_rename_region(region_id, &name)
             }
+            UiAction::VoicelinesJoinRegions(region_ids) => {
+                state.voicelines_join_regions(region_ids)
+            }
             UiAction::VoicelinesDeleteRegion(region_id) => {
                 state.voicelines_delete_region(region_id)
             }
@@ -446,6 +491,10 @@ impl CommandDispatcher {
                 audio_id,
                 workspace,
             } => state.voicelines_send_audio(audio_id, workspace),
+            UiAction::VoicelinesUpdateAudio {
+                audio_id,
+                workspace,
+            } => state.voicelines_update_audio(audio_id, workspace),
             UiAction::VoicelinesSaveSession => {
                 if state.project_session.project_path.is_some() {
                     quick_save_existing(state);
@@ -1080,22 +1129,29 @@ impl CommandDispatcher {
                 state.save_export_configuration(configuration);
             }
             UiAction::StartConfiguredExport { configuration } => {
+                state.save_export_configuration(configuration.clone());
                 if state.active_workspace()
                     == crate::application::workspace_service::WorkspaceId::ComicDubs
                 {
+                    let filters = if configuration.comic_dubs_pages_zip {
+                        save_dialog_filters("Archive MP4 par page", &["zip"])
+                    } else if configuration.comic_dubs_alpha {
+                        save_dialog_filters("Vidéo alpha ProRes", &["mov"])
+                    } else {
+                        save_dialog_filters("Vidéo MP4", &["mp4"])
+                    };
                     open_file_picker(
                         state,
                         elwt,
                         i18n::t("picker.delivery_export.title"),
                         FilePickerMode::Save,
                         FilePickerIntent::ComicDubsExport { configuration },
-                        save_dialog_filters("Vidéo MP4", &["mp4"]),
+                        filters,
                         project_or_video_dir(state),
                         None,
                     );
                     return false;
                 }
-                state.save_export_configuration(configuration.clone());
                 let filters = save_dialog_filters(
                     "Export Coquerythmo",
                     &[

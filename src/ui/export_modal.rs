@@ -40,6 +40,8 @@ enum ExportFocus {
     VideoQuality(usize),
     VideoWidth,
     VideoHeight,
+    ComicAlpha,
+    ComicPages,
     VideoFps,
     VideoBrScale,
     VideoKaraokeScale,
@@ -139,10 +141,6 @@ impl ExportModal {
         modal
     }
 
-    pub fn video_only(&self) -> bool {
-        self.video_only
-    }
-
     fn focus_order(&self) -> Vec<ExportFocus> {
         let page_index = match self.page {
             ExportPage::Video => 0,
@@ -166,8 +164,11 @@ impl ExportModal {
                     order.push(ExportFocus::VideoWidth);
                     order.push(ExportFocus::VideoHeight);
                 }
-                order.push(ExportFocus::VideoFps);
+                if self.video_only {
+                    order.extend([ExportFocus::ComicAlpha, ExportFocus::ComicPages]);
+                }
                 if !self.video_only {
+                    order.push(ExportFocus::VideoFps);
                     order.extend([
                         ExportFocus::VideoBrScale,
                         ExportFocus::VideoKaraokeScale,
@@ -271,6 +272,8 @@ impl ExportModal {
             ExportFocus::VideoQuality(_) => t("export_hub.quality").to_string(),
             ExportFocus::VideoWidth => t("export_modal.width").to_string(),
             ExportFocus::VideoHeight => t("export_modal.height").to_string(),
+            ExportFocus::ComicAlpha => t("comic_dubs.export.alpha").to_string(),
+            ExportFocus::ComicPages => t("comic_dubs.export.pages_zip").to_string(),
             ExportFocus::VideoFps => t("export_modal.fps").to_string(),
             ExportFocus::VideoBrScale => t("export_modal.br_scale").to_string(),
             ExportFocus::VideoKaraokeScale => t("export_modal.karaoke_text_scale").to_string(),
@@ -345,6 +348,16 @@ impl ExportModal {
                 "{}, {}",
                 self.keyboard_focus_label(),
                 state(self.configuration.video_enabled)
+            )),
+            ExportFocus::ComicAlpha => Some(format!(
+                "{}, {}",
+                self.keyboard_focus_label(),
+                state(self.configuration.comic_dubs_alpha)
+            )),
+            ExportFocus::ComicPages => Some(format!(
+                "{}, {}",
+                self.keyboard_focus_label(),
+                state(self.configuration.comic_dubs_pages_zip)
             )),
             ExportFocus::VideoAspect(index) => {
                 let selected = match index {
@@ -708,6 +721,8 @@ impl ExportModal {
                     + direction * 2)
                     .clamp(16, 8192) as u32;
             }
+            ExportFocus::ComicAlpha => self.toggle_comic_alpha(),
+            ExportFocus::ComicPages => self.toggle_comic_pages(),
             ExportFocus::VideoFps => {
                 self.configuration.fps =
                     (self.configuration.fps + direction as f64).clamp(1.0, 480.0);
@@ -757,6 +772,8 @@ impl ExportModal {
                 | ExportFocus::VideoQuality(_)
                 | ExportFocus::VideoWidth
                 | ExportFocus::VideoHeight
+                | ExportFocus::ComicAlpha
+                | ExportFocus::ComicPages
                 | ExportFocus::VideoFps
                 | ExportFocus::VideoBrScale
                 | ExportFocus::VideoKaraokeScale
@@ -800,6 +817,8 @@ impl ExportModal {
             }
             ExportFocus::VideoWidth => self.begin_numeric(NumericField::Width),
             ExportFocus::VideoHeight => self.begin_numeric(NumericField::Height),
+            ExportFocus::ComicAlpha => self.toggle_comic_alpha(),
+            ExportFocus::ComicPages => self.toggle_comic_pages(),
             ExportFocus::VideoCountdown => {
                 self.configuration.countdown_enabled = !self.configuration.countdown_enabled;
             }
@@ -851,6 +870,14 @@ impl ExportModal {
         }
         self.refresh_display_strings();
         None
+    }
+
+    fn toggle_comic_alpha(&mut self) {
+        self.configuration.comic_dubs_alpha = !self.configuration.comic_dubs_alpha;
+    }
+
+    fn toggle_comic_pages(&mut self) {
+        self.configuration.comic_dubs_pages_zip = !self.configuration.comic_dubs_pages_zip;
     }
 
     fn any_format_selected(&self) -> bool {
@@ -1234,6 +1261,23 @@ impl ExportModal {
                 return;
             }
         }
+        if self.video_only {
+            for (rect, focus) in [
+                (Rect { x: content.x + 16.0, y: content.y + 286.0, width: content.width - 32.0, height: 34.0 }, ExportFocus::ComicAlpha),
+                (Rect { x: content.x + 16.0, y: content.y + 328.0, width: content.width - 32.0, height: 34.0 }, ExportFocus::ComicPages),
+            ] {
+                if rect.contains(x, y) {
+                    self.set_focus(focus);
+                    match focus {
+                        ExportFocus::ComicAlpha => self.toggle_comic_alpha(),
+                        ExportFocus::ComicPages => self.toggle_comic_pages(),
+                        _ => {}
+                    }
+                    return;
+                }
+            }
+            return;
+        }
         if stepper_minus(content, 276.0).contains(x, y) {
             self.set_focus(ExportFocus::VideoFps);
             self.configuration.fps = (self.configuration.fps - 1.0).max(1.0);
@@ -1542,6 +1586,8 @@ impl ExportModal {
             ExportFocus::VideoQuality(index) => segment_rect(content, 180.0, 5, index),
             ExportFocus::VideoWidth => dimension_rects(content).0,
             ExportFocus::VideoHeight => dimension_rects(content).1,
+            ExportFocus::ComicAlpha => Rect { x: content.x + 16.0, y: content.y + 286.0, width: content.width - 32.0, height: 34.0 },
+            ExportFocus::ComicPages => Rect { x: content.x + 16.0, y: content.y + 328.0, width: content.width - 32.0, height: 34.0 },
             ExportFocus::VideoFps => stepper_focus_rect(content, 276.0),
             ExportFocus::VideoBrScale => stepper_focus_rect(content, 326.0),
             ExportFocus::VideoKaraokeScale => stepper_focus_rect(content, 376.0),
@@ -1690,6 +1736,35 @@ impl ExportModal {
                 Some([132, 181, 255]),
             ));
         }
+        if self.video_only {
+            checkbox_row(
+                quads,
+                labels,
+                Rect {
+                    x: content.x + 16.0,
+                    y: content.y + 286.0,
+                    width: content.width - 32.0,
+                    height: 34.0,
+                },
+                self.configuration.comic_dubs_alpha,
+                t("comic_dubs.export.alpha"),
+                true,
+            );
+            checkbox_row(
+                quads,
+                labels,
+                Rect {
+                    x: content.x + 16.0,
+                    y: content.y + 328.0,
+                    width: content.width - 32.0,
+                    height: 34.0,
+                },
+                self.configuration.comic_dubs_pages_zip,
+                t("comic_dubs.export.pages_zip"),
+                true,
+            );
+            return;
+        }
         stepper(
             quads,
             labels,
@@ -1698,9 +1773,6 @@ impl ExportModal {
             t("export_modal.fps"),
             &self.fps_display,
         );
-        if self.video_only {
-            return;
-        }
         stepper(
             quads,
             labels,
@@ -2465,6 +2537,7 @@ mod tests {
         assert!(labels
             .iter()
             .any(|label| label.text == t("comic_dubs.export.video")));
+        assert!(!labels.iter().any(|label| label.text == t("export_modal.fps")));
         let content = modal.content_rect(ExportModal::card(1280.0, 720.0));
         let plus = stepper_plus(content, 276.0);
         let previous_fps = modal.configuration.fps;
@@ -2476,7 +2549,7 @@ mod tests {
             1280.0,
             720.0,
         );
-        assert_eq!(modal.configuration.fps, previous_fps + 1.0);
+        assert_eq!(modal.configuration.fps, previous_fps);
     }
 
     #[test]
@@ -2489,5 +2562,14 @@ mod tests {
             .keyboard_selection_label()
             .unwrap()
             .contains("désactivé"));
+    }
+
+    #[test]
+    fn comic_export_can_split_transparent_pages() {
+        let mut modal = ExportModal::new_video_only(1920, 1080, ExportConfiguration::default());
+        modal.toggle_comic_alpha();
+        modal.toggle_comic_pages();
+        assert!(modal.configuration.comic_dubs_alpha);
+        assert!(modal.configuration.comic_dubs_pages_zip);
     }
 }

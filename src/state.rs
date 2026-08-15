@@ -194,7 +194,8 @@ fn recording_added_assets<'a>(
                 recording_added_assets(operation, assets);
             }
         }
-        crate::recording::RecordingOperation::AddAsset { asset } => assets.push(asset),
+        crate::recording::RecordingOperation::AddAsset { asset }
+        | crate::recording::RecordingOperation::ReplaceAsset { asset } => assets.push(asset),
         _ => {}
     }
 }
@@ -524,6 +525,7 @@ pub struct State {
     voicelines_revision: u64,
     voicelines_player: Option<VideoPlayer>,
     voicelines_imports: Vec<PendingVoicelinesImport>,
+    voicelines_joins: Vec<PendingVoicelinesJoin>,
     voicelines_exports: Vec<PendingVoicelinesExport>,
     voicelines_transfers: Vec<PendingVoicelinesTransfer>,
     voicelines_play_until_ms: Option<u64>,
@@ -588,17 +590,35 @@ struct PendingVoicelinesImport {
     receiver: Receiver<Result<crate::recording::RecordedAudio, crate::recording::RecordingError>>,
 }
 
+struct PendingVoicelinesJoin {
+    before: crate::voicelines::VoicelinesProject,
+    project: crate::voicelines::VoicelinesProject,
+    join: crate::voicelines::RegionJoin,
+    output_path: PathBuf,
+    revision: u64,
+    receiver: Receiver<Result<crate::recording::RecordedAudio, String>>,
+}
+
 struct PendingVoicelinesExport {
     receiver: Receiver<Result<String, String>>,
 }
 
 struct TransferredVoiceline {
+    region_id: crate::voicelines::RegionId,
     output_path: PathBuf,
     recorded: crate::recording::RecordedAudio,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VoicelinesTransferMode {
+    Send,
+    Update,
+}
+
 struct PendingVoicelinesTransfer {
+    audio_id: crate::voicelines::AudioId,
     workspace: WorkspaceId,
+    mode: VoicelinesTransferMode,
     output_paths: Vec<PathBuf>,
     receiver: Receiver<Result<Vec<TransferredVoiceline>, String>>,
 }
@@ -620,6 +640,7 @@ enum PendingComicDubsImport {
 struct ComicDubsPlayback {
     page_index: usize,
     bubble_index: usize,
+    started_at: Instant,
     deadline: Instant,
 }
 
@@ -647,6 +668,7 @@ impl State {
             voicelines_revision: 0,
             voicelines_player: None,
             voicelines_imports: Vec::new(),
+            voicelines_joins: Vec::new(),
             voicelines_exports: Vec::new(),
             voicelines_transfers: Vec::new(),
             voicelines_play_until_ms: None,
@@ -797,7 +819,7 @@ impl State {
 
     pub(crate) fn reset_voicelines_document(&mut self) {
         self.voicelines_project = crate::voicelines::VoicelinesProject::default();
-        self.voicelines_revision = 0;
+        self.voicelines_revision = self.voicelines_revision.wrapping_add(1);
         self.voicelines_undo.clear();
         self.voicelines_redo.clear();
         self.voicelines_player = None;
@@ -872,6 +894,41 @@ impl State {
             self.voicelines_commit(before);
             self.ui_shell.ui.set_voicelines_selected_region(None);
         }
+    }
+
+    pub fn voicelines_join_regions(&mut self, region_ids: Vec<crate::voicelines::RegionId>) {
+        let before = self.voicelines_project.clone();
+        let mut project = before.clone();
+        let Some(join) = project.join_regions(&region_ids) else {
+            self.show_toast("Sélectionnez au moins deux zones valides", 4.0);
+            return;
+        };
+        let Some(audio) = before.audio(join.audio_id) else {
+            return;
+        };
+        let input_path = audio.playback_path.clone();
+        let output_path = self
+            .recording_runtime
+            .allocate_external_audio_path(&input_path, "voicelines-join");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker_output = output_path.clone();
+        let worker_join = join.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(crate::voicelines::join_audio_regions(
+                &input_path,
+                &worker_output,
+                &worker_join,
+            ));
+        });
+        self.voicelines_joins.push(PendingVoicelinesJoin {
+            before,
+            project,
+            join,
+            output_path,
+            revision: self.voicelines_revision,
+            receiver,
+        });
+        self.show_toast("Raccord des zones en cours…", 2.5);
     }
 
     pub fn voicelines_set_naming_pattern(&mut self, pattern: String) {
@@ -1034,6 +1091,23 @@ impl State {
         audio_id: crate::voicelines::AudioId,
         workspace: WorkspaceId,
     ) {
+        self.voicelines_transfer_audio(audio_id, workspace, VoicelinesTransferMode::Send);
+    }
+
+    pub fn voicelines_update_audio(
+        &mut self,
+        audio_id: crate::voicelines::AudioId,
+        workspace: WorkspaceId,
+    ) {
+        self.voicelines_transfer_audio(audio_id, workspace, VoicelinesTransferMode::Update);
+    }
+
+    fn voicelines_transfer_audio(
+        &mut self,
+        audio_id: crate::voicelines::AudioId,
+        workspace: WorkspaceId,
+        mode: VoicelinesTransferMode,
+    ) {
         if !matches!(workspace, WorkspaceId::ComicDubs | WorkspaceId::Recording) {
             return;
         }
@@ -1051,6 +1125,15 @@ impl State {
         let Some(audio) = self.voicelines_project.audio(audio_id).cloned() else {
             return;
         };
+        let destination = if workspace == WorkspaceId::ComicDubs {
+            crate::voicelines::DeliveryDestination::ComicDubs
+        } else {
+            crate::voicelines::DeliveryDestination::Recording
+        };
+        if mode == VoicelinesTransferMode::Update && !audio.has_delivery(destination) {
+            self.show_toast("Aucun envoi à mettre à jour dans cette destination", 4.0);
+            return;
+        }
         if audio.regions.is_empty() {
             self.show_toast("Aucune voiceline à envoyer", 3.0);
             return;
@@ -1094,6 +1177,7 @@ impl State {
                         recorded.file_name =
                             format!("{}.flac", crate::voicelines::export_stem(&region.name));
                         Ok(TransferredVoiceline {
+                            region_id: region.id,
                             output_path,
                             recorded,
                         })
@@ -1112,11 +1196,20 @@ impl State {
             let _ = sender.send(result);
         });
         self.voicelines_transfers.push(PendingVoicelinesTransfer {
+            audio_id,
             workspace,
+            mode,
             output_paths,
             receiver,
         });
-        self.show_toast("Envoi des voicelines en cours…", 2.0);
+        self.show_toast(
+            if mode == VoicelinesTransferMode::Update {
+                "Mise à jour des voicelines en cours…"
+            } else {
+                "Envoi des voicelines en cours…"
+            },
+            2.0,
+        );
     }
 
     pub fn voicelines_save_session(&mut self, path: PathBuf) {
@@ -1308,6 +1401,48 @@ impl State {
             changed = true;
         }
 
+        let mut index = self.voicelines_joins.len();
+        while index > 0 {
+            index -= 1;
+            let result = match self.voicelines_joins[index].receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Disconnected) => Some(Err("raccord audio interrompu".into())),
+                Err(TryRecvError::Empty) => None,
+            };
+            let Some(result) = result else { continue };
+            let mut pending = self.voicelines_joins.swap_remove(index);
+            match result {
+                Ok(recorded) if pending.revision == self.voicelines_revision => {
+                    self.recording_runtime
+                        .remember_external_audio(&recorded, pending.output_path.clone());
+                    pending.project.bind_audio(
+                        pending.join.audio_id,
+                        pending.output_path,
+                        recorded,
+                    );
+                    self.voicelines_project = pending.project;
+                    self.voicelines_commit(pending.before);
+                    if let Err(error) = self.voicelines_load_active_player() {
+                        self.show_toast(error, 5.0);
+                    } else {
+                        self.ui_shell
+                            .ui
+                            .set_voicelines_selected_region(Some(pending.join.region_id));
+                        self.show_toast("Zones raccordées", 3.0);
+                    }
+                }
+                Ok(_) => {
+                    let _ = std::fs::remove_file(pending.output_path);
+                    self.show_toast("Le projet a changé pendant le raccord", 5.0);
+                }
+                Err(error) => {
+                    let _ = std::fs::remove_file(pending.output_path);
+                    self.show_toast(error, 6.0);
+                }
+            }
+            changed = true;
+        }
+
         let mut index = self.voicelines_exports.len();
         while index > 0 {
             index -= 1;
@@ -1339,22 +1474,88 @@ impl State {
             match result {
                 Ok(items) if pending.workspace == WorkspaceId::ComicDubs => {
                     let count = items.len();
-                    let before = self.comic_dubs_project.clone();
-                    for item in items {
-                        let file_name = item.recorded.file_name.clone();
-                        self.recording_runtime
-                            .remember_external_audio(&item.recorded, item.output_path.clone());
-                        self.comic_dubs_project.add_audio(
-                            file_name,
-                            item.output_path,
-                            item.recorded,
-                        );
+                    let before_comic_dubs = self.comic_dubs_project.clone();
+                    let before_voicelines = self.voicelines_project.clone();
+                    let source_audio = self.voicelines_project.audio(pending.audio_id).cloned();
+                    let result = (|| {
+                        let source_audio = source_audio
+                            .ok_or_else(|| "Audio Voicelines source introuvable".to_string())?;
+                        if pending.mode == VoicelinesTransferMode::Update {
+                            for item in &items {
+                                if let Some(target_id) = source_audio.delivery_target(
+                                    crate::voicelines::DeliveryDestination::ComicDubs,
+                                    item.region_id,
+                                ) {
+                                    if self.comic_dubs_project.audio(target_id).is_none() {
+                                        return Err(format!(
+                                            "Audio Comic Dubs à mettre à jour introuvable ({target_id})"
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        for item in items {
+                            let target_id = if pending.mode == VoicelinesTransferMode::Update {
+                                source_audio.delivery_target(
+                                    crate::voicelines::DeliveryDestination::ComicDubs,
+                                    item.region_id,
+                                )
+                            } else {
+                                None
+                            };
+                            self.recording_runtime.remember_external_audio(
+                                &item.recorded,
+                                item.output_path.clone(),
+                            );
+                            let target_id = if let Some(target_id) = target_id {
+                                self.comic_dubs_project.bind_audio(
+                                    target_id,
+                                    item.output_path,
+                                    item.recorded,
+                                );
+                                target_id
+                            } else {
+                                let file_name = item.recorded.file_name.clone();
+                                self.comic_dubs_project.add_audio(
+                                    file_name,
+                                    item.output_path,
+                                    item.recorded,
+                                )
+                            };
+                            self.voicelines_project.set_delivery_target(
+                                pending.audio_id,
+                                crate::voicelines::DeliveryDestination::ComicDubs,
+                                item.region_id,
+                                target_id,
+                            );
+                        }
+                        Ok::<(), String>(())
+                    })();
+                    match result {
+                        Ok(()) => {
+                            self.comic_dubs_commit(before_comic_dubs);
+                            self.voicelines_commit(before_voicelines);
+                            self.show_toast(
+                                format!(
+                                    "{count} voiceline(s) {} Comic Dubs",
+                                    if pending.mode == VoicelinesTransferMode::Update {
+                                        "mise(s) à jour dans"
+                                    } else {
+                                        "envoyée(s) vers"
+                                    }
+                                ),
+                                4.0,
+                            );
+                        }
+                        Err(error) => {
+                            self.comic_dubs_project = before_comic_dubs;
+                            self.voicelines_project = before_voicelines;
+                            for output in pending.output_paths {
+                                let _ = std::fs::remove_file(output);
+                            }
+                            self.show_toast(error, 7.0);
+                        }
                     }
-                    self.comic_dubs_commit(before);
-                    self.show_toast(
-                        format!("{count} voiceline(s) envoyée(s) vers Comic Dubs"),
-                        4.0,
-                    );
                 }
                 Ok(items) if pending.workspace == WorkspaceId::Recording => {
                     if !self.ui_shell.ui.recording_can_edit_timeline() {
@@ -1367,27 +1568,69 @@ impl State {
                     }
                     let count = items.len();
                     let mut operations = Vec::with_capacity(count);
+                    let mut deliveries = Vec::with_capacity(count);
                     let mut last = None;
                     for item in items {
+                        let target_id = (pending.mode == VoicelinesTransferMode::Update)
+                            .then(|| {
+                                self.voicelines_project
+                                    .audio(pending.audio_id)
+                                    .and_then(|audio| {
+                                        audio.delivery_target(
+                                            crate::voicelines::DeliveryDestination::Recording,
+                                            item.region_id,
+                                        )
+                                    })
+                            })
+                            .flatten();
                         self.recording_runtime
                             .remember_external_audio(&item.recorded, item.output_path);
-                        let (id, file_name, operation) = imported_audio_operation(
-                            &mut self.project_session.recording_project,
-                            item.recorded,
-                            None,
-                        );
+                        let (id, file_name, operation) = if let Some(raw_id) = target_id {
+                            let id = crate::recording::AudioAssetId::new(raw_id);
+                            let asset = item.recorded.into_asset(id);
+                            let file_name = asset.file_name.clone();
+                            (
+                                id,
+                                file_name,
+                                crate::recording::RecordingOperation::ReplaceAsset { asset },
+                            )
+                        } else {
+                            imported_audio_operation(
+                                &mut self.project_session.recording_project,
+                                item.recorded,
+                                None,
+                            )
+                        };
                         last = Some((file_name, id));
+                        deliveries.push((item.region_id, id));
                         operations.push(operation);
                     }
                     match self.apply_recording_operation(
                         crate::recording::RecordingOperation::Batch { operations },
                     ) {
                         Ok(()) => {
+                            let before = self.voicelines_project.clone();
+                            for (region_id, id) in deliveries {
+                                self.voicelines_project.set_delivery_target(
+                                    pending.audio_id,
+                                    crate::voicelines::DeliveryDestination::Recording,
+                                    region_id,
+                                    id.get(),
+                                );
+                            }
+                            self.voicelines_commit(before);
                             if let Some((file_name, id)) = last {
                                 self.ui_shell.ui.recording_reveal_asset(&file_name, id);
                             }
                             self.show_toast(
-                                format!("{count} voiceline(s) envoyée(s) vers Enregistrement"),
+                                format!(
+                                    "{count} voiceline(s) {} Enregistrement",
+                                    if pending.mode == VoicelinesTransferMode::Update {
+                                        "mise(s) à jour dans"
+                                    } else {
+                                        "envoyée(s) vers"
+                                    }
+                                ),
                                 4.0,
                             );
                         }
@@ -1435,7 +1678,6 @@ impl State {
             output_path,
             receiver,
         });
-        self.show_toast("Conversion PNG en cours…", 2.0);
     }
 
     pub fn comic_dubs_begin_audio_import(&mut self, source_path: PathBuf) {
@@ -1467,7 +1709,12 @@ impl State {
             output_path,
             receiver,
         });
-        self.show_toast("Conversion FLAC en cours…", 2.0);
+        let pending = self
+            .comic_dubs_imports
+            .iter()
+            .filter(|job| matches!(job, PendingComicDubsImport::Audio { .. }))
+            .count();
+        self.ui_shell.ui.set_comic_dubs_pending_audio_imports(pending);
     }
 
     pub fn comic_dubs_select_page(&mut self, page_id: crate::comic_dubs::PageId) {
@@ -1539,6 +1786,67 @@ impl State {
         self.comic_dubs_commit(before);
     }
 
+    pub fn comic_dubs_set_bubble_letter_spacing(
+        &mut self,
+        bubble_id: crate::comic_dubs::BubbleId,
+        spacing: f32,
+    ) {
+        let before = self.comic_dubs_project.clone();
+        self.comic_dubs_project
+            .set_bubble_letter_spacing(bubble_id, spacing);
+        self.comic_dubs_commit(before);
+    }
+
+    pub fn comic_dubs_set_bubble_line_spacing(
+        &mut self,
+        bubble_id: crate::comic_dubs::BubbleId,
+        spacing: f32,
+    ) {
+        let before = self.comic_dubs_project.clone();
+        self.comic_dubs_project
+            .set_bubble_line_spacing(bubble_id, spacing);
+        self.comic_dubs_commit(before);
+    }
+
+    pub fn comic_dubs_set_bubble_text_color(
+        &mut self,
+        bubble_id: crate::comic_dubs::BubbleId,
+        color: [u8; 4],
+    ) {
+        let before = self.comic_dubs_project.clone();
+        self.comic_dubs_project
+            .set_bubble_text_color(bubble_id, color);
+        self.comic_dubs_commit(before);
+    }
+
+    pub fn comic_dubs_set_bubble_text_alignment(
+        &mut self,
+        bubble_id: crate::comic_dubs::BubbleId,
+        alignment: crate::comic_dubs::TextAlignment,
+    ) {
+        let before = self.comic_dubs_project.clone();
+        self.comic_dubs_project
+            .set_bubble_text_alignment(bubble_id, alignment);
+        self.comic_dubs_commit(before);
+    }
+
+    pub fn comic_dubs_set_bubble_text_style(
+        &mut self,
+        bubble_id: crate::comic_dubs::BubbleId,
+        bold: bool,
+        strikethrough: bool,
+        underline: bool,
+    ) {
+        let before = self.comic_dubs_project.clone();
+        self.comic_dubs_project.set_bubble_text_style(
+            bubble_id,
+            bold,
+            strikethrough,
+            underline,
+        );
+        self.comic_dubs_commit(before);
+    }
+
     pub fn comic_dubs_set_bubble_points(
         &mut self,
         bubble_id: crate::comic_dubs::BubbleId,
@@ -1546,6 +1854,57 @@ impl State {
     ) {
         let before = self.comic_dubs_project.clone();
         self.comic_dubs_project.set_bubble_points(bubble_id, points);
+        self.comic_dubs_commit(before);
+    }
+
+    pub fn open_comic_dubs_vertex_editor(
+        &mut self,
+        bubble_id: crate::comic_dubs::BubbleId,
+    ) {
+        if self.comic_dubs_project.bubble(bubble_id).is_none() {
+            return;
+        }
+        self.stop_comic_dubs_playback();
+        self.ui_shell.ui.open_comic_dubs_vertex_editor(bubble_id);
+    }
+
+    pub fn close_comic_dubs_vertex_editor(&mut self) {
+        self.ui_shell.ui.close_comic_dubs_vertex_editor();
+    }
+
+    pub fn set_comic_dubs_vertex_editor_playhead(&mut self, at_ms: u64) {
+        self.ui_shell.ui.set_comic_dubs_vertex_editor_playhead(
+            at_ms,
+            &self.comic_dubs_project,
+        );
+    }
+
+    pub fn toggle_comic_dubs_vertex_editor_preview(&mut self) -> bool {
+        self.ui_shell.ui.toggle_comic_dubs_vertex_editor_preview(
+            &self.comic_dubs_project,
+        )
+    }
+
+    pub fn comic_dubs_set_bubble_vertex_keyframe(
+        &mut self,
+        bubble_id: crate::comic_dubs::BubbleId,
+        at_ms: u64,
+        points: Vec<crate::comic_dubs::Point>,
+    ) {
+        let before = self.comic_dubs_project.clone();
+        self.comic_dubs_project
+            .set_bubble_vertex_keyframe(bubble_id, at_ms, points);
+        self.comic_dubs_commit(before);
+    }
+
+    pub fn comic_dubs_remove_bubble_vertex_keyframe(
+        &mut self,
+        bubble_id: crate::comic_dubs::BubbleId,
+        at_ms: u64,
+    ) {
+        let before = self.comic_dubs_project.clone();
+        self.comic_dubs_project
+            .remove_bubble_vertex_keyframe(bubble_id, at_ms);
         self.comic_dubs_commit(before);
     }
 
@@ -1597,6 +1956,7 @@ impl State {
         self.comic_dubs_playback = Some(ComicDubsPlayback {
             page_index,
             bubble_index: 0,
+            started_at: Instant::now(),
             deadline: Instant::now(),
         });
         self.ui_shell.ui.set_playing(true);
@@ -1617,6 +1977,7 @@ impl State {
             self.stop_comic_dubs_playback();
             return;
         };
+        let animation_duration_ms = bubble.vertex_animation_duration_ms();
         let page_id = page.id;
         let audio = bubble.audio_id.and_then(|id| {
             self.comic_dubs_project
@@ -1630,7 +1991,7 @@ impl State {
         self.comic_dubs_project.select_page(page_id);
         self.ui_shell
             .ui
-            .set_comic_dubs_playback(Some(page_id), bubble_index + 1);
+            .set_comic_dubs_playback(Some(page_id), bubble_index + 1, 0);
         self.comic_dubs_player = None;
         let mut duration_ms = 0;
         if let Some((path, audio_duration_ms)) = audio {
@@ -1647,11 +2008,26 @@ impl State {
             }
         }
         if let Some(playback) = self.comic_dubs_playback.as_mut() {
-            playback.deadline = now + Duration::from_millis(duration_ms.saturating_add(gap_ms));
+            playback.started_at = now;
+            playback.deadline = now
+                + Duration::from_millis(
+                    duration_ms
+                        .max(animation_duration_ms)
+                        .saturating_add(gap_ms),
+                );
         }
     }
 
     fn tick_comic_dubs_playback(&mut self, now: Instant) {
+        if let Some(playback) = self.comic_dubs_playback.as_ref() {
+            if let Some(page) = self.comic_dubs_project.pages().get(playback.page_index) {
+                self.ui_shell.ui.set_comic_dubs_playback(
+                    Some(page.id),
+                    playback.bubble_index + 1,
+                    now.saturating_duration_since(playback.started_at).as_millis() as u64,
+                );
+            }
+        }
         let deadline = self
             .comic_dubs_playback
             .as_ref()
@@ -1687,7 +2063,7 @@ impl State {
         }
         self.comic_dubs_player = None;
         self.comic_dubs_playback = None;
-        self.ui_shell.ui.set_comic_dubs_playback(None, 0);
+        self.ui_shell.ui.set_comic_dubs_playback(None, 0, 0);
         self.ui_shell.ui.set_playing(false);
     }
 
@@ -1765,6 +2141,14 @@ impl State {
             };
             let Some(completed) = completed else { continue };
             let pending = self.comic_dubs_imports.swap_remove(index);
+            let pending_audio = self
+                .comic_dubs_imports
+                .iter()
+                .filter(|job| matches!(job, PendingComicDubsImport::Audio { .. }))
+                .count();
+            self.ui_shell
+                .ui
+                .set_comic_dubs_pending_audio_imports(pending_audio);
             match (pending, completed) {
                 (
                     PendingComicDubsImport::Image {
@@ -1787,7 +2171,6 @@ impl State {
                         height,
                     );
                     self.comic_dubs_commit(before);
-                    self.show_toast("Image ajoutée en PNG", 2.5);
                 }
                 (
                     PendingComicDubsImport::Audio {
@@ -1809,7 +2192,6 @@ impl State {
                         recorded,
                     );
                     self.comic_dubs_commit(before);
-                    self.show_toast("Audio ajouté en FLAC", 2.5);
                 }
                 (
                     PendingComicDubsImport::Image { output_path, .. },
@@ -4888,21 +5270,27 @@ impl State {
         mut output: PathBuf,
         configuration: crate::project::ExportConfiguration,
     ) {
-        if !self
-            .comic_dubs_project
-            .pages()
-            .iter()
-            .any(|page| !page.bubbles.is_empty())
+        let pages = self.comic_dubs_project.pages();
+        if pages.is_empty()
+            || (!configuration.comic_dubs_pages_zip
+                && !pages.iter().any(|page| !page.bubbles.is_empty()))
         {
-            self.show_toast("Aucune bulle Comic Dubs à exporter", 4.0);
+            self.show_toast("Aucune page Comic Dubs à exporter", 4.0);
             return;
         }
+        let extension = if configuration.comic_dubs_pages_zip {
+            "zip"
+        } else if configuration.comic_dubs_alpha {
+            "mov"
+        } else {
+            "mp4"
+        };
         if !output
             .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("mp4"))
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case(extension))
         {
-            output.set_extension("mp4");
+            output.set_extension(extension);
         }
         let project = self.comic_dubs_project.clone();
         let progress = Arc::new(std::sync::atomic::AtomicU32::new(0.001_f32.to_bits()));
@@ -4911,7 +5299,7 @@ impl State {
         let cancel_for_job = cancel.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let result = crate::comic_dubs_export::export_mp4(
+            let result = crate::comic_dubs_export::export(
                 &project,
                 &output,
                 &configuration,
@@ -5148,7 +5536,7 @@ impl State {
             } else {
                 frame.max(0)
             };
-            player.seek_frame_instant(target as i32);
+            player.seek_to_frame_instant(target);
             player.decode_current_frame(
                 &self.render.gfx.device,
                 &self.render.gfx.queue,
@@ -5225,6 +5613,9 @@ impl State {
 
     fn toggle_play_pause_internal(&mut self, broadcast: bool) {
         if self.active_workspace() == WorkspaceId::ComicDubs {
+            if self.toggle_comic_dubs_vertex_editor_preview() {
+                return;
+            }
             self.toggle_comic_dubs_playback();
             return;
         }
@@ -5484,6 +5875,14 @@ impl State {
     }
 
     pub fn prev_frame(&mut self) {
+        if self.active_workspace() == WorkspaceId::ComicDubs
+            && self
+                .ui_shell
+                .ui
+                .nudge_comic_dubs_vertex_editor(-50, &self.comic_dubs_project)
+        {
+            return;
+        }
         if self.recording_playback_is_read_only() {
             return;
         }
@@ -5497,7 +5896,7 @@ impl State {
         ) {
             if self.active_workspace() == WorkspaceId::ComicDubs {
                 self.comic_dubs_playback = None;
-                self.ui_shell.ui.set_comic_dubs_playback(None, 0);
+                self.ui_shell.ui.set_comic_dubs_playback(None, 0, 0);
             }
             self.seek_relative_internal(-1, false);
             return;
@@ -5525,6 +5924,14 @@ impl State {
     }
 
     pub fn next_frame(&mut self) {
+        if self.active_workspace() == WorkspaceId::ComicDubs
+            && self
+                .ui_shell
+                .ui
+                .nudge_comic_dubs_vertex_editor(50, &self.comic_dubs_project)
+        {
+            return;
+        }
         if self.recording_playback_is_read_only() {
             return;
         }
@@ -5538,7 +5945,7 @@ impl State {
         ) {
             if self.active_workspace() == WorkspaceId::ComicDubs {
                 self.comic_dubs_playback = None;
-                self.ui_shell.ui.set_comic_dubs_playback(None, 0);
+                self.ui_shell.ui.set_comic_dubs_playback(None, 0, 0);
             }
             self.seek_relative_internal(1, false);
             return;
@@ -5576,7 +5983,7 @@ impl State {
         let mut playback = None;
         if self.active_workspace() == WorkspaceId::ComicDubs {
             self.comic_dubs_playback = None;
-            self.ui_shell.ui.set_comic_dubs_playback(None, 0);
+            self.ui_shell.ui.set_comic_dubs_playback(None, 0, 0);
         }
         let player = match self.active_workspace() {
             WorkspaceId::Voicelines => &mut self.voicelines_player,
@@ -5590,9 +5997,7 @@ impl State {
                 }
                 self.playback.timeline.emit(TimelineEvent::PlaybackStopped);
             }
-            let current = player.current_frame();
-            let delta = (frame - current) as i32;
-            player.seek_frame_instant(delta);
+            player.seek_to_frame_instant(frame);
             self.playback.timeline.emit(TimelineEvent::FrameChanged {
                 frame: player.current_frame(),
             });
@@ -8984,7 +9389,7 @@ impl State {
                 }
                 self.recording_runtime = recording_runtime;
                 self.voicelines_project = voicelines_project;
-                self.voicelines_revision = 0;
+                self.voicelines_revision = self.voicelines_revision.wrapping_add(1);
                 self.voicelines_undo.clear();
                 self.voicelines_redo.clear();
                 self.voicelines_player = None;

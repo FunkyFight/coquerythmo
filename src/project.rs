@@ -125,6 +125,10 @@ pub struct ExportConfiguration {
     pub video_enabled: bool,
     #[serde(default)]
     pub video_aspect: VideoExportAspect,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub comic_dubs_alpha: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub comic_dubs_pages_zip: bool,
     #[serde(default)]
     pub video_quality: VideoExportQuality,
     #[serde(default = "default_export_width")]
@@ -162,6 +166,8 @@ impl Default for ExportConfiguration {
         Self {
             video_enabled: true,
             video_aspect: VideoExportAspect::Source,
+            comic_dubs_alpha: false,
+            comic_dubs_pages_zip: false,
             video_quality: VideoExportQuality::P1080,
             custom_width: default_export_width(),
             custom_height: default_export_height(),
@@ -1237,6 +1243,15 @@ impl Project {
         self.bump_revision();
     }
 
+    /// Replace a complete imported band without the quadratic per-line
+    /// reconciliation performed by interactive inserts.
+    pub(crate) fn replace_lines(&mut self, lines: Vec<RythmoLine>) {
+        self.line_order = lines.iter().map(|line| line.id).collect();
+        self.line_map = lines.into_iter().map(|line| (line.id, line)).collect();
+        self.reconcile_known_characters();
+        self.bump_revision();
+    }
+
     /// Insert a line at a specific position (for undo).
     pub fn insert_line_at(&mut self, index: usize, line: RythmoLine) {
         let id = line.id;
@@ -1570,24 +1585,26 @@ impl Project {
     /// by at least one line. Colors already customized in the catalog win;
     /// newly encountered characters inherit the color of their first line.
     fn reconcile_known_characters(&mut self) {
+        let mut seen = std::collections::HashSet::new();
         let used: Vec<(String, [f32; 4])> = self
             .lines()
             .filter(|line| line.kind.is_dialogue() && !line.character_name.trim().is_empty())
             .map(|line| (line.character_name.clone(), line.character_color))
-            .fold(Vec::new(), |mut characters, character| {
-                if !characters.iter().any(|(name, _)| name == &character.0) {
-                    characters.push(character);
-                }
-                characters
-            });
-        self.known_characters
-            .retain(|character| used.iter().any(|(name, _)| name == &character.name));
+            .filter(|(name, _)| seen.insert(name.clone()))
+            .collect();
+        {
+            let used_names: std::collections::HashSet<_> =
+                used.iter().map(|(name, _)| name.as_str()).collect();
+            self.known_characters
+                .retain(|character| used_names.contains(character.name.as_str()));
+        }
+        let mut known_names: std::collections::HashSet<_> = self
+            .known_characters
+            .iter()
+            .map(|character| character.name.clone())
+            .collect();
         for (name, color) in used {
-            if !self
-                .known_characters
-                .iter()
-                .any(|character| character.name == name)
-            {
+            if known_names.insert(name.clone()) {
                 self.known_characters.push(Character { name, color });
             }
         }
@@ -2284,5 +2301,18 @@ mod tests {
         assert_eq!(configuration.custom_height, 1080);
         assert_eq!(configuration.countdown_start, 3);
         assert!(AudioSelection::default().original);
+    }
+
+    #[test]
+    fn disabled_comic_export_modes_keep_legacy_serialization_stable() {
+        let mut configuration = ExportConfiguration::default();
+        configuration.fps = 30.0;
+        let json = serde_json::to_value(&configuration).unwrap();
+        assert!(json.get("comic_dubs_alpha").is_none());
+        assert!(json.get("comic_dubs_pages_zip").is_none());
+
+        configuration.comic_dubs_alpha = true;
+        let json = serde_json::to_value(&configuration).unwrap();
+        assert_eq!(json["comic_dubs_alpha"], true);
     }
 }

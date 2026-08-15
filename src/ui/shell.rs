@@ -47,6 +47,8 @@ pub(crate) fn build_topbar(
     active_workspace: WorkspaceId,
     recording_daw_enabled: bool,
     actor_requests_enabled: bool,
+    voicelines_selected_regions: Vec<crate::voicelines::RegionId>,
+    comic_dubs_selected_bubble: Option<crate::comic_dubs::BubbleId>,
 ) -> Vec<Box<dyn Widget>> {
     // Build project menu with "Récent" submenu
     let recents = crate::config::recent_projects();
@@ -420,7 +422,7 @@ pub(crate) fn build_topbar(
     .with_tooltip(t("settings.tooltip"));
 
     let mut topbar_widgets: Vec<Box<dyn Widget>> = if comic_dubs {
-        vec![
+        let mut widgets: Vec<Box<dyn Widget>> = vec![
             Box::new(project_menu),
             Box::new(
                 Dropdown::new(
@@ -443,9 +445,55 @@ pub(crate) fn build_topbar(
                 .with_panel_width(260.0),
             ),
             Box::new(export_menu),
-        ]
+        ];
+        if let Some(bubble_id) = comic_dubs_selected_bubble {
+            widgets.push(Box::new(
+                Dropdown::new(
+                    Rect {
+                        x: 272.0,
+                        y: 2.0,
+                        width: 88.0,
+                        height: 28.0,
+                    },
+                    vec!["Animer les sommets de la bulle".into()],
+                    move |index, _| match index {
+                        0 => EventResponse::Action(UiAction::ComicDubsOpenVertexEditor(bubble_id)),
+                        _ => EventResponse::Consumed,
+                    },
+                )
+                .with_arrow(false)
+                .with_trigger_bg(false)
+                .with_trigger_label("Actions")
+                .with_panel_width(300.0),
+            ));
+        }
+        widgets
     } else if voicelines {
-        vec![Box::new(project_menu), Box::new(export_menu)]
+        let mut widgets: Vec<Box<dyn Widget>> = vec![Box::new(project_menu), Box::new(export_menu)];
+        if voicelines_selected_regions.len() >= 2 {
+            widgets.push(Box::new(
+                Dropdown::new(
+                    Rect {
+                        x: 172.0,
+                        y: 2.0,
+                        width: 88.0,
+                        height: 28.0,
+                    },
+                    vec!["Raccorder les zones sélectionnées".into()],
+                    move |index, _| match index {
+                        0 => EventResponse::Action(UiAction::VoicelinesJoinRegions(
+                            voicelines_selected_regions.clone(),
+                        )),
+                        _ => EventResponse::Consumed,
+                    },
+                )
+                .with_arrow(false)
+                .with_trigger_bg(false)
+                .with_trigger_label("Actions")
+                .with_panel_width(280.0),
+            ));
+        }
+        widgets
     } else {
         vec![
             Box::new(project_menu),
@@ -969,6 +1017,8 @@ mod tests {
             WorkspaceId::Recording,
             true,
             false,
+            Vec::new(),
+            None,
         );
         for pair in widgets.windows(2) {
             let left = pair[0].bounds();
@@ -989,6 +1039,8 @@ mod tests {
             WorkspaceId::ComicDubs,
             false,
             false,
+            Vec::new(),
+            None,
         );
         assert!(widgets.len() >= 5);
         for pair in widgets.windows(2) {
@@ -996,10 +1048,29 @@ mod tests {
             let right = pair[1].bounds();
             assert!(left.x + left.width <= right.x);
         }
+
+        let mut widgets = build_topbar(
+            false,
+            false,
+            1280.0,
+            [0.0; 4],
+            [0.0; 4],
+            WorkspaceId::ComicDubs,
+            false,
+            false,
+            Vec::new(),
+            Some(42),
+        );
+        widgets[3].handle_event(&UiEvent::Activate);
+        assert!(matches!(
+            widgets[3].handle_event(&UiEvent::Activate),
+            EventResponse::Actions(actions)
+                if actions.contains(&UiAction::ComicDubsOpenVertexEditor(42))
+        ));
     }
 
     #[test]
-    fn voicelines_topbar_only_keeps_project_and_audio_export_on_the_left() {
+    fn voicelines_actions_sits_next_to_export_only_for_multi_selection() {
         crate::config::init();
         let mut widgets = build_topbar(
             false,
@@ -1010,6 +1081,8 @@ mod tests {
             WorkspaceId::Voicelines,
             false,
             false,
+            Vec::new(),
+            None,
         );
         assert_eq!(widgets[0].bounds().x, 4.0);
         assert_eq!(widgets[1].bounds().x, 88.0);
@@ -1025,6 +1098,26 @@ mod tests {
             widgets[1].handle_event(&UiEvent::Activate),
             EventResponse::Actions(actions)
                 if actions.iter().any(|action| action == &UiAction::VoicelinesExportAll)
+        ));
+
+        let mut widgets = build_topbar(
+            false,
+            false,
+            1280.0,
+            [0.0; 4],
+            [0.0; 4],
+            WorkspaceId::Voicelines,
+            false,
+            false,
+            vec![7, 9],
+            None,
+        );
+        assert_eq!(widgets[2].bounds().x, 172.0);
+        widgets[2].handle_event(&UiEvent::Activate);
+        assert!(matches!(
+            widgets[2].handle_event(&UiEvent::Activate),
+            EventResponse::Actions(actions)
+                if actions.contains(&UiAction::VoicelinesJoinRegions(vec![7, 9]))
         ));
     }
 

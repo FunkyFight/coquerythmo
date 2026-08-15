@@ -2,22 +2,27 @@ use super::primitives::{IconInstance, QuadInstance, Rect};
 
 const SV_SIZE: f32 = 150.0;
 const HUE_BAR_HEIGHT: f32 = 16.0;
+const EYEDROPPER_HEIGHT: f32 = 26.0;
 const GAP: f32 = 6.0;
 const PICKER_PADDING: f32 = 8.0;
 const PICKER_RADIUS: f32 = 6.0;
 const INDICATOR_SIZE: f32 = 8.0;
+const TRANSPARENT_SWATCH_SIZE: f32 = 20.0;
 const SV_TEX_SIZE: u32 = 64;
 const HUE_TEX_W: u32 = 256;
 const HUE_TEX_H: u32 = 1;
 
 pub struct ColorPickerState {
     pub active: bool,
+    pub can_be_transparent: bool,
     pub origin: (f32, f32), // top-left of the picker
     pub hue: f32,           // 0.0 - 360.0
     pub sat: f32,           // 0.0 - 1.0
     pub val: f32,           // 0.0 - 1.0
     pub dragging_sv: bool,
     pub dragging_hue: bool,
+    transparent: bool,
+    eyedropper: bool,
     sv_texture_dirty: bool,
     sv_bind_group: Option<wgpu::BindGroup>,
     hue_bind_group: Option<wgpu::BindGroup>,
@@ -33,12 +38,15 @@ impl ColorPickerState {
     pub fn new() -> Self {
         Self {
             active: false,
+            can_be_transparent: false,
             origin: (0.0, 0.0),
             hue: 0.0,
             sat: 1.0,
             val: 1.0,
             dragging_sv: false,
             dragging_hue: false,
+            transparent: false,
+            eyedropper: false,
             sv_texture_dirty: true,
             sv_bind_group: None,
             hue_bind_group: None,
@@ -46,7 +54,23 @@ impl ColorPickerState {
     }
 
     pub fn open(&mut self, x: f32, y: f32, color: [f32; 4]) {
+        self.open_with_transparency(x, y, color, false);
+    }
+
+    pub fn open_with_transparency(
+        &mut self,
+        x: f32,
+        y: f32,
+        color: [f32; 4],
+        can_be_transparent: bool,
+    ) {
+        if self.eyedropper {
+            crate::platform::cancel_screen_color_pick();
+        }
         self.active = true;
+        self.can_be_transparent = can_be_transparent;
+        self.transparent = can_be_transparent && color[3] == 0.0;
+        self.eyedropper = false;
         self.origin = (x, y);
         let (h, s, v) = rgb_to_hsv(color[0], color[1], color[2]);
         self.hue = h;
@@ -62,24 +86,28 @@ impl ColorPickerState {
     pub fn panel_size() -> (f32, f32) {
         (
             SV_SIZE + PICKER_PADDING * 2.0,
-            SV_SIZE + GAP + HUE_BAR_HEIGHT + PICKER_PADDING * 2.0,
+            SV_SIZE + GAP * 2.0 + HUE_BAR_HEIGHT + EYEDROPPER_HEIGHT + PICKER_PADDING * 2.0,
         )
     }
 
     pub fn close(&mut self) {
+        if self.eyedropper {
+            crate::platform::cancel_screen_color_pick();
+        }
         self.active = false;
+        self.eyedropper = false;
         self.dragging_sv = false;
         self.dragging_hue = false;
     }
 
     pub fn current_color(&self) -> [f32; 4] {
         let (r, g, b) = hsv_to_rgb(self.hue, self.sat, self.val);
-        [r, g, b, 1.0]
+        [r, g, b, if self.transparent { 0.0 } else { 1.0 }]
     }
 
     fn total_rect(&self) -> Rect {
         let w = SV_SIZE + PICKER_PADDING * 2.0;
-        let h = SV_SIZE + GAP + HUE_BAR_HEIGHT + PICKER_PADDING * 2.0;
+        let h = SV_SIZE + GAP * 2.0 + HUE_BAR_HEIGHT + EYEDROPPER_HEIGHT + PICKER_PADDING * 2.0;
         Rect {
             x: self.origin.0,
             y: self.origin.1,
@@ -103,6 +131,25 @@ impl ColorPickerState {
             y: self.origin.1 + PICKER_PADDING + SV_SIZE + GAP,
             width: SV_SIZE,
             height: HUE_BAR_HEIGHT,
+        }
+    }
+
+    fn eyedropper_rect(&self) -> Rect {
+        Rect {
+            x: self.origin.0 + PICKER_PADDING,
+            y: self.hue_rect().y + HUE_BAR_HEIGHT + GAP,
+            width: SV_SIZE,
+            height: EYEDROPPER_HEIGHT,
+        }
+    }
+
+    pub(crate) fn transparent_rect(&self) -> Rect {
+        let row = self.eyedropper_rect();
+        Rect {
+            x: row.x + row.width - TRANSPARENT_SWATCH_SIZE - 3.0,
+            y: row.y + 3.0,
+            width: TRANSPARENT_SWATCH_SIZE,
+            height: TRANSPARENT_SWATCH_SIZE,
         }
     }
 
@@ -181,6 +228,7 @@ impl ColorPickerState {
         let total = self.total_rect();
         let sv = self.sv_rect();
         let hue = self.hue_rect();
+        let eyedropper = self.eyedropper_rect();
 
         // Background
         bg_quads.push(QuadInstance {
@@ -257,16 +305,71 @@ impl ColorPickerState {
         });
 
         // Preview swatch
-        let color = self.current_color();
-        let preview_size = 20.0;
-        let px = total.x + total.width - PICKER_PADDING - preview_size;
-        let py = hue.y + hue.height + GAP;
+        let color = srgb_to_linear(self.current_color());
+        let preview = self.transparent_rect();
         fg_quads.push(QuadInstance {
-            rect: [px, py - GAP, preview_size, preview_size],
+            rect: [eyedropper.x, eyedropper.y, eyedropper.width, eyedropper.height],
+            color: if self.eyedropper { [0.18, 0.38, 0.62, 1.0] } else { [0.18, 0.18, 0.21, 1.0] },
+            color_bottom: if self.eyedropper { [0.14, 0.30, 0.52, 1.0] } else { [0.14, 0.14, 0.17, 1.0] },
+            border_color: [0.45, 0.48, 0.58, 0.8],
+            border_width: 1.0,
+            border_radius: 3.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+        for (rect, rotation) in [
+            ([eyedropper.x + 10.0, eyedropper.y + 6.0, 4.0, 14.0], -0.75),
+            ([eyedropper.x + 13.0, eyedropper.y + 4.0, 7.0, 5.0], -0.75),
+        ] {
+            fg_quads.push(QuadInstance {
+                rect,
+                color: [0.92, 0.94, 1.0, 1.0],
+                color_bottom: [0.92, 0.94, 1.0, 1.0],
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                border_radius: 1.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0; 4],
+                shadow_blur: 0.0,
+                rotation,
+                _padding: [0.0; 2],
+            });
+        }
+        if self.can_be_transparent {
+            let cell = preview.width / 4.0;
+            for row in 0..4 {
+                for column in 0..4 {
+                    let shade = if (row + column) % 2 == 0 { 0.72 } else { 0.34 };
+                    fg_quads.push(QuadInstance {
+                        rect: [
+                            preview.x + column as f32 * cell,
+                            preview.y + row as f32 * cell,
+                            cell,
+                            cell,
+                        ],
+                        color: [shade, shade, shade, 1.0],
+                        color_bottom: [shade, shade, shade, 1.0],
+                        border_color: [0.0; 4],
+                        border_width: 0.0,
+                        border_radius: 0.0,
+                        shadow_offset: [0.0; 2],
+                        shadow_color: [0.0; 4],
+                        shadow_blur: 0.0,
+                        rotation: 0.0,
+                        _padding: [0.0; 2],
+                    });
+                }
+            }
+        }
+        fg_quads.push(QuadInstance {
+            rect: [preview.x, preview.y, preview.width, preview.height],
             color,
             color_bottom: color,
-            border_color: [0.5, 0.5, 0.55, 0.5],
-            border_width: 1.0,
+            border_color: if self.transparent { [0.72, 0.58, 1.0, 1.0] } else { [0.5, 0.5, 0.55, 0.5] },
+            border_width: if self.transparent { 2.0 } else { 1.0 },
             border_radius: 3.0,
             shadow_offset: [0.0; 2],
             shadow_color: [0.0; 4],
@@ -283,16 +386,42 @@ impl ColorPickerState {
 
         let sv = self.sv_rect();
         let hue = self.hue_rect();
+        let eyedropper = self.eyedropper_rect();
+        let transparent = self.transparent_rect();
 
         match event {
+            super::primitives::UiEvent::KeyInput { text } if text == "\x1b" => {
+                self.close();
+                true
+            }
             super::primitives::UiEvent::MousePress { x, y } => {
+                if self.eyedropper {
+                    if let Some(color) = crate::platform::sample_screen_color() {
+                        (self.hue, self.sat, self.val) = rgb_to_hsv(color[0], color[1], color[2]);
+                        self.transparent = false;
+                        self.sv_texture_dirty = true;
+                    }
+                    self.eyedropper = false;
+                    return true;
+                }
+                if self.can_be_transparent && transparent.contains(*x, *y) {
+                    self.transparent = true;
+                    return true;
+                }
+                if eyedropper.contains(*x, *y) {
+                    self.eyedropper = true;
+                    crate::platform::begin_screen_color_pick();
+                    return true;
+                }
                 if sv.contains(*x, *y) {
+                    self.transparent = false;
                     self.dragging_sv = true;
                     self.sat = ((*x - sv.x) / sv.width).clamp(0.0, 1.0);
                     self.val = 1.0 - ((*y - sv.y) / sv.height).clamp(0.0, 1.0);
                     return true;
                 }
                 if hue.contains(*x, *y) {
+                    self.transparent = false;
                     self.dragging_hue = true;
                     self.hue = ((*x - hue.x) / hue.width).clamp(0.0, 1.0) * 360.0;
                     self.sv_texture_dirty = true;
@@ -307,11 +436,13 @@ impl ColorPickerState {
             }
             super::primitives::UiEvent::MouseMove { x, y } => {
                 if self.dragging_sv {
+                    self.transparent = false;
                     self.sat = ((*x - sv.x) / sv.width).clamp(0.0, 1.0);
                     self.val = 1.0 - ((*y - sv.y) / sv.height).clamp(0.0, 1.0);
                     return true;
                 }
                 if self.dragging_hue {
+                    self.transparent = false;
                     self.hue = ((*x - hue.x) / hue.width).clamp(0.0, 1.0) * 360.0;
                     self.sv_texture_dirty = true;
                     return true;
@@ -390,6 +521,17 @@ fn upload_texture(
     })
 }
 
+pub(crate) fn srgb_to_linear([r, g, b, a]: [f32; 4]) -> [f32; 4] {
+    let convert = |channel: f32| {
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    [convert(r), convert(g), convert(b), a]
+}
+
 fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     let c = v * s;
     let hp = h / 60.0;
@@ -422,4 +564,34 @@ fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let h = if h < 0.0 { h + 360.0 } else { h };
     let s = if max < 0.0001 { 0.0 } else { d / max };
     (h, s, max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sampled_rgb_round_trips_through_picker_space() {
+        let (h, s, v) = rgb_to_hsv(0.2, 0.6, 0.9);
+        let (r, g, b) = hsv_to_rgb(h, s, v);
+        assert!((r - 0.2).abs() < 0.001);
+        assert!((g - 0.6).abs() < 0.001);
+        assert!((b - 0.9).abs() < 0.001);
+    }
+
+    #[test]
+    fn transparency_is_opt_in_and_selects_only_zero_alpha() {
+        let mut picker = ColorPickerState::new();
+        assert!(!picker.can_be_transparent);
+        picker.open_with_transparency(0.0, 0.0, [0.2, 0.4, 0.6, 1.0], true);
+        let transparent = picker.transparent_rect();
+        assert!(picker.handle_event(&super::super::primitives::UiEvent::MousePress {
+            x: transparent.x + 1.0,
+            y: transparent.y + 1.0,
+        }));
+        assert_eq!(picker.current_color()[3], 0.0);
+        picker.open(0.0, 0.0, [0.2, 0.4, 0.6, 0.0]);
+        assert!(!picker.can_be_transparent);
+        assert_eq!(picker.current_color()[3], 1.0);
+    }
 }

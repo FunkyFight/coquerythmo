@@ -1,18 +1,30 @@
 //! Backend-neutral Comic Dubs layout, interaction and scene generation.
 
-use crate::comic_dubs::{Bubble, BubbleId, ComicAudioId, ComicDubsProject, Page, PageId, Point};
+use crate::comic_dubs::{
+    Bubble, BubbleId, ComicAudioId, ComicDubsProject, Page, PageId, Point, TextAlignment,
+};
 use crate::ui::color_picker::ColorPickerState;
 use crate::ui::focus::AccessibleRole;
 use crate::ui::primitives::{
     EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction,
     UiEvent, VAlign,
 };
+use std::time::Instant;
 
 const SIDEBAR_W: f32 = 292.0;
 const INSPECTOR_W: f32 = 260.0;
 const HEADER_H: f32 = 52.0;
 const TOOLBAR_H: f32 = 42.0;
 const ROW_H: f32 = 44.0;
+const INSPECTOR_FONT_SIZE_Y: f32 = 88.0;
+const INSPECTOR_LETTER_SPACING_Y: f32 = 136.0;
+const INSPECTOR_LINE_SPACING_Y: f32 = 184.0;
+const INSPECTOR_COLORS_Y: f32 = 248.0;
+const INSPECTOR_STYLE_Y: f32 = 300.0;
+const INSPECTOR_ALIGNMENT_Y: f32 = 342.0;
+const INSPECTOR_AUDIO_Y: f32 = 392.0;
+const INSPECTOR_ORDER_Y: f32 = 436.0;
+const INSPECTOR_DELETE_Y: f32 = 488.0;
 const BG: [f32; 4] = [0.052, 0.055, 0.07, 1.0];
 const PANEL: [f32; 4] = [0.082, 0.087, 0.108, 1.0];
 const PANEL_ALT: [f32; 4] = [0.115, 0.12, 0.15, 1.0];
@@ -20,6 +32,8 @@ const BORDER: [f32; 4] = [0.24, 0.25, 0.31, 0.9];
 const ACCENT: [f32; 4] = [0.38, 0.31, 0.88, 1.0];
 const TEXT: [u8; 3] = [232, 234, 242];
 const MUTED: [u8; 3] = [151, 155, 172];
+const VERTEX_EDITOR_HEADER_H: f32 = 52.0;
+const VERTEX_EDITOR_TIMELINE_H: f32 = 112.0;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ComicDubsLayout {
     pub content: Rect,
@@ -129,6 +143,8 @@ pub struct SceneLabel {
     pub font_size: f32,
     pub color: [u8; 3],
     pub font_family: Option<String>,
+    pub padding: f32,
+    pub letter_spacing: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +179,7 @@ struct BubbleDrag {
 struct BubbleVertexDrag {
     bubble_id: BubbleId,
     index: usize,
+    keyframe_at_ms: Option<u64>,
     original: Vec<Point>,
     points: Vec<Point>,
 }
@@ -172,6 +189,90 @@ struct DraftVertexDrag {
     index: usize,
     original: Point,
     moved: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ColorTarget {
+    Bubble(BubbleId),
+    Text(BubbleId),
+}
+
+#[derive(Debug, Clone)]
+struct VertexEditor {
+    bubble_id: BubbleId,
+    playhead_ms: u64,
+    selected_keyframe: Option<u64>,
+    playing: Option<(Instant, u64)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VertexEditorLayout {
+    header: Rect,
+    close: Rect,
+    stage: Rect,
+    timeline_panel: Rect,
+    track: Rect,
+    previous: Rect,
+    play: Rect,
+    next: Rect,
+    add: Rect,
+    delete: Rect,
+}
+
+impl VertexEditorLayout {
+    fn compute(layout: ComicDubsLayout) -> Self {
+        let header = Rect {
+            height: VERTEX_EDITOR_HEADER_H,
+            ..layout.content
+        };
+        let timeline_panel = Rect {
+            y: layout.content.y + layout.content.height - VERTEX_EDITOR_TIMELINE_H,
+            height: VERTEX_EDITOR_TIMELINE_H,
+            ..layout.content
+        };
+        let close = Rect {
+            x: header.x + header.width - 44.0,
+            y: header.y + 10.0,
+            width: 32.0,
+            height: 32.0,
+        };
+        let stage = Rect {
+            x: layout.content.x + 20.0,
+            y: header.y + header.height + 12.0,
+            width: (layout.content.width - 40.0).max(0.0),
+            height: (timeline_panel.y - header.y - header.height - 24.0).max(0.0),
+        };
+        let controls_y = timeline_panel.y + 12.0;
+        let button = |x, width| Rect {
+            x,
+            y: controls_y,
+            width,
+            height: 30.0,
+        };
+        let previous = button(timeline_panel.x + 16.0, 42.0);
+        let play = button(previous.x + previous.width + 6.0, 74.0);
+        let next = button(play.x + play.width + 6.0, 42.0);
+        let delete = button(timeline_panel.x + timeline_panel.width - 118.0, 102.0);
+        let add = button(delete.x - 150.0, 142.0);
+        let track = Rect {
+            x: timeline_panel.x + 24.0,
+            y: timeline_panel.y + 66.0,
+            width: (timeline_panel.width - 48.0).max(1.0),
+            height: 12.0,
+        };
+        Self {
+            header,
+            close,
+            stage,
+            timeline_panel,
+            track,
+            previous,
+            play,
+            next,
+            add,
+            delete,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -186,9 +287,11 @@ pub struct ComicDubsWorkspaceUi {
     bubble_drag: Option<BubbleDrag>,
     bubble_vertex_drag: Option<BubbleVertexDrag>,
     draft_vertex_drag: Option<DraftVertexDrag>,
-    playback: Option<(PageId, usize)>,
-    color_bubble: Option<BubbleId>,
+    playback: Option<(PageId, usize, u64)>,
+    vertex_editor: Option<VertexEditor>,
+    color_target: Option<ColorTarget>,
     color_picker: ColorPickerState,
+    pending_audio_imports: usize,
 }
 
 impl ComicDubsWorkspaceUi {
@@ -220,8 +323,95 @@ impl ComicDubsWorkspaceUi {
         self.selected_bubble
     }
 
-    pub fn set_playback(&mut self, page_id: Option<PageId>, visible_bubbles: usize) {
-        self.playback = page_id.map(|page_id| (page_id, visible_bubbles));
+    pub fn vertex_editor_open(&self) -> bool {
+        self.vertex_editor.is_some()
+    }
+
+    pub fn vertex_editor_playing(&self) -> bool {
+        self.vertex_editor
+            .as_ref()
+            .is_some_and(|editor| editor.playing.is_some())
+    }
+
+    pub fn open_vertex_editor(&mut self, bubble_id: BubbleId) {
+        self.selected_bubble = Some(bubble_id);
+        self.text_edit = None;
+        self.color_picker.close();
+        self.color_target = None;
+        self.vertex_editor = Some(VertexEditor {
+            bubble_id,
+            playhead_ms: 0,
+            selected_keyframe: None,
+            playing: None,
+        });
+    }
+
+    pub fn close_vertex_editor(&mut self) -> bool {
+        self.bubble_vertex_drag = None;
+        self.vertex_editor.take().is_some()
+    }
+
+    pub fn set_vertex_editor_playhead(&mut self, at_ms: u64, project: &ComicDubsProject) {
+        let Some(editor) = self.vertex_editor.as_mut() else {
+            return;
+        };
+        let Some(bubble) = project.bubble(editor.bubble_id) else {
+            self.vertex_editor = None;
+            return;
+        };
+        editor.playhead_ms = at_ms.min(vertex_editor_duration_ms(project, bubble));
+        editor.selected_keyframe = bubble
+            .vertex_keyframes
+            .iter()
+            .find(|keyframe| keyframe.at_ms == editor.playhead_ms)
+            .map(|keyframe| keyframe.at_ms);
+        editor.playing = None;
+    }
+
+    pub fn toggle_vertex_editor_preview(&mut self, project: &ComicDubsProject) -> bool {
+        let Some(editor) = self.vertex_editor.as_mut() else {
+            return false;
+        };
+        let Some(bubble) = project.bubble(editor.bubble_id) else {
+            self.vertex_editor = None;
+            return true;
+        };
+        if editor.playing.take().is_none() {
+            let duration = vertex_editor_duration_ms(project, bubble);
+            if editor.playhead_ms >= duration {
+                editor.playhead_ms = 0;
+            }
+            editor.playing = Some((Instant::now(), editor.playhead_ms));
+        }
+        true
+    }
+
+    pub fn nudge_vertex_editor(&mut self, delta_ms: i64, project: &ComicDubsProject) -> bool {
+        let Some(playhead_ms) = self
+            .vertex_editor
+            .as_ref()
+            .map(|editor| editor.playhead_ms)
+        else {
+            return false;
+        };
+        self.set_vertex_editor_playhead(playhead_ms.saturating_add_signed(delta_ms), project);
+        true
+    }
+
+    pub fn set_pending_audio_imports(&mut self, count: usize) {
+        self.pending_audio_imports = count;
+        if count > 0 {
+            self.media_tab = MediaTab::Audios;
+        }
+    }
+
+    pub fn set_playback(
+        &mut self,
+        page_id: Option<PageId>,
+        visible_bubbles: usize,
+        bubble_elapsed_ms: u64,
+    ) {
+        self.playback = page_id.map(|page_id| (page_id, visible_bubbles, bubble_elapsed_ms));
         if page_id.is_some() {
             self.text_edit = None;
             self.selected_bubble = None;
@@ -238,6 +428,9 @@ impl ComicDubsWorkspaceUi {
     }
 
     pub fn cancel_draft(&mut self) -> bool {
+        if self.close_vertex_editor() {
+            return true;
+        }
         let cancelled = !self.draft.is_empty();
         self.draft.clear();
         self.draft_vertex_drag = None;
@@ -245,6 +438,48 @@ impl ComicDubsWorkspaceUi {
     }
 
     pub fn control_action(&mut self, id: &str, project: &ComicDubsProject) -> Option<UiAction> {
+        if id == "comic.vertex.close" {
+            return Some(UiAction::ComicDubsCloseVertexEditor);
+        }
+        if id == "comic.vertex.play" {
+            return Some(UiAction::ComicDubsToggleVertexEditorPreview);
+        }
+        if let Some(editor) = self.vertex_editor.as_ref() {
+            let bubble = project.bubble(editor.bubble_id)?;
+            if id == "comic.vertex.add" {
+                return Some(UiAction::ComicDubsSetBubbleVertexKeyframe {
+                    bubble_id: bubble.id,
+                    at_ms: editor.playhead_ms,
+                    points: bubble.points_at(editor.playhead_ms).to_vec(),
+                });
+            }
+            if id == "comic.vertex.delete" {
+                return editor.selected_keyframe.map(|at_ms| {
+                    UiAction::ComicDubsRemoveBubbleVertexKeyframe {
+                        bubble_id: bubble.id,
+                        at_ms,
+                    }
+                });
+            }
+            if id == "comic.vertex.previous" {
+                return Some(UiAction::ComicDubsSetVertexEditorPlayhead(
+                    previous_keyframe_at(bubble, editor.playhead_ms),
+                ));
+            }
+            if id == "comic.vertex.next" {
+                return Some(UiAction::ComicDubsSetVertexEditorPlayhead(next_keyframe_at(
+                    bubble,
+                    editor.playhead_ms,
+                    vertex_editor_duration_ms(project, bubble),
+                )));
+            }
+            if let Some(at_ms) = id
+                .strip_prefix("comic.vertex.marker.")
+                .and_then(|value| value.parse().ok())
+            {
+                return Some(UiAction::ComicDubsSetVertexEditorPlayhead(at_ms));
+            }
+        }
         if let Some(id) = id
             .strip_prefix("comic.page.")
             .and_then(|id| id.parse().ok())
@@ -271,6 +506,30 @@ impl ComicDubsWorkspaceUi {
                 });
             }
         }
+        for (suffix, style) in [
+            ("bold", 0),
+            ("strikethrough", 1),
+            ("underline", 2),
+        ] {
+            if let Some(bubble_id) = id
+                .strip_prefix(&format!("comic.inspector.style.{suffix}."))
+                .and_then(|id| id.parse().ok())
+            {
+                let bubble = project.bubble(bubble_id)?;
+                let mut values = (bubble.bold, bubble.strikethrough, bubble.underline);
+                match style {
+                    0 => values.0 = !values.0,
+                    1 => values.1 = !values.1,
+                    _ => values.2 = !values.2,
+                }
+                return Some(UiAction::ComicDubsSetBubbleTextStyle {
+                    bubble_id,
+                    bold: values.0,
+                    strikethrough: values.1,
+                    underline: values.2,
+                });
+            }
+        }
         None
     }
 
@@ -279,6 +538,27 @@ impl ComicDubsWorkspaceUi {
     }
 
     pub fn sync(&mut self, project: &ComicDubsProject, layout: ComicDubsLayout) {
+        if let Some(bubble_id) = self.vertex_editor.as_ref().map(|editor| editor.bubble_id) {
+            if let Some(bubble) = project.bubble(bubble_id) {
+                let duration = vertex_editor_duration_ms(project, bubble);
+                let editor = self.vertex_editor.as_mut().unwrap();
+                if let Some((started, from_ms)) = editor.playing {
+                    editor.playhead_ms = from_ms
+                        .saturating_add(started.elapsed().as_millis() as u64)
+                        .min(duration);
+                    if editor.playhead_ms >= duration {
+                        editor.playing = None;
+                    }
+                    editor.selected_keyframe = bubble
+                        .vertex_keyframes
+                        .iter()
+                        .find(|keyframe| keyframe.at_ms == editor.playhead_ms)
+                        .map(|keyframe| keyframe.at_ms);
+                }
+            } else {
+                self.vertex_editor = None;
+            }
+        }
         if self
             .selected_bubble
             .is_some_and(|id| project.bubble(id).is_none())
@@ -302,20 +582,29 @@ impl ComicDubsWorkspaceUi {
         layout: ComicDubsLayout,
     ) -> EventResponse {
         self.sync(project, layout);
+        if self.vertex_editor.is_some() {
+            return self.handle_vertex_editor_event(event, project, layout);
+        }
         if self.color_picker.active {
             let before = self.color_picker.current_color();
             if self.color_picker.handle_event(event) {
                 let after = self.color_picker.current_color();
-                let bubble_id = self.color_bubble;
+                let target = self.color_target;
                 if !self.color_picker.active {
-                    self.color_bubble = None;
+                    self.color_target = None;
                 }
-                return bubble_id.filter(|_| before != after).map_or(
+                return target.filter(|_| before != after).map_or(
                     EventResponse::Consumed,
-                    |bubble_id| {
-                        EventResponse::Action(UiAction::ComicDubsSetBubbleColor {
-                            bubble_id,
-                            color: rgba8(after),
+                    |target| {
+                        EventResponse::Action(match target {
+                            ColorTarget::Bubble(bubble_id) => UiAction::ComicDubsSetBubbleColor {
+                                bubble_id,
+                                color: rgba8(after),
+                            },
+                            ColorTarget::Text(bubble_id) => UiAction::ComicDubsSetBubbleTextColor {
+                                bubble_id,
+                                color: rgba8(after),
+                            },
                         })
                     },
                 );
@@ -469,6 +758,12 @@ impl ComicDubsWorkspaceUi {
             if let Some(drag) = self.bubble_vertex_drag.take() {
                 return if drag.points == drag.original {
                     EventResponse::Consumed
+                } else if let Some(at_ms) = drag.keyframe_at_ms {
+                    EventResponse::Action(UiAction::ComicDubsSetBubbleVertexKeyframe {
+                        bubble_id: drag.bubble_id,
+                        at_ms,
+                        points: drag.points,
+                    })
                 } else {
                     EventResponse::Action(UiAction::ComicDubsSetBubblePoints {
                         bubble_id: drag.bubble_id,
@@ -505,6 +800,7 @@ impl ComicDubsWorkspaceUi {
                         self.bubble_vertex_drag = Some(BubbleVertexDrag {
                             bubble_id,
                             index,
+                            keyframe_at_ms: None,
                             original: bubble.points.clone(),
                             points: bubble.points.clone(),
                         });
@@ -549,6 +845,167 @@ impl ComicDubsWorkspaceUi {
             self.bubble_drag = None;
         }
         EventResponse::Ignored
+    }
+
+    fn handle_vertex_editor_event(
+        &mut self,
+        event: &UiEvent,
+        project: &ComicDubsProject,
+        layout: ComicDubsLayout,
+    ) -> EventResponse {
+        let Some(editor) = self.vertex_editor.as_ref() else {
+            return EventResponse::Ignored;
+        };
+        let bubble_id = editor.bubble_id;
+        let playhead_ms = editor.playhead_ms;
+        let selected_keyframe = editor.selected_keyframe;
+        let Some(bubble) = project.bubble(bubble_id) else {
+            self.vertex_editor = None;
+            return EventResponse::Consumed;
+        };
+        let duration_ms = vertex_editor_duration_ms(project, bubble);
+        let editor_layout = VertexEditorLayout::compute(layout);
+        let page_rect = project
+            .active_page()
+            .map(|page| image_rect(editor_layout.stage, page));
+
+        if matches!(event, UiEvent::KeyInput { text } if text == "\x1b") {
+            self.close_vertex_editor();
+            return EventResponse::Consumed;
+        }
+        if let UiEvent::MousePress { x, y } = event {
+            if editor_layout.close.contains(*x, *y) {
+                self.close_vertex_editor();
+                return EventResponse::Consumed;
+            }
+            if editor_layout.previous.contains(*x, *y) {
+                self.set_vertex_editor_playhead(
+                    previous_keyframe_at(bubble, playhead_ms),
+                    project,
+                );
+                return EventResponse::Consumed;
+            }
+            if editor_layout.next.contains(*x, *y) {
+                self.set_vertex_editor_playhead(
+                    next_keyframe_at(bubble, playhead_ms, duration_ms),
+                    project,
+                );
+                return EventResponse::Consumed;
+            }
+            if editor_layout.play.contains(*x, *y) {
+                self.toggle_vertex_editor_preview(project);
+                return EventResponse::Consumed;
+            }
+            if editor_layout.add.contains(*x, *y) {
+                self.vertex_editor.as_mut().unwrap().selected_keyframe = Some(playhead_ms);
+                return EventResponse::Action(UiAction::ComicDubsSetBubbleVertexKeyframe {
+                    bubble_id,
+                    at_ms: playhead_ms,
+                    points: bubble.points_at(playhead_ms).to_vec(),
+                });
+            }
+            if editor_layout.delete.contains(*x, *y) {
+                return selected_keyframe.map_or(EventResponse::Consumed, |at_ms| {
+                    self.vertex_editor.as_mut().unwrap().selected_keyframe = None;
+                    EventResponse::Action(UiAction::ComicDubsRemoveBubbleVertexKeyframe {
+                        bubble_id,
+                        at_ms,
+                    })
+                });
+            }
+            if editor_layout.track.contains(*x, *y) {
+                let at_ms = (((*x - editor_layout.track.x) / editor_layout.track.width)
+                    .clamp(0.0, 1.0)
+                    * duration_ms as f32)
+                    .round() as u64;
+                let marker = bubble
+                    .vertex_keyframes
+                    .iter()
+                    .min_by_key(|keyframe| keyframe.at_ms.abs_diff(at_ms))
+                    .filter(|keyframe| {
+                        keyframe.at_ms.abs_diff(at_ms) as f32 / duration_ms.max(1) as f32
+                            * editor_layout.track.width
+                            <= 10.0
+                    })
+                    .map(|keyframe| keyframe.at_ms);
+                self.set_vertex_editor_playhead(marker.unwrap_or(at_ms), project);
+                return EventResponse::Consumed;
+            }
+            if let Some(rect) = page_rect {
+                let points = bubble.points_at(playhead_ms).to_vec();
+                if let Some(index) = vertex_at(rect, &points, *x, *y) {
+                    self.vertex_editor.as_mut().unwrap().playing = None;
+                    self.bubble_vertex_drag = Some(BubbleVertexDrag {
+                        bubble_id,
+                        index,
+                        keyframe_at_ms: Some(playhead_ms),
+                        original: points.clone(),
+                        points,
+                    });
+                }
+            }
+            return EventResponse::Consumed;
+        }
+        if let (UiEvent::MouseMove { x, y }, Some(rect), Some(drag)) =
+            (event, page_rect, self.bubble_vertex_drag.as_mut())
+        {
+            drag.points[drag.index] = point_at(rect, *x, *y);
+            return EventResponse::Consumed;
+        }
+        if matches!(event, UiEvent::MouseRelease { .. }) {
+            if let Some(drag) = self.bubble_vertex_drag.take() {
+                if drag.points != drag.original {
+                    self.vertex_editor.as_mut().unwrap().selected_keyframe = drag.keyframe_at_ms;
+                    return EventResponse::Action(UiAction::ComicDubsSetBubbleVertexKeyframe {
+                        bubble_id: drag.bubble_id,
+                        at_ms: drag.keyframe_at_ms.unwrap(),
+                        points: drag.points,
+                    });
+                }
+            }
+            return EventResponse::Consumed;
+        }
+        if matches!(event, UiEvent::Delete)
+            || matches!(event, UiEvent::KeyInput { text } if text == "\x7f")
+        {
+            if let Some(at_ms) = selected_keyframe {
+                self.vertex_editor.as_mut().unwrap().selected_keyframe = None;
+                return EventResponse::Action(UiAction::ComicDubsRemoveBubbleVertexKeyframe {
+                    bubble_id,
+                    at_ms,
+                });
+            }
+            return EventResponse::Consumed;
+        }
+        match event {
+            UiEvent::CursorLeft => {
+                self.set_vertex_editor_playhead(playhead_ms.saturating_sub(50), project)
+            }
+            UiEvent::CursorRight => self.set_vertex_editor_playhead(
+                playhead_ms.saturating_add(50).min(duration_ms),
+                project,
+            ),
+            UiEvent::Home => self.set_vertex_editor_playhead(0, project),
+            UiEvent::End => self.set_vertex_editor_playhead(duration_ms, project),
+            UiEvent::PageUp => self.set_vertex_editor_playhead(
+                previous_keyframe_at(bubble, playhead_ms),
+                project,
+            ),
+            UiEvent::PageDown => self.set_vertex_editor_playhead(
+                next_keyframe_at(bubble, playhead_ms, duration_ms),
+                project,
+            ),
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => {
+                self.vertex_editor.as_mut().unwrap().selected_keyframe = Some(playhead_ms);
+                return EventResponse::Action(UiAction::ComicDubsSetBubbleVertexKeyframe {
+                    bubble_id,
+                    at_ms: playhead_ms,
+                    points: bubble.points_at(playhead_ms).to_vec(),
+                });
+            }
+            _ => {}
+        }
+        EventResponse::Consumed
     }
 
     fn handle_header(
@@ -596,7 +1053,7 @@ impl ComicDubsWorkspaceUi {
             return Some(EventResponse::Consumed);
         };
         let bubble = project.bubble(bubble_id)?;
-        if inspector_minus(layout, 88.0).contains(*x, *y) {
+        if inspector_minus(layout, INSPECTOR_FONT_SIZE_Y).contains(*x, *y) {
             return Some(EventResponse::Action(
                 UiAction::ComicDubsSetBubbleFontSize {
                     bubble_id,
@@ -604,7 +1061,7 @@ impl ComicDubsWorkspaceUi {
                 },
             ));
         }
-        if inspector_plus(layout, 88.0).contains(*x, *y) {
+        if inspector_plus(layout, INSPECTOR_FONT_SIZE_Y).contains(*x, *y) {
             return Some(EventResponse::Action(
                 UiAction::ComicDubsSetBubbleFontSize {
                     bubble_id,
@@ -612,26 +1069,111 @@ impl ComicDubsWorkspaceUi {
                 },
             ));
         }
-        let swatch = inspector_color(layout);
-        if swatch.contains(*x, *y) {
+        for (row_y, spacing, letter) in [
+            (INSPECTOR_LETTER_SPACING_Y, bubble.letter_spacing, true),
+            (INSPECTOR_LINE_SPACING_Y, bubble.line_spacing, false),
+        ] {
+            let delta = if letter { 0.5 } else { 0.1 };
+            if inspector_minus(layout, row_y).contains(*x, *y) {
+                return Some(EventResponse::Action(if letter {
+                    UiAction::ComicDubsSetBubbleLetterSpacing {
+                        bubble_id,
+                        spacing: spacing - delta,
+                    }
+                } else {
+                    UiAction::ComicDubsSetBubbleLineSpacing {
+                        bubble_id,
+                        spacing: spacing - delta,
+                    }
+                }));
+            }
+            if inspector_plus(layout, row_y).contains(*x, *y) {
+                return Some(EventResponse::Action(if letter {
+                    UiAction::ComicDubsSetBubbleLetterSpacing {
+                        bubble_id,
+                        spacing: spacing + delta,
+                    }
+                } else {
+                    UiAction::ComicDubsSetBubbleLineSpacing {
+                        bubble_id,
+                        spacing: spacing + delta,
+                    }
+                }));
+            }
+        }
+        let bubble_swatch = inspector_color(layout, INSPECTOR_COLORS_Y, 0);
+        let text_swatch = inspector_color(layout, INSPECTOR_COLORS_Y, 1);
+        let (swatch, color, target) = if bubble_swatch.contains(*x, *y) {
+            (bubble_swatch, bubble.color, ColorTarget::Bubble(bubble_id))
+        } else if text_swatch.contains(*x, *y) {
+            (
+                text_swatch,
+                effective_text_color(bubble),
+                ColorTarget::Text(bubble_id),
+            )
+        } else {
+            (Rect::default(), [0; 4], ColorTarget::Bubble(bubble_id))
+        };
+        if swatch.width > 0.0 {
             let (picker_w, picker_h) = ColorPickerState::panel_size();
             let picker_x = (layout.inspector.x - picker_w - 8.0).max(4.0);
             let picker_y = swatch
                 .y
                 .min(layout.content.y + layout.content.height - picker_h - 4.0)
                 .max(layout.content.y + 4.0);
-            self.color_picker
-                .open(picker_x, picker_y, rgba(bubble.color));
-            self.color_bubble = Some(bubble_id);
+            if matches!(target, ColorTarget::Bubble(_)) {
+                self.color_picker.open_with_transparency(
+                    picker_x,
+                    picker_y,
+                    rgba(color),
+                    true,
+                );
+            } else {
+                self.color_picker.open(picker_x, picker_y, rgba(color));
+            }
+            self.color_target = Some(target);
             return Some(EventResponse::Consumed);
         }
-        if inspector_action(layout, 230.0, 0).contains(*x, *y) {
+        for column in 0..3 {
+            if inspector_columns(layout, INSPECTOR_STYLE_Y, 3, column).contains(*x, *y) {
+                let mut style = (bubble.bold, bubble.strikethrough, bubble.underline);
+                match column {
+                    0 => style.0 = !style.0,
+                    1 => style.1 = !style.1,
+                    _ => style.2 = !style.2,
+                }
+                return Some(EventResponse::Action(UiAction::ComicDubsSetBubbleTextStyle {
+                    bubble_id,
+                    bold: style.0,
+                    strikethrough: style.1,
+                    underline: style.2,
+                }));
+            }
+        }
+        for (column, alignment) in [
+            TextAlignment::Left,
+            TextAlignment::Center,
+            TextAlignment::Right,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if inspector_columns(layout, INSPECTOR_ALIGNMENT_Y, 3, column).contains(*x, *y) {
+                return Some(EventResponse::Action(
+                    UiAction::ComicDubsSetBubbleTextAlignment {
+                        bubble_id,
+                        alignment,
+                    },
+                ));
+            }
+        }
+        if inspector_action(layout, INSPECTOR_ORDER_Y, 0).contains(*x, *y) {
             return Some(EventResponse::Action(UiAction::ComicDubsMoveBubble {
                 bubble_id,
                 delta: -1,
             }));
         }
-        if inspector_action(layout, 230.0, 1).contains(*x, *y) {
+        if inspector_action(layout, INSPECTOR_ORDER_Y, 1).contains(*x, *y) {
             return Some(EventResponse::Action(UiAction::ComicDubsMoveBubble {
                 bubble_id,
                 delta: 1,
@@ -639,7 +1181,7 @@ impl ComicDubsWorkspaceUi {
         }
         let delete = Rect {
             x: layout.inspector.x + 12.0,
-            y: layout.inspector.y + 278.0,
+            y: layout.inspector.y + INSPECTOR_DELETE_Y,
             width: layout.inspector.width - 24.0,
             height: 34.0,
         };
@@ -747,6 +1289,9 @@ impl ComicDubsWorkspaceUi {
     }
 
     pub fn scene(&self, project: &ComicDubsProject, layout: ComicDubsLayout) -> ComicDubsScene {
+        if self.vertex_editor.is_some() {
+            return self.vertex_editor_scene(project, layout);
+        }
         let mut scene = ComicDubsScene::default();
         scene.quads.push(quad(layout.content, BG, [0.0; 4], 0.0));
         scene.quads.push(quad(layout.sidebar, PANEL, BORDER, 0.0));
@@ -776,8 +1321,8 @@ impl ComicDubsWorkspaceUi {
         for (index, bubble) in page.bubbles.iter().enumerate() {
             let playback_state = self
                 .playback
-                .filter(|(page_id, _)| *page_id == page.id)
-                .map(|(_, visible)| {
+                .filter(|(page_id, _, _)| *page_id == page.id)
+                .map(|(_, visible, _)| {
                     crate::comic_dubs::bubble_playback_state(bubble, index, visible)
                 });
             if playback_state.is_some_and(|(show_background, _)| !show_background) {
@@ -793,6 +1338,20 @@ impl ComicDubsWorkspaceUi {
                         .as_ref()
                         .filter(|drag| drag.bubble_id == bubble.id)
                         .map(translated_drag_points)
+                })
+                .or_else(|| {
+                    self.playback
+                        .filter(|(page_id, _, _)| *page_id == page.id)
+                        .map(|(_, visible, elapsed_ms)| {
+                            let at_ms = if index + 1 < visible {
+                                u64::MAX
+                            } else if index + 1 == visible {
+                                elapsed_ms
+                            } else {
+                                0
+                            };
+                            bubble.points_at(at_ms).to_vec()
+                        })
                 });
             let bubble_points = points.as_deref().unwrap_or(&bubble.points);
             render_bubble(
@@ -878,6 +1437,251 @@ impl ComicDubsWorkspaceUi {
                 .push(quad(drag, [0.15, 0.13, 0.28, 0.96], ACCENT, 6.0));
             overlay_label(&mut scene, name, drag, HAlign::Center, 12.0, TEXT);
         }
+        scene
+    }
+
+    fn vertex_editor_scene(
+        &self,
+        project: &ComicDubsProject,
+        layout: ComicDubsLayout,
+    ) -> ComicDubsScene {
+        let mut scene = ComicDubsScene::default();
+        let Some(editor) = self.vertex_editor.as_ref() else {
+            return scene;
+        };
+        let Some(bubble) = project.bubble(editor.bubble_id) else {
+            return scene;
+        };
+        let Some(page) = project.active_page() else {
+            return scene;
+        };
+        let editor_layout = VertexEditorLayout::compute(layout);
+        let duration_ms = vertex_editor_duration_ms(project, bubble);
+        scene.quads.push(quad(layout.content, BG, [0.0; 4], 0.0));
+        scene
+            .quads
+            .push(quad(editor_layout.header, PANEL, BORDER, 0.0));
+        scene.quads.push(quad(
+            editor_layout.timeline_panel,
+            PANEL,
+            BORDER,
+            0.0,
+        ));
+        label(
+            &mut scene,
+            "ANIMATION DES SOMMETS DE LA BULLE",
+            Rect {
+                x: editor_layout.header.x + 16.0,
+                width: editor_layout.header.width - 72.0,
+                ..editor_layout.header
+            },
+            HAlign::Left,
+            14.0,
+            TEXT,
+        );
+        label(
+            &mut scene,
+            "Interpolation instantanée • glissez un sommet • Entrée ajoute • Espace lit • Ctrl+←/→ 50 ms • Échap ferme",
+            Rect {
+                x: editor_layout.header.x + 310.0,
+                width: (editor_layout.header.width - 382.0).max(0.0),
+                ..editor_layout.header
+            },
+            HAlign::Right,
+            10.0,
+            MUTED,
+        );
+        scene
+            .quads
+            .push(quad(editor_layout.close, PANEL_ALT, BORDER, 6.0));
+        label(
+            &mut scene,
+            "×",
+            editor_layout.close,
+            HAlign::Center,
+            20.0,
+            TEXT,
+        );
+        scene.controls.push(SceneControl {
+            id: "comic.vertex.close".into(),
+            label: "Fermer l’éditeur de sommets".into(),
+            bounds: editor_layout.close,
+            role: AccessibleRole::Button,
+            selected: false,
+        });
+
+        let rect = image_rect(editor_layout.stage, page);
+        scene.page_rect = Some(rect);
+        scene.page_id = Some(page.id);
+        scene
+            .quads
+            .push(quad(rect, [0.04, 0.04, 0.05, 1.0], BORDER, 2.0));
+        let points = self
+            .bubble_vertex_drag
+            .as_ref()
+            .filter(|drag| drag.bubble_id == bubble.id)
+            .map(|drag| drag.points.as_slice())
+            .unwrap_or_else(|| bubble.points_at(editor.playhead_ms));
+        if points != bubble.points.as_slice() {
+            for (a, b) in bubble
+                .points
+                .iter()
+                .zip(bubble.points.iter().cycle().skip(1))
+                .take(bubble.points.len())
+            {
+                scene
+                    .overlay_quads
+                    .push(line_quad(rect, *a, *b, [0.55, 0.56, 0.64, 0.45], 1.0));
+            }
+        }
+        render_bubble(
+            &mut scene,
+            bubble,
+            points,
+            rect,
+            true,
+            None,
+            true,
+            project.font_family(),
+        );
+
+        for (bounds, text, id, selected) in [
+            (editor_layout.previous, "|◀", "comic.vertex.previous", false),
+            (
+                editor_layout.play,
+                if editor.playing.is_some() { "Pause" } else { "Lire" },
+                "comic.vertex.play",
+                editor.playing.is_some(),
+            ),
+            (editor_layout.next, "▶|", "comic.vertex.next", false),
+            (
+                editor_layout.add,
+                if editor.selected_keyframe == Some(editor.playhead_ms) {
+                    "Mettre à jour"
+                } else {
+                    "Ajouter une pose"
+                },
+                "comic.vertex.add",
+                false,
+            ),
+            (
+                editor_layout.delete,
+                "Supprimer",
+                "comic.vertex.delete",
+                false,
+            ),
+        ] {
+            let enabled = id != "comic.vertex.delete" || editor.selected_keyframe.is_some();
+            scene.quads.push(quad(
+                bounds,
+                if selected {
+                    ACCENT
+                } else if enabled {
+                    PANEL_ALT
+                } else {
+                    [0.075, 0.078, 0.09, 1.0]
+                },
+                BORDER,
+                5.0,
+            ));
+            label(
+                &mut scene,
+                text,
+                bounds,
+                HAlign::Center,
+                11.0,
+                if enabled { TEXT } else { MUTED },
+            );
+            scene.controls.push(SceneControl {
+                id: id.into(),
+                label: text.into(),
+                bounds,
+                role: AccessibleRole::Button,
+                selected,
+            });
+        }
+
+        scene
+            .quads
+            .push(quad(editor_layout.track, PANEL_ALT, BORDER, 6.0));
+        for keyframe in &bubble.vertex_keyframes {
+            let x = editor_layout.track.x
+                + keyframe.at_ms.min(duration_ms) as f32 / duration_ms.max(1) as f32
+                    * editor_layout.track.width;
+            let marker = Rect {
+                x: x - 6.0,
+                y: editor_layout.track.y - 5.0,
+                width: 12.0,
+                height: 22.0,
+            };
+            let selected = editor.selected_keyframe == Some(keyframe.at_ms);
+            scene.quads.push(quad(
+                marker,
+                if selected { ACCENT } else { [0.72, 0.63, 1.0, 1.0] },
+                [1.0; 4],
+                4.0,
+            ));
+            scene.controls.push(SceneControl {
+                id: format!("comic.vertex.marker.{}", keyframe.at_ms),
+                label: format!("Pose à {}", format_time_ms(keyframe.at_ms)),
+                bounds: marker,
+                role: AccessibleRole::Button,
+                selected,
+            });
+        }
+        let playhead_x = editor_layout.track.x
+            + editor.playhead_ms.min(duration_ms) as f32 / duration_ms.max(1) as f32
+                * editor_layout.track.width;
+        scene.quads.push(quad(
+            Rect {
+                x: playhead_x - 1.5,
+                y: editor_layout.track.y - 10.0,
+                width: 3.0,
+                height: 32.0,
+            },
+            [0.95, 0.38, 0.55, 1.0],
+            [0.0; 4],
+            1.5,
+        ));
+        label(
+            &mut scene,
+            "0:00.000",
+            Rect {
+                x: editor_layout.track.x,
+                y: editor_layout.track.y + 20.0,
+                width: 90.0,
+                height: 20.0,
+            },
+            HAlign::Left,
+            10.0,
+            MUTED,
+        );
+        label(
+            &mut scene,
+            &format_time_ms(editor.playhead_ms),
+            Rect {
+                x: playhead_x - 55.0,
+                y: editor_layout.track.y - 30.0,
+                width: 110.0,
+                height: 20.0,
+            },
+            HAlign::Center,
+            10.0,
+            TEXT,
+        );
+        label(
+            &mut scene,
+            &format_time_ms(duration_ms),
+            Rect {
+                x: editor_layout.track.x + editor_layout.track.width - 90.0,
+                y: editor_layout.track.y + 20.0,
+                width: 90.0,
+                height: 20.0,
+            },
+            HAlign::Right,
+            10.0,
+            MUTED,
+        );
         scene
     }
 
@@ -1017,6 +1821,23 @@ impl ComicDubsWorkspaceUi {
                 }
             }
         }
+        if self.media_tab == MediaTab::Audios && self.pending_audio_imports > 0 {
+            let status = Rect {
+                x: layout.sidebar.x + 10.0,
+                y: layout.sidebar.y + layout.sidebar.height - 82.0,
+                width: layout.sidebar.width - 20.0,
+                height: 30.0,
+            };
+            scene.quads.push(quad(status, [0.15, 0.13, 0.28, 1.0], ACCENT, 6.0));
+            label(
+                scene,
+                &format!("Chargement de {} audio(s)…", self.pending_audio_imports),
+                status,
+                HAlign::Center,
+                11.0,
+                TEXT,
+            );
+        }
         let hint = match self.media_tab {
             MediaTab::Images => "Déposez des images ici • conversion PNG automatique",
             MediaTab::Audios => {
@@ -1136,27 +1957,82 @@ impl ComicDubsWorkspaceUi {
         inspector_value(
             scene,
             layout,
-            88.0,
+            INSPECTOR_FONT_SIZE_Y,
             "Taille du texte",
             &format!("{} px", bubble.font_size.round()),
         );
-        label(
+        inspector_value(
             scene,
-            "Fond de la bulle",
-            Rect {
-                x: layout.inspector.x + 12.0,
-                y: layout.inspector.y + 142.0,
-                width: layout.inspector.width - 24.0,
-                height: 20.0,
-            },
-            HAlign::Left,
-            11.0,
-            TEXT,
+            layout,
+            INSPECTOR_LETTER_SPACING_Y,
+            "Espacement lettres",
+            &format!("{:.1} px", bubble.letter_spacing),
         );
-        let color = inspector_color(layout);
-        scene
-            .quads
-            .push(quad(color, rgba(bubble.color), BORDER, 5.0));
+        inspector_value(
+            scene,
+            layout,
+            INSPECTOR_LINE_SPACING_Y,
+            "Interligne",
+            &format!("{:.1}×", bubble.line_spacing),
+        );
+        for (column, text, color) in [
+            (0, "Fond", bubble.color),
+            (1, "Texte", effective_text_color(bubble)),
+        ] {
+            let swatch = inspector_color(layout, INSPECTOR_COLORS_Y, column);
+            label(
+                scene,
+                text,
+                Rect {
+                    y: swatch.y - 18.0,
+                    height: 16.0,
+                    ..swatch
+                },
+                HAlign::Center,
+                10.0,
+                MUTED,
+            );
+            scene.quads.push(quad(swatch, gpu_rgba(color), BORDER, 5.0));
+        }
+        for (column, text, selected) in [
+            (0, "Gras", bubble.bold),
+            (1, "Barré", bubble.strikethrough),
+            (2, "Souligné", bubble.underline),
+        ] {
+            let rect = inspector_columns(layout, INSPECTOR_STYLE_Y, 3, column);
+            scene.quads.push(quad(
+                rect,
+                if selected { ACCENT } else { PANEL_ALT },
+                BORDER,
+                5.0,
+            ));
+            label(scene, text, rect, HAlign::Center, 9.0, TEXT);
+            scene.controls.push(SceneControl {
+                id: format!(
+                    "comic.inspector.style.{}.{}",
+                    ["bold", "strikethrough", "underline"][column],
+                    bubble.id,
+                ),
+                label: text.into(),
+                bounds: rect,
+                role: AccessibleRole::Button,
+                selected,
+            });
+        }
+        for (column, text, alignment) in [
+            (0, "Gauche", TextAlignment::Left),
+            (1, "Centre", TextAlignment::Center),
+            (2, "Droite", TextAlignment::Right),
+        ] {
+            let rect = inspector_columns(layout, INSPECTOR_ALIGNMENT_Y, 3, column);
+            scene.quads.push(quad(
+                rect,
+                if bubble.text_alignment == alignment { ACCENT } else { PANEL_ALT },
+                BORDER,
+                5.0,
+            ));
+            label(scene, text, rect, HAlign::Center, 10.0, TEXT);
+        }
         let audio = bubble
             .audio_id
             .and_then(|id| project.audio(id))
@@ -1167,7 +2043,7 @@ impl ComicDubsWorkspaceUi {
             &audio,
             Rect {
                 x: layout.inspector.x + 12.0,
-                y: layout.inspector.y + 190.0,
+                y: layout.inspector.y + INSPECTOR_AUDIO_Y,
                 width: layout.inspector.width - 24.0,
                 height: 28.0,
             },
@@ -1176,15 +2052,15 @@ impl ComicDubsWorkspaceUi {
             MUTED,
         );
         for (rect, text) in [
-            (inspector_action(layout, 230.0, 0), "Ordre ↑"),
-            (inspector_action(layout, 230.0, 1), "Ordre ↓"),
+            (inspector_action(layout, INSPECTOR_ORDER_Y, 0), "Ordre ↑"),
+            (inspector_action(layout, INSPECTOR_ORDER_Y, 1), "Ordre ↓"),
         ] {
             scene.quads.push(quad(rect, PANEL_ALT, BORDER, 6.0));
             label(scene, text, rect, HAlign::Center, 11.0, TEXT);
         }
         let delete = Rect {
             x: layout.inspector.x + 12.0,
-            y: layout.inspector.y + 278.0,
+            y: layout.inspector.y + INSPECTOR_DELETE_Y,
             width: layout.inspector.width - 24.0,
             height: 34.0,
         };
@@ -1215,7 +2091,7 @@ fn render_bubble(
     scene.overlay_quads.extend(polygon_fill_quads(
         page_rect,
         points,
-        opaque_rgba(bubble.color),
+        gpu_rgba(bubble.color),
     ));
     let border = if selected {
         ACCENT
@@ -1252,34 +2128,87 @@ fn render_bubble(
         }
     }
     let bounds = polygon_text_bounds(page_rect, points);
-    let color = if luminance(rgba(bubble.color)) > 0.55 {
-        [24, 24, 30]
-    } else {
-        TEXT
+    let text_bounds = Rect {
+        x: bounds.x + 6.0,
+        width: (bounds.width - 12.0).max(1.0),
+        ..bounds
     };
+    let text_color = effective_text_color(bubble);
+    let color = [text_color[0], text_color[1], text_color[2]];
     if show_text {
         let text = text_edit
             .filter(|(id, _)| *id == bubble.id)
             .map(|(_, text)| format!("{text}|"))
             .unwrap_or_else(|| bubble.text.clone());
-        let (lines, font) = fit_text(&text, bounds, bubble.font_size);
-        let line_h = font * 1.18;
+        let (lines, font) = fit_text(
+            &text,
+            text_bounds,
+            bubble.font_size,
+            bubble.letter_spacing,
+            bubble.line_spacing,
+            font_family,
+        );
+        let line_h = font * bubble.line_spacing;
         let total_h = line_h * lines.len() as f32;
         for (index, line) in lines.iter().enumerate() {
+            let line_rect = Rect {
+                y: text_bounds.y + (text_bounds.height - total_h) * 0.5 + index as f32 * line_h,
+                height: line_h,
+                ..text_bounds
+            };
+            let alignment = match bubble.text_alignment {
+                TextAlignment::Left => HAlign::Left,
+                TextAlignment::Center => HAlign::Center,
+                TextAlignment::Right => HAlign::Right,
+            };
             overlay_label_with_font(
                 scene,
                 line,
-                Rect {
-                    x: bounds.x + 5.0,
-                    y: bounds.y + (bounds.height - total_h) * 0.5 + index as f32 * line_h,
-                    width: (bounds.width - 10.0).max(1.0),
-                    height: line_h,
-                },
-                HAlign::Center,
+                line_rect,
+                alignment,
                 font,
                 color,
                 font_family,
+                bubble.letter_spacing,
             );
+            if bubble.bold {
+                overlay_label_with_font(
+                    scene,
+                    line,
+                    Rect { x: line_rect.x + 0.8, ..line_rect },
+                    alignment,
+                    font,
+                    color,
+                    font_family,
+                    bubble.letter_spacing,
+                );
+            }
+            let width = measured_line_width(line, font, bubble.letter_spacing, font_family)
+                .min(line_rect.width);
+            let x = match bubble.text_alignment {
+                TextAlignment::Left => line_rect.x,
+                TextAlignment::Center => line_rect.x + (line_rect.width - width) * 0.5,
+                TextAlignment::Right => line_rect.x + line_rect.width - width,
+            };
+            for y in [
+                bubble.strikethrough.then_some(line_rect.y + line_h * 0.48),
+                bubble.underline.then_some(line_rect.y + line_h * 0.78),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                scene.overlay_quads.push(quad(
+                    Rect {
+                        x,
+                        y,
+                        width,
+                        height: (font * 0.07).max(1.0),
+                    },
+                    gpu_rgba(text_color),
+                    [0.0; 4],
+                    0.0,
+                ));
+            }
         }
     }
     scene.controls.push(SceneControl {
@@ -1361,19 +2290,34 @@ fn render_reading_order_badge(
     }
 }
 
-fn fit_text(text: &str, bounds: Rect, preferred_font_size: f32) -> (Vec<String>, f32) {
+fn fit_text(
+    text: &str,
+    bounds: Rect,
+    preferred_font_size: f32,
+    letter_spacing: f32,
+    line_spacing: f32,
+    font_family: Option<&str>,
+) -> (Vec<String>, f32) {
     let maximum = preferred_font_size.clamp(6.0, 72.0).floor() as u32;
     for font in (6..=maximum).rev().map(|size| size as f32) {
-        let max_chars = (bounds.width / (font * 0.56)).floor().max(1.0) as usize;
+        let max_chars = (bounds.width / (font * 0.56 + letter_spacing))
+            .floor()
+            .max(1.0) as usize;
         let lines = wrap_text(text, max_chars);
-        if lines.len() as f32 * font * 1.18 <= bounds.height {
+        if lines.len() as f32 * font * line_spacing <= bounds.height
+            && lines.iter().all(|line| {
+                measured_line_width(line, font, letter_spacing, font_family) <= bounds.width
+            })
+        {
             return (lines, font);
         }
     }
 
     let font = 6.0;
-    let max_chars = (bounds.width / (font * 0.56)).floor().max(1.0) as usize;
-    let max_lines = (bounds.height / (font * 1.18)).floor().max(1.0) as usize;
+    let max_chars = (bounds.width / (font * 0.56 + letter_spacing))
+        .floor()
+        .max(1.0) as usize;
+    let max_lines = (bounds.height / (font * line_spacing)).floor().max(1.0) as usize;
     let mut lines = wrap_text(text, max_chars);
     if lines.len() > max_lines {
         lines.truncate(max_lines);
@@ -1385,6 +2329,28 @@ fn fit_text(text: &str, bounds: Rect, preferred_font_size: f32) -> (Vec<String>,
         }
     }
     (lines, font)
+}
+
+fn measured_line_width(
+    line: &str,
+    font_size: f32,
+    letter_spacing: f32,
+    font_family: Option<&str>,
+) -> f32 {
+    use unicode_segmentation::UnicodeSegmentation;
+    crate::vector_text::measure_text_width_with_family_standalone(line, font_size, font_family)
+        .unwrap_or(0.0)
+        + letter_spacing * line.graphemes(true).count().saturating_sub(1) as f32
+}
+
+fn effective_text_color(bubble: &Bubble) -> [u8; 4] {
+    bubble.text_color.unwrap_or_else(|| {
+        if luminance(rgba(bubble.color)) > 0.55 {
+            [24, 24, 30, 255]
+        } else {
+            [244, 244, 248, 255]
+        }
+    })
 }
 
 fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
@@ -1421,6 +2387,42 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
         lines.push(String::new());
     }
     lines
+}
+
+fn vertex_editor_duration_ms(project: &ComicDubsProject, bubble: &Bubble) -> u64 {
+    bubble
+        .audio_id
+        .and_then(|id| project.audio(id))
+        .map_or(0, |audio| audio.duration_ms())
+        .max(bubble.vertex_animation_duration_ms())
+        .max(2_000)
+        .min(86_400_000)
+}
+
+fn previous_keyframe_at(bubble: &Bubble, playhead_ms: u64) -> u64 {
+    bubble
+        .vertex_keyframes
+        .iter()
+        .rev()
+        .find(|keyframe| keyframe.at_ms < playhead_ms)
+        .map_or(0, |keyframe| keyframe.at_ms)
+}
+
+fn next_keyframe_at(bubble: &Bubble, playhead_ms: u64, duration_ms: u64) -> u64 {
+    bubble
+        .vertex_keyframes
+        .iter()
+        .find(|keyframe| keyframe.at_ms > playhead_ms)
+        .map_or(duration_ms, |keyframe| keyframe.at_ms)
+}
+
+fn format_time_ms(at_ms: u64) -> String {
+    format!(
+        "{}:{:02}.{:03}",
+        at_ms / 60_000,
+        at_ms / 1_000 % 60,
+        at_ms % 1_000
+    )
 }
 
 fn image_rect(canvas: Rect, page: &Page) -> Rect {
@@ -1666,18 +2668,17 @@ fn inspector_plus(layout: ComicDubsLayout, y: f32) -> Rect {
     }
 }
 
-fn inspector_color(layout: ComicDubsLayout) -> Rect {
-    Rect {
-        x: layout.inspector.x + layout.inspector.width - 54.0,
-        y: layout.inspector.y + 138.0,
-        width: 42.0,
-        height: 28.0,
-    }
+fn inspector_color(layout: ComicDubsLayout, y: f32, column: usize) -> Rect {
+    inspector_columns(layout, y, 2, column)
 }
 
 fn inspector_action(layout: ComicDubsLayout, y: f32, column: usize) -> Rect {
+    inspector_columns(layout, y, 2, column)
+}
+
+fn inspector_columns(layout: ComicDubsLayout, y: f32, count: usize, column: usize) -> Rect {
     let gap = 8.0;
-    let width = (layout.inspector.width - 24.0 - gap) * 0.5;
+    let width = (layout.inspector.width - 24.0 - gap * (count - 1) as f32) / count as f32;
     Rect {
         x: layout.inspector.x + 12.0 + column as f32 * (width + gap),
         y: layout.inspector.y + y,
@@ -1775,6 +2776,8 @@ fn label(
         font_size,
         color,
         font_family: None,
+        padding: 6.0,
+        letter_spacing: 0.0,
     });
 }
 
@@ -1786,6 +2789,7 @@ fn overlay_label_with_font(
     font_size: f32,
     color: [u8; 3],
     font_family: Option<&str>,
+    letter_spacing: f32,
 ) {
     scene.overlay_labels.push(SceneLabel {
         text: text.into(),
@@ -1794,6 +2798,8 @@ fn overlay_label_with_font(
         font_size,
         color,
         font_family: font_family.map(str::to_owned),
+        padding: 0.0,
+        letter_spacing,
     });
 }
 
@@ -1812,6 +2818,8 @@ fn overlay_label(
         font_size,
         color,
         font_family: None,
+        padding: 6.0,
+        letter_spacing: 0.0,
     });
 }
 
@@ -1824,17 +2832,19 @@ fn rgba8(color: [f32; 4]) -> [u8; 4] {
         (color[0] * 255.0).round() as u8,
         (color[1] * 255.0).round() as u8,
         (color[2] * 255.0).round() as u8,
-        255,
+        (color[3] * 255.0).round() as u8,
     ]
 }
 
+#[cfg(test)]
 fn opaque_rgba(color: [u8; 4]) -> [f32; 4] {
-    [
-        color[0] as f32 / 255.0,
-        color[1] as f32 / 255.0,
-        color[2] as f32 / 255.0,
-        1.0,
-    ]
+    let mut color = gpu_rgba(color);
+    color[3] = 1.0;
+    color
+}
+
+fn gpu_rgba(color: [u8; 4]) -> [f32; 4] {
+    crate::ui::color_picker::srgb_to_linear(rgba(color))
 }
 
 fn luminance(color: [f32; 4]) -> f32 {
@@ -1852,8 +2862,12 @@ pub fn append_scene<'a>(
         bounds: label.bounds,
         h_align: label.h_align,
         v_align: VAlign::Center,
-        overflow: Overflow::Clip,
-        padding: 6.0,
+        overflow: if label.letter_spacing == 0.0 {
+            Overflow::Clip
+        } else {
+            Overflow::ClipWithLetterSpacing(label.letter_spacing)
+        },
+        padding: label.padding,
         font_size_override: Some(label.font_size),
         color_override: Some(label.color),
         font_family_override: label.font_family.as_deref(),
@@ -1871,8 +2885,12 @@ pub fn append_overlay<'a>(
         bounds: label.bounds,
         h_align: label.h_align,
         v_align: VAlign::Center,
-        overflow: Overflow::Clip,
-        padding: 6.0,
+        overflow: if label.letter_spacing == 0.0 {
+            Overflow::Clip
+        } else {
+            Overflow::ClipWithLetterSpacing(label.letter_spacing)
+        },
+        padding: label.padding,
         font_size_override: Some(label.font_size),
         color_override: Some(label.color),
         font_family_override: label.font_family.as_deref(),
@@ -2234,6 +3252,7 @@ mod tests {
             )
             .unwrap();
         project.set_bubble_font_size(bubble_id, 18.0);
+        project.set_bubble_letter_spacing(bubble_id, 6.0);
         project.set_settings(Some("Arial".into()), 250, 250, 24.0);
         let mut ui = ComicDubsWorkspaceUi::default();
         ui.begin_text_edit(bubble_id, "Nouveau texte".into());
@@ -2255,7 +3274,15 @@ mod tests {
             .iter()
             .any(|label| label.text == "Nouveau texte|"
                 && label.font_size <= 18.0
+                && label.letter_spacing == 6.0
                 && label.font_family.as_deref() == Some("Arial")));
+        let mut quads = Vec::new();
+        let mut labels = Vec::new();
+        append_overlay(&mut quads, &mut labels, &scene);
+        assert!(labels.iter().any(|label| matches!(
+            label.overflow,
+            Overflow::ClipWithLetterSpacing(6.0)
+        )));
         assert!(scene.overlay_quads.iter().any(|quad| quad.color[3] == 1.0));
     }
 
@@ -2283,7 +3310,7 @@ mod tests {
             selected_bubble: Some(bubble_id),
             ..Default::default()
         };
-        let plus = inspector_plus(layout, 88.0);
+        let plus = inspector_plus(layout, INSPECTOR_FONT_SIZE_Y);
         assert!(matches!(
             ui.handle_event(
                 &UiEvent::MousePress {
@@ -2298,7 +3325,7 @@ mod tests {
                 font_size: 26.0,
             }) if id == bubble_id
         ));
-        let color = inspector_color(layout);
+        let color = inspector_color(layout, INSPECTOR_COLORS_Y, 0);
         assert_eq!(
             ui.handle_event(
                 &UiEvent::MousePress {
@@ -2311,7 +3338,24 @@ mod tests {
             EventResponse::Consumed
         );
         assert!(ui.color_picker.active);
+        assert!(ui.color_picker.can_be_transparent);
         let origin = ui.color_picker.origin;
+        let transparent = ui.color_picker.transparent_rect();
+        let transparent_response = ui.handle_event(
+                &UiEvent::MousePress {
+                    x: transparent.x + 1.0,
+                    y: transparent.y + 1.0,
+                },
+                &project,
+                layout,
+            );
+        assert_eq!(
+            transparent_response,
+            EventResponse::Action(UiAction::ComicDubsSetBubbleColor {
+                bubble_id,
+                color: [255, 255, 255, 0],
+            })
+        );
         assert!(matches!(
             ui.handle_event(
                 &UiEvent::MousePress {
@@ -2326,6 +3370,126 @@ mod tests {
                 ..
             }) if id == bubble_id
         ));
+        ui.color_picker.close();
+        let text_color = inspector_color(layout, INSPECTOR_COLORS_Y, 1);
+        ui.handle_event(
+            &UiEvent::MousePress {
+                x: text_color.x + 2.0,
+                y: text_color.y + 2.0,
+            },
+            &project,
+            layout,
+        );
+        assert!(!ui.color_picker.can_be_transparent);
+    }
+
+    #[test]
+    fn vertex_editor_replaces_panels_and_dragging_creates_a_step_pose() {
+        let mut project = project();
+        let page_id = project.active_page_id().unwrap();
+        let bubble_id = project
+            .add_bubble(
+                page_id,
+                vec![
+                    Point { x: 0.2, y: 0.2 },
+                    Point { x: 0.8, y: 0.2 },
+                    Point { x: 0.5, y: 0.8 },
+                ],
+            )
+            .unwrap();
+        let layout = ComicDubsLayout::compute(Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1_200.0,
+            height: 800.0,
+        });
+        let mut ui = ComicDubsWorkspaceUi::default();
+        ui.open_vertex_editor(bubble_id);
+        let scene = ui.scene(&project, layout);
+        assert!(scene
+            .labels
+            .iter()
+            .any(|label| label.text == "ANIMATION DES SOMMETS DE LA BULLE"));
+        assert!(!scene.labels.iter().any(|label| label.text == "INSPECTEUR"));
+
+        let page = scene.page_rect.unwrap();
+        let vertex = screen_point(page, project.bubble(bubble_id).unwrap().points[0]);
+        ui.handle_event(
+            &UiEvent::MousePress {
+                x: vertex.0,
+                y: vertex.1,
+            },
+            &project,
+            layout,
+        );
+        ui.handle_event(
+            &UiEvent::MouseMove {
+                x: vertex.0 + page.width * 0.05,
+                y: vertex.1 + page.height * 0.05,
+            },
+            &project,
+            layout,
+        );
+        assert!(matches!(
+            ui.handle_event(
+                &UiEvent::MouseRelease {
+                    x: vertex.0 + page.width * 0.05,
+                    y: vertex.1 + page.height * 0.05,
+                },
+                &project,
+                layout,
+            ),
+            EventResponse::Action(UiAction::ComicDubsSetBubbleVertexKeyframe {
+                bubble_id: id,
+                at_ms: 0,
+                points,
+            }) if id == bubble_id && points[0].x > 0.24
+        ));
+        assert!(ui.cancel_draft());
+        assert!(!ui.vertex_editor_open());
+    }
+
+    #[test]
+    fn audio_import_has_a_visible_loading_state() {
+        let project = project();
+        let mut ui = ComicDubsWorkspaceUi::default();
+        ui.set_pending_audio_imports(2);
+        let scene = ui.scene(
+            &project,
+            ComicDubsLayout::compute(Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1_200.0,
+                height: 800.0,
+            }),
+        );
+        assert_eq!(ui.media_tab, MediaTab::Audios);
+        assert!(scene
+            .labels
+            .iter()
+            .any(|label| label.text == "Chargement de 2 audio(s)…"));
+    }
+
+    #[test]
+    fn persisted_srgb_bubble_color_is_linearized_for_gpu() {
+        let color = opaque_rgba([128, 64, 32, 255]);
+        assert!((color[0] - 0.21586).abs() < 0.0001);
+        assert!((color[1] - 0.05127).abs() < 0.0001);
+        assert!((color[2] - 0.01444).abs() < 0.0001);
+        assert_eq!(color[3], 1.0);
+    }
+
+    #[test]
+    fn fitted_text_uses_the_real_font_width() {
+        let bounds = Rect {
+            width: 120.0,
+            height: 80.0,
+            ..Rect::default()
+        };
+        let (lines, font) = fit_text("WWWW WWWW", bounds, 34.0, 2.0, 1.2, None);
+        assert!(lines
+            .iter()
+            .all(|line| measured_line_width(line, font, 2.0, None) <= bounds.width));
     }
 
     #[test]
@@ -2352,7 +3516,7 @@ mod tests {
             height: 800.0,
         });
         let mut ui = ComicDubsWorkspaceUi::default();
-        ui.set_playback(Some(page_id), 1);
+        ui.set_playback(Some(page_id), 1, 0);
         let first = ui.scene(&project, layout);
         assert!(first
             .overlay_labels
@@ -2363,7 +3527,7 @@ mod tests {
             .iter()
             .all(|label| label.text != "Deuxième"));
 
-        ui.set_playback(Some(page_id), 2);
+        ui.set_playback(Some(page_id), 2, 0);
         let second = ui.scene(&project, layout);
         assert!(second
             .overlay_labels
@@ -2440,7 +3604,7 @@ mod tests {
         );
         assert!(audio_badge.overlay_quads.len() > plain_badge.overlay_quads.len());
 
-        ui.set_playback(Some(page_id), 2);
+        ui.set_playback(Some(page_id), 2, 0);
         let playback = ui.scene(&project, layout);
         assert!(playback
             .overlay_labels
@@ -2552,7 +3716,7 @@ mod tests {
             assert!(point_in_polygon(point_at(page, x, y), &triangle));
         }
         let text = "Une traduction assez longue doit rester lisible dans la bulle";
-        let (lines, font) = fit_text(text, bounds, 34.0);
+        let (lines, font) = fit_text(text, bounds, 34.0, 0.0, 1.18, None);
         assert_eq!(lines.join(" "), text);
         assert!(lines.len() as f32 * font * 1.18 <= bounds.height);
     }
