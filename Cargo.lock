@@ -793,7 +793,7 @@ dependencies = [
 
 [[package]]
 name = "coquerythmo"
-version = "5.0.1"
+version = "5.0.2"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -818,6 +818,7 @@ dependencies = [
  "toml 0.8.23",
  "unicode-segmentation",
  "ureq",
+ "urlencoding",
  "wgpu",
  "windows-sys 0.61.2",
  "winit",

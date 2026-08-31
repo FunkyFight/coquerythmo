@@ -547,6 +547,8 @@ pub struct State {
     recording_input_preflight: Option<(Option<String>, bool)>,
     recording_uploads: Vec<(String, Receiver<Result<(), String>>)>,
     recording_upload_acks: Vec<String>,
+    /// In-flight chunked `big_*` events being reassembled (sync, recording_prepare).
+    big_receives: crate::big_event::BigEventReceiver,
     pub workspace_host: WorkspaceHost,
     pub narration: NarrationService,
     last_autosave: Instant,
@@ -690,6 +692,7 @@ impl State {
             recording_input_preflight: None,
             recording_uploads: Vec::new(),
             recording_upload_acks: Vec::new(),
+            big_receives: crate::big_event::BigEventReceiver::default(),
             workspace_host: WorkspaceHost::new(
                 vec![
                     Box::new(RythmoWorkspace::new()),
@@ -4007,7 +4010,7 @@ impl State {
             let ping_results = self.collaboration.ping_results.clone();
             let pw = password.clone();
             std::thread::spawn(move || {
-                ping_server_socketio(&ip, port, pw, ping_results);
+                ping_server_http(&ip, port, pw, ping_results);
             });
         }
     }
@@ -6371,6 +6374,7 @@ impl State {
                     self.recording_input_preflight = None;
                     self.recording_uploads.clear();
                     self.recording_upload_acks.clear();
+                    self.big_receives.clear();
                     self.ui_shell.ui.close_project_transfer_modal();
                     self.ui_shell.ui.sync_overlay = None;
                     self.collaboration.network.state = ConnectionState::Disconnected;
@@ -6380,6 +6384,7 @@ impl State {
                     self.collaboration.network.member_id = None;
                     self.collaboration.network.project_huuid = None;
                     self.collaboration.network.project_matches = false;
+                    self.collaboration.network.sync_requested_this_session = false;
                     self.collaboration.network.member_details.clear();
                     self.collaboration.network.control_owner_id = None;
                     self.set_network_status("");
@@ -6396,6 +6401,10 @@ impl State {
                     self.collaboration.network.member_id = Some(member_id);
                     self.collaboration.network.project_huuid = Some(project_huuid);
                     self.collaboration.network.project_matches = project_matches;
+                    if project_matches && !self.collaboration.network.sync_requested_this_session {
+                        self.collaboration.network.sync_requested_this_session = true;
+                        self.collaboration.network.send_raw("request_sync", serde_json::json!({}));
+                    }
                 }
                 IncomingMessage::RoomState {
                     members,
@@ -6410,6 +6419,28 @@ impl State {
                     self.enter_online_recording_view();
                 }
                 IncomingMessage::Delta(data) => self.apply_delta(data),
+                IncomingMessage::BigBegin(begin) => {
+                    if let Err(error) = self.big_receives.begin(begin) {
+                        log::warn!("Rejected big transfer: {error}");
+                    }
+                }
+                IncomingMessage::BigChunk {
+                    transfer_id,
+                    index,
+                    data_base64,
+                } => {
+                    if let Err(error) =
+                        self.big_receives.push_base64(&transfer_id, index, &data_base64)
+                    {
+                        log::warn!("Rejected big chunk: {error}");
+                    }
+                }
+                IncomingMessage::BigEnd { transfer_id } => {
+                    match self.big_receives.finish(&transfer_id) {
+                        Ok((event, payload)) => self.dispatch_big_event(&event, &payload),
+                        Err(error) => log::warn!("Rejected big transfer {transfer_id}: {error}"),
+                    }
+                }
                 IncomingMessage::RecordingTransaction(transaction) => {
                     self.receive_recording_transaction(transaction)
                 }
@@ -6502,16 +6533,23 @@ impl State {
                             self.narration.publish_progress(String::new(), None);
                             self.project_transfer_waiting_dismissed = None;
                         } else {
-                            if let Some(runtime) = self.project_transfer.as_mut() {
-                                runtime.receiver.cancel();
-                            }
-                            if self.collaboration.network.project_matches {
-                                self.ui_shell.ui.sync_overlay = None;
-                            } else {
-                                self.ui_shell.ui.sync_progress = 0.0;
-                                self.ui_shell.ui.sync_overlay = Some(
-                                    crate::i18n::t("recording.project_transfer.no_project").into(),
-                                );
+                            // Only touch the overlay when this client takes
+                            // part in the transfer. Bystanders waiting on a
+                            // project sync must keep their "Synchronisation en
+                            // cours..." overlay until the sync truly arrives.
+                            if self.project_transfer.is_some() {
+                                if let Some(runtime) = self.project_transfer.as_mut() {
+                                    runtime.receiver.cancel();
+                                }
+                                if self.collaboration.network.project_matches {
+                                    self.ui_shell.ui.sync_overlay = None;
+                                } else {
+                                    self.ui_shell.ui.sync_progress = 0.0;
+                                    self.ui_shell.ui.sync_overlay = Some(
+                                        crate::i18n::t("recording.project_transfer.no_project")
+                                            .into(),
+                                    );
+                                }
                             }
                             self.project_transfer_source = None;
                             self.project_transfer_send = None;
@@ -6585,11 +6623,10 @@ impl State {
                 IncomingMessage::SyncRequested { requester } => {
                     log::info!("Sync requested by {requester}");
                     let data = ProjectData::from_project(&self.project_session.project);
-                    let mut json = serde_json::json!({ "project": data });
-                    if !requester.is_empty() {
-                        json["_target"] = serde_json::Value::String(requester.clone());
-                    }
-                    self.collaboration.network.send_raw("sync", json);
+                    let json = serde_json::json!({ "project": data });
+                    self.collaboration
+                        .network
+                        .send_sync(json, (!requester.is_empty()).then_some(requester.as_str()));
                     let prepare = crate::network::RecordingPreparePayload {
                         project: self.project_session.recording_project.clone(),
                         transactions: self.project_session.recording_transactions.clone(),
@@ -6689,6 +6726,7 @@ impl State {
                 self.collaboration.network.state = ConnectionState::InRoom;
                 self.collaboration.network.room_code = Some(code.clone());
                 self.collaboration.network.role = Some("admin".into());
+                self.collaboration.network.set_rejoin_code(&code);
                 self.set_network_status("Salon créé");
                 self.show_toast(
                     format!("{}{code}", crate::i18n::t("toast.room_created")),
@@ -6696,14 +6734,11 @@ impl State {
                 );
                 log::info!("Room created: {code}");
                 self.enter_online_recording_view();
-                self.collaboration.network.send_recording_prepare(
-                    &crate::network::RecordingPreparePayload {
-                        project: self.project_session.recording_project.clone(),
-                        transactions: self.project_session.recording_transactions.clone(),
-                        current_frame: self.current_frame(),
-                        capture_target: None,
-                    },
-                );
+                // No recording_prepare broadcast here: a freshly created room
+                // is empty so it is a no-op, while on a promotion (director
+                // lost, oldest member promoted) it would clobber every peer
+                // with this member's possibly stale recording state. Late
+                // joiners are prepared through their sync request instead.
             }
             Packet::RoomJoined {
                 code,
@@ -6712,6 +6747,7 @@ impl State {
             } => {
                 self.collaboration.network.state = ConnectionState::InRoom;
                 self.collaboration.network.room_code = Some(code.clone());
+                self.collaboration.network.set_rejoin_code(&code);
                 self.collaboration.network.role = Some(role);
                 self.collaboration.network.members = members;
                 self.set_network_status("Connecté au salon");
@@ -6771,6 +6807,37 @@ impl State {
     fn apply_project_sync(&mut self, data: ProjectData) {
         EditExecutor::apply_sync(&mut self.project_session, data);
         log::info!("Project synced (merged)");
+    }
+
+    /// Dispatch a reassembled chunked event along the same path as its legacy
+    /// single-frame equivalent.
+    fn dispatch_big_event(&mut self, event: &str, payload: &[u8]) {
+        let value: serde_json::Value = match serde_json::from_slice(payload) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!("Big event {event} is not valid JSON: {error}");
+                return;
+            }
+        };
+        match event {
+            "sync" => match serde_json::from_value::<ProjectData>(value["project"].clone()) {
+                Ok(project) => {
+                    self.apply_project_sync(project);
+                    self.ui_shell.ui.sync_overlay = None;
+                    if self.collaboration.network.room_code.is_some() {
+                        self.set_network_status("Salon synchronisé");
+                    }
+                }
+                Err(error) => log::warn!("Big sync payload is invalid: {error}"),
+            },
+            "recording_prepare" => {
+                match serde_json::from_value::<crate::network::RecordingPreparePayload>(value) {
+                    Ok(prepare) => self.receive_recording_prepare(prepare),
+                    Err(error) => log::warn!("Big recording_prepare payload is invalid: {error}"),
+                }
+            }
+            other => log::warn!("Unknown big event: {other}"),
+        }
     }
     fn apply_delta(&mut self, data: serde_json::Value) {
         log::debug!(
@@ -6854,7 +6921,7 @@ impl State {
         let data = ProjectData::from_project(&self.project_session.project);
         self.collaboration
             .network
-            .send_raw("sync", serde_json::json!({ "project": data }));
+            .send_sync(serde_json::json!({ "project": data }), None);
     }
 
     // -- Undo / Redo --
@@ -9410,6 +9477,9 @@ impl State {
                     Some(job.br_path.clone())
                 };
                 self.project_session.huuid = if is_legacy_json { None } else { loaded_huuid };
+                self.collaboration.network.update_local_huuid(
+                    self.project_session.huuid.as_ref().map(ToString::to_string),
+                );
                 if !is_legacy_json {
                     if let Err(error) = crate::video_proxy::set_default_uses_proxy(
                         &job.br_path,
@@ -9527,6 +9597,9 @@ impl State {
 
                 self.project_session.project_path = Some(job.path.clone());
                 self.project_session.huuid = Some(metadata.huuid);
+                self.collaboration.network.update_local_huuid(
+                    self.project_session.huuid.as_ref().map(ToString::to_string),
+                );
                 if let Err(error) =
                     crate::video_proxy::set_default_uses_proxy(&job.path, job.default_uses_proxy)
                 {
@@ -10560,39 +10633,34 @@ fn build_full_window_video_quad(
     ))
 }
 
-fn ping_server_socketio(
+fn ping_server_http(
     ip: &str,
     port: u16,
     password: String,
     results: std::sync::Arc<std::sync::Mutex<Vec<PingResult>>>,
 ) {
-    use rust_socketio::{ClientBuilder, Event, Payload};
+    let url = format!("http://{}:{}/info?password={}", ip, port, urlencoding::encode(&password));
 
-    let ip_clone = ip.to_string();
-    let port_clone = port;
-    let results_clone = results.clone();
-    let url = format!("http://{}:{}", ip, port);
+    let agent = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(5)))
+            .build(),
+    );
 
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let done2 = done.clone();
-    let done3 = done.clone();
-    let ip_for_info = ip_clone.clone();
-    let ip_for_disc = ip_clone.clone();
-    let results_disc = results.clone();
+    let response = agent.get(&url).call();
 
-    let client = ClientBuilder::new(&url)
-        .auth(serde_json::json!({ "password": password }))
-        .on("server_info", move |payload, _client| {
-            if let Payload::Text(values) = payload {
-                if let Some(info) = values.first() {
+    match response {
+        Ok(mut resp) => {
+            if resp.status() == 200 {
+                if let Ok(info) = resp.body_mut().read_json::<serde_json::Value>() {
                     let name = info["name"].as_str().unwrap_or("").to_string();
                     let motd = info["motd"].as_str().unwrap_or("").to_string();
                     let online = info["online"].as_u64().unwrap_or(0) as u32;
                     let max_slots = info["max_slots"].as_u64().unwrap_or(0) as u32;
-                    if let Ok(mut r) = results_clone.lock() {
+                    if let Ok(mut r) = results.lock() {
                         r.push(PingResult {
-                            ip: ip_for_info.clone(),
-                            port: port_clone,
+                            ip: ip.to_string(),
+                            port,
                             name,
                             motd,
                             online,
@@ -10600,46 +10668,13 @@ fn ping_server_socketio(
                             success: true,
                         });
                     }
-                    done2.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return;
                 }
-            }
-        })
-        .on(Event::Connect, move |_, client| {
-            let _ = client.emit("ping_server", serde_json::json!({}));
-        })
-        .on(Event::Close, move |_, _| {
-            // Server disconnected us — if we didn't get info, mark offline
-            if !done3.load(std::sync::atomic::Ordering::Relaxed) {
-                if let Ok(mut r) = results_disc.lock() {
-                    r.push(PingResult {
-                        ip: ip_for_disc.clone(),
-                        port: port_clone,
-                        name: String::new(),
-                        motd: String::new(),
-                        online: 0,
-                        max_slots: 0,
-                        success: false,
-                    });
-                }
-                done3.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-        })
-        .connect();
-
-    match client {
-        Ok(_c) => {
-            // Wait for server to disconnect us (max 6s safety)
-            for _ in 0..60 {
-                if done.load(std::sync::atomic::Ordering::Relaxed) {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            // If still no response after timeout, mark offline
-            if !done.load(std::sync::atomic::Ordering::Relaxed) {
+            } else if resp.status() == 401 {
+                // Invalid password - server is up but auth failed
                 if let Ok(mut r) = results.lock() {
                     r.push(PingResult {
-                        ip: ip_clone,
+                        ip: ip.to_string(),
                         port,
                         name: String::new(),
                         motd: String::new(),
@@ -10648,12 +10683,26 @@ fn ping_server_socketio(
                         success: false,
                     });
                 }
+                return;
+            }
+            // Other HTTP error
+            if let Ok(mut r) = results.lock() {
+                r.push(PingResult {
+                    ip: ip.to_string(),
+                    port,
+                    name: String::new(),
+                    motd: String::new(),
+                    online: 0,
+                    max_slots: 0,
+                    success: false,
+                });
             }
         }
         Err(_) => {
+            // Connection error / timeout
             if let Ok(mut r) = results.lock() {
                 r.push(PingResult {
-                    ip: ip_clone,
+                    ip: ip.to_string(),
                     port,
                     name: String::new(),
                     motd: String::new(),

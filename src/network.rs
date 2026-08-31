@@ -160,16 +160,39 @@ pub enum IncomingMessage {
     ProjectTransferEnd {
         request_id: String,
     },
+    BigBegin(crate::big_event::BigEventBegin),
+    BigChunk {
+        transfer_id: String,
+        index: usize,
+        data_base64: String,
+    },
+    BigEnd {
+        transfer_id: String,
+    },
 }
 
 /// Outgoing message: event name + JSON payload, sent via dedicated sender thread.
 struct OutgoingMessage(String, serde_json::Value);
 
+/// One oversized event queued for the FIFO big sender worker.
+struct BigSendJob {
+    event: String,
+    serialized: Vec<u8>,
+    target: Option<String>,
+}
+
 pub struct NetworkClient {
     _client: Option<rust_socketio::client::Client>,
     out_tx: Option<mpsc::SyncSender<OutgoingMessage>>,
+    big_tx: Option<mpsc::Sender<BigSendJob>>,
     rx: Option<mpsc::Receiver<IncomingMessage>>,
     session_id: String,
+    /// Packet re-emitted on every automatic reconnect. Starts as the initial
+    /// create/join packet and becomes a `join_room` once a room is known, so
+    /// the director rejoins its own room instead of creating a new one.
+    rejoin_slot: Option<Arc<Mutex<Option<Packet>>>>,
+    username: Option<String>,
+    local_huuid: Option<String>,
     pub state: ConnectionState,
     pub room_code: Option<String>,
     pub role: Option<String>,
@@ -177,6 +200,7 @@ pub struct NetworkClient {
     pub member_id: Option<String>,
     pub project_huuid: Option<String>,
     pub project_matches: bool,
+    pub sync_requested_this_session: bool,
     pub member_details: Vec<NetworkMember>,
     pub control_owner_id: Option<String>,
 }
@@ -192,8 +216,12 @@ impl NetworkClient {
         Self {
             _client: None,
             out_tx: None,
+            big_tx: None,
             rx: None,
             session_id: format!("{:032x}", rand::random::<u128>()),
+            rejoin_slot: None,
+            username: None,
+            local_huuid: None,
             state: ConnectionState::Disconnected,
             room_code: None,
             role: None,
@@ -201,6 +229,7 @@ impl NetworkClient {
             member_id: None,
             project_huuid: None,
             project_matches: false,
+            sync_requested_this_session: false,
             member_details: Vec::new(),
             control_owner_id: None,
         }
@@ -208,6 +237,39 @@ impl NetworkClient {
 
     pub fn is_in_room(&self) -> bool {
         self.state == ConnectionState::InRoom
+    }
+
+    /// Remember the room to rejoin after an automatic reconnect. Called once
+    /// the server confirms room creation or joining.
+    pub fn set_rejoin_code(&mut self, code: &str) {
+        let (Some(slot), Some(username)) = (&self.rejoin_slot, &self.username) else {
+            return;
+        };
+        let project_huuid = self.local_huuid.clone();
+        if let Ok(mut slot) = slot.lock() {
+            *slot = Some(Packet::JoinRoom {
+                code: code.to_string(),
+                username: username.clone(),
+                project_huuid,
+            });
+        }
+    }
+
+    /// Keep the rejoin packet's project HUUID in sync with the local project.
+    /// Every successful save or import assigns a fresh HUUID; rejoining with
+    /// a stale one would report `project_matches = false` and skip the sync
+    /// request that restores the session.
+    pub fn update_local_huuid(&mut self, huuid: Option<String>) {
+        if self.rejoin_slot.is_none() {
+            return;
+        }
+        self.local_huuid = huuid;
+        let Some(slot) = &self.rejoin_slot else { return };
+        if let Ok(mut slot) = slot.lock() {
+            if let Some(Packet::JoinRoom { project_huuid, .. }) = slot.as_mut() {
+                *project_huuid = self.local_huuid.clone();
+            }
+        }
     }
 
     pub fn is_connected(&self) -> bool {
@@ -223,6 +285,30 @@ impl NetworkClient {
         }
         self.state = ConnectionState::Connecting;
 
+        match &first_packet {
+            Packet::CreateRoom {
+                username,
+                project_huuid,
+            } => {
+                self.username = Some(username.clone());
+                self.local_huuid = Some(project_huuid.clone());
+            }
+            Packet::JoinRoom {
+                username,
+                project_huuid,
+                ..
+            } => {
+                self.username = Some(username.clone());
+                self.local_huuid = project_huuid.clone();
+            }
+            _ => {
+                self.username = None;
+                self.local_huuid = None;
+            }
+        }
+        let rejoin_slot = Arc::new(Mutex::new(None::<Packet>));
+        self.rejoin_slot = Some(Arc::clone(&rejoin_slot));
+
         let (in_tx, in_rx) = mpsc::channel::<IncomingMessage>();
         // Bound queued payloads so a multi-gigabyte take cannot be expanded
         // to base64 in memory faster than Socket.IO can emit it.
@@ -232,6 +318,7 @@ impl NetworkClient {
 
         let tx_connect = in_tx.clone();
         let tx_disconnect = in_tx.clone();
+        let tx_close = in_tx.clone();
         let tx_room_created = in_tx.clone();
         let tx_room_joined = in_tx.clone();
         let tx_join_error = in_tx.clone();
@@ -263,9 +350,28 @@ impl NetworkClient {
         let tx_project_transfer_status = in_tx.clone();
         let tx_project_transfer_chunk = in_tx.clone();
         let tx_project_transfer_end = in_tx.clone();
+        let tx_big_begin = in_tx.clone();
+        let tx_big_chunk = in_tx.clone();
+        let tx_big_end = in_tx.clone();
 
-        let (first_event, first_payload) = packet_to_emit(&first_packet, Some(&self.session_id));
-        let first_event = first_event.to_string();
+        // FIFO worker for oversized events: serializing and chunking a
+        // multi-megabyte payload must not block the UI thread, and a single
+        // worker keeps successive big events (sync, then recording_prepare)
+        // ordered in the bounded sender queue.
+        let (big_tx, big_rx) = mpsc::channel::<BigSendJob>();
+        {
+            let out_tx = out_tx.clone();
+            if let Err(error) = thread::Builder::new()
+                .name("big-event-sender".into())
+                .spawn(move || run_big_sender(big_rx, out_tx))
+            {
+                log::error!("cannot start the big event sender: {error}");
+            }
+        }
+        self.big_tx = Some(big_tx);
+
+        let connect_first_packet = first_packet.clone();
+        let connect_session_id = self.session_id.clone();
         let out_rx = Mutex::new(Some(out_rx));
         let sender_client = Arc::new(Mutex::new(None::<RawClient>));
         let sender_started = Arc::new(AtomicBool::new(false));
@@ -283,7 +389,16 @@ impl NetworkClient {
                     *active_client = Some(client.clone());
                 }
                 let _ = tx_connect.send(IncomingMessage::Connected);
-                let _ = client.emit(&*first_event, first_payload.clone());
+                // On an automatic reconnect, rejoin the known room instead of
+                // re-running the initial packet: re-emitting `create_room`
+                // would silently move the director into a fresh, empty room.
+                let packet = rejoin_slot
+                    .lock()
+                    .ok()
+                    .and_then(|slot| slot.clone())
+                    .unwrap_or_else(|| connect_first_packet.clone());
+                let (event, payload) = packet_to_emit(&packet, Some(&connect_session_id));
+                let _ = client.emit(event, payload);
                 if sender_started_on_connect
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
@@ -315,6 +430,13 @@ impl NetworkClient {
                 if let Ok(mut active_client) = sender_client_on_close.lock() {
                     *active_client = None;
                 }
+                // Notify the app that the transport dropped. Without this the
+                // session state (room, sync request flag) was never reset on
+                // an automatic reconnect, leaving peers stuck waiting for a
+                // sync they no longer requested. On a manual disconnect the
+                // receiver is dropped right after `client.disconnect()`, so
+                // this message is discarded.
+                let _ = tx_close.send(IncomingMessage::Disconnected("transport closed".into()));
             })
             .on(Event::Error, move |err, _| {
                 let msg = match &err {
@@ -338,7 +460,7 @@ impl NetworkClient {
                 });
                 let _ = tx_room_created.send(IncomingMessage::Packet(Packet::RoomCreated { code }));
             })
-            .on("room_joined", move |payload, client: RawClient| {
+            .on("room_joined", move |payload, _client: RawClient| {
                 if let Some(obj) = payload_to_value(&payload) {
                     let code = obj["code"].as_str().unwrap_or("").to_string();
                     let role = obj["role"].as_str().unwrap_or("user").to_string();
@@ -363,9 +485,6 @@ impl NetworkClient {
                         role,
                         members,
                     }));
-                    if project_matches {
-                        let _ = client.emit("request_sync", serde_json::json!({}));
-                    }
                 }
             })
             .on("join_error", move |payload, _| {
@@ -635,6 +754,38 @@ impl NetworkClient {
                     .unwrap_or_default();
                 let _ = tx_project_transfer_end
                     .send(IncomingMessage::ProjectTransferEnd { request_id });
+            })
+            .on("big_begin", move |payload, _| {
+                let Some(value) = payload_to_value(&payload) else {
+                    return;
+                };
+                let begin = crate::big_event::BigEventBegin {
+                    transfer_id: value["transfer_id"].as_str().unwrap_or("").to_string(),
+                    event: value["event"].as_str().unwrap_or("").to_string(),
+                    total_bytes: value["total_bytes"].as_u64().unwrap_or(0),
+                    total_chunks: value["total_chunks"].as_u64().unwrap_or(0) as usize,
+                    chunk_size: value["chunk_size"].as_u64().unwrap_or(0) as usize,
+                    sha1: value["sha1"].as_str().unwrap_or("").to_string(),
+                };
+                let _ = tx_big_begin.send(IncomingMessage::BigBegin(begin));
+            })
+            .on("big_chunk", move |payload, _| {
+                if let Some(value) = payload_to_value(&payload) {
+                    let transfer_id = value["transfer_id"].as_str().unwrap_or("").to_string();
+                    let index = value["index"].as_u64().unwrap_or(0) as usize;
+                    let data_base64 = value["data"].as_str().unwrap_or("").to_string();
+                    let _ = tx_big_chunk.send(IncomingMessage::BigChunk {
+                        transfer_id,
+                        index,
+                        data_base64,
+                    });
+                }
+            })
+            .on("big_end", move |payload, _| {
+                let transfer_id = payload_to_value(&payload)
+                    .and_then(|value| value["transfer_id"].as_str().map(String::from))
+                    .unwrap_or_default();
+                let _ = tx_big_end.send(IncomingMessage::BigEnd { transfer_id });
             });
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| builder.connect()));
@@ -679,16 +830,61 @@ impl NetworkClient {
         }
     }
 
+    /// Send an event directly when its serialized payload fits in one
+    /// websocket frame, otherwise hand it to the FIFO big sender worker which
+    /// frames it as `big_begin` / `big_chunk`* / `big_end`.
+    pub fn send_big_event(
+        &self,
+        event: &str,
+        mut payload: serde_json::Value,
+        target: Option<&str>,
+    ) {
+        let serialized = match serde_json::to_vec(&payload) {
+            Ok(serialized) => serialized,
+            Err(error) => {
+                log::error!("cannot serialize {event}: {error}");
+                return;
+            }
+        };
+        if serialized.len() <= crate::big_event::BIG_EVENT_DIRECT_MAX_BYTES {
+            if let Some(target) = target {
+                payload["_target"] = serde_json::Value::String(target.to_owned());
+            }
+            self.send_raw(event, payload);
+            return;
+        }
+        if serialized.len() as u64 > crate::big_event::MAX_BIG_EVENT_BYTES {
+            log::error!("{event} payload exceeds the big event size limit");
+            return;
+        }
+        let Some(big_tx) = &self.big_tx else {
+            log::warn!("dropping oversized {event}: network is not connected");
+            return;
+        };
+        let job = BigSendJob {
+            event: event.to_string(),
+            serialized,
+            target: target.map(str::to_owned),
+        };
+        if big_tx.send(job).is_err() {
+            log::error!("the big event sender stopped");
+        }
+    }
+
+    /// Send a full project sync, chunked when the project is large.
+    pub fn send_sync(&self, payload: serde_json::Value, target: Option<&str>) {
+        self.send_big_event("sync", payload, target);
+    }
+
     pub fn send_recording_prepare(&self, prepare: &RecordingPreparePayload) {
         if let Ok(payload) = serde_json::to_value(prepare) {
-            self.send_raw("recording_prepare", payload);
+            self.send_big_event("recording_prepare", payload, None);
         }
     }
 
     pub fn send_recording_prepare_to(&self, prepare: &RecordingPreparePayload, member_id: &str) {
-        if let Ok(mut payload) = serde_json::to_value(prepare) {
-            payload["_target"] = serde_json::Value::String(member_id.to_owned());
-            self.send_raw("recording_prepare", payload);
+        if let Ok(payload) = serde_json::to_value(prepare) {
+            self.send_big_event("recording_prepare", payload, Some(member_id));
         }
     }
 
@@ -912,10 +1108,14 @@ impl NetworkClient {
         log::info!("Disconnecting from server");
         // Drop out_tx first to stop sender thread
         self.out_tx = None;
+        self.big_tx = None;
         if let Some(client) = self._client.take() {
             let _ = client.disconnect();
         }
         self.rx = None;
+        self.rejoin_slot = None;
+        self.username = None;
+        self.local_huuid = None;
         self.state = ConnectionState::Disconnected;
         self.room_code = None;
         self.role = None;
@@ -923,6 +1123,7 @@ impl NetworkClient {
         self.member_id = None;
         self.project_huuid = None;
         self.project_matches = false;
+        self.sync_requested_this_session = false;
         self.member_details.clear();
         self.control_owner_id = None;
     }
@@ -983,4 +1184,78 @@ fn extract_string_field(payload: &Payload, field: &str) -> String {
     payload_to_value(payload)
         .and_then(|v| v[field].as_str().map(String::from))
         .unwrap_or_default()
+}
+
+/// Big sender worker loop: one thread drains the FIFO of oversized events and
+/// frames each as `big_begin` / `big_chunk`* / `big_end` on the bounded
+/// sender queue, preserving the order of successive big events.
+fn run_big_sender(
+    rx: mpsc::Receiver<BigSendJob>,
+    out_tx: mpsc::SyncSender<OutgoingMessage>,
+) {
+    use std::sync::atomic::AtomicU64;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static BIG_TRANSFER_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    while let Ok(job) = rx.recv() {
+        let result: Result<(), String> = (|| {
+            let (frame, chunks) = crate::big_event::frame_big_event(&job.serialized)?;
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            let transfer_id = format!(
+                "big_{nanos}_{}",
+                BIG_TRANSFER_COUNTER.fetch_add(1, Ordering::Relaxed)
+            );
+            let mut begin = serde_json::json!({
+                "transfer_id": transfer_id,
+                "event": job.event,
+                "total_bytes": frame.total_bytes,
+                "total_chunks": frame.total_chunks,
+                "chunk_size": frame.chunk_size,
+                "sha1": frame.sha1,
+            });
+            if let Some(target) = &job.target {
+                begin["_target"] = serde_json::Value::String(target.clone());
+            }
+            out_tx
+                .send(OutgoingMessage("big_begin".into(), begin))
+                .map_err(|_| "network sender stopped".to_string())?;
+            for (index, data) in chunks.iter().enumerate() {
+                out_tx
+                    .send(OutgoingMessage(
+                        "big_chunk".into(),
+                        serde_json::json!({
+                            "transfer_id": transfer_id,
+                            "index": index,
+                            "data": data,
+                        }),
+                    ))
+                    .map_err(|_| "network sender stopped".to_string())?;
+            }
+            out_tx
+                .send(OutgoingMessage(
+                    "big_end".into(),
+                    serde_json::json!({ "transfer_id": transfer_id }),
+                ))
+                .map_err(|_| "network sender stopped".to_string())?;
+            log::info!(
+                "Sent chunked {} ({} bytes, {} chunks)",
+                job.event,
+                frame.total_bytes,
+                frame.total_chunks
+            );
+            Ok(())
+        })();
+        if let Err(error) = result {
+            log::error!("cannot send chunked {}: {error}", job.event);
+            // A closed sender queue means the client is disconnecting; the
+            // remaining jobs would fail the same way.
+            if error == "network sender stopped" {
+                return;
+            }
+        }
+    }
 }

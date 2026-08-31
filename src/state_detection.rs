@@ -706,7 +706,7 @@ impl State {
         let data = ProjectData::from_project(&self.project_session.project);
         self.collaboration
             .network
-            .send_raw("sync", serde_json::json!({ "project": data }));
+            .send_sync(serde_json::json!({ "project": data }), None);
     }
 
     /// AccessKit receives only the visual object and operation for edits.
