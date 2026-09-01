@@ -14,6 +14,7 @@ pub mod connect_modal;
 pub mod context_menu;
 pub mod dropdown;
 pub mod export_modal;
+pub mod file_explorer;
 pub mod focus;
 pub mod font_dropdown;
 pub mod icon_button;
@@ -154,6 +155,7 @@ pub struct Ui {
     pub loading_project: Option<ProjectLoadUi>,
     automation_editor: automation::AutomationEditor,
     side_panel: side_panel::SidePanel,
+    file_tree: file_explorer::FileTree,
     focus: FocusManager,
     active_workspace: WorkspaceId,
     recording_ui: RecordingWorkspaceUi,
@@ -363,6 +365,7 @@ impl Ui {
             loading_project: None,
             automation_editor: automation::AutomationEditor::default(),
             side_panel: side_panel::SidePanel::default(),
+            file_tree: file_explorer::FileTree::new(),
             focus: FocusManager::default(),
             active_workspace: WorkspaceId::Rythmo,
             recording_ui: RecordingWorkspaceUi::default(),
@@ -2651,6 +2654,99 @@ impl Ui {
         self.side_panel.is_open()
     }
 
+    // -- File tree --
+
+    pub fn toggle_file_tree(&mut self) {
+        if self.file_tree.is_open() {
+            self.close_file_tree();
+        } else {
+            self.close_side_panel();
+            self.props_visible = true;
+            self.file_tree.open();
+            self.rebuild_layout();
+        }
+    }
+
+    pub fn close_file_tree(&mut self) {
+        if self.file_tree.is_open() {
+            self.file_tree.close();
+            self.props_visible = false;
+            self.rebuild_layout();
+        }
+    }
+
+    pub fn file_tree_open(&self) -> bool {
+        self.file_tree.is_open()
+    }
+
+    pub fn begin_rename_media_video(&mut self, id: crate::project::MediaId) {
+        self.file_tree.begin_rename(
+            crate::ui::file_explorer::RenameTarget::Video(id),
+            "",
+        );
+    }
+
+    pub fn begin_rename_media_audio(&mut self, id: crate::project::MediaId) {
+        self.file_tree.begin_rename(
+            crate::ui::file_explorer::RenameTarget::Audio(id),
+            "",
+        );
+    }
+
+    pub fn begin_rename_language(&mut self, id: u64) {
+        self.file_tree.begin_rename(
+            crate::ui::file_explorer::RenameTarget::Band(id),
+            "",
+        );
+    }
+
+    pub fn file_tree_handle_event(
+        &mut self,
+        event: &UiEvent,
+        panel: Rect,
+        data: &crate::ui::file_explorer::FileTreeData,
+    ) -> Option<EventResponse> {
+        self.file_tree.handle_event(event, panel, data)
+    }
+
+    pub fn file_tree_render<'a>(
+        &'a mut self,
+        panel: Rect,
+        data: &'a crate::ui::file_explorer::FileTreeData,
+        quads: &mut Vec<QuadInstance>,
+        labels: &mut Vec<LabelInfo<'a>>,
+    ) {
+        self.file_tree.render(panel, data, quads, labels);
+    }
+
+    pub fn file_tree_render_menus<'a>(
+        &'a self,
+        quads: &mut Vec<QuadInstance>,
+        labels: &mut Vec<LabelInfo<'a>>,
+    ) {
+        self.file_tree.render_menus(quads, labels);
+    }
+
+    pub fn file_tree_animate(
+        &mut self,
+        data: &crate::ui::file_explorer::FileTreeData,
+        dt: f32,
+    ) -> bool {
+        self.file_tree.animate(data, dt)
+    }
+
+    pub fn file_tree_captures_keyboard_event(&self, event: &UiEvent) -> bool {
+        self.file_tree.captures_keyboard_event(event)
+    }
+
+    pub fn file_tree_is_editing_text(&self) -> bool {
+        self.file_tree.is_editing_text()
+    }
+
+    pub fn file_tree_next_cursor_blink_deadline(&self) -> Option<std::time::Instant> {
+        self.file_tree.next_cursor_blink_deadline()
+    }
+
     pub fn take_selected_automation_node(&mut self) -> Option<u64> {
         self.automation_editor.take_selected_node_for_deletion()
     }
@@ -3411,6 +3507,12 @@ impl Ui {
         waveform_offset_frames: i64,
         waveform_is_instrumental: bool,
     ) {
+        let file_tree_data = crate::ui::file_explorer::FileTreeData::from_project(
+            project,
+            "Projet".to_string(),
+            None,
+            None,
+        );
         if self.active_workspace == WorkspaceId::Voicelines {
             let selection_before = self.voicelines_ui.selected_regions().to_vec();
             self.voicelines_ui
@@ -4078,14 +4180,24 @@ impl Ui {
         // actor icons and the drawing layer from ever bleeding into the panel.
         if self.active_workspace == WorkspaceId::Rythmo {
             if let Some(panel) = self.layout.properties {
-                self.side_panel
-                    .render(panel, project, &mut overlay_quads, &mut overlay_labels);
+                if self.file_tree.is_open() {
+                    let file_tree = &self.file_tree;
+                    file_tree.render(panel, &file_tree_data, &mut overlay_quads, &mut overlay_labels);
+                } else {
+                    self.side_panel
+                        .render(panel, project, &mut overlay_quads, &mut overlay_labels);
+                }
             }
         }
 
         if self.active_workspace == WorkspaceId::Rythmo {
-            self.side_panel
-                .render_menus(project, &mut system_quads, &mut system_labels);
+            if self.file_tree.is_open() {
+                let file_tree = &self.file_tree;
+                file_tree.render_menus(&mut system_quads, &mut system_labels);
+            } else {
+                self.side_panel
+                    .render_menus(project, &mut system_quads, &mut system_labels);
+            }
         }
 
         // Capturing dropdowns belong above persistent overlays such as the

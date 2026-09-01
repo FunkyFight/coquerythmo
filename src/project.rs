@@ -389,6 +389,48 @@ pub struct LineCharacterNameChange {
     pub new_name: String,
 }
 
+pub type MediaId = u64;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MediaVideo {
+    pub id: MediaId,
+    pub name: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_of: Option<MediaId>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub generated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MediaAudio {
+    pub id: MediaId,
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MediaLibrary {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub videos: Vec<MediaVideo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audios: Vec<MediaAudio>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_video: Option<MediaId>,
+}
+
+impl MediaLibrary {
+    pub fn next_id(&self) -> MediaId {
+        let video_max = self.videos.iter().map(|v| v.id).max().unwrap_or(0);
+        let audio_max = self.audios.iter().map(|a| a.id).max().unwrap_or(0);
+        video_max.max(audio_max) + 1
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.videos.is_empty() && self.audios.is_empty() && self.default_video.is_none()
+    }
+}
+
 pub struct Project {
     line_map: HashMap<u64, RythmoLine>,
     line_order: Vec<u64>,
@@ -403,6 +445,7 @@ pub struct Project {
     active_language: ProjectLanguage,
     language_order: Vec<LanguageId>,
     language_snapshots: HashMap<LanguageId, StoredLanguageSnapshot>,
+    media_library: MediaLibrary,
 }
 
 impl Default for Project {
@@ -449,6 +492,7 @@ impl Project {
             active_language: language,
             language_order: vec![language_id],
             language_snapshots: HashMap::new(),
+            media_library: MediaLibrary::default(),
         }
     }
 
@@ -467,6 +511,7 @@ impl Project {
             active_language: self.active_language.clone(),
             language_order: self.language_order.clone(),
             language_snapshots: self.language_snapshots.clone(),
+            media_library: self.media_library.clone(),
         }
     }
 
@@ -1048,7 +1093,200 @@ impl Project {
             active_language: language,
             language_order: vec![id],
             language_snapshots: HashMap::new(),
+            media_library: MediaLibrary::default(),
         }
+    }
+
+    // -- Media library --
+
+    pub fn media_library(&self) -> &MediaLibrary {
+        &self.media_library
+    }
+
+    pub fn media_library_mut(&mut self) -> &mut MediaLibrary {
+        &mut self.media_library
+    }
+
+    pub fn add_media_video(
+        &mut self,
+        name: impl Into<String>,
+        path: impl Into<String>,
+        proxy_of: Option<MediaId>,
+        generated: bool,
+    ) -> Result<MediaId, String> {
+        let path = path.into();
+        if self.media_library.videos.iter().any(|v| v.path == path) {
+            return Err(format!("video already in library: {path}"));
+        }
+        let id = self.media_library.next_id();
+        self.media_library.videos.push(MediaVideo {
+            id,
+            name: name.into(),
+            path,
+            proxy_of,
+            generated,
+        });
+        Ok(id)
+    }
+
+    pub fn add_media_audio(
+        &mut self,
+        name: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Result<MediaId, String> {
+        let path = path.into();
+        if self.media_library.audios.iter().any(|a| a.path == path) {
+            return Err(format!("audio already in library: {path}"));
+        }
+        let id = self.media_library.next_id();
+        self.media_library.audios.push(MediaAudio {
+            id,
+            name: name.into(),
+            path,
+        });
+        Ok(id)
+    }
+
+    pub fn rename_media_video(&mut self, id: MediaId, name: impl Into<String>) -> bool {
+        let Some(video) = self.media_library.videos.iter_mut().find(|v| v.id == id) else {
+            return false;
+        };
+        video.name = name.into();
+        true
+    }
+
+    pub fn rename_media_audio(&mut self, id: MediaId, name: impl Into<String>) -> bool {
+        let Some(audio) = self.media_library.audios.iter_mut().find(|a| a.id == id) else {
+            return false;
+        };
+        audio.name = name.into();
+        true
+    }
+
+    pub fn remove_media_video(&mut self, id: MediaId) -> bool {
+        let mut removed = false;
+        // Remove proxy children first.
+        self.media_library.videos.retain(|v| {
+            if v.proxy_of == Some(id) {
+                removed = true;
+                false
+            } else {
+                true
+            }
+        });
+        // Remove the video itself.
+        if let Some(index) = self.media_library.videos.iter().position(|v| v.id == id) {
+            self.media_library.videos.remove(index);
+            removed = true;
+        }
+        // Cascade default.
+        if self.media_library.default_video == Some(id) {
+            self.media_library.default_video = None;
+        }
+        removed
+    }
+
+    pub fn remove_media_audio(&mut self, id: MediaId) -> bool {
+        let Some(index) = self.media_library.audios.iter().position(|a| a.id == id) else {
+            return false;
+        };
+        let path = self.media_library.audios[index].path.clone();
+        self.media_library.audios.remove(index);
+        // Clear instrumental references in all languages.
+        for language_id in self.language_order.clone() {
+            if self.language_instrumental_audio_path(language_id).as_deref() == Some(path.as_str()) {
+                self.set_language_instrumental_audio_path(language_id, None);
+            }
+        }
+        true
+    }
+
+    pub fn set_default_video(&mut self, id: Option<MediaId>) -> Result<(), String> {
+        if let Some(id) = id {
+            if !self.media_library.videos.iter().any(|v| v.id == id) {
+                return Err(format!("video not found: {id}"));
+            }
+        }
+        self.media_library.default_video = id;
+        Ok(())
+    }
+
+    pub fn associate_proxy(&mut self, proxy_id: MediaId, source_id: MediaId) -> Result<(), String> {
+        let proxy_index = self
+            .media_library
+            .videos
+            .iter()
+            .position(|v| v.id == proxy_id)
+            .ok_or_else(|| format!("proxy video not found: {proxy_id}"))?;
+        let source_index = self
+            .media_library
+            .videos
+            .iter()
+            .position(|v| v.id == source_id)
+            .ok_or_else(|| format!("source video not found: {source_id}"))?;
+
+        // Constraint: source must be top-level and have no proxy.
+        if self.media_library.videos[source_index].proxy_of.is_some() {
+            return Err("source video is itself a proxy".to_string());
+        }
+        if self
+            .media_library
+            .videos
+            .iter()
+            .any(|v| v.proxy_of == Some(source_id))
+        {
+            return Err("source video already has a proxy".to_string());
+        }
+        // A proxy cannot have a proxy.
+        if self.media_library.videos[proxy_index].proxy_of.is_some() {
+            return Err("proxy video already has a proxy".to_string());
+        }
+
+        // If the proxy was already associated with another source, detach it.
+        if let Some(old_source) = self.media_library.videos[proxy_index].proxy_of {
+            let _ = old_source; // already handled by retain below
+        }
+
+        self.media_library.videos[proxy_index].proxy_of = Some(source_id);
+        Ok(())
+    }
+
+    pub fn dissociate_proxy(&mut self, id: MediaId) -> bool {
+        let Some(video) = self.media_library.videos.iter_mut().find(|v| v.id == id) else {
+            return false;
+        };
+        video.proxy_of = None;
+        true
+    }
+
+    pub fn reorder_media_video(&mut self, id: MediaId, to_index: usize) -> bool {
+        let Some(from) = self.media_library.videos.iter().position(|v| v.id == id) else {
+            return false;
+        };
+        let video = self.media_library.videos.remove(from);
+        let to = to_index.min(self.media_library.videos.len());
+        self.media_library.videos.insert(to, video);
+        true
+    }
+
+    pub fn reorder_media_audio(&mut self, id: MediaId, to_index: usize) -> bool {
+        let Some(from) = self.media_library.audios.iter().position(|a| a.id == id) else {
+            return false;
+        };
+        let audio = self.media_library.audios.remove(from);
+        let to = to_index.min(self.media_library.audios.len());
+        self.media_library.audios.insert(to, audio);
+        true
+    }
+
+    pub fn reorder_language(&mut self, id: LanguageId, to_index: usize) -> bool {
+        let Some(from) = self.language_order.iter().position(|l| *l == id) else {
+            return false;
+        };
+        let language = self.language_order.remove(from);
+        let to = to_index.min(self.language_order.len());
+        self.language_order.insert(to, language);
+        true
     }
 
     pub fn bump_revision(&mut self) {

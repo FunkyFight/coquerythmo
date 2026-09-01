@@ -10753,3 +10753,186 @@ fn ping_server_http(
         }
     }
 }
+
+// -- File tree media library methods --
+impl State {
+    pub fn toggle_file_tree(&mut self) {
+        self.ui_shell.ui.toggle_file_tree();
+    }
+
+    pub fn close_file_tree(&mut self) {
+        self.ui_shell.ui.close_file_tree();
+    }
+
+    pub fn use_media_video(&mut self, id: crate::project::MediaId) {
+        let Some(video) = self
+            .project_session
+            .project
+            .media_library()
+            .videos
+            .iter()
+            .find(|v| v.id == id)
+        else {
+            return;
+        };
+        let path = video.path.clone();
+        if !std::path::Path::new(&path).exists() {
+            self.show_toast(crate::i18n::t("toast.media_file_missing"), 5.0);
+            return;
+        }
+        let frame = self.current_frame();
+        self.load_video_for_playback(Path::new(&path), None, Some(frame), false);
+    }
+
+    pub fn set_default_media_video_by_id(&mut self, id: crate::project::MediaId) {
+        if self.project_session.project_path.is_none() {
+            self.show_toast(crate::i18n::t("toast.media_save_project_first"), 5.0);
+            return;
+        }
+        if let Err(error) = self.project_session.project.set_default_video(Some(id)) {
+            self.show_toast(error, 5.0);
+            return;
+        }
+        self.project_session.dirty = true;
+        self.show_toast(crate::i18n::t("toast.media_default_saved"), 4.0);
+    }
+
+    pub fn remove_media_video(&mut self, id: crate::project::MediaId) {
+        let was_default = self
+            .project_session
+            .project
+            .media_library()
+            .default_video
+            == Some(id);
+        if !self.project_session.project.remove_media_video(id) {
+            return;
+        }
+        if was_default {
+            self.project_session.project.set_default_video(None).ok();
+        }
+        self.project_session.dirty = true;
+        self.show_toast(crate::i18n::t("toast.media_video_removed"), 4.0);
+    }
+
+    pub fn rename_media_video(&mut self, id: crate::project::MediaId, name: String) {
+        if !self.project_session.project.rename_media_video(id, name) {
+            return;
+        }
+        self.project_session.dirty = true;
+    }
+
+    pub fn begin_rename_media_video(&mut self, id: crate::project::MediaId) {
+        self.ui_shell.ui.begin_rename_media_video(id);
+    }
+
+    pub fn create_proxy_for_media(&mut self, id: crate::project::MediaId) {
+        let Some(video) = self
+            .project_session
+            .project
+            .media_library()
+            .videos
+            .iter()
+            .find(|v| v.id == id)
+        else {
+            return;
+        };
+        let source_path = video.path.clone();
+        if !std::path::Path::new(&source_path).exists() {
+            self.show_toast(crate::i18n::t("toast.media_file_missing"), 5.0);
+            return;
+        }
+        // Reuse the existing proxy modal flow.
+        self.open_proxy_modal();
+    }
+
+    pub fn associate_proxy(&mut self, proxy_id: crate::project::MediaId, source_id: crate::project::MediaId) {
+        if let Err(error) = self
+            .project_session
+            .project
+            .associate_proxy(proxy_id, source_id)
+        {
+            self.show_toast(error, 5.0);
+            return;
+        }
+        self.project_session.dirty = true;
+    }
+
+    pub fn dissociate_proxy(&mut self, id: crate::project::MediaId) {
+        if !self.project_session.project.dissociate_proxy(id) {
+            return;
+        }
+        self.project_session.dirty = true;
+    }
+
+    pub fn import_audio(&mut self, path: String) {
+        let name = std::path::Path::new(&path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.clone());
+        if let Err(error) = self.project_session.project.add_media_audio(name, path) {
+            self.show_toast(error, 5.0);
+            return;
+        }
+        self.project_session.dirty = true;
+    }
+
+    pub fn remove_audio(&mut self, id: crate::project::MediaId) {
+        if !self.project_session.project.remove_media_audio(id) {
+            return;
+        }
+        self.project_session.dirty = true;
+    }
+
+    pub fn rename_media_audio(&mut self, id: crate::project::MediaId, name: String) {
+        if !self.project_session.project.rename_media_audio(id, name) {
+            return;
+        }
+        self.project_session.dirty = true;
+    }
+
+    pub fn begin_rename_media_audio(&mut self, id: crate::project::MediaId) {
+        self.ui_shell.ui.begin_rename_media_audio(id);
+    }
+
+    pub fn reorder_media_video(&mut self, id: crate::project::MediaId, to_index: usize) {
+        if !self.project_session.project.reorder_media_video(id, to_index) {
+            return;
+        }
+        self.project_session.dirty = true;
+    }
+
+    pub fn reorder_media_audio(&mut self, id: crate::project::MediaId, to_index: usize) {
+        if !self.project_session.project.reorder_media_audio(id, to_index) {
+            return;
+        }
+        self.project_session.dirty = true;
+    }
+
+    pub fn reorder_language(&mut self, id: u64, to_index: usize) {
+        if !self.project_session.project.reorder_language(id, to_index) {
+            return;
+        }
+        self.project_session.dirty = true;
+        // Language reordering clears history like other language ops.
+        self.project_session.history.clear();
+    }
+
+    pub fn begin_rename_language(&mut self, id: u64) {
+        self.ui_shell.ui.begin_rename_language(id);
+    }
+
+    pub fn set_language_instrumental_audio_by_media_id(&mut self, band_id: u64, media_id: crate::project::MediaId) {
+        let Some(audio) = self
+            .project_session
+            .project
+            .media_library()
+            .audios
+            .iter()
+            .find(|a| a.id == media_id)
+        else {
+            return;
+        };
+        let path = audio.path.clone();
+        self.set_language_instrumental_audio(band_id, Some(path));
+    }
+}

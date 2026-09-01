@@ -1101,6 +1101,36 @@ impl CommandDispatcher {
                 state.open_export_modal();
             }
             UiAction::OpenMediaExplorer => state.open_media_explorer(),
+            UiAction::ToggleFileTree => state.toggle_file_tree(),
+            UiAction::CloseFileTree => state.close_file_tree(),
+            UiAction::MediaVideoUse { id } => state.use_media_video(id),
+            UiAction::MediaVideoSetDefault { id } => state.set_default_media_video_by_id(id),
+            UiAction::MediaVideoRemove { id } => state.remove_media_video(id),
+            UiAction::MediaVideoRename { id, name } => state.rename_media_video(id, name),
+            UiAction::MediaVideoBeginRename { id } => state.begin_rename_media_video(id),
+            UiAction::MediaVideoCreateProxy { id } => state.create_proxy_for_media(id),
+            UiAction::MediaVideoAssociateProxy { proxy_id, source_id } => {
+                state.associate_proxy(proxy_id, source_id)
+            }
+            UiAction::MediaVideoDissociateProxy { id } => state.dissociate_proxy(id),
+            UiAction::MediaAudioAdd { path } => state.import_audio(path),
+            UiAction::MediaAudioRemove { id } => state.remove_audio(id),
+            UiAction::MediaAudioRename { id, name } => state.rename_media_audio(id, name),
+            UiAction::MediaAudioBeginRename { id } => state.begin_rename_media_audio(id),
+            UiAction::MediaReorderVideo { id, to_index } => {
+                state.reorder_media_video(id, to_index)
+            }
+            UiAction::MediaReorderAudio { id, to_index } => {
+                state.reorder_media_audio(id, to_index)
+            }
+            UiAction::LanguageReorder { id, to_index } => state.reorder_language(id, to_index),
+            UiAction::LanguageBeginRename { id } => state.begin_rename_language(id),
+            UiAction::SetLanguageInstrumentalAudioPath { id, path } => {
+                state.set_language_instrumental_audio(id, Some(path))
+            }
+            UiAction::SetLanguageInstrumentalAudioByMediaId { band_id, media_id } => {
+                state.set_language_instrumental_audio_by_media_id(band_id, media_id)
+            }
             UiAction::CreateLanguage { name } => state.create_language(name),
             UiAction::RenameLanguage { id, name } => state.rename_language(id, name),
             UiAction::DeleteLanguage { id } => state.delete_language(id),

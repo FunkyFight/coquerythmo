@@ -46,6 +46,8 @@ pub struct ProjectData {
     pub languages: Vec<LanguageProjectData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_language_id: Option<LanguageId>,
+    #[serde(default, skip_serializing_if = "crate::project::MediaLibrary::is_empty")]
+    pub media_library: crate::project::MediaLibrary,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -211,6 +213,7 @@ impl ProjectData {
             },
             languages: Vec::new(),
             active_language_id: None,
+            media_library: project.media_library().clone(),
         }
     }
 
@@ -703,6 +706,7 @@ pub fn import_srt(path: &Path, fps: f64) -> Result<ProjectData, String> {
         drawing: DrawingData::default(),
         languages: Vec::new(),
         active_language_id: None,
+        media_library: crate::project::MediaLibrary::default(),
     })
 }
 
@@ -898,6 +902,7 @@ pub fn import_ass(path: &Path, fps: f64) -> Result<ProjectData, String> {
         drawing: DrawingData::default(),
         languages: Vec::new(),
         active_language_id: None,
+        media_library: crate::project::MediaLibrary::default(),
     })
 }
 
@@ -1219,6 +1224,7 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
         drawing: DrawingData::default(),
         languages: Vec::new(),
         active_language_id: None,
+        media_library: crate::project::MediaLibrary::default(),
     })
 }
 
