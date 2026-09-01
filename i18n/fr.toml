@@ -255,6 +255,7 @@
 "toast.save_already_running" = "Une sauvegarde du projet est déjà en cours."
 "toast.close_blocked_saving" = "Fermeture impossible : attendez la fin de la sauvegarde du projet."
 "toast.project_change_blocked_saving" = "Cette action est indisponible pendant la sauvegarde du projet."
+"toast.action_blocked_task" = "Cette action est indisponible pendant la tâche en cours (export, proxy ou chargement)."
 "toast.network_requires_saved_project" = "Enregistrez un projet avant de créer un salon."
 "toast.new_project_canceled_after_edit" = "Nouveau projet annulé : le projet a été modifié pendant la sauvegarde."
 "toast.transition_canceled_after_edit" = "Action annulée : le projet a été modifié pendant la sauvegarde."

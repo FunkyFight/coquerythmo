@@ -751,6 +751,35 @@ impl UiAction {
                 )
         )
     }
+
+    /// Actions refused while a background task (export, proxy or project
+    /// import) runs: they would replace the document, touch the media files
+    /// the worker is reading, or start a concurrent worker on the shared
+    /// progress slot. Everything else stays available so the UI never
+    /// freezes behind a progress indicator.
+    pub fn blocked_during_background_task(&self) -> bool {
+        matches!(
+            self,
+            Self::AddVideo
+                | Self::NewProject
+                | Self::OpenRecentProject { .. }
+                | Self::ImportProject
+                | Self::ImportCappelaProject
+                | Self::ImportSrtProject
+                | Self::ImportSubtitles
+                | Self::SwitchMediaVideo { .. }
+                | Self::SetDefaultMediaVideo { .. }
+                | Self::DeleteMediaVideo { .. }
+                | Self::StartExport { .. }
+                | Self::StartExportToPath { .. }
+                | Self::StartConfiguredExport { .. }
+                | Self::StartConfiguredExportToPath { .. }
+                | Self::OpenProxyModal
+                | Self::CreateProxy { .. }
+                | Self::ExitApplication
+                | Self::CloseApp
+        )
+    }
 }
 
 #[cfg(test)]

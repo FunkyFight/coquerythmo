@@ -3725,8 +3725,18 @@ impl State {
         });
     }
 
+    /// A background task (export, proxy or project import) is running. The
+    /// UI stays interactive, but project-level actions that would replace
+    /// the document or touch the media read by the worker are refused.
+    pub fn background_task_running(&self) -> bool {
+        self.ui_shell.ui.has_active_progress() || self.jobs.pending_import_job.is_some()
+    }
+
     pub fn set_export_progress(&mut self, p: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>) {
         let is_none = p.is_none();
+        if !is_none {
+            self.ui_shell.ui.task_rows.export_expanded = false;
+        }
         self.ui_shell.ui.export_progress = p;
         self.last_progress_percent = None;
         self.last_progress_announcement = if is_none { None } else { Some(Instant::now()) };
@@ -5279,6 +5289,10 @@ impl State {
         mut output: PathBuf,
         configuration: crate::project::ExportConfiguration,
     ) {
+        if self.background_task_running() {
+            self.show_toast(crate::i18n::t("toast.action_blocked_task"), 5.0);
+            return;
+        }
         let pages = self.comic_dubs_project.pages();
         if pages.is_empty()
             || (!configuration.comic_dubs_pages_zip
@@ -5338,6 +5352,10 @@ impl State {
         output_base: PathBuf,
         configuration: crate::project::ExportConfiguration,
     ) {
+        if self.background_task_running() {
+            self.show_toast(crate::i18n::t("toast.action_blocked_task"), 5.0);
+            return;
+        }
         let audio_outputs_enabled = configuration.audio_formats.mp3
             || configuration.audio_formats.wav
             || configuration.audio_formats.bwf_stems;
@@ -5420,6 +5438,10 @@ impl State {
 
         if self.is_project_save_in_progress() {
             self.show_toast(crate::i18n::t("toast.project_change_blocked_saving"), 5.0);
+            return;
+        }
+        if self.background_task_running() {
+            self.show_toast(crate::i18n::t("toast.action_blocked_task"), 5.0);
             return;
         }
 
@@ -10410,13 +10432,12 @@ impl State {
             self.sync_recording_workspace_ui_at(render_frame);
         }
 
-        // Video quad — skip when export modal is showing (it would cover the modal)
+        // Video quad
         let recording_choice = self.active_workspace() == WorkspaceId::Recording
             && self.ui_shell.ui.recording_page()
                 == crate::ui::recording_workspace::RecordingPage::Choice;
         let video_quad = if recording_choice
             || !workspace_shows_project_video(self.active_workspace())
-            || self.ui_shell.ui.export_progress.is_some()
             || self.window_manager.secondary_kind
                 == Some(crate::application::window_service::SecondaryWindowKind::Video)
             || self.ui_shell.ui.automation_open()

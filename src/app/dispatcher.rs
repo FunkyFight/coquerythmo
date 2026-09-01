@@ -320,6 +320,13 @@ impl CommandDispatcher {
             });
             return false;
         }
+        // Background tasks (export, proxy, project import) no longer freeze
+        // the UI, but project-level actions that would race the worker stay
+        // refused until the task row completes.
+        if state.background_task_running() && action.blocked_during_background_task() {
+            state.show_toast(i18n::t("toast.action_blocked_task"), 4.0);
+            return false;
+        }
         if announce_action {
             if let Some(event) = crate::accessibility::event_for_action(&action) {
                 if state.is_ctrl_held() {

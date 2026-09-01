@@ -6,6 +6,7 @@
 - Le flux audio n’est plus détruit puis recréé à chaque déplacement : seule la source de décodage est remplacée, ce qui supprime les à-coups liés à la réinitialisation audio pendant le scrub.
 - La sauvegarde des projets `.coquerythmo` est nettement plus rapide : les médias sont copiés en parallèle sur tous les cœurs du processeur et les empreintes CRC-32/SHA-1 exploitent les instructions matérielles du processeur.
 - La sauvegarde automatique (toutes les 60 secondes) s’effectue désormais en arrière-plan et ne bloque plus l’interface.
+- Le chargement de projet, l’export et la création de proxy n’affichent plus de fenêtre modale bloquante : ils apparaissent sous forme de lignes de tâches discrètes en bas à droite, avec barre de progression, et l’interface reste utilisable pendant leur exécution.
 
 ## Affichage
 

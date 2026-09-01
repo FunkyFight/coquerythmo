@@ -470,7 +470,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                                     ["flac", "wav", "mp3", "ogg", "m4a", "aac", "opus"]
                                         .contains(&extension.to_ascii_lowercase().as_str())
                                 });
-                            if is_audio && !state.ui_shell.ui.has_active_progress() {
+                            if is_audio && !state.background_task_running() {
                                 let position = state
                                     .secondary_cursor_position()
                                     .unwrap_or(secondary_cursor_pos);
@@ -615,21 +615,21 @@ pub fn run(startup: Option<super::StartupInput>) {
                                 return;
                             }
                         }
-                        if state.ui_shell.ui.has_active_progress() {
-                            if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
-                                dispatch_key_action(
-                                    UiAction::CancelExport,
-                                    &event,
-                                    keyboard_modifiers,
-                                    InputWindow::Main,
-                                    &mut state,
-                                    elwt,
-                                );
-                                state.request_redraw();
-                            }
-                            return;
-                        }
-                        if state.ui_shell.ui.loading_project.is_some() {
+                        // Background tasks surface as task rows and keep the
+                        // UI interactive; Escape stays the cancellation path
+                        // for export/proxy workers.
+                        if state.ui_shell.ui.has_active_progress()
+                            && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+                        {
+                            dispatch_key_action(
+                                UiAction::CancelExport,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
+                            state.request_redraw();
                             return;
                         }
                         // Keep frame-by-frame line nudging independent from
@@ -1573,7 +1573,9 @@ pub fn run(startup: Option<super::StartupInput>) {
                     }
                 }
                 WindowEvent::DroppedFile(path) => {
-                    if state.ui_shell.ui.has_active_progress() {
+                    if state.background_task_running() {
+                        state.show_toast(i18n::t("toast.action_blocked_task"), 4.0);
+                        state.request_redraw();
                         return;
                     }
                     let ext = path.extension()

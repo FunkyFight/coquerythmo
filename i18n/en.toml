@@ -255,6 +255,7 @@
 "toast.save_already_running" = "A project save is already running."
 "toast.close_blocked_saving" = "Cannot close: wait for the project save to finish."
 "toast.project_change_blocked_saving" = "This action is unavailable while the project is being saved."
+"toast.action_blocked_task" = "This action is unavailable while a task is running (export, proxy or project load)."
 "toast.network_requires_saved_project" = "Save a project before creating a room."
 "toast.new_project_canceled_after_edit" = "New project canceled: the project changed while it was being saved."
 "toast.transition_canceled_after_edit" = "Action canceled: the project changed while it was being saved."
