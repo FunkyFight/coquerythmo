@@ -1074,12 +1074,12 @@ impl FileTree {
 
     // -- Rendering --
 
-    pub fn render(
-        &self,
+    pub fn render<'a>(
+        &'a self,
         panel: Rect,
-        data: &FileTreeData,
+        data: &'a FileTreeData,
         quads: &mut Vec<QuadInstance>,
-        labels: &mut Vec<LabelInfo<'_>>,
+        labels: &mut Vec<LabelInfo<'a>>,
     ) {
         if !self.open {
             return;
@@ -1497,10 +1497,10 @@ impl FileTree {
     }
 
     /// Contextual menu overlay (rendered on the modal layer).
-    pub fn render_menus(
-        &self,
+    pub fn render_menus<'a>(
+        &'a self,
         quads: &mut Vec<QuadInstance>,
-        labels: &mut Vec<LabelInfo<'_>>,
+        labels: &mut Vec<LabelInfo<'a>>,
     ) {
         let Some(menu) = &self.context_menu else {
             return;
