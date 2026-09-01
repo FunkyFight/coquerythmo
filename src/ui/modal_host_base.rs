@@ -525,11 +525,13 @@ impl ModalHost {
             super::settings_modal::SettingsModalResult::Save {
                 lang,
                 temporary_directory,
+                show_controls_hint,
             } => {
                 self.settings = None;
                 ModalOutcome::Action(UiAction::SaveSettings {
                     lang,
                     temporary_directory,
+                    show_controls_hint,
                 })
             }
             super::settings_modal::SettingsModalResult::BrowseTemporaryDirectory => {

@@ -27,8 +27,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PROJECT_EXTENSION: &str = "coquerythmo";
@@ -816,23 +815,7 @@ fn save_bundle_with_instrumentals_recording_voicelines_and_comic_dubs_data(
     }
 
     let (temporary_path, temporary_file) = create_temporary_file_near(bundle_path)?;
-    let write_result = (|| -> Result<(), ProjectArchiveError> {
-        let mut writer = BufWriter::with_capacity(COPY_BUFFER_BYTES, temporary_file);
-        writer.write_all(MAGIC)?;
-        write_u32(&mut writer, FORMAT_VERSION)?;
-        write_u32(&mut writer, entry_count)?;
-        write_bytes_entry(&mut writer, MANIFEST_ENTRY, &manifest_bytes)?;
-        for entry in entries {
-            write_file_entry(&mut writer, &entry)?;
-        }
-        writer.write_all(FOOTER_MAGIC)?;
-        writer.flush()?;
-        let file = writer
-            .into_inner()
-            .map_err(|error| ProjectArchiveError::Io(error.into_error()))?;
-        file.sync_all()?;
-        Ok(())
-    })();
+    let write_result = write_bundle_container(temporary_file, entry_count, &manifest_bytes, &entries);
 
     if let Err(error) = write_result {
         let _ = fs::remove_file(&temporary_path);
@@ -874,23 +857,7 @@ pub fn save_voicelines_file(
     }
 
     let (temporary_path, temporary_file) = create_temporary_file_near(bundle_path)?;
-    let write_result = (|| -> Result<(), ProjectArchiveError> {
-        let mut writer = BufWriter::with_capacity(COPY_BUFFER_BYTES, temporary_file);
-        writer.write_all(MAGIC)?;
-        write_u32(&mut writer, FORMAT_VERSION)?;
-        write_u32(&mut writer, entry_count)?;
-        write_bytes_entry(&mut writer, MANIFEST_ENTRY, &manifest_bytes)?;
-        for entry in entries {
-            write_file_entry(&mut writer, &entry)?;
-        }
-        writer.write_all(FOOTER_MAGIC)?;
-        writer.flush()?;
-        writer
-            .into_inner()
-            .map_err(|error| ProjectArchiveError::Io(error.into_error()))?
-            .sync_all()?;
-        Ok(())
-    })();
+    let write_result = write_bundle_container(temporary_file, entry_count, &manifest_bytes, &entries);
     if let Err(error) = write_result {
         let _ = fs::remove_file(&temporary_path);
         return Err(error);
@@ -1792,6 +1759,8 @@ fn copy_payload<R: Read, W: Write>(
     Ok(())
 }
 
+// Kept for the portable (non positioned-write) fallback and container tests.
+#[cfg_attr(any(unix, windows), allow(dead_code))]
 fn write_bytes_entry<W: Write>(
     writer: &mut W,
     name: &str,
@@ -1805,6 +1774,8 @@ fn write_bytes_entry<W: Write>(
     Ok(())
 }
 
+// Kept for the portable (non positioned-write) fallback and container tests.
+#[cfg_attr(any(unix, windows), allow(dead_code))]
 fn write_file_entry<W: Write>(
     writer: &mut W,
     entry: &FileEntryToWrite,
@@ -1847,18 +1818,231 @@ fn write_file_entry<W: Write>(
     Ok(())
 }
 
+/// Write a complete container (header, manifest entry, file entries, footer)
+/// into `file`, spreading the media copies across all available CPU cores.
+///
+/// Every entry offset is computable upfront from the declared payload
+/// lengths, so on platforms with positioned writes each worker streams its
+/// own entries at disjoint file positions while hashing with the fast
+/// CRC-32/SHA-1 backends. Elsewhere the historical sequential writer is used.
+fn write_bundle_container(
+    file: File,
+    entry_count: u32,
+    manifest_bytes: &[u8],
+    entries: &[FileEntryToWrite],
+) -> Result<(), ProjectArchiveError> {
+    #[cfg(any(unix, windows))]
+    {
+        write_bundle_container_parallel(file, entry_count, manifest_bytes, entries)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let mut writer = BufWriter::with_capacity(COPY_BUFFER_BYTES, file);
+        writer.write_all(MAGIC)?;
+        write_u32(&mut writer, FORMAT_VERSION)?;
+        write_u32(&mut writer, entry_count)?;
+        write_bytes_entry(&mut writer, MANIFEST_ENTRY, manifest_bytes)?;
+        for entry in entries {
+            write_file_entry(&mut writer, entry)?;
+        }
+        writer.write_all(FOOTER_MAGIC)?;
+        writer.flush()?;
+        let file = writer
+            .into_inner()
+            .map_err(|error| ProjectArchiveError::Io(error.into_error()))?;
+        file.sync_all()?;
+        Ok(())
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn write_all_at(file: &File, mut bytes: &[u8], mut offset: u64) -> io::Result<()> {
+    while !bytes.is_empty() {
+        #[cfg(windows)]
+        let written = {
+            use std::os::windows::fs::FileExt;
+            file.seek_write(bytes, offset)?
+        };
+        #[cfg(unix)]
+        let written = {
+            use std::os::unix::fs::FileExt;
+            file.write_at(bytes, offset)?
+        };
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "failed to write archive payload",
+            ));
+        }
+        offset += written as u64;
+        bytes = &bytes[written..];
+    }
+    Ok(())
+}
+
+#[cfg(any(unix, windows))]
+fn write_bundle_container_parallel(
+    file: File,
+    entry_count: u32,
+    manifest_bytes: &[u8],
+    entries: &[FileEntryToWrite],
+) -> Result<(), ProjectArchiveError> {
+    let mut preamble = Vec::with_capacity(MAGIC.len() + 8);
+    preamble.extend_from_slice(MAGIC);
+    preamble.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    preamble.extend_from_slice(&entry_count.to_le_bytes());
+
+    let mut offset = preamble.len() as u64;
+    let manifest_header = entry_header_bytes(MANIFEST_ENTRY, manifest_bytes.len() as u64)?;
+    let manifest_offset = offset;
+    offset += (manifest_header.len() + manifest_bytes.len() + 4) as u64;
+
+    let mut entry_offsets = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let header_len = entry_header_bytes(&entry.name, entry.len)?.len() as u64;
+        entry_offsets.push(offset);
+        offset += header_len + entry.len + 4;
+    }
+    let footer_offset = offset;
+    file.set_len(footer_offset + FOOTER_MAGIC.len() as u64)?;
+
+    write_all_at(&file, &preamble, 0)?;
+    write_all_at(&file, &manifest_header, manifest_offset)?;
+    write_all_at(
+        &file,
+        manifest_bytes,
+        manifest_offset + manifest_header.len() as u64,
+    )?;
+    let mut manifest_crc = Crc32::new();
+    manifest_crc.update(manifest_bytes);
+    write_all_at(
+        &file,
+        &manifest_crc.finish().to_le_bytes(),
+        manifest_offset + (manifest_header.len() + manifest_bytes.len()) as u64,
+    )?;
+    write_all_at(&file, FOOTER_MAGIC, footer_offset)?;
+
+    if entries.is_empty() {
+        file.sync_all()?;
+        return Ok(());
+    }
+
+    // Largest entries first so a single huge asset does not straggle at the
+    // end while the other cores sit idle.
+    let mut order: Vec<usize> = (0..entries.len()).collect();
+    order.sort_by_key(|&index| std::cmp::Reverse(entries[index].len));
+    let next = AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(4)
+        .min(entries.len());
+    let file_ref = &file;
+    let order_ref = &order;
+    let entry_offsets_ref = &entry_offsets;
+    let next_ref = &next;
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            handles.push(scope.spawn(move || -> Result<(), ProjectArchiveError> {
+                loop {
+                    let position = next_ref.fetch_add(1, Ordering::Relaxed);
+                    let Some(&index) = order_ref.get(position) else {
+                        return Ok(());
+                    };
+                    write_file_entry_at(file_ref, &entries[index], entry_offsets_ref[index])?;
+                }
+            }));
+        }
+        let mut result = Ok(());
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    if result.is_ok() {
+                        result = Err(error);
+                    }
+                }
+                Err(_) => {
+                    if result.is_ok() {
+                        result = Err(ProjectArchiveError::InvalidFormat(
+                            "asset writer thread panicked".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        result
+    })?;
+
+    file.sync_all()?;
+    Ok(())
+}
+
+#[cfg(any(unix, windows))]
+fn write_file_entry_at(
+    file: &File,
+    entry: &FileEntryToWrite,
+    offset: u64,
+) -> Result<(), ProjectArchiveError> {
+    let header = entry_header_bytes(&entry.name, entry.len)?;
+    write_all_at(file, &header, offset)?;
+    let mut cursor = offset + header.len() as u64;
+    let mut source = File::open(&entry.path)?;
+    let mut remaining = entry.len;
+    let mut crc = Crc32::new();
+    let mut sha1 = entry.expected_recording_sha1.map(|_| Sha1::new());
+    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
+    while remaining > 0 {
+        let wanted = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
+        let read = source.read(&mut buffer[..wanted])?;
+        if read == 0 {
+            return Err(ProjectArchiveError::AssetChangedDuringSave(
+                entry.path.clone(),
+            ));
+        }
+        write_all_at(file, &buffer[..read], cursor)?;
+        cursor += read as u64;
+        crc.update(&buffer[..read]);
+        if let Some(sha1) = &mut sha1 {
+            sha1.update(&buffer[..read]);
+        }
+        remaining -= read as u64;
+    }
+    let mut extra = [0_u8; 1];
+    if source.read(&mut extra)? != 0 {
+        return Err(ProjectArchiveError::AssetChangedDuringSave(
+            entry.path.clone(),
+        ));
+    }
+    if let (Some((asset_id, expected)), Some(actual)) =
+        (entry.expected_recording_sha1, sha1.map(Sha1::finalize))
+    {
+        if actual != expected {
+            return Err(ProjectArchiveError::RecordingChecksumMismatch(asset_id));
+        }
+    }
+    write_all_at(file, &crc.finish().to_le_bytes(), cursor)?;
+    Ok(())
+}
+
+fn entry_header_bytes(name: &str, payload_len: u64) -> Result<Vec<u8>, ProjectArchiveError> {
+    validate_entry_name(name)?;
+    let name_len = u32::try_from(name.len())
+        .map_err(|_| ProjectArchiveError::UnsafeEntryName(name.to_string()))?;
+    let mut bytes = Vec::with_capacity(ENTRY_MAGIC.len() + 4 + 8 + name.len());
+    bytes.extend_from_slice(ENTRY_MAGIC);
+    bytes.extend_from_slice(&name_len.to_le_bytes());
+    bytes.extend_from_slice(&payload_len.to_le_bytes());
+    bytes.extend_from_slice(name.as_bytes());
+    Ok(bytes)
+}
+
 fn write_entry_header<W: Write>(
     writer: &mut W,
     name: &str,
     payload_len: u64,
 ) -> Result<(), ProjectArchiveError> {
-    validate_entry_name(name)?;
-    let name_len = u32::try_from(name.len())
-        .map_err(|_| ProjectArchiveError::UnsafeEntryName(name.to_string()))?;
-    writer.write_all(ENTRY_MAGIC)?;
-    write_u32(writer, name_len)?;
-    write_u64(writer, payload_len)?;
-    writer.write_all(name.as_bytes())?;
+    writer.write_all(&entry_header_bytes(name, payload_len)?)?;
     Ok(())
 }
 
@@ -2204,6 +2388,8 @@ fn write_u32<W: Write>(writer: &mut W, value: u32) -> io::Result<()> {
     writer.write_all(&value.to_le_bytes())
 }
 
+// Kept for the portable (non positioned-write) fallback and container tests.
+#[cfg_attr(any(unix, windows), allow(dead_code))]
 fn write_u64<W: Write>(writer: &mut W, value: u64) -> io::Result<()> {
     writer.write_all(&value.to_le_bytes())
 }
@@ -2220,43 +2406,23 @@ fn read_u64<R: Read>(reader: &mut R) -> io::Result<u64> {
     Ok(u64::from_le_bytes(bytes))
 }
 
-struct Crc32(u32);
+/// CRC-32 (IEEE) over archive payloads. Backed by `crc32fast`, whose
+/// SIMD slicing-by-16 implementation is an order of magnitude faster than a
+/// byte-at-a-time table walk on multi-gigabyte media entries.
+struct Crc32(crc32fast::Hasher);
 
 impl Crc32 {
     fn new() -> Self {
-        Self(u32::MAX)
+        Self(crc32fast::Hasher::new())
     }
 
     fn update(&mut self, bytes: &[u8]) {
-        let table = crc32_table();
-        for &byte in bytes {
-            let index = ((self.0 ^ u32::from(byte)) & 0xff) as usize;
-            self.0 = table[index] ^ (self.0 >> 8);
-        }
+        self.0.update(bytes);
     }
 
     fn finish(self) -> u32 {
-        !self.0
+        self.0.finalize()
     }
-}
-
-fn crc32_table() -> &'static [u32; 256] {
-    static TABLE: OnceLock<[u32; 256]> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        let mut table = [0_u32; 256];
-        for (index, slot) in table.iter_mut().enumerate() {
-            let mut crc = index as u32;
-            for _ in 0..8 {
-                crc = if crc & 1 != 0 {
-                    0xedb8_8320_u32 ^ (crc >> 1)
-                } else {
-                    crc >> 1
-                };
-            }
-            *slot = crc;
-        }
-        table
-    })
 }
 
 #[cfg(test)]
@@ -2304,6 +2470,47 @@ mod tests {
     };
 
     struct TestDir(PathBuf);
+
+    #[test]
+    fn parallel_container_matches_sequential_layout() {
+        let dir = TestDir::new();
+        let asset_a = dir.path("a.bin");
+        let asset_b = dir.path("b.bin");
+        let payload_a: Vec<u8> = (0..150_000).map(|i| (i % 251) as u8).collect();
+        let payload_b: Vec<u8> = (0..700_000).map(|i| ((i % 253) as u8) ^ 0x5a).collect();
+        fs::write(&asset_a, &payload_a).unwrap();
+        fs::write(&asset_b, &payload_b).unwrap();
+
+        let entries = vec![
+            file_entry("media/a".into(), &asset_a).unwrap(),
+            file_entry("media/b".into(), &asset_b).unwrap(),
+        ];
+        let manifest = b"{\"format\":\"test\"}";
+
+        // Sequential reference produced by the historical writer.
+        let mut reference = Vec::new();
+        reference.extend_from_slice(MAGIC);
+        reference.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        reference.extend_from_slice(&3_u32.to_le_bytes());
+        write_bytes_entry(&mut reference, MANIFEST_ENTRY, manifest).unwrap();
+        for entry in &entries {
+            write_file_entry(&mut reference, entry).unwrap();
+        }
+        reference.extend_from_slice(FOOTER_MAGIC);
+
+        let bundle = dir.path("parallel.bin");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&bundle)
+            .unwrap();
+        write_bundle_container(file, 3, manifest, &entries).unwrap();
+        let produced = fs::read(&bundle).unwrap();
+
+        assert_eq!(produced, reference);
+    }
 
     impl TestDir {
         fn new() -> Self {

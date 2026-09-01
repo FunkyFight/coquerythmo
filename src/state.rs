@@ -3891,6 +3891,12 @@ impl State {
         self.ui_shell.ui.has_keyboard_focus()
     }
 
+    /// Ordered shortcut contexts for the current UI state (shared with the
+    /// bottom-left shortcut panel).
+    pub fn shortcut_contexts(&self) -> Vec<crate::input::context::InputContext> {
+        self.ui_shell.ui.shortcut_contexts()
+    }
+
     pub fn focused_workspace_tab(&self) -> bool {
         self.ui_shell.ui.focused_workspace_tab()
     }
@@ -5904,16 +5910,13 @@ impl State {
             self.seek_relative_internal(-1, false);
             return;
         }
-        let bgl = self.render.ui_renderer.texture_bind_group_layout();
-        let sampler = self.render.ui_renderer.texture_sampler();
         let mut playback = None;
         if let Some(player) = &mut self.playback.video_player {
-            player.step_backward(
-                &self.render.gfx.device,
-                &self.render.gfx.queue,
-                bgl,
-                sampler,
-            );
+            // Step through the debounced async seek path: the previous
+            // synchronous per-frame ffmpeg decode froze the UI as soon as the
+            // key was held down.
+            player.pause_for_seek();
+            player.seek_frame_instant(-1);
             if self.ui_shell.ui.is_playing() {
                 self.ui_shell.ui.toggle_play_pause();
             }
@@ -5924,6 +5927,8 @@ impl State {
                 self.broadcast_recording_playback(frame, playing);
             }
         }
+        self.playback.last_scroll_time = Some(Instant::now());
+        self.playback.scroll_needs_decode = true;
     }
 
     pub fn next_frame(&mut self) {
@@ -5953,16 +5958,13 @@ impl State {
             self.seek_relative_internal(1, false);
             return;
         }
-        let bgl = self.render.ui_renderer.texture_bind_group_layout();
-        let sampler = self.render.ui_renderer.texture_sampler();
         let mut playback = None;
         if let Some(player) = &mut self.playback.video_player {
-            player.step_forward(
-                &self.render.gfx.device,
-                &self.render.gfx.queue,
-                bgl,
-                sampler,
-            );
+            // Step through the debounced async seek path: the previous
+            // synchronous per-frame ffmpeg decode froze the UI as soon as the
+            // key was held down.
+            player.pause_for_seek();
+            player.seek_frame_instant(1);
             if self.ui_shell.ui.is_playing() {
                 self.ui_shell.ui.toggle_play_pause();
             }
@@ -5973,6 +5975,8 @@ impl State {
                 self.broadcast_recording_playback(frame, playing);
             }
         }
+        self.playback.last_scroll_time = Some(Instant::now());
+        self.playback.scroll_needs_decode = true;
     }
 
     pub fn seek_absolute(&mut self, frame: i64) {
@@ -9009,16 +9013,28 @@ impl State {
 
     pub fn save_backup(&self) {
         use crate::export::{JsonExporter, ProjectExporter};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static BACKUP_RUNNING: AtomicBool = AtomicBool::new(false);
+        // A slow disk must not pile up concurrent exports of the same file.
+        if BACKUP_RUNNING.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let path = Self::backup_path();
         let fps = self.fps();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = JsonExporter.export(&self.project_session.project, fps, &path) {
-            log::warn!("Auto-save failed: {e}");
-        } else {
-            log::info!("Auto-saved to {}", path.display());
-        }
+        // Snapshot here; the JSON serialization and file write — the
+        // expensive part on large projects — run off the UI thread.
+        let project = self.project_session.project.snapshot();
+        std::thread::spawn(move || {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = JsonExporter.export(&project, fps, &path) {
+                log::warn!("Auto-save failed: {e}");
+            } else {
+                log::info!("Auto-saved to {}", path.display());
+            }
+            BACKUP_RUNNING.store(false, Ordering::Release);
+        });
     }
 
     pub fn restore_backup(&mut self) -> bool {
@@ -10431,6 +10447,8 @@ impl State {
         self.project_session
             .render_index
             .refresh(&self.project_session.project);
+        // Bridge the line clipboard fact for the contextual shortcut panel.
+        self.ui_shell.ui.line_clipboard_available = self.line_clipboard.is_some();
         self.ui_shell.ui.render(
             &mut self.render.ui_renderer,
             &self.render.gfx.device,

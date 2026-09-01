@@ -271,6 +271,51 @@ pub fn event_for_keyboard_shortcut(
     event_for_action(action)
 }
 
+/// i18n key naming an action in the contextual shortcut panel.
+///
+/// This is a superset of the narration table: navigation helpers, continuous
+/// pan and caret moves stay silent in the speech announcements (see
+/// [`event_for_action`]) but still deserve an on-screen name.
+pub fn panel_label_key_for_action(
+    action: &crate::application::command::UiAction,
+) -> Option<&'static str> {
+    use crate::application::command::{TextCommand, UiAction};
+    let key = match action {
+        UiAction::ToggleScreenReader => "panel.toggle_screen_reader",
+        UiAction::Text(
+            TextCommand::CursorLeft
+            | TextCommand::CursorRight
+            | TextCommand::CursorUp
+            | TextCommand::CursorDown,
+        ) => "panel.move_cursor",
+        UiAction::Text(TextCommand::Delete) => "panel.delete_char",
+        UiAction::Text(TextCommand::SelectLeft | TextCommand::SelectRight) => {
+            "panel.extend_selection"
+        }
+        UiAction::TogglePlayPause => "panel.play_pause",
+        UiAction::ToggleKaraokeForSelection => "panel.toggle_karaoke",
+        UiAction::SelectLineAtPlayhead => "panel.select_line_at_playhead",
+        UiAction::BeginKeyboardPan { direction } if *direction < 0 => "panel.pan_left",
+        UiAction::BeginKeyboardPan { .. } => "panel.pan_right",
+        UiAction::NavigateLines { direction } if *direction < 0 => "panel.navigate_prev",
+        UiAction::NavigateLines { .. } => "panel.navigate_next",
+        UiAction::MoveSelectedLineTrack { direction } if *direction < 0 => {
+            "panel.move_track_up"
+        }
+        UiAction::MoveSelectedLineTrack { .. } => "panel.move_track_down",
+        UiAction::AdjustVolume(delta) if *delta >= 0.0 => "panel.volume_up",
+        UiAction::AdjustVolume(_) => "panel.volume_down",
+        UiAction::ToggleActiveAudio => "panel.toggle_active_audio",
+        UiAction::RecordingToggleSharedAudio => "panel.toggle_shared_audio",
+        UiAction::RecordingCycleLanguage => "panel.cycle_language",
+        UiAction::CloseSecondaryDisplay => "panel.close_secondary_display",
+        UiAction::NudgeSelectedDetection { .. } => "panel.audition_detection",
+        UiAction::AddSyncPointAtPlayhead => "panel.add_sync_point",
+        _ => return None,
+    };
+    Some(key)
+}
+
 // Emit the short progress tone used for export and proxy percentages.
 // Higher progress produces a lower pitch so the operation audibly descends
 // towards completion.

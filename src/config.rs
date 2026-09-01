@@ -86,6 +86,8 @@ pub struct UiConfig {
     /// Fraction of the free area (screen height minus topbar and toolbar)
     /// allocated to the video preview. The bande rythmo gets the remainder.
     pub video_split: f32,
+    /// Show the contextual shortcut panel in the bottom-left corner.
+    pub show_controls_hint: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +171,7 @@ impl Default for UiConfig {
             border_radius: 8.0,
             rythmo_font: None,
             video_split: 0.48,
+            show_controls_hint: true,
         }
     }
 }
@@ -582,6 +585,13 @@ pub fn set_video_split(split: f32) {
     let lock = INSTANCE.get().expect("config not initialized");
     let mut cfg = lock.write().unwrap();
     cfg.ui.video_split = split;
+    cfg.save();
+}
+
+pub fn set_show_controls_hint(enabled: bool) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    cfg.ui.show_controls_hint = enabled;
     cfg.save();
 }
 

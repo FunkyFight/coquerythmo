@@ -1643,9 +1643,11 @@ impl CommandDispatcher {
             UiAction::SaveSettings {
                 lang,
                 temporary_directory,
+                show_controls_hint,
             } => {
                 let rythmo_font = crate::config::get().ui.rythmo_font.clone();
                 crate::config::save_settings(lang, rythmo_font, temporary_directory);
+                crate::config::set_show_controls_hint(show_controls_hint);
                 state.recording_runtime.refresh_temporary_directory();
                 state.close_settings_modal();
             }

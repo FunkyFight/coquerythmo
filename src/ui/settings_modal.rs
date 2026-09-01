@@ -3,13 +3,15 @@ use crate::i18n::t;
 use std::path::PathBuf;
 
 pub const SETTINGS_W: f32 = 450.0;
-pub const SETTINGS_H: f32 = 260.0;
-const CONTROL_COUNT: usize = 4;
+pub const SETTINGS_H: f32 = 300.0;
+const CONTROL_COUNT: usize = 5;
+const CONTROLS_TOGGLE_FOCUS: usize = 2;
 
 pub struct SettingsModal {
     pub lang: String,
     pub temporary_directory: PathBuf,
     pub temporary_directory_text: String,
+    pub show_controls_hint: bool,
     keyboard_focus: usize,
 }
 
@@ -19,6 +21,7 @@ pub enum SettingsModalResult {
     Save {
         lang: String,
         temporary_directory: PathBuf,
+        show_controls_hint: bool,
     },
     BrowseTemporaryDirectory,
 }
@@ -29,6 +32,7 @@ impl SettingsModal {
             lang: crate::config::get().lang.clone(),
             temporary_directory_text: temporary_directory.display().to_string(),
             temporary_directory,
+            show_controls_hint: crate::config::get().ui.show_controls_hint,
             keyboard_focus: 0,
         }
     }
@@ -46,7 +50,16 @@ impl SettingsModal {
                 t("settings.temporary_directory"),
                 self.temporary_directory_text
             ),
-            2 => t("settings.save").to_string(),
+            CONTROLS_TOGGLE_FOCUS => format!(
+                "{}, {}",
+                t("settings.show_controls"),
+                if self.show_controls_hint {
+                    t("accessibility.checked")
+                } else {
+                    t("accessibility.unchecked")
+                }
+            ),
+            3 => t("settings.save").to_string(),
             _ => t("project_settings.close").to_string(),
         }
     }
@@ -98,7 +111,11 @@ impl SettingsModal {
                     SettingsModalResult::Consumed
                 }
                 1 => SettingsModalResult::BrowseTemporaryDirectory,
-                2 => self.save(),
+                CONTROLS_TOGGLE_FOCUS => {
+                    self.show_controls_hint = !self.show_controls_hint;
+                    SettingsModalResult::Consumed
+                }
+                3 => self.save(),
                 _ => SettingsModalResult::Close,
             },
             UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " " => {
@@ -108,7 +125,11 @@ impl SettingsModal {
                         SettingsModalResult::Consumed
                     }
                     1 => SettingsModalResult::BrowseTemporaryDirectory,
-                    2 => self.save(),
+                    CONTROLS_TOGGLE_FOCUS => {
+                        self.show_controls_hint = !self.show_controls_hint;
+                        SettingsModalResult::Consumed
+                    }
+                    3 => self.save(),
                     _ => SettingsModalResult::Close,
                 }
             }
@@ -126,6 +147,11 @@ impl SettingsModal {
                 if browse_rect(card).contains(*x, *y) {
                     self.keyboard_focus = 1;
                     return SettingsModalResult::BrowseTemporaryDirectory;
+                }
+                if controls_toggle_rect(card).contains(*x, *y) {
+                    self.keyboard_focus = CONTROLS_TOGGLE_FOCUS;
+                    self.show_controls_hint = !self.show_controls_hint;
+                    return SettingsModalResult::Consumed;
                 }
                 if save_rect(card).contains(*x, *y) {
                     return self.save();
@@ -230,6 +256,13 @@ impl SettingsModal {
             t("settings.browse"),
             false,
         );
+        push_button(
+            quads,
+            labels,
+            controls_toggle_rect(card),
+            t("settings.show_controls"),
+            self.show_controls_hint,
+        );
         push_button(quads, labels, save_rect(card), t("settings.save"), true);
         push_button(
             quads,
@@ -241,7 +274,8 @@ impl SettingsModal {
         let focus = match self.keyboard_focus {
             0 => language_rect(card, &self.lang),
             1 => browse_rect(card),
-            2 => save_rect(card),
+            CONTROLS_TOGGLE_FOCUS => controls_toggle_rect(card),
+            3 => save_rect(card),
             _ => close_rect(card),
         };
         push_outline(quads, focus);
@@ -261,7 +295,17 @@ impl SettingsModal {
         SettingsModalResult::Save {
             lang: self.lang.clone(),
             temporary_directory: self.temporary_directory.clone(),
+            show_controls_hint: self.show_controls_hint,
         }
+    }
+}
+
+fn controls_toggle_rect(card: Rect) -> Rect {
+    Rect {
+        x: card.x + 20.0,
+        y: card.y + 180.0,
+        width: card.width - 40.0,
+        height: 30.0,
     }
 }
 
@@ -414,13 +458,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn general_settings_only_save_language_and_temporary_directory() {
+    fn general_settings_save_language_directory_and_controls_hint() {
         let modal = SettingsModal {
             lang: "fr-fr".into(),
             temporary_directory: PathBuf::from("tmp"),
             temporary_directory_text: "tmp".into(),
+            show_controls_hint: true,
             keyboard_focus: 0,
         };
-        assert!(matches!(modal.save(), SettingsModalResult::Save { .. }));
+        assert!(matches!(
+            modal.save(),
+            SettingsModalResult::Save {
+                show_controls_hint: true,
+                ..
+            }
+        ));
     }
 }

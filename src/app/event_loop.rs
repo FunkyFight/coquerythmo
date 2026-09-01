@@ -1026,27 +1026,9 @@ pub fn run(startup: Option<super::StartupInput>) {
                             return;
                         }
 
-                        let mut contexts = Vec::new();
-                        if state.captures_modal_input() {
-                            contexts.push(InputContext::Modal);
-                        } else if state.is_rythmo_text_editing() {
-                            contexts.push(InputContext::TextEditing);
-                        } else if state.has_keyboard_focus() {
-                            if state.active_workspace() == WorkspaceId::Recording {
-                                contexts.push(InputContext::Recording);
-                            }
-                            contexts.push(InputContext::MainWindow);
-                            contexts.push(InputContext::Global);
-                        } else if !state.is_editing_text() {
-                            match state.active_workspace() {
-                                WorkspaceId::Rythmo => contexts.push(InputContext::Workspace),
-                                WorkspaceId::Recording => contexts.push(InputContext::Recording),
-                                WorkspaceId::Voicelines => contexts.push(InputContext::Workspace),
-                                WorkspaceId::ComicDubs => contexts.push(InputContext::Workspace),
-                            }
-                            contexts.push(InputContext::Global);
-                        }
-                        let context_stack = InputContextStack::new(contexts);
+                        // Single source of truth shared with the bottom-left
+                        // shortcut panel.
+                        let context_stack = InputContextStack::new(state.shortcut_contexts());
                         if let Some(stroke) = KeyStroke::from_winit(
                             &event,
                             keyboard_modifiers,

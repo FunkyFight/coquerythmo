@@ -1408,6 +1408,78 @@ mod tests {
     }
 
     #[test]
+    fn selected_line_tints_its_waveform_span_with_the_character_color() {
+        crate::config::init();
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 100, 0.0);
+        project.get_line_mut(line_id).unwrap().character_color = [1.0, 0.2, 0.3, 1.0];
+        let mut render_index = ProjectRenderIndex::new();
+        render_index.refresh(&project);
+        let mut state = RythmoState::new();
+        state.selected = Some(Selection::Line(line_id));
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 240.0,
+        };
+        // Ample peaks so bars exist both inside and outside the line span.
+        let waveform = vec![1.0_f32; 4000 * 4];
+        let quads = render_rythmo_base(
+            &zone,
+            &project,
+            &render_index,
+            50.0,
+            &waveform,
+            0,
+            false,
+            false,
+            24.0,
+            &state,
+        );
+
+        // Bars under the selected line take the character color…
+        assert!(quads.iter().any(|quad| quad.color == [1.0, 0.2, 0.3, 0.85]));
+        // …while bars outside the line keep the default source color.
+        assert!(quads.iter().any(|quad| quad.color == [0.4, 0.65, 1.0, 0.85]));
+    }
+
+    #[test]
+    fn waveform_keeps_default_colors_without_a_selection() {
+        crate::config::init();
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 100, 0.0);
+        project.get_line_mut(line_id).unwrap().character_color = [1.0, 0.2, 0.3, 1.0];
+        let mut render_index = ProjectRenderIndex::new();
+        render_index.refresh(&project);
+        let state = RythmoState::new();
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 240.0,
+        };
+        let waveform = vec![1.0_f32; 4000 * 4];
+        let quads = render_rythmo_base(
+            &zone,
+            &project,
+            &render_index,
+            50.0,
+            &waveform,
+            0,
+            false,
+            false,
+            24.0,
+            &state,
+        );
+
+        assert!(!quads.is_empty());
+        assert!(quads
+            .iter()
+            .all(|quad| quad.color != [1.0, 0.2, 0.3, 0.85]));
+    }
+
+    #[test]
     fn hidden_voice_actor_menu_cannot_open_the_create_actor_action() {
         let mut project = Project::new();
         let line_id = project.add_line(0, 24, 0.0);
@@ -1662,6 +1734,21 @@ pub fn render_rythmo_base(
             .saturating_mul(subs as i64)
             .clamp(0, waveform.len() as i64);
 
+        // A clicked line tints the waveform span it covers with its character
+        // color. Without a selection the waveform keeps its default colors.
+        let selected_lines: Vec<&crate::rythmo_line::RythmoLine> = match state.selected.as_ref() {
+            Some(Selection::Line(id)) => project.get_line(*id).into_iter().collect(),
+            Some(Selection::Lines(ids)) => ids
+                .iter()
+                .filter_map(|id| project.get_line(*id))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let tint_ranges: Vec<(i64, i64, [f32; 4])> = selected_lines
+            .iter()
+            .map(|line| (line.start_frame, line.end_frame(), line.character_color))
+            .collect();
+
         for si in first_sub..last_sub {
             let amp = waveform[si as usize].min(1.0);
             let bar_h = amp * ruler_h;
@@ -1677,10 +1764,26 @@ pub fn render_rythmo_base(
                 continue;
             }
 
+            let (bar_top, bar_bottom) = tint_ranges
+                .iter()
+                .find(|(start, end, _)| frame >= *start && frame < *end)
+                .map(|&(_, _, color)| {
+                    (
+                        [color[0], color[1], color[2], wave_top[3]],
+                        [
+                            (color[0] * 0.55).min(1.0),
+                            (color[1] * 0.55).min(1.0),
+                            (color[2] * 0.55).min(1.0),
+                            wave_bottom[3],
+                        ],
+                    )
+                })
+                .unwrap_or((wave_top, wave_bottom));
+
             quads.push(QuadInstance {
                 rect: [x, zone.y + ruler_h - bar_h, bar_w, bar_h],
-                color: wave_top,
-                color_bottom: wave_bottom,
+                color: bar_top,
+                color_bottom: bar_bottom,
                 border_color: [0.0; 4],
                 border_width: 0.0,
                 border_radius: 0.0,

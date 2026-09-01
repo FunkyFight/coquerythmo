@@ -57,6 +57,12 @@ impl<C> ShortcutRouter<C> {
         });
     }
 
+    /// Read-only view of the declared bindings, used by the contextual
+    /// shortcut panel to list what is available in the active context.
+    pub fn bindings(&self) -> &[Binding<C>] {
+        &self.bindings
+    }
+
     pub fn resolve<'a>(
         &'a self,
         stroke: &KeyStroke,

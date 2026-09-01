@@ -576,6 +576,7 @@ pub enum UiAction {
     SaveSettings {
         lang: String,
         temporary_directory: std::path::PathBuf,
+        show_controls_hint: bool,
     },
     SaveProjectSettings {
         rythmo_font: Option<String>,

@@ -1,4 +1,20 @@
-# 5.0.0
+# 5.0.3
+
+## Performance
+
+- Le déplacement dans la bande rythmo (scrub) ne fige plus l’interface, même en répétition intensive : le pas à pas image par image (`Ctrl + ←` / `Ctrl + →`) est désormais asynchrone et les déplacements rapprochés sont fusionnés en un seul décodage.
+- Le flux audio n’est plus détruit puis recréé à chaque déplacement : seule la source de décodage est remplacée, ce qui supprime les à-coups liés à la réinitialisation audio pendant le scrub.
+- La sauvegarde des projets `.coquerythmo` est nettement plus rapide : les médias sont copiés en parallèle sur tous les cœurs du processeur et les empreintes CRC-32/SHA-1 exploitent les instructions matérielles du processeur.
+- La sauvegarde automatique (toutes les 60 secondes) s’effectue désormais en arrière-plan et ne bloque plus l’interface.
+
+## Affichage
+
+- Nouveau panneau de contrôles en bas à gauche : il liste les raccourcis clavier réellement utilisables dans la situation courante (ligne sélectionnée, édition de texte, modale, détection…), avec une barre de défilement quand la liste dépasse. (BÊTA)
+- Nouveau paramètre « Activer l’affichage des contrôles » dans les paramètres de l’application, activé par défaut.
+- Quand une ligne de la bande rythmo est sélectionnée, la partie de la forme d’onde qu’elle couvre prend la couleur de son personnage.
+
+## Mode enregistrement
+- Correction de la synchronisation en boucle quand un doubleur tente de se connecter à une session trop lourde.
 
 ## Nouveau mode Voicelines
 

@@ -81,6 +81,10 @@ pub struct VideoPlayer {
     audio_clock: Option<Arc<AudioOutputState>>,
     audio_thread: Option<JoinHandle<()>>,
     audio_ready: Option<Arc<AtomicBool>>,
+    /// Hand-off slot for the decoder feed of the persistent output stream.
+    /// Swapping the receiver retires the previous decoder (its `send` then
+    /// fails) without recreating the expensive WASAPI stream on every seek.
+    audio_rx_slot: Option<Arc<Mutex<Option<Receiver<Vec<f32>>>>>>,
     // Positive offsets require silence before the audio begins.
     pending_audio_start_at: Option<f64>,
     pub waveform: Arc<RwLock<Vec<f32>>>,
@@ -106,6 +110,13 @@ struct AudioOutputState {
     volume_bits: AtomicU32,
     frames_written: AtomicU64,
     underruns: AtomicU64,
+    /// Timeline seconds mapped to the first sample of the current decoder
+    /// feed. Updated on every seek so the recording mix stays in sync while
+    /// the output stream itself persists.
+    timeline_start_bits: AtomicU64,
+    /// When false, playback progress falls back to wall time (audio deferred
+    /// by a positive offset, or decoders stopped by a seek).
+    clock_active: AtomicBool,
     snapshot: Mutex<AudioClockSnapshot>,
 }
 
@@ -116,12 +127,43 @@ impl AudioOutputState {
             volume_bits: AtomicU32::new(volume.to_bits()),
             frames_written: AtomicU64::new(0),
             underruns: AtomicU64::new(0),
+            timeline_start_bits: AtomicU64::new(0.0f64.to_bits()),
+            clock_active: AtomicBool::new(true),
             snapshot: Mutex::new(AudioClockSnapshot {
                 wall_instant: Instant::now(),
                 audible_frame: 0,
                 written_frame: 0,
             }),
         }
+    }
+
+    /// Restart the clock for a decoder feed that begins at
+    /// `timeline_start_seconds`. Used on every seek while the output stream
+    /// itself stays alive.
+    fn reset(&self, timeline_start_seconds: f64) {
+        self.timeline_start_bits
+            .store(timeline_start_seconds.to_bits(), Ordering::Relaxed);
+        self.frames_written.store(0, Ordering::Relaxed);
+        self.clock_active.store(true, Ordering::Relaxed);
+        if let Ok(mut snapshot) = self.snapshot.lock() {
+            *snapshot = AudioClockSnapshot {
+                wall_instant: Instant::now(),
+                audible_frame: 0,
+                written_frame: 0,
+            };
+        }
+    }
+
+    fn timeline_start_seconds(&self) -> f64 {
+        f64::from_bits(self.timeline_start_bits.load(Ordering::Relaxed))
+    }
+
+    fn set_clock_active(&self, active: bool) {
+        self.clock_active.store(active, Ordering::Relaxed);
+    }
+
+    fn is_clock_active(&self) -> bool {
+        self.clock_active.load(Ordering::Relaxed)
     }
 
     fn set_volume(&self, volume: f32) {
@@ -218,6 +260,7 @@ impl VideoPlayer {
             audio_clock: None,
             audio_thread: None,
             audio_ready: None,
+            audio_rx_slot: None,
             pending_audio_start_at: None,
             waveform: Arc::new(RwLock::new(Vec::new())),
             instrumental_waveform: Arc::new(RwLock::new(Vec::new())),
@@ -571,41 +614,6 @@ impl VideoPlayer {
         self.finished = false;
     }
 
-    /// Full seek: move + decode (for step forward/backward buttons).
-    pub fn seek_relative(
-        &mut self,
-        delta: i32,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        bind_group_layout: &wgpu::BindGroupLayout,
-        sampler: &wgpu::Sampler,
-    ) {
-        self.seek_frame_instant(delta);
-        self.decode_current_frame(device, queue, bind_group_layout, sampler);
-    }
-
-    pub fn step_forward(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        bind_group_layout: &wgpu::BindGroupLayout,
-        sampler: &wgpu::Sampler,
-    ) {
-        self.playing = false;
-        self.seek_relative(1, device, queue, bind_group_layout, sampler);
-    }
-
-    pub fn step_backward(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        bind_group_layout: &wgpu::BindGroupLayout,
-        sampler: &wgpu::Sampler,
-    ) {
-        self.playing = false;
-        self.seek_relative(-1, device, queue, bind_group_layout, sampler);
-    }
-
     /// Advances decoded video state using a caller-provided monotonic sample.
     ///
     /// Interactive rendering must call [`Self::tick_at`] so video frame
@@ -756,6 +764,7 @@ impl VideoPlayer {
         self.playback_start_audio_frame = self
             .audio_clock
             .as_ref()
+            .filter(|clock| clock.is_clock_active())
             .map(|clock| clock.audible_frame_at(now))
             .unwrap_or(0);
 
@@ -774,7 +783,11 @@ impl VideoPlayer {
 
     fn playback_elapsed_seconds_at(&self, now: Instant) -> Option<f64> {
         let start_time = self.playback_start_time?;
-        if let Some(clock) = &self.audio_clock {
+        if let Some(clock) = self
+            .audio_clock
+            .as_ref()
+            .filter(|clock| clock.is_clock_active())
+        {
             let audio_frames = clock
                 .audible_frame_at(now)
                 .saturating_sub(self.playback_start_audio_frame);
@@ -925,16 +938,14 @@ impl VideoPlayer {
     fn defer_audio_start(&mut self) {
         let start_at = self.active_audio_offset_frames() as f64 / self.fps.max(1.0);
         self.pending_audio_start_at = (start_at > 0.0).then_some(start_at);
+        self.detach_audio_feed();
         if let Some(clock) = &self.audio_clock {
             clock.freeze();
+            clock.set_clock_active(false);
         }
         if let Some(stream) = &self.audio_stream {
             let _ = stream.pause();
         }
-        self.audio_stream = None;
-        self.audio_clock = None;
-        self.audio_ready = None;
-        self.audio_thread.take();
     }
 
     fn start_pending_audio_if_due(&mut self, video_frame: f64, now: Instant) {
@@ -976,16 +987,14 @@ impl VideoPlayer {
             return;
         };
         let was_playing = self.playing;
+        self.detach_audio_feed();
         if let Some(clock) = &self.audio_clock {
             clock.freeze();
+            clock.set_clock_active(false);
         }
         if let Some(stream) = &self.audio_stream {
             let _ = stream.pause();
         }
-        self.audio_stream = None;
-        self.audio_clock = None;
-        self.audio_ready = None;
-        self.audio_thread.take();
         self.pending_audio_start_at = None;
 
         let video_timestamp = self.current_frame as f64 / self.fps.max(1.0);
@@ -1093,6 +1102,40 @@ impl VideoPlayer {
         decode_timestamp: f64,
         timeline_start_seconds: f64,
     ) -> Result<(), String> {
+        let (audio_tx, audio_rx) = mpsc::sync_channel::<Vec<f32>>(24);
+        let path_clone = path.to_path_buf();
+        let audio_ready = Arc::new(AtomicBool::new(false));
+        let decoder_ready = audio_ready.clone();
+
+        // Fast path: the output stream already exists. Swap the decoder feed
+        // and restart the audio clock instead of rebuilding the WASAPI stream
+        // (a blocking operation that used to run on the UI thread at every
+        // scrub pause).
+        if let (Some(clock), Some(slot)) = (&self.audio_clock, &self.audio_rx_slot) {
+            let sample_rate = clock.sample_rate;
+            clock.reset(timeline_start_seconds);
+            {
+                // Replacing the receiver disconnects the previous decoder's
+                // sender, which makes its thread kill its ffmpeg and exit.
+                let Ok(mut guard) = slot.lock() else {
+                    return Err("Audio feed slot poisoned".to_string());
+                };
+                *guard = Some(audio_rx);
+            }
+            let audio_handle = thread::spawn(move || {
+                decode_audio_stream_from(
+                    path_clone,
+                    decode_timestamp,
+                    sample_rate,
+                    audio_tx,
+                    decoder_ready,
+                );
+            });
+            self.audio_thread = Some(audio_handle);
+            self.audio_ready = Some(audio_ready);
+            return Ok(());
+        }
+
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -1104,10 +1147,6 @@ impl VideoPlayer {
         let sample_rate = config.sample_rate.0;
         let channels = config.channels as usize;
 
-        let (audio_tx, audio_rx) = mpsc::sync_channel::<Vec<f32>>(24);
-        let path_clone = path.to_path_buf();
-        let audio_ready = Arc::new(AtomicBool::new(false));
-        let decoder_ready = audio_ready.clone();
         let audio_handle = thread::spawn(move || {
             decode_audio_stream_from(
                 path_clone,
@@ -1117,10 +1156,6 @@ impl VideoPlayer {
                 decoder_ready,
             );
         });
-        // Never wait for FFmpeg on the UI thread. While paused, the bounded
-        // channel naturally pre-buffers audio; the callback is non-blocking if
-        // playback is requested before the first chunk is ready.
-        let initial_chunk = None;
 
         let output_volume = if self.has_recording_mix() {
             1.0
@@ -1128,35 +1163,31 @@ impl VideoPlayer {
             self.volume
         };
         let state = Arc::new(AudioOutputState::new(sample_rate, output_volume));
+        state.reset(timeline_start_seconds);
+        let slot = Arc::new(Mutex::new(Some(audio_rx)));
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => build_audio_stream::<f32>(
                 &device,
                 &config,
-                audio_rx,
-                initial_chunk,
+                slot.clone(),
                 state.clone(),
                 channels,
-                timeline_start_seconds,
                 self.recording_mix.clone(),
             ),
             cpal::SampleFormat::I16 => build_audio_stream::<i16>(
                 &device,
                 &config,
-                audio_rx,
-                initial_chunk,
+                slot.clone(),
                 state.clone(),
                 channels,
-                timeline_start_seconds,
                 self.recording_mix.clone(),
             ),
             cpal::SampleFormat::U16 => build_audio_stream::<u16>(
                 &device,
                 &config,
-                audio_rx,
-                initial_chunk,
+                slot.clone(),
                 state.clone(),
                 channels,
-                timeline_start_seconds,
                 self.recording_mix.clone(),
             ),
             sample_format => Err(format!(
@@ -1166,6 +1197,7 @@ impl VideoPlayer {
 
         self.audio_stream = Some(stream);
         self.audio_clock = Some(state);
+        self.audio_rx_slot = Some(slot);
         self.audio_thread = Some(audio_handle);
         self.audio_ready = Some(audio_ready);
         Ok(())
@@ -1240,28 +1272,47 @@ impl VideoPlayer {
         );
     }
 
+    /// Detach the current decoder feed so its thread unblocks, kills its
+    /// ffmpeg and exits. The output stream itself is left untouched.
+    fn detach_audio_feed(&mut self) {
+        if let Some(slot) = &self.audio_rx_slot {
+            if let Ok(mut guard) = slot.lock() {
+                *guard = None;
+            }
+        }
+        self.audio_ready = None;
+        self.audio_thread.take();
+    }
+
     fn stop_decoders(&mut self) {
         // Signal threads to kill their ffmpeg processes and exit
         self.kill_signal.store(true, Ordering::Relaxed);
         self.pending_audio_start_at = None;
 
+        // Keep the output stream alive across seeks: recreating it is a
+        // blocking WASAPI operation that froze the UI while scrubbing.
+        self.detach_audio_feed();
+        if let Some(clock) = &self.audio_clock {
+            clock.freeze();
+            clock.set_clock_active(false);
+        }
         if let Some(stream) = &self.audio_stream {
             let _ = stream.pause();
         }
-        self.audio_stream = None;
-        self.audio_clock = None;
-        self.audio_ready = None;
         self.receiver = None;
         self.receiver_has_current_frame = false;
         self.waiting_for_first_frame = false;
         self.frame_recycler = None;
         self.decoder_handle.take();
-        self.audio_thread.take();
     }
 
     fn stop(&mut self) {
         self.playing = false;
         self.stop_decoders();
+        // Full teardown (media change or drop): release the persistent stream.
+        self.audio_stream = None;
+        self.audio_clock = None;
+        self.audio_rx_slot = None;
     }
 }
 
@@ -1276,16 +1327,20 @@ impl Drop for VideoPlayer {
 const AUDIO_CHANNELS: u16 = AUDIO_DECODE_CHANNELS as u16;
 
 struct AudioSampleReader {
-    rx: Receiver<Vec<f32>>,
+    /// Latest decoder feed published by the UI thread. Swapped on every seek
+    /// so the output stream (and this reader) can stay alive.
+    slot: Arc<Mutex<Option<Receiver<Vec<f32>>>>>,
+    rx: Option<Receiver<Vec<f32>>>,
     buffer: Vec<f32>,
     pos: usize,
 }
 
 impl AudioSampleReader {
-    fn new(rx: Receiver<Vec<f32>>, initial_chunk: Option<Vec<f32>>) -> Self {
+    fn new(slot: Arc<Mutex<Option<Receiver<Vec<f32>>>>>) -> Self {
         Self {
-            rx,
-            buffer: initial_chunk.unwrap_or_default(),
+            slot,
+            rx: None,
+            buffer: Vec::new(),
             pos: 0,
         }
     }
@@ -1303,12 +1358,27 @@ impl AudioSampleReader {
                 self.pos += 1;
                 return Some(sample);
             }
-            match self.rx.try_recv() {
+            if self.rx.is_none() {
+                // Never block the audio callback on a lock: a seek in
+                // progress simply yields silence for this buffer.
+                if let Ok(mut slot) = self.slot.try_lock() {
+                    self.rx = slot.take();
+                }
+            }
+            let rx = self.rx.as_ref()?;
+            match rx.try_recv() {
                 Ok(chunk) => {
                     self.buffer = chunk;
                     self.pos = 0;
                 }
-                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => return None,
+                Err(mpsc::TryRecvError::Empty) => return None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // Decoder retired by a seek: pick up the new feed (if any)
+                    // on the next iteration.
+                    self.rx = None;
+                    self.buffer = Vec::new();
+                    self.pos = 0;
+                }
             }
         }
     }
@@ -1317,18 +1387,16 @@ impl AudioSampleReader {
 fn build_audio_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    rx: Receiver<Vec<f32>>,
-    initial_chunk: Option<Vec<f32>>,
+    slot: Arc<Mutex<Option<Receiver<Vec<f32>>>>>,
     state: Arc<AudioOutputState>,
     output_channels: usize,
-    timeline_start_seconds: f64,
     recording_mix: Arc<RwLock<Option<Arc<RealtimeRecordingMix>>>>,
 ) -> Result<cpal::Stream, String>
 where
     T: Sample + SizedSample + FromSample<f32>,
 {
     let sample_rate = config.sample_rate.0;
-    let mut reader = AudioSampleReader::new(rx, initial_chunk);
+    let mut reader = AudioSampleReader::new(slot);
     let err_fn = |err| log::error!("Audio stream error: {err}");
 
     device
@@ -1342,7 +1410,6 @@ where
                     &state,
                     &mut reader,
                     info,
-                    timeline_start_seconds,
                     &recording_mix,
                 )
             },
@@ -1359,7 +1426,6 @@ fn write_audio_output<T>(
     state: &AudioOutputState,
     reader: &mut AudioSampleReader,
     info: &cpal::OutputCallbackInfo,
-    timeline_start_seconds: f64,
     recording_mix: &RwLock<Option<Arc<RealtimeRecordingMix>>>,
 ) where
     T: Sample + FromSample<f32>,
@@ -1392,7 +1458,7 @@ fn write_audio_output<T>(
             }
         };
         let stereo = recording_mix.as_ref().map_or(source, |mix| {
-            let timeline_seconds = timeline_start_seconds
+            let timeline_seconds = state.timeline_start_seconds()
                 + (frames_before + index as u64) as f64 / f64::from(sample_rate);
             mix.mix_stereo(timeline_seconds, source)
         });
@@ -1815,7 +1881,7 @@ mod tests {
     }
 
     #[test]
-    fn seek_invalidates_audio_stream_while_paused() {
+    fn seek_invalidates_decoders_while_paused() {
         let mut player = VideoPlayer::new();
         let (_, receiver) = mpsc::sync_channel(1);
         player.receiver = Some(receiver);
@@ -1827,7 +1893,10 @@ mod tests {
 
         assert_eq!(player.current_frame(), 90);
         assert!(player.receiver.is_none());
-        assert!(player.audio_clock.is_none());
+        // The persistent output stream's clock survives the seek but is
+        // parked until the debounced decoder restart resets it.
+        let clock = player.audio_clock.as_ref().expect("clock persists");
+        assert!(!clock.is_clock_active());
     }
 
     #[test]
@@ -1913,19 +1982,39 @@ mod tests {
 
     #[test]
     fn empty_audio_prebuffer_never_blocks_the_output_callback() {
-        let (_sender, receiver) = mpsc::sync_channel(1);
-        let mut reader = AudioSampleReader::new(receiver, None);
+        let slot = Arc::new(std::sync::Mutex::new(None));
+        let mut reader = AudioSampleReader::new(slot);
 
         assert_eq!(reader.next_stereo(), None);
     }
 
     #[test]
     fn stereo_audio_preserves_both_output_sides() {
-        let (_sender, receiver) = mpsc::sync_channel(1);
-        let mut reader = AudioSampleReader::new(receiver, Some(vec![0.25, -0.5]));
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender.send(vec![0.25, -0.5]).unwrap();
+        let slot = Arc::new(std::sync::Mutex::new(Some(receiver)));
+        let mut reader = AudioSampleReader::new(slot);
 
         assert_eq!(reader.next_stereo(), Some([0.25, -0.5]));
         assert_eq!(reader.next_stereo(), None);
+    }
+
+    #[test]
+    fn swapped_audio_feed_replaces_a_retired_decoder() {
+        let (old_sender, old_receiver) = mpsc::sync_channel::<Vec<f32>>(1);
+        let slot = Arc::new(std::sync::Mutex::new(Some(old_receiver)));
+        let mut reader = AudioSampleReader::new(slot.clone());
+        old_sender.send(vec![1.0, 1.0]).unwrap();
+        assert_eq!(reader.next_stereo(), Some([1.0, 1.0]));
+
+        // Seek: the old receiver is dropped, its sender disconnects, and a
+        // fresh decoder feed is published through the same slot.
+        drop(old_sender);
+        let (new_sender, new_receiver) = mpsc::sync_channel::<Vec<f32>>(1);
+        *slot.lock().unwrap() = Some(new_receiver);
+        new_sender.send(vec![0.5, -0.5]).unwrap();
+
+        assert_eq!(reader.next_stereo(), Some([0.5, -0.5]));
     }
 
     #[test]

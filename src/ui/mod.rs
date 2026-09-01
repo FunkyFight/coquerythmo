@@ -40,6 +40,7 @@ pub mod save_prompt_modal;
 pub mod server_browser;
 pub mod settings_modal;
 pub mod shell;
+pub mod shortcut_panel;
 pub mod side_panel;
 pub mod slider;
 pub mod tab_button;
@@ -108,6 +109,10 @@ pub struct Ui {
     recording_assets_split: f32,
     dragging_recording_split: Option<RecordingSplitHandle>,
     tooltip: Option<TooltipState>,
+    /// Contextual shortcut hints rendered in the bottom-left corner.
+    shortcut_panel: shortcut_panel::ShortcutPanelState,
+    /// Bridged from State: the internal line clipboard holds an entry.
+    pub line_clipboard_available: bool,
     pub cursor_pos: (f32, f32),
     playing: bool,
     volume: f32,
@@ -325,6 +330,8 @@ impl Ui {
             recording_assets_split: 0.23,
             dragging_recording_split: None,
             tooltip: None,
+            shortcut_panel: shortcut_panel::ShortcutPanelState::new(),
+            line_clipboard_available: false,
             cursor_pos: (0.0, 0.0),
             playing: false,
             volume: 0.75,
@@ -515,6 +522,34 @@ impl Ui {
 
     pub fn has_keyboard_focus(&self) -> bool {
         self.focus.current_id().is_some()
+    }
+
+    /// Ordered shortcut contexts for the current UI state. This is the single
+    /// source of truth shared by the event loop (to resolve a keystroke) and
+    /// the bottom-left shortcut panel (to list what is available).
+    pub fn shortcut_contexts(&self) -> Vec<crate::input::context::InputContext> {
+        use crate::input::context::InputContext;
+        let mut contexts = Vec::new();
+        if self.modal_host.captures_input() {
+            contexts.push(InputContext::Modal);
+        } else if self.rythmo_state.is_editing() {
+            contexts.push(InputContext::TextEditing);
+        } else if self.has_keyboard_focus() {
+            if self.active_workspace == WorkspaceId::Recording {
+                contexts.push(InputContext::Recording);
+            }
+            contexts.push(InputContext::MainWindow);
+            contexts.push(InputContext::Global);
+        } else if !self.is_editing_text() {
+            match self.active_workspace {
+                WorkspaceId::Rythmo
+                | WorkspaceId::Voicelines
+                | WorkspaceId::ComicDubs => contexts.push(InputContext::Workspace),
+                WorkspaceId::Recording => contexts.push(InputContext::Recording),
+            }
+            contexts.push(InputContext::Global);
+        }
+        contexts
     }
 
     pub fn focused_workspace_tab(&self) -> bool {
@@ -2262,6 +2297,16 @@ impl Ui {
             return rythmo_response;
         }
 
+        // The contextual shortcut panel owns the wheel over its own rect,
+        // before the rythmo zone claims every scroll inside its bounds.
+        if let UiEvent::Scroll { .. } = event {
+            if crate::config::get().ui.show_controls_hint
+                && self.shortcut_panel.handle_scroll(event, self.screen_h)
+            {
+                return EventResponse::Consumed;
+            }
+        }
+
         // Scroll in rythmo zone
         if let UiEvent::Scroll {
             x,
@@ -3329,6 +3374,40 @@ impl Ui {
         // Tick toasts (needs &mut self, before labels borrow self)
         self.toasts.tick();
 
+        // Refresh the contextual shortcut panel when the situation changed
+        // (needs &mut self, before labels borrow self).
+        {
+            use crate::workspaces::rythmo::view::Selection;
+            let (line_selected, any_selection, detection_selected) =
+                match self.rythmo_state.selected.as_ref() {
+                    Some(Selection::Line(_) | Selection::Lines(_) | Selection::AllLines) => {
+                        (true, true, false)
+                    }
+                    Some(Selection::Detection(_)) => (false, true, true),
+                    Some(_) => (false, true, false),
+                    None => (false, false, false),
+                };
+            let situation = shortcut_panel::PanelSituation {
+                contexts: self.shortcut_contexts(),
+                workspace: self.active_workspace,
+                has_video: self.has_video,
+                has_instrumental: project.settings().instrumental_audio_path.is_some(),
+                line_selected,
+                any_selection,
+                detection_selected,
+                hovered_line: self.rythmo_state.hovered_line.is_some(),
+                editing_line: self.rythmo_state.editing_line.is_some(),
+                editing_any: self.rythmo_state.is_editing(),
+                has_lines: project.line_count() > 0,
+                line_at_playhead: project
+                    .lines()
+                    .any(|line| current_frame >= line.start_frame && current_frame < line.end_frame()),
+                line_clipboard_available: self.line_clipboard_available,
+            };
+            self.shortcut_panel
+                .sync(&situation, shortcut_panel::shortcut_router().bindings());
+        }
+
         // Prepare color picker textures first (needs &mut self, before labels borrow self)
         self.rythmo_state.color_picker.ensure_textures(
             device,
@@ -3988,6 +4067,14 @@ impl Ui {
         } else if let Some(tooltip) = &self.tooltip {
             tooltip_quads.extend(tooltip.render_quads(self.screen_w));
             tooltip_labels.extend(tooltip.render_labels(self.screen_w));
+        }
+
+        // Contextual shortcut hints → overlay (bottom-left, below popups and
+        // modal layers so it never covers interactive chrome). Controlled by
+        // the "show controls" application setting.
+        if crate::config::get().ui.show_controls_hint && !self.shortcut_panel.is_empty() {
+            overlay_quads.extend(self.shortcut_panel.render_quads(self.screen_h));
+            overlay_labels.extend(self.shortcut_panel.render_labels(self.screen_h));
         }
 
         // Sync overlay (blocks UI during video transfer)
