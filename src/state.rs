@@ -10757,7 +10757,89 @@ fn ping_server_http(
 // -- File tree media library methods --
 impl State {
     pub fn toggle_file_tree(&mut self) {
+        self.migrate_media_library_from_playback();
         self.ui_shell.ui.toggle_file_tree();
+    }
+
+    /// Legacy projects predate the media library: seed it once from the
+    /// currently loaded playback state so the file tree can handle them.
+    fn migrate_media_library_from_playback(&mut self) {
+        if !self
+            .project_session
+            .project
+            .media_library()
+            .is_empty()
+        {
+            return;
+        }
+        let source = self.video_path();
+        let proxy = self.proxy_video_path();
+        let Some(source) = source else {
+            return;
+        };
+        let name = source
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let source_str = source.to_string_lossy().into_owned();
+        let source_id = self
+            .project_session
+            .project
+            .add_media_video(&name, &source_str, None, false)
+            .ok();
+        if let (Some(proxy), Some(source_id)) = (proxy, source_id) {
+            let proxy_str = proxy.to_string_lossy().into_owned();
+            let proxy_name = proxy
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if proxy_str != source_str {
+                let proxy_id = self
+                    .project_session
+                    .project
+                    .add_media_video(&proxy_name, &proxy_str, Some(source_id), true)
+                    .ok();
+                if let Some(proxy_id) = proxy_id {
+                    let _ = self
+                        .project_session
+                        .project
+                        .set_default_video(Some(proxy_id));
+                }
+            } else {
+                let _ = self
+                    .project_session
+                    .project
+                    .set_default_video(Some(source_id));
+            }
+        } else if let Some(source_id) = source_id {
+            let _ = self
+                .project_session
+                .project
+                .set_default_video(Some(source_id));
+        }
+        // Import instrumental audios referenced by languages.
+        let language_audio_paths: Vec<String> = self
+            .project_session
+            .project
+            .languages()
+            .into_iter()
+            .filter_map(|language| {
+                self.project_session
+                    .project
+                    .language_instrumental_audio_path(language.id)
+            })
+            .filter(|path| !path.trim().is_empty())
+            .collect();
+        for path in language_audio_paths {
+            let name = std::path::Path::new(&path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone());
+            let _ = self
+                .project_session
+                .project
+                .add_media_audio(&name, &path);
+        }
     }
 
     pub fn close_file_tree(&mut self) {

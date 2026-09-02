@@ -897,7 +897,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                             );
                             return;
                         }
-                        // The media explorer is global, but never stack it over an
+                        // The file tree is global, but never stack it over an
                         // existing modal whose event routing would remain underneath it.
                         if ctrl_held
                             && !event.repeat
@@ -905,7 +905,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                             && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("l"))
                         {
                             dispatch_key_action(
-                                UiAction::OpenMediaExplorer,
+                                UiAction::ToggleFileTree,
                                 &event,
                                 keyboard_modifiers,
                                 InputWindow::Main,
