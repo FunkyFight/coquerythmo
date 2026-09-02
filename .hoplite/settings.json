@@ -1,0 +1,26 @@
+{
+	"version": 1,
+	"ports": {
+		"preview": 3000,
+		"additional": {}
+	},
+	"scripts": {
+		"setup": {
+			"enabled": true,
+      "command": "command -v cargo >/dev/null 2>&1 && pkg-config --exists openssl 2>/dev/null && pkg-config --exists alsa 2>/dev/null && command -v rustfmt >/dev/null 2>&1 && command -v git-lfs >/dev/null 2>&1 || (apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cargo rustc pkg-config libssl-dev libasound2-dev git-lfs && rustup component add rustfmt)"
+		},
+		"run": {
+			"enabled": true,
+			"command": null
+		},
+		"archive": {
+			"enabled": true,
+			"command": null
+		},
+		"check": {
+			"enabled": true,
+			"command": null
+		}
+	},
+	"mcpServers": []
+}
