@@ -266,9 +266,9 @@ impl RecordingLayout {
         let main_w = (content.width - assets_w).max(0.0);
         let toolbar_h = super::layout::TOOLBAR_H.min(content.height);
         let available_h = (content.height - toolbar_h).max(0.0);
-        let video_h = (available_h - 164.0 - rythmo_min_h.max(100.0)).clamp(140.0, 560.0);
-        let available_after_video = (content.height - video_h - toolbar_h).max(0.0);
         const DAW_MIN_H: f32 = 164.0;
+        let video_h = (available_h - DAW_MIN_H - rythmo_min_h.max(100.0)).max(140.0);
+        let available_after_video = (content.height - video_h - toolbar_h).max(0.0);
         let rythmo_h = rythmo_min_h
             .max(100.0)
             .min((available_after_video - DAW_MIN_H).max(0.0));

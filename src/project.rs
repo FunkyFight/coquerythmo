@@ -5,7 +5,7 @@ use crate::constants::JS_MAX_SAFE_INTEGER;
 use crate::rythmo_drawing::{DrawingStroke, RythmoDrawing};
 use crate::rythmo_line::{RythmoLine, RythmoMarker};
 use crate::voice_actor::VoiceActor;
-use std::collections::{hash_map::Entry, BTreeMap, HashMap};
+use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 
 const DEFAULT_COLORS: &[[f32; 4]] = &[
     [0.35, 0.55, 0.90, 1.0], // blue
@@ -428,6 +428,82 @@ impl MediaLibrary {
 
     pub fn is_empty(&self) -> bool {
         self.videos.is_empty() && self.audios.is_empty() && self.default_video.is_none()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let mut ids = HashSet::new();
+        let mut video_ids = HashSet::new();
+        let mut video_paths = HashSet::new();
+        for video in &self.videos {
+            if video.id > JS_MAX_SAFE_INTEGER {
+                return Err(format!("media id {} exceeds the JSON-safe range", video.id));
+            }
+            if !ids.insert(video.id) {
+                return Err(format!("duplicate media id: {}", video.id));
+            }
+            if !video_ids.insert(video.id) {
+                return Err(format!("duplicate video id: {}", video.id));
+            }
+            if !video_paths.insert(&video.path) {
+                return Err(format!("duplicate media video path: {}", video.path));
+            }
+            if video.name.trim().is_empty() {
+                return Err(format!("media video {} has an empty name", video.id));
+            }
+            if video.path.trim().is_empty() {
+                return Err(format!("media video {} has an empty path", video.id));
+            }
+        }
+
+        let mut audio_paths = HashSet::new();
+        for audio in &self.audios {
+            if audio.id > JS_MAX_SAFE_INTEGER {
+                return Err(format!("media id {} exceeds the JSON-safe range", audio.id));
+            }
+            if !ids.insert(audio.id) {
+                return Err(format!("duplicate media id: {}", audio.id));
+            }
+            if !audio_paths.insert(&audio.path) {
+                return Err(format!("duplicate media audio path: {}", audio.path));
+            }
+            if audio.name.trim().is_empty() {
+                return Err(format!("media audio {} has an empty name", audio.id));
+            }
+            if audio.path.trim().is_empty() {
+                return Err(format!("media audio {} has an empty path", audio.id));
+            }
+        }
+
+        if let Some(default_video) = self.default_video {
+            if !video_ids.contains(&default_video) {
+                return Err(format!("default video not found: {default_video}"));
+            }
+        }
+
+        let mut proxy_sources = HashSet::new();
+        for video in &self.videos {
+            let Some(source_id) = video.proxy_of else {
+                continue;
+            };
+            if source_id == video.id {
+                return Err(format!("video {} cannot proxy itself", video.id));
+            }
+            let Some(source) = self
+                .videos
+                .iter()
+                .find(|candidate| candidate.id == source_id)
+            else {
+                return Err(format!("proxy source not found: {source_id}"));
+            };
+            if source.proxy_of.is_some() {
+                return Err(format!("proxy source {source_id} is itself a proxy"));
+            }
+            if !proxy_sources.insert(source_id) {
+                return Err(format!("source video {source_id} already has a proxy"));
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -1103,8 +1179,13 @@ impl Project {
         &self.media_library
     }
 
-    pub fn media_library_mut(&mut self) -> &mut MediaLibrary {
-        &mut self.media_library
+    pub fn replace_media_library(&mut self, media_library: MediaLibrary) -> Result<(), String> {
+        media_library.validate()?;
+        if self.media_library != media_library {
+            self.media_library = media_library;
+            self.bump_revision();
+        }
+        Ok(())
     }
 
     pub fn add_media_video(
@@ -1114,18 +1195,20 @@ impl Project {
         proxy_of: Option<MediaId>,
         generated: bool,
     ) -> Result<MediaId, String> {
+        let name = name.into();
         let path = path.into();
-        if self.media_library.videos.iter().any(|v| v.path == path) {
-            return Err(format!("video already in library: {path}"));
-        }
         let id = self.media_library.next_id();
-        self.media_library.videos.push(MediaVideo {
+        let mut media_library = self.media_library.clone();
+        media_library.videos.push(MediaVideo {
             id,
-            name: name.into(),
+            name,
             path,
             proxy_of,
             generated,
         });
+        media_library.validate()?;
+        self.media_library = media_library;
+        self.bump_revision();
         Ok(id)
     }
 
@@ -1134,16 +1217,14 @@ impl Project {
         name: impl Into<String>,
         path: impl Into<String>,
     ) -> Result<MediaId, String> {
+        let name = name.into();
         let path = path.into();
-        if self.media_library.audios.iter().any(|a| a.path == path) {
-            return Err(format!("audio already in library: {path}"));
-        }
         let id = self.media_library.next_id();
-        self.media_library.audios.push(MediaAudio {
-            id,
-            name: name.into(),
-            path,
-        });
+        let mut media_library = self.media_library.clone();
+        media_library.audios.push(MediaAudio { id, name, path });
+        media_library.validate()?;
+        self.media_library = media_library;
+        self.bump_revision();
         Ok(id)
     }
 
@@ -1151,7 +1232,12 @@ impl Project {
         let Some(video) = self.media_library.videos.iter_mut().find(|v| v.id == id) else {
             return false;
         };
-        video.name = name.into();
+        let name = name.into();
+        if name.trim().is_empty() || video.name == name {
+            return false;
+        }
+        video.name = name;
+        self.bump_revision();
         true
     }
 
@@ -1159,31 +1245,52 @@ impl Project {
         let Some(audio) = self.media_library.audios.iter_mut().find(|a| a.id == id) else {
             return false;
         };
-        audio.name = name.into();
+        let name = name.into();
+        if name.trim().is_empty() || audio.name == name {
+            return false;
+        }
+        audio.name = name;
+        self.bump_revision();
         true
     }
 
     pub fn remove_media_video(&mut self, id: MediaId) -> bool {
-        let mut removed = false;
-        // Remove proxy children first.
-        self.media_library.videos.retain(|v| {
-            if v.proxy_of == Some(id) {
-                removed = true;
-                false
-            } else {
-                true
-            }
-        });
-        // Remove the video itself.
-        if let Some(index) = self.media_library.videos.iter().position(|v| v.id == id) {
-            self.media_library.videos.remove(index);
-            removed = true;
+        if !self.media_library.videos.iter().any(|video| video.id == id) {
+            return false;
         }
-        // Cascade default.
-        if self.media_library.default_video == Some(id) {
+
+        let mut removed_ids = HashSet::from([id]);
+        loop {
+            let before = removed_ids.len();
+            let children: Vec<_> = self
+                .media_library
+                .videos
+                .iter()
+                .filter_map(|video| {
+                    video
+                        .proxy_of
+                        .filter(|source_id| removed_ids.contains(source_id))
+                        .map(|_| video.id)
+                })
+                .collect();
+            removed_ids.extend(children);
+            if removed_ids.len() == before {
+                break;
+            }
+        }
+
+        self.media_library
+            .videos
+            .retain(|video| !removed_ids.contains(&video.id));
+        if self
+            .media_library
+            .default_video
+            .is_some_and(|default_id| removed_ids.contains(&default_id))
+        {
             self.media_library.default_video = None;
         }
-        removed
+        self.bump_revision();
+        true
     }
 
     pub fn remove_media_audio(&mut self, id: MediaId) -> bool {
@@ -1194,10 +1301,15 @@ impl Project {
         self.media_library.audios.remove(index);
         // Clear instrumental references in all languages.
         for language_id in self.language_order.clone() {
-            if self.language_instrumental_audio_path(language_id).as_deref() == Some(path.as_str()) {
+            if self
+                .language_instrumental_audio_path(language_id)
+                .as_deref()
+                == Some(path.as_str())
+            {
                 self.set_language_instrumental_audio_path(language_id, None);
             }
         }
+        self.bump_revision();
         true
     }
 
@@ -1207,11 +1319,18 @@ impl Project {
                 return Err(format!("video not found: {id}"));
             }
         }
-        self.media_library.default_video = id;
+        if self.media_library.default_video != id {
+            self.media_library.default_video = id;
+            self.bump_revision();
+        }
         Ok(())
     }
 
     pub fn associate_proxy(&mut self, proxy_id: MediaId, source_id: MediaId) -> Result<(), String> {
+        self.media_library.validate()?;
+        if proxy_id == source_id {
+            return Err("a video cannot be its own proxy".to_string());
+        }
         let proxy_index = self
             .media_library
             .videos
@@ -1229,25 +1348,20 @@ impl Project {
         if self.media_library.videos[source_index].proxy_of.is_some() {
             return Err("source video is itself a proxy".to_string());
         }
-        if self
-            .media_library
-            .videos
-            .iter()
-            .any(|v| v.proxy_of == Some(source_id))
-        {
-            return Err("source video already has a proxy".to_string());
-        }
         // A proxy cannot have a proxy.
         if self.media_library.videos[proxy_index].proxy_of.is_some() {
             return Err("proxy video already has a proxy".to_string());
         }
 
-        // If the proxy was already associated with another source, detach it.
-        if let Some(old_source) = self.media_library.videos[proxy_index].proxy_of {
-            let _ = old_source; // already handled by retain below
+        // Replacing a source proxy promotes the previous proxy back to top level.
+        for video in &mut self.media_library.videos {
+            if video.proxy_of == Some(source_id) {
+                video.proxy_of = None;
+            }
         }
-
         self.media_library.videos[proxy_index].proxy_of = Some(source_id);
+        debug_assert!(self.media_library.validate().is_ok());
+        self.bump_revision();
         Ok(())
     }
 
@@ -1255,7 +1369,11 @@ impl Project {
         let Some(video) = self.media_library.videos.iter_mut().find(|v| v.id == id) else {
             return false;
         };
+        if video.proxy_of.is_none() {
+            return false;
+        }
         video.proxy_of = None;
+        self.bump_revision();
         true
     }
 
@@ -1266,6 +1384,9 @@ impl Project {
         let video = self.media_library.videos.remove(from);
         let to = to_index.min(self.media_library.videos.len());
         self.media_library.videos.insert(to, video);
+        if from != to {
+            self.bump_revision();
+        }
         true
     }
 
@@ -1276,6 +1397,9 @@ impl Project {
         let audio = self.media_library.audios.remove(from);
         let to = to_index.min(self.media_library.audios.len());
         self.media_library.audios.insert(to, audio);
+        if from != to {
+            self.bump_revision();
+        }
         true
     }
 
@@ -2552,5 +2676,114 @@ mod tests {
         configuration.comic_dubs_alpha = true;
         let json = serde_json::to_value(&configuration).unwrap();
         assert_eq!(json["comic_dubs_alpha"], true);
+    }
+
+    #[test]
+    fn media_library_rejects_invalid_proxy_links_and_cycles() {
+        let mut project = Project::new();
+        assert!(project
+            .add_media_video("dangling", "/videos/dangling.mp4", Some(99), false)
+            .is_err());
+
+        let self_referencing = MediaLibrary {
+            videos: vec![MediaVideo {
+                id: 1,
+                name: "self".into(),
+                path: "/videos/self.mp4".into(),
+                proxy_of: Some(1),
+                generated: false,
+            }],
+            audios: Vec::new(),
+            default_video: None,
+        };
+        assert!(project.replace_media_library(self_referencing).is_err());
+
+        let cycle = MediaLibrary {
+            videos: vec![
+                MediaVideo {
+                    id: 1,
+                    name: "one".into(),
+                    path: "/videos/one.mp4".into(),
+                    proxy_of: Some(2),
+                    generated: false,
+                },
+                MediaVideo {
+                    id: 2,
+                    name: "two".into(),
+                    path: "/videos/two.mp4".into(),
+                    proxy_of: Some(1),
+                    generated: false,
+                },
+            ],
+            audios: Vec::new(),
+            default_video: None,
+        };
+        assert!(project.replace_media_library(cycle).is_err());
+    }
+
+    #[test]
+    fn associating_proxy_replaces_the_existing_source_proxy() {
+        let mut project = Project::new();
+        let source = project
+            .add_media_video("source", "/videos/source.mp4", None, false)
+            .unwrap();
+        let previous_proxy = project
+            .add_media_video("old proxy", "/videos/old-proxy.mp4", Some(source), true)
+            .unwrap();
+        let replacement_proxy = project
+            .add_media_video("new proxy", "/videos/new-proxy.mp4", None, false)
+            .unwrap();
+
+        project.associate_proxy(replacement_proxy, source).unwrap();
+
+        let videos = &project.media_library().videos;
+        assert_eq!(
+            videos
+                .iter()
+                .find(|video| video.id == previous_proxy)
+                .unwrap()
+                .proxy_of,
+            None
+        );
+        assert_eq!(
+            videos
+                .iter()
+                .find(|video| video.id == replacement_proxy)
+                .unwrap()
+                .proxy_of,
+            Some(source)
+        );
+        assert!(project.associate_proxy(source, source).is_err());
+    }
+
+    #[test]
+    fn removing_source_clears_a_default_proxy_child() {
+        let mut project = Project::new();
+        let source = project
+            .add_media_video("source", "/videos/source.mp4", None, false)
+            .unwrap();
+        let proxy = project
+            .add_media_video("proxy", "/videos/proxy.mp4", Some(source), true)
+            .unwrap();
+        project.set_default_video(Some(proxy)).unwrap();
+
+        assert!(project.remove_media_video(source));
+        assert!(project.media_library().videos.is_empty());
+        assert_eq!(project.media_library().default_video, None);
+    }
+
+    #[test]
+    fn removing_media_audio_clears_every_matching_instrumental() {
+        let mut project = Project::new_with_language("Français", "fr-fr");
+        let french = project.active_language_id();
+        let english = project.create_language("English", "en-us");
+        let path = "/audio/instrumental.flac";
+        project.set_language_instrumental_audio_path(french, Some(path.into()));
+        project.set_language_instrumental_audio_path(english, Some(path.into()));
+        let audio = project.add_media_audio("Instrumental", path).unwrap();
+
+        assert!(project.remove_media_audio(audio));
+        assert_eq!(project.language_instrumental_audio_path(french), None);
+        assert_eq!(project.language_instrumental_audio_path(english), None);
     }
 }

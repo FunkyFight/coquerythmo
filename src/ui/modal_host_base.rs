@@ -9,7 +9,6 @@ use super::comic_dubs_settings_modal::ComicDubsSettingsModal;
 use super::connect_modal::ConnectModal;
 use super::export_modal::ExportModal;
 use super::invitation_modal::InvitationModal;
-use super::language_modal::{LanguageListItem, LanguageModal, MediaExplorerData};
 use super::microphone_modal::{MicrophoneModal, RecordingActorMenuModal};
 use super::pricing_license_modal::PricingLicenseModal;
 use super::pricing_page::PricingPage;
@@ -89,7 +88,6 @@ pub struct ModalHost {
     pub comic_dubs_settings: Option<ComicDubsSettingsModal>,
     pub export: Option<ExportModal>,
     pub invitation: Option<InvitationModal>,
-    pub languages: Option<LanguageModal>,
     pub microphone: Option<MicrophoneModal>,
     pub recording_actor_menu: Option<RecordingActorMenuModal>,
     pub proxy: Option<ProxyModal>,
@@ -114,7 +112,6 @@ impl ModalHost {
             comic_dubs_settings: None,
             export: None,
             invitation: None,
-            languages: None,
             microphone: None,
             recording_actor_menu: None,
             proxy: None,
@@ -138,7 +135,6 @@ impl ModalHost {
             || self.comic_dubs_settings.is_some()
             || self.export.is_some()
             || self.invitation.is_some()
-            || self.languages.is_some()
             || self.microphone.is_some()
             || self.recording_actor_menu.is_some()
             || self.proxy.is_some()
@@ -160,7 +156,6 @@ impl ModalHost {
             || self.comic_dubs_settings.is_some()
             || self.connect.is_some()
             || self.export.is_some()
-            || self.languages.is_some()
             || self.proxy.is_some()
             || self.proxy_error.is_some()
             || self.voice_actor.is_some()
@@ -253,9 +248,6 @@ impl ModalHost {
         }
         if self.invitation.is_some() {
             return Some(self.handle_invitation_event(event, screen_w, screen_h));
-        }
-        if self.languages.is_some() {
-            return Some(self.handle_languages_event(event, screen_w, screen_h));
         }
         if self.microphone.is_some() {
             return Some(self.handle_microphone_event(event, screen_w, screen_h));
@@ -739,120 +731,6 @@ impl ModalHost {
                     UiAction::StartConfiguredExport { configuration },
                     crate::i18n::t("export_modal.title"),
                 )
-            }
-        }
-    }
-
-    fn handle_languages_event(
-        &mut self,
-        event: &UiEvent,
-        screen_w: f32,
-        screen_h: f32,
-    ) -> ModalOutcome {
-        use super::language_modal::LanguageModalResult;
-        let result = self
-            .languages
-            .as_mut()
-            .unwrap()
-            .handle_event(event, screen_w, screen_h);
-        if matches!(event, UiEvent::CursorUp | UiEvent::CursorDown)
-            && matches!(result, LanguageModalResult::Consumed)
-            && self
-                .languages
-                .as_ref()
-                .is_some_and(|modal| modal.keyboard_focus_role() == "list box")
-        {
-            if let Some(label) = self
-                .languages
-                .as_ref()
-                .and_then(|modal| modal.keyboard_selection_label())
-            {
-                return ModalOutcome::Action(UiAction::Accessibility(
-                    crate::accessibility::AccessibilityEvent::Selection { label },
-                ));
-            }
-        }
-        let focus_navigation = match event {
-            UiEvent::FocusNext | UiEvent::FocusPrevious => true,
-            UiEvent::KeyInput { text } => text == "\t" || text == "\u{b}",
-            _ => false,
-        };
-        let tab_interaction = self
-            .languages
-            .as_ref()
-            .is_some_and(|modal| modal.keyboard_focus_role() == "tab")
-            && (matches!(
-                event,
-                UiEvent::CursorLeft | UiEvent::CursorRight | UiEvent::Activate
-            ) || matches!(event, UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " "));
-        if (focus_navigation || tab_interaction) && matches!(result, LanguageModalResult::Consumed)
-        {
-            if let Some((label, role)) = self.languages.as_ref().map(|modal| {
-                (
-                    modal.keyboard_focus_label(),
-                    modal.keyboard_focus_role().to_string(),
-                )
-            }) {
-                return ModalOutcome::Action(UiAction::Accessibility(
-                    crate::accessibility::AccessibilityEvent::Focus { label, role },
-                ));
-            }
-        }
-        match result {
-            LanguageModalResult::Consumed => ModalOutcome::Consumed,
-            LanguageModalResult::Close => {
-                self.languages = None;
-                closed_modal(crate::i18n::t("media_explorer.title"))
-            }
-            LanguageModalResult::Create { name } => {
-                ModalOutcome::Action(UiAction::CreateLanguage { name })
-            }
-            LanguageModalResult::Rename { id, name } => {
-                ModalOutcome::Action(UiAction::RenameLanguage { id, name })
-            }
-            LanguageModalResult::Delete { id } => {
-                ModalOutcome::Action(UiAction::DeleteLanguage { id })
-            }
-            LanguageModalResult::Select { id } => {
-                ModalOutcome::Action(UiAction::SelectLanguage { id })
-            }
-            LanguageModalResult::SetSyllableLanguage { id, language } => {
-                ModalOutcome::Actions(vec![
-                    UiAction::SetLanguageSyllableLanguage { id, language },
-                    UiAction::Accessibility(
-                        crate::accessibility::AccessibilityEvent::ValueChanged {
-                            label: crate::i18n::t("languages.syllables").to_string(),
-                            value: super::language_modal::syllable_language_label(language)
-                                .to_string(),
-                        },
-                    ),
-                ])
-            }
-            LanguageModalResult::PickInstrumental { id } => {
-                ModalOutcome::Action(UiAction::PickLanguageInstrumentalAudio { id })
-            }
-            LanguageModalResult::ClearInstrumental { id } => {
-                ModalOutcome::Action(UiAction::ClearLanguageInstrumentalAudio { id })
-            }
-            LanguageModalResult::AddVideo => {
-                self.languages = None;
-                action_closed_modal(UiAction::AddVideo, crate::i18n::t("media_explorer.title"))
-            }
-            LanguageModalResult::CreateProxy => {
-                self.languages = None;
-                action_closed_modal(
-                    UiAction::OpenProxyModal,
-                    crate::i18n::t("media_explorer.title"),
-                )
-            }
-            LanguageModalResult::SwitchVideo { use_proxy } => {
-                ModalOutcome::Action(UiAction::SwitchMediaVideo { use_proxy })
-            }
-            LanguageModalResult::SetDefaultVideo { use_proxy } => {
-                ModalOutcome::Action(UiAction::SetDefaultMediaVideo { use_proxy })
-            }
-            LanguageModalResult::DeleteVideo { use_proxy } => {
-                ModalOutcome::Action(UiAction::DeleteMediaVideo { use_proxy })
             }
         }
     }
@@ -1474,19 +1352,6 @@ impl ModalHost {
         ));
     }
 
-    pub fn open_media_explorer(
-        &mut self,
-        languages: Vec<LanguageListItem>,
-        active_language_id: u64,
-        media: MediaExplorerData,
-    ) {
-        self.languages = Some(LanguageModal::with_media(
-            languages,
-            active_language_id,
-            media,
-        ));
-    }
-
     pub fn open_microphone(
         &mut self,
         devices: Vec<crate::media_recording::InputDeviceInfo>,
@@ -1501,18 +1366,6 @@ impl ModalHost {
 
     pub fn open_invitation(&mut self, code: String, link: String) {
         self.invitation = Some(InvitationModal::new(code, link));
-    }
-
-    pub fn refresh_languages(&mut self, languages: Vec<LanguageListItem>, active_language_id: u64) {
-        if let Some(modal) = &mut self.languages {
-            modal.refresh(languages, active_language_id);
-        }
-    }
-
-    pub fn refresh_media_explorer(&mut self, media: MediaExplorerData) {
-        if let Some(modal) = &mut self.languages {
-            modal.refresh_media(media);
-        }
     }
 
     pub fn open_voice_actor(&mut self) {
@@ -1595,11 +1448,10 @@ impl ModalHost {
         self.connect = Some(modal);
     }
 
-    pub fn open_settings(
-        &mut self,
-        temporary_directory: std::path::PathBuf,
-    ) {
-        self.settings = Some(super::settings_modal::SettingsModal::new(temporary_directory));
+    pub fn open_settings(&mut self, temporary_directory: std::path::PathBuf) {
+        self.settings = Some(super::settings_modal::SettingsModal::new(
+            temporary_directory,
+        ));
     }
 
     pub fn set_settings_temporary_directory(&mut self, path: std::path::PathBuf) {
@@ -1713,9 +1565,6 @@ impl ModalHost {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
         if let Some(modal) = &self.invitation {
-            modal.render(modal_quads, modal_labels, screen_w, screen_h);
-        }
-        if let Some(modal) = &self.languages {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
         if let Some(modal) = &self.microphone {
@@ -1854,46 +1703,6 @@ mod tests {
                     ..
                 }
             )) if value == "MJPEG"
-        ));
-    }
-
-    #[test]
-    fn media_tabs_report_focus_role_and_selected_state_for_nvda() {
-        let mut host = ModalHost::new();
-        host.open_media_explorer(
-            vec![LanguageListItem {
-                id: 1,
-                name: "French".into(),
-                instrumental_audio_path: None,
-                syllable_language: crate::project::SyllableLanguage::French,
-            }],
-            1,
-            MediaExplorerData::default(),
-        );
-
-        assert!(matches!(
-            host.handle_event(&UiEvent::CursorDown, 1280.0, 720.0),
-            Some(ModalOutcome::Consumed)
-        ));
-
-        let outcome = host
-            .handle_event(&UiEvent::FocusNext, 1280.0, 720.0)
-            .unwrap();
-        assert!(matches!(
-            outcome,
-            ModalOutcome::Action(UiAction::Accessibility(
-                crate::accessibility::AccessibilityEvent::Focus { label, role }
-            )) if label == crate::i18n::t("media_explorer.tab.audios") && role == "tab"
-        ));
-
-        let outcome = host
-            .handle_event(&UiEvent::Activate, 1280.0, 720.0)
-            .unwrap();
-        assert!(matches!(
-            outcome,
-            ModalOutcome::Action(UiAction::Accessibility(
-                crate::accessibility::AccessibilityEvent::Focus { label, role }
-            )) if label.contains(crate::i18n::t("accessibility.selected")) && role == "tab"
         ));
     }
 

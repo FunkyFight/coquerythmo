@@ -886,6 +886,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                             && !state.captures_modal_input()
                             && !state.is_editing_text()
                             && !state.side_panel_open()
+                            && !state.file_tree_open()
                             && state.has_keyboard_focus()
                         {
                             dispatch(
@@ -897,11 +898,12 @@ pub fn run(startup: Option<super::StartupInput>) {
                             );
                             return;
                         }
-                        // The file tree is global, but never stack it over an
-                        // existing modal whose event routing would remain underneath it.
+                        // The file tree belongs to the editable rythmo workspace and never
+                        // stacks over a modal whose routing would remain underneath it.
                         if ctrl_held
                             && !event.repeat
                             && !state.captures_modal_input()
+                            && state.active_workspace() == WorkspaceId::Rythmo
                             && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("l"))
                         {
                             dispatch_key_action(
@@ -915,7 +917,19 @@ pub fn run(startup: Option<super::StartupInput>) {
                             state.request_redraw();
                             return;
                         }
-                        if state.side_panel_open() && ctrl_held {
+                        if state.file_tree_open()
+                            && !event.repeat
+                            && matches!(event.logical_key, Key::Named(NamedKey::F2))
+                        {
+                            dispatch(
+                                UiEvent::KeyInput { text: "F2".into() },
+                                &mut state,
+                                elwt,
+                            );
+                            state.request_redraw();
+                            return;
+                        }
+                        if (state.side_panel_open() || state.file_tree_open()) && ctrl_held {
                             if state.is_editing_text()
                                 && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v"))
                             {
@@ -972,7 +986,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                                 return;
                             }
                         }
-                        if state.side_panel_open() && !ctrl_held {
+                        if (state.side_panel_open() || state.file_tree_open()) && !ctrl_held {
                             let panel_event = match &event.logical_key {
                                 Key::Named(NamedKey::Escape) => Some(UiEvent::KeyInput {
                                     text: "\x1b".to_string(),
@@ -1632,6 +1646,34 @@ pub fn run(startup: Option<super::StartupInput>) {
                             .map(|(x, y)| state.window_to_ui_position(x, y))
                             .unwrap_or(cursor_pos);
                         state.recording_begin_audio_import(path, Some(position));
+                        state.request_redraw();
+                    } else if state.active_workspace()
+                        == crate::application::workspace_service::WorkspaceId::Rythmo
+                        && state.file_tree_open()
+                    {
+                        let position = crate::platform::cursor_position(&window)
+                            .map(|(x, y)| state.window_to_ui_position(x, y))
+                            .unwrap_or(cursor_pos);
+                        match state.file_tree_drop_target(position.0, position.1) {
+                            Some(crate::ui::file_explorer::rows::GroupKind::Videos) if [
+                                "mp4", "mov", "avi", "mkv", "webm",
+                            ]
+                            .contains(&ext.as_str()) => {
+                                state.import_media_video(&path);
+                            }
+                            Some(crate::ui::file_explorer::rows::GroupKind::Audios) if is_audio => {
+                                state.import_audio(path.to_string_lossy().into_owned());
+                            }
+                            Some(crate::ui::file_explorer::rows::GroupKind::Videos) => {
+                                state.show_toast(crate::i18n::t("file_tree.drop.video"), 4.0);
+                            }
+                            Some(crate::ui::file_explorer::rows::GroupKind::Audios) => {
+                                state.show_toast(crate::i18n::t("file_tree.drop.audio"), 4.0);
+                            }
+                            Some(crate::ui::file_explorer::rows::GroupKind::Bands) | None => {
+                                state.show_toast(crate::i18n::t("file_tree.drop.target"), 4.0);
+                            }
+                        }
                         state.request_redraw();
                     } else if ["mp4", "mov", "avi", "mkv", "webm"].contains(&ext.as_str()) {
                         if state.load_video(&path) {

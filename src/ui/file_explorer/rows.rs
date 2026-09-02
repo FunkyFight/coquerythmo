@@ -1,5 +1,7 @@
 //! Row model: identifiers and flattening of the tree for rendering.
 
+use std::ops::Range;
+
 use crate::project::MediaId;
 
 use super::data::FileTreeData;
@@ -137,11 +139,64 @@ impl ExpandedSet {
     }
 }
 
-/// Position-in-set / size-of-set for a11y tree items, relative to the
-/// flattened list of *visible* rows.
+/// Position-in-set / size-of-set for a11y tree items among visible siblings.
 pub fn set_metrics(rows: &[Row], id: RowId) -> Option<(usize, usize)> {
-    let position = rows.iter().position(|row| row.id == id)?;
-    Some((position + 1, rows.len()))
+    let index = rows.iter().position(|row| row.id == id)?;
+    let siblings: Vec<usize> = match rows[index].id {
+        RowId::Root => vec![index],
+        RowId::Group(_) => rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| matches!(row.id, RowId::Group(_)).then_some(index))
+            .collect(),
+        RowId::Video(_) if rows[index].depth == 3 => proxy_sibling_range(rows, index)
+            .map(|range| range.collect())
+            .unwrap_or_else(|| vec![index]),
+        RowId::Video(_) => rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                (matches!(row.id, RowId::Video(_)) && row.depth == 2).then_some(index)
+            })
+            .collect(),
+        RowId::Audio(_) => rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| matches!(row.id, RowId::Audio(_)).then_some(index))
+            .collect(),
+        RowId::Band(_) => rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| matches!(row.id, RowId::Band(_)).then_some(index))
+            .collect(),
+    };
+    let position = siblings.iter().position(|sibling| *sibling == index)?;
+    Some((position + 1, siblings.len()))
+}
+
+/// The content range after `kind`'s header, stopping before the next header.
+pub fn group_content_range(rows: &[Row], kind: GroupKind) -> Option<Range<usize>> {
+    let start = rows.iter().position(|row| row.id == RowId::Group(kind))? + 1;
+    let end = rows
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(index, row)| matches!(row.id, RowId::Group(_)).then_some(index))
+        .unwrap_or(rows.len());
+    Some(start..end)
+}
+
+fn proxy_sibling_range(rows: &[Row], index: usize) -> Option<Range<usize>> {
+    let parent = (0..index).rev().find(|candidate| {
+        rows[*candidate].depth == 2 && matches!(rows[*candidate].id, RowId::Video(_))
+    })?;
+    let end = rows
+        .iter()
+        .enumerate()
+        .skip(index)
+        .find_map(|(candidate, row)| (row.depth < 3).then_some(candidate))
+        .unwrap_or(rows.len());
+    Some((parent + 1)..end)
 }
 
 #[cfg(test)]
@@ -203,12 +258,24 @@ mod tests {
     }
 
     #[test]
-    fn set_metrics_are_one_based_and_bounded() {
+    fn set_metrics_are_one_based_within_visible_siblings() {
         let data = sample();
         let rows = flatten(&data, &ExpandedSet::all_expanded());
         let (position, size) = set_metrics(&rows, RowId::Root).unwrap();
         assert_eq!(position, 1);
-        assert_eq!(size, rows.len());
+        assert_eq!(size, 1);
+        let (position, size) = set_metrics(&rows, RowId::Group(GroupKind::Bands)).unwrap();
+        assert_eq!((position, size), (2, 3));
         assert!(set_metrics(&rows, RowId::Video(999)).is_none());
+    }
+
+    #[test]
+    fn group_content_ranges_stop_at_the_next_group_header() {
+        let data = sample();
+        let rows = flatten(&data, &ExpandedSet::all_expanded());
+        let videos = group_content_range(&rows, GroupKind::Videos).unwrap();
+        assert_eq!(videos, 2..4);
+        let audios = group_content_range(&rows, GroupKind::Audios).unwrap();
+        assert_eq!(audios, 8..9);
     }
 }

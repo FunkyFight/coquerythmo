@@ -377,9 +377,9 @@ pub(crate) fn build_topbar(
             width: 120.0,
             height: 28.0,
         },
-        vec![format!("{}    Ctrl+L", t("menu.explorers.media"))],
+        vec![format!("{}    Ctrl+L", t("file_tree.title"))],
         |index, _label| match index {
-            0 => EventResponse::Action(UiAction::OpenMediaExplorer),
+            0 => EventResponse::Action(UiAction::ToggleFileTree),
             _ => EventResponse::Consumed,
         },
     )

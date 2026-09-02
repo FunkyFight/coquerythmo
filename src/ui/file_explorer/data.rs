@@ -82,12 +82,12 @@ impl FileTreeData {
             .iter()
             .map(|video| {
                 let path = video.path.as_str();
-                let active = source_path
-                    .map(|p| paths_equal(p, path))
-                    .unwrap_or(false)
-                    || proxy_path
-                        .map(|p| paths_equal(p, path))
-                        .unwrap_or(false);
+                // The preview displays the proxy when one is loaded, so it is
+                // the sole active row instead of highlighting both files.
+                let active = proxy_path
+                    .or(source_path)
+                    .map(|current_path| paths_equal(current_path, path))
+                    .unwrap_or(false);
                 VideoData {
                     id: video.id,
                     name: video.name.clone(),
@@ -98,10 +98,7 @@ impl FileTreeData {
                     default: default_video == Some(video.id),
                     missing: !std::path::Path::new(path).exists(),
                     is_default: default_video == Some(video.id),
-                    is_proxy_source: library
-                        .videos
-                        .iter()
-                        .any(|v| v.proxy_of == Some(video.id)),
+                    is_proxy_source: library.videos.iter().any(|v| v.proxy_of == Some(video.id)),
                 }
             })
             .collect();
@@ -137,7 +134,7 @@ impl FileTreeData {
             });
         }
 
-        let show_original = source_path.is_some();
+        let show_original = source_path.is_some() || proxy_path.is_some();
         if show_original {
             audios.insert(
                 0,
@@ -162,8 +159,7 @@ impl FileTreeData {
                 syllable_language: project
                     .language_syllable_language(language.id)
                     .unwrap_or_default(),
-                instrumental_audio_path: project
-                    .language_instrumental_audio_path(language.id),
+                instrumental_audio_path: project.language_instrumental_audio_path(language.id),
             })
             .collect();
 
@@ -188,6 +184,30 @@ impl FileTreeData {
                     .then_some(band.name.as_str())
             })
             .collect()
+    }
+
+    pub fn video(&self, id: MediaId) -> Option<&VideoData> {
+        self.videos.iter().find(|video| video.id == id)
+    }
+
+    pub fn audio(&self, id: AudioRowId) -> Option<&AudioData> {
+        self.audios.iter().find(|audio| audio.id == id)
+    }
+
+    pub fn group_is_empty(&self, group: super::rows::GroupKind) -> bool {
+        match group {
+            super::rows::GroupKind::Videos => self.videos.is_empty(),
+            super::rows::GroupKind::Bands => self.bands.is_empty(),
+            super::rows::GroupKind::Audios => {
+                self.audios.iter().all(|audio| audio.media_id.is_none())
+            }
+        }
+    }
+
+    /// A source/proxy association must not create a proxy chain.
+    pub fn can_be_proxy_endpoint(&self, id: MediaId) -> bool {
+        self.video(id)
+            .is_some_and(|video| video.proxy_of.is_none() && !video.is_proxy_source)
     }
 }
 
@@ -218,7 +238,7 @@ mod tests {
         );
 
         let source_row = data.videos.iter().find(|v| v.id == source).unwrap();
-        assert!(source_row.active);
+        assert!(!source_row.active);
         assert!(!source_row.default);
         let proxy_row = data.videos.iter().find(|v| v.id == proxy).unwrap();
         assert!(proxy_row.active);
@@ -228,10 +248,34 @@ mod tests {
     }
 
     #[test]
+    fn only_the_loaded_proxy_is_marked_active() {
+        let mut project = crate::project::Project::new();
+        let source = project
+            .add_media_video("Film", "C:/v/film.mp4", None, false)
+            .unwrap();
+        let proxy = project
+            .add_media_video("Proxy", "C:/v/film_proxy.mp4", Some(source), true)
+            .unwrap();
+
+        let data = FileTreeData::from_project(
+            &project,
+            "Projet",
+            Some("C:/v/film.mp4"),
+            Some("C:/v/film_proxy.mp4"),
+        );
+
+        assert!(!data.video(source).unwrap().active);
+        assert!(data.video(proxy).unwrap().active);
+    }
+
+    #[test]
     fn original_audio_row_is_virtual_and_first() {
         let project = crate::project::Project::new();
         let data = FileTreeData::from_project(&project, "P", Some("C:/v/a.mp4"), None);
-        assert_eq!(data.audios.first().map(|a| a.id), Some(AudioRowId::OriginalVideo));
+        assert_eq!(
+            data.audios.first().map(|a| a.id),
+            Some(AudioRowId::OriginalVideo)
+        );
         assert!(data.audios.first().unwrap().media_id.is_none());
 
         let empty = FileTreeData::from_project(&project, "P", None, None);

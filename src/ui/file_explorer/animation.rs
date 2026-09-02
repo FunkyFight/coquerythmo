@@ -52,7 +52,7 @@ pub struct Spring {
 impl Spring {
     /// Maximum `dt` fed to the integrator (seconds). Longer frame gaps are
     /// clamped, which keeps the motion stable at the cost of slowing down.
-    const MAX_DT: f32 = 1.0 / 30.0;
+    const MAX_DT: f32 = 1.0 / 240.0;
 
     /// Advance the spring by `dt` seconds and return the new value/velocity.
     /// With reduced motion the target is reached instantly.
@@ -118,18 +118,29 @@ impl SpringValue {
 pub struct Tween {
     pub elapsed: f32,
     pub duration: f32,
+    pub delay: f32,
 }
 
 impl Tween {
     pub fn start(duration: f32) -> Self {
+        Self::start_delayed(duration, 0.0)
+    }
+
+    /// Start after a delay while preserving a 0 progress value until then.
+    pub fn start_delayed(duration: f32, delay: f32) -> Self {
         Self {
             elapsed: 0.0,
             duration: if reduced_motion() { 0.0 } else { duration },
+            delay: if reduced_motion() {
+                0.0
+            } else {
+                delay.max(0.0)
+            },
         }
     }
 
     pub fn advance(&mut self, dt: f32) {
-        self.elapsed = (self.elapsed + dt).min(self.duration);
+        self.elapsed = (self.elapsed + dt.max(0.0)).min(self.delay + self.duration);
     }
 
     /// Eased progress in 0..=1.
@@ -137,11 +148,14 @@ impl Tween {
         if self.duration <= 0.0 {
             return 1.0;
         }
-        ease_out_quint_expo(self.elapsed / self.duration)
+        if self.elapsed <= self.delay {
+            return 0.0;
+        }
+        ease_out_quint_expo((self.elapsed - self.delay) / self.duration)
     }
 
     pub fn finished(&self) -> bool {
-        self.elapsed >= self.duration
+        self.elapsed >= self.delay + self.duration
     }
 }
 
@@ -163,7 +177,7 @@ fn detect_reduced_motion() -> bool {
     #[cfg(target_os = "windows")]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SystemParametersInfoW, SYSTEM_PARAMETERS_INFO_ACTION, SPI_GETCLIENTAREAANIMATION,
+            SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_ACTION,
         };
         let mut enabled: windows_sys::core::BOOL = 1;
         // SAFETY: passing a valid pointer to a BOOL with the documented action.
@@ -223,6 +237,19 @@ mod tests {
         }
         assert!(tween.finished());
         assert!((tween.progress() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn delayed_tween_stays_hidden_until_its_delay_has_elapsed() {
+        let mut tween = Tween::start_delayed(0.2, 0.1);
+        tween.advance(0.09);
+        assert_eq!(tween.progress(), 0.0);
+        assert!(!tween.finished());
+
+        tween.advance(0.02);
+        assert!(tween.progress() > 0.0);
+        tween.advance(1.0);
+        assert!(tween.finished());
     }
 
     #[test]

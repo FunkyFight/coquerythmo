@@ -121,69 +121,6 @@ fn comic_dubs_playback_due(now: Instant, deadline: Instant, audio_playing: bool)
     now >= deadline && !audio_playing
 }
 
-fn media_video_item(path: &Path) -> crate::ui::language_modal::MediaVideoItem {
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string());
-    let (summary, audio_summary) = match crate::video_proxy::probe_video(path) {
-        Ok(info) => {
-            let bitrate = if info.bitrate >= 1_000_000 {
-                format!("{:.1} Mb/s", info.bitrate as f64 / 1_000_000.0)
-            } else if info.bitrate > 0 {
-                format!("{} kb/s", info.bitrate / 1_000)
-            } else {
-                "—".to_string()
-            };
-            let size = if info.file_size >= 1_000_000_000 {
-                format!("{:.1} Go", info.file_size as f64 / 1_000_000_000.0)
-            } else {
-                format!("{:.1} Mo", info.file_size as f64 / 1_000_000.0)
-            };
-            let duration = format!(
-                "{:02}:{:02}:{:02}",
-                (info.duration_secs / 3600.0) as u64,
-                ((info.duration_secs % 3600.0) / 60.0) as u64,
-                (info.duration_secs % 60.0) as u64
-            );
-            let audio = info.audio_codec.as_ref().map(|codec| {
-                format!(
-                    "{} • {} canaux • {} kHz",
-                    codec.to_uppercase(),
-                    info.audio_channels.unwrap_or(0),
-                    info.audio_sample_rate.unwrap_or(0) / 1_000
-                )
-            });
-            (
-                format!(
-                    "{} × {} • {} • {:.3} i/s • {} • {} • {}",
-                    info.width,
-                    info.height,
-                    info.video_codec.to_uppercase(),
-                    info.fps,
-                    bitrate,
-                    duration,
-                    size
-                ),
-                audio,
-            )
-        }
-        Err(error) => (
-            format!(
-                "{} ({error})",
-                crate::i18n::t("media_explorer.info_unavailable")
-            ),
-            None,
-        ),
-    };
-    crate::ui::language_modal::MediaVideoItem {
-        name,
-        path: path.display().to_string(),
-        summary,
-        audio_summary,
-    }
-}
-
 fn recording_added_assets<'a>(
     operation: &'a crate::recording::RecordingOperation,
     assets: &mut Vec<&'a crate::recording::AudioAsset>,
@@ -1506,10 +1443,8 @@ impl State {
                             } else {
                                 None
                             };
-                            self.recording_runtime.remember_external_audio(
-                                &item.recorded,
-                                item.output_path.clone(),
-                            );
+                            self.recording_runtime
+                                .remember_external_audio(&item.recorded, item.output_path.clone());
                             let target_id = if let Some(target_id) = target_id {
                                 self.comic_dubs_project.bind_audio(
                                     target_id,
@@ -1717,7 +1652,9 @@ impl State {
             .iter()
             .filter(|job| matches!(job, PendingComicDubsImport::Audio { .. }))
             .count();
-        self.ui_shell.ui.set_comic_dubs_pending_audio_imports(pending);
+        self.ui_shell
+            .ui
+            .set_comic_dubs_pending_audio_imports(pending);
     }
 
     pub fn comic_dubs_select_page(&mut self, page_id: crate::comic_dubs::PageId) {
@@ -1841,12 +1778,8 @@ impl State {
         underline: bool,
     ) {
         let before = self.comic_dubs_project.clone();
-        self.comic_dubs_project.set_bubble_text_style(
-            bubble_id,
-            bold,
-            strikethrough,
-            underline,
-        );
+        self.comic_dubs_project
+            .set_bubble_text_style(bubble_id, bold, strikethrough, underline);
         self.comic_dubs_commit(before);
     }
 
@@ -1860,10 +1793,7 @@ impl State {
         self.comic_dubs_commit(before);
     }
 
-    pub fn open_comic_dubs_vertex_editor(
-        &mut self,
-        bubble_id: crate::comic_dubs::BubbleId,
-    ) {
+    pub fn open_comic_dubs_vertex_editor(&mut self, bubble_id: crate::comic_dubs::BubbleId) {
         if self.comic_dubs_project.bubble(bubble_id).is_none() {
             return;
         }
@@ -1876,16 +1806,15 @@ impl State {
     }
 
     pub fn set_comic_dubs_vertex_editor_playhead(&mut self, at_ms: u64) {
-        self.ui_shell.ui.set_comic_dubs_vertex_editor_playhead(
-            at_ms,
-            &self.comic_dubs_project,
-        );
+        self.ui_shell
+            .ui
+            .set_comic_dubs_vertex_editor_playhead(at_ms, &self.comic_dubs_project);
     }
 
     pub fn toggle_comic_dubs_vertex_editor_preview(&mut self) -> bool {
-        self.ui_shell.ui.toggle_comic_dubs_vertex_editor_preview(
-            &self.comic_dubs_project,
-        )
+        self.ui_shell
+            .ui
+            .toggle_comic_dubs_vertex_editor_preview(&self.comic_dubs_project)
     }
 
     pub fn comic_dubs_set_bubble_vertex_keyframe(
@@ -2027,7 +1956,8 @@ impl State {
                 self.ui_shell.ui.set_comic_dubs_playback(
                     Some(page.id),
                     playback.bubble_index + 1,
-                    now.saturating_duration_since(playback.started_at).as_millis() as u64,
+                    now.saturating_duration_since(playback.started_at)
+                        .as_millis() as u64,
                 );
             }
         }
@@ -2223,6 +2153,7 @@ impl State {
         self.project_session
             .render_index
             .refresh(&self.project_session.project);
+        let file_tree_data = self.file_tree_data();
         let response = self.ui_shell.ui.handle_event(
             event,
             &self.project_session.project,
@@ -2231,6 +2162,7 @@ impl State {
             &self.project_session.render_index,
             render_frame,
             fps,
+            &file_tree_data,
         );
         if self.active_workspace() == WorkspaceId::Recording {
             self.sync_recording_workspace_ui();
@@ -3685,15 +3617,6 @@ impl State {
             .map(|modal| modal.keyboard_focus_label())
     }
 
-    pub fn language_modal_focus_label(&self) -> Option<String> {
-        self.ui_shell
-            .ui
-            .modal_host
-            .languages
-            .as_ref()
-            .map(|modal| modal.keyboard_focus_label())
-    }
-
     pub fn rename_character_modal_focus_label(&self) -> Option<String> {
         self.ui_shell
             .ui
@@ -4496,52 +4419,6 @@ impl State {
         }
     }
 
-    fn language_modal_items(&self) -> Vec<crate::ui::language_modal::LanguageListItem> {
-        self.project_session
-            .project
-            .languages()
-            .into_iter()
-            .map(|language| crate::ui::language_modal::LanguageListItem {
-                id: language.id,
-                name: language.name,
-                instrumental_audio_path: self
-                    .project_session
-                    .project
-                    .language_instrumental_audio_path(language.id),
-                syllable_language: self
-                    .project_session
-                    .project
-                    .language_syllable_language(language.id)
-                    .unwrap_or_default(),
-            })
-            .collect()
-    }
-
-    fn media_explorer_data(&self) -> crate::ui::language_modal::MediaExplorerData {
-        let source_path = self.video_path();
-        let proxy_path = self.proxy_video_path();
-        crate::ui::language_modal::MediaExplorerData {
-            source: source_path.as_deref().map(media_video_item),
-            proxy: proxy_path.as_deref().map(media_video_item),
-            active_proxy: self.playback.proxy_video_path.is_some(),
-            default_proxy: self.default_media_uses_proxy(),
-            can_persist_default: self.project_session.project_path.is_some(),
-        }
-    }
-
-    pub fn open_media_explorer(&mut self) {
-        let active = self.project_session.project.active_language_id();
-        let languages = self.language_modal_items();
-        let media = self.media_explorer_data();
-        self.ui_shell
-            .ui
-            .open_media_explorer(languages, active, media);
-        self.announce_open_container(
-            crate::i18n::t("media_explorer.title"),
-            crate::i18n::t("media_explorer.tab.videos").to_string(),
-        );
-    }
-
     pub(crate) fn recent_projects_first_accessibility_label(&self) -> Option<String> {
         crate::config::recent_projects().first().map(|recent| {
             if recent.video_path == recent.br_path {
@@ -4573,17 +4450,6 @@ impl State {
         }
     }
 
-    fn refresh_languages_modal(&mut self) {
-        let active = self.project_session.project.active_language_id();
-        let languages = self.language_modal_items();
-        self.ui_shell.ui.refresh_languages_modal(languages, active);
-    }
-
-    fn refresh_media_explorer(&mut self) {
-        let media = self.media_explorer_data();
-        self.ui_shell.ui.refresh_media_explorer(media);
-    }
-
     pub fn create_language(&mut self, name: String) {
         let id = self
             .project_session
@@ -4594,7 +4460,6 @@ impl State {
         self.project_session.render_index = crate::render_index::ProjectRenderIndex::new();
         self.ui_shell.ui.clear_selection();
         self.sync_audio_settings_to_player();
-        self.refresh_languages_modal();
         let selected = self
             .project_session
             .project
@@ -4614,7 +4479,6 @@ impl State {
             .rename_language(id, name.clone())
         {
             self.project_session.dirty = true;
-            self.refresh_languages_modal();
             self.show_toast(
                 format!("{} {}", crate::i18n::t("toast.language_renamed"), name),
                 3.0,
@@ -4632,7 +4496,6 @@ impl State {
             self.project_session.render_index = crate::render_index::ProjectRenderIndex::new();
             self.ui_shell.ui.clear_selection();
             self.sync_audio_settings_to_player();
-            self.refresh_languages_modal();
             if let Some(language) = self.project_session.project.language(id) {
                 self.show_toast(
                     format!(
@@ -4659,7 +4522,6 @@ impl State {
             self.project_session.render_index = crate::render_index::ProjectRenderIndex::new();
             self.ui_shell.ui.clear_selection();
             self.sync_audio_settings_to_player();
-            self.refresh_languages_modal();
             self.show_toast(
                 format!("{} {}", crate::i18n::t("toast.language_deleted"), name),
                 3.0,
@@ -4683,7 +4545,6 @@ impl State {
                 self.project_session.history.clear();
                 self.project_session.render_index = crate::render_index::ProjectRenderIndex::new();
             }
-            self.refresh_languages_modal();
         }
     }
 
@@ -4693,7 +4554,7 @@ impl State {
             .project
             .language(id)
             .map(|language| language.name)
-            .unwrap_or_else(|| crate::i18n::t("media_explorer.tab.audios").to_string());
+            .unwrap_or_else(|| crate::i18n::t("file_tree.groups.audios").to_string());
         let value = path
             .as_deref()
             .and_then(|path| Path::new(path).file_name())
@@ -4708,7 +4569,6 @@ impl State {
             if id == self.project_session.project.active_language_id() {
                 self.sync_audio_settings_to_player();
             }
-            self.refresh_languages_modal();
             self.announce_accessibility(AccessibilityEvent::ValueChanged { label, value });
         }
     }
@@ -4741,6 +4601,18 @@ impl State {
     }
 
     pub fn open_proxy_modal(&mut self) {
+        self.jobs.requested_proxy_source = self.video_path().and_then(|active_path| {
+            self.project_session
+                .project
+                .media_library()
+                .videos
+                .iter()
+                .find(|video| {
+                    video.proxy_of.is_none()
+                        && crate::video_proxy::paths_match(&active_path, Path::new(&video.path))
+                })
+                .map(|video| (video.id, PathBuf::from(&video.path)))
+        });
         let (video_width, video_height) = self.source_video_size().unwrap_or((1920, 1080));
         self.ui_shell.ui.open_proxy_modal(video_width, video_height);
         if let Some(first_label) = self.proxy_modal_focus_label() {
@@ -5170,112 +5042,15 @@ impl State {
         self.load_video_for_playback(&source_path, proxy_path.as_deref(), Some(frame), false);
     }
 
-    pub fn switch_media_video(&mut self, use_proxy: bool) {
-        let Some(source) = self.video_path() else {
-            return;
-        };
-        let proxy = self.proxy_video_path();
-        if use_proxy && proxy.is_none() {
-            self.show_toast(crate::i18n::t("toast.media_proxy_missing"), 4.0);
-            return;
-        }
-        let frame = self.current_frame();
-        if self.load_video_for_playback(
-            &source,
-            use_proxy.then_some(proxy.as_deref()).flatten(),
-            Some(frame),
-            false,
-        ) {
-            self.refresh_media_explorer();
-            self.announce_accessibility(AccessibilityEvent::ValueChanged {
-                label: crate::i18n::t("media_explorer.active").to_string(),
-                value: crate::i18n::t(if use_proxy {
-                    "media_explorer.video.proxy"
-                } else {
-                    "media_explorer.video.original"
-                })
-                .to_string(),
-            });
-        }
-    }
-
-    pub fn set_default_media_video(&mut self, use_proxy: bool) {
-        let Some(project_path) = self.project_session.project_path.as_deref() else {
-            self.show_toast(crate::i18n::t("toast.media_save_project_first"), 5.0);
-            return;
-        };
-        if use_proxy && self.media_explorer_data().proxy.is_none() {
-            self.show_toast(crate::i18n::t("toast.media_proxy_missing"), 4.0);
-            return;
-        }
-        match crate::video_proxy::set_default_uses_proxy(project_path, use_proxy) {
-            Ok(()) => {
-                if let Some(loaded) = self.project_session.loaded_project.as_mut() {
-                    loaded.default_uses_proxy = use_proxy;
-                }
-                self.project_session.dirty = true;
-                self.show_toast(crate::i18n::t("toast.media_default_saved"), 4.0);
-                self.refresh_media_explorer();
-            }
-            Err(error) => {
-                log::error!("Failed to save default media: {error}");
-                self.show_toast(crate::i18n::t("toast.media_default_failed"), 5.0);
-            }
-        }
-    }
-
-    pub fn delete_media_video(&mut self, use_proxy: bool) {
-        if use_proxy {
-            let Some(project_path) = self.project_session.project_path.clone() else {
-                self.show_toast(crate::i18n::t("toast.media_save_project_first"), 5.0);
-                return;
-            };
-            if self.playback.proxy_video_path.is_some() {
-                let Some(source) = self.video_path() else {
-                    return;
-                };
-                let frame = self.current_frame();
-                if !self.load_video_for_playback(&source, None, Some(frame), false) {
-                    return;
-                }
-            }
-            match crate::video_proxy::delete_proxy(&project_path) {
-                Ok(()) => {
-                    if let Some(loaded) = self.project_session.loaded_project.as_mut() {
-                        loaded.proxy_video_path = None;
-                        loaded.default_uses_proxy = false;
-                    }
-                    self.project_session.dirty = true;
-                    self.show_toast(crate::i18n::t("toast.media_proxy_deleted"), 4.0);
-                }
-                Err(error) => {
-                    log::error!("Failed to delete proxy: {error}");
-                    self.show_toast(crate::i18n::t("toast.media_delete_failed"), 5.0);
-                }
-            }
-        } else {
-            if let Some(project_path) = self.project_session.project_path.clone() {
-                if let Err(error) = crate::video_proxy::delete_proxy(&project_path) {
-                    log::warn!("Failed to remove linked proxy while unlinking video: {error}");
-                }
-                if let Err(error) = crate::video_proxy::set_source_removed(&project_path, true) {
-                    log::warn!("Failed to persist removed source video: {error}");
-                }
-            }
-            self.clear_video_for_new_project();
-            self.project_session.dirty = true;
-            self.show_toast(crate::i18n::t("toast.media_video_unlinked"), 4.0);
-        }
-        self.refresh_media_explorer();
-    }
-
     pub fn watch_proxy_job(
         &mut self,
         source_path: PathBuf,
+        source_media_id: Option<crate::project::MediaId>,
         receiver: Receiver<Result<PathBuf, String>>,
     ) {
         self.jobs.pending_proxy_job = Some(PendingProxyJob {
             source_path,
+            source_media_id,
             receiver,
         });
     }
@@ -6429,7 +6204,9 @@ impl State {
                     self.collaboration.network.project_matches = project_matches;
                     if project_matches && !self.collaboration.network.sync_requested_this_session {
                         self.collaboration.network.sync_requested_this_session = true;
-                        self.collaboration.network.send_raw("request_sync", serde_json::json!({}));
+                        self.collaboration
+                            .network
+                            .send_raw("request_sync", serde_json::json!({}));
                     }
                 }
                 IncomingMessage::RoomState {
@@ -6456,7 +6233,8 @@ impl State {
                     data_base64,
                 } => {
                     if let Err(error) =
-                        self.big_receives.push_base64(&transfer_id, index, &data_base64)
+                        self.big_receives
+                            .push_base64(&transfer_id, index, &data_base64)
                     {
                         log::warn!("Rejected big chunk: {error}");
                     }
@@ -9155,6 +8933,42 @@ impl State {
         match result {
             Ok(proxy_path) => {
                 log::info!("Proxy created at {}", proxy_path.display());
+                if let Some(source_media_id) = job.source_media_id {
+                    let proxy_id = match self.register_generated_proxy(source_media_id, &proxy_path)
+                    {
+                        Ok(proxy_id) => proxy_id,
+                        Err(error) => {
+                            let _ = std::fs::remove_file(&proxy_path);
+                            log::error!("Could not add generated proxy to media library: {error}");
+                            self.show_toast(error, 5.0);
+                            return true;
+                        }
+                    };
+
+                    self.project_session.dirty = true;
+                    let current_source = self.video_path();
+                    if current_source
+                        .as_ref()
+                        .is_some_and(|path| crate::video_proxy::paths_match(path, &job.source_path))
+                    {
+                        let frame = self.current_frame();
+                        if self.load_video_for_playback(
+                            &job.source_path,
+                            Some(&proxy_path),
+                            Some(frame),
+                            false,
+                        ) {
+                            self.show_toast(crate::i18n::t("toast.proxy_created"), 4.0);
+                        }
+                    } else {
+                        self.show_toast(crate::i18n::t("toast.proxy_created_not_loaded"), 5.0);
+                    }
+                    self.announce_accessibility(AccessibilityEvent::ValueChanged {
+                        label: crate::i18n::t("file_tree.badges.proxy").to_string(),
+                        value: proxy_id.to_string(),
+                    });
+                    return true;
+                }
                 let current_source = self.video_path();
                 if current_source
                     .as_ref()
@@ -9394,38 +9208,46 @@ impl State {
                 let loaded_comic_dubs = loaded.comic_dubs.take();
                 let loaded_default_uses_proxy = loaded.default_uses_proxy;
                 let source_removed = crate::video_proxy::source_is_removed(&job.br_path);
+                let legacy_link = (!source_removed)
+                    .then(|| crate::video_proxy::proxy_link_for_br(&job.br_path))
+                    .flatten();
                 if source_removed {
                     self.clear_video_for_new_project();
                 }
                 let bundled_source = (!source_removed)
                     .then(|| loaded.source_video_path.clone())
                     .flatten();
-                if bundled_source.is_none() {
+                let legacy_source = bundled_source.clone().or_else(|| {
+                    legacy_link
+                        .as_ref()
+                        .map(|link| link.source_video_path.clone())
+                });
+                let legacy_proxy = loaded.proxy_video_path.clone().or_else(|| {
+                    legacy_link.as_ref().and_then(|link| {
+                        legacy_source
+                            .as_ref()
+                            .filter(|source| {
+                                crate::video_proxy::paths_match(source, &link.source_video_path)
+                            })
+                            .map(|_| link.proxy_video_path.clone())
+                    })
+                });
+                let legacy_default_uses_proxy = crate::video_proxy::default_uses_proxy_or(
+                    &job.br_path,
+                    loaded_default_uses_proxy,
+                );
+                if legacy_source.is_none() && loaded.project_data.media_library.is_empty() {
                     self.clear_video_for_new_project();
                 }
-                let bundled_proxy = loaded
-                    .proxy_video_path
-                    .clone()
-                    .filter(|_| loaded_default_uses_proxy);
-                if let Some(source) = bundled_source.as_deref() {
+                let bundled_proxy = legacy_default_uses_proxy
+                    .then_some(legacy_proxy.as_deref())
+                    .flatten();
+                if let Some(source) = legacy_source.as_deref() {
                     if !self.load_video_for_playback(source, bundled_proxy.as_deref(), None, false)
                     {
                         let message = crate::i18n::t("toast.import_video_failed");
                         log::error!("{message} {}", source.display());
                         self.show_toast(message, 7.0);
-                        if let Some(request_id) = transfer_request_id.as_deref() {
-                            self.collaboration.network.report_project_transfer(
-                                request_id,
-                                false,
-                                Some(message),
-                            );
-                        }
-                        self.narration.announce_event(AccessibilityEvent::Error {
-                            message: crate::i18n::t("accessibility.project_load_failed")
-                                .to_string(),
-                        });
-                        self.ui_shell.ui.finish_project_load();
-                        return true;
                     }
                 }
 
@@ -9475,6 +9297,12 @@ impl State {
                 loaded
                     .project_data
                     .apply_to_project(&mut self.project_session.project, fps);
+                let media_library_migrated = self.migrate_media_library_from_legacy(
+                    legacy_source.as_deref(),
+                    legacy_proxy.as_deref(),
+                    legacy_default_uses_proxy,
+                );
+                self.load_default_media_video();
                 self.project_session.history.clear();
                 self.project_session.transaction_journal = loaded_transaction_journal
                     .unwrap_or_else(|| {
@@ -9507,7 +9335,7 @@ impl State {
                 self.comic_dubs_redo.clear();
                 self.comic_dubs_imports.clear();
                 self.ui_shell.ui.reset_comic_dubs_workspace();
-                self.project_session.dirty = false;
+                self.project_session.dirty = media_library_migrated;
                 self.sync_audio_settings_to_player();
                 self.project_session.project_path = if is_legacy_json {
                     None
@@ -9518,14 +9346,6 @@ impl State {
                 self.collaboration.network.update_local_huuid(
                     self.project_session.huuid.as_ref().map(ToString::to_string),
                 );
-                if !is_legacy_json {
-                    if let Err(error) = crate::video_proxy::set_default_uses_proxy(
-                        &job.br_path,
-                        loaded_default_uses_proxy,
-                    ) {
-                        log::warn!("Failed to cache the project's default video: {error}");
-                    }
-                }
                 if is_legacy_json {
                     self.show_toast(crate::i18n::t("toast.legacy_project_loaded"), 6.0);
                 }
@@ -9638,11 +9458,6 @@ impl State {
                 self.collaboration.network.update_local_huuid(
                     self.project_session.huuid.as_ref().map(ToString::to_string),
                 );
-                if let Err(error) =
-                    crate::video_proxy::set_default_uses_proxy(&job.path, job.default_uses_proxy)
-                {
-                    log::warn!("Failed to cache the project's default video: {error}");
-                }
                 if snapshot_is_current {
                     if let Some(journal) = metadata.transaction_journal {
                         self.project_session.transaction_journal = journal;
@@ -10465,6 +10280,7 @@ impl State {
         let fps = self.active_fps();
         let waveform_offset_frames = self.active_audio_offset_frames();
         let waveform_is_instrumental = self.active_audio_is_instrumental();
+        let file_tree_data = self.file_tree_data();
         self.project_session
             .render_index
             .refresh(&self.project_session.project);
@@ -10481,6 +10297,7 @@ impl State {
             self.ui_scale,
             video_quad.as_ref().map(|(bg, inst)| (*bg, *inst)),
             &self.project_session.project,
+            &file_tree_data,
             &self.voicelines_project,
             &self.comic_dubs_project,
             &self.project_session.render_index,
@@ -10490,6 +10307,7 @@ impl State {
             waveform,
             waveform_offset_frames,
             waveform_is_instrumental,
+            frame_sample.delta,
         );
 
         self.render
@@ -10678,7 +10496,12 @@ fn ping_server_http(
     password: String,
     results: std::sync::Arc<std::sync::Mutex<Vec<PingResult>>>,
 ) {
-    let url = format!("http://{}:{}/info?password={}", ip, port, urlencoding::encode(&password));
+    let url = format!(
+        "http://{}:{}/info?password={}",
+        ip,
+        port,
+        urlencoding::encode(&password)
+    );
 
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
@@ -10757,65 +10580,92 @@ fn ping_server_http(
 // -- File tree media library methods --
 impl State {
     pub fn toggle_file_tree(&mut self) {
-        self.migrate_media_library_from_playback();
+        if self.active_workspace() != WorkspaceId::Rythmo {
+            return;
+        }
+        if self.migrate_media_library_from_playback() {
+            self.project_session.dirty = true;
+        }
         self.ui_shell.ui.toggle_file_tree();
+    }
+
+    fn file_tree_data(&self) -> crate::ui::file_explorer::FileTreeData {
+        let root_name = self
+            .project_session
+            .project_path
+            .as_deref()
+            .and_then(|path| path.file_stem())
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| crate::i18n::t("file_tree.untitled").to_string());
+        let source_path = self.video_path();
+        let proxy_path = self.proxy_video_path();
+        crate::ui::file_explorer::FileTreeData::from_project(
+            &self.project_session.project,
+            root_name,
+            source_path.as_deref().and_then(Path::to_str),
+            proxy_path.as_deref().and_then(Path::to_str),
+        )
     }
 
     /// Legacy projects predate the media library: seed it once from the
     /// currently loaded playback state so the file tree can handle them.
-    fn migrate_media_library_from_playback(&mut self) {
-        if !self
-            .project_session
-            .project
-            .media_library()
-            .is_empty()
-        {
-            return;
-        }
+    fn migrate_media_library_from_playback(&mut self) -> bool {
         let source = self.video_path();
         let proxy = self.proxy_video_path();
-        let Some(source) = source else {
-            return;
-        };
-        let name = source
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let source_str = source.to_string_lossy().into_owned();
-        let source_id = self
-            .project_session
-            .project
-            .add_media_video(&name, &source_str, None, false)
-            .ok();
-        if let (Some(proxy), Some(source_id)) = (proxy, source_id) {
-            let proxy_str = proxy.to_string_lossy().into_owned();
-            let proxy_name = proxy
+        let default_uses_proxy = self.default_media_uses_proxy();
+        self.migrate_media_library_from_legacy(
+            source.as_deref(),
+            proxy.as_deref(),
+            default_uses_proxy,
+        )
+    }
+
+    fn migrate_media_library_from_legacy(
+        &mut self,
+        source: Option<&Path>,
+        proxy: Option<&Path>,
+        default_uses_proxy: bool,
+    ) -> bool {
+        if !self.project_session.project.media_library().is_empty() {
+            return false;
+        }
+        let source_id = source.and_then(|source| {
+            let name = source
                 .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if proxy_str != source_str {
-                let proxy_id = self
-                    .project_session
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_else(|| source.to_string_lossy().into_owned());
+            self.project_session
+                .project
+                .add_media_video(&name, source.to_string_lossy(), None, false)
+                .ok()
+        });
+        let proxy_id = if let (Some(proxy), Some(source_id)) = (proxy, source_id) {
+            let proxy_str = proxy.to_string_lossy().into_owned();
+            if source.is_some_and(|source| !crate::video_proxy::paths_match(source, proxy)) {
+                let proxy_name = proxy
+                    .file_stem()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| proxy_str.clone());
+                self.project_session
                     .project
-                    .add_media_video(&proxy_name, &proxy_str, Some(source_id), true)
-                    .ok();
-                if let Some(proxy_id) = proxy_id {
-                    let _ = self
-                        .project_session
-                        .project
-                        .set_default_video(Some(proxy_id));
-                }
+                    .add_media_video(proxy_name, proxy_str, Some(source_id), true)
+                    .ok()
             } else {
-                let _ = self
-                    .project_session
-                    .project
-                    .set_default_video(Some(source_id));
+                None
             }
-        } else if let Some(source_id) = source_id {
+        } else {
+            None
+        };
+        if let Some(default_id) = default_uses_proxy
+            .then_some(proxy_id)
+            .flatten()
+            .or(source_id)
+        {
             let _ = self
                 .project_session
                 .project
-                .set_default_video(Some(source_id));
+                .set_default_video(Some(default_id));
         }
         // Import instrumental audios referenced by languages.
         let language_audio_paths: Vec<String> = self
@@ -10835,35 +10685,93 @@ impl State {
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.clone());
-            let _ = self
-                .project_session
-                .project
-                .add_media_audio(&name, &path);
+            let _ = self.project_session.project.add_media_audio(&name, &path);
         }
+        !self.project_session.project.media_library().is_empty()
     }
 
     pub fn close_file_tree(&mut self) {
         self.ui_shell.ui.close_file_tree();
     }
 
+    pub fn file_tree_open(&self) -> bool {
+        self.ui_shell.ui.file_tree_open()
+    }
+
+    pub fn file_tree_drop_target(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Option<crate::ui::file_explorer::rows::GroupKind> {
+        let data = self.file_tree_data();
+        self.ui_shell.ui.file_tree_drop_target(x, y, &data)
+    }
+
     pub fn use_media_video(&mut self, id: crate::project::MediaId) {
-        let Some(video) = self
+        let Some((source_path, proxy_path)) = self.media_video_playback_paths(id) else {
+            self.show_toast(crate::i18n::t("toast.media_file_missing"), 5.0);
+            return;
+        };
+        let frame = self.current_frame();
+        self.load_video_for_playback(&source_path, proxy_path.as_deref(), Some(frame), false);
+    }
+
+    fn media_video_playback_paths(
+        &self,
+        id: crate::project::MediaId,
+    ) -> Option<(PathBuf, Option<PathBuf>)> {
+        let video = self
             .project_session
             .project
             .media_library()
             .videos
             .iter()
-            .find(|v| v.id == id)
-        else {
-            return;
+            .find(|video| video.id == id)?;
+        let (source_path, proxy_path) = if let Some(source_id) = video.proxy_of {
+            let source = self
+                .project_session
+                .project
+                .media_library()
+                .videos
+                .iter()
+                .find(|candidate| candidate.id == source_id)?;
+            (source.path.clone(), Some(video.path.clone()))
+        } else {
+            (video.path.clone(), None)
         };
-        let path = video.path.clone();
-        if !std::path::Path::new(&path).exists() {
-            self.show_toast(crate::i18n::t("toast.media_file_missing"), 5.0);
-            return;
+        if !Path::new(&source_path).exists()
+            || proxy_path
+                .as_deref()
+                .is_some_and(|path| !Path::new(path).exists())
+        {
+            return None;
         }
-        let frame = self.current_frame();
-        self.load_video_for_playback(Path::new(&path), None, Some(frame), false);
+        Some((PathBuf::from(source_path), proxy_path.map(PathBuf::from)))
+    }
+
+    fn load_default_media_video(&mut self) -> bool {
+        let library = self.project_session.project.media_library();
+        let mut candidates = Vec::with_capacity(library.videos.len());
+        if let Some(default_video) = library.default_video {
+            candidates.push(default_video);
+        }
+        candidates.extend(
+            library
+                .videos
+                .iter()
+                .filter(|video| Some(video.id) != library.default_video)
+                .map(|video| video.id),
+        );
+
+        for id in candidates {
+            let Some((source_path, proxy_path)) = self.media_video_playback_paths(id) else {
+                continue;
+            };
+            if self.load_video_for_playback(&source_path, proxy_path.as_deref(), None, false) {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn set_default_media_video_by_id(&mut self, id: crate::project::MediaId) {
@@ -10880,17 +10788,39 @@ impl State {
     }
 
     pub fn remove_media_video(&mut self, id: crate::project::MediaId) {
-        let was_default = self
+        let removed = self
             .project_session
             .project
             .media_library()
-            .default_video
-            == Some(id);
+            .videos
+            .iter()
+            .filter(|video| video.id == id || video.proxy_of == Some(id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if removed.is_empty() {
+            return;
+        }
+        let removes_active_video = self.video_path().as_ref().is_some_and(|active| {
+            removed
+                .iter()
+                .any(|video| crate::video_proxy::paths_match(active, Path::new(&video.path)))
+        }) || self.proxy_video_path().as_ref().is_some_and(|active| {
+            removed
+                .iter()
+                .any(|video| crate::video_proxy::paths_match(active, Path::new(&video.path)))
+        });
         if !self.project_session.project.remove_media_video(id) {
             return;
         }
-        if was_default {
-            self.project_session.project.set_default_video(None).ok();
+        for video in removed.into_iter().filter(|video| video.generated) {
+            if let Err(error) = std::fs::remove_file(&video.path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    log::warn!("Failed to delete generated proxy {}: {error}", video.path);
+                }
+            }
+        }
+        if removes_active_video {
+            self.clear_video_for_new_project();
         }
         self.project_session.dirty = true;
         self.show_toast(crate::i18n::t("toast.media_video_removed"), 4.0);
@@ -10918,16 +10848,125 @@ impl State {
         else {
             return;
         };
+        if video.proxy_of.is_some() {
+            return;
+        }
+        if self.project_session.project_path.is_none() {
+            self.show_toast(crate::i18n::t("toast.media_save_project_first"), 5.0);
+            return;
+        }
         let source_path = video.path.clone();
         if !std::path::Path::new(&source_path).exists() {
             self.show_toast(crate::i18n::t("toast.media_file_missing"), 5.0);
             return;
         }
-        // Reuse the existing proxy modal flow.
-        self.open_proxy_modal();
+        let (video_width, video_height) = crate::video_proxy::probe_video(Path::new(&source_path))
+            .map(|info| (info.width, info.height))
+            .unwrap_or((1920, 1080));
+        self.jobs.requested_proxy_source = Some((id, PathBuf::from(source_path)));
+        self.ui_shell.ui.open_proxy_modal(video_width, video_height);
     }
 
-    pub fn associate_proxy(&mut self, proxy_id: crate::project::MediaId, source_id: crate::project::MediaId) {
+    pub(crate) fn take_requested_proxy_source(
+        &mut self,
+    ) -> Option<(crate::project::MediaId, PathBuf)> {
+        self.jobs.requested_proxy_source.take()
+    }
+
+    fn register_generated_proxy(
+        &mut self,
+        source_id: crate::project::MediaId,
+        proxy_path: &Path,
+    ) -> Result<crate::project::MediaId, String> {
+        let source_exists = self
+            .project_session
+            .project
+            .media_library()
+            .videos
+            .iter()
+            .any(|video| video.id == source_id && video.proxy_of.is_none());
+        if !source_exists {
+            return Err("source video was removed before its proxy was created".into());
+        }
+
+        let existing_proxy = self
+            .project_session
+            .project
+            .media_library()
+            .videos
+            .iter()
+            .find(|video| video.proxy_of == Some(source_id))
+            .cloned();
+        let restore_default = existing_proxy.as_ref().is_some_and(|video| {
+            self.project_session.project.media_library().default_video == Some(video.id)
+        });
+        if let Some(existing) = existing_proxy.as_ref() {
+            self.project_session.project.remove_media_video(existing.id);
+        }
+
+        let name = proxy_path
+            .file_stem()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Proxy".to_string());
+        let proxy_id = self.project_session.project.add_media_video(
+            name,
+            proxy_path.to_string_lossy(),
+            Some(source_id),
+            true,
+        )?;
+        if restore_default {
+            self.project_session
+                .project
+                .set_default_video(Some(proxy_id))?;
+        }
+        if let Some(existing) = existing_proxy.filter(|video| {
+            video.generated && !crate::video_proxy::paths_match(Path::new(&video.path), proxy_path)
+        }) {
+            if let Err(error) = std::fs::remove_file(existing.path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    log::warn!("Failed to delete replaced generated proxy: {error}");
+                }
+            }
+        }
+        Ok(proxy_id)
+    }
+
+    pub fn import_media_video(&mut self, path: &Path) -> bool {
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let name = path
+            .file_stem()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let first_video = self
+            .project_session
+            .project
+            .media_library()
+            .videos
+            .is_empty();
+        let id = match self.project_session.project.add_media_video(
+            name,
+            path.to_string_lossy(),
+            None,
+            false,
+        ) {
+            Ok(id) => id,
+            Err(error) => {
+                self.show_toast(error, 5.0);
+                return false;
+            }
+        };
+        if first_video {
+            let _ = self.project_session.project.set_default_video(Some(id));
+        }
+        self.project_session.dirty = true;
+        self.load_video_for_playback(&path, None, None, false)
+    }
+
+    pub fn associate_proxy(
+        &mut self,
+        proxy_id: crate::project::MediaId,
+        source_id: crate::project::MediaId,
+    ) {
         if let Err(error) = self
             .project_session
             .project
@@ -10977,14 +11016,22 @@ impl State {
     }
 
     pub fn reorder_media_video(&mut self, id: crate::project::MediaId, to_index: usize) {
-        if !self.project_session.project.reorder_media_video(id, to_index) {
+        if !self
+            .project_session
+            .project
+            .reorder_media_video(id, to_index)
+        {
             return;
         }
         self.project_session.dirty = true;
     }
 
     pub fn reorder_media_audio(&mut self, id: crate::project::MediaId, to_index: usize) {
-        if !self.project_session.project.reorder_media_audio(id, to_index) {
+        if !self
+            .project_session
+            .project
+            .reorder_media_audio(id, to_index)
+        {
             return;
         }
         self.project_session.dirty = true;
@@ -11003,7 +11050,11 @@ impl State {
         self.ui_shell.ui.begin_rename_language(id);
     }
 
-    pub fn set_language_instrumental_audio_by_media_id(&mut self, band_id: u64, media_id: crate::project::MediaId) {
+    pub fn set_language_instrumental_audio_by_media_id(
+        &mut self,
+        band_id: u64,
+        media_id: crate::project::MediaId,
+    ) {
         let Some(audio) = self
             .project_session
             .project

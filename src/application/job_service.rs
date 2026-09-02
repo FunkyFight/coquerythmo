@@ -9,6 +9,7 @@ use crate::project_archive::{LoadedProject, ProjectLoadProgress};
 
 pub(crate) struct PendingProxyJob {
     pub source_path: PathBuf,
+    pub source_media_id: Option<crate::project::MediaId>,
     pub receiver: Receiver<Result<PathBuf, String>>,
 }
 
@@ -62,6 +63,7 @@ pub struct JobManager {
     pub(crate) pending_import_job: Option<PendingImportJob>,
     pub(crate) pending_save_job: Option<PendingSaveJob>,
     pub(crate) active_export_cancel: Option<Arc<AtomicBool>>,
+    pub(crate) requested_proxy_source: Option<(crate::project::MediaId, PathBuf)>,
     pub(crate) transition_after_save_ready: Option<SaveContinuation>,
     pub(crate) play_recording_mix_when_ready: bool,
 }
@@ -75,6 +77,7 @@ impl JobManager {
             pending_import_job: None,
             pending_save_job: None,
             active_export_cancel: None,
+            requested_proxy_source: None,
             transition_after_save_ready: None,
             play_recording_mix_when_ready: false,
         }

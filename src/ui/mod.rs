@@ -21,7 +21,6 @@ pub mod icon_button;
 pub mod icons;
 pub mod interactive;
 pub mod invitation_modal;
-pub mod language_modal;
 pub mod layout;
 pub mod license_badge;
 pub mod microphone_modal;
@@ -74,7 +73,7 @@ use crate::recording::{CaptureState, RecordingProject};
 use crate::render_index::ProjectRenderIndex;
 
 use self::actor_icon_cache::ActorIconCache;
-use self::focus::{AccessibleNode, FocusId, FocusManager};
+use self::focus::{AccessibleNode, AccessibleRole, FocusId, FocusManager};
 use self::icons::IconAtlas;
 use self::modal_host::ModalHost;
 use self::project_transfer_modal::{ProjectTransferAction, ProjectTransferModal};
@@ -156,6 +155,7 @@ pub struct Ui {
     automation_editor: automation::AutomationEditor,
     side_panel: side_panel::SidePanel,
     file_tree: file_explorer::FileTree,
+    file_tree_animating: bool,
     focus: FocusManager,
     active_workspace: WorkspaceId,
     recording_ui: RecordingWorkspaceUi,
@@ -366,6 +366,7 @@ impl Ui {
             automation_editor: automation::AutomationEditor::default(),
             side_panel: side_panel::SidePanel::default(),
             file_tree: file_explorer::FileTree::new(),
+            file_tree_animating: false,
             focus: FocusManager::default(),
             active_workspace: WorkspaceId::Rythmo,
             recording_ui: RecordingWorkspaceUi::default(),
@@ -551,9 +552,9 @@ impl Ui {
             contexts.push(InputContext::Global);
         } else if !self.is_editing_text() {
             match self.active_workspace {
-                WorkspaceId::Rythmo
-                | WorkspaceId::Voicelines
-                | WorkspaceId::ComicDubs => contexts.push(InputContext::Workspace),
+                WorkspaceId::Rythmo | WorkspaceId::Voicelines | WorkspaceId::ComicDubs => {
+                    contexts.push(InputContext::Workspace)
+                }
                 WorkspaceId::Recording => contexts.push(InputContext::Recording),
             }
             contexts.push(InputContext::Global);
@@ -704,6 +705,9 @@ impl Ui {
     }
 
     pub fn set_active_workspace(&mut self, workspace: WorkspaceId) {
+        if workspace != WorkspaceId::Rythmo {
+            self.close_file_tree();
+        }
         self.active_workspace = workspace;
         if workspace != WorkspaceId::Rythmo {
             crate::detection_foreground::clear();
@@ -1461,6 +1465,7 @@ impl Ui {
         render_index: &ProjectRenderIndex,
         render_frame: f64,
         fps: f64,
+        file_tree_data: &file_explorer::FileTreeData,
     ) -> EventResponse {
         if let UiEvent::MouseMove { x, y } = event {
             self.cursor_pos = (*x, *y);
@@ -1513,8 +1518,7 @@ impl Ui {
         // interface underneath.
         if let UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } = event {
             let rows = self.task_row_views();
-            if let Some(kind) =
-                task_row::row_header_at(&rows, *x, *y, self.screen_w, self.screen_h)
+            if let Some(kind) = task_row::row_header_at(&rows, *x, *y, self.screen_w, self.screen_h)
             {
                 match kind {
                     task_row::TaskRowKind::Loading => {
@@ -1667,6 +1671,14 @@ impl Ui {
                 let response = widget.handle_event(event);
                 if response != EventResponse::Ignored {
                     self.update_tooltip();
+                    return response;
+                }
+            }
+        }
+
+        if self.active_workspace == WorkspaceId::Rythmo && self.file_tree.is_open() {
+            if let Some(panel) = self.layout.properties {
+                if let Some(response) = self.file_tree.handle_event(event, panel, file_tree_data) {
                     return response;
                 }
             }
@@ -2617,6 +2629,7 @@ impl Ui {
     }
 
     pub fn open_side_panel(&mut self, kind: side_panel::SidePanelKind) {
+        self.close_file_tree();
         self.close_automation();
         self.props_visible = true;
         self.side_panel.open(kind);
@@ -2629,6 +2642,7 @@ impl Ui {
         kind: side_panel::SidePanelKind,
         selected_line_ids: impl IntoIterator<Item = u64>,
     ) {
+        self.close_file_tree();
         self.close_automation();
         self.props_visible = true;
         self.side_panel.open_with_selection(kind, selected_line_ids);
@@ -2657,12 +2671,23 @@ impl Ui {
     // -- File tree --
 
     pub fn toggle_file_tree(&mut self) {
+        if self.active_workspace != WorkspaceId::Rythmo {
+            return;
+        }
         if self.file_tree.is_open() {
             self.close_file_tree();
         } else {
             self.close_side_panel();
             self.props_visible = true;
             self.file_tree.open();
+            self.focus.push_scope(
+                "file-tree",
+                vec![AccessibleNode::focusable(
+                    "file-tree",
+                    AccessibleRole::Tree,
+                    t("file_tree.title"),
+                )],
+            );
             self.rebuild_layout();
         }
     }
@@ -2670,7 +2695,10 @@ impl Ui {
     pub fn close_file_tree(&mut self) {
         if self.file_tree.is_open() {
             self.file_tree.close();
-            self.props_visible = false;
+            if self.focus.active_scope_id() == Some("file-tree") {
+                self.focus.pop_scope();
+            }
+            self.props_visible = self.side_panel.is_open();
             self.rebuild_layout();
         }
     }
@@ -2680,71 +2708,18 @@ impl Ui {
     }
 
     pub fn begin_rename_media_video(&mut self, id: crate::project::MediaId) {
-        self.file_tree.begin_rename(
-            crate::ui::file_explorer::RenameTarget::Video(id),
-            "",
-        );
+        self.file_tree
+            .begin_rename(crate::ui::file_explorer::RenameTarget::Video(id), "");
     }
 
     pub fn begin_rename_media_audio(&mut self, id: crate::project::MediaId) {
-        self.file_tree.begin_rename(
-            crate::ui::file_explorer::RenameTarget::Audio(id),
-            "",
-        );
+        self.file_tree
+            .begin_rename(crate::ui::file_explorer::RenameTarget::Audio(id), "");
     }
 
     pub fn begin_rename_language(&mut self, id: u64) {
-        self.file_tree.begin_rename(
-            crate::ui::file_explorer::RenameTarget::Band(id),
-            "",
-        );
-    }
-
-    pub fn file_tree_handle_event(
-        &mut self,
-        event: &UiEvent,
-        panel: Rect,
-        data: &crate::ui::file_explorer::FileTreeData,
-    ) -> Option<EventResponse> {
-        self.file_tree.handle_event(event, panel, data)
-    }
-
-    pub fn file_tree_render<'a>(
-        &'a mut self,
-        panel: Rect,
-        data: &'a crate::ui::file_explorer::FileTreeData,
-        quads: &mut Vec<QuadInstance>,
-        labels: &mut Vec<LabelInfo<'a>>,
-    ) {
-        self.file_tree.render(panel, data, quads, labels);
-    }
-
-    pub fn file_tree_render_menus<'a>(
-        &'a self,
-        quads: &mut Vec<QuadInstance>,
-        labels: &mut Vec<LabelInfo<'a>>,
-    ) {
-        self.file_tree.render_menus(quads, labels);
-    }
-
-    pub fn file_tree_animate(
-        &mut self,
-        data: &crate::ui::file_explorer::FileTreeData,
-        dt: f32,
-    ) -> bool {
-        self.file_tree.animate(data, dt)
-    }
-
-    pub fn file_tree_captures_keyboard_event(&self, event: &UiEvent) -> bool {
-        self.file_tree.captures_keyboard_event(event)
-    }
-
-    pub fn file_tree_is_editing_text(&self) -> bool {
-        self.file_tree.is_editing_text()
-    }
-
-    pub fn file_tree_next_cursor_blink_deadline(&self) -> Option<std::time::Instant> {
-        self.file_tree.next_cursor_blink_deadline()
+        self.file_tree
+            .begin_rename(crate::ui::file_explorer::RenameTarget::Band(id), "");
     }
 
     pub fn take_selected_automation_node(&mut self) -> Option<u64> {
@@ -2926,6 +2901,7 @@ impl Ui {
             || self.project_transfer_modal.is_some()
             || self.comic_dubs_ui.vertex_editor_playing()
             || self.rythmo_state.needs_animation_or_interaction()
+            || self.file_tree_animating
     }
 
     pub fn needs_background_poll(&self) -> bool {
@@ -2937,6 +2913,11 @@ impl Ui {
         if let Some(side_panel_deadline) = self.side_panel.next_cursor_blink_deadline() {
             deadline = Some(deadline.map_or(side_panel_deadline, |current| {
                 current.min(side_panel_deadline)
+            }));
+        }
+        if let Some(file_tree_deadline) = self.file_tree.next_cursor_blink_deadline() {
+            deadline = Some(deadline.map_or(file_tree_deadline, |current| {
+                current.min(file_tree_deadline)
             }));
         }
         if let Some(modal_deadline) = self
@@ -3138,6 +3119,7 @@ impl Ui {
         self.rythmo_state.is_editing()
             || self.modal_host.is_editing_text()
             || self.side_panel.is_editing_text()
+            || self.file_tree.is_editing_text()
             || self.recording_ui.is_editing_text()
             || self.voicelines_ui.is_editing_text()
             || self.comic_dubs_ui.is_editing_text()
@@ -3174,6 +3156,17 @@ impl Ui {
             .drop_accepts(self.comic_dubs_layout, x, y)
     }
 
+    pub fn file_tree_drop_target(
+        &self,
+        x: f32,
+        y: f32,
+        data: &file_explorer::FileTreeData,
+    ) -> Option<file_explorer::rows::GroupKind> {
+        self.layout
+            .properties
+            .and_then(|panel| self.file_tree.drop_target_at(panel, x, y, data))
+    }
+
     pub fn begin_comic_dubs_text_edit(
         &mut self,
         bubble_id: crate::comic_dubs::BubbleId,
@@ -3183,10 +3176,7 @@ impl Ui {
         self.rebuild_topbar(self.network_in_room);
     }
 
-    pub fn open_comic_dubs_vertex_editor(
-        &mut self,
-        bubble_id: crate::comic_dubs::BubbleId,
-    ) {
+    pub fn open_comic_dubs_vertex_editor(&mut self, bubble_id: crate::comic_dubs::BubbleId) {
         self.comic_dubs_ui.open_vertex_editor(bubble_id);
     }
 
@@ -3262,25 +3252,6 @@ impl Ui {
             .open_video_only_export(video_width, video_height, configuration);
     }
 
-    pub fn open_media_explorer(
-        &mut self,
-        languages: Vec<language_modal::LanguageListItem>,
-        active_language_id: u64,
-        media: language_modal::MediaExplorerData,
-    ) {
-        self.modal_host
-            .open_media_explorer(languages, active_language_id, media);
-    }
-
-    pub fn refresh_languages_modal(
-        &mut self,
-        languages: Vec<language_modal::LanguageListItem>,
-        active_language_id: u64,
-    ) {
-        self.modal_host
-            .refresh_languages(languages, active_language_id);
-    }
-
     pub fn open_voice_actor_modal(&mut self) {
         self.modal_host.open_voice_actor();
     }
@@ -3311,10 +3282,6 @@ impl Ui {
 
     pub fn open_recording_actor_menu(&mut self) {
         self.modal_host.open_recording_actor_menu(self.volume);
-    }
-
-    pub fn refresh_media_explorer(&mut self, media: language_modal::MediaExplorerData) {
-        self.modal_host.refresh_media_explorer(media);
     }
 
     pub fn open_room_invitation(&mut self, code: String, link: String) {
@@ -3374,10 +3341,7 @@ impl Ui {
             .open_connect_with_room(ip, port, room_code, password);
     }
 
-    pub fn open_settings_modal(
-        &mut self,
-        temporary_directory: std::path::PathBuf,
-    ) {
+    pub fn open_settings_modal(&mut self, temporary_directory: std::path::PathBuf) {
         self.modal_host.open_settings(temporary_directory);
     }
 
@@ -3497,6 +3461,7 @@ impl Ui {
         ui_scale: f32,
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         project: &Project,
+        file_tree_data: &file_explorer::FileTreeData,
         voicelines_project: &crate::voicelines::VoicelinesProject,
         comic_dubs_project: &crate::comic_dubs::ComicDubsProject,
         render_index: &ProjectRenderIndex,
@@ -3506,13 +3471,11 @@ impl Ui {
         waveform: &[f32],
         waveform_offset_frames: i64,
         waveform_is_instrumental: bool,
+        animation_delta: std::time::Duration,
     ) {
-        let file_tree_data = crate::ui::file_explorer::FileTreeData::from_project(
-            project,
-            "Projet".to_string(),
-            None,
-            None,
-        );
+        self.file_tree_animating = self
+            .file_tree
+            .animate(file_tree_data, animation_delta.as_secs_f32());
         if self.active_workspace == WorkspaceId::Voicelines {
             let selection_before = self.voicelines_ui.selected_regions().to_vec();
             self.voicelines_ui
@@ -3585,9 +3548,9 @@ impl Ui {
                 editing_line: self.rythmo_state.editing_line.is_some(),
                 editing_any: self.rythmo_state.is_editing(),
                 has_lines: project.line_count() > 0,
-                line_at_playhead: project
-                    .lines()
-                    .any(|line| current_frame >= line.start_frame && current_frame < line.end_frame()),
+                line_at_playhead: project.lines().any(|line| {
+                    current_frame >= line.start_frame && current_frame < line.end_frame()
+                }),
                 line_clipboard_available: self.line_clipboard_available,
             };
             self.shortcut_panel
@@ -4182,7 +4145,12 @@ impl Ui {
             if let Some(panel) = self.layout.properties {
                 if self.file_tree.is_open() {
                     let file_tree = &self.file_tree;
-                    file_tree.render(panel, &file_tree_data, &mut overlay_quads, &mut overlay_labels);
+                    file_tree.render(
+                        panel,
+                        file_tree_data,
+                        &mut overlay_quads,
+                        &mut overlay_labels,
+                    );
                 } else {
                     self.side_panel
                         .render(panel, project, &mut overlay_quads, &mut overlay_labels);

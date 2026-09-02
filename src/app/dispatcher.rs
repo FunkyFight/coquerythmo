@@ -33,19 +33,10 @@ pub(crate) fn handle_file_picker_selected(
 ) {
     match intent {
         FilePickerIntent::AddVideo => {
-            if state.load_video(&path) {
-                if let Some(project_path) = state.project_session.project_path.as_deref() {
-                    if let Err(error) = video_proxy::delete_proxy(project_path) {
-                        log::warn!(
-                            "Failed to remove the previous proxy after replacement: {error}"
-                        );
-                    }
-                    if let Err(error) = video_proxy::set_source_removed(project_path, false) {
-                        log::warn!("Failed to link the replacement video: {error}");
-                    }
-                }
-                state.project_session.dirty = true;
-            }
+            state.import_media_video(&path);
+        }
+        FilePickerIntent::AddMediaAudio => {
+            state.import_audio(path.to_string_lossy().into_owned());
         }
         FilePickerIntent::ComicDubsImage => state.comic_dubs_begin_image_import(path),
         FilePickerIntent::ComicDubsAudio => state.comic_dubs_begin_audio_import(path),
@@ -99,12 +90,6 @@ pub(crate) fn handle_file_picker_selected(
                 show_text_emotion_lanes,
             );
             state.close_project_settings_modal();
-        }
-        FilePickerIntent::LanguageInstrumentalAudio { language_id } => {
-            state.set_language_instrumental_audio(
-                language_id,
-                Some(path.to_string_lossy().into_owned()),
-            );
         }
         FilePickerIntent::ExportMp4 {
             fps,
@@ -212,7 +197,7 @@ impl CommandDispatcher {
         let navigates_lines = matches!(&action, UiAction::NavigateLines { .. });
         let container_title = match &action {
             UiAction::OpenRecentProjects => Some(crate::i18n::t("menu.project.recent")),
-            UiAction::OpenMediaExplorer => Some(crate::i18n::t("media_explorer.title")),
+            UiAction::ToggleFileTree => Some(crate::i18n::t("file_tree.title")),
             UiAction::OpenDropdown(crate::ui::primitives::ToolbarDropdown::Respirations) => {
                 Some(crate::i18n::t("toolbar.respirations"))
             }
@@ -244,9 +229,6 @@ impl CommandDispatcher {
         let opened_save_prompt = !save_prompt_was_open && state.is_save_prompt_open();
         let container_first_label = match &action {
             UiAction::OpenRecentProjects => state.recent_projects_first_accessibility_label(),
-            UiAction::OpenMediaExplorer => {
-                Some(crate::i18n::t("media_explorer.tab.videos").to_string())
-            }
             UiAction::OpenDropdown(dropdown) => {
                 state.toolbar_dropdown_first_accessibility_label(dropdown)
             }
@@ -408,12 +390,7 @@ impl CommandDispatcher {
                 bold,
                 strikethrough,
                 underline,
-            } => state.comic_dubs_set_bubble_text_style(
-                bubble_id,
-                bold,
-                strikethrough,
-                underline,
-            ),
+            } => state.comic_dubs_set_bubble_text_style(bubble_id, bold, strikethrough, underline),
             UiAction::ComicDubsSetBubblePoints { bubble_id, points } => {
                 state.comic_dubs_set_bubble_points(bubble_id, points)
             }
@@ -641,6 +618,22 @@ impl CommandDispatcher {
                     i18n::t("picker.video.title"),
                     FilePickerMode::Open,
                     FilePickerIntent::AddVideo,
+                    filters,
+                    project_or_video_dir(state),
+                    None,
+                );
+            }
+            UiAction::AddMediaAudio => {
+                let filters = open_dialog_filters(
+                    i18n::t("recording.audio.filter"),
+                    &["flac", "wav", "mp3", "ogg", "m4a", "aac", "opus"],
+                );
+                open_file_picker(
+                    state,
+                    elwt,
+                    i18n::t("file_tree.picker.audio_title"),
+                    FilePickerMode::Open,
+                    FilePickerIntent::AddMediaAudio,
                     filters,
                     project_or_video_dir(state),
                     None,
@@ -1100,7 +1093,6 @@ impl CommandDispatcher {
             UiAction::OpenExportModal => {
                 state.open_export_modal();
             }
-            UiAction::OpenMediaExplorer => state.open_media_explorer(),
             UiAction::ToggleFileTree => state.toggle_file_tree(),
             UiAction::CloseFileTree => state.close_file_tree(),
             UiAction::MediaVideoUse { id } => state.use_media_video(id),
@@ -1109,24 +1101,24 @@ impl CommandDispatcher {
             UiAction::MediaVideoRename { id, name } => state.rename_media_video(id, name),
             UiAction::MediaVideoBeginRename { id } => state.begin_rename_media_video(id),
             UiAction::MediaVideoCreateProxy { id } => state.create_proxy_for_media(id),
-            UiAction::MediaVideoAssociateProxy { proxy_id, source_id } => {
-                state.associate_proxy(proxy_id, source_id)
-            }
+            UiAction::MediaVideoAssociateProxy {
+                proxy_id,
+                source_id,
+            } => state.associate_proxy(proxy_id, source_id),
             UiAction::MediaVideoDissociateProxy { id } => state.dissociate_proxy(id),
             UiAction::MediaAudioAdd { path } => state.import_audio(path),
             UiAction::MediaAudioRemove { id } => state.remove_audio(id),
             UiAction::MediaAudioRename { id, name } => state.rename_media_audio(id, name),
             UiAction::MediaAudioBeginRename { id } => state.begin_rename_media_audio(id),
-            UiAction::MediaReorderVideo { id, to_index } => {
-                state.reorder_media_video(id, to_index)
-            }
-            UiAction::MediaReorderAudio { id, to_index } => {
-                state.reorder_media_audio(id, to_index)
-            }
+            UiAction::MediaReorderVideo { id, to_index } => state.reorder_media_video(id, to_index),
+            UiAction::MediaReorderAudio { id, to_index } => state.reorder_media_audio(id, to_index),
             UiAction::LanguageReorder { id, to_index } => state.reorder_language(id, to_index),
             UiAction::LanguageBeginRename { id } => state.begin_rename_language(id),
             UiAction::SetLanguageInstrumentalAudioPath { id, path } => {
                 state.set_language_instrumental_audio(id, Some(path))
+            }
+            UiAction::ClearLanguageInstrumentalAudio { id } => {
+                state.set_language_instrumental_audio(id, None)
             }
             UiAction::SetLanguageInstrumentalAudioByMediaId { band_id, media_id } => {
                 state.set_language_instrumental_audio_by_media_id(band_id, media_id)
@@ -1138,30 +1130,6 @@ impl CommandDispatcher {
             UiAction::SetLanguageSyllableLanguage { id, language } => {
                 state.set_language_syllable_language(id, language)
             }
-            UiAction::PickLanguageInstrumentalAudio { id } => {
-                let filters = open_dialog_filters(
-                    "Audio",
-                    &["wav", "mp3", "m4a", "aac", "flac", "ogg", "opus"],
-                );
-                open_file_picker(
-                    state,
-                    elwt,
-                    i18n::t("picker.instrumental_audio.title"),
-                    FilePickerMode::Open,
-                    FilePickerIntent::LanguageInstrumentalAudio { language_id: id },
-                    filters,
-                    video_or_project_dir(state),
-                    None,
-                );
-            }
-            UiAction::ClearLanguageInstrumentalAudio { id } => {
-                state.set_language_instrumental_audio(id, None);
-            }
-            UiAction::SwitchMediaVideo { use_proxy } => state.switch_media_video(use_proxy),
-            UiAction::SetDefaultMediaVideo { use_proxy } => {
-                state.set_default_media_video(use_proxy)
-            }
-            UiAction::DeleteMediaVideo { use_proxy } => state.delete_media_video(use_proxy),
             UiAction::SaveExportConfiguration { configuration } => {
                 state.save_export_configuration(configuration);
             }
@@ -1227,7 +1195,12 @@ impl CommandDispatcher {
                 crf,
                 encoder,
             } => {
-                let Some(source) = state.video_path() else {
+                let requested_media = state.take_requested_proxy_source();
+                let source_media_id = requested_media.as_ref().map(|(id, _)| *id);
+                let Some(source) = requested_media
+                    .map(|(_, source)| source)
+                    .or_else(|| state.video_path())
+                else {
                     log::warn!("No video loaded — cannot create proxy");
                     return false;
                 };
@@ -1247,18 +1220,33 @@ impl CommandDispatcher {
 
                 std::thread::spawn(move || {
                     let p = progress.clone();
-                    let result = video_proxy::create_proxy(
-                        &source_for_job,
-                        &br_for_job,
-                        width,
-                        height,
-                        crf,
-                        encoder,
-                        cancel_for_job,
-                        move |v| {
-                            p.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                        },
-                    );
+                    let result = if source_media_id.is_some() {
+                        video_proxy::create_library_proxy(
+                            &source_for_job,
+                            &br_for_job,
+                            width,
+                            height,
+                            crf,
+                            encoder,
+                            cancel_for_job,
+                            move |v| {
+                                p.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                            },
+                        )
+                    } else {
+                        video_proxy::create_proxy(
+                            &source_for_job,
+                            &br_for_job,
+                            width,
+                            height,
+                            crf,
+                            encoder,
+                            cancel_for_job,
+                            move |v| {
+                                p.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                            },
+                        )
+                    };
                     let _ = tx.send(result);
                     progress.store(2.0_f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
                 });
@@ -1266,7 +1254,7 @@ impl CommandDispatcher {
                 state.set_progress_label(i18n::t("progress.proxy"));
                 state.set_export_progress(Some(progress_for_ui));
                 state.set_export_cancel(Some(cancel));
-                state.watch_proxy_job(source, rx);
+                state.watch_proxy_job(source, source_media_id, rx);
                 state.announce_shortcut_accessibility(
                     crate::accessibility::AccessibilityEvent::Opened {
                         label: format!(

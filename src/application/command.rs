@@ -226,6 +226,7 @@ pub enum UiAction {
     Undo,
     Redo,
     AddVideo,
+    AddMediaAudio,
     ImportProject,
     ImportCappelaProject,
     ImportSrtProject,
@@ -233,7 +234,6 @@ pub enum UiAction {
     ImportSubtitles,
     ExportProject,
     OpenExportModal,
-    OpenMediaExplorer,
     ToggleFileTree,
     CloseFileTree,
     MediaVideoUse {
@@ -294,6 +294,9 @@ pub enum UiAction {
         id: u64,
         path: String,
     },
+    ClearLanguageInstrumentalAudio {
+        id: u64,
+    },
     SetLanguageInstrumentalAudioByMediaId {
         band_id: u64,
         media_id: crate::project::MediaId,
@@ -314,21 +317,6 @@ pub enum UiAction {
     SetLanguageSyllableLanguage {
         id: u64,
         language: crate::project::SyllableLanguage,
-    },
-    PickLanguageInstrumentalAudio {
-        id: u64,
-    },
-    ClearLanguageInstrumentalAudio {
-        id: u64,
-    },
-    SwitchMediaVideo {
-        use_proxy: bool,
-    },
-    SetDefaultMediaVideo {
-        use_proxy: bool,
-    },
-    DeleteMediaVideo {
-        use_proxy: bool,
     },
     StartExport {
         fps: f64,
@@ -746,7 +734,6 @@ impl UiAction {
                 | Self::DeleteLanguage { .. }
                 | Self::SelectLanguage { .. }
                 | Self::SetLanguageSyllableLanguage { .. }
-                | Self::PickLanguageInstrumentalAudio { .. }
                 | Self::ClearLanguageInstrumentalAudio { .. }
                 | Self::PickProjectInstrumentalAudio
                 | Self::SaveProjectSettings { .. }
@@ -831,9 +818,6 @@ impl UiAction {
                 | Self::ImportCappelaProject
                 | Self::ImportSrtProject
                 | Self::ImportSubtitles
-                | Self::SwitchMediaVideo { .. }
-                | Self::SetDefaultMediaVideo { .. }
-                | Self::DeleteMediaVideo { .. }
                 | Self::StartExport { .. }
                 | Self::StartExportToPath { .. }
                 | Self::StartConfiguredExport { .. }
@@ -903,6 +887,7 @@ pub enum ToolMode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilePickerIntent {
     AddVideo,
+    AddMediaAudio,
     ComicDubsImage,
     ComicDubsAudio,
     ComicDubsExport {
@@ -929,9 +914,6 @@ pub enum FilePickerIntent {
     ExitApplicationSave,
     VoiceActorIcon,
     ProjectInstrumentalAudio,
-    LanguageInstrumentalAudio {
-        language_id: u64,
-    },
     ExportMp4 {
         fps: f64,
         br_scale: f32,
