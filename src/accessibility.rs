@@ -212,7 +212,7 @@ pub fn event_for_action(
         UiAction::RequestActorsCloseProjectTransferWaiting => {
             "recording.actor_requests.close_transfer_waiting"
         }
-        UiAction::OpenMediaExplorer => "media_explorer.title",
+        UiAction::ToggleFileTree => "file_tree.title",
         UiAction::OpenLinesPanel => "menu.panels.lines",
         UiAction::OpenRolesPanel => "menu.panels.roles",
         UiAction::PickProjectInstrumentalAudio => "project_settings.browse",
@@ -299,9 +299,7 @@ pub fn panel_label_key_for_action(
         UiAction::BeginKeyboardPan { .. } => "panel.pan_right",
         UiAction::NavigateLines { direction } if *direction < 0 => "panel.navigate_prev",
         UiAction::NavigateLines { .. } => "panel.navigate_next",
-        UiAction::MoveSelectedLineTrack { direction } if *direction < 0 => {
-            "panel.move_track_up"
-        }
+        UiAction::MoveSelectedLineTrack { direction } if *direction < 0 => "panel.move_track_up",
         UiAction::MoveSelectedLineTrack { .. } => "panel.move_track_down",
         UiAction::AdjustVolume(delta) if *delta >= 0.0 => "panel.volume_up",
         UiAction::AdjustVolume(_) => "panel.volume_down",
@@ -939,6 +937,10 @@ fn accesskit_role(role: &str) -> accesskit::Role {
     let role = role.to_ascii_lowercase();
     if role.contains("checkbox") {
         accesskit::Role::CheckBox
+    } else if role.contains("tree item") {
+        accesskit::Role::TreeItem
+    } else if role.contains("tree") {
+        accesskit::Role::Tree
     } else if role.contains("tab") {
         accesskit::Role::Tab
     } else if role.contains("button") {

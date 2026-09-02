@@ -18,6 +18,8 @@ pub enum AccessibleRole {
     TextField,
     List,
     ListItem,
+    Tree,
+    TreeItem,
     Checkbox,
     Slider,
     Dialog,

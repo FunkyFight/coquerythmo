@@ -327,7 +327,58 @@ pub fn create_proxy(
     crf: u8,
     encoder: ProxyEncoder,
     cancel: Arc<AtomicBool>,
+    progress_cb: impl FnMut(f32),
+) -> Result<PathBuf, String> {
+    create_proxy_inner(
+        source_video,
+        br_path,
+        target_width,
+        target_height,
+        crf,
+        encoder,
+        cancel,
+        progress_cb,
+        true,
+    )
+}
+
+/// Create a generated proxy owned by the project media library.
+///
+/// Legacy manifests remain read-only after migration, so this deliberately
+/// avoids updating their metadata or media preference sidecars.
+pub fn create_library_proxy(
+    source_video: &Path,
+    project_path: &Path,
+    target_width: u32,
+    target_height: u32,
+    crf: u8,
+    encoder: ProxyEncoder,
+    cancel: Arc<AtomicBool>,
+    progress_cb: impl FnMut(f32),
+) -> Result<PathBuf, String> {
+    create_proxy_inner(
+        source_video,
+        project_path,
+        target_width,
+        target_height,
+        crf,
+        encoder,
+        cancel,
+        progress_cb,
+        false,
+    )
+}
+
+fn create_proxy_inner(
+    source_video: &Path,
+    br_path: &Path,
+    target_width: u32,
+    target_height: u32,
+    crf: u8,
+    encoder: ProxyEncoder,
+    cancel: Arc<AtomicBool>,
     mut progress_cb: impl FnMut(f32),
+    persist_legacy_sidecars: bool,
 ) -> Result<PathBuf, String> {
     if !crate::video_export::check_ffmpeg() {
         return Err("ffmpeg/ffprobe not found beside app or in PATH".into());
@@ -449,8 +500,10 @@ pub fn create_proxy(
     }
 
     progress_cb(1.0);
-    write_metadata(br_path, source_video, &proxy_path, width, height, crf)?;
-    set_default_uses_proxy(br_path, true)?;
+    if persist_legacy_sidecars {
+        write_metadata(br_path, source_video, &proxy_path, width, height, crf)?;
+        set_default_uses_proxy(br_path, true)?;
+    }
     Ok(proxy_path)
 }
 

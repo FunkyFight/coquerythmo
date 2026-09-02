@@ -226,6 +226,7 @@ pub enum UiAction {
     Undo,
     Redo,
     AddVideo,
+    AddMediaAudio,
     ImportProject,
     ImportCappelaProject,
     ImportSrtProject,
@@ -233,7 +234,73 @@ pub enum UiAction {
     ImportSubtitles,
     ExportProject,
     OpenExportModal,
-    OpenMediaExplorer,
+    ToggleFileTree,
+    CloseFileTree,
+    MediaVideoUse {
+        id: crate::project::MediaId,
+    },
+    MediaVideoSetDefault {
+        id: crate::project::MediaId,
+    },
+    MediaVideoRemove {
+        id: crate::project::MediaId,
+    },
+    MediaVideoRename {
+        id: crate::project::MediaId,
+        name: String,
+    },
+    MediaVideoBeginRename {
+        id: crate::project::MediaId,
+    },
+    MediaVideoCreateProxy {
+        id: crate::project::MediaId,
+    },
+    MediaVideoAssociateProxy {
+        proxy_id: crate::project::MediaId,
+        source_id: crate::project::MediaId,
+    },
+    MediaVideoDissociateProxy {
+        id: crate::project::MediaId,
+    },
+    MediaAudioAdd {
+        path: String,
+    },
+    MediaAudioRemove {
+        id: crate::project::MediaId,
+    },
+    MediaAudioRename {
+        id: crate::project::MediaId,
+        name: String,
+    },
+    MediaAudioBeginRename {
+        id: crate::project::MediaId,
+    },
+    MediaReorderVideo {
+        id: crate::project::MediaId,
+        to_index: usize,
+    },
+    MediaReorderAudio {
+        id: crate::project::MediaId,
+        to_index: usize,
+    },
+    LanguageReorder {
+        id: u64,
+        to_index: usize,
+    },
+    LanguageBeginRename {
+        id: u64,
+    },
+    SetLanguageInstrumentalAudioPath {
+        id: u64,
+        path: String,
+    },
+    ClearLanguageInstrumentalAudio {
+        id: u64,
+    },
+    SetLanguageInstrumentalAudioByMediaId {
+        band_id: u64,
+        media_id: crate::project::MediaId,
+    },
     CreateLanguage {
         name: String,
     },
@@ -250,21 +317,6 @@ pub enum UiAction {
     SetLanguageSyllableLanguage {
         id: u64,
         language: crate::project::SyllableLanguage,
-    },
-    PickLanguageInstrumentalAudio {
-        id: u64,
-    },
-    ClearLanguageInstrumentalAudio {
-        id: u64,
-    },
-    SwitchMediaVideo {
-        use_proxy: bool,
-    },
-    SetDefaultMediaVideo {
-        use_proxy: bool,
-    },
-    DeleteMediaVideo {
-        use_proxy: bool,
     },
     StartExport {
         fps: f64,
@@ -682,7 +734,6 @@ impl UiAction {
                 | Self::DeleteLanguage { .. }
                 | Self::SelectLanguage { .. }
                 | Self::SetLanguageSyllableLanguage { .. }
-                | Self::PickLanguageInstrumentalAudio { .. }
                 | Self::ClearLanguageInstrumentalAudio { .. }
                 | Self::PickProjectInstrumentalAudio
                 | Self::SaveProjectSettings { .. }
@@ -751,6 +802,32 @@ impl UiAction {
                 )
         )
     }
+
+    /// Actions refused while a background task (export, proxy or project
+    /// import) runs: they would replace the document, touch the media files
+    /// the worker is reading, or start a concurrent worker on the shared
+    /// progress slot. Everything else stays available so the UI never
+    /// freezes behind a progress indicator.
+    pub fn blocked_during_background_task(&self) -> bool {
+        matches!(
+            self,
+            Self::AddVideo
+                | Self::NewProject
+                | Self::OpenRecentProject { .. }
+                | Self::ImportProject
+                | Self::ImportCappelaProject
+                | Self::ImportSrtProject
+                | Self::ImportSubtitles
+                | Self::StartExport { .. }
+                | Self::StartExportToPath { .. }
+                | Self::StartConfiguredExport { .. }
+                | Self::StartConfiguredExportToPath { .. }
+                | Self::OpenProxyModal
+                | Self::CreateProxy { .. }
+                | Self::ExitApplication
+                | Self::CloseApp
+        )
+    }
 }
 
 #[cfg(test)]
@@ -810,6 +887,7 @@ pub enum ToolMode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilePickerIntent {
     AddVideo,
+    AddMediaAudio,
     ComicDubsImage,
     ComicDubsAudio,
     ComicDubsExport {
@@ -836,9 +914,6 @@ pub enum FilePickerIntent {
     ExitApplicationSave,
     VoiceActorIcon,
     ProjectInstrumentalAudio,
-    LanguageInstrumentalAudio {
-        language_id: u64,
-    },
     ExportMp4 {
         fps: f64,
         br_scale: f32,

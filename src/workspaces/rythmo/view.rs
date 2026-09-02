@@ -43,50 +43,134 @@ const KARAOKE_TEXTURE_PREWARM_LOOKAHEAD_SECONDS: f64 = 60.0;
 const KARAOKE_TEXTURE_PREWARM_CANDIDATES_PER_FRAME: usize = 32;
 const KARAOKE_TEXTURE_PREWARM_PUSHES_PER_FRAME: usize = 2;
 
+/// Y-banded index over the line-body rects queried in one render pass. Line
+/// bodies are wide (they span many timeline pixels) but vertically thin and
+/// shelled by track rows, so the only strong discriminator is vertical
+/// overlap. Bucketing by Y keeps the build O(V) even for arbitrarily wide
+/// bodies (unlike a 2D cell grid, which would iterate cells proportional to
+/// body area) and turns the badge's per-line scan into a scan of the query's
+/// row only. Built once per frame from the queried-body list.
+struct BadgeCollisionGrid<'a> {
+    targets: &'a [(u64, Rect, &'a str)],
+    // y-cell -> indices of bodies whose Y-range covers that cell.
+    cells: HashMap<i32, Vec<u32>>,
+    y_cell: f32,
+}
+
+fn y_cell_range(rect: &Rect, cell: f32, out: &mut std::ops::RangeInclusive<i32>) {
+    *out = (rect.y / cell).floor() as i32..=((rect.y + rect.height) / cell).floor() as i32;
+}
+
+impl<'a> BadgeCollisionGrid<'a> {
+    fn from_slice(targets: &'a [(u64, Rect, &'a str)], y_cell: f32) -> Self {
+        let mut cells: HashMap<i32, Vec<u32>> = HashMap::new();
+        let mut cell_range = std::ops::RangeInclusive::new(0, 0);
+        for (i, (_, rect, _)) in targets.iter().enumerate() {
+            y_cell_range(rect, y_cell, &mut cell_range);
+            for cy in cell_range.clone() {
+                cells.entry(cy).or_default().push(i as u32);
+            }
+        }
+        Self {
+            targets,
+            cells,
+            y_cell,
+        }
+    }
+
+    /// Fill `scratch` with indices of targets whose Y-range shares a cell with
+    /// `rect`. Duplicates are possible when a body spans several cells; they
+    /// only cause redundant overlap checks, so no dedup is needed.
+    fn collect(&self, rect: &Rect, scratch: &mut Vec<u32>) {
+        scratch.clear();
+        let cell_range = self.y_cell_range_of(rect);
+        for cy in cell_range {
+            if let Some(bucket) = self.cells.get(&cy) {
+                scratch.extend_from_slice(bucket);
+            }
+        }
+    }
+
+    fn y_cell_range_of(&self, rect: &Rect) -> std::ops::RangeInclusive<i32> {
+        (rect.y / self.y_cell).floor() as i32
+            ..=((rect.y + rect.height) / self.y_cell).floor() as i32
+    }
+
+    fn any_overlap(&self, rect: &Rect, exclude: u64, scratch: &mut Vec<u32>) -> bool {
+        self.collect(rect, scratch);
+        scratch.iter().any(|&i| {
+            let (id, other, _) = &self.targets[i as usize];
+            *id != exclude && rects_overlap(rect, other)
+        })
+    }
+
+    fn same_character_overlap(
+        &self,
+        rect: &Rect,
+        exclude: u64,
+        name: &str,
+        scratch: &mut Vec<u32>,
+    ) -> bool {
+        self.collect(rect, scratch);
+        scratch.iter().any(|&i| {
+            let (id, other, other_name) = &self.targets[i as usize];
+            *id != exclude && *other_name == name && rects_overlap(rect, other)
+        })
+    }
+}
+
 fn character_badge_collision_layout(
     line_id: u64,
     character_name: &str,
     badge_rect: &Rect,
     line_x: f32,
-    other_lines: &[(u64, Rect, &str)],
+    grid: &BadgeCollisionGrid,
+    scratch: &mut Vec<u32>,
 ) -> (bool, Rect, f32) {
-    let collides = |candidate: &Rect| {
-        other_lines.iter().any(|(other_id, other_rect, _)| {
-            *other_id != line_id && rects_overlap(candidate, other_rect)
-        })
-    };
-    for (other_id, other_rect, other_character_name) in other_lines {
-        if *other_id == line_id || !rects_overlap(badge_rect, other_rect) {
-            continue;
-        }
-        if *other_character_name == character_name {
-            return (true, *badge_rect, 1.0);
-        }
+    if grid.same_character_overlap(badge_rect, line_id, character_name, scratch) {
+        return (true, *badge_rect, 1.0);
     }
+    let mut collides = |candidate: &Rect| grid.any_overlap(candidate, line_id, scratch);
     if !collides(badge_rect) {
         return (false, *badge_rect, 1.0);
     }
 
-    let mut fitted = *badge_rect;
-    fitted.x = line_x - BADGE_GAP - fitted.width;
-    if !collides(&fitted) {
-        return (false, fitted, 1.0);
+    // Preserve the original full-size left alignment before considering a
+    // shrink. After that move, every smaller badge is a strict subset of the
+    // previous one, so collision is monotone in the shrink step.
+    let top = badge_rect.y;
+    let base_width = badge_rect.width;
+    let base_height = badge_rect.height;
+    let fitted_at = |step: i32| {
+        let scale = 1.0 - step as f32 * 0.01;
+        Rect {
+            x: line_x - BADGE_GAP - base_width * scale,
+            y: top,
+            width: base_width * scale,
+            height: base_height * scale,
+        }
+    };
+    let full_size_fitted = fitted_at(0);
+    if !collides(&full_size_fitted) {
+        return (false, full_size_fitted, 1.0);
     }
 
-    let top = fitted.y;
-    let base_width = fitted.width;
-    let base_height = fitted.height;
-    for step in 1..=95 {
-        let scale = 1.0 - step as f32 * 0.01;
-        fitted.width = base_width * scale;
-        fitted.height = base_height * scale;
-        fitted.x = line_x - BADGE_GAP - fitted.width;
-        fitted.y = top;
-        if !collides(&fitted) {
-            return (false, fitted, scale);
+    // Find the first collision-free 1% step instead of testing all 95.
+    let mut lo = 1;
+    let mut hi = 95;
+    let mut best = 96; // sentinel: no collision-free step in 1..=95
+    while lo <= hi {
+        let mid = (lo + hi) / 2;
+        if collides(&fitted_at(mid)) {
+            lo = mid + 1;
+        } else {
+            best = mid;
+            hi = mid - 1;
         }
     }
-    (false, fitted, 0.05)
+    let fitted = fitted_at(best.min(95));
+    let scale = 1.0 - (best.min(95) as f32) * 0.01;
+    (false, fitted, scale)
 }
 
 #[path = "detection_ui.rs"]
@@ -863,25 +947,20 @@ mod tests {
             height: 30.0,
         };
 
-        let (hidden, fitted, scale) = character_badge_collision_layout(
-            1,
-            "Alice",
-            &badge,
-            200.0,
-            &[(2, colliding_line, "Bob")],
-        );
+        let targets = [(2, colliding_line, "Bob")];
+        let grid = BadgeCollisionGrid::from_slice(&targets, 64.0);
+        let mut scratch = Vec::new();
+        let (hidden, fitted, scale) =
+            character_badge_collision_layout(1, "Alice", &badge, 200.0, &grid, &mut scratch);
         assert!(!hidden);
         assert!(scale < 1.0);
         assert_eq!(fitted.y, badge.y);
         assert!(!rects_overlap(&fitted, &colliding_line));
 
-        let (hidden, _, _) = character_badge_collision_layout(
-            1,
-            "Alice",
-            &badge,
-            200.0,
-            &[(2, colliding_line, "Alice")],
-        );
+        let targets = [(2, colliding_line, "Alice")];
+        let grid = BadgeCollisionGrid::from_slice(&targets, 64.0);
+        let (hidden, _, _) =
+            character_badge_collision_layout(1, "Alice", &badge, 200.0, &grid, &mut scratch);
         assert!(hidden);
     }
 
@@ -901,9 +980,106 @@ mod tests {
         };
         let other_lines = [(2, colliding_line, "Bob"), (3, colliding_line, "Alice")];
 
+        let grid = BadgeCollisionGrid::from_slice(&other_lines, 64.0);
+        let mut scratch = Vec::new();
         let (hidden, _, _) =
-            character_badge_collision_layout(1, "Alice", &badge, 200.0, &other_lines);
+            character_badge_collision_layout(1, "Alice", &badge, 200.0, &grid, &mut scratch);
         assert!(hidden);
+    }
+
+    #[test]
+    fn badge_collision_grid_matches_naive_scan() {
+        // The spatial index must be a pure query accelerator: for every
+        // candidate badge it must report the same result as a brute-force scan.
+        fn naive(
+            line_id: u64,
+            character_name: &str,
+            badge_rect: &Rect,
+            line_x: f32,
+            other: &[(u64, Rect, &str)],
+        ) -> (bool, Rect, f32) {
+            let collides = |candidate: &Rect| {
+                other
+                    .iter()
+                    .any(|(id, r, _)| *id != line_id && rects_overlap(candidate, r))
+            };
+            for (id, r, name) in other {
+                if *id == line_id || !rects_overlap(badge_rect, r) {
+                    continue;
+                }
+                if *name == character_name {
+                    return (true, *badge_rect, 1.0);
+                }
+            }
+            if !collides(badge_rect) {
+                return (false, *badge_rect, 1.0);
+            }
+            let mut fitted = *badge_rect;
+            fitted.x = line_x - BADGE_GAP - fitted.width;
+            if !collides(&fitted) {
+                return (false, fitted, 1.0);
+            }
+            let top = fitted.y;
+            let bw = fitted.width;
+            let bh = fitted.height;
+            for step in 1..=95 {
+                let scale = 1.0 - step as f32 * 0.01;
+                fitted.width = bw * scale;
+                fitted.height = bh * scale;
+                fitted.x = line_x - BADGE_GAP - fitted.width;
+                fitted.y = top;
+                if !collides(&fitted) {
+                    return (false, fitted, scale);
+                }
+            }
+            (false, fitted, 0.05)
+        }
+
+        let names = ["Alice", "Bob", "Carol", "Diana"];
+        for seed in 0u64..40u64 {
+            let mut other: Vec<(u64, Rect, &str)> = Vec::new();
+            let mut x = -200.0;
+            for i in 0..30 {
+                let w = 80.0 + seed as f32 + (i * 13 % 40) as f32;
+                other.push((
+                    i as u64,
+                    Rect {
+                        x,
+                        y: 5.0 + (i % 6) as f32 * 18.0,
+                        width: w,
+                        height: 22.0,
+                    },
+                    names[(i + seed as usize) % names.len()],
+                ));
+                x += 40.0 - (seed % 13) as f32;
+            }
+            let grid = BadgeCollisionGrid::from_slice(&other, 64.0);
+            let mut scratch = Vec::new();
+            for i in 0..8 {
+                let badge = Rect {
+                    x: -10.0 + (i * 5) as f32 - seed as f32,
+                    y: 10.0 + (i % 5) as f32 * 15.0,
+                    width: 70.0,
+                    height: 18.0,
+                };
+                let name = names[(i + seed as usize) % names.len()];
+                let through_grid = character_badge_collision_layout(
+                    999,
+                    name,
+                    &badge,
+                    badge.x + 80.0,
+                    &grid,
+                    &mut scratch,
+                );
+                let through_naive = naive(999, name, &badge, badge.x + 80.0, &other);
+                assert_eq!(through_grid.0, through_naive.0, "seed {seed} i {i}");
+                assert!((through_grid.1.x - through_naive.1.x).abs() < 0.01);
+                assert!((through_grid.1.y - through_naive.1.y).abs() < 0.01);
+                assert!((through_grid.1.width - through_naive.1.width).abs() < 0.01);
+                assert!((through_grid.1.height - through_naive.1.height).abs() < 0.01);
+                assert!((through_grid.2 - through_naive.2).abs() < 0.001);
+            }
+        }
     }
 
     #[test]
@@ -1441,7 +1617,9 @@ mod tests {
         // Bars under the selected line take the character color…
         assert!(quads.iter().any(|quad| quad.color == [1.0, 0.2, 0.3, 0.85]));
         // …while bars outside the line keep the default source color.
-        assert!(quads.iter().any(|quad| quad.color == [0.4, 0.65, 1.0, 0.85]));
+        assert!(quads
+            .iter()
+            .any(|quad| quad.color == [0.4, 0.65, 1.0, 0.85]));
     }
 
     #[test]
@@ -1474,9 +1652,7 @@ mod tests {
         );
 
         assert!(!quads.is_empty());
-        assert!(quads
-            .iter()
-            .all(|quad| quad.color != [1.0, 0.2, 0.3, 0.85]));
+        assert!(quads.iter().all(|quad| quad.color != [1.0, 0.2, 0.3, 0.85]));
     }
 
     #[test]
@@ -1738,10 +1914,9 @@ pub fn render_rythmo_base(
         // color. Without a selection the waveform keeps its default colors.
         let selected_lines: Vec<&crate::rythmo_line::RythmoLine> = match state.selected.as_ref() {
             Some(Selection::Line(id)) => project.get_line(*id).into_iter().collect(),
-            Some(Selection::Lines(ids)) => ids
-                .iter()
-                .filter_map(|id| project.get_line(*id))
-                .collect(),
+            Some(Selection::Lines(ids)) => {
+                ids.iter().filter_map(|id| project.get_line(*id)).collect()
+            }
             _ => Vec::new(),
         };
         let tint_ranges: Vec<(i64, i64, [f32; 4])> = selected_lines
@@ -3364,6 +3539,8 @@ pub fn render_lines<'a>(
                 .map(|line| (line_id, rect, line.character_name.as_str()))
         })
         .collect();
+    let collision_grid = BadgeCollisionGrid::from_slice(&collision_targets, 32.0);
+    let mut collision_scratch: Vec<u32> = Vec::new();
 
     for (line_id, badge_rect, line_x) in badge_prewarm_candidates {
         let Some(line) = project.get_line(line_id) else {
@@ -3374,7 +3551,8 @@ pub fn render_lines<'a>(
             &line.character_name,
             &badge_rect,
             line_x,
-            &collision_targets,
+            &collision_grid,
+            &mut collision_scratch,
         );
         if !hidden {
             stretched.push(character_badge_text(line, fitted_rect, scale, true));
@@ -3390,7 +3568,8 @@ pub fn render_lines<'a>(
             &line.character_name,
             &data.badge_rect,
             data.rect.x,
-            &collision_targets,
+            &collision_grid,
+            &mut collision_scratch,
         );
         badge_hidden.insert(*line_id, hidden);
         fitted_badges.insert(*line_id, (fitted_rect, scale));

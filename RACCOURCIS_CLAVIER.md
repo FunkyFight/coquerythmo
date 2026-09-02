@@ -46,7 +46,7 @@ l’annulation est annoncée en priorité.
 | `Ctrl + N` | Créer un nouveau projet |
 | `Ctrl + I` | Ouvrir le panneau des lignes |
 | `Ctrl + P` | Ouvrir le panneau des rôles |
-| `Ctrl + L` | Ouvrir l’Explorateur des médias, hors modale |
+| `Ctrl + L` | Ouvrir ou fermer les fichiers du projet (espace Rythmo, hors modale) |
 | `Alt + E` | Ouvrir le menu des émotions du texte |
 | `Ctrl + K` | Scinder le dialogue à la position du caret |
 
@@ -140,11 +140,10 @@ modale.
 | `↑` / `↓` | Parcourir les suggestions ou les éléments de liste |
 | `Retour arrière` / `Suppr` | Supprimer le caractère précédent/suivant |
 
-Dans un panneau ouvert, `Ctrl + A`, `Ctrl + C`, `Ctrl + X`, `Ctrl + V` et
-`Ctrl + Z` s’appliquent à l’édition ou à la sélection du panneau. Dans
-l’Explorateur de fichiers, `Alt + ←`/`Alt + →` parcourent l’historique,
-`Retour arrière` remonte au dossier parent et `Entrée` ouvre le fichier ou
-valide l’action principale.
+Dans les fichiers du projet, `Tab`/`Maj + Tab` et les flèches parcourent les
+éléments ; `Entrée` ouvre une vidéo ou active une bande, `F2` renomme
+l’élément sélectionné, `Maj + F10` ouvre le menu contextuel et `Échap` ferme
+le panneau.
 
 ## Fenêtre secondaire
 

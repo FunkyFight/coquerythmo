@@ -14,13 +14,13 @@ pub mod connect_modal;
 pub mod context_menu;
 pub mod dropdown;
 pub mod export_modal;
+pub mod file_explorer;
 pub mod focus;
 pub mod font_dropdown;
 pub mod icon_button;
 pub mod icons;
 pub mod interactive;
 pub mod invitation_modal;
-pub mod language_modal;
 pub mod layout;
 pub mod license_badge;
 pub mod microphone_modal;
@@ -44,6 +44,7 @@ pub mod shortcut_panel;
 pub mod side_panel;
 pub mod slider;
 pub mod tab_button;
+pub mod task_row;
 pub mod text_button;
 pub mod text_input;
 pub mod theme;
@@ -72,7 +73,7 @@ use crate::recording::{CaptureState, RecordingProject};
 use crate::render_index::ProjectRenderIndex;
 
 use self::actor_icon_cache::ActorIconCache;
-use self::focus::{AccessibleNode, FocusId, FocusManager};
+use self::focus::{AccessibleNode, AccessibleRole, FocusId, FocusManager};
 use self::icons::IconAtlas;
 use self::modal_host::ModalHost;
 use self::project_transfer_modal::{ProjectTransferAction, ProjectTransferModal};
@@ -89,6 +90,8 @@ pub struct ProjectLoadUi {
     pub label: String,
     pub phase: String,
     pub progress: f32,
+    /// Index into `task_row::LOADING_STEP_KEYS` for the expanded sub-steps.
+    pub stage_index: usize,
 }
 
 pub struct Ui {
@@ -144,11 +147,15 @@ pub struct Ui {
     pub brush_color_presets: [[f32; 4]; 8],
     pub brush_color_preset_index: usize,
     pub toasts: toast::ToastManager,
+    /// Expanded state of the background task rows (top-center card).
+    pub task_rows: task_row::TaskRowsState,
     /// Active bande rythmo import. Set by State while a background parse runs;
-    /// the modal blocks input and exposes the current load stage.
+    /// surfaced as a task row with the current load stage.
     pub loading_project: Option<ProjectLoadUi>,
     automation_editor: automation::AutomationEditor,
     side_panel: side_panel::SidePanel,
+    file_tree: file_explorer::FileTree,
+    file_tree_animating: bool,
     focus: FocusManager,
     active_workspace: WorkspaceId,
     recording_ui: RecordingWorkspaceUi,
@@ -354,9 +361,12 @@ impl Ui {
             total_frames: 0,
             scrubbing: false,
             toasts: toast::ToastManager::new(),
+            task_rows: task_row::TaskRowsState::default(),
             loading_project: None,
             automation_editor: automation::AutomationEditor::default(),
             side_panel: side_panel::SidePanel::default(),
+            file_tree: file_explorer::FileTree::new(),
+            file_tree_animating: false,
             focus: FocusManager::default(),
             active_workspace: WorkspaceId::Rythmo,
             recording_ui: RecordingWorkspaceUi::default(),
@@ -542,9 +552,9 @@ impl Ui {
             contexts.push(InputContext::Global);
         } else if !self.is_editing_text() {
             match self.active_workspace {
-                WorkspaceId::Rythmo
-                | WorkspaceId::Voicelines
-                | WorkspaceId::ComicDubs => contexts.push(InputContext::Workspace),
+                WorkspaceId::Rythmo | WorkspaceId::Voicelines | WorkspaceId::ComicDubs => {
+                    contexts.push(InputContext::Workspace)
+                }
                 WorkspaceId::Recording => contexts.push(InputContext::Recording),
             }
             contexts.push(InputContext::Global);
@@ -695,6 +705,9 @@ impl Ui {
     }
 
     pub fn set_active_workspace(&mut self, workspace: WorkspaceId) {
+        if workspace != WorkspaceId::Rythmo {
+            self.close_file_tree();
+        }
         self.active_workspace = workspace;
         if workspace != WorkspaceId::Rythmo {
             crate::detection_foreground::clear();
@@ -1452,6 +1465,7 @@ impl Ui {
         render_index: &ProjectRenderIndex,
         render_frame: f64,
         fps: f64,
+        file_tree_data: &file_explorer::FileTreeData,
     ) -> EventResponse {
         if let UiEvent::MouseMove { x, y } = event {
             self.cursor_pos = (*x, *y);
@@ -1475,10 +1489,8 @@ impl Ui {
             self.focus_widget_at(*x, *y);
         }
 
-        // Project loading modal blocks all input while a BR is being parsed.
-        if self.loading_project.is_some() {
-            return EventResponse::Consumed;
-        }
+        // Project loading runs as a background task row: the UI stays
+        // interactive while the BR archive is parsed.
 
         if let Some(modal) = self.project_transfer_modal.as_mut() {
             if let Some(action) = modal.handle_event(event, self.screen_w, self.screen_h) {
@@ -1492,14 +1504,37 @@ impl Ui {
             return EventResponse::Consumed;
         }
 
-        // Export/proxy workers may read media extracted from a portable
-        // project. Keep the document immutable until they finish; Escape is a
+        // Export/proxy workers run on document snapshots, so the UI stays
+        // interactive while they progress in a task row. Escape remains a
         // deliberate cancellation path handled by the worker.
-        if self.export_progress.is_some() {
-            if matches!(event, UiEvent::KeyInput { text } if text == "\x1b") {
-                return EventResponse::Action(UiAction::CancelExport);
+        if self.export_progress.is_some()
+            && matches!(event, UiEvent::KeyInput { text } if text == "\x1b")
+        {
+            return EventResponse::Action(UiAction::CancelExport);
+        }
+
+        // Task rows: a click on a row header unfolds its sub-steps; clicks
+        // anywhere else on the card are consumed so they cannot reach the
+        // interface underneath.
+        if let UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } = event {
+            let rows = self.task_row_views();
+            if let Some(kind) = task_row::row_header_at(&rows, *x, *y, self.screen_w, self.screen_h)
+            {
+                match kind {
+                    task_row::TaskRowKind::Loading => {
+                        self.task_rows.loading_expanded = !self.task_rows.loading_expanded;
+                    }
+                    task_row::TaskRowKind::Export => {
+                        self.task_rows.export_expanded = !self.task_rows.export_expanded;
+                    }
+                }
+                return EventResponse::Consumed;
             }
-            return EventResponse::Consumed;
+            if task_row::card_bounds(&rows, self.screen_w, self.screen_h)
+                .is_some_and(|bounds| bounds.contains(*x, *y))
+            {
+                return EventResponse::Consumed;
+            }
         }
 
         // Toast click to dismiss
@@ -1636,6 +1671,14 @@ impl Ui {
                 let response = widget.handle_event(event);
                 if response != EventResponse::Ignored {
                     self.update_tooltip();
+                    return response;
+                }
+            }
+        }
+
+        if self.active_workspace == WorkspaceId::Rythmo && self.file_tree.is_open() {
+            if let Some(panel) = self.layout.properties {
+                if let Some(response) = self.file_tree.handle_event(event, panel, file_tree_data) {
                     return response;
                 }
             }
@@ -2586,6 +2629,7 @@ impl Ui {
     }
 
     pub fn open_side_panel(&mut self, kind: side_panel::SidePanelKind) {
+        self.close_file_tree();
         self.close_automation();
         self.props_visible = true;
         self.side_panel.open(kind);
@@ -2598,6 +2642,7 @@ impl Ui {
         kind: side_panel::SidePanelKind,
         selected_line_ids: impl IntoIterator<Item = u64>,
     ) {
+        self.close_file_tree();
         self.close_automation();
         self.props_visible = true;
         self.side_panel.open_with_selection(kind, selected_line_ids);
@@ -2621,6 +2666,60 @@ impl Ui {
 
     pub fn side_panel_open(&self) -> bool {
         self.side_panel.is_open()
+    }
+
+    // -- File tree --
+
+    pub fn toggle_file_tree(&mut self) {
+        if self.active_workspace != WorkspaceId::Rythmo {
+            return;
+        }
+        if self.file_tree.is_open() {
+            self.close_file_tree();
+        } else {
+            self.close_side_panel();
+            self.props_visible = true;
+            self.file_tree.open();
+            self.focus.push_scope(
+                "file-tree",
+                vec![AccessibleNode::focusable(
+                    "file-tree",
+                    AccessibleRole::Tree,
+                    t("file_tree.title"),
+                )],
+            );
+            self.rebuild_layout();
+        }
+    }
+
+    pub fn close_file_tree(&mut self) {
+        if self.file_tree.is_open() {
+            self.file_tree.close();
+            if self.focus.active_scope_id() == Some("file-tree") {
+                self.focus.pop_scope();
+            }
+            self.props_visible = self.side_panel.is_open();
+            self.rebuild_layout();
+        }
+    }
+
+    pub fn file_tree_open(&self) -> bool {
+        self.file_tree.is_open()
+    }
+
+    pub fn begin_rename_media_video(&mut self, id: crate::project::MediaId) {
+        self.file_tree
+            .begin_rename(crate::ui::file_explorer::RenameTarget::Video(id), "");
+    }
+
+    pub fn begin_rename_media_audio(&mut self, id: crate::project::MediaId) {
+        self.file_tree
+            .begin_rename(crate::ui::file_explorer::RenameTarget::Audio(id), "");
+    }
+
+    pub fn begin_rename_language(&mut self, id: u64) {
+        self.file_tree
+            .begin_rename(crate::ui::file_explorer::RenameTarget::Band(id), "");
     }
 
     pub fn take_selected_automation_node(&mut self) -> Option<u64> {
@@ -2679,6 +2778,57 @@ impl Ui {
         self.export_progress.is_some()
     }
 
+    /// Views of the currently running background tasks (project import,
+    /// export, proxy), rendered as expandable task rows at the top center.
+    fn task_row_views(&self) -> Vec<task_row::TaskRowView> {
+        let mut rows = Vec::new();
+        if let Some(load) = &self.loading_project {
+            let steps = task_row::LOADING_STEP_KEYS
+                .iter()
+                .enumerate()
+                .map(|(index, key)| task_row::TaskStepView {
+                    label: t(key).to_string(),
+                    state: match index.cmp(&load.stage_index) {
+                        std::cmp::Ordering::Less => task_row::TaskStepState::Done,
+                        std::cmp::Ordering::Equal => task_row::TaskStepState::Running,
+                        std::cmp::Ordering::Greater => task_row::TaskStepState::Pending,
+                    },
+                    meta: None,
+                })
+                .collect();
+            let detail = (!load.label.is_empty()).then(|| load.label.clone());
+            rows.push(task_row::TaskRowView::new(
+                task_row::TaskRowKind::Loading,
+                t("loading_project.title"),
+                detail,
+                load.progress,
+                false,
+                steps,
+                self.task_rows.loading_expanded,
+            ));
+        }
+        if let Some(progress_atomic) = &self.export_progress {
+            let progress =
+                f32::from_bits(progress_atomic.load(std::sync::atomic::Ordering::Relaxed));
+            let percent = format!("{:.0} %", progress.clamp(0.0, 1.0) * 100.0);
+            let steps = vec![task_row::TaskStepView {
+                label: self.export_label.clone(),
+                state: task_row::TaskStepState::Running,
+                meta: Some(percent),
+            }];
+            rows.push(task_row::TaskRowView::new(
+                task_row::TaskRowKind::Export,
+                self.export_label.clone(),
+                None,
+                progress,
+                true,
+                steps,
+                self.task_rows.export_expanded,
+            ));
+        }
+        rows
+    }
+
     pub fn open_project_transfer_modal(
         &mut self,
         metadata: crate::network::ProjectTransferMetadata,
@@ -2689,18 +2839,23 @@ impl Ui {
     }
 
     pub fn start_project_load(&mut self, label: String) {
+        self.task_rows.loading_expanded = false;
         self.loading_project = Some(ProjectLoadUi {
             label,
             phase: t("loading_project.reading_manifest").to_string(),
             progress: 0.0,
+            stage_index: 0,
         });
     }
 
     pub fn set_project_load_progress(&mut self, phase_key: &str, progress: f32) {
         if let Some(load) = self.loading_project.as_mut() {
-            let progress = progress.clamp(0.0, 1.0);
-            load.phase = format!("{} — {:.0} %", t(phase_key), progress * 100.0);
-            load.progress = progress;
+            load.phase = t(phase_key).to_string();
+            load.progress = progress.clamp(0.0, 1.0);
+            load.stage_index = task_row::LOADING_STEP_KEYS
+                .iter()
+                .position(|key| *key == phase_key)
+                .unwrap_or(load.stage_index);
         }
     }
 
@@ -2746,6 +2901,7 @@ impl Ui {
             || self.project_transfer_modal.is_some()
             || self.comic_dubs_ui.vertex_editor_playing()
             || self.rythmo_state.needs_animation_or_interaction()
+            || self.file_tree_animating
     }
 
     pub fn needs_background_poll(&self) -> bool {
@@ -2757,6 +2913,11 @@ impl Ui {
         if let Some(side_panel_deadline) = self.side_panel.next_cursor_blink_deadline() {
             deadline = Some(deadline.map_or(side_panel_deadline, |current| {
                 current.min(side_panel_deadline)
+            }));
+        }
+        if let Some(file_tree_deadline) = self.file_tree.next_cursor_blink_deadline() {
+            deadline = Some(deadline.map_or(file_tree_deadline, |current| {
+                current.min(file_tree_deadline)
             }));
         }
         if let Some(modal_deadline) = self
@@ -2958,6 +3119,7 @@ impl Ui {
         self.rythmo_state.is_editing()
             || self.modal_host.is_editing_text()
             || self.side_panel.is_editing_text()
+            || self.file_tree.is_editing_text()
             || self.recording_ui.is_editing_text()
             || self.voicelines_ui.is_editing_text()
             || self.comic_dubs_ui.is_editing_text()
@@ -2994,6 +3156,17 @@ impl Ui {
             .drop_accepts(self.comic_dubs_layout, x, y)
     }
 
+    pub fn file_tree_drop_target(
+        &self,
+        x: f32,
+        y: f32,
+        data: &file_explorer::FileTreeData,
+    ) -> Option<file_explorer::rows::GroupKind> {
+        self.layout
+            .properties
+            .and_then(|panel| self.file_tree.drop_target_at(panel, x, y, data))
+    }
+
     pub fn begin_comic_dubs_text_edit(
         &mut self,
         bubble_id: crate::comic_dubs::BubbleId,
@@ -3003,10 +3176,7 @@ impl Ui {
         self.rebuild_topbar(self.network_in_room);
     }
 
-    pub fn open_comic_dubs_vertex_editor(
-        &mut self,
-        bubble_id: crate::comic_dubs::BubbleId,
-    ) {
+    pub fn open_comic_dubs_vertex_editor(&mut self, bubble_id: crate::comic_dubs::BubbleId) {
         self.comic_dubs_ui.open_vertex_editor(bubble_id);
     }
 
@@ -3082,25 +3252,6 @@ impl Ui {
             .open_video_only_export(video_width, video_height, configuration);
     }
 
-    pub fn open_media_explorer(
-        &mut self,
-        languages: Vec<language_modal::LanguageListItem>,
-        active_language_id: u64,
-        media: language_modal::MediaExplorerData,
-    ) {
-        self.modal_host
-            .open_media_explorer(languages, active_language_id, media);
-    }
-
-    pub fn refresh_languages_modal(
-        &mut self,
-        languages: Vec<language_modal::LanguageListItem>,
-        active_language_id: u64,
-    ) {
-        self.modal_host
-            .refresh_languages(languages, active_language_id);
-    }
-
     pub fn open_voice_actor_modal(&mut self) {
         self.modal_host.open_voice_actor();
     }
@@ -3131,10 +3282,6 @@ impl Ui {
 
     pub fn open_recording_actor_menu(&mut self) {
         self.modal_host.open_recording_actor_menu(self.volume);
-    }
-
-    pub fn refresh_media_explorer(&mut self, media: language_modal::MediaExplorerData) {
-        self.modal_host.refresh_media_explorer(media);
     }
 
     pub fn open_room_invitation(&mut self, code: String, link: String) {
@@ -3194,10 +3341,7 @@ impl Ui {
             .open_connect_with_room(ip, port, room_code, password);
     }
 
-    pub fn open_settings_modal(
-        &mut self,
-        temporary_directory: std::path::PathBuf,
-    ) {
+    pub fn open_settings_modal(&mut self, temporary_directory: std::path::PathBuf) {
         self.modal_host.open_settings(temporary_directory);
     }
 
@@ -3317,6 +3461,7 @@ impl Ui {
         ui_scale: f32,
         video_quad: Option<(&wgpu::BindGroup, IconInstance)>,
         project: &Project,
+        file_tree_data: &file_explorer::FileTreeData,
         voicelines_project: &crate::voicelines::VoicelinesProject,
         comic_dubs_project: &crate::comic_dubs::ComicDubsProject,
         render_index: &ProjectRenderIndex,
@@ -3326,7 +3471,11 @@ impl Ui {
         waveform: &[f32],
         waveform_offset_frames: i64,
         waveform_is_instrumental: bool,
+        animation_delta: std::time::Duration,
     ) {
+        self.file_tree_animating = self
+            .file_tree
+            .animate(file_tree_data, animation_delta.as_secs_f32());
         if self.active_workspace == WorkspaceId::Voicelines {
             let selection_before = self.voicelines_ui.selected_regions().to_vec();
             self.voicelines_ui
@@ -3399,9 +3548,9 @@ impl Ui {
                 editing_line: self.rythmo_state.editing_line.is_some(),
                 editing_any: self.rythmo_state.is_editing(),
                 has_lines: project.line_count() > 0,
-                line_at_playhead: project
-                    .lines()
-                    .any(|line| current_frame >= line.start_frame && current_frame < line.end_frame()),
+                line_at_playhead: project.lines().any(|line| {
+                    current_frame >= line.start_frame && current_frame < line.end_frame()
+                }),
                 line_clipboard_available: self.line_clipboard_available,
             };
             self.shortcut_panel
@@ -3455,11 +3604,10 @@ impl Ui {
         let mut extra_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
         let mut color_picker_fg_quads: Vec<QuadInstance> = Vec::new();
 
-        // Update export label BEFORE borrowing self via labels
-        if let Some(progress_atomic) = &self.export_progress {
+        // Update the export/proxy task row title BEFORE borrowing self via
+        // labels. The percentage itself is rendered by the task row.
+        if self.export_progress.is_some() {
             use std::sync::atomic::Ordering;
-            let progress = f32::from_bits(progress_atomic.load(Ordering::Relaxed));
-            let pct = (progress.clamp(0.0, 1.0) * 100.0) as u32;
             let prefix = if self.progress_prefix.is_empty() {
                 self.export_render_backend
                     .as_ref()
@@ -3477,7 +3625,7 @@ impl Ui {
             } else {
                 &self.progress_prefix
             };
-            self.export_label = format!("{} {}%", prefix, pct);
+            self.export_label = prefix.to_string();
         }
         // Consume pending cursor click if any before starting to collect labels referencing self
         let pending_click = self.rythmo_state.pending_cursor_click.take();
@@ -3995,14 +4143,29 @@ impl Ui {
         // actor icons and the drawing layer from ever bleeding into the panel.
         if self.active_workspace == WorkspaceId::Rythmo {
             if let Some(panel) = self.layout.properties {
-                self.side_panel
-                    .render(panel, project, &mut overlay_quads, &mut overlay_labels);
+                if self.file_tree.is_open() {
+                    let file_tree = &self.file_tree;
+                    file_tree.render(
+                        panel,
+                        file_tree_data,
+                        &mut overlay_quads,
+                        &mut overlay_labels,
+                    );
+                } else {
+                    self.side_panel
+                        .render(panel, project, &mut overlay_quads, &mut overlay_labels);
+                }
             }
         }
 
         if self.active_workspace == WorkspaceId::Rythmo {
-            self.side_panel
-                .render_menus(project, &mut system_quads, &mut system_labels);
+            if self.file_tree.is_open() {
+                let file_tree = &self.file_tree;
+                file_tree.render_menus(&mut system_quads, &mut system_labels);
+            } else {
+                self.side_panel
+                    .render_menus(project, &mut system_quads, &mut system_labels);
+            }
         }
 
         // Capturing dropdowns belong above persistent overlays such as the
@@ -4186,241 +4349,16 @@ impl Ui {
             );
         }
 
-        // Bande rythmo import loading modal (on top while a background parse runs)
-        if let Some(load) = &self.loading_project {
-            let (overlay_quads, overlay_labels) = (&mut system_quads, &mut system_labels);
-            let dw = 520.0;
-            let dh = 190.0;
-            let dx = (self.screen_w - dw) / 2.0;
-            let dy = (self.screen_h - dh) / 2.0;
-
-            // Dim
-            overlay_quads.push(QuadInstance {
-                rect: [0.0, 0.0, self.screen_w, self.screen_h],
-                color: [0.0, 0.0, 0.0, 0.75],
-                color_bottom: [0.0, 0.0, 0.0, 0.75],
-                border_color: [0.0; 4],
-                border_width: 0.0,
-                border_radius: 0.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-            // Card
-            overlay_quads.push(QuadInstance {
-                rect: [dx, dy, dw, dh],
-                color: [0.22, 0.22, 0.26, 1.0],
-                color_bottom: [0.16, 0.16, 0.19, 1.0],
-                border_color: [0.45, 0.45, 0.52, 0.8],
-                border_width: 1.5,
-                border_radius: 14.0,
-                shadow_offset: [0.0, 4.0],
-                shadow_color: [0.0, 0.0, 0.0, 0.5],
-                shadow_blur: 10.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-            // Title
-            overlay_labels.push(LabelInfo {
-                text: t("loading_project.title"),
-                bounds: Rect {
-                    x: dx,
-                    y: dy + 22.0,
-                    width: dw,
-                    height: 26.0,
-                },
-                h_align: HAlign::Center,
-                v_align: VAlign::Center,
-                overflow: Overflow::Clip,
-                padding: 0.0,
-                font_size_override: Some(17.0),
-                color_override: None,
-                font_family_override: None,
-            });
-            // File name
-            overlay_labels.push(LabelInfo {
-                text: load.label.as_str(),
-                bounds: Rect {
-                    x: dx + 20.0,
-                    y: dy + 52.0,
-                    width: dw - 40.0,
-                    height: 18.0,
-                },
-                h_align: HAlign::Center,
-                v_align: VAlign::Center,
-                overflow: Overflow::Clip,
-                padding: 0.0,
-                font_size_override: Some(12.0),
-                color_override: Some([180, 180, 190]),
-                font_family_override: None,
-            });
-            // Exact stage and overall progress, updated by the background
-            // archive reader.
-            overlay_labels.push(LabelInfo {
-                text: load.phase.as_str(),
-                bounds: Rect {
-                    x: dx + 24.0,
-                    y: dy + 78.0,
-                    width: dw - 48.0,
-                    height: 22.0,
-                },
-                h_align: HAlign::Center,
-                v_align: VAlign::Center,
-                overflow: Overflow::Clip,
-                padding: 0.0,
-                font_size_override: Some(13.0),
-                color_override: Some([205, 210, 225]),
-                font_family_override: None,
-            });
-            let bx = dx + 30.0;
-            let by = dy + 120.0;
-            let bw = dw - 60.0;
-            let bh = 14.0;
-            overlay_quads.push(QuadInstance {
-                rect: [bx, by, bw, bh],
-                color: [0.10, 0.10, 0.13, 1.0],
-                color_bottom: [0.10, 0.10, 0.13, 1.0],
-                border_color: [0.30, 0.30, 0.38, 0.8],
-                border_width: 1.0,
-                border_radius: 5.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-            let fill = (bw - 4.0) * load.progress.clamp(0.0, 1.0);
-            if fill > 0.5 {
-                overlay_quads.push(QuadInstance {
-                    rect: [bx + 2.0, by + 2.0, fill, bh - 4.0],
-                    color: [0.35, 0.60, 1.0, 1.0],
-                    color_bottom: [0.25, 0.45, 0.85, 1.0],
-                    border_color: [0.0; 4],
-                    border_width: 0.0,
-                    border_radius: 5.0,
-                    shadow_offset: [0.0; 2],
-                    shadow_color: [0.0; 4],
-                    shadow_blur: 0.0,
-                    rotation: 0.0,
-                    _padding: [0.0; 2],
-                });
-            }
-        }
-
-        // Export progress modal (rendered last so it's always on top)
-        let export_progress_val = self
-            .export_progress
-            .as_ref()
-            .map(|p| f32::from_bits(p.load(std::sync::atomic::Ordering::Relaxed)))
-            .unwrap_or(0.0);
-        if self.export_progress.is_some() && export_progress_val > 0.0 {
-            let (overlay_quads, overlay_labels) = (&mut system_quads, &mut system_labels);
-            let progress = export_progress_val;
-
-            let dw = 420.0;
-            let dh = 120.0;
-            let dx = (self.screen_w - dw) / 2.0;
-            let dy = (self.screen_h - dh) / 2.0;
-
-            // Dim
-            overlay_quads.push(QuadInstance {
-                rect: [0.0, 0.0, self.screen_w, self.screen_h],
-                color: [0.0, 0.0, 0.0, 0.75],
-                color_bottom: [0.0, 0.0, 0.0, 0.75],
-                border_color: [0.0; 4],
-                border_width: 0.0,
-                border_radius: 0.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-            // Card
-            overlay_quads.push(QuadInstance {
-                rect: [dx, dy, dw, dh],
-                color: [0.22, 0.22, 0.26, 1.0],
-                color_bottom: [0.16, 0.16, 0.19, 1.0],
-                border_color: [0.45, 0.45, 0.52, 0.8],
-                border_width: 1.5,
-                border_radius: 14.0,
-                shadow_offset: [0.0, 4.0],
-                shadow_color: [0.0, 0.0, 0.0, 0.5],
-                shadow_blur: 10.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-            // Bar track
-            let bx = dx + 30.0;
-            let by = dy + 65.0;
-            let bw = dw - 60.0;
-            let bh = 14.0;
-            overlay_quads.push(QuadInstance {
-                rect: [bx, by, bw, bh],
-                color: [0.10, 0.10, 0.13, 1.0],
-                color_bottom: [0.10, 0.10, 0.13, 1.0],
-                border_color: [0.30, 0.30, 0.38, 0.8],
-                border_width: 1.0,
-                border_radius: 7.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-            // Bar fill
-            let fill = (bw - 4.0) * progress.clamp(0.0, 1.0);
-            if fill > 0.5 {
-                overlay_quads.push(QuadInstance {
-                    rect: [bx + 2.0, by + 2.0, fill, bh - 4.0],
-                    color: [0.35, 0.60, 1.0, 1.0],
-                    color_bottom: [0.25, 0.45, 0.85, 1.0],
-                    border_color: [0.0; 4],
-                    border_width: 0.0,
-                    border_radius: 5.0,
-                    shadow_offset: [0.0; 2],
-                    shadow_color: [0.0; 4],
-                    shadow_blur: 0.0,
-                    rotation: 0.0,
-                    _padding: [0.0; 2],
-                });
-            }
-            // Labels
-            overlay_labels.push(LabelInfo {
-                text: &self.export_label,
-                bounds: Rect {
-                    x: dx,
-                    y: dy + 18.0,
-                    width: dw,
-                    height: 28.0,
-                },
-                h_align: HAlign::Center,
-                v_align: VAlign::Center,
-                overflow: Overflow::Clip,
-                padding: 0.0,
-                font_size_override: Some(17.0),
-                color_override: None,
-                font_family_override: None,
-            });
-            overlay_labels.push(LabelInfo {
-                text: crate::i18n::t("progress.cancel_hint"),
-                bounds: Rect {
-                    x: dx,
-                    y: dy + 86.0,
-                    width: dw,
-                    height: 20.0,
-                },
-                h_align: HAlign::Center,
-                v_align: VAlign::Center,
-                overflow: Overflow::Clip,
-                padding: 0.0,
-                font_size_override: Some(11.0),
-                color_override: Some([160, 164, 176]),
-                font_family_override: None,
-            });
-        }
+        // Background tasks (project import, export, proxy) surface as
+        // non-blocking task rows at the top center of the screen.
+        let task_rows = self.task_row_views();
+        task_row::render_task_rows(
+            &task_rows,
+            &mut system_quads,
+            &mut system_labels,
+            self.screen_w,
+            self.screen_h,
+        );
 
         if self.active_workspace == WorkspaceId::Recording
             && self.recording_ui.page == RecordingPage::Timeline

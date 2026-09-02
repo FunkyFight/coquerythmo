@@ -46,6 +46,11 @@ pub struct ProjectData {
     pub languages: Vec<LanguageProjectData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_language_id: Option<LanguageId>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::project::MediaLibrary::is_empty"
+    )]
+    pub media_library: crate::project::MediaLibrary,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -211,6 +216,7 @@ impl ProjectData {
             },
             languages: Vec::new(),
             active_language_id: None,
+            media_library: project.media_library().clone(),
         }
     }
 
@@ -254,9 +260,14 @@ impl ProjectData {
             log::error!("Rejected project data with invalid line identifiers: {error}");
             return;
         }
+        if let Err(error) = self.validate_media_library() {
+            log::error!("Rejected project data with invalid media library: {error}");
+            return;
+        }
         if self.languages.is_empty() {
             if self.apply_single_to_project(project, target_fps) {
                 project.retain_active_language_only();
+                self.restore_media_library(project);
             }
             return;
         }
@@ -330,14 +341,18 @@ impl ProjectData {
         let Some(active_language_id) = requested_active else {
             if self.apply_single_to_project(project, target_fps) {
                 project.retain_active_language_only();
+                self.restore_media_library(project);
             }
             return;
         };
         if !project.replace_language_snapshots(snapshots, active_language_id) {
             if self.apply_single_to_project(project, target_fps) {
                 project.retain_active_language_only();
+                self.restore_media_library(project);
             }
+            return;
         }
+        self.restore_media_library(project);
     }
 
     /// Reject duplicate persisted line identifiers before mutating a project.
@@ -389,8 +404,23 @@ impl ProjectData {
         target_fps: f64,
     ) -> Result<(), String> {
         self.validate_line_ids()?;
+        self.validate_media_library()?;
         self.apply_to_project(project, target_fps);
         Ok(())
+    }
+
+    fn validate_media_library(&self) -> Result<(), String> {
+        self.media_library.validate()?;
+        for language in &self.languages {
+            language.project.validate_media_library()?;
+        }
+        Ok(())
+    }
+
+    fn restore_media_library(&self, project: &mut Project) {
+        project
+            .replace_media_library(self.media_library.clone())
+            .expect("validated media library must be restorable");
     }
 
     /// Replace only the currently selected language band. Other languages and
@@ -703,6 +733,7 @@ pub fn import_srt(path: &Path, fps: f64) -> Result<ProjectData, String> {
         drawing: DrawingData::default(),
         languages: Vec::new(),
         active_language_id: None,
+        media_library: crate::project::MediaLibrary::default(),
     })
 }
 
@@ -898,6 +929,7 @@ pub fn import_ass(path: &Path, fps: f64) -> Result<ProjectData, String> {
         drawing: DrawingData::default(),
         languages: Vec::new(),
         active_language_id: None,
+        media_library: crate::project::MediaLibrary::default(),
     })
 }
 
@@ -1219,6 +1251,7 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
         drawing: DrawingData::default(),
         languages: Vec::new(),
         active_language_id: None,
+        media_library: crate::project::MediaLibrary::default(),
     })
 }
 
@@ -1276,6 +1309,52 @@ mod tests {
                 emotion: crate::rythmo_line::TextEmotion::Bounce,
             }]
         );
+    }
+
+    #[test]
+    fn media_library_survives_project_data_roundtrip() {
+        let mut project = Project::new_with_language("Français", "fr-fr");
+        let source = project
+            .add_media_video("Original", "/videos/original.mov", None, false)
+            .unwrap();
+        let proxy = project
+            .add_media_video("Proxy", "/videos/original-proxy.mp4", Some(source), true)
+            .unwrap();
+        project
+            .add_media_video("Alternate", "/videos/alternate.mp4", None, false)
+            .unwrap();
+        project
+            .add_media_audio("Instrumental", "/audio/instrumental.flac")
+            .unwrap();
+        project.set_default_video(Some(proxy)).unwrap();
+
+        let encoded = serde_json::to_string(&ProjectData::from_project(&project, 24.0)).unwrap();
+        let decoded: ProjectData = serde_json::from_str(&encoded).unwrap();
+        let mut restored = Project::new();
+        decoded.try_apply_to_project(&mut restored, 24.0).unwrap();
+
+        assert_eq!(restored.media_library(), project.media_library());
+    }
+
+    #[test]
+    fn invalid_media_library_is_rejected_before_project_mutation() {
+        let mut data = ProjectData::from_project(&Project::new(), 24.0);
+        data.media_library = crate::project::MediaLibrary {
+            videos: vec![crate::project::MediaVideo {
+                id: 1,
+                name: "invalid".into(),
+                path: "/videos/invalid.mp4".into(),
+                proxy_of: Some(1),
+                generated: false,
+            }],
+            audios: Vec::new(),
+            default_video: None,
+        };
+
+        let mut project = Project::new();
+        let sentinel = project.add_line(0, 24, 0.5);
+        assert!(data.try_apply_to_project(&mut project, 24.0).is_err());
+        assert!(project.get_line(sentinel).is_some());
     }
 
     #[test]
@@ -1485,6 +1564,7 @@ mod tests {
             drawing: DrawingData::default(),
             languages: Vec::new(),
             active_language_id: None,
+            media_library: crate::project::MediaLibrary::default(),
         };
 
         let mut project = Project::new();
@@ -1542,6 +1622,7 @@ mod tests {
             drawing: DrawingData::default(),
             languages: Vec::new(),
             active_language_id: None,
+            media_library: crate::project::MediaLibrary::default(),
         };
 
         let (clipped, skipped) = data.clamp_to_total_frames(100);
@@ -1585,6 +1666,7 @@ mod tests {
             drawing: DrawingData { strokes: vec![] },
             languages: Vec::new(),
             active_language_id: None,
+            media_library: crate::project::MediaLibrary::default(),
         };
         data.apply_to_project(&mut project, 24.0);
         assert_eq!(project.line_count(), 1);
@@ -1633,6 +1715,7 @@ mod tests {
             drawing: DrawingData::default(),
             languages: Vec::new(),
             active_language_id: None,
+            media_library: crate::project::MediaLibrary::default(),
         };
 
         assert!(imported.apply_to_active_language(&mut project, 24.0));
@@ -1701,6 +1784,7 @@ mod tests {
             drawing: DrawingData { strokes: vec![] },
             languages: Vec::new(),
             active_language_id: None,
+            media_library: crate::project::MediaLibrary::default(),
         };
 
         let mut project = Project::new();
@@ -1786,6 +1870,7 @@ mod tests {
             drawing: DrawingData { strokes: vec![] },
             languages: Vec::new(),
             active_language_id: None,
+            media_library: crate::project::MediaLibrary::default(),
         };
         let mut project = Project::new();
         data.apply_to_project(&mut project, 24.0);
