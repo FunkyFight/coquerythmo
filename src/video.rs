@@ -85,6 +85,9 @@ pub struct VideoPlayer {
     /// Swapping the receiver retires the previous decoder (its `send` then
     /// fails) without recreating the expensive WASAPI stream on every seek.
     audio_rx_slot: Option<Arc<Mutex<Option<Receiver<Vec<f32>>>>>>,
+    /// Generation of the active feed. The callback uses it to discard samples
+    /// buffered by the previous decoder immediately when a seek occurs.
+    audio_feed_generation: Arc<AtomicU64>,
     // Positive offsets require silence before the audio begins.
     pending_audio_start_at: Option<f64>,
     pub waveform: Arc<RwLock<Vec<f32>>>,
@@ -261,6 +264,7 @@ impl VideoPlayer {
             audio_thread: None,
             audio_ready: None,
             audio_rx_slot: None,
+            audio_feed_generation: Arc::new(AtomicU64::new(0)),
             pending_audio_start_at: None,
             waveform: Arc::new(RwLock::new(Vec::new())),
             instrumental_waveform: Arc::new(RwLock::new(Vec::new())),
@@ -1113,6 +1117,10 @@ impl VideoPlayer {
         // scrub pause).
         if let (Some(clock), Some(slot)) = (&self.audio_clock, &self.audio_rx_slot) {
             let sample_rate = clock.sample_rate;
+            // Invalidate the callback's local receiver before publishing the
+            // new one. This is important when rewinding: the old decoder may
+            // already have queued chunks that otherwise play after the seek.
+            self.audio_feed_generation.fetch_add(1, Ordering::AcqRel);
             clock.reset(timeline_start_seconds);
             {
                 // Replacing the receiver disconnects the previous decoder's
@@ -1173,6 +1181,7 @@ impl VideoPlayer {
                 state.clone(),
                 channels,
                 self.recording_mix.clone(),
+                self.audio_feed_generation.clone(),
             ),
             cpal::SampleFormat::I16 => build_audio_stream::<i16>(
                 &device,
@@ -1181,6 +1190,7 @@ impl VideoPlayer {
                 state.clone(),
                 channels,
                 self.recording_mix.clone(),
+                self.audio_feed_generation.clone(),
             ),
             cpal::SampleFormat::U16 => build_audio_stream::<u16>(
                 &device,
@@ -1189,6 +1199,7 @@ impl VideoPlayer {
                 state.clone(),
                 channels,
                 self.recording_mix.clone(),
+                self.audio_feed_generation.clone(),
             ),
             sample_format => Err(format!(
                 "Unsupported audio sample format: {sample_format:?}"
@@ -1330,15 +1341,20 @@ struct AudioSampleReader {
     /// Latest decoder feed published by the UI thread. Swapped on every seek
     /// so the output stream (and this reader) can stay alive.
     slot: Arc<Mutex<Option<Receiver<Vec<f32>>>>>,
+    feed_generation: Arc<AtomicU64>,
+    observed_generation: u64,
     rx: Option<Receiver<Vec<f32>>>,
     buffer: Vec<f32>,
     pos: usize,
 }
 
 impl AudioSampleReader {
-    fn new(slot: Arc<Mutex<Option<Receiver<Vec<f32>>>>>) -> Self {
+    fn new(slot: Arc<Mutex<Option<Receiver<Vec<f32>>>>>, feed_generation: Arc<AtomicU64>) -> Self {
+        let observed_generation = feed_generation.load(Ordering::Acquire);
         Self {
             slot,
+            feed_generation,
+            observed_generation,
             rx: None,
             buffer: Vec::new(),
             pos: 0,
@@ -1352,6 +1368,13 @@ impl AudioSampleReader {
     }
 
     fn next_sample(&mut self) -> Option<f32> {
+        let generation = self.feed_generation.load(Ordering::Acquire);
+        if generation != self.observed_generation {
+            self.observed_generation = generation;
+            self.rx = None;
+            self.buffer.clear();
+            self.pos = 0;
+        }
         loop {
             if self.pos < self.buffer.len() {
                 let sample = self.buffer[self.pos];
@@ -1391,12 +1414,13 @@ fn build_audio_stream<T>(
     state: Arc<AudioOutputState>,
     output_channels: usize,
     recording_mix: Arc<RwLock<Option<Arc<RealtimeRecordingMix>>>>,
+    feed_generation: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, String>
 where
     T: Sample + SizedSample + FromSample<f32>,
 {
     let sample_rate = config.sample_rate.0;
-    let mut reader = AudioSampleReader::new(slot);
+    let mut reader = AudioSampleReader::new(slot, feed_generation);
     let err_fn = |err| log::error!("Audio stream error: {err}");
 
     device
@@ -1983,7 +2007,8 @@ mod tests {
     #[test]
     fn empty_audio_prebuffer_never_blocks_the_output_callback() {
         let slot = Arc::new(std::sync::Mutex::new(None));
-        let mut reader = AudioSampleReader::new(slot);
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut reader = AudioSampleReader::new(slot, generation);
 
         assert_eq!(reader.next_stereo(), None);
     }
@@ -1993,7 +2018,8 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         sender.send(vec![0.25, -0.5]).unwrap();
         let slot = Arc::new(std::sync::Mutex::new(Some(receiver)));
-        let mut reader = AudioSampleReader::new(slot);
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut reader = AudioSampleReader::new(slot, generation);
 
         assert_eq!(reader.next_stereo(), Some([0.25, -0.5]));
         assert_eq!(reader.next_stereo(), None);
@@ -2003,14 +2029,14 @@ mod tests {
     fn swapped_audio_feed_replaces_a_retired_decoder() {
         let (old_sender, old_receiver) = mpsc::sync_channel::<Vec<f32>>(1);
         let slot = Arc::new(std::sync::Mutex::new(Some(old_receiver)));
-        let mut reader = AudioSampleReader::new(slot.clone());
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut reader = AudioSampleReader::new(slot.clone(), generation.clone());
         old_sender.send(vec![1.0, 1.0]).unwrap();
         assert_eq!(reader.next_stereo(), Some([1.0, 1.0]));
 
-        // Seek: the old receiver is dropped, its sender disconnects, and a
-        // fresh decoder feed is published through the same slot.
-        drop(old_sender);
+        // A seek must invalidate samples already buffered in the callback.
         let (new_sender, new_receiver) = mpsc::sync_channel::<Vec<f32>>(1);
+        generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         *slot.lock().unwrap() = Some(new_receiver);
         new_sender.send(vec![0.5, -0.5]).unwrap();
 
