@@ -374,6 +374,17 @@ impl FileTree {
                     self.auto_scroll_during_drag(panel, data);
                     return Some(EventResponse::Consumed);
                 }
+                // The tree is an overlay panel. Once the pointer leaves its
+                // bounds, clear transient hover state immediately instead of
+                // leaving a spring/fade running at the edge while the rest of
+                // the workspace receives the same mouse event.
+                if !panel.contains(*x, *y) {
+                    self.hover = None;
+                    self.hover_pill = None;
+                    self.hover_pill_fade = 0.0;
+                    return None;
+                }
+
                 let hovered = self.row_at(panel, *x, *y, data);
                 if hovered != self.hover {
                     self.hover = hovered;
@@ -385,13 +396,12 @@ impl FileTree {
                     }) {
                         let pill = self.hover_pill.get_or_insert(SpringValue::at(y));
                         pill.retarget(y);
+                    } else {
+                        self.hover_pill = None;
+                        self.hover_pill_fade = 0.0;
                     }
                 }
-                if panel.contains(*x, *y) {
-                    Some(EventResponse::Consumed)
-                } else {
-                    None
-                }
+                Some(EventResponse::Consumed)
             }
             UiEvent::MousePress { x, y } => {
                 if !panel.contains(*x, *y) {
@@ -2562,6 +2572,33 @@ mod tests {
             .expect("row should be visible")
             .rect;
         (rect.x + 8.0, rect.y + rect.height * 0.5)
+    }
+
+    #[test]
+    fn leaving_the_panel_clears_transient_hover_without_affecting_panel_state() {
+        let (data, ..) = sample();
+        let mut tree = FileTree::new();
+        tree.open();
+        let (x, y) = center(&tree, &data, RowId::Root);
+
+        assert_eq!(
+            tree.handle_event(&UiEvent::MouseMove { x, y }, panel(), &data),
+            Some(EventResponse::Consumed)
+        );
+        assert_eq!(tree.hover, Some(RowId::Root));
+
+        assert_eq!(
+            tree.handle_event(
+                &UiEvent::MouseMove { x: panel().width + 20.0, y },
+                panel(),
+                &data,
+            ),
+            None
+        );
+        assert!(tree.is_open());
+        assert_eq!(tree.hover, None);
+        assert!(tree.hover_pill.is_none());
+        assert_eq!(tree.hover_pill_fade, 0.0);
     }
 
     #[test]
