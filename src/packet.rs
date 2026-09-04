@@ -32,6 +32,8 @@ pub enum Packet {
         code: String,
         username: String,
         project_huuid: Option<String>,
+        #[serde(default)]
+        project_mode: crate::protocol::InvitationProjectMode,
     },
     LeaveRoom,
     Command {

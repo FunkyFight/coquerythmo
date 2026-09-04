@@ -137,6 +137,7 @@ pub struct Ui {
     pub sync_overlay: Option<String>,
     pub sync_progress: f32,
     pub project_transfer_modal: Option<ProjectTransferModal>,
+    pub project_transfer_status: Option<crate::network::ProjectTransferStatus>,
     pub active_mode: Option<ToolMode>,
     pub brush_color: [f32; 4],
     pub brush_radius_index: usize,
@@ -365,6 +366,7 @@ impl Ui {
             sync_overlay: None,
             sync_progress: 0.0,
             project_transfer_modal: None,
+            project_transfer_status: None,
             has_video: false,
             current_frame: 0,
             total_frames: 0,
@@ -1535,6 +1537,10 @@ impl Ui {
                     }
                     task_row::TaskRowKind::Export => {
                         self.task_rows.export_expanded = !self.task_rows.export_expanded;
+                    }
+                    task_row::TaskRowKind::ProjectTransfer => {
+                        self.task_rows.project_transfer_expanded =
+                            !self.task_rows.project_transfer_expanded;
                     }
                 }
                 return EventResponse::Consumed;
@@ -2852,6 +2858,45 @@ impl Ui {
                 self.task_rows.export_expanded,
             ));
         }
+        if let Some(status) = &self.project_transfer_status {
+            let progress = if status.total_bytes == 0 {
+                0.0
+            } else {
+                status.transferred_bytes as f32 / status.total_bytes as f32
+            };
+            let steps = status
+                .participants
+                .iter()
+                .map(|participant| {
+                    let done = matches!(
+                        participant.response.as_str(),
+                        "loaded" | "refused" | "failed" | "expired" | "disconnected"
+                    );
+                    task_row::TaskStepView {
+                        label: participant.username.clone(),
+                        state: if done {
+                            task_row::TaskStepState::Done
+                        } else if matches!(participant.response.as_str(), "receiving" | "loading") {
+                            task_row::TaskStepState::Running
+                        } else {
+                            task_row::TaskStepState::Pending
+                        },
+                        meta: Some(crate::ui::project_transfer_modal::transfer_label(
+                            &participant.response,
+                        ).to_string()),
+                    }
+                })
+                .collect();
+            rows.push(task_row::TaskRowView::new(
+                task_row::TaskRowKind::ProjectTransfer,
+                t("recording.project_transfer.title"),
+                Some(crate::ui::project_transfer_modal::phase_label(&status.phase)),
+                progress,
+                false,
+                steps,
+                self.task_rows.project_transfer_expanded,
+            ));
+        }
         rows
     }
 
@@ -2890,6 +2935,7 @@ impl Ui {
     }
 
     pub fn set_project_transfer_status(&mut self, status: crate::network::ProjectTransferStatus) {
+        self.project_transfer_status = Some(status.clone());
         if let Some(modal) = self.project_transfer_modal.as_mut() {
             modal.set_status(status);
         }
@@ -2915,6 +2961,7 @@ impl Ui {
 
     pub fn close_project_transfer_modal(&mut self) {
         self.project_transfer_modal = None;
+        self.project_transfer_status = None;
     }
 
     pub fn needs_animation_or_interaction(&self) -> bool {
@@ -3310,8 +3357,21 @@ impl Ui {
         self.modal_host.open_recording_actor_menu(self.volume);
     }
 
-    pub fn open_room_invitation(&mut self, code: String, link: String) {
-        self.modal_host.open_invitation(code, link);
+    pub fn open_room_invitation(
+        &mut self,
+        code: String,
+        link: String,
+        mode: crate::protocol::InvitationProjectMode,
+    ) {
+        self.modal_host.open_invitation(code, link, mode);
+    }
+
+    pub fn set_room_invitation_link(
+        &mut self,
+        link: String,
+        mode: crate::protocol::InvitationProjectMode,
+    ) {
+        self.modal_host.set_invitation_link(link, mode);
     }
 
     pub fn open_whats_new_modal(
@@ -3362,9 +3422,20 @@ impl Ui {
         port: u16,
         room_code: &str,
         password: &str,
+        project_mode: crate::protocol::InvitationProjectMode,
+        project_huuid: Option<String>,
+        project_file_name: Option<String>,
     ) {
         self.modal_host
-            .open_connect_with_room(ip, port, room_code, password);
+            .open_connect_with_room(
+                ip,
+                port,
+                room_code,
+                password,
+                project_mode,
+                project_huuid,
+                project_file_name,
+            );
     }
 
     pub fn open_settings_modal(&mut self, temporary_directory: std::path::PathBuf) {

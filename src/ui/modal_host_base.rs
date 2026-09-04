@@ -315,6 +315,9 @@ impl ModalHost {
                 password,
                 username,
                 room_code,
+                project_mode,
+                expected_project_huuid,
+                expected_project_file_name,
             } => {
                 self.connect = None;
                 action_closed_modal(
@@ -324,6 +327,9 @@ impl ModalHost {
                         password,
                         username,
                         room_code,
+                        project_mode,
+                        expected_project_huuid,
+                        expected_project_file_name,
                     },
                     crate::i18n::t("menu.connect"),
                 )
@@ -402,6 +408,9 @@ impl ModalHost {
             }
             super::invitation_modal::InvitationModalResult::CopyCode => {
                 ModalOutcome::Action(UiAction::CopyRoomCode)
+            }
+            super::invitation_modal::InvitationModalResult::SetProjectMode(mode) => {
+                ModalOutcome::Action(UiAction::SetInvitationProjectMode(mode))
             }
         }
     }
@@ -1364,8 +1373,22 @@ impl ModalHost {
         self.recording_actor_menu = Some(RecordingActorMenuModal::new(volume));
     }
 
-    pub fn open_invitation(&mut self, code: String, link: String) {
-        self.invitation = Some(InvitationModal::new(code, link));
+    pub fn open_invitation(
+        &mut self,
+        code: String,
+        link: String,
+        mode: crate::protocol::InvitationProjectMode,
+    ) {
+        let mut modal = InvitationModal::new(code, link);
+        modal.project_mode = mode;
+        self.invitation = Some(modal);
+    }
+
+    pub fn set_invitation_link(&mut self, link: String, mode: crate::protocol::InvitationProjectMode) {
+        if let Some(modal) = self.invitation.as_mut() {
+            modal.link = link;
+            modal.project_mode = mode;
+        }
     }
 
     pub fn open_voice_actor(&mut self) {
@@ -1442,9 +1465,19 @@ impl ModalHost {
     /// Open the connect modal in "join" mode with the room code pre-filled
     /// (used by `coquerythmo://join...` quick-setup links, where ip+password
     /// come from the URL and only the username is left to type).
-    pub fn open_connect_with_room(&mut self, ip: &str, port: u16, room_code: &str, password: &str) {
-        let modal =
+    pub fn open_connect_with_room(
+        &mut self,
+        ip: &str,
+        port: u16,
+        room_code: &str,
+        password: &str,
+        project_mode: crate::protocol::InvitationProjectMode,
+        project_huuid: Option<String>,
+        project_file_name: Option<String>,
+    ) {
+        let mut modal =
             super::connect_modal::ConnectModal::new_with_room(ip, port, room_code, password);
+        modal.set_project_invitation(project_mode, project_huuid, project_file_name);
         self.connect = Some(modal);
     }
 

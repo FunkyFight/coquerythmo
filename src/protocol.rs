@@ -23,6 +23,21 @@ pub const DEFAULT_SERVER_PORT: u16 = 9050;
 const KIND_HOST: &str = "h";
 const KIND_JOIN: &str = "j";
 
+/// Behaviour requested by a generated room invitation.
+///
+/// The mode is carried by the invitation URL, rather than being a global
+/// room setting: a director can therefore give one person a normal invite
+/// and another person an invite which prepares the matching project (or
+/// transfers it automatically).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InvitationProjectMode {
+    #[default]
+    None,
+    RequireMatch,
+    AutoTransfer,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProtocolKind {
     Host,
@@ -53,6 +68,18 @@ pub struct ProtocolPayload {
     /// Local path of the `.coquerythmo` project to open — `host` only.
     #[serde(rename = "j", default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// Project policy requested by a join invitation.
+    #[serde(rename = "m", default, skip_serializing_if = "is_default_project_mode")]
+    pub project_mode: InvitationProjectMode,
+    /// The project identity shown by the join onboarding.
+    #[serde(rename = "i", default, skip_serializing_if = "Option::is_none")]
+    pub project_huuid: Option<String>,
+    #[serde(rename = "f", default, skip_serializing_if = "Option::is_none")]
+    pub project_file_name: Option<String>,
+}
+
+fn is_default_project_mode(mode: &InvitationProjectMode) -> bool {
+    *mode == InvitationProjectMode::None
 }
 
 impl ProtocolPayload {
@@ -69,6 +96,9 @@ impl ProtocolPayload {
             password: password.into(),
             username: Some(username.into()).filter(|u| !u.trim().is_empty()),
             project: Some(project.into()).filter(|p| !p.trim().is_empty()),
+            project_mode: InvitationProjectMode::None,
+            project_huuid: None,
+            project_file_name: None,
         }
     }
 
@@ -80,7 +110,25 @@ impl ProtocolPayload {
             password: password.into(),
             username: None,
             project: None,
+            project_mode: InvitationProjectMode::None,
+            project_huuid: None,
+            project_file_name: None,
         }
+    }
+
+    pub fn join_with_project(
+        server: &str,
+        password: impl Into<String>,
+        code: impl Into<String>,
+        mode: InvitationProjectMode,
+        project_huuid: impl Into<String>,
+        project_file_name: impl Into<String>,
+    ) -> Self {
+        let mut payload = Self::join(server, password, code);
+        payload.project_mode = mode;
+        payload.project_huuid = Some(project_huuid.into()).filter(|value| !value.trim().is_empty());
+        payload.project_file_name = Some(project_file_name.into()).filter(|value| !value.trim().is_empty());
+        payload
     }
 
     pub fn kind(&self) -> Option<ProtocolKind> {
@@ -141,7 +189,21 @@ impl ProtocolPayload {
                         .as_deref()
                         .is_some_and(|p| !p.trim().is_empty())
             }
-            Some(ProtocolKind::Join) => self.code.as_deref().is_some_and(|c| !c.trim().is_empty()),
+            Some(ProtocolKind::Join) => {
+                let code_ok = self.code.as_deref().is_some_and(|c| !c.trim().is_empty());
+                let project_ok = match self.project_mode {
+                    InvitationProjectMode::None => true,
+                    InvitationProjectMode::RequireMatch | InvitationProjectMode::AutoTransfer => {
+                        self.project_huuid
+                            .as_deref()
+                            .is_some_and(|id| !id.trim().is_empty())
+                            && self.project_file_name.as_deref().is_some_and(|name| {
+                                name.to_ascii_lowercase().ends_with(".coquerythmo")
+                            })
+                    }
+                };
+                code_ok && project_ok
+            }
             None => false,
         }
     }
@@ -264,6 +326,9 @@ mod tests {
             password: "p".into(),
             username: None,
             project: None,
+            project_mode: InvitationProjectMode::None,
+            project_huuid: None,
+            project_file_name: None,
         };
         assert!(payload.kind().is_none());
         assert!(!payload.is_valid());
@@ -295,6 +360,29 @@ mod tests {
         assert!(payload.is_valid());
         let decoded = ProtocolPayload::from_url(&payload.to_url()).expect("valid join URI");
         assert!(decoded.username.is_none());
+    }
+
+    #[test]
+    fn project_invitation_roundtrips_its_policy_and_identity() {
+        let payload = ProtocolPayload::join_with_project(
+            "example.com",
+            "p",
+            "ABCD",
+            InvitationProjectMode::AutoTransfer,
+            "huuid-42",
+            "episode.coquerythmo",
+        );
+        let decoded = ProtocolPayload::from_url(&payload.to_url()).unwrap();
+        assert_eq!(decoded.project_mode, InvitationProjectMode::AutoTransfer);
+        assert_eq!(decoded.project_huuid.as_deref(), Some("huuid-42"));
+        assert!(decoded.is_valid());
+    }
+
+    #[test]
+    fn project_invitation_requires_identity() {
+        let mut payload = ProtocolPayload::join("example.com", "p", "ABCD");
+        payload.project_mode = InvitationProjectMode::RequireMatch;
+        assert!(!payload.is_valid());
     }
 
     #[test]

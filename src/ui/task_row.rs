@@ -12,6 +12,7 @@ use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, VAlign}
 pub enum TaskRowKind {
     Loading,
     Export,
+    ProjectTransfer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +78,7 @@ impl TaskRowView {
 pub struct TaskRowsState {
     pub loading_expanded: bool,
     pub export_expanded: bool,
+    pub project_transfer_expanded: bool,
 }
 
 /// Sub-step keys of a project load, in execution order.

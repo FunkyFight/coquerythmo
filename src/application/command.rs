@@ -221,6 +221,8 @@ pub enum UiAction {
     OpenRoomInvitation,
     /// Copy the current online room code to the clipboard.
     CopyRoomCode,
+    /// Change the project policy encoded in the current room invitation.
+    SetInvitationProjectMode(crate::protocol::InvitationProjectMode),
     CloseApp,
     CloseSecondaryDisplay,
     Undo,
@@ -621,6 +623,9 @@ pub enum UiAction {
         password: String,
         username: String,
         room_code: Option<String>,
+        project_mode: crate::protocol::InvitationProjectMode,
+        expected_project_huuid: Option<String>,
+        expected_project_file_name: Option<String>,
     },
     NetworkDisconnect,
     // Settings

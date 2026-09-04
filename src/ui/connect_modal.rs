@@ -5,6 +5,7 @@ use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent
 use super::text_input;
 
 use crate::i18n::t;
+use crate::protocol::InvitationProjectMode;
 
 const CARD_W: f32 = 620.0;
 const CARD_PADDING: f32 = 32.0;
@@ -25,6 +26,9 @@ pub struct ConnectModal {
     endpoint: String,
     masked_password: String,
     username_only: bool,
+    pub project_mode: InvitationProjectMode,
+    pub expected_project_huuid: Option<String>,
+    pub expected_project_file_name: Option<String>,
 }
 
 impl ConnectModal {
@@ -45,6 +49,9 @@ impl ConnectModal {
             endpoint: format!("{ip}:{port}"),
             masked_password: "•".repeat(net.password.chars().count()),
             username_only: false,
+            project_mode: InvitationProjectMode::None,
+            expected_project_huuid: None,
+            expected_project_file_name: None,
         };
         modal.input.activate(&modal.fields[0]);
         modal
@@ -68,9 +75,23 @@ impl ConnectModal {
             endpoint: format!("{ip}:{port}"),
             masked_password: "•".repeat(password.chars().count()),
             username_only: true,
+            project_mode: InvitationProjectMode::None,
+            expected_project_huuid: None,
+            expected_project_file_name: None,
         };
         modal.input.activate(&modal.fields[Self::USERNAME]);
         modal
+    }
+
+    pub fn set_project_invitation(
+        &mut self,
+        mode: InvitationProjectMode,
+        project_huuid: Option<String>,
+        file_name: Option<String>,
+    ) {
+        self.project_mode = mode;
+        self.expected_project_huuid = project_huuid;
+        self.expected_project_file_name = file_name;
     }
 
     pub fn field_count(&self) -> usize {
@@ -186,6 +207,9 @@ impl ConnectModal {
             room_code: self
                 .join
                 .then(|| self.fields[Self::ROOM_CODE].trim().to_uppercase()),
+            project_mode: self.project_mode,
+            expected_project_huuid: self.expected_project_huuid.clone(),
+            expected_project_file_name: self.expected_project_file_name.clone(),
         }
     }
 
@@ -671,6 +695,9 @@ pub enum ConnectModalResult {
         password: String,
         username: String,
         room_code: Option<String>,
+        project_mode: InvitationProjectMode,
+        expected_project_huuid: Option<String>,
+        expected_project_file_name: Option<String>,
     },
 }
 
@@ -689,6 +716,9 @@ mod tests {
             endpoint: "127.0.0.1:9050".into(),
             masked_password: String::new(),
             username_only: false,
+            project_mode: InvitationProjectMode::None,
+            expected_project_huuid: None,
+            expected_project_file_name: None,
         }
     }
 

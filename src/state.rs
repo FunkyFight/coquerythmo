@@ -554,6 +554,7 @@ pub struct State {
     project_transfer: Option<ProjectTransferRuntime>,
     project_transfer_prepare: Option<Receiver<Result<ProjectTransferMetadata, String>>>,
     project_transfer_source: Option<PathBuf>,
+    project_transfer_target: Option<String>,
     project_transfer_send: Option<(String, Receiver<Result<(), String>>)>,
     project_transfer_loading_request: Option<String>,
     project_transfer_waiting_dismissed: Option<String>,
@@ -573,6 +574,8 @@ pub struct State {
     /// Pending `coquerythmo://` quick-setup flow awaiting either a project
     /// save/close decision, a project import or (join only) a username prompt.
     pending_protocol: Option<PendingProtocolFlow>,
+    pending_join_after_load: Option<PendingJoinAfterLoad>,
+    required_room_project: Option<(String, Option<String>)>,
 }
 
 /// Internal state machine for protocol quick-setup links. At most one flow
@@ -581,6 +584,17 @@ pub struct State {
 pub(crate) struct PendingProtocolFlow {
     pub(crate) payload: ProtocolPayload,
     pub(crate) stage: PendingProtocolStage,
+}
+
+struct PendingJoinAfterLoad {
+    ip: String,
+    port: u16,
+    password: String,
+    username: String,
+    room_code: String,
+    mode: crate::protocol::InvitationProjectMode,
+    expected_huuid: Option<String>,
+    expected_file_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -699,6 +713,7 @@ impl State {
             project_transfer: None,
             project_transfer_prepare: None,
             project_transfer_source: None,
+            project_transfer_target: None,
             project_transfer_send: None,
             project_transfer_loading_request: None,
             project_transfer_waiting_dismissed: None,
@@ -726,6 +741,8 @@ impl State {
             last_progress_announcement: None,
             last_recording_countdown_second: None,
             pending_protocol: None,
+            pending_join_after_load: None,
+            required_room_project: None,
         }
     }
 
@@ -3480,6 +3497,7 @@ impl State {
             runtime.receiver.cancel();
         }
         self.project_transfer = None;
+        self.project_transfer_target = None;
         self.project_transfer_loading_request = None;
         self.ui_shell.ui.close_project_transfer_modal();
         self.ui_shell.ui.sync_overlay = None;
@@ -3489,6 +3507,10 @@ impl State {
     }
 
     pub fn request_actors_project_transfer(&mut self) {
+        self.request_actors_project_transfer_to(None);
+    }
+
+    fn request_actors_project_transfer_to(&mut self, target_member_id: Option<String>) {
         if !self.collaboration.network.is_in_room()
             || !matches!(
                 self.ui_shell.ui.recording_role(),
@@ -3497,6 +3519,7 @@ impl State {
         {
             return;
         }
+        self.project_transfer_target = target_member_id;
         let Some(path) = self.project_session.project_path.clone() else {
             self.show_toast(
                 crate::i18n::t("recording.project_transfer_requires_saved"),
@@ -4054,10 +4077,21 @@ impl State {
         port: u16,
         room_code: &str,
         password: &str,
+        project_mode: crate::protocol::InvitationProjectMode,
+        project_huuid: Option<String>,
+        project_file_name: Option<String>,
     ) {
         self.ui_shell
             .ui
-            .open_connect_modal_with_room(ip, port, room_code, password);
+            .open_connect_modal_with_room(
+                ip,
+                port,
+                room_code,
+                password,
+                project_mode,
+                project_huuid,
+                project_file_name,
+            );
         if let Some(first) = self
             .ui_shell
             .ui
@@ -6338,6 +6372,7 @@ impl State {
                     self.project_transfer = None;
                     self.project_transfer_prepare = None;
                     self.project_transfer_source = None;
+                    self.project_transfer_target = None;
                     self.project_transfer_send = None;
                     self.project_transfer_loading_request = None;
                     self.project_transfer_waiting_dismissed = None;
@@ -6367,10 +6402,21 @@ impl State {
                     member_id,
                     project_huuid,
                     project_matches,
+                    project_mode,
+                    project_file_name,
                 } => {
                     self.collaboration.network.member_id = Some(member_id);
-                    self.collaboration.network.project_huuid = Some(project_huuid);
+                    self.collaboration.network.project_huuid = Some(project_huuid.clone());
                     self.collaboration.network.project_matches = project_matches;
+                    self.collaboration.network.invitation_project_mode = project_mode;
+                    self.collaboration.network.invitation_project_file_name = project_file_name.clone();
+                    if project_mode == crate::protocol::InvitationProjectMode::RequireMatch
+                        && !project_matches
+                        && self.jobs.pending_import_job.is_none()
+                        && self.pending_join_after_load.is_none()
+                    {
+                        self.start_required_room_project_load(project_huuid, project_file_name);
+                    }
                     if project_matches && !self.collaboration.network.sync_requested_this_session {
                         self.collaboration.network.sync_requested_this_session = true;
                         self.collaboration
@@ -6441,20 +6487,28 @@ impl State {
                 IncomingMessage::ActorRequestCloseProjectTransferWaiting => {
                     self.close_project_transfer_waiting()
                 }
+                IncomingMessage::ProjectTransferAutoRequest { member_id } => {
+                    // The server only emits this to the director. Reuse the
+                    // normal request path so automatic invitations retain
+                    // the same save, metadata and chunk integrity checks.
+                    self.request_actors_project_transfer_to(Some(member_id));
+                }
                 IncomingMessage::ProjectTransferRequest(metadata) => {
                     // A fresh in-memory document is not a local project to protect:
                     // only offer the save-and-replace path when a saved project exists.
                     let dirty =
                         self.project_session.project_path.is_some() && self.project_session.dirty;
-                    self.ui_shell
-                        .ui
-                        .open_project_transfer_modal(metadata.clone(), false, dirty);
                     self.project_transfer = Some(ProjectTransferRuntime {
                         metadata,
                         status: None,
                         receiver: crate::file_transfer::FileTransferReceiver::default(),
                     });
                     self.project_transfer_waiting_dismissed = None;
+                    self.ui_shell.ui.open_project_transfer_modal(
+                        self.project_transfer.as_ref().expect("transfer exists").metadata.clone(),
+                        false,
+                        dirty,
+                    );
                     self.announce_open_container(
                         crate::i18n::t("recording.project_transfer.title"),
                         crate::i18n::t("recording.project_transfer_request_received").to_string(),
@@ -6525,6 +6579,7 @@ impl State {
                                 }
                             }
                             self.project_transfer_source = None;
+                            self.project_transfer_target = None;
                             self.project_transfer_send = None;
                             self.narration.publish_progress(String::new(), None);
                             self.ui_shell.ui.close_project_transfer_modal();
@@ -9321,13 +9376,17 @@ impl State {
                 );
                 self.collaboration
                     .network
-                    .request_project_transfer(&metadata);
+                    .request_project_transfer_to(
+                        &metadata,
+                        self.project_transfer_target.as_deref(),
+                    );
                 self.ui_shell.ui.sync_overlay =
                     Some(crate::i18n::t("recording.project_transfer_waiting").into());
                 self.ui_shell.ui.sync_progress = 0.0;
             }
             Err(error) => {
                 self.project_transfer_source = None;
+                self.project_transfer_target = None;
                 self.ui_shell.ui.sync_overlay = None;
                 self.show_toast(
                     format!("{} {error}", crate::i18n::t("toast.save_failed")),
@@ -9411,6 +9470,32 @@ impl State {
 
         match result {
             Ok(mut loaded) => {
+                if let Some(pending) = self.pending_join_after_load.as_ref() {
+                    let loaded_huuid = loaded.huuid.as_ref().map(ToString::to_string);
+                    let name_matches = pending.expected_file_name.as_deref().is_none_or(|name| {
+                        job.br_path.file_name().and_then(|value| value.to_str()) == Some(name)
+                    });
+                    if loaded_huuid != pending.expected_huuid || !name_matches {
+                        self.pending_join_after_load = None;
+                        self.ui_shell.ui.finish_project_load();
+                        self.show_toast(crate::i18n::t("invite.project_mismatch"), 7.0);
+                        return true;
+                    }
+                }
+                if let Some((expected_huuid, expected_file_name)) =
+                    self.required_room_project.as_ref()
+                {
+                    let loaded_huuid = loaded.huuid.as_ref().map(ToString::to_string);
+                    let name_matches = expected_file_name.as_deref().is_none_or(|name| {
+                        job.br_path.file_name().and_then(|value| value.to_str()) == Some(name)
+                    });
+                    if loaded_huuid.as_deref() != Some(expected_huuid.as_str()) || !name_matches {
+                        self.required_room_project = None;
+                        self.ui_shell.ui.finish_project_load();
+                        self.show_toast(crate::i18n::t("invite.project_mismatch"), 7.0);
+                        return true;
+                    }
+                }
                 let is_legacy_json = loaded.is_legacy_json();
                 let loaded_huuid = loaded.huuid.clone();
                 let loaded_transaction_journal = loaded.transaction_journal.clone();
@@ -9596,6 +9681,29 @@ impl State {
                     );
                 }
                 self.rebuild_topbar_for_network();
+                if self.required_room_project.take().is_some()
+                    && self.collaboration.network.is_in_room()
+                {
+                    self.collaboration.network.project_matches = true;
+                    self.collaboration.network.sync_requested_this_session = true;
+                    self.collaboration
+                        .network
+                        .send_raw("request_sync", serde_json::json!({}));
+                }
+                if let Some(pending) = self.pending_join_after_load.take() {
+                    self.connect_network_packet(
+                        pending.ip,
+                        pending.port,
+                        pending.password,
+                        crate::packet::Packet::JoinRoom {
+                            code: pending.room_code,
+                            username: pending.username,
+                            project_huuid: self.project_session.huuid.as_ref().map(ToString::to_string),
+                            project_mode: pending.mode,
+                        },
+                        pending.mode,
+                    );
+                }
                 log::info!("Project imported from {}", job.br_path.display());
                 self.narration.announce_event(AccessibilityEvent::Success {
                     message: format!(
@@ -10089,8 +10197,38 @@ impl State {
         };
         let cfg = crate::config::get().clone();
         let server = format!("{}:{}", cfg.network.server_ip, cfg.network.server_port);
-        let link = ProtocolPayload::join(&server, cfg.network.password, code.clone()).to_url();
-        self.ui_shell.ui.open_room_invitation(code, link);
+        let mode = self.collaboration.network.invitation_project_mode;
+        let link = if mode == crate::protocol::InvitationProjectMode::None {
+            ProtocolPayload::join(&server, cfg.network.password, code.clone()).to_url()
+        } else {
+            let project_huuid = self
+                .project_session
+                .huuid
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            let file_name = self
+                .project_session
+                .project_path
+                .as_deref()
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "projet.coquerythmo".into());
+            ProtocolPayload::join_with_project(
+                &server,
+                cfg.network.password,
+                code.clone(),
+                mode,
+                project_huuid,
+                file_name.clone(),
+            )
+            .to_url()
+        };
+        self.ui_shell.ui.open_room_invitation(
+            code,
+            link,
+            mode,
+        );
         let first = self
             .ui_shell
             .ui
@@ -10100,6 +10238,198 @@ impl State {
             .map(|modal| modal.keyboard_focus_label())
             .unwrap_or_else(|| crate::i18n::t("invite.copy_link").to_string());
         self.announce_open_container(crate::i18n::t("invite.title"), first);
+    }
+
+    pub fn set_room_invitation_project_mode(
+        &mut self,
+        mode: crate::protocol::InvitationProjectMode,
+    ) {
+        let Some(code) = self.collaboration.network.room_code.clone() else { return };
+        let cfg = crate::config::get().clone();
+        let server = format!("{}:{}", cfg.network.server_ip, cfg.network.server_port);
+        let Some(project_huuid) = self.project_session.huuid.as_ref().map(ToString::to_string) else {
+            self.show_toast("Enregistrez le projet avant de créer une invitation avec projet." , 5.0);
+            self.ui_shell.ui.set_room_invitation_link(
+                crate::protocol::ProtocolPayload::join(&server, cfg.network.password, code).to_url(),
+                crate::protocol::InvitationProjectMode::None,
+            );
+            return;
+        };
+        let file_name = self
+            .project_session
+            .project_path
+            .as_deref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "projet.coquerythmo".into());
+        let link = if mode == crate::protocol::InvitationProjectMode::None {
+            crate::protocol::ProtocolPayload::join(&server, cfg.network.password, code).to_url()
+        } else {
+            crate::protocol::ProtocolPayload::join_with_project(
+                &server,
+                cfg.network.password,
+                code,
+                mode,
+                project_huuid,
+                file_name.clone(),
+            ).to_url()
+        };
+        let file_name_for_server = (mode != crate::protocol::InvitationProjectMode::None)
+            .then_some(file_name.as_str());
+        self.collaboration
+            .network
+            .invitation_project_mode = mode;
+        self.collaboration.network.invitation_project_file_name =
+            file_name_for_server.map(ToOwned::to_owned);
+        self.collaboration
+            .network
+            .set_project_invitation_mode(mode, file_name_for_server);
+        self.ui_shell.ui.set_room_invitation_link(link, mode);
+    }
+
+    /// Connect using an invitation policy. A matching-project invitation is
+    /// deliberately resolved before opening the socket so the actor never
+    /// appears in the room with the wrong document for even one frame.
+    pub fn begin_network_connect_with_options(
+        &mut self,
+        ip: String,
+        port: u16,
+        password: String,
+        username: String,
+        room_code: Option<String>,
+        mode: crate::protocol::InvitationProjectMode,
+        expected_huuid: Option<String>,
+        expected_file_name: Option<String>,
+        current_huuid: Option<String>,
+    ) {
+        let Some(code) = room_code else {
+            let Some(project_huuid) = current_huuid else {
+                self.show_toast(crate::i18n::t("toast.network_requires_saved_project"), 6.0);
+                return;
+            };
+            self.connect_network_packet(
+                ip,
+                port,
+                password,
+                crate::packet::Packet::CreateRoom { username, project_huuid },
+                mode,
+            );
+            return;
+        };
+
+        if mode == crate::protocol::InvitationProjectMode::RequireMatch {
+            let already_matches = expected_huuid.is_some()
+                && current_huuid == expected_huuid
+                && self.project_session.project_path.is_some()
+                && !self.project_session.dirty;
+            if !already_matches {
+                let recent = crate::config::recent_projects()
+                    .into_iter()
+                    .find(|recent| {
+                        recent.br_path.is_file()
+                            && expected_file_name.as_deref().is_some_and(|name| {
+                                recent.br_path.file_name().and_then(|value| value.to_str())
+                                    == Some(name)
+                            })
+                    })
+                    .map(|recent| recent.br_path);
+                let path = if let Some(path) = recent {
+                    self.show_toast(crate::i18n::t("invite.quick_load"), 3.0);
+                    path
+                } else {
+                    let mut dialog = rfd::FileDialog::new()
+                        .set_title(crate::i18n::t("invite.select_project"))
+                        .add_filter("Coquerythmo", &[crate::project_archive::PROJECT_EXTENSION]);
+                    if let Some(path) = self.project_session.project_path.as_deref() {
+                        if let Some(parent) = path.parent().filter(|parent| parent.is_dir()) {
+                            dialog = dialog.set_directory(parent);
+                        }
+                    }
+                    let Some(path) = dialog.pick_file() else {
+                        self.show_toast(crate::i18n::t("invite.project_required"), 5.0);
+                        return;
+                    };
+                    path
+                };
+                self.pending_join_after_load = Some(PendingJoinAfterLoad {
+                    ip,
+                    port,
+                    password,
+                    username,
+                    room_code: code,
+                    mode,
+                    expected_huuid,
+                    expected_file_name,
+                });
+                self.start_br_import(path);
+                return;
+            }
+        }
+
+        self.connect_network_packet(
+            ip,
+            port,
+            password,
+            crate::packet::Packet::JoinRoom {
+                code,
+                username,
+                project_huuid: current_huuid,
+                project_mode: mode,
+            },
+            mode,
+        );
+    }
+
+    fn start_required_room_project_load(
+        &mut self,
+        expected_huuid: String,
+        expected_file_name: Option<String>,
+    ) {
+        let recent = crate::config::recent_projects()
+            .into_iter()
+            .find(|recent| {
+                recent.br_path.is_file()
+                    && expected_file_name.as_deref().is_some_and(|name| {
+                        recent.br_path.file_name().and_then(|value| value.to_str()) == Some(name)
+                    })
+            })
+            .map(|recent| recent.br_path);
+        let path = if let Some(path) = recent {
+            self.show_toast(crate::i18n::t("invite.quick_load"), 3.0);
+            path
+        } else {
+            let mut dialog = rfd::FileDialog::new()
+                .set_title(crate::i18n::t("invite.select_project"))
+                .add_filter("Coquerythmo", &[crate::project_archive::PROJECT_EXTENSION]);
+            if let Some(current) = self.project_session.project_path.as_deref() {
+                if let Some(parent) = current.parent().filter(|parent| parent.is_dir()) {
+                    dialog = dialog.set_directory(parent);
+                }
+            }
+            let Some(path) = dialog.pick_file() else {
+                self.show_toast(crate::i18n::t("invite.project_required"), 5.0);
+                return;
+            };
+            path
+        };
+        self.required_room_project = Some((expected_huuid, expected_file_name));
+        self.start_br_import(path);
+    }
+
+    fn connect_network_packet(
+        &mut self,
+        ip: String,
+        port: u16,
+        password: String,
+        packet: crate::packet::Packet,
+        mode: crate::protocol::InvitationProjectMode,
+    ) {
+        self.collaboration.network.invitation_project_mode = mode;
+        self.begin_network_connect();
+        self.collaboration
+            .network
+            .connect_and_send(&ip, port, &password, packet);
+        self.rebuild_topbar_for_network();
     }
 
     pub fn copy_room_code_to_clipboard(&mut self) {
@@ -10233,7 +10563,15 @@ impl State {
         }
         // The invitation never embeds a username: the recipient must provide
         // their own, while the modal keeps the other link fields hidden.
-        self.open_connect_modal_with_room(&ip, port, &code, &payload.password);
+        self.open_connect_modal_with_room(
+            &ip,
+            port,
+            &code,
+            &payload.password,
+            payload.project_mode,
+            payload.project_huuid,
+            payload.project_file_name,
+        );
     }
 
     /// Resumes the pending host flow once the user has saved (or discarded)

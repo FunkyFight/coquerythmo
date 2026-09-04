@@ -442,7 +442,7 @@ impl ProjectTransferModal {
     }
 }
 
-fn transfer_label(response: &str) -> &'static str {
+pub(crate) fn transfer_label(response: &str) -> &'static str {
     match response {
         "saving" => t("recording.project_transfer.saving"),
         "accepted" => t("recording.project_transfer.accepted"),
@@ -453,5 +453,15 @@ fn transfer_label(response: &str) -> &'static str {
         "loaded" => t("recording.project_transfer.loaded"),
         "failed" => t("recording.project_transfer.failed"),
         _ => t("recording.project_transfer.pending"),
+    }
+}
+
+pub(crate) fn phase_label(phase: &str) -> String {
+    match phase {
+        "transferring" => t("recording.project_transfer.receiving").to_string(),
+        "finishing" => t("recording.project_transfer.loading").to_string(),
+        "completed" => t("recording.project_transfer.complete").to_string(),
+        "cancelled" => t("recording.project_transfer.failed").to_string(),
+        _ => t("recording.project_transfer.pending").to_string(),
     }
 }

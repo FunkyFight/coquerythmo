@@ -109,6 +109,9 @@ pub enum IncomingMessage {
         member_id: String,
         project_huuid: String,
         project_matches: bool,
+        #[allow(dead_code)]
+        project_mode: crate::protocol::InvitationProjectMode,
+        project_file_name: Option<String>,
     },
     RoomState {
         members: Vec<NetworkMember>,
@@ -149,6 +152,7 @@ pub enum IncomingMessage {
         reading_bar_offset_percent: f32,
     },
     ActorRequestCloseProjectTransferWaiting,
+    ProjectTransferAutoRequest { member_id: String },
     ProjectTransferRequest(ProjectTransferMetadata),
     ProjectTransferReady(ProjectTransferMetadata),
     ProjectTransferStatus(ProjectTransferStatus),
@@ -212,6 +216,9 @@ pub struct NetworkClient {
     pub member_id: Option<String>,
     pub project_huuid: Option<String>,
     pub project_matches: bool,
+    /// Policy carried by the invitation used for this connection.
+    pub invitation_project_mode: crate::protocol::InvitationProjectMode,
+    pub invitation_project_file_name: Option<String>,
     pub sync_requested_this_session: bool,
     pub member_details: Vec<NetworkMember>,
     pub control_owner_id: Option<String>,
@@ -241,6 +248,8 @@ impl NetworkClient {
             member_id: None,
             project_huuid: None,
             project_matches: false,
+            invitation_project_mode: crate::protocol::InvitationProjectMode::None,
+            invitation_project_file_name: None,
             sync_requested_this_session: false,
             member_details: Vec::new(),
             control_owner_id: None,
@@ -259,10 +268,12 @@ impl NetworkClient {
         };
         let project_huuid = self.local_huuid.clone();
         if let Ok(mut slot) = slot.lock() {
+            let project_mode = self.invitation_project_mode;
             *slot = Some(Packet::JoinRoom {
                 code: code.to_string(),
                 username: username.clone(),
                 project_huuid,
+                project_mode,
             });
         }
     }
@@ -293,6 +304,20 @@ impl NetworkClient {
         )
     }
 
+    pub fn set_project_invitation_mode(
+        &self,
+        mode: crate::protocol::InvitationProjectMode,
+        file_name: Option<&str>,
+    ) {
+        self.send_raw(
+            "set_project_invitation_mode",
+            serde_json::json!({
+                "project_mode": mode,
+                "project_file_name": file_name,
+            }),
+        );
+    }
+
     pub fn connect_and_send(&mut self, ip: &str, port: u16, password: &str, first_packet: Packet) {
         if self.state != ConnectionState::Disconnected {
             self.disconnect();
@@ -310,10 +335,12 @@ impl NetworkClient {
             Packet::JoinRoom {
                 username,
                 project_huuid,
+                project_mode,
                 ..
             } => {
                 self.username = Some(username.clone());
                 self.local_huuid = project_huuid.clone();
+                self.invitation_project_mode = *project_mode;
             }
             _ => {
                 self.username = None;
@@ -360,6 +387,7 @@ impl NetworkClient {
         let tx_recording_view = in_tx.clone();
         let tx_actor_request = in_tx.clone();
         let tx_project_transfer_request = in_tx.clone();
+        let tx_project_transfer_auto_request = in_tx.clone();
         let tx_project_transfer_ready = in_tx.clone();
         let tx_project_transfer_status = in_tx.clone();
         let tx_project_transfer_chunk = in_tx.clone();
@@ -442,6 +470,8 @@ impl NetworkClient {
                     member_id,
                     project_huuid,
                     project_matches: true,
+                    project_mode: crate::protocol::InvitationProjectMode::None,
+                    project_file_name: None,
                 });
                 let _ = tx_room_created.send(IncomingMessage::Packet(Packet::RoomCreated { code }));
             })
@@ -460,10 +490,19 @@ impl NetworkClient {
                     let member_id = obj["member_id"].as_str().unwrap_or("").to_string();
                     let project_huuid = obj["project_huuid"].as_str().unwrap_or("").to_string();
                     let project_matches = obj["project_matches"].as_bool().unwrap_or(false);
+                    let project_mode = serde_json::from_value(
+                        obj["project_mode"].clone(),
+                    )
+                    .unwrap_or_default();
+                    let project_file_name = obj["project_file_name"]
+                        .as_str()
+                        .map(ToOwned::to_owned);
                     let _ = tx_room_metadata_joined.send(IncomingMessage::RoomMetadata {
                         member_id,
                         project_huuid,
                         project_matches,
+                        project_mode,
+                        project_file_name,
                     });
                     let _ = tx_room_joined.send(IncomingMessage::Packet(Packet::RoomJoined {
                         code,
@@ -705,6 +744,15 @@ impl NetworkClient {
                     }
                 }
             })
+            .on("project_transfer_auto_request", move |payload, _| {
+                if let Some(value) = payload_to_value(&payload) {
+                    let member_id = value["member_id"].as_str().unwrap_or("").to_string();
+                    if !member_id.is_empty() {
+                        let _ = tx_project_transfer_auto_request
+                            .send(IncomingMessage::ProjectTransferAutoRequest { member_id });
+                    }
+                }
+            })
             .on("project_transfer_ready", move |payload, _| {
                 if let Some(value) = payload_to_value(&payload) {
                     if let Ok(metadata) = serde_json::from_value(value["metadata"].clone()) {
@@ -920,7 +968,19 @@ impl NetworkClient {
     }
 
     pub fn request_project_transfer(&self, metadata: &ProjectTransferMetadata) {
+        self.request_project_transfer_to(metadata, None);
+    }
+
+    pub fn request_project_transfer_to(
+        &self,
+        metadata: &ProjectTransferMetadata,
+        member_id: Option<&str>,
+    ) {
         if let Ok(payload) = serde_json::to_value(metadata) {
+            let mut payload = payload;
+            if let Some(member_id) = member_id {
+                payload["member_id"] = serde_json::Value::String(member_id.to_owned());
+            }
             self.send_raw("project_transfer_request", payload);
         }
     }
@@ -1102,6 +1162,8 @@ impl NetworkClient {
         self.project_huuid = None;
         self.project_matches = false;
         self.sync_requested_this_session = false;
+        self.invitation_project_mode = crate::protocol::InvitationProjectMode::None;
+        self.invitation_project_file_name = None;
         self.member_details.clear();
         self.control_owner_id = None;
     }
@@ -1132,11 +1194,13 @@ fn packet_to_emit(packet: &Packet, session_id: Option<&str>) -> (&'static str, s
             code,
             username,
             project_huuid,
+            project_mode,
         } => {
             let mut payload = serde_json::json!({
                 "code": code,
                 "username": username,
                 "project_huuid": project_huuid,
+                "project_mode": project_mode,
             });
             if let Some(session_id) = session_id {
                 payload["session_id"] = serde_json::Value::String(session_id.to_owned());

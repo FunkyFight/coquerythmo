@@ -1,8 +1,9 @@
 use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
+use crate::protocol::InvitationProjectMode;
 
 const CARD_W: f32 = 720.0;
-const CARD_H: f32 = 360.0;
+const CARD_H: f32 = 470.0;
 const PADDING: f32 = 32.0;
 const BUTTON_H: f32 = 44.0;
 
@@ -10,6 +11,7 @@ pub struct InvitationModal {
     pub code: String,
     pub link: String,
     focused: usize,
+    pub project_mode: InvitationProjectMode,
 }
 
 pub enum InvitationModalResult {
@@ -17,6 +19,7 @@ pub enum InvitationModalResult {
     Close,
     CopyLink,
     CopyCode,
+    SetProjectMode(InvitationProjectMode),
 }
 
 impl InvitationModal {
@@ -25,6 +28,7 @@ impl InvitationModal {
             code: code.into(),
             link: link.into(),
             focused: 0,
+            project_mode: InvitationProjectMode::None,
         }
     }
 
@@ -32,6 +36,8 @@ impl InvitationModal {
         match self.focused {
             0 => t("invite.copy_link").to_string(),
             1 => t("invite.copy_code").to_string(),
+            2 => t("invite.require_project").to_string(),
+            3 => t("invite.transfer_project").to_string(),
             _ => t("connect.cancel").to_string(),
         }
     }
@@ -51,22 +57,33 @@ impl InvitationModal {
             Rect {
                 x: card.x + PADDING,
                 y,
-                width: 300.0,
+                width: 270.0,
                 height: BUTTON_H,
             },
             Rect {
-                x: card.x + PADDING + 312.0,
+                x: card.x + PADDING + 282.0,
                 y,
-                width: 150.0,
+                width: 135.0,
                 height: BUTTON_H,
             },
             Rect {
-                x: card.x + card.width - PADDING - 120.0,
+                x: card.x + card.width - PADDING - 105.0,
                 y,
-                width: 120.0,
+                width: 105.0,
                 height: BUTTON_H,
             },
         ]
+    }
+
+    fn option_rects(&self, card: Rect) -> [Rect; 2] {
+        [
+            Rect { x: card.x + PADDING, y: card.y + 264.0, width: card.width - 2.0 * PADDING, height: 34.0 },
+            Rect { x: card.x + PADDING, y: card.y + 304.0, width: card.width - 2.0 * PADDING, height: 34.0 },
+        ]
+    }
+
+    fn mode_for_option(index: usize) -> InvitationProjectMode {
+        if index == 0 { InvitationProjectMode::RequireMatch } else { InvitationProjectMode::AutoTransfer }
     }
 
     pub fn handle_event(
@@ -78,32 +95,49 @@ impl InvitationModal {
         match event {
             UiEvent::KeyInput { text } if text == "\x1b" => InvitationModalResult::Close,
             UiEvent::KeyInput { text } if text == "\t" => {
-                self.focused = (self.focused + 1) % 3;
+                self.focused = (self.focused + 1) % 5;
                 InvitationModalResult::Consumed
             }
             UiEvent::KeyInput { text } if text == "\u{b}" => {
-                self.focused = (self.focused + 2) % 3;
+                self.focused = (self.focused + 4) % 5;
                 InvitationModalResult::Consumed
             }
             UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " " => {
                 match self.focused {
                     0 => InvitationModalResult::CopyLink,
                     1 => InvitationModalResult::CopyCode,
+                    2 | 3 => {
+                        let mode = Self::mode_for_option(self.focused - 2);
+                        self.project_mode = if self.project_mode == mode {
+                            InvitationProjectMode::None
+                        } else { mode };
+                        InvitationModalResult::SetProjectMode(self.project_mode)
+                    }
                     _ => InvitationModalResult::Close,
                 }
             }
             UiEvent::FocusNext | UiEvent::CursorDown => {
-                self.focused = (self.focused + 1) % 3;
+                self.focused = (self.focused + 1) % 5;
                 InvitationModalResult::Consumed
             }
             UiEvent::FocusPrevious | UiEvent::CursorUp => {
-                self.focused = (self.focused + 2) % 3;
+                self.focused = (self.focused + 4) % 5;
                 InvitationModalResult::Consumed
             }
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
                 let card = self.card(screen_w, screen_h);
                 if !card.contains(*x, *y) {
                     return InvitationModalResult::Close;
+                }
+                for (index, option) in self.option_rects(card).into_iter().enumerate() {
+                    if option.contains(*x, *y) {
+                        self.focused = index + 2;
+                        let mode = Self::mode_for_option(index);
+                        self.project_mode = if self.project_mode == mode {
+                            InvitationProjectMode::None
+                        } else { mode };
+                        return InvitationModalResult::SetProjectMode(self.project_mode);
+                    }
                 }
                 for (index, button) in self.buttons(card).into_iter().enumerate() {
                     if button.contains(*x, *y) {
@@ -216,6 +250,14 @@ impl InvitationModal {
             12.0,
             Some([195, 195, 212]),
         ));
+        labels.push(label(
+            t("invite.options"),
+            Rect { x: card.x + PADDING, y: card.y + 238.0, width: card.width - 2.0 * PADDING, height: 20.0 },
+            HAlign::Left, 13.0, Some([190, 192, 210]),
+        ));
+        let options = self.option_rects(card);
+        render_option(quads, labels, options[0], t("invite.require_project"), self.project_mode == InvitationProjectMode::RequireMatch, self.focused == 2);
+        render_option(quads, labels, options[1], t("invite.transfer_project"), self.project_mode == InvitationProjectMode::AutoTransfer, self.focused == 3);
         let buttons = self.buttons(card);
         render_button(
             quads,
@@ -239,7 +281,7 @@ impl InvitationModal {
             buttons[2],
             t("connect.cancel"),
             false,
-            self.focused == 2,
+            self.focused == 4,
         );
     }
 }
@@ -335,6 +377,40 @@ fn render_button<'a>(
     ));
 }
 
+fn render_option<'a>(
+    quads: &mut Vec<QuadInstance>,
+    labels: &mut Vec<LabelInfo<'a>>,
+    rect: Rect,
+    text: &'a str,
+    checked: bool,
+    focused: bool,
+) {
+    let box_rect = Rect { x: rect.x, y: rect.y + 7.0, width: 20.0, height: 20.0 };
+    quads.push(quad(
+        box_rect,
+        if checked { [0.35, 0.52, 0.90, 1.0] } else { [0.10, 0.10, 0.14, 1.0] },
+        if focused { [0.80, 0.86, 1.0, 1.0] } else { [0.46, 0.48, 0.58, 0.9] },
+        if focused { 2.0 } else { 1.0 },
+        4.0,
+    ));
+    if checked {
+        labels.push(label(
+            "✓",
+            box_rect,
+            HAlign::Center,
+            15.0,
+            Some([250, 250, 255]),
+        ));
+    }
+    labels.push(label(
+        text,
+        Rect { x: rect.x + 32.0, y: rect.y, width: rect.width - 32.0, height: rect.height },
+        HAlign::Left,
+        13.0,
+        Some([225, 226, 238]),
+    ));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,5 +427,14 @@ mod tests {
             modal.handle_event(&UiEvent::KeyInput { text: "\r".into() }, 1280.0, 720.0),
             InvitationModalResult::CopyCode
         ));
+    }
+
+    #[test]
+    fn project_options_are_mutually_exclusive() {
+        let mut modal = InvitationModal::new("ABCD", "coquerythmo://link/example");
+        modal.handle_event(&UiEvent::MousePress { x: 400.0, y: 389.0 }, 1280.0, 720.0);
+        assert_eq!(modal.project_mode, InvitationProjectMode::RequireMatch);
+        modal.handle_event(&UiEvent::MousePress { x: 400.0, y: 429.0 }, 1280.0, 720.0);
+        assert_eq!(modal.project_mode, InvitationProjectMode::AutoTransfer);
     }
 }

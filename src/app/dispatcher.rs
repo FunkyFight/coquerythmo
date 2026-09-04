@@ -13,7 +13,6 @@ use crate::application::command::{FilePickerIntent, FilePickerMode, TextCommand}
 use crate::application::job_service::SaveContinuation;
 use crate::config;
 use crate::i18n;
-use crate::packet::Packet;
 use crate::platform;
 use crate::state::State;
 use crate::ui::primitives::{EventResponse, UiAction, UiEvent};
@@ -579,6 +578,9 @@ impl CommandDispatcher {
             }
             UiAction::OpenRoomInvitation => state.open_room_invitation(),
             UiAction::CopyRoomCode => state.copy_room_code_to_clipboard(),
+            UiAction::SetInvitationProjectMode(mode) => {
+                state.set_room_invitation_project_mode(mode)
+            }
             UiAction::CloseApp => {
                 if state.is_project_save_in_progress() {
                     state.show_toast(i18n::t("toast.close_blocked_saving"), 5.0);
@@ -1551,6 +1553,9 @@ impl CommandDispatcher {
                 password,
                 username,
                 room_code,
+                project_mode,
+                expected_project_huuid,
+                expected_project_file_name,
             } => {
                 let project_huuid = state
                     .project_session
@@ -1577,24 +1582,17 @@ impl CommandDispatcher {
                     cfg.network.username = username.clone();
                     cfg.save();
                 }
-                let first_packet = if let Some(code) = room_code {
-                    Packet::JoinRoom {
-                        code,
-                        username,
-                        project_huuid,
-                    }
-                } else {
-                    Packet::CreateRoom {
-                        username,
-                        project_huuid: project_huuid.expect("create room requires a saved project"),
-                    }
-                };
-                state.begin_network_connect();
-                state
-                    .collaboration
-                    .network
-                    .connect_and_send(&ip, port, &password, first_packet);
-                state.rebuild_topbar_for_network();
+                state.begin_network_connect_with_options(
+                    ip,
+                    port,
+                    password,
+                    username,
+                    room_code,
+                    project_mode,
+                    expected_project_huuid,
+                    expected_project_file_name,
+                    project_huuid,
+                );
             }
             UiAction::NetworkDisconnect => {
                 state.disconnect_network();
