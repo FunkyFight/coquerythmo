@@ -165,7 +165,7 @@ impl RecordingMixSpec {
     pub fn from_project(
         project: &RecordingProject,
         asset_paths: &BTreeMap<AudioAssetId, PathBuf>,
-        source: Option<PathBuf>,
+        _source: Option<PathBuf>,
         total_duration_seconds: Option<f64>,
     ) -> Result<Self, String> {
         project.validate().map_err(|error| error.to_string())?;

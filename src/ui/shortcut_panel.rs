@@ -300,10 +300,9 @@ impl ShortcutPanelState {
         } else {
             0.0
         };
-        let width = (longest * font_size * GLYPH_WIDTH_RATIO
-            + PANEL_PADDING_H * 2.0
-            + scrollbar_allowance)
-            .clamp(0.0, PANEL_MAX_WIDTH);
+        let width =
+            (longest * font_size * GLYPH_WIDTH_RATIO + PANEL_PADDING_H * 2.0 + scrollbar_allowance)
+                .clamp(0.0, PANEL_MAX_WIDTH);
         let height = self.viewport_height() + PANEL_PADDING_V * 2.0;
         Rect {
             x: PANEL_MARGIN,
@@ -350,9 +349,8 @@ impl ShortcutPanelState {
             let track_h = rect.height - SCROLLBAR_INSET * 2.0;
             let thumb_h = (track_h * (self.viewport_height() / self.content_height()))
                 .clamp(SCROLLBAR_MIN_THUMB.min(track_h), track_h);
-            let thumb_y = rect.y
-                + SCROLLBAR_INSET
-                + (track_h - thumb_h) * (self.scroll_offset / max_scroll);
+            let thumb_y =
+                rect.y + SCROLLBAR_INSET + (track_h - thumb_h) * (self.scroll_offset / max_scroll);
             quads.push(QuadInstance {
                 rect: [
                     rect.x + rect.width - SCROLLBAR_INSET - SCROLLBAR_WIDTH,

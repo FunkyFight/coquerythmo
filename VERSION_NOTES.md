@@ -2,6 +2,15 @@
 
 ## Bugs
 
+- Correction de la désynchronisation audio/vidéo après un rembobinage ou un déplacement dans la bande rythmo : les échantillons audio encore en mémoire sont désormais invalidés avant le démarrage du nouveau flux.
+- Le file tree reste un panneau stable lorsque la souris sort de ses limites : l’état de survol et son animation sont correctement réinitialisés.
+- Correction du chevauchement entre les badges du file tree et le nom des vidéos ou des audios ; le texte utilise maintenant uniquement l’espace disponible.
+- Ajout de l’option « Rétablir le lien » pour les vidéos sources manquantes dans le file tree, avec sélection d’un nouveau fichier et sauvegarde du chemin restauré.
+- Correction de l’affichage des sous-menus contextuels du file tree : ils apparaissent à côté du menu parent au lieu de le recouvrir.
+
+## Raccourcis et édition
+
+- Nouveau raccourci `Ctrl + Shift + V` : colle la ligne copiée en reprenant le dernier personnage utilisé sur la piste cible, au point de collage. Le personnage d’origine reste utilisé avec `Ctrl + V`.
 
 ## Performance
 
@@ -21,6 +30,8 @@
 
 ## Mode enregistrement
 - Correction de la synchronisation en boucle quand un doubleur tente de se connecter à une session trop lourde.
+- Les doubleurs connectés reçoivent de nouveau correctement les changements de mute et de solo des pistes.
+- Correction critique de l’écoute en session d’enregistrement en ligne : le DA et tous les doubleurs entendent désormais l’intégralité des audios présents sur la timeline, quelle que soit leur origine ou l’opération effectuée (prise fraîchement enregistrée, import externe, audio interne ou envoi depuis Voicelines). Les fichiers manquants sont également retransmis après une connexion ou une reconnexion avant le démarrage de la lecture.
 
 ## Nouveau mode Voicelines
 

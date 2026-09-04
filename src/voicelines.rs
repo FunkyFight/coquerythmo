@@ -104,10 +104,7 @@ impl Audio {
         }
     }
 
-    fn deliveries_mut(
-        &mut self,
-        destination: DeliveryDestination,
-    ) -> &mut BTreeMap<RegionId, u64> {
+    fn deliveries_mut(&mut self, destination: DeliveryDestination) -> &mut BTreeMap<RegionId, u64> {
         match destination {
             DeliveryDestination::ComicDubs => &mut self.comic_dubs_deliveries,
             DeliveryDestination::Recording => &mut self.recording_deliveries,
@@ -272,10 +269,7 @@ impl VoicelinesProject {
             }
         }
         self.automatic_pattern.clone_from(&pattern);
-        self.naming = NamingMode::Automatic {
-            pattern,
-            next,
-        };
+        self.naming = NamingMode::Automatic { pattern, next };
         Ok(())
     }
 
@@ -360,7 +354,10 @@ impl VoicelinesProject {
         let mut regions = Vec::with_capacity(ids.len());
         for id in ids {
             let region = audio.regions.iter().find(|region| region.id == *id)?;
-            if regions.iter().any(|existing: &Region| existing.id == region.id) {
+            if regions
+                .iter()
+                .any(|existing: &Region| existing.id == region.id)
+            {
                 return None;
             }
             regions.push(region.clone());
@@ -380,7 +377,9 @@ impl VoicelinesProject {
         let selected: HashSet<_> = ids.iter().copied().collect();
         let region_id = self.allocate_id();
         let audio = self.active_audio_mut()?;
-        audio.regions.retain(|region| !selected.contains(&region.id));
+        audio
+            .regions
+            .retain(|region| !selected.contains(&region.id));
         for region in &mut audio.regions {
             if region.start_ms >= destination_ms {
                 region.start_ms = region.start_ms.saturating_add(duration_ms);
@@ -396,7 +395,9 @@ impl VoicelinesProject {
             end_ms,
             manually_renamed: first.manually_renamed,
         });
-        audio.regions.sort_by_key(|region| (region.start_ms, region.id));
+        audio
+            .regions
+            .sort_by_key(|region| (region.start_ms, region.id));
         Some(RegionJoin {
             audio_id,
             region_id,
@@ -511,7 +512,9 @@ fn name_matches_pattern(name: &str, pattern: &str) -> bool {
     };
     name.strip_prefix(prefix)
         .and_then(|name| name.strip_suffix(suffix))
-        .is_some_and(|number| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
+        .is_some_and(|number| {
+            !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 pub fn join_audio_regions(
@@ -908,18 +911,65 @@ mod tests {
 
         project.set_automatic_naming("prise-{num}").unwrap();
         let audio = project.active_audio().unwrap();
-        assert_eq!(audio.regions.iter().find(|region| region.id == first).unwrap().name, "voiceline_001");
-        assert_eq!(audio.regions.iter().find(|region| region.id == automatic).unwrap().name, "prise-001");
-        assert_eq!(audio.regions.iter().find(|region| region.id == second).unwrap().name, "héros");
-        assert_eq!(audio.regions.iter().find(|region| region.id == tail).unwrap().name, "prise-002");
+        assert_eq!(
+            audio
+                .regions
+                .iter()
+                .find(|region| region.id == first)
+                .unwrap()
+                .name,
+            "voiceline_001"
+        );
+        assert_eq!(
+            audio
+                .regions
+                .iter()
+                .find(|region| region.id == automatic)
+                .unwrap()
+                .name,
+            "prise-001"
+        );
+        assert_eq!(
+            audio
+                .regions
+                .iter()
+                .find(|region| region.id == second)
+                .unwrap()
+                .name,
+            "héros"
+        );
+        assert_eq!(
+            audio
+                .regions
+                .iter()
+                .find(|region| region.id == tail)
+                .unwrap()
+                .name,
+            "prise-002"
+        );
 
         let join = project.join_regions(&[second, first]).unwrap();
         assert_eq!(join.destination_ms, 1_900);
         assert_eq!(join.ranges_ms, vec![(1_900, 2_000), (100, 300)]);
         assert_eq!(join.output_duration_ms, 3_300);
-        let region = project.active_audio().unwrap().regions.iter().find(|region| region.id == join.region_id).unwrap();
-        assert_eq!((region.start_ms, region.end_ms, region.name.as_str()), (1_900, 2_200, "héros"));
-        let tail = project.active_audio().unwrap().regions.iter().find(|region| region.id == tail).unwrap();
+        let region = project
+            .active_audio()
+            .unwrap()
+            .regions
+            .iter()
+            .find(|region| region.id == join.region_id)
+            .unwrap();
+        assert_eq!(
+            (region.start_ms, region.end_ms, region.name.as_str()),
+            (1_900, 2_200, "héros")
+        );
+        let tail = project
+            .active_audio()
+            .unwrap()
+            .regions
+            .iter()
+            .find(|region| region.id == tail)
+            .unwrap();
         assert_eq!((tail.start_ms, tail.end_ms), (2_500, 2_600));
     }
 }

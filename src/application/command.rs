@@ -252,6 +252,9 @@ pub enum UiAction {
     MediaVideoBeginRename {
         id: crate::project::MediaId,
     },
+    MediaVideoRelink {
+        id: crate::project::MediaId,
+    },
     MediaVideoCreateProxy {
         id: crate::project::MediaId,
     },
@@ -686,6 +689,7 @@ pub enum UiAction {
     CopySelectedLine,
     CutSelectedLine,
     PasteLine,
+    PasteLineWithTrackCharacter,
     // Drawing
     AddDrawingStroke(crate::rythmo_drawing::DrawingStroke),
     EraseDrawingStrokes(Vec<u64>),
@@ -794,6 +798,7 @@ impl UiAction {
                 | Self::SetClipboardAndUpdateLineNote { .. }
                 | Self::CutSelectedLine
                 | Self::PasteLine
+                | Self::PasteLineWithTrackCharacter
                 | Self::AddDrawingStroke(_)
                 | Self::EraseDrawingStrokes(_)
                 | Self::TransformStrokes { .. }
@@ -888,6 +893,9 @@ pub enum ToolMode {
 pub enum FilePickerIntent {
     AddVideo,
     AddMediaAudio,
+    RelinkVideo {
+        id: crate::project::MediaId,
+    },
     ComicDubsImage,
     ComicDubsAudio,
     ComicDubsExport {

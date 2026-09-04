@@ -152,6 +152,7 @@ pub struct SyllableDrag {
     pub line_id: u64,
     pub separator_index: usize, // which separator is being dragged (0 = between syl 0 and 1)
     pub ratios: Vec<f32>,       // working copy of ratios
+    pub original_ratios: Vec<f32>, // ratios at drag start
     pub drag_start_x: f32,
     pub line_rect: Rect,
     /// Ctrl+click keeps every boundary before the selected handle fixed.

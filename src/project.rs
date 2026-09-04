@@ -1228,6 +1228,18 @@ impl Project {
         Ok(id)
     }
 
+    pub fn update_media_video_path(&mut self, id: MediaId, path: impl Into<String>) -> bool {
+        let path = path.into();
+        let Some(video) = self.media_library.videos.iter_mut().find(|v| v.id == id) else {
+            return false;
+        };
+        if path.trim().is_empty() || video.path == path {
+            return false;
+        }
+        video.path = path;
+        self.bump_revision();
+        true
+    }
     pub fn rename_media_video(&mut self, id: MediaId, name: impl Into<String>) -> bool {
         let Some(video) = self.media_library.videos.iter_mut().find(|v| v.id == id) else {
             return false;

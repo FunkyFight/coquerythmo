@@ -309,6 +309,7 @@ mod tests {
             line_id: 1,
             separator_index: 1,
             ratios: vec![0.2, 0.3, 0.2, 0.3],
+            original_ratios: vec![0.2, 0.3, 0.2, 0.3],
             drag_start_x: 100.0,
             line_rect: Rect {
                 x: 0.0,
@@ -336,6 +337,7 @@ mod tests {
             line_id: 1,
             separator_index: 1,
             ratios: vec![0.2, 0.3, 0.2, 0.3],
+            original_ratios: vec![0.2, 0.3, 0.2, 0.3],
             drag_start_x: 100.0,
             line_rect: Rect {
                 x: 0.0,
@@ -371,6 +373,7 @@ mod tests {
             line_id: 1,
             separator_index: 1,
             ratios: vec![0.48, 0.48, 0.04],
+            original_ratios: vec![0.48, 0.48, 0.04],
             drag_start_x: 100.0,
             line_rect: Rect {
                 x: 0.0,
@@ -1924,6 +1927,7 @@ pub fn render_rythmo_base(
             .map(|line| (line.start_frame, line.end_frame(), line.character_color))
             .collect();
 
+        let drag_markers = waveform_drag_markers(project, state);
         for si in first_sub..last_sub {
             let amp = waveform[si as usize].min(1.0);
             let bar_h = amp * ruler_h;
@@ -1968,6 +1972,25 @@ pub fn render_rythmo_base(
                 rotation: 0.0,
                 _padding: [0.0; 2],
             });
+        }
+        // Draw the guide lines last so they remain visible above waveform bars.
+        for (marker, character) in &drag_markers {
+            let x = frame_to_x(*marker, current_frame, zone, fps);
+            if (zone.x..=zone.x + zone.width).contains(&x) {
+                quads.push(QuadInstance {
+                    rect: [x - 1.5, zone.y, 3.0, ruler_h],
+                    color: [character[0], character[1], character[2], 0.98],
+                    color_bottom: [character[0], character[1], character[2], 0.98],
+                    border_color: [0.0; 4],
+                    border_width: 0.0,
+                    border_radius: 1.5,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0; 4],
+                    shadow_blur: 0.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
+                });
+            }
         }
     } else if waveform_is_instrumental {
         let ruler_h = constants::RULER_HEIGHT;

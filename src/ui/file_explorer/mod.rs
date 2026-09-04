@@ -16,27 +16,32 @@ use std::collections::HashMap;
 use crate::i18n::t;
 use crate::project::{MediaId, SyllableLanguage};
 
-use self::animation::{
-    enter_delay, SpringValue, Tween, BRANCH_DURATION, ENTER_DURATION, SPRING_LAYOUT, SPRING_SWAP,
-};
+use self::animation::{enter_delay, SpringValue, Tween, ENTER_DURATION, SPRING_LAYOUT};
 use self::data::{paths_equal, AudioData, VideoData};
 use self::rows::{flatten, AudioRowId, ExpandedSet, GroupKind, Row, RowId};
 
 use super::primitives::{
-    EventResponse, HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiAction, UiEvent, VAlign,
+    EventResponse, HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, UiAction,
+    UiEvent, VAlign,
 };
 use super::text_input::{TextInputAction, TextInputState};
 
 const ROW_H: f32 = 36.0;
-const INDENT: f32 = 18.0;
-const CHEVRON_W: f32 = 14.0;
+/// Horizontal distance between a group's entries and their children. Groups
+/// themselves stay aligned with the project row; entries use one level and
+/// proxies use a second level.
+const INDENT: f32 = 24.0;
 const ICON_SIZE: f32 = 16.0;
+const STATUS_ICON_SIZE: f32 = 15.0;
+const STATUS_ICON_GAP: f32 = 5.0;
 const PAD: f32 = 10.0;
 const SCROLLBAR_W: f32 = 4.0;
 const MENU_ROW_H: f32 = 30.0;
 const MENU_W: f32 = 190.0;
 const SUBMENU_W: f32 = 200.0;
 const MENU_MARGIN: f32 = 8.0;
+/// Minimum gap between an element name and its right-aligned badges.
+const BADGE_TEXT_GAP: f32 = 6.0;
 /// Movement (px) before a press becomes a drag.
 const DRAG_THRESHOLD: f32 = 6.0;
 
@@ -75,6 +80,14 @@ enum DragFeedback {
     Insertion { x: f32, y: f32, width: f32 },
 }
 
+#[derive(Clone, Copy, Debug)]
+struct StatusIcon<'a> {
+    name: &'static str,
+    tooltip: &'a str,
+    rect: Rect,
+    color: [u8; 3],
+}
+
 pub struct FileTree {
     open: bool,
     expanded: ExpandedSet,
@@ -82,19 +95,16 @@ pub struct FileTree {
     focused: Option<RowId>,
     scroll: usize,
     hover: Option<RowId>,
+    hover_tooltip: Option<String>,
     /// Shared-layout hover pill: y position springs between rows.
     hover_pill: Option<SpringValue>,
     hover_pill_fade: f32,
     /// Per-row entry animations (offset-y + opacity), keyed by row id.
     enter: HashMap<RowId, Tween>,
-    /// Proxy branch line entries are intentionally a little slower than rows.
-    branch_enter: HashMap<RowId, Tween>,
     /// A tree can open before the caller has a snapshot to seed its entries.
     entry_pending: bool,
     /// Row positions preserve continuity across expand/collapse and reorders.
     layout_positions: HashMap<RowId, SpringValue>,
-    /// Chevron rotation progress per group (0 = closed, 90 = open).
-    chevron: HashMap<GroupKind, SpringValue>,
     rename: Option<(RenameTarget, String)>,
     rename_original: String,
     rename_hydrated: bool,
@@ -143,10 +153,6 @@ impl Default for FileTree {
 
 impl FileTree {
     pub fn new() -> Self {
-        let mut chevron = HashMap::new();
-        for kind in [GroupKind::Videos, GroupKind::Bands, GroupKind::Audios] {
-            chevron.insert(kind, SpringValue::at(90.0));
-        }
         Self {
             open: false,
             expanded: ExpandedSet::all_expanded(),
@@ -154,13 +160,12 @@ impl FileTree {
             focused: None,
             scroll: 0,
             hover: None,
+            hover_tooltip: None,
             hover_pill: None,
             hover_pill_fade: 0.0,
             enter: HashMap::new(),
-            branch_enter: HashMap::new(),
             entry_pending: false,
             layout_positions: HashMap::new(),
-            chevron,
             rename: None,
             rename_original: String::new(),
             rename_hydrated: false,
@@ -173,8 +178,8 @@ impl FileTree {
 
     pub fn open(&mut self) {
         self.open = true;
+        self.focused = Some(RowId::Root);
         self.enter.clear();
-        self.branch_enter.clear();
         self.entry_pending = true;
     }
 
@@ -185,14 +190,18 @@ impl FileTree {
         self.drag = None;
         self.scroll_drag = None;
         self.hover = None;
+        self.hover_tooltip = None;
         self.hover_pill = None;
         self.enter.clear();
-        self.branch_enter.clear();
         self.layout_positions.clear();
     }
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    pub fn hovered_tooltip(&self) -> Option<&str> {
+        self.hover_tooltip.as_deref()
     }
 
     pub fn is_editing_text(&self) -> bool {
@@ -213,7 +222,7 @@ impl FileTree {
         if self.entry_pending {
             self.seed_entry_animations(data);
             self.entry_pending = false;
-            running = !self.enter.is_empty() || !self.branch_enter.is_empty();
+            running = !self.enter.is_empty();
         }
 
         if let Some(pill) = self.hover_pill.as_mut() {
@@ -234,14 +243,6 @@ impl FileTree {
         }
         self.enter.retain(|_, tween| !tween.finished());
 
-        for (_, tween) in self.branch_enter.iter_mut() {
-            tween.advance(dt);
-            if !tween.finished() {
-                running = true;
-            }
-        }
-        self.branch_enter.retain(|_, tween| !tween.finished());
-
         let rows = flatten(data, &self.expanded);
         for (index, row) in rows.iter().enumerate() {
             let target = index as f32 * ROW_H;
@@ -258,33 +259,16 @@ impl FileTree {
         self.layout_positions
             .retain(|id, _| rows.iter().any(|row| row.id == *id));
 
-        // Retarget chevrons towards their open/closed angle.
-        for (kind, spring) in self.chevron.iter_mut() {
-            let open = self.expanded.get(*kind);
-            spring.retarget(if open { 90.0 } else { 0.0 });
-            spring.step(SPRING_SWAP, dt);
-            if !spring.settled() {
-                running = true;
-            }
-        }
-
         running
     }
 
     fn seed_entry_animations(&mut self, data: &FileTreeData) {
         self.enter.clear();
-        self.branch_enter.clear();
         for (index, row) in flatten(data, &self.expanded).into_iter().enumerate() {
             self.enter.insert(
                 row.id,
                 Tween::start_delayed(ENTER_DURATION, enter_delay(index)),
             );
-            if matches!(row.id, RowId::Video(_)) && row.depth == 3 {
-                self.branch_enter.insert(
-                    row.id,
-                    Tween::start_delayed(BRANCH_DURATION, enter_delay(index)),
-                );
-            }
         }
     }
 
@@ -366,10 +350,12 @@ impl FileTree {
         match event {
             UiEvent::MouseMove { x, y } => {
                 if self.scroll_drag.is_some() {
+                    self.hover_tooltip = None;
                     self.update_scroll_drag(panel, data, *y);
                     return Some(EventResponse::Consumed);
                 }
                 if let Some(drag) = self.drag.as_mut() {
+                    self.hover_tooltip = None;
                     drag.current = (*x, *y);
                     self.auto_scroll_during_drag(panel, data);
                     return Some(EventResponse::Consumed);
@@ -380,11 +366,13 @@ impl FileTree {
                 // the workspace receives the same mouse event.
                 if !panel.contains(*x, *y) {
                     self.hover = None;
+                    self.hover_tooltip = None;
                     self.hover_pill = None;
                     self.hover_pill_fade = 0.0;
                     return None;
                 }
 
+                self.hover_tooltip = self.status_tooltip_at(panel, *x, *y, data);
                 let hovered = self.row_at(panel, *x, *y, data);
                 if hovered != self.hover {
                     self.hover = hovered;
@@ -421,7 +409,7 @@ impl FileTree {
                 match row {
                     RowId::Group(kind) => {
                         self.toggle_group(kind, data);
-                        Some(self.expand_event(kind))
+                        Some(self.expand_event(kind, data))
                     }
                     RowId::Root => Some(EventResponse::Consumed),
                     RowId::Audio(AudioRowId::OriginalVideo) => Some(EventResponse::Consumed),
@@ -557,7 +545,7 @@ impl FileTree {
                 if let Some(RowId::Group(kind)) = self.focused {
                     if !self.expanded.get(kind) {
                         self.toggle_group(kind, data);
-                        return self.expand_event(kind);
+                        return self.expand_event(kind, data);
                     }
                 } else if self.focused.is_some() {
                     // descend: focus next visible row
@@ -571,7 +559,7 @@ impl FileTree {
                 if let Some(RowId::Group(kind)) = self.focused {
                     if self.expanded.get(kind) {
                         self.toggle_group(kind, data);
-                        return self.expand_event(kind);
+                        return self.expand_event(kind, data);
                     }
                 } else {
                     let parent = index.and_then(|index| {
@@ -637,7 +625,7 @@ impl FileTree {
         match id {
             RowId::Group(kind) => {
                 self.toggle_group(kind, data);
-                self.expand_event(kind)
+                self.expand_event(kind, data)
             }
             RowId::Root => EventResponse::Consumed,
             RowId::Video(media_id) => {
@@ -880,14 +868,9 @@ impl FileTree {
         let Some(menu) = self.context_menu.as_mut() else {
             return;
         };
-        let desired_x = menu.anchor.0 + MENU_W - 10.0;
-        let desired_y = menu.anchor.1 + index as f32 * MENU_ROW_H;
-        let anchor = clamped_menu_origin(
-            menu.panel,
-            desired_x,
-            desired_y,
-            SUBMENU_W,
-            labels.len() as f32 * MENU_ROW_H,
+        let anchor = (
+            menu.anchor.0 + MENU_W + MENU_MARGIN,
+            menu.anchor.1 + index as f32 * MENU_ROW_H,
         );
         menu.submenu = Some(Submenu { kind, anchor });
         menu.submenu_index = 0;
@@ -1490,7 +1473,7 @@ impl FileTree {
         let Some(id) = self.focused else {
             return EventResponse::Consumed;
         };
-        let label = self.row_label(id, data).to_string();
+        let label = self.accessibility_label(id, data);
         EventResponse::Action(UiAction::Accessibility(
             crate::accessibility::AccessibilityEvent::Focus {
                 label,
@@ -1499,10 +1482,10 @@ impl FileTree {
         ))
     }
 
-    fn expand_event(&self, kind: GroupKind) -> EventResponse {
+    fn expand_event(&self, kind: GroupKind, data: &FileTreeData) -> EventResponse {
         EventResponse::Action(UiAction::Accessibility(
             crate::accessibility::AccessibilityEvent::ValueChanged {
-                label: group_label(kind).to_string(),
+                label: self.accessibility_label(RowId::Group(kind), data),
                 value: if self.expanded.get(kind) {
                     t("accessibility.expanded").to_string()
                 } else {
@@ -1512,13 +1495,217 @@ impl FileTree {
         ))
     }
 
+    fn accessibility_label(&self, id: RowId, data: &FileTreeData) -> String {
+        let rows = flatten(data, &self.expanded);
+        let position = self::rows::set_metrics(&rows, id)
+            .map(|(position, total)| {
+                interpolate(
+                    t("file_tree.a11y.position"),
+                    &[
+                        ("{position}", position.to_string()),
+                        ("{total}", total.to_string()),
+                    ],
+                )
+            })
+            .unwrap_or_default();
+        let mut parts = match id {
+            RowId::Root => vec![interpolate(
+                t("file_tree.a11y.project"),
+                &[("{name}", data.root_name.clone())],
+            )],
+            RowId::Group(kind) => {
+                let count = match kind {
+                    GroupKind::Videos => data.videos.len(),
+                    GroupKind::Bands => data.bands.len(),
+                    GroupKind::Audios => data.audios.len(),
+                };
+                let count_label = if count == 1 {
+                    t("file_tree.a11y.one_item").to_string()
+                } else {
+                    interpolate(
+                        t("file_tree.a11y.many_items"),
+                        &[("{count}", count.to_string())],
+                    )
+                };
+                vec![
+                    interpolate(
+                        t("file_tree.a11y.group"),
+                        &[("{name}", group_label(kind).to_string())],
+                    ),
+                    count_label,
+                ]
+            }
+            RowId::Video(video_id) => {
+                let Some(video) = data.video(video_id) else {
+                    return String::new();
+                };
+                let first = if let Some(source_id) = video.proxy_of {
+                    let source = data
+                        .video(source_id)
+                        .map(|source| source.name.as_str())
+                        .unwrap_or("");
+                    interpolate(
+                        t("file_tree.a11y.video_proxy"),
+                        &[
+                            ("{source}", source.to_string()),
+                            ("{name}", video.name.clone()),
+                        ],
+                    )
+                } else {
+                    interpolate(
+                        t("file_tree.a11y.video_source"),
+                        &[("{name}", video.name.clone())],
+                    )
+                };
+                let mut video_parts = vec![first];
+                if video.proxy_of.is_some() {
+                    video_parts.push(t("file_tree.a11y.is_proxy").to_string());
+                }
+                if video.is_default {
+                    video_parts.push(t("file_tree.badges.default").to_string());
+                }
+                if video.is_proxy_source {
+                    video_parts.push(t("file_tree.badges.has_proxy").to_string());
+                }
+                if video.active {
+                    video_parts.push(t("file_tree.a11y.active").to_string());
+                }
+                if video.missing {
+                    video_parts.push(t("file_tree.a11y.missing").to_string());
+                }
+                video_parts
+            }
+            RowId::Band(band_id) => {
+                let Some(band) = data.bands.iter().find(|band| band.id == band_id) else {
+                    return String::new();
+                };
+                let mut band_parts = vec![interpolate(
+                    t("file_tree.a11y.band"),
+                    &[("{name}", band.name.clone())],
+                )];
+                if band.active {
+                    band_parts.push(t("accessibility.selected").to_string());
+                }
+                band_parts
+            }
+            RowId::Audio(AudioRowId::OriginalVideo) => {
+                vec![t("file_tree.a11y.original_audio").to_string()]
+            }
+            RowId::Audio(audio_id) => {
+                let Some(audio) = data.audio(audio_id) else {
+                    return String::new();
+                };
+                let mut audio_parts = vec![interpolate(
+                    t("file_tree.a11y.audio"),
+                    &[("{name}", audio.name.clone())],
+                )];
+                if !audio.instrumental_of.is_empty() {
+                    audio_parts.push(interpolate(
+                        t("file_tree.a11y.instrumental"),
+                        &[("{bands}", audio.instrumental_of.join(", "))],
+                    ));
+                }
+                audio_parts
+            }
+        };
+        if self.selected == Some(id) && !matches!(id, RowId::Band(_)) {
+            parts.push(t("accessibility.selected").to_string());
+        }
+        if !position.is_empty() {
+            parts.push(position);
+        }
+        parts.join(", ")
+    }
+
+    fn status_icons_for_row<'a>(
+        &self,
+        id: RowId,
+        y: f32,
+        body: Rect,
+        data: &'a FileTreeData,
+    ) -> Vec<StatusIcon<'a>> {
+        let mut right = body.x + body.width - SCROLLBAR_W - PAD;
+        let mut icons = Vec::new();
+        let mut push = |name, tooltip, color| {
+            let rect = Rect {
+                x: right - STATUS_ICON_SIZE,
+                y: y + (ROW_H - STATUS_ICON_SIZE) * 0.5,
+                width: STATUS_ICON_SIZE,
+                height: STATUS_ICON_SIZE,
+            };
+            right -= STATUS_ICON_SIZE + STATUS_ICON_GAP;
+            icons.push(StatusIcon {
+                name,
+                tooltip,
+                rect,
+                color,
+            });
+        };
+        match id {
+            RowId::Video(video_id) => {
+                if let Some(video) = data.video(video_id) {
+                    if video.proxy_of.is_some() {
+                        push(
+                            "file-tree/proxy",
+                            t("file_tree.badges.proxy"),
+                            [126, 176, 255],
+                        );
+                    }
+                    if video.is_default {
+                        push(
+                            "file-tree/default",
+                            t("file_tree.badges.default"),
+                            [255, 207, 92],
+                        );
+                    }
+                    if video.is_proxy_source {
+                        push(
+                            "file-tree/has-proxy",
+                            t("file_tree.badges.has_proxy"),
+                            [92, 210, 235],
+                        );
+                    }
+                }
+            }
+            RowId::Audio(audio_id) => {
+                if let Some(audio) = data.audio(audio_id) {
+                    if !audio.instrumental_of.is_empty() {
+                        push(
+                            "file-tree/rythmo-band",
+                            audio.instrumental_badge.as_str(),
+                            [202, 143, 255],
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+        icons
+    }
+
+    fn status_tooltip_at(
+        &self,
+        panel: Rect,
+        x: f32,
+        y: f32,
+        data: &FileTreeData,
+    ) -> Option<String> {
+        let row = self.row_rect_at(panel, x, y, data)?;
+        self.status_icons_for_row(row.row.id, row.rect.y, body_rect(panel), data)
+            .into_iter()
+            .find(|icon| icon.rect.contains(x, y))
+            .map(|icon| icon.tooltip.to_string())
+    }
+
     // -- Rendering --
 
     pub fn render<'a>(
         &'a self,
         panel: Rect,
         data: &'a FileTreeData,
+        icon_uvs: &HashMap<String, [f32; 4]>,
         quads: &mut Vec<QuadInstance>,
+        icons: &mut Vec<IconInstance>,
         labels: &mut Vec<LabelInfo<'a>>,
     ) {
         if !self.open {
@@ -1563,7 +1750,9 @@ impl FileTree {
                 .map(|position| position.value)
                 .unwrap_or(row.index as f32 * ROW_H);
             let y = body.y + layout_y - scroll as f32 * ROW_H - (1.0 - progress) * 6.0;
-            self.render_row(&row.row, y, panel, data, progress, quads, labels);
+            self.render_row(
+                &row.row, y, panel, data, icon_uvs, progress, quads, icons, labels,
+            );
         }
 
         // Scrollbar.
@@ -1634,15 +1823,33 @@ impl FileTree {
         y: f32,
         panel: Rect,
         data: &'a FileTreeData,
+        icon_uvs: &HashMap<String, [f32; 4]>,
         opacity: f32,
         quads: &mut Vec<QuadInstance>,
+        icons: &mut Vec<IconInstance>,
         labels: &mut Vec<LabelInfo<'a>>,
     ) {
         let body = body_rect(panel);
-        let indent = row.depth as f32 * INDENT;
+        let indent = row_indent(row);
         let selected = self.selected == Some(row.id);
         let focused = self.focused == Some(row.id);
         let tint = |color| faded_text_color(color, opacity);
+
+        if let Some(kind) = row_category(row.id) {
+            let row_rect = Rect {
+                x: body.x + 4.0,
+                y: y + 2.0,
+                width: body.width - 8.0 - SCROLLBAR_W,
+                height: ROW_H - 4.0,
+            };
+            solid(
+                quads,
+                row_rect,
+                category_background(kind, matches!(row.id, RowId::Group(_)), opacity),
+                [0.0; 4],
+                5.0,
+            );
+        }
 
         if selected {
             let mut color = [0.12, 0.14, 0.23, 1.0];
@@ -1675,15 +1882,28 @@ impl FileTree {
             );
         }
 
-        let mut icon_x = body.x + PAD + indent;
+        let icon_x = body.x + PAD + indent;
         match row.id {
             RowId::Root => {
+                push_icon(
+                    icons,
+                    icon_uvs,
+                    "file-tree/folder",
+                    Rect {
+                        x: icon_x,
+                        y: y + (ROW_H - ICON_SIZE) * 0.5,
+                        width: ICON_SIZE,
+                        height: ICON_SIZE,
+                    },
+                    [255, 205, 96],
+                    opacity,
+                );
                 labels.push(label(
                     &data.root_name,
                     Rect {
-                        x: icon_x,
+                        x: icon_x + ICON_SIZE + 8.0,
                         y,
-                        width: body.width - indent - SCROLLBAR_W - 2.0 * PAD,
+                        width: body.width - indent - ICON_SIZE - 8.0 - SCROLLBAR_W - 2.0 * PAD,
                         height: ROW_H,
                     },
                     HAlign::Left,
@@ -1692,32 +1912,26 @@ impl FileTree {
                 ));
             }
             RowId::Group(kind) => {
-                // Chevron (animated rotation handled via progress).
-                let chevron_progress = self
-                    .chevron
-                    .get(&kind)
-                    .map(|spring| spring.value / 90.0)
-                    .unwrap_or(if self.expanded.get(kind) { 1.0 } else { 0.0 })
-                    .clamp(0.0, 1.0);
-                labels.push(label(
-                    if chevron_progress > 0.5 { "▾" } else { "▸" },
+                let accent = category_color(kind);
+                push_icon(
+                    icons,
+                    icon_uvs,
+                    "file-tree/folder",
                     Rect {
                         x: icon_x,
-                        y,
-                        width: CHEVRON_W,
-                        height: ROW_H,
+                        y: y + (ROW_H - ICON_SIZE) * 0.5,
+                        width: ICON_SIZE,
+                        height: ICON_SIZE,
                     },
-                    HAlign::Center,
-                    12.0,
-                    tint([126, 132, 154]),
-                ));
-                icon_x += CHEVRON_W + 6.0;
+                    color_to_u8(accent),
+                    opacity,
+                );
                 labels.push(label(
                     group_label(kind),
                     Rect {
-                        x: icon_x + 4.0,
+                        x: icon_x + ICON_SIZE + 8.0,
                         y,
-                        width: body.width - indent - CHEVRON_W - 2.0 * PAD,
+                        width: body.width - indent - ICON_SIZE - 14.0 - 2.0 * PAD,
                         height: ROW_H,
                     },
                     HAlign::Left,
@@ -1729,43 +1943,27 @@ impl FileTree {
                 let Some(video) = data.videos.iter().find(|v| v.id == id) else {
                     return;
                 };
-                let is_child = row.depth == 3;
-                if is_child {
-                    let progress = self
-                        .branch_enter
-                        .get(&row.id)
-                        .map(Tween::progress)
-                        .unwrap_or(1.0);
-                    let line_x = body.x + PAD + (row.depth - 1) as f32 * INDENT - 4.0;
-                    solid(
-                        quads,
-                        Rect {
-                            x: line_x,
-                            y,
-                            width: 1.5,
-                            height: ROW_H * progress,
-                        },
-                        [0.30, 0.32, 0.40, 0.8 * opacity],
-                        [0.0; 4],
-                        0.0,
-                    );
-                }
-                labels.push(label(
-                    "🎬",
+                push_icon(
+                    icons,
+                    icon_uvs,
+                    if video.proxy_of.is_some() {
+                        "file-tree/video-proxy"
+                    } else {
+                        "file-tree/video-source"
+                    },
                     Rect {
                         x: icon_x,
-                        y,
+                        y: y + (ROW_H - ICON_SIZE) * 0.5,
                         width: ICON_SIZE,
-                        height: ROW_H,
+                        height: ICON_SIZE,
                     },
-                    HAlign::Center,
-                    12.0,
-                    tint(if video.missing {
+                    if video.missing {
                         [220, 170, 80]
                     } else {
-                        [150, 155, 175]
-                    }),
-                ));
+                        [105, 169, 255]
+                    },
+                    opacity,
+                );
                 let text_color: [u8; 3] = if video.active {
                     [130, 180, 255]
                 } else if video.missing {
@@ -1777,38 +1975,53 @@ impl FileTree {
                     Some((RenameTarget::Video(rid), buffer)) if *rid == id => buffer.as_str(),
                     _ => video.name.as_str(),
                 };
+                let text_x = icon_x + ICON_SIZE + 8.0;
+                let status_icons = self.status_icons_for_row(row.id, y, body, data);
+                let badge_left = status_icons
+                    .iter()
+                    .map(|icon| icon.rect.x)
+                    .reduce(f32::min)
+                    .unwrap_or(body.x + body.width - SCROLLBAR_W - PAD);
                 labels.push(label(
                     name,
                     Rect {
-                        x: icon_x + ICON_SIZE + 8.0,
+                        x: text_x,
                         y,
-                        width: body.width - indent - ICON_SIZE - 90.0,
+                        width: (badge_left - BADGE_TEXT_GAP - text_x).max(0.0),
                         height: ROW_H,
                     },
                     HAlign::Left,
                     13.0,
                     tint(text_color),
                 ));
-                // Badges (right-aligned).
-                self.render_badges(video, y, body, opacity, labels);
+                self.render_status_icons(status_icons, icon_uvs, opacity, icons);
             }
             RowId::Audio(audio_id) => {
                 let Some(audio) = data.audios.iter().find(|a| a.id == audio_id) else {
                     return;
                 };
                 let is_original = audio.media_id.is_none();
-                labels.push(label(
-                    "🎵",
+                push_icon(
+                    icons,
+                    icon_uvs,
+                    if is_original {
+                        "file-tree/audio-original"
+                    } else {
+                        "file-tree/audio-file"
+                    },
                     Rect {
                         x: icon_x,
-                        y,
+                        y: y + (ROW_H - ICON_SIZE) * 0.5,
                         width: ICON_SIZE,
-                        height: ROW_H,
+                        height: ICON_SIZE,
                     },
-                    HAlign::Center,
-                    12.0,
-                    tint([150, 155, 175]),
-                ));
+                    if is_original {
+                        [142, 225, 205]
+                    } else {
+                        [82, 211, 184]
+                    },
+                    opacity,
+                );
                 let name: &str = if is_original {
                     t("file_tree.original_audio")
                 } else {
@@ -1819,49 +2032,44 @@ impl FileTree {
                 } else {
                     [222, 225, 235]
                 };
+                let text_x = icon_x + ICON_SIZE + 8.0;
+                let status_icons = self.status_icons_for_row(row.id, y, body, data);
+                let badge_left = status_icons
+                    .iter()
+                    .map(|icon| icon.rect.x)
+                    .reduce(f32::min)
+                    .unwrap_or(body.x + body.width - SCROLLBAR_W - PAD);
                 labels.push(label(
                     name,
                     Rect {
-                        x: icon_x + ICON_SIZE + 8.0,
+                        x: text_x,
                         y,
-                        width: body.width - indent - ICON_SIZE - 90.0,
+                        width: (badge_left - BADGE_TEXT_GAP - text_x).max(0.0),
                         height: ROW_H,
                     },
                     HAlign::Left,
                     13.0,
                     tint(text_color),
                 ));
-                if !audio.instrumental_of.is_empty() {
-                    labels.push(label(
-                        audio.instrumental_badge.as_str(),
-                        Rect {
-                            x: body.x + body.width - 150.0 - SCROLLBAR_W,
-                            y,
-                            width: 150.0,
-                            height: ROW_H,
-                        },
-                        HAlign::Right,
-                        10.0,
-                        tint([140, 165, 230]),
-                    ));
-                }
+                self.render_status_icons(status_icons, icon_uvs, opacity, icons);
             }
             RowId::Band(band_id) => {
                 let Some(band) = data.bands.iter().find(|b| b.id == band_id) else {
                     return;
                 };
-                labels.push(label(
-                    "🎞",
+                push_icon(
+                    icons,
+                    icon_uvs,
+                    "file-tree/rythmo-band",
                     Rect {
                         x: icon_x,
-                        y,
+                        y: y + (ROW_H - ICON_SIZE) * 0.5,
                         width: ICON_SIZE,
-                        height: ROW_H,
+                        height: ICON_SIZE,
                     },
-                    HAlign::Center,
-                    12.0,
-                    tint([150, 155, 175]),
-                ));
+                    [193, 129, 255],
+                    opacity,
+                );
                 let name: &str = match &self.rename {
                     Some((RenameTarget::Band(rid), buffer)) if *rid == band_id => buffer.as_str(),
                     _ => band.name.as_str(),
@@ -1886,52 +2094,21 @@ impl FileTree {
         }
     }
 
-    fn render_badges<'a>(
+    fn render_status_icons(
         &self,
-        video: &'a VideoData,
-        y: f32,
-        body: Rect,
+        status_icons: Vec<StatusIcon<'_>>,
+        icon_uvs: &HashMap<String, [f32; 4]>,
         opacity: f32,
-        labels: &mut Vec<LabelInfo<'a>>,
+        icons: &mut Vec<IconInstance>,
     ) {
-        let mut right = body.x + body.width - SCROLLBAR_W - 14.0;
-        let badge = |labels: &mut Vec<LabelInfo<'a>>, text: &'a str, color: [u8; 3], x: f32| {
-            labels.push(LabelInfo {
-                text,
-                bounds: Rect {
-                    x: x - 60.0,
-                    y,
-                    width: 60.0,
-                    height: ROW_H,
-                },
-                h_align: HAlign::Right,
-                v_align: VAlign::Center,
-                overflow: Overflow::Ellipsis,
-                padding: 4.0,
-                font_size_override: Some(10.0),
-                color_override: Some(faded_text_color(color, opacity)),
-                font_family_override: None,
-            });
-        };
-        if video.proxy_of.is_some() {
-            badge(labels, t("file_tree.badges.proxy"), [140, 165, 230], right);
-            right -= 64.0;
-        }
-        if video.is_default {
-            badge(
-                labels,
-                t("file_tree.badges.default"),
-                [170, 230, 170],
-                right,
-            );
-            right -= 64.0;
-        }
-        if video.is_proxy_source {
-            badge(
-                labels,
-                t("file_tree.badges.has_proxy"),
-                [140, 165, 230],
-                right,
+        for status in status_icons {
+            push_icon(
+                icons,
+                icon_uvs,
+                status.name,
+                status.rect,
+                status.color,
+                opacity,
             );
         }
     }
@@ -2082,6 +2259,14 @@ fn context_menu_items(row: RowId, data: &FileTreeData) -> Vec<MenuItem> {
                     }),
                 });
             } else {
+                items.push(MenuItem {
+                    label: t("file_tree.menu.restore_link").to_string(),
+                    enabled: video.missing,
+                    submenu: None,
+                    action: Box::new(move || {
+                        EventResponse::Action(UiAction::MediaVideoRelink { id })
+                    }),
+                });
                 let has_proxy = data.videos.iter().any(|v| v.proxy_of == Some(id));
                 items.push(MenuItem {
                     label: t(if has_proxy {
@@ -2325,6 +2510,76 @@ fn group_label(kind: GroupKind) -> &'static str {
         GroupKind::Bands => t("file_tree.groups.bands"),
         GroupKind::Audios => t("file_tree.groups.audios"),
     }
+}
+
+fn row_category(id: RowId) -> Option<GroupKind> {
+    match id {
+        RowId::Group(kind) => Some(kind),
+        other => parent_group(other),
+    }
+}
+
+fn row_indent(row: &Row) -> f32 {
+    match row.id {
+        RowId::Root | RowId::Group(_) => 0.0,
+        _ => row.depth.saturating_sub(1) as f32 * INDENT,
+    }
+}
+
+fn category_color(kind: GroupKind) -> [f32; 3] {
+    match kind {
+        GroupKind::Videos => [0.41, 0.66, 1.0],
+        GroupKind::Bands => [0.76, 0.51, 1.0],
+        GroupKind::Audios => [0.32, 0.83, 0.72],
+    }
+}
+
+fn category_background(kind: GroupKind, header: bool, opacity: f32) -> [f32; 4] {
+    let (color, alpha) = match (kind, header) {
+        (GroupKind::Videos, true) => ([0.075, 0.13, 0.225], 0.94),
+        (GroupKind::Videos, false) => ([0.055, 0.085, 0.135], 0.76),
+        (GroupKind::Bands, true) => ([0.15, 0.085, 0.20], 0.94),
+        (GroupKind::Bands, false) => ([0.10, 0.065, 0.13], 0.76),
+        (GroupKind::Audios, true) => ([0.045, 0.15, 0.14], 0.94),
+        (GroupKind::Audios, false) => ([0.045, 0.105, 0.105], 0.76),
+    };
+    [color[0], color[1], color[2], alpha * opacity]
+}
+
+fn color_to_u8(color: [f32; 3]) -> [u8; 3] {
+    std::array::from_fn(|index| (color[index] * 255.0).round() as u8)
+}
+
+fn push_icon(
+    icons: &mut Vec<IconInstance>,
+    icon_uvs: &HashMap<String, [f32; 4]>,
+    name: &str,
+    rect: Rect,
+    color: [u8; 3],
+    opacity: f32,
+) {
+    let Some(uv_rect) = icon_uvs.get(name).copied() else {
+        return;
+    };
+    icons.push(IconInstance {
+        rect: [rect.x, rect.y, rect.width, rect.height],
+        uv_rect,
+        tint: [
+            color[0] as f32 / 255.0,
+            color[1] as f32 / 255.0,
+            color[2] as f32 / 255.0,
+            opacity.clamp(0.0, 1.0),
+        ],
+        transform: [0.0, 0.0, 0.5, 0.5],
+    });
+}
+
+fn interpolate(template: &str, replacements: &[(&str, String)]) -> String {
+    replacements
+        .iter()
+        .fold(template.to_string(), |text, (key, value)| {
+            text.replace(key, value)
+        })
 }
 
 fn parent_group(id: RowId) -> Option<GroupKind> {
@@ -2589,7 +2844,10 @@ mod tests {
 
         assert_eq!(
             tree.handle_event(
-                &UiEvent::MouseMove { x: panel().width + 20.0, y },
+                &UiEvent::MouseMove {
+                    x: panel().width + 20.0,
+                    y
+                },
                 panel(),
                 &data,
             ),
@@ -2616,8 +2874,16 @@ mod tests {
         assert_eq!(root.rect.height, ROW_H);
 
         let mut quads = Vec::new();
+        let mut icons = Vec::new();
         let mut labels = Vec::new();
-        tree.render(panel(), &data, &mut quads, &mut labels);
+        tree.render(
+            panel(),
+            &data,
+            &HashMap::new(),
+            &mut quads,
+            &mut icons,
+            &mut labels,
+        );
         assert_eq!(
             labels
                 .iter()
@@ -2797,5 +3063,120 @@ mod tests {
         assert!(tree.animate(&data, 0.0));
         assert!(tree.enter.contains_key(&RowId::Video(source)));
         assert_eq!(tree.enter[&RowId::Video(source)].progress(), 0.0);
+    }
+
+    #[test]
+    fn accessible_proxy_label_contains_its_full_breadcrumb_and_states() {
+        let mut project = Project::new();
+        let source = project
+            .add_media_video("Source", "C:/videos/source.mp4", None, false)
+            .unwrap();
+        let proxy = project
+            .add_media_video("A1 proxy", "C:/videos/a1-proxy.mp4", Some(source), true)
+            .unwrap();
+        project.set_default_video(Some(proxy)).unwrap();
+        let data = FileTreeData::from_project(
+            &project,
+            "Demo",
+            Some("C:/videos/source.mp4"),
+            Some("C:/videos/a1-proxy.mp4"),
+        );
+        let mut tree = FileTree::new();
+        tree.selected = Some(RowId::Video(proxy));
+
+        let spoken = tree.accessibility_label(RowId::Video(proxy), &data);
+
+        assert!(spoken.contains("Source"));
+        assert!(spoken.contains("A1 proxy"));
+        assert!(spoken.contains(t("file_tree.badges.default")));
+        assert!(spoken.contains(t("file_tree.a11y.is_proxy")));
+        assert!(spoken.contains(t("accessibility.selected")));
+        assert!(spoken.contains(&interpolate(
+            t("file_tree.a11y.position"),
+            &[("{position}", "1".into()), ("{total}", "1".into())],
+        )));
+    }
+
+    #[test]
+    fn accessible_audio_label_names_its_instrumental_rythmo_band() {
+        let mut project = Project::new();
+        let french = project.active_language_id();
+        project.rename_language(french, "Français");
+        let audio = project
+            .add_media_audio("Version instrumentale", "C:/audio/fr.wav")
+            .unwrap();
+        project.set_language_instrumental_audio_path(french, Some("C:/audio/fr.wav".into()));
+        let data = FileTreeData::from_project(&project, "Demo", None, None);
+        let tree = FileTree::new();
+
+        let spoken = tree.accessibility_label(RowId::Audio(AudioRowId::Media(audio)), &data);
+
+        assert!(spoken.contains("Version instrumentale"));
+        assert!(spoken.contains("Français"));
+    }
+
+    #[test]
+    fn compact_status_icons_expose_their_tooltip_on_hover() {
+        let mut project = Project::new();
+        let source = project
+            .add_media_video("Source", "C:/videos/source.mp4", None, false)
+            .unwrap();
+        project.set_default_video(Some(source)).unwrap();
+        let data = FileTreeData::from_project(&project, "Demo", None, None);
+        let mut tree = FileTree::new();
+        tree.open();
+        let row = tree
+            .row_rects(panel(), &data)
+            .into_iter()
+            .find(|row| row.row.id == RowId::Video(source))
+            .unwrap();
+        let status = tree
+            .status_icons_for_row(row.row.id, row.rect.y, body_rect(panel()), &data)
+            .into_iter()
+            .find(|icon| icon.name == "file-tree/default")
+            .unwrap();
+
+        tree.handle_event(
+            &UiEvent::MouseMove {
+                x: status.rect.x + status.rect.width * 0.5,
+                y: status.rect.y + status.rect.height * 0.5,
+            },
+            panel(),
+            &data,
+        );
+
+        assert_eq!(tree.hovered_tooltip(), Some(t("file_tree.badges.default")));
+    }
+
+    #[test]
+    fn category_backgrounds_are_visually_distinct() {
+        assert_ne!(
+            category_background(GroupKind::Videos, true, 1.0),
+            category_background(GroupKind::Bands, true, 1.0)
+        );
+        assert_ne!(
+            category_background(GroupKind::Bands, true, 1.0),
+            category_background(GroupKind::Audios, true, 1.0)
+        );
+    }
+
+    #[test]
+    fn rows_use_group_alignment_then_two_entry_levels() {
+        let group = Row {
+            id: RowId::Group(GroupKind::Videos),
+            depth: 1,
+        };
+        let source = Row {
+            id: RowId::Video(1),
+            depth: 2,
+        };
+        let proxy = Row {
+            id: RowId::Video(2),
+            depth: 3,
+        };
+
+        assert_eq!(row_indent(&group), 0.0);
+        assert_eq!(row_indent(&source), INDENT);
+        assert_eq!(row_indent(&proxy), INDENT * 2.0);
     }
 }

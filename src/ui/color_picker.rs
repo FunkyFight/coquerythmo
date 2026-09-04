@@ -308,9 +308,22 @@ impl ColorPickerState {
         let color = srgb_to_linear(self.current_color());
         let preview = self.transparent_rect();
         fg_quads.push(QuadInstance {
-            rect: [eyedropper.x, eyedropper.y, eyedropper.width, eyedropper.height],
-            color: if self.eyedropper { [0.18, 0.38, 0.62, 1.0] } else { [0.18, 0.18, 0.21, 1.0] },
-            color_bottom: if self.eyedropper { [0.14, 0.30, 0.52, 1.0] } else { [0.14, 0.14, 0.17, 1.0] },
+            rect: [
+                eyedropper.x,
+                eyedropper.y,
+                eyedropper.width,
+                eyedropper.height,
+            ],
+            color: if self.eyedropper {
+                [0.18, 0.38, 0.62, 1.0]
+            } else {
+                [0.18, 0.18, 0.21, 1.0]
+            },
+            color_bottom: if self.eyedropper {
+                [0.14, 0.30, 0.52, 1.0]
+            } else {
+                [0.14, 0.14, 0.17, 1.0]
+            },
             border_color: [0.45, 0.48, 0.58, 0.8],
             border_width: 1.0,
             border_radius: 3.0,
@@ -368,7 +381,11 @@ impl ColorPickerState {
             rect: [preview.x, preview.y, preview.width, preview.height],
             color,
             color_bottom: color,
-            border_color: if self.transparent { [0.72, 0.58, 1.0, 1.0] } else { [0.5, 0.5, 0.55, 0.5] },
+            border_color: if self.transparent {
+                [0.72, 0.58, 1.0, 1.0]
+            } else {
+                [0.5, 0.5, 0.55, 0.5]
+            },
             border_width: if self.transparent { 2.0 } else { 1.0 },
             border_radius: 3.0,
             shadow_offset: [0.0; 2],
@@ -585,10 +602,12 @@ mod tests {
         assert!(!picker.can_be_transparent);
         picker.open_with_transparency(0.0, 0.0, [0.2, 0.4, 0.6, 1.0], true);
         let transparent = picker.transparent_rect();
-        assert!(picker.handle_event(&super::super::primitives::UiEvent::MousePress {
-            x: transparent.x + 1.0,
-            y: transparent.y + 1.0,
-        }));
+        assert!(
+            picker.handle_event(&super::super::primitives::UiEvent::MousePress {
+                x: transparent.x + 1.0,
+                y: transparent.y + 1.0,
+            })
+        );
         assert_eq!(picker.current_color()[3], 0.0);
         picker.open(0.0, 0.0, [0.2, 0.4, 0.6, 0.0]);
         assert!(!picker.can_be_transparent);

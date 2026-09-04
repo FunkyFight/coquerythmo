@@ -180,6 +180,42 @@ impl IconAtlas {
             AtlasEntry::svg("karaoke", include_bytes!("../icons/karaoke.svg")),
             AtlasEntry::svg("sound", include_bytes!("../icons/sound.svg")),
             AtlasEntry::svg("mute", include_bytes!("../icons/mute-svgrepo-com (1).svg")),
+            AtlasEntry::svg(
+                "file-tree/folder",
+                include_bytes!("../icons/file_tree/folder.svg"),
+            ),
+            AtlasEntry::svg(
+                "file-tree/video-source",
+                include_bytes!("../icons/file_tree/video-source.svg"),
+            ),
+            AtlasEntry::svg(
+                "file-tree/video-proxy",
+                include_bytes!("../icons/file_tree/video-proxy.svg"),
+            ),
+            AtlasEntry::svg(
+                "file-tree/audio-file",
+                include_bytes!("../icons/file_tree/audio-file.svg"),
+            ),
+            AtlasEntry::svg(
+                "file-tree/audio-original",
+                include_bytes!("../icons/file_tree/audio-original.svg"),
+            ),
+            AtlasEntry::svg(
+                "file-tree/rythmo-band",
+                include_bytes!("../icons/file_tree/rythmo-band.svg"),
+            ),
+            AtlasEntry::svg(
+                "file-tree/default",
+                include_bytes!("../icons/file_tree/default.svg"),
+            ),
+            AtlasEntry::svg(
+                "file-tree/proxy",
+                include_bytes!("../icons/file_tree/proxy.svg"),
+            ),
+            AtlasEntry::svg(
+                "file-tree/has-proxy",
+                include_bytes!("../icons/file_tree/has-proxy.svg"),
+            ),
             AtlasEntry::stretchable_svg(
                 "detection/labial",
                 include_bytes!("../icons/detection/labial.svg"),
@@ -377,5 +413,26 @@ impl IconAtlas {
             let v_max = (y + height) as f32 / self.atlas_height as f32;
             [u_min, v_min, u_max, v_max]
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn file_tree_svg_assets_are_valid() {
+        for bytes in [
+            include_bytes!("../icons/file_tree/folder.svg").as_slice(),
+            include_bytes!("../icons/file_tree/video-source.svg").as_slice(),
+            include_bytes!("../icons/file_tree/video-proxy.svg").as_slice(),
+            include_bytes!("../icons/file_tree/audio-file.svg").as_slice(),
+            include_bytes!("../icons/file_tree/audio-original.svg").as_slice(),
+            include_bytes!("../icons/file_tree/rythmo-band.svg").as_slice(),
+            include_bytes!("../icons/file_tree/default.svg").as_slice(),
+            include_bytes!("../icons/file_tree/proxy.svg").as_slice(),
+            include_bytes!("../icons/file_tree/has-proxy.svg").as_slice(),
+        ] {
+            resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default())
+                .expect("file tree SVG should parse");
+        }
     }
 }

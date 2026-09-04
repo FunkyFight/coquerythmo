@@ -1263,8 +1263,24 @@ impl ExportModal {
         }
         if self.video_only {
             for (rect, focus) in [
-                (Rect { x: content.x + 16.0, y: content.y + 286.0, width: content.width - 32.0, height: 34.0 }, ExportFocus::ComicAlpha),
-                (Rect { x: content.x + 16.0, y: content.y + 328.0, width: content.width - 32.0, height: 34.0 }, ExportFocus::ComicPages),
+                (
+                    Rect {
+                        x: content.x + 16.0,
+                        y: content.y + 286.0,
+                        width: content.width - 32.0,
+                        height: 34.0,
+                    },
+                    ExportFocus::ComicAlpha,
+                ),
+                (
+                    Rect {
+                        x: content.x + 16.0,
+                        y: content.y + 328.0,
+                        width: content.width - 32.0,
+                        height: 34.0,
+                    },
+                    ExportFocus::ComicPages,
+                ),
             ] {
                 if rect.contains(x, y) {
                     self.set_focus(focus);
@@ -1586,8 +1602,18 @@ impl ExportModal {
             ExportFocus::VideoQuality(index) => segment_rect(content, 180.0, 5, index),
             ExportFocus::VideoWidth => dimension_rects(content).0,
             ExportFocus::VideoHeight => dimension_rects(content).1,
-            ExportFocus::ComicAlpha => Rect { x: content.x + 16.0, y: content.y + 286.0, width: content.width - 32.0, height: 34.0 },
-            ExportFocus::ComicPages => Rect { x: content.x + 16.0, y: content.y + 328.0, width: content.width - 32.0, height: 34.0 },
+            ExportFocus::ComicAlpha => Rect {
+                x: content.x + 16.0,
+                y: content.y + 286.0,
+                width: content.width - 32.0,
+                height: 34.0,
+            },
+            ExportFocus::ComicPages => Rect {
+                x: content.x + 16.0,
+                y: content.y + 328.0,
+                width: content.width - 32.0,
+                height: 34.0,
+            },
             ExportFocus::VideoFps => stepper_focus_rect(content, 276.0),
             ExportFocus::VideoBrScale => stepper_focus_rect(content, 326.0),
             ExportFocus::VideoKaraokeScale => stepper_focus_rect(content, 376.0),
@@ -2537,7 +2563,9 @@ mod tests {
         assert!(labels
             .iter()
             .any(|label| label.text == t("comic_dubs.export.video")));
-        assert!(!labels.iter().any(|label| label.text == t("export_modal.fps")));
+        assert!(!labels
+            .iter()
+            .any(|label| label.text == t("export_modal.fps")));
         let content = modal.content_rect(ExportModal::card(1280.0, 720.0));
         let plus = stepper_plus(content, 276.0);
         let previous_fps = modal.configuration.fps;

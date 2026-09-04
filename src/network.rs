@@ -171,8 +171,15 @@ pub enum IncomingMessage {
     },
 }
 
-/// Outgoing message: event name + JSON payload, sent via dedicated sender thread.
-struct OutgoingMessage(String, serde_json::Value);
+/// Outgoing message sent through the single FIFO sender thread.
+///
+/// Keeping direct and chunked events in the same queue is important: a live
+/// recording transaction must not overtake the recording snapshot that brings
+/// a newly connected peer to the same transaction-chain tip.
+enum OutgoingMessage {
+    Direct(String, serde_json::Value),
+    Big(BigSendJob),
+}
 
 /// One oversized event queued for the FIFO big sender worker.
 struct BigSendJob {
@@ -181,10 +188,15 @@ struct BigSendJob {
     target: Option<String>,
 }
 
+struct AudioSendJob {
+    files: Vec<(PathBuf, crate::audio_transfer::AudioTransferMetadata)>,
+    result: mpsc::Sender<Result<(), String>>,
+}
+
 pub struct NetworkClient {
     _client: Option<rust_socketio::client::Client>,
     out_tx: Option<mpsc::SyncSender<OutgoingMessage>>,
-    big_tx: Option<mpsc::Sender<BigSendJob>>,
+    audio_tx: Option<mpsc::Sender<AudioSendJob>>,
     rx: Option<mpsc::Receiver<IncomingMessage>>,
     session_id: String,
     /// Packet re-emitted on every automatic reconnect. Starts as the initial
@@ -216,7 +228,7 @@ impl NetworkClient {
         Self {
             _client: None,
             out_tx: None,
-            big_tx: None,
+            audio_tx: None,
             rx: None,
             session_id: format!("{:032x}", rand::random::<u128>()),
             rejoin_slot: None,
@@ -264,7 +276,9 @@ impl NetworkClient {
             return;
         }
         self.local_huuid = huuid;
-        let Some(slot) = &self.rejoin_slot else { return };
+        let Some(slot) = &self.rejoin_slot else {
+            return;
+        };
         if let Ok(mut slot) = slot.lock() {
             if let Some(Packet::JoinRoom { project_huuid, .. }) = slot.as_mut() {
                 *project_huuid = self.local_huuid.clone();
@@ -354,22 +368,6 @@ impl NetworkClient {
         let tx_big_chunk = in_tx.clone();
         let tx_big_end = in_tx.clone();
 
-        // FIFO worker for oversized events: serializing and chunking a
-        // multi-megabyte payload must not block the UI thread, and a single
-        // worker keeps successive big events (sync, then recording_prepare)
-        // ordered in the bounded sender queue.
-        let (big_tx, big_rx) = mpsc::channel::<BigSendJob>();
-        {
-            let out_tx = out_tx.clone();
-            if let Err(error) = thread::Builder::new()
-                .name("big-event-sender".into())
-                .spawn(move || run_big_sender(big_rx, out_tx))
-            {
-                log::error!("cannot start the big event sender: {error}");
-            }
-        }
-        self.big_tx = Some(big_tx);
-
         let connect_first_packet = first_packet.clone();
         let connect_session_id = self.session_id.clone();
         let out_rx = Mutex::new(Some(out_rx));
@@ -408,20 +406,7 @@ impl NetworkClient {
                     if let Some(rx) = out_rx.lock().unwrap().take() {
                         let active_client = Arc::clone(&sender_client_for_thread);
                         thread::spawn(move || {
-                            while let Ok(OutgoingMessage(event, payload)) = rx.recv() {
-                                loop {
-                                    let client =
-                                        active_client.lock().ok().and_then(|active| active.clone());
-                                    let Some(client) = client else {
-                                        thread::sleep(Duration::from_millis(25));
-                                        continue;
-                                    };
-                                    if client.emit(&*event, payload.clone()).is_ok() {
-                                        break;
-                                    }
-                                    thread::sleep(Duration::from_millis(25));
-                                }
-                            }
+                            run_outgoing_sender(rx, active_client);
                         });
                     }
                 }
@@ -797,6 +782,16 @@ impl NetworkClient {
 
         match result {
             Ok(client) => {
+                let (audio_tx, audio_rx) = mpsc::channel();
+                let audio_out_tx = out_tx.clone();
+                if let Err(error) = thread::Builder::new()
+                    .name("recording-audio-uploads".into())
+                    .spawn(move || run_audio_sender(audio_rx, audio_out_tx))
+                {
+                    log::error!("cannot start the recording audio sender: {error}");
+                } else {
+                    self.audio_tx = Some(audio_tx);
+                }
                 self._client = Some(client);
                 self.out_tx = Some(out_tx);
                 self.rx = Some(in_rx);
@@ -820,7 +815,7 @@ impl NetworkClient {
     pub fn send_raw(&self, event: &str, payload: serde_json::Value) {
         log::debug!("Sending event: {event}");
         if let Some(tx) = &self.out_tx {
-            let _ = tx.send(OutgoingMessage(event.to_string(), payload));
+            let _ = tx.send(OutgoingMessage::Direct(event.to_string(), payload));
         }
     }
 
@@ -850,14 +845,16 @@ impl NetworkClient {
             if let Some(target) = target {
                 payload["_target"] = serde_json::Value::String(target.to_owned());
             }
-            self.send_raw(event, payload);
+            if let Some(tx) = &self.out_tx {
+                let _ = tx.send(OutgoingMessage::Direct(event.to_string(), payload));
+            }
             return;
         }
         if serialized.len() as u64 > crate::big_event::MAX_BIG_EVENT_BYTES {
             log::error!("{event} payload exceeds the big event size limit");
             return;
         }
-        let Some(big_tx) = &self.big_tx else {
+        let Some(out_tx) = &self.out_tx else {
             log::warn!("dropping oversized {event}: network is not connected");
             return;
         };
@@ -866,8 +863,8 @@ impl NetworkClient {
             serialized,
             target: target.map(str::to_owned),
         };
-        if big_tx.send(job).is_err() {
-            log::error!("the big event sender stopped");
+        if out_tx.send(OutgoingMessage::Big(job)).is_err() {
+            log::error!("the network sender stopped");
         }
     }
 
@@ -991,20 +988,20 @@ impl NetworkClient {
                 };
                 generic.validate()?;
                 out_tx
-                    .send(OutgoingMessage(
+                    .send(OutgoingMessage::Direct(
                         "project_transfer_start".into(),
                         serde_json::to_value(&metadata).map_err(|error| error.to_string())?,
                     ))
                     .map_err(|_| "network sender stopped".to_string())?;
                 for chunk in crate::file_transfer::FileChunkReader::open(&path, &generic)? {
                     let (index, data) = chunk?;
-                    out_tx.send(OutgoingMessage(
+                    out_tx.send(OutgoingMessage::Direct(
                         "project_transfer_chunk".into(),
                         serde_json::json!({ "request_id": &metadata.request_id, "index": index, "data": data }),
                     )).map_err(|_| "network sender stopped".to_string())?;
                 }
                 out_tx
-                    .send(OutgoingMessage(
+                    .send(OutgoingMessage::Direct(
                         "project_transfer_end".into(),
                         serde_json::json!({ "request_id": metadata.request_id }),
                     ))
@@ -1054,48 +1051,29 @@ impl NetworkClient {
         path: PathBuf,
         metadata: crate::audio_transfer::AudioTransferMetadata,
     ) -> mpsc::Receiver<Result<(), String>> {
+        self.send_audio_files(vec![(path, metadata)])
+    }
+
+    /// Stream several FLAC files without interleaving their start/chunk/end
+    /// frames. The server intentionally permits one active audio transfer per
+    /// sender, so catch-up publication must remain strictly sequential.
+    pub fn send_audio_files(
+        &self,
+        files: Vec<(PathBuf, crate::audio_transfer::AudioTransferMetadata)>,
+    ) -> mpsc::Receiver<Result<(), String>> {
         let (result_tx, result_rx) = mpsc::channel();
-        let Some(out_tx) = self.out_tx.clone() else {
+        let Some(audio_tx) = &self.audio_tx else {
             let _ = result_tx.send(Err("network is not connected".into()));
             return result_rx;
         };
-        let spawn_error_tx = result_tx.clone();
-        if let Err(error) = thread::Builder::new()
-            .name("recording-audio-upload".into())
-            .spawn(move || {
-                let result = (|| {
-                    metadata.validate()?;
-                    let start = serde_json::to_value(&metadata)
-                        .map_err(|error| format!("cannot serialize FLAC metadata: {error}"))?;
-                    out_tx
-                        .send(OutgoingMessage("audio_start".into(), start))
-                        .map_err(|_| "network sender stopped".to_string())?;
-                    let reader = crate::audio_transfer::AudioChunkReader::open(&path, &metadata)?;
-                    for chunk in reader {
-                        let chunk = chunk?;
-                        out_tx
-                            .send(OutgoingMessage(
-                                "audio_chunk".into(),
-                                serde_json::json!({
-                                    "transfer_id": &metadata.transfer_id,
-                                    "index": chunk.index,
-                                    "data": chunk.data_base64,
-                                }),
-                            ))
-                            .map_err(|_| "network sender stopped".to_string())?;
-                    }
-                    out_tx
-                        .send(OutgoingMessage(
-                            "audio_end".into(),
-                            serde_json::json!({ "transfer_id": &metadata.transfer_id }),
-                        ))
-                        .map_err(|_| "network sender stopped".to_string())?;
-                    Ok(())
-                })();
-                let _ = result_tx.send(result);
-            })
-        {
-            let _ = spawn_error_tx.send(Err(format!("cannot start FLAC upload: {error}")));
+        if let Err(error) = audio_tx.send(AudioSendJob {
+            files,
+            result: result_tx,
+        }) {
+            let _ = error
+                .0
+                .result
+                .send(Err("recording audio sender stopped".into()));
         }
         result_rx
     }
@@ -1107,8 +1085,8 @@ impl NetworkClient {
     pub fn disconnect(&mut self) {
         log::info!("Disconnecting from server");
         // Drop out_tx first to stop sender thread
+        self.audio_tx = None;
         self.out_tx = None;
-        self.big_tx = None;
         if let Some(client) = self._client.take() {
             let _ = client.disconnect();
         }
@@ -1186,76 +1164,158 @@ fn extract_string_field(payload: &Payload, field: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Big sender worker loop: one thread drains the FIFO of oversized events and
-/// frames each as `big_begin` / `big_chunk`* / `big_end` on the bounded
-/// sender queue, preserving the order of successive big events.
-fn run_big_sender(
-    rx: mpsc::Receiver<BigSendJob>,
-    out_tx: mpsc::SyncSender<OutgoingMessage>,
+fn run_audio_sender(rx: mpsc::Receiver<AudioSendJob>, out_tx: mpsc::SyncSender<OutgoingMessage>) {
+    while let Ok(job) = rx.recv() {
+        let result = (|| {
+            for (path, metadata) in job.files {
+                metadata.validate()?;
+                let start = serde_json::to_value(&metadata)
+                    .map_err(|error| format!("cannot serialize FLAC metadata: {error}"))?;
+                out_tx
+                    .send(OutgoingMessage::Direct("audio_start".into(), start))
+                    .map_err(|_| "network sender stopped".to_string())?;
+                let reader = crate::audio_transfer::AudioChunkReader::open(&path, &metadata)?;
+                for chunk in reader {
+                    let chunk = chunk?;
+                    out_tx
+                        .send(OutgoingMessage::Direct(
+                            "audio_chunk".into(),
+                            serde_json::json!({
+                                "transfer_id": &metadata.transfer_id,
+                                "index": chunk.index,
+                                "data": chunk.data_base64,
+                            }),
+                        ))
+                        .map_err(|_| "network sender stopped".to_string())?;
+                }
+                out_tx
+                    .send(OutgoingMessage::Direct(
+                        "audio_end".into(),
+                        serde_json::json!({ "transfer_id": &metadata.transfer_id }),
+                    ))
+                    .map_err(|_| "network sender stopped".to_string())?;
+            }
+            Ok(())
+        })();
+        let sender_stopped = matches!(&result, Err(error) if error == "network sender stopped");
+        let _ = job.result.send(result);
+        if sender_stopped {
+            return;
+        }
+    }
+}
+
+/// Sender worker loop. Direct and chunked events are consumed from one FIFO so
+/// a live transaction cannot overtake a preceding snapshot or sync event.
+fn run_outgoing_sender(
+    rx: mpsc::Receiver<OutgoingMessage>,
+    active_client: Arc<Mutex<Option<RawClient>>>,
 ) {
     use std::sync::atomic::AtomicU64;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static BIG_TRANSFER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    while let Ok(job) = rx.recv() {
-        let result: Result<(), String> = (|| {
-            let (frame, chunks) = crate::big_event::frame_big_event(&job.serialized)?;
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or(0);
-            let transfer_id = format!(
-                "big_{nanos}_{}",
-                BIG_TRANSFER_COUNTER.fetch_add(1, Ordering::Relaxed)
-            );
-            let mut begin = serde_json::json!({
-                "transfer_id": transfer_id,
-                "event": job.event,
-                "total_bytes": frame.total_bytes,
-                "total_chunks": frame.total_chunks,
-                "chunk_size": frame.chunk_size,
-                "sha1": frame.sha1,
-            });
-            if let Some(target) = &job.target {
-                begin["_target"] = serde_json::Value::String(target.clone());
+    while let Ok(message) = rx.recv() {
+        match message {
+            OutgoingMessage::Direct(event, payload) => {
+                emit_with_retry(&active_client, &event, &payload);
             }
-            out_tx
-                .send(OutgoingMessage("big_begin".into(), begin))
-                .map_err(|_| "network sender stopped".to_string())?;
-            for (index, data) in chunks.iter().enumerate() {
-                out_tx
-                    .send(OutgoingMessage(
-                        "big_chunk".into(),
-                        serde_json::json!({
+            OutgoingMessage::Big(job) => {
+                let result: Result<(), String> = (|| {
+                    let (frame, chunks) = crate::big_event::frame_big_event(&job.serialized)?;
+                    let nanos = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|duration| duration.as_nanos())
+                        .unwrap_or(0);
+                    let transfer_id = format!(
+                        "big_{nanos}_{}",
+                        BIG_TRANSFER_COUNTER.fetch_add(1, Ordering::Relaxed)
+                    );
+                    let mut begin = serde_json::json!({
+                        "transfer_id": transfer_id,
+                        "event": job.event,
+                        "total_bytes": frame.total_bytes,
+                        "total_chunks": frame.total_chunks,
+                        "chunk_size": frame.chunk_size,
+                        "sha1": frame.sha1,
+                    });
+                    if let Some(target) = &job.target {
+                        begin["_target"] = serde_json::Value::String(target.clone());
+                    }
+                    emit_with_retry(&active_client, "big_begin", &begin);
+                    for (index, data) in chunks.iter().enumerate() {
+                        let payload = serde_json::json!({
                             "transfer_id": transfer_id,
                             "index": index,
                             "data": data,
-                        }),
-                    ))
-                    .map_err(|_| "network sender stopped".to_string())?;
+                        });
+                        emit_with_retry(&active_client, "big_chunk", &payload);
+                    }
+                    let payload = serde_json::json!({ "transfer_id": transfer_id });
+                    emit_with_retry(&active_client, "big_end", &payload);
+                    log::info!(
+                        "Sent chunked {} ({} bytes, {} chunks)",
+                        job.event,
+                        frame.total_bytes,
+                        frame.total_chunks
+                    );
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    log::error!("cannot send chunked {}: {error}", job.event);
+                }
             }
-            out_tx
-                .send(OutgoingMessage(
-                    "big_end".into(),
-                    serde_json::json!({ "transfer_id": transfer_id }),
-                ))
-                .map_err(|_| "network sender stopped".to_string())?;
-            log::info!(
-                "Sent chunked {} ({} bytes, {} chunks)",
-                job.event,
-                frame.total_bytes,
-                frame.total_chunks
-            );
-            Ok(())
-        })();
-        if let Err(error) = result {
-            log::error!("cannot send chunked {}: {error}", job.event);
-            // A closed sender queue means the client is disconnecting; the
-            // remaining jobs would fail the same way.
-            if error == "network sender stopped" {
-                return;
-            }
+        }
+    }
+}
+
+fn emit_with_retry(
+    active_client: &Arc<Mutex<Option<RawClient>>>,
+    event: &str,
+    payload: &serde_json::Value,
+) {
+    loop {
+        let client = active_client.lock().ok().and_then(|active| active.clone());
+        let Some(client) = client else {
+            thread::sleep(Duration::from_millis(25));
+            continue;
+        };
+        if client.emit(event, payload.clone()).is_ok() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn chunked_snapshot_stays_before_following_live_transaction() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let mut network = NetworkClient::new();
+        network.out_tx = Some(sender);
+
+        network.send_big_event(
+            "recording_prepare",
+            serde_json::json!({ "snapshot": "x".repeat(crate::big_event::BIG_EVENT_DIRECT_MAX_BYTES + 1) }),
+            None,
+        );
+        network.send_raw(
+            "recording_transaction",
+            serde_json::json!({ "operation": { "op": "set_track_muted" } }),
+        );
+
+        match receiver.recv().unwrap() {
+            OutgoingMessage::Big(job) => assert_eq!(job.event, "recording_prepare"),
+            OutgoingMessage::Direct(event, _) => panic!("received direct event first: {event}"),
+        }
+        match receiver.recv().unwrap() {
+            OutgoingMessage::Direct(event, _) => assert_eq!(event, "recording_transaction"),
+            OutgoingMessage::Big(job) => panic!("received chunked event second: {}", job.event),
         }
     }
 }

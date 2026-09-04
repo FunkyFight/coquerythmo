@@ -27,7 +27,15 @@ pub fn export_mp4(
     progress: Arc<AtomicU32>,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    export_video(project, output, configuration, progress, cancel, None, false)
+    export_video(
+        project,
+        output,
+        configuration,
+        progress,
+        cancel,
+        None,
+        false,
+    )
 }
 
 pub fn export(
@@ -102,11 +110,7 @@ fn export_pages_zip(
     progress: Arc<AtomicU32>,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let pages = project
-        .pages()
-        .iter()
-        .enumerate()
-        .collect::<Vec<_>>();
+    let pages = project.pages().iter().enumerate().collect::<Vec<_>>();
     if pages.is_empty() {
         return Err("Aucune page Comic Dubs à exporter".into());
     }
@@ -117,14 +121,18 @@ fn export_pages_zip(
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
-    let temp_dir = crate::media_binary::installation_temp_dir()
-        .join(format!("comic-dubs-pages-{stamp}"));
+    let temp_dir =
+        crate::media_binary::installation_temp_dir().join(format!("comic-dubs-pages-{stamp}"));
     std::fs::create_dir_all(&temp_dir).map_err(|error| error.to_string())?;
     let result = (|| {
         let mut videos = Vec::with_capacity(pages.len());
         for (position, (page_index, page)) in pages.iter().enumerate() {
             check_cancel(&cancel)?;
-            let extension = if configuration.comic_dubs_alpha { "mov" } else { "mp4" };
+            let extension = if configuration.comic_dubs_alpha {
+                "mov"
+            } else {
+                "mp4"
+            };
             let name = format!(
                 "{:03}-{}.{}",
                 position + 1,
@@ -324,7 +332,14 @@ fn export_in_temp(
     // `-fps_mode` is intentionally banned here: our supported FFmpeg build does not expose it.
     // The `fps` filter above preserves every concat duration while producing constant frame rate.
     if alpha {
-        command.args(["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le"]);
+        command.args([
+            "-c:v",
+            "prores_ks",
+            "-profile:v",
+            "4",
+            "-pix_fmt",
+            "yuva444p10le",
+        ]);
     } else {
         command.args([
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
@@ -389,9 +404,7 @@ fn playback_steps(
         .pages()
         .iter()
         .enumerate()
-        .filter(|(index, page)| {
-            page_filter.map_or(!page.bubbles.is_empty(), |page| page == *index)
-        })
+        .filter(|(index, page)| page_filter.map_or(!page.bubbles.is_empty(), |page| page == *index))
         .collect::<Vec<_>>();
     let minimum_ms = (1_000.0 / fps.max(1.0)).ceil() as u64;
     let mut elapsed_ms = 0_u64;
@@ -477,7 +490,11 @@ fn render_page(
     let mut canvas = RgbaImage::from_pixel(
         width,
         height,
-        if alpha { Rgba([0, 0, 0, 0]) } else { Rgba([0, 0, 0, 255]) },
+        if alpha {
+            Rgba([0, 0, 0, 0])
+        } else {
+            Rgba([0, 0, 0, 255])
+        },
     );
     imageops::overlay(&mut canvas, &resized, i64::from(x), i64::from(y));
     Ok((canvas, (x, y, page_width, page_height)))
@@ -547,27 +564,22 @@ fn render_bubble_text(
         |color| [color[0], color[1], color[2]],
     );
     for line in lines {
-        let measured = measured_line_width(
-            &line,
-            font_size,
-            bubble.letter_spacing,
-            font_family,
-        )
-        .ceil()
-        + 2.0;
-        let measured = measured
-        .clamp(1.0, text_rect.2.max(1.0)) as u32;
-        if let Some(pixmap) = crate::vector_text::render_text_natural_with_family_spacing_and_style_standalone(
-            &line,
-            font_size,
-            measured,
-            line_height.ceil().max(1.0) as u32,
-            font_family,
-            bubble.letter_spacing,
-            bubble.bold,
-            bubble.strikethrough,
-            bubble.underline,
-        ) {
+        let measured =
+            measured_line_width(&line, font_size, bubble.letter_spacing, font_family).ceil() + 2.0;
+        let measured = measured.clamp(1.0, text_rect.2.max(1.0)) as u32;
+        if let Some(pixmap) =
+            crate::vector_text::render_text_natural_with_family_spacing_and_style_standalone(
+                &line,
+                font_size,
+                measured,
+                line_height.ceil().max(1.0) as u32,
+                font_family,
+                bubble.letter_spacing,
+                bubble.bold,
+                bubble.strikethrough,
+                bubble.underline,
+            )
+        {
             let x = match bubble.text_alignment {
                 TextAlignment::Left => text_rect.0,
                 TextAlignment::Center => text_rect.0 + (text_rect.2 - pixmap.width as f32) * 0.5,
@@ -837,7 +849,11 @@ mod tests {
     fn page_export_keeps_pages_without_bubbles() {
         let mut project = ComicDubsProject::default();
         let page = project.add_page("empty.png".into(), "empty.png".into(), 100, 100);
-        let page_index = project.pages().iter().position(|candidate| candidate.id == page).unwrap();
+        let page_index = project
+            .pages()
+            .iter()
+            .position(|candidate| candidate.id == page)
+            .unwrap();
         let steps = playback_steps(&project, 25.0, Some(page_index));
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].page_index, page_index);

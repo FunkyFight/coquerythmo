@@ -1833,6 +1833,50 @@ mod tests {
     }
 
     #[test]
+    fn connected_replica_receives_mute_and_solo_transactions() {
+        let mut authority_project = RecordingProject::new(24.0).unwrap();
+        let mut authority_log = TransactionLog::default();
+        authority_log
+            .append_and_apply(
+                &mut authority_project,
+                RecordingOperation::AddTrack {
+                    track: AudioTrack::new(AudioTrackId::new(1), "Voice"),
+                },
+            )
+            .unwrap();
+        authority_log
+            .append_and_apply(
+                &mut authority_project,
+                RecordingOperation::SetTrackMuted {
+                    track_id: AudioTrackId::new(1),
+                    muted: true,
+                },
+            )
+            .unwrap();
+        authority_log
+            .append_and_apply(
+                &mut authority_project,
+                RecordingOperation::SetTrackSolo {
+                    track_id: AudioTrackId::new(1),
+                    solo: true,
+                },
+            )
+            .unwrap();
+
+        let mut replica_project = RecordingProject::new(24.0).unwrap();
+        let mut replica_log = TransactionLog::default();
+        for transaction in authority_log.entries() {
+            replica_log
+                .append_received_and_apply(&mut replica_project, transaction.clone())
+                .unwrap();
+        }
+
+        assert_eq!(replica_project, authority_project);
+        assert!(replica_project.track(AudioTrackId::new(1)).unwrap().muted);
+        assert!(replica_project.track(AudioTrackId::new(1)).unwrap().solo);
+    }
+
+    #[test]
     fn received_transaction_rejects_tampering_and_out_of_order_delivery() {
         let mut authority_project = RecordingProject::new(24.0).unwrap();
         let mut authority_log = TransactionLog::default();

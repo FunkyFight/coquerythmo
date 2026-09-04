@@ -790,8 +790,16 @@ fn build_svg_styled(
     };
     let emphasis = format!(
         "{}{}",
-        if emphasized { r#" font-style="italic""# } else { "" },
-        if emphasized || bold { r#" font-weight="700""# } else { "" },
+        if emphasized {
+            r#" font-style="italic""#
+        } else {
+            ""
+        },
+        if emphasized || bold {
+            r#" font-weight="700""#
+        } else {
+            ""
+        },
     );
     let decoration = match (underline, strikethrough) {
         (true, true) => r#" text-decoration="underline line-through""#,

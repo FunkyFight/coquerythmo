@@ -815,7 +815,8 @@ fn save_bundle_with_instrumentals_recording_voicelines_and_comic_dubs_data(
     }
 
     let (temporary_path, temporary_file) = create_temporary_file_near(bundle_path)?;
-    let write_result = write_bundle_container(temporary_file, entry_count, &manifest_bytes, &entries);
+    let write_result =
+        write_bundle_container(temporary_file, entry_count, &manifest_bytes, &entries);
 
     if let Err(error) = write_result {
         let _ = fs::remove_file(&temporary_path);
@@ -857,7 +858,8 @@ pub fn save_voicelines_file(
     }
 
     let (temporary_path, temporary_file) = create_temporary_file_near(bundle_path)?;
-    let write_result = write_bundle_container(temporary_file, entry_count, &manifest_bytes, &entries);
+    let write_result =
+        write_bundle_container(temporary_file, entry_count, &manifest_bytes, &entries);
     if let Err(error) = write_result {
         let _ = fs::remove_file(&temporary_path);
         return Err(error);

@@ -135,11 +135,7 @@ fn layout(rows: &[TaskRowView], screen_w: f32, screen_h: f32) -> Option<(f32, f3
 }
 
 /// Bounds of the whole card, for click consumption.
-pub fn card_bounds(
-    rows: &[TaskRowView],
-    screen_w: f32,
-    screen_h: f32,
-) -> Option<Rect> {
+pub fn card_bounds(rows: &[TaskRowView], screen_w: f32, screen_h: f32) -> Option<Rect> {
     layout(rows, screen_w, screen_h).map(|(card_x, card_y, card_h)| Rect {
         x: card_x,
         y: card_y,
@@ -185,8 +181,8 @@ fn push_spinner(quads: &mut Vec<QuadInstance>, cx: f32, cy: f32) {
     let dot = 3.6;
     for i in 0..SEGMENTS {
         let age = (head + SEGMENTS - i) % SEGMENTS;
-        let angle = (i as f32 / SEGMENTS as f32) * std::f32::consts::TAU
-            - std::f32::consts::FRAC_PI_2;
+        let angle =
+            (i as f32 / SEGMENTS as f32) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
         quads.push(QuadInstance {
             rect: [
                 cx + radius * angle.cos() - dot / 2.0,
@@ -241,11 +237,7 @@ fn step_dot_color(state: TaskStepState) -> ([f32; 4], [f32; 4], f32) {
     match state {
         TaskStepState::Done => ([0.35, 0.78, 0.45, 1.0], [0.0; 4], 0.0),
         TaskStepState::Running => ([0.45, 0.65, 1.0, 1.0], [0.0; 4], 0.0),
-        TaskStepState::Pending => (
-            [0.0; 4],
-            [0.45, 0.45, 0.52, 0.9],
-            1.0,
-        ),
+        TaskStepState::Pending => ([0.0; 4], [0.45, 0.45, 0.52, 0.9], 1.0),
     }
 }
 

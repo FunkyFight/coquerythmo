@@ -12,7 +12,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 
 use crate::integrity::Sha1;
-use crate::recording::{CaptureTarget, RecordedAudio};
+use crate::recording::{AudioAsset, AudioClipId, AudioTrackId, CaptureTarget, RecordedAudio};
 
 pub const AUDIO_CHUNK_BYTES: usize = 192 * 1024;
 pub const MAX_AUDIO_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -27,8 +27,17 @@ pub struct AudioTransferMetadata {
     pub sha1: String,
     pub target: CaptureTarget,
     pub audio: RecordedAudio,
+    /// False for an asset whose timeline transaction was sent separately
+    /// (imports and catch-up transfers). The explicit flag keeps the wire
+    /// shape compatible with clients that still require `target`.
+    #[serde(default = "default_commit_on_receive")]
+    pub commit_on_receive: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_member_id: Option<String>,
+    /// Restrict a catch-up transfer to one member. Live takes and imports use
+    /// `None` and are relayed to every other participant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_member_id: Option<String>,
 }
 
 impl AudioTransferMetadata {
@@ -36,7 +45,52 @@ impl AudioTransferMetadata {
         transfer_id: impl Into<String>,
         path: &Path,
         target: CaptureTarget,
+        audio: RecordedAudio,
+    ) -> Result<Self, String> {
+        Self::from_descriptor_file(transfer_id, path, target, audio, true, None)
+    }
+
+    pub fn from_asset_file(
+        transfer_id: impl Into<String>,
+        path: &Path,
+        asset: &AudioAsset,
+        to_member_id: Option<String>,
+    ) -> Result<Self, String> {
+        let audio = RecordedAudio {
+            file_name: asset.file_name.clone(),
+            sample_rate: asset.sample_rate,
+            channels: asset.channels,
+            sample_count: asset.sample_count,
+            checksum: asset.checksum.clone(),
+            waveform: asset.waveform.clone(),
+        };
+        let compatibility_target = CaptureTarget {
+            track_id: AudioTrackId::new(0),
+            asset_id: asset.id,
+            clip_id: AudioClipId::new(0),
+            start_frame: 0,
+        };
+        let metadata = Self::from_descriptor_file(
+            transfer_id,
+            path,
+            compatibility_target,
+            audio,
+            false,
+            to_member_id,
+        )?;
+        if metadata.sha1 != asset.checksum {
+            return Err("recording asset FLAC checksum no longer matches the timeline".into());
+        }
+        Ok(metadata)
+    }
+
+    fn from_descriptor_file(
+        transfer_id: impl Into<String>,
+        path: &Path,
+        target: CaptureTarget,
         mut audio: RecordedAudio,
+        commit_on_receive: bool,
+        to_member_id: Option<String>,
     ) -> Result<Self, String> {
         let transfer_id = transfer_id.into();
         validate_transfer_id(&transfer_id).and_then(|_| {
@@ -58,7 +112,9 @@ impl AudioTransferMetadata {
                 sha1,
                 target,
                 audio,
+                commit_on_receive,
                 from_member_id: None,
+                to_member_id,
             };
             metadata.validate()?;
             Ok(metadata)
@@ -97,6 +153,11 @@ impl AudioTransferMetadata {
             member_id.is_empty() || member_id.len() > 128 || member_id.chars().any(char::is_control)
         }) {
             return Err("invalid FLAC sender id".into());
+        }
+        if self.to_member_id.as_ref().is_some_and(|member_id| {
+            member_id.is_empty() || member_id.len() > 128 || member_id.chars().any(char::is_control)
+        }) {
+            return Err("invalid FLAC recipient id".into());
         }
         Ok(())
     }
@@ -137,6 +198,10 @@ impl AudioTransferMetadata {
         self.audio.file_name = self.file_name.clone();
         self.validate()
     }
+}
+
+fn default_commit_on_receive() -> bool {
+    true
 }
 
 #[derive(Debug)]
@@ -487,6 +552,42 @@ mod tests {
         metadata.prefix_file_name_with_user("Comé/dien").unwrap();
 
         assert_eq!(metadata.file_name, "Comé_dien_take.flac");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn asset_publication_is_targeted_without_requesting_a_new_clip() {
+        let root = std::env::temp_dir().join(format!(
+            "coquerythmo-audio-transfer-publication-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("take.flac");
+        fs::write(&source, b"audio").unwrap();
+        let capture =
+            AudioTransferMetadata::from_file("take_4", &source, target(), recorded()).unwrap();
+        let asset = capture.audio.clone().into_asset(AudioAssetId::new(9));
+
+        let publication = AudioTransferMetadata::from_asset_file(
+            "asset_9",
+            &source,
+            &asset,
+            Some("actor-2".into()),
+        )
+        .unwrap();
+
+        assert!(!publication.commit_on_receive);
+        assert_eq!(publication.target.asset_id, asset.id);
+        assert_eq!(publication.to_member_id.as_deref(), Some("actor-2"));
+
+        let mut legacy_json = serde_json::to_value(capture).unwrap();
+        legacy_json
+            .as_object_mut()
+            .unwrap()
+            .remove("commit_on_receive");
+        let legacy: AudioTransferMetadata = serde_json::from_value(legacy_json).unwrap();
+        assert!(legacy.commit_on_receive);
         let _ = fs::remove_dir_all(root);
     }
 

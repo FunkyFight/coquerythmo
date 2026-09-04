@@ -303,10 +303,8 @@ mod tests {
         let mut quads = Vec::new();
         let mut labels = Vec::new();
         dropdown.render(&mut quads, &mut labels, trigger, "Default");
-        assert!(
-            labels
-                .iter()
-                .any(|label| label.text == "Arial" && label.font_family_override == Some("Arial"))
-        );
+        assert!(labels
+            .iter()
+            .any(|label| label.text == "Arial" && label.font_family_override == Some("Arial")));
     }
 }

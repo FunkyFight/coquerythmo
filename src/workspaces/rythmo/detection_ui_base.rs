@@ -210,6 +210,11 @@ pub struct DetectionDrag {
 }
 
 impl DetectionDrag {
+    pub(crate) fn waveform_context(self) -> Option<(u64, DetectionCueId)> {
+        self.moved
+            .then_some((self.address.line_id, self.address.detection_id))
+    }
+
     fn new(address: DetectionAddress, x: f32, y: f32) -> Self {
         Self::with_retarget(address, x, y, false)
     }
@@ -250,10 +255,49 @@ impl RythmoState {
     }
 }
 
+pub(crate) fn waveform_drag_markers(
+    project: &Project,
+    state: &RythmoState,
+) -> Vec<(i64, [f32; 4])> {
+    let mut markers = Vec::new();
+    if let Some(drag) = state.syllable_drag.as_ref() {
+        let line_id = decode_sync_syllable_drag_line_id(drag.line_id).unwrap_or(drag.line_id);
+        if let Some(line) = project.get_line(line_id) {
+            let mut old_cursor = line.start_frame;
+            let mut new_cursor = line.start_frame;
+            for (old, new) in drag.original_ratios.iter().zip(&drag.ratios) {
+                let old_end = old_cursor + (line.duration_frames as f32 * old).round() as i64;
+                let new_end = new_cursor + (line.duration_frames as f32 * new).round() as i64;
+                if old_end != new_end {
+                    markers.push((new_end, line.character_color));
+                }
+                old_cursor = old_end;
+                new_cursor = new_end;
+            }
+        }
+    }
+    if let Some((line_id, detection_id)) = state
+        .detection_drag
+        .and_then(DetectionDrag::waveform_context)
+    {
+        if let (Some(line), Some(cue)) = (
+            project.get_line(line_id),
+            project.detections().detection(DetectionAddress {
+                line_id,
+                detection_id,
+            }),
+        ) {
+            markers.push((
+                cue.media_tick.as_frame_position().round() as i64,
+                line.character_color,
+            ));
+        }
+    }
+    markers
+}
 pub(crate) fn encode_sync_syllable_drag_line_id(line_id: u64) -> u64 {
     line_id | SYNC_SYLLABLE_DRAG_MASK
 }
-
 pub(crate) fn decode_sync_syllable_drag_line_id(line_id: u64) -> Option<u64> {
     (line_id & SYNC_SYLLABLE_DRAG_MASK != 0).then_some(line_id & !SYNC_SYLLABLE_DRAG_MASK)
 }

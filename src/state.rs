@@ -49,6 +49,9 @@ use crate::workspaces::voicelines::VoicelinesWorkspace;
 use crate::constants;
 use crate::recording_mix::REALTIME_SAMPLE_RATE;
 
+static RECORDING_AUDIO_PUBLICATION_NONCE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 enum DialogueSplitTarget {
     Cursor { line_id: u64, cursor_pos: usize },
     Playhead { line_id: u64, progress: f32 },
@@ -61,10 +64,28 @@ fn rebase_pasted_start_frame(source_start: i64, source_anchor: i64, target_ancho
 fn recording_playback_waits_for_mix(
     workspace: WorkspaceId,
     mix_pending: bool,
+    timeline_audio_ready: bool,
     player_is_playing: bool,
     capture_started: bool,
 ) -> bool {
-    workspace == WorkspaceId::Recording && mix_pending && !player_is_playing && !capture_started
+    workspace == WorkspaceId::Recording
+        && (mix_pending || !timeline_audio_ready)
+        && !player_is_playing
+        && !capture_started
+}
+
+fn recording_timeline_audio_ready(
+    project: &crate::recording::RecordingProject,
+    asset_paths: &std::collections::BTreeMap<crate::recording::AudioAssetId, PathBuf>,
+) -> bool {
+    project
+        .clips()
+        .all(|clip| asset_paths.contains_key(&clip.asset_id))
+}
+
+fn recording_audio_publication_id(asset_id: crate::recording::AudioAssetId) -> String {
+    let nonce = RECORDING_AUDIO_PUBLICATION_NONCE.fetch_add(1, Ordering::Relaxed);
+    format!("asset_{}_{}_{}", std::process::id(), asset_id.get(), nonce)
 }
 
 fn recording_playback_is_blocked_during_countdown(
@@ -259,7 +280,8 @@ mod playback_tests {
     use super::{
         comic_dubs_playback_due, comic_dubs_start_page, next_comic_dubs_position,
         recording_playback_is_blocked_during_countdown, recording_playback_waits_for_mix,
-        recording_workspace_has_content, workspace_shows_project_video, WorkspaceId,
+        recording_timeline_audio_ready, recording_workspace_has_content,
+        workspace_shows_project_video, WorkspaceId,
     };
     use crate::comic_dubs::{ComicDubsProject, Point};
     use crate::recording::{AudioAssetId, AudioClipId, AudioTrackId, CaptureState, CaptureTarget};
@@ -270,21 +292,75 @@ mod playback_tests {
         assert!(recording_playback_waits_for_mix(
             WorkspaceId::Recording,
             true,
+            true,
             false,
             false,
         ));
         assert!(!recording_playback_waits_for_mix(
             WorkspaceId::Recording,
             false,
+            true,
             false,
             false,
         ));
         assert!(!recording_playback_waits_for_mix(
             WorkspaceId::Recording,
             true,
+            true,
             false,
             true,
         ));
+    }
+
+    #[test]
+    fn recording_play_waits_until_every_timeline_asset_is_local() {
+        let mut project = crate::recording::RecordingProject::new(24.0).unwrap();
+        let track_id = project.allocate_track_id();
+        let asset_id = project.allocate_asset_id();
+        let clip_id = project.allocate_clip_id();
+        project
+            .apply(&crate::recording::RecordingOperation::Batch {
+                operations: vec![
+                    crate::recording::RecordingOperation::AddTrack {
+                        track: crate::recording::AudioTrack::new(track_id, "Voice"),
+                    },
+                    crate::recording::RecordingOperation::AddAsset {
+                        asset: crate::recording::AudioAsset {
+                            id: asset_id,
+                            file_name: "voice.flac".into(),
+                            sample_rate: 48_000,
+                            channels: 1,
+                            sample_count: 48_000,
+                            checksum: "a".repeat(40),
+                            waveform: crate::recording::WaveformData::default(),
+                        },
+                    },
+                    crate::recording::RecordingOperation::AddClip {
+                        clip: crate::recording::AudioClip {
+                            id: clip_id,
+                            asset_id,
+                            track_id,
+                            start_frame: 0,
+                            source_start_frame: 0,
+                            duration_frames: 24,
+                        },
+                    },
+                ],
+            })
+            .unwrap();
+        let mut paths = std::collections::BTreeMap::new();
+
+        assert!(!recording_timeline_audio_ready(&project, &paths));
+        assert!(recording_playback_waits_for_mix(
+            WorkspaceId::Recording,
+            false,
+            false,
+            false,
+            false,
+        ));
+
+        paths.insert(asset_id, std::path::PathBuf::from("voice.flac"));
+        assert!(recording_timeline_audio_ready(&project, &paths));
     }
 
     #[test]
@@ -2791,6 +2867,14 @@ impl State {
         &mut self,
         operation: crate::recording::RecordingOperation,
     ) -> Result<(), crate::recording::RecordingError> {
+        self.apply_recording_operation_internal(operation, true)
+    }
+
+    fn apply_recording_operation_internal(
+        &mut self,
+        operation: crate::recording::RecordingOperation,
+        publish_audio: bool,
+    ) -> Result<(), crate::recording::RecordingError> {
         if !self.ui_shell.ui.recording_can_edit_timeline() {
             self.recording_read_only_error();
             return Ok(());
@@ -2806,10 +2890,87 @@ impl State {
             self.collaboration
                 .network
                 .send_recording_transaction(&transaction);
+            if publish_audio {
+                self.publish_recording_operation_audio(&transaction.operation, None);
+            }
         }
         self.sync_recording_workspace_ui();
         self.schedule_recording_mix();
         Ok(())
+    }
+
+    fn publish_recording_operation_audio(
+        &mut self,
+        operation: &crate::recording::RecordingOperation,
+        to_member_id: Option<&str>,
+    ) {
+        let mut added_assets = Vec::new();
+        recording_added_assets(operation, &mut added_assets);
+        let asset_ids = added_assets
+            .into_iter()
+            .map(|asset| asset.id)
+            .collect::<Vec<_>>();
+        self.publish_recording_assets(asset_ids, to_member_id);
+    }
+
+    fn publish_all_recording_audio_to(&mut self, member_id: Option<&str>) {
+        let asset_ids = self
+            .project_session
+            .recording_project
+            .assets()
+            .map(|asset| asset.id)
+            .collect::<Vec<_>>();
+        self.publish_recording_assets(asset_ids, member_id);
+    }
+
+    fn publish_recording_assets(
+        &mut self,
+        asset_ids: Vec<crate::recording::AudioAssetId>,
+        to_member_id: Option<&str>,
+    ) {
+        if !self.collaboration.network.is_in_room() || asset_ids.is_empty() {
+            return;
+        }
+        let mut files = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for asset_id in asset_ids {
+            if !seen.insert(asset_id) {
+                continue;
+            }
+            let Some(asset) = self
+                .project_session
+                .recording_project
+                .asset(asset_id)
+                .cloned()
+            else {
+                continue;
+            };
+            let Some(path) = self
+                .project_session
+                .recording_asset_paths
+                .get(&asset_id)
+                .cloned()
+            else {
+                log::warn!("Cannot publish recording asset {asset_id}: local FLAC is missing");
+                continue;
+            };
+            let transfer_id = recording_audio_publication_id(asset_id);
+            match crate::audio_transfer::AudioTransferMetadata::from_asset_file(
+                transfer_id,
+                &path,
+                &asset,
+                to_member_id.map(str::to_owned),
+            ) {
+                Ok(metadata) => files.push((path, metadata)),
+                Err(error) => self.recording_error(error),
+            }
+        }
+        if files.is_empty() {
+            return;
+        }
+        let job_id = files[0].1.transfer_id.clone();
+        let receiver = self.collaboration.network.send_audio_files(files);
+        self.recording_uploads.push((job_id, receiver));
     }
 
     fn bind_recording_audio_paths(&mut self, operation: &crate::recording::RecordingOperation) {
@@ -2836,9 +2997,6 @@ impl State {
             self.start_deferred_recording_playback();
             return;
         }
-        let Some(source) = self.playback.source_video_path.clone() else {
-            return;
-        };
         let mut spec = match crate::recording_mix::RecordingMixSpec::from_project(
             &self.project_session.recording_project,
             &self.project_session.recording_asset_paths,
@@ -5432,6 +5590,10 @@ impl State {
         let recording_mix_pending = recording_playback_waits_for_mix(
             self.active_workspace(),
             self.jobs.pending_recording_mix_job.is_some(),
+            recording_timeline_audio_ready(
+                &self.project_session.recording_project,
+                &self.project_session.recording_asset_paths,
+            ),
             self.playback
                 .video_player
                 .as_ref()
@@ -6097,16 +6259,19 @@ impl State {
         self.recording_runtime
             .remember_audio_path(&metadata.audio.checksum, &path);
 
-        let matching_asset_id = self
+        let matching_asset_ids = self
             .project_session
             .recording_project
             .assets()
-            .find(|asset| asset.checksum == metadata.audio.checksum)
-            .map(|asset| asset.id);
-        if let Some(asset_id) = matching_asset_id {
-            self.project_session
-                .recording_asset_paths
-                .insert(asset_id, path);
+            .filter(|asset| asset.checksum == metadata.audio.checksum)
+            .map(|asset| asset.id)
+            .collect::<Vec<_>>();
+        if !matching_asset_ids.is_empty() {
+            for asset_id in matching_asset_ids {
+                self.project_session
+                    .recording_asset_paths
+                    .insert(asset_id, path.clone());
+            }
             self.project_session.mark_recording_changed();
             self.schedule_recording_mix();
             return;
@@ -6115,15 +6280,17 @@ impl State {
         if matches!(
             self.recording_network_role(),
             crate::ui::recording_workspace::RecordingRole::Director
-        ) {
+        ) && metadata.commit_on_receive
+        {
             // Every participant receives the same reserved capture IDs. The
             // authoritative DA proposes fresh IDs against its current state so
             // simultaneous takes never collide, then broadcasts the resulting
             // atomic AddAsset + AddClip transaction.
+            let capture_target = metadata.target;
             let target = match self
                 .project_session
                 .recording_project
-                .propose_capture_target(metadata.target.track_id, metadata.target.start_frame)
+                .propose_capture_target(capture_target.track_id, capture_target.start_frame)
             {
                 Ok(target) => target,
                 Err(error) => {
@@ -6136,7 +6303,9 @@ impl State {
                 audio: metadata.audio,
             }
             .into_project_operation(self.project_session.recording_project.timeline_fps());
-            if let Err(error) = self.apply_recording_operation(operation) {
+            // The actor's original upload was already relayed to every room
+            // member. Only publish the canonical transaction here.
+            if let Err(error) = self.apply_recording_operation_internal(operation, false) {
                 self.recording_error(error.to_string());
                 return;
             }
@@ -6454,6 +6623,9 @@ impl State {
                             .send_recording_prepare_to(&prepare, &requester);
                     }
                     self.send_recording_view((!requester.is_empty()).then_some(requester.as_str()));
+                    self.publish_all_recording_audio_to(
+                        (!requester.is_empty()).then_some(requester.as_str()),
+                    );
                 }
                 IncomingMessage::AudioStart { metadata } => {
                     match serde_json::from_value::<crate::audio_transfer::AudioTransferMetadata>(
@@ -7135,7 +7307,42 @@ impl State {
         self.delete_selected();
     }
 
+    pub fn paste_line_with_track_character(&mut self) {
+        let target_track = self
+            .ui_shell
+            .ui
+            .rythmo_state
+            .hovered_track
+            .unwrap_or(self.ui_shell.ui.rythmo_state.keyboard_track);
+        let target_frame = self
+            .ui_shell
+            .ui
+            .rythmo_state
+            .hovered_frame
+            .unwrap_or_else(|| self.current_frame());
+        let y_slot = crate::rythmo_layout::y_slot_for_track_index(target_track);
+        let character = self
+            .project_session
+            .project
+            .lines()
+            .filter(|line| (line.y_slot - y_slot).abs() < 0.01 && line.end_frame() <= target_frame)
+            .max_by_key(|line| line.end_frame())
+            .or_else(|| {
+                self.project_session
+                    .project
+                    .lines()
+                    .filter(|line| (line.y_slot - y_slot).abs() < 0.01)
+                    .last()
+            })
+            .map(|line| (line.character_name.clone(), line.character_color));
+        self.paste_line_internal(character);
+    }
+
     pub fn paste_line(&mut self) {
+        self.paste_line_internal(None);
+    }
+
+    fn paste_line_internal(&mut self, override_character: Option<(String, [f32; 4])>) {
         let Some(snapshots) = self.line_clipboard.clone() else {
             self.narration.announce_event(AccessibilityEvent::Error {
                 message: crate::i18n::t("accessibility.no_line_clipboard").to_string(),
@@ -7188,15 +7395,19 @@ impl State {
         let mut pasted_detections = Vec::new();
         for (offset, entry) in snapshots.into_iter().enumerate() {
             let mut line = entry.line;
+            if let Some((character_name, character_color)) = override_character.as_ref() {
+                line.character_name = character_name.clone();
+                line.character_color = *character_color;
+            }
             let source_track = crate::rythmo_layout::track_index_for_y_slot(line.y_slot) as i32;
             let pasted_track = target_anchor_track + source_track - source_anchor_track;
-            let old_start_frame = line.start_frame;
             line.id = loop {
                 let id = self.project_session.project.generate_line_id();
                 if inserted_lines.iter().all(|(inserted, _)| inserted.id != id) {
                     break id;
                 }
             };
+            let old_start_frame = line.start_frame;
             line.start_frame = rebase_pasted_start_frame(
                 line.start_frame,
                 source_anchor_frame,
@@ -10835,6 +11046,20 @@ impl State {
 
     pub fn begin_rename_media_video(&mut self, id: crate::project::MediaId) {
         self.ui_shell.ui.begin_rename_media_video(id);
+    }
+
+    pub fn relink_media_video(&mut self, id: crate::project::MediaId, path: String) {
+        let path = PathBuf::from(path);
+        if !path.exists()
+            || !self
+                .project_session
+                .project
+                .update_media_video_path(id, path.to_string_lossy())
+        {
+            self.show_toast(crate::i18n::t("toast.media_file_missing"), 5.0);
+            return;
+        }
+        self.project_session.dirty = true;
     }
 
     pub fn create_proxy_for_media(&mut self, id: crate::project::MediaId) {

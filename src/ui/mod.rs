@@ -275,6 +275,15 @@ impl Ui {
             "karaoke",
             "sound",
             "mute",
+            "file-tree/folder",
+            "file-tree/video-source",
+            "file-tree/video-proxy",
+            "file-tree/audio-file",
+            "file-tree/audio-original",
+            "file-tree/rythmo-band",
+            "file-tree/default",
+            "file-tree/proxy",
+            "file-tree/has-proxy",
             "select-mode",
             "draw-mode",
             "eraser",
@@ -1679,6 +1688,7 @@ impl Ui {
         if self.active_workspace == WorkspaceId::Rythmo && self.file_tree.is_open() {
             if let Some(panel) = self.layout.properties {
                 if let Some(response) = self.file_tree.handle_event(event, panel, file_tree_data) {
+                    self.update_tooltip();
                     return response;
                 }
             }
@@ -2680,6 +2690,7 @@ impl Ui {
             self.close_side_panel();
             self.props_visible = true;
             self.file_tree.open();
+            self.tooltip = None;
             self.focus.push_scope(
                 "file-tree",
                 vec![AccessibleNode::focusable(
@@ -2728,6 +2739,21 @@ impl Ui {
 
     fn update_tooltip(&mut self) {
         let (cx, cy) = self.cursor_pos;
+        let file_tree_tooltip = (self.active_workspace == WorkspaceId::Rythmo
+            && self.file_tree.is_open())
+        .then(|| self.layout.properties)
+        .flatten()
+        .filter(|panel| panel.contains(cx, cy))
+        .and_then(|_| self.file_tree.hovered_tooltip())
+        .map(str::to_string);
+        if let Some(text) = file_tree_tooltip {
+            self.tooltip = Some(TooltipState {
+                text,
+                cursor_x: cx,
+                cursor_y: cy,
+            });
+            return;
+        }
         for widget in self
             .topbar_widgets
             .iter()
@@ -3635,6 +3661,7 @@ impl Ui {
         let mut icons: Vec<IconInstance> = Vec::new();
         let mut labels: Vec<LabelInfo> = Vec::new();
         let mut overlay_labels: Vec<LabelInfo> = Vec::new();
+        let mut overlay_icons: Vec<IconInstance> = Vec::new();
         let mut popup_quads: Vec<QuadInstance> = Vec::new();
         let mut popup_labels: Vec<LabelInfo> = Vec::new();
         let mut popup_icons: Vec<IconInstance> = Vec::new();
@@ -4148,7 +4175,9 @@ impl Ui {
                     file_tree.render(
                         panel,
                         file_tree_data,
+                        &self.icon_uvs,
                         &mut overlay_quads,
+                        &mut overlay_icons,
                         &mut overlay_labels,
                     );
                 } else {
@@ -4434,7 +4463,14 @@ impl Ui {
         }
 
         let layers = [
-            UiLayerBatch::new(UiLayer::Overlay, &overlay_quads, &overlay_labels),
+            UiLayerBatch {
+                layer: UiLayer::Overlay,
+                quads: &overlay_quads,
+                textured: &[],
+                foreground_quads: &[],
+                icons: &overlay_icons,
+                labels: &overlay_labels,
+            },
             UiLayerBatch {
                 layer: UiLayer::Popup,
                 quads: &popup_quads,

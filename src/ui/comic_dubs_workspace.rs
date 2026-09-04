@@ -387,11 +387,7 @@ impl ComicDubsWorkspaceUi {
     }
 
     pub fn nudge_vertex_editor(&mut self, delta_ms: i64, project: &ComicDubsProject) -> bool {
-        let Some(playhead_ms) = self
-            .vertex_editor
-            .as_ref()
-            .map(|editor| editor.playhead_ms)
-        else {
+        let Some(playhead_ms) = self.vertex_editor.as_ref().map(|editor| editor.playhead_ms) else {
             return false;
         };
         self.set_vertex_editor_playhead(playhead_ms.saturating_add_signed(delta_ms), project);
@@ -467,11 +463,13 @@ impl ComicDubsWorkspaceUi {
                 ));
             }
             if id == "comic.vertex.next" {
-                return Some(UiAction::ComicDubsSetVertexEditorPlayhead(next_keyframe_at(
-                    bubble,
-                    editor.playhead_ms,
-                    vertex_editor_duration_ms(project, bubble),
-                )));
+                return Some(UiAction::ComicDubsSetVertexEditorPlayhead(
+                    next_keyframe_at(
+                        bubble,
+                        editor.playhead_ms,
+                        vertex_editor_duration_ms(project, bubble),
+                    ),
+                ));
             }
             if let Some(at_ms) = id
                 .strip_prefix("comic.vertex.marker.")
@@ -506,11 +504,7 @@ impl ComicDubsWorkspaceUi {
                 });
             }
         }
-        for (suffix, style) in [
-            ("bold", 0),
-            ("strikethrough", 1),
-            ("underline", 2),
-        ] {
+        for (suffix, style) in [("bold", 0), ("strikethrough", 1), ("underline", 2)] {
             if let Some(bubble_id) = id
                 .strip_prefix(&format!("comic.inspector.style.{suffix}."))
                 .and_then(|id| id.parse().ok())
@@ -879,10 +873,7 @@ impl ComicDubsWorkspaceUi {
                 return EventResponse::Consumed;
             }
             if editor_layout.previous.contains(*x, *y) {
-                self.set_vertex_editor_playhead(
-                    previous_keyframe_at(bubble, playhead_ms),
-                    project,
-                );
+                self.set_vertex_editor_playhead(previous_keyframe_at(bubble, playhead_ms), project);
                 return EventResponse::Consumed;
             }
             if editor_layout.next.contains(*x, *y) {
@@ -987,10 +978,9 @@ impl ComicDubsWorkspaceUi {
             ),
             UiEvent::Home => self.set_vertex_editor_playhead(0, project),
             UiEvent::End => self.set_vertex_editor_playhead(duration_ms, project),
-            UiEvent::PageUp => self.set_vertex_editor_playhead(
-                previous_keyframe_at(bubble, playhead_ms),
-                project,
-            ),
+            UiEvent::PageUp => {
+                self.set_vertex_editor_playhead(previous_keyframe_at(bubble, playhead_ms), project)
+            }
             UiEvent::PageDown => self.set_vertex_editor_playhead(
                 next_keyframe_at(bubble, playhead_ms, duration_ms),
                 project,
@@ -1122,12 +1112,8 @@ impl ComicDubsWorkspaceUi {
                 .min(layout.content.y + layout.content.height - picker_h - 4.0)
                 .max(layout.content.y + 4.0);
             if matches!(target, ColorTarget::Bubble(_)) {
-                self.color_picker.open_with_transparency(
-                    picker_x,
-                    picker_y,
-                    rgba(color),
-                    true,
-                );
+                self.color_picker
+                    .open_with_transparency(picker_x, picker_y, rgba(color), true);
             } else {
                 self.color_picker.open(picker_x, picker_y, rgba(color));
             }
@@ -1142,12 +1128,14 @@ impl ComicDubsWorkspaceUi {
                     1 => style.1 = !style.1,
                     _ => style.2 = !style.2,
                 }
-                return Some(EventResponse::Action(UiAction::ComicDubsSetBubbleTextStyle {
-                    bubble_id,
-                    bold: style.0,
-                    strikethrough: style.1,
-                    underline: style.2,
-                }));
+                return Some(EventResponse::Action(
+                    UiAction::ComicDubsSetBubbleTextStyle {
+                        bubble_id,
+                        bold: style.0,
+                        strikethrough: style.1,
+                        underline: style.2,
+                    },
+                ));
             }
         }
         for (column, alignment) in [
@@ -1461,12 +1449,9 @@ impl ComicDubsWorkspaceUi {
         scene
             .quads
             .push(quad(editor_layout.header, PANEL, BORDER, 0.0));
-        scene.quads.push(quad(
-            editor_layout.timeline_panel,
-            PANEL,
-            BORDER,
-            0.0,
-        ));
+        scene
+            .quads
+            .push(quad(editor_layout.timeline_panel, PANEL, BORDER, 0.0));
         label(
             &mut scene,
             "ANIMATION DES SOMMETS DE LA BULLE",
@@ -1549,7 +1534,11 @@ impl ComicDubsWorkspaceUi {
             (editor_layout.previous, "|◀", "comic.vertex.previous", false),
             (
                 editor_layout.play,
-                if editor.playing.is_some() { "Pause" } else { "Lire" },
+                if editor.playing.is_some() {
+                    "Pause"
+                } else {
+                    "Lire"
+                },
                 "comic.vertex.play",
                 editor.playing.is_some(),
             ),
@@ -1617,7 +1606,11 @@ impl ComicDubsWorkspaceUi {
             let selected = editor.selected_keyframe == Some(keyframe.at_ms);
             scene.quads.push(quad(
                 marker,
-                if selected { ACCENT } else { [0.72, 0.63, 1.0, 1.0] },
+                if selected {
+                    ACCENT
+                } else {
+                    [0.72, 0.63, 1.0, 1.0]
+                },
                 [1.0; 4],
                 4.0,
             ));
@@ -1828,7 +1821,9 @@ impl ComicDubsWorkspaceUi {
                 width: layout.sidebar.width - 20.0,
                 height: 30.0,
             };
-            scene.quads.push(quad(status, [0.15, 0.13, 0.28, 1.0], ACCENT, 6.0));
+            scene
+                .quads
+                .push(quad(status, [0.15, 0.13, 0.28, 1.0], ACCENT, 6.0));
             label(
                 scene,
                 &format!("Chargement de {} audio(s)…", self.pending_audio_imports),
@@ -2027,7 +2022,11 @@ impl ComicDubsWorkspaceUi {
             let rect = inspector_columns(layout, INSPECTOR_ALIGNMENT_Y, 3, column);
             scene.quads.push(quad(
                 rect,
-                if bubble.text_alignment == alignment { ACCENT } else { PANEL_ALT },
+                if bubble.text_alignment == alignment {
+                    ACCENT
+                } else {
+                    PANEL_ALT
+                },
                 BORDER,
                 5.0,
             ));
@@ -2175,7 +2174,10 @@ fn render_bubble(
                 overlay_label_with_font(
                     scene,
                     line,
-                    Rect { x: line_rect.x + 0.8, ..line_rect },
+                    Rect {
+                        x: line_rect.x + 0.8,
+                        ..line_rect
+                    },
                     alignment,
                     font,
                     color,
@@ -3279,10 +3281,9 @@ mod tests {
         let mut quads = Vec::new();
         let mut labels = Vec::new();
         append_overlay(&mut quads, &mut labels, &scene);
-        assert!(labels.iter().any(|label| matches!(
-            label.overflow,
-            Overflow::ClipWithLetterSpacing(6.0)
-        )));
+        assert!(labels
+            .iter()
+            .any(|label| matches!(label.overflow, Overflow::ClipWithLetterSpacing(6.0))));
         assert!(scene.overlay_quads.iter().any(|quad| quad.color[3] == 1.0));
     }
 
@@ -3342,13 +3343,13 @@ mod tests {
         let origin = ui.color_picker.origin;
         let transparent = ui.color_picker.transparent_rect();
         let transparent_response = ui.handle_event(
-                &UiEvent::MousePress {
-                    x: transparent.x + 1.0,
-                    y: transparent.y + 1.0,
-                },
-                &project,
-                layout,
-            );
+            &UiEvent::MousePress {
+                x: transparent.x + 1.0,
+                y: transparent.y + 1.0,
+            },
+            &project,
+            layout,
+        );
         assert_eq!(
             transparent_response,
             EventResponse::Action(UiAction::ComicDubsSetBubbleColor {

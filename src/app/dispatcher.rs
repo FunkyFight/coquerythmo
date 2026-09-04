@@ -38,6 +38,9 @@ pub(crate) fn handle_file_picker_selected(
         FilePickerIntent::AddMediaAudio => {
             state.import_audio(path.to_string_lossy().into_owned());
         }
+        FilePickerIntent::RelinkVideo { id } => {
+            state.relink_media_video(id, path.to_string_lossy().into_owned());
+        }
         FilePickerIntent::ComicDubsImage => state.comic_dubs_begin_image_import(path),
         FilePickerIntent::ComicDubsAudio => state.comic_dubs_begin_audio_import(path),
         FilePickerIntent::ComicDubsExport { configuration } => {
@@ -1100,6 +1103,19 @@ impl CommandDispatcher {
             UiAction::MediaVideoRemove { id } => state.remove_media_video(id),
             UiAction::MediaVideoRename { id, name } => state.rename_media_video(id, name),
             UiAction::MediaVideoBeginRename { id } => state.begin_rename_media_video(id),
+            UiAction::MediaVideoRelink { id } => {
+                let filters = open_dialog_filters("Video", &["mp4", "mov", "avi", "mkv", "webm"]);
+                open_file_picker(
+                    state,
+                    elwt,
+                    i18n::t("file_tree.picker.video_relink_title"),
+                    FilePickerMode::Open,
+                    FilePickerIntent::RelinkVideo { id },
+                    filters,
+                    project_or_video_dir(state),
+                    None,
+                );
+            }
             UiAction::MediaVideoCreateProxy { id } => state.create_proxy_for_media(id),
             UiAction::MediaVideoAssociateProxy {
                 proxy_id,
@@ -1891,6 +1907,9 @@ impl CommandDispatcher {
             }
             UiAction::PasteLine => {
                 state.paste_line();
+            }
+            UiAction::PasteLineWithTrackCharacter => {
+                state.paste_line_with_track_character();
             }
             UiAction::SetToolMode(mode) => {
                 state.set_tool_mode(mode);

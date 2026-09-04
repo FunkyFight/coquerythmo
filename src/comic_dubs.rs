@@ -496,11 +496,7 @@ impl ComicDubsProject {
         true
     }
 
-    pub fn set_bubble_text_alignment(
-        &mut self,
-        id: BubbleId,
-        alignment: TextAlignment,
-    ) -> bool {
+    pub fn set_bubble_text_alignment(&mut self, id: BubbleId, alignment: TextAlignment) -> bool {
         let Some(bubble) = self.bubble_mut(id) else {
             return false;
         };
@@ -521,8 +517,7 @@ impl ComicDubsProject {
         let Some(bubble) = self.bubble_mut(id) else {
             return false;
         };
-        if (bubble.bold, bubble.strikethrough, bubble.underline)
-            == (bold, strikethrough, underline)
+        if (bubble.bold, bubble.strikethrough, bubble.underline) == (bold, strikethrough, underline)
         {
             return false;
         }
@@ -669,9 +664,10 @@ impl ComicDubsProject {
                     || !bubble.line_spacing.is_finite()
                     || !(0.8..=2.0).contains(&bubble.line_spacing)
                     || bubble.audio_id.is_some_and(|id| !audio_ids.contains(&id))
-                    || bubble.vertex_keyframes.windows(2).any(|pair| {
-                        pair[0].at_ms == pair[1].at_ms
-                    })
+                    || bubble
+                        .vertex_keyframes
+                        .windows(2)
+                        .any(|pair| pair[0].at_ms == pair[1].at_ms)
                     || bubble.vertex_keyframes.iter().any(|keyframe| {
                         keyframe.at_ms > 86_400_000
                             || keyframe.points.len() != bubble.points.len()
@@ -832,8 +828,14 @@ mod tests {
         assert_eq!(project.bubble(bubble).unwrap().color, [10, 20, 30, 0]);
         assert_eq!(project.bubble(bubble).unwrap().letter_spacing, 2.5);
         assert_eq!(project.bubble(bubble).unwrap().line_spacing, 1.4);
-        assert_eq!(project.bubble(bubble).unwrap().text_color, Some([40, 50, 60, 255]));
-        assert_eq!(project.bubble(bubble).unwrap().text_alignment, TextAlignment::Left);
+        assert_eq!(
+            project.bubble(bubble).unwrap().text_color,
+            Some([40, 50, 60, 255])
+        );
+        assert_eq!(
+            project.bubble(bubble).unwrap().text_alignment,
+            TextAlignment::Left
+        );
         assert_eq!(
             (
                 project.bubble(bubble).unwrap().bold,

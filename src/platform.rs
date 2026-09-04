@@ -453,7 +453,12 @@ mod tests {
     fn windows_colorref_uses_red_green_blue_byte_order() {
         assert_eq!(
             colorref_to_rgba(0x00_33_22_11),
-            [0x11 as f32 / 255.0, 0x22 as f32 / 255.0, 0x33 as f32 / 255.0, 1.0]
+            [
+                0x11 as f32 / 255.0,
+                0x22 as f32 / 255.0,
+                0x33 as f32 / 255.0,
+                1.0
+            ]
         );
     }
 }

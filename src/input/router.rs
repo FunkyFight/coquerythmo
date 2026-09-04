@@ -454,6 +454,13 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
     router.bind(
         InputContext::Global,
         KeyCode::Character('v'),
+        ctrl_shift,
+        RepeatPolicy::PressOnly,
+        UiAction::PasteLineWithTrackCharacter,
+    );
+    router.bind(
+        InputContext::Global,
+        KeyCode::Character('v'),
         ctrl,
         RepeatPolicy::PressAndRepeat,
         UiAction::PasteLine,

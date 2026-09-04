@@ -17,7 +17,7 @@ mod base;
 
 pub(crate) use base::{
     decode_sync_syllable_drag_line_id, encode_sync_syllable_drag_line_id,
-    line_has_visible_sync_points,
+    line_has_visible_sync_points, waveform_drag_markers,
 };
 pub use base::{DetectionDrag, DetectionHover, DetectionMenu};
 

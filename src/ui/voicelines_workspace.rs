@@ -440,27 +440,26 @@ impl VoicelinesWorkspaceUi {
                 }
             }
             UiEvent::CtrlClick { x, y } => {
-                let region = region_row_hit(audio, layout, self.region_scroll, *x, *y).or_else(|| {
-                    layout
-                        .waveform
-                        .contains(*x, *y)
-                        .then(|| {
-                            region_hit(
-                                audio,
-                                layout.waveform,
-                                self.view_start_ms,
-                                self.view_duration_ms,
-                                *x,
-                            )
-                            .map(|(region, _)| region)
-                        })
-                        .flatten()
-                });
+                let region =
+                    region_row_hit(audio, layout, self.region_scroll, *x, *y).or_else(|| {
+                        layout
+                            .waveform
+                            .contains(*x, *y)
+                            .then(|| {
+                                region_hit(
+                                    audio,
+                                    layout.waveform,
+                                    self.view_start_ms,
+                                    self.view_duration_ms,
+                                    *x,
+                                )
+                                .map(|(region, _)| region)
+                            })
+                            .flatten()
+                    });
                 if let Some(region) = region {
-                    if let Some(index) = self
-                        .selected_regions
-                        .iter()
-                        .position(|id| *id == region.id)
+                    if let Some(index) =
+                        self.selected_regions.iter().position(|id| *id == region.id)
                     {
                         self.selected_regions.remove(index);
                     } else {
@@ -580,12 +579,10 @@ impl VoicelinesWorkspaceUi {
                 open_mode: None,
                 hover_parent: None,
                 hover_target: None,
-                delivered_comic_dubs: audio.has_delivery(
-                    crate::voicelines::DeliveryDestination::ComicDubs,
-                ),
-                delivered_recording: audio.has_delivery(
-                    crate::voicelines::DeliveryDestination::Recording,
-                ),
+                delivered_comic_dubs: audio
+                    .has_delivery(crate::voicelines::DeliveryDestination::ComicDubs),
+                delivered_recording: audio
+                    .has_delivery(crate::voicelines::DeliveryDestination::Recording),
             });
             return Some(EventResponse::Consumed);
         }
@@ -695,8 +692,7 @@ impl VoicelinesWorkspaceUi {
             }
             UiEvent::CursorUp | UiEvent::CursorDown if menu.open_mode.is_some() => {
                 let mode = menu.open_mode.unwrap();
-                let comic_enabled = !matches!(mode, AudioMenuMode::Update)
-                    || delivered_comic_dubs;
+                let comic_enabled = !matches!(mode, AudioMenuMode::Update) || delivered_comic_dubs;
                 let recording_enabled = !recording_transfer_disabled
                     && (!matches!(mode, AudioMenuMode::Update) || delivered_recording);
                 menu.hover_target = Some(if comic_enabled && recording_enabled {
