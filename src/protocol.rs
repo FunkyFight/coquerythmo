@@ -127,7 +127,8 @@ impl ProtocolPayload {
         let mut payload = Self::join(server, password, code);
         payload.project_mode = mode;
         payload.project_huuid = Some(project_huuid.into()).filter(|value| !value.trim().is_empty());
-        payload.project_file_name = Some(project_file_name.into()).filter(|value| !value.trim().is_empty());
+        payload.project_file_name =
+            Some(project_file_name.into()).filter(|value| !value.trim().is_empty());
         payload
     }
 

@@ -126,6 +126,7 @@
 "recording.actor_menu.video_volume" = "Volumen del vídeo"
 "recording.actor_menu.video_volume_hint" = "Este volumen no modifica las pistas grabadas."
 "recording.actor_menu.return" = "Volver a la sesión"
+"recording.actor_menu.leave" = "Salir de la sesión"
 "recording.actor_requests" = "Solicitudes de actores"
 "recording.actor_requests.open_microphone" = "Abrir ajustes del micrófono"
 "recording.actor_requests.transfer_project" = "Transferir proyecto"

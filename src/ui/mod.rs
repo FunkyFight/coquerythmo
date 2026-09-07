@@ -2858,44 +2858,57 @@ impl Ui {
                 self.task_rows.export_expanded,
             ));
         }
-        if let Some(status) = &self.project_transfer_status {
-            let progress = if status.total_bytes == 0 {
-                0.0
-            } else {
-                status.transferred_bytes as f32 / status.total_bytes as f32
-            };
-            let steps = status
-                .participants
-                .iter()
-                .map(|participant| {
-                    let done = matches!(
-                        participant.response.as_str(),
-                        "loaded" | "refused" | "failed" | "expired" | "disconnected"
-                    );
-                    task_row::TaskStepView {
-                        label: participant.username.clone(),
-                        state: if done {
-                            task_row::TaskStepState::Done
-                        } else if matches!(participant.response.as_str(), "receiving" | "loading") {
-                            task_row::TaskStepState::Running
-                        } else {
-                            task_row::TaskStepState::Pending
-                        },
-                        meta: Some(crate::ui::project_transfer_modal::transfer_label(
-                            &participant.response,
-                        ).to_string()),
-                    }
-                })
-                .collect();
-            rows.push(task_row::TaskRowView::new(
-                task_row::TaskRowKind::ProjectTransfer,
-                t("recording.project_transfer.title"),
-                Some(crate::ui::project_transfer_modal::phase_label(&status.phase)),
-                progress,
-                false,
-                steps,
-                self.task_rows.project_transfer_expanded,
-            ));
+        // Project-transfer progress is a participant-facing task. The
+        // director follows the same state inside the full transfer modal and
+        // must not get a duplicate task row.
+        if matches!(self.recording_ui.role, RecordingRole::Actor) {
+            if let Some(status) = &self.project_transfer_status {
+                let progress = if status.total_bytes == 0 {
+                    0.0
+                } else {
+                    status.transferred_bytes as f32 / status.total_bytes as f32
+                };
+                let steps = status
+                    .participants
+                    .iter()
+                    .map(|participant| {
+                        let done = matches!(
+                            participant.response.as_str(),
+                            "loaded" | "refused" | "failed" | "expired" | "disconnected"
+                        );
+                        task_row::TaskStepView {
+                            label: participant.username.clone(),
+                            state: if done {
+                                task_row::TaskStepState::Done
+                            } else if matches!(
+                                participant.response.as_str(),
+                                "receiving" | "loading"
+                            ) {
+                                task_row::TaskStepState::Running
+                            } else {
+                                task_row::TaskStepState::Pending
+                            },
+                            meta: Some(
+                                crate::ui::project_transfer_modal::transfer_label(
+                                    &participant.response,
+                                )
+                                .to_string(),
+                            ),
+                        }
+                    })
+                    .collect();
+                rows.push(task_row::TaskRowView::new(
+                    task_row::TaskRowKind::ProjectTransfer,
+                    t("recording.project_transfer.title"),
+                    Some(crate::ui::project_transfer_modal::phase_label(
+                        &status.phase,
+                    )),
+                    progress,
+                    false,
+                    steps,
+                    self.task_rows.project_transfer_expanded,
+                ));
+            }
         }
         rows
     }
@@ -2962,6 +2975,10 @@ impl Ui {
     pub fn close_project_transfer_modal(&mut self) {
         self.project_transfer_modal = None;
         self.project_transfer_status = None;
+    }
+
+    pub fn close_project_transfer_prompt(&mut self) {
+        self.project_transfer_modal = None;
     }
 
     pub fn needs_animation_or_interaction(&self) -> bool {
@@ -3426,16 +3443,15 @@ impl Ui {
         project_huuid: Option<String>,
         project_file_name: Option<String>,
     ) {
-        self.modal_host
-            .open_connect_with_room(
-                ip,
-                port,
-                room_code,
-                password,
-                project_mode,
-                project_huuid,
-                project_file_name,
-            );
+        self.modal_host.open_connect_with_room(
+            ip,
+            port,
+            room_code,
+            password,
+            project_mode,
+            project_huuid,
+            project_file_name,
+        );
     }
 
     pub fn open_settings_modal(&mut self, temporary_directory: std::path::PathBuf) {

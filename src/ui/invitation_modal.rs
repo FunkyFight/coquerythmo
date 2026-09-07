@@ -77,13 +77,27 @@ impl InvitationModal {
 
     fn option_rects(&self, card: Rect) -> [Rect; 2] {
         [
-            Rect { x: card.x + PADDING, y: card.y + 264.0, width: card.width - 2.0 * PADDING, height: 34.0 },
-            Rect { x: card.x + PADDING, y: card.y + 304.0, width: card.width - 2.0 * PADDING, height: 34.0 },
+            Rect {
+                x: card.x + PADDING,
+                y: card.y + 264.0,
+                width: card.width - 2.0 * PADDING,
+                height: 34.0,
+            },
+            Rect {
+                x: card.x + PADDING,
+                y: card.y + 304.0,
+                width: card.width - 2.0 * PADDING,
+                height: 34.0,
+            },
         ]
     }
 
     fn mode_for_option(index: usize) -> InvitationProjectMode {
-        if index == 0 { InvitationProjectMode::RequireMatch } else { InvitationProjectMode::AutoTransfer }
+        if index == 0 {
+            InvitationProjectMode::RequireMatch
+        } else {
+            InvitationProjectMode::AutoTransfer
+        }
     }
 
     pub fn handle_event(
@@ -110,7 +124,9 @@ impl InvitationModal {
                         let mode = Self::mode_for_option(self.focused - 2);
                         self.project_mode = if self.project_mode == mode {
                             InvitationProjectMode::None
-                        } else { mode };
+                        } else {
+                            mode
+                        };
                         InvitationModalResult::SetProjectMode(self.project_mode)
                     }
                     _ => InvitationModalResult::Close,
@@ -135,7 +151,9 @@ impl InvitationModal {
                         let mode = Self::mode_for_option(index);
                         self.project_mode = if self.project_mode == mode {
                             InvitationProjectMode::None
-                        } else { mode };
+                        } else {
+                            mode
+                        };
                         return InvitationModalResult::SetProjectMode(self.project_mode);
                     }
                 }
@@ -252,12 +270,33 @@ impl InvitationModal {
         ));
         labels.push(label(
             t("invite.options"),
-            Rect { x: card.x + PADDING, y: card.y + 238.0, width: card.width - 2.0 * PADDING, height: 20.0 },
-            HAlign::Left, 13.0, Some([190, 192, 210]),
+            Rect {
+                x: card.x + PADDING,
+                y: card.y + 238.0,
+                width: card.width - 2.0 * PADDING,
+                height: 20.0,
+            },
+            HAlign::Left,
+            13.0,
+            Some([190, 192, 210]),
         ));
         let options = self.option_rects(card);
-        render_option(quads, labels, options[0], t("invite.require_project"), self.project_mode == InvitationProjectMode::RequireMatch, self.focused == 2);
-        render_option(quads, labels, options[1], t("invite.transfer_project"), self.project_mode == InvitationProjectMode::AutoTransfer, self.focused == 3);
+        render_option(
+            quads,
+            labels,
+            options[0],
+            t("invite.require_project"),
+            self.project_mode == InvitationProjectMode::RequireMatch,
+            self.focused == 2,
+        );
+        render_option(
+            quads,
+            labels,
+            options[1],
+            t("invite.transfer_project"),
+            self.project_mode == InvitationProjectMode::AutoTransfer,
+            self.focused == 3,
+        );
         let buttons = self.buttons(card);
         render_button(
             quads,
@@ -385,11 +424,24 @@ fn render_option<'a>(
     checked: bool,
     focused: bool,
 ) {
-    let box_rect = Rect { x: rect.x, y: rect.y + 7.0, width: 20.0, height: 20.0 };
+    let box_rect = Rect {
+        x: rect.x,
+        y: rect.y + 7.0,
+        width: 20.0,
+        height: 20.0,
+    };
     quads.push(quad(
         box_rect,
-        if checked { [0.35, 0.52, 0.90, 1.0] } else { [0.10, 0.10, 0.14, 1.0] },
-        if focused { [0.80, 0.86, 1.0, 1.0] } else { [0.46, 0.48, 0.58, 0.9] },
+        if checked {
+            [0.35, 0.52, 0.90, 1.0]
+        } else {
+            [0.10, 0.10, 0.14, 1.0]
+        },
+        if focused {
+            [0.80, 0.86, 1.0, 1.0]
+        } else {
+            [0.46, 0.48, 0.58, 0.9]
+        },
         if focused { 2.0 } else { 1.0 },
         4.0,
     ));
@@ -404,7 +456,12 @@ fn render_option<'a>(
     }
     labels.push(label(
         text,
-        Rect { x: rect.x + 32.0, y: rect.y, width: rect.width - 32.0, height: rect.height },
+        Rect {
+            x: rect.x + 32.0,
+            y: rect.y,
+            width: rect.width - 32.0,
+            height: rect.height,
+        },
         HAlign::Left,
         13.0,
         Some([225, 226, 238]),

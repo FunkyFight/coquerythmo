@@ -320,6 +320,7 @@ impl MicrophoneModal {
 pub enum RecordingActorMenuResult {
     Consumed,
     Close,
+    LeaveSession,
     ChooseMicrophone,
     SetVideoVolume(f32),
 }
@@ -350,6 +351,7 @@ impl RecordingActorMenuModal {
                 t("recording.actor_menu.video_volume"),
                 self.volume_label
             ),
+            2 => t("recording.actor_menu.leave").to_string(),
             _ => t("recording.actor_menu.return").to_string(),
         }
     }
@@ -400,6 +402,15 @@ impl RecordingActorMenuModal {
         }
     }
 
+    fn leave_button(card: Rect) -> Rect {
+        Rect {
+            x: card.x + 30.0,
+            y: card.y + card.height - 54.0,
+            width: 144.0,
+            height: 34.0,
+        }
+    }
+
     fn set_volume(&mut self, volume: f32) -> RecordingActorMenuResult {
         self.volume = volume.clamp(0.0, 1.0);
         self.volume_label = volume_percent(self.volume);
@@ -417,18 +428,18 @@ impl RecordingActorMenuModal {
             UiEvent::KeyInput { text } if text == "\x1b" => RecordingActorMenuResult::Close,
             UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}" => {
                 self.focused = if text == "\t" {
-                    (self.focused + 1) % 3
+                    (self.focused + 1) % 4
                 } else {
-                    (self.focused + 2) % 3
+                    (self.focused + 3) % 4
                 };
                 RecordingActorMenuResult::Consumed
             }
             UiEvent::CursorUp => {
-                self.focused = (self.focused + 2) % 3;
+                self.focused = (self.focused + 3) % 4;
                 RecordingActorMenuResult::Consumed
             }
             UiEvent::CursorDown => {
-                self.focused = (self.focused + 1) % 3;
+                self.focused = (self.focused + 1) % 4;
                 RecordingActorMenuResult::Consumed
             }
             UiEvent::CursorLeft if self.focused == 1 => self.set_volume(self.volume - 0.05),
@@ -437,7 +448,8 @@ impl RecordingActorMenuModal {
             UiEvent::End if self.focused == 1 => self.set_volume(1.0),
             UiEvent::KeyInput { text } if text == "\r" || text == "\n" => match self.focused {
                 0 => RecordingActorMenuResult::ChooseMicrophone,
-                2 => RecordingActorMenuResult::Close,
+                2 => RecordingActorMenuResult::LeaveSession,
+                3 => RecordingActorMenuResult::Close,
                 _ => RecordingActorMenuResult::Consumed,
             },
             UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
@@ -446,6 +458,9 @@ impl RecordingActorMenuModal {
                 }
                 if Self::microphone_button(card).contains(*x, *y) {
                     return RecordingActorMenuResult::ChooseMicrophone;
+                }
+                if Self::leave_button(card).contains(*x, *y) {
+                    return RecordingActorMenuResult::LeaveSession;
                 }
                 if slider.contains(*x, *y) {
                     self.focused = 1;
@@ -624,7 +639,7 @@ impl RecordingActorMenuModal {
             close,
             [0.20, 0.20, 0.27, 1.0],
             7.0,
-            if self.focused == 2 {
+            if self.focused == 3 {
                 [0.38, 0.62, 1.0, 1.0]
             } else {
                 [0.36, 0.38, 0.46, 0.8]
@@ -633,6 +648,25 @@ impl RecordingActorMenuModal {
         labels.push(label(
             t("recording.actor_menu.return"),
             close,
+            13.0,
+            HAlign::Center,
+            Some([235, 235, 242]),
+        ));
+        let leave = Self::leave_button(card);
+        push_panel(
+            quads,
+            leave,
+            [0.20, 0.20, 0.27, 1.0],
+            7.0,
+            if self.focused == 2 {
+                [0.38, 0.62, 1.0, 1.0]
+            } else {
+                [0.36, 0.38, 0.46, 0.8]
+            },
+        );
+        labels.push(label(
+            t("recording.actor_menu.leave"),
+            leave,
             13.0,
             HAlign::Center,
             Some([235, 235, 242]),
@@ -768,6 +802,41 @@ mod tests {
         assert_eq!(
             modal.handle_event(&UiEvent::CursorLeft, 1280.0, 720.0),
             RecordingActorMenuResult::SetVideoVolume(0.70)
+        );
+    }
+
+    #[test]
+    fn actor_can_leave_session_with_keyboard_or_mouse() {
+        let mut modal = RecordingActorMenuModal::new(0.75);
+        for _ in 0..2 {
+            modal.handle_event(&UiEvent::CursorDown, 1280.0, 720.0);
+        }
+        assert_eq!(
+            modal.handle_event(&UiEvent::KeyInput { text: "\r".into() }, 1280.0, 720.0),
+            RecordingActorMenuResult::LeaveSession
+        );
+        let button =
+            RecordingActorMenuModal::leave_button(RecordingActorMenuModal::card(1280.0, 720.0));
+        assert_eq!(
+            modal.handle_event(
+                &UiEvent::MousePress {
+                    x: button.x + 5.0,
+                    y: button.y + 5.0
+                },
+                1280.0,
+                720.0
+            ),
+            RecordingActorMenuResult::LeaveSession
+        );
+        assert_eq!(
+            modal.handle_event(
+                &UiEvent::KeyInput {
+                    text: "\x1b".into()
+                },
+                1280.0,
+                720.0
+            ),
+            RecordingActorMenuResult::Close
         );
     }
 }

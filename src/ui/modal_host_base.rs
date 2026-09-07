@@ -465,6 +465,13 @@ impl ModalHost {
             super::microphone_modal::RecordingActorMenuResult::SetVideoVolume(volume) => {
                 ModalOutcome::Action(UiAction::SetVolume(volume))
             }
+            super::microphone_modal::RecordingActorMenuResult::LeaveSession => {
+                self.recording_actor_menu = None;
+                action_closed_modal(
+                    UiAction::NetworkDisconnect,
+                    crate::i18n::t("recording.actor_menu.title"),
+                )
+            }
         }
     }
 
@@ -1384,7 +1391,11 @@ impl ModalHost {
         self.invitation = Some(modal);
     }
 
-    pub fn set_invitation_link(&mut self, link: String, mode: crate::protocol::InvitationProjectMode) {
+    pub fn set_invitation_link(
+        &mut self,
+        link: String,
+        mode: crate::protocol::InvitationProjectMode,
+    ) {
         if let Some(modal) = self.invitation.as_mut() {
             modal.link = link;
             modal.project_mode = mode;

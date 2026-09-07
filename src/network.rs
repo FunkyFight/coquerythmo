@@ -47,6 +47,8 @@ pub struct RecordingPlaybackPayload {
 pub struct RecordingViewPayload {
     pub language_id: u64,
     pub instrumental: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrumental_audio_offset_frames: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -152,7 +154,9 @@ pub enum IncomingMessage {
         reading_bar_offset_percent: f32,
     },
     ActorRequestCloseProjectTransferWaiting,
-    ProjectTransferAutoRequest { member_id: String },
+    ProjectTransferAutoRequest {
+        member_id: String,
+    },
     ProjectTransferRequest(ProjectTransferMetadata),
     ProjectTransferReady(ProjectTransferMetadata),
     ProjectTransferStatus(ProjectTransferStatus),
@@ -190,6 +194,24 @@ struct BigSendJob {
     event: String,
     serialized: Vec<u8>,
     target: Option<String>,
+    recording_chain: Option<serde_json::Value>,
+}
+
+// The relay does not reassemble large snapshots. Announce the active log head
+// so it can resume transaction ordering when the snapshot finishes transferring.
+fn recording_snapshot_chain(payload: &serde_json::Value) -> Option<serde_json::Value> {
+    let log = payload.get("transactions")?;
+    let cursor = usize::try_from(log.get("cursor")?.as_u64()?).ok()?;
+    let entries = log.get("entries")?.as_array()?;
+    if cursor > entries.len() {
+        return None;
+    }
+    let integrity = if cursor == 0 {
+        "0000000000000000"
+    } else {
+        entries[cursor - 1].get("integrity")?.as_str()?
+    };
+    Some(serde_json::json!({ "nextSequence": cursor, "previousIntegrity": integrity }))
 }
 
 struct AudioSendJob {
@@ -490,13 +512,10 @@ impl NetworkClient {
                     let member_id = obj["member_id"].as_str().unwrap_or("").to_string();
                     let project_huuid = obj["project_huuid"].as_str().unwrap_or("").to_string();
                     let project_matches = obj["project_matches"].as_bool().unwrap_or(false);
-                    let project_mode = serde_json::from_value(
-                        obj["project_mode"].clone(),
-                    )
-                    .unwrap_or_default();
-                    let project_file_name = obj["project_file_name"]
-                        .as_str()
-                        .map(ToOwned::to_owned);
+                    let project_mode =
+                        serde_json::from_value(obj["project_mode"].clone()).unwrap_or_default();
+                    let project_file_name =
+                        obj["project_file_name"].as_str().map(ToOwned::to_owned);
                     let _ = tx_room_metadata_joined.send(IncomingMessage::RoomMetadata {
                         member_id,
                         project_huuid,
@@ -910,6 +929,9 @@ impl NetworkClient {
             event: event.to_string(),
             serialized,
             target: target.map(str::to_owned),
+            recording_chain: (event == "recording_prepare")
+                .then(|| recording_snapshot_chain(&payload))
+                .flatten(),
         };
         if out_tx.send(OutgoingMessage::Big(job)).is_err() {
             log::error!("the network sender stopped");
@@ -1307,6 +1329,9 @@ fn run_outgoing_sender(
                     if let Some(target) = &job.target {
                         begin["_target"] = serde_json::Value::String(target.clone());
                     }
+                    if let Some(chain) = &job.recording_chain {
+                        begin["recording_chain"] = chain.clone();
+                    }
                     emit_with_retry(&active_client, "big_begin", &begin);
                     for (index, data) in chunks.iter().enumerate() {
                         let payload = serde_json::json!({
@@ -1356,6 +1381,54 @@ fn emit_with_retry(
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[test]
+    fn recording_view_preserves_absolute_instrumental_offset() {
+        for offset in [-48, 0, 72] {
+            let wire = serde_json::json!({
+                "language_id": 1, "instrumental": true,
+                "instrumental_audio_offset_frames": offset
+            });
+            let view: RecordingViewPayload = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(view.instrumental_audio_offset_frames, Some(offset));
+            assert_eq!(serde_json::to_value(view).unwrap(), wire);
+        }
+        let legacy: RecordingViewPayload = serde_json::from_value(serde_json::json!({
+            "language_id": 1, "instrumental": false
+        }))
+        .unwrap();
+        assert_eq!(legacy.instrumental_audio_offset_frames, None);
+    }
+
+    #[test]
+    fn chunked_recording_snapshot_announces_active_cursor_including_undo() {
+        for cursor in [0, 1, 2] {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let mut network = NetworkClient::new();
+            network.out_tx = Some(sender);
+            network.send_big_event(
+                "recording_prepare",
+                serde_json::json!({
+                    "project": "x".repeat(crate::big_event::BIG_EVENT_DIRECT_MAX_BYTES),
+                    "transactions": { "cursor": cursor, "entries": [
+                        { "integrity": "aaaaaaaaaaaaaaaa" },
+                        { "integrity": "bbbbbbbbbbbbbbbb" }
+                    ] }
+                }),
+                Some("actor"),
+            );
+            let OutgoingMessage::Big(job) = receiver.recv().unwrap() else {
+                panic!("expected a chunked snapshot");
+            };
+            assert_eq!(
+                job.recording_chain,
+                Some(serde_json::json!({
+                    "nextSequence": cursor,
+                    "previousIntegrity": (["0000000000000000", "aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"][cursor])
+                }))
+            );
+        }
+    }
 
     #[test]
     fn chunked_snapshot_stays_before_following_live_transaction() {

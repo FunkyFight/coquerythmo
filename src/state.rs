@@ -3600,6 +3600,9 @@ impl State {
         if response == "accepted" {
             self.begin_project_transfer_receive(&request_id);
         }
+        if response != "saving" {
+            self.ui_shell.ui.close_project_transfer_prompt();
+        }
     }
 
     fn update_project_transfer_response(&mut self, response: &str) {
@@ -4081,17 +4084,15 @@ impl State {
         project_huuid: Option<String>,
         project_file_name: Option<String>,
     ) {
-        self.ui_shell
-            .ui
-            .open_connect_modal_with_room(
-                ip,
-                port,
-                room_code,
-                password,
-                project_mode,
-                project_huuid,
-                project_file_name,
-            );
+        self.ui_shell.ui.open_connect_modal_with_room(
+            ip,
+            port,
+            room_code,
+            password,
+            project_mode,
+            project_huuid,
+            project_file_name,
+        );
         if let Some(first) = self
             .ui_shell
             .ui
@@ -5696,6 +5697,9 @@ impl State {
         crate::network::RecordingViewPayload {
             language_id: self.project_session.project.active_language_id(),
             instrumental: self.active_audio_is_instrumental(),
+            instrumental_audio_offset_frames: Some(
+                self.project_session.project.settings().instrumental_audio_offset_frames,
+            ),
         }
     }
 
@@ -5785,6 +5789,7 @@ impl State {
             ),
         };
         player.adjust_active_audio_offset(delta_frames);
+        self.send_recording_view(None);
     }
 
     pub fn sync_audio_settings_to_player(&mut self) {
@@ -6276,6 +6281,25 @@ impl State {
             return;
         }
         self.select_language(view.language_id);
+        if let Some(offset) = view.instrumental_audio_offset_frames.filter(|offset| {
+            *offset != self.project_session.project.settings().instrumental_audio_offset_frames
+        }) {
+            EditExecutor::apply_domain_change(
+                &mut self.project_session,
+                EditOrigin::Remote,
+                |project| {
+                    let mut settings = project.settings().clone();
+                    settings.instrumental_audio_offset_frames = offset;
+                    project.set_settings(settings);
+                },
+            );
+            if let Some(player) = &mut self.playback.video_player {
+                player.set_audio_offsets(
+                    self.project_session.project.settings().source_audio_offset_frames,
+                    offset,
+                );
+            }
+        }
         if self.active_audio_is_instrumental() != view.instrumental {
             self.toggle_active_audio();
         }
@@ -6409,7 +6433,8 @@ impl State {
                     self.collaboration.network.project_huuid = Some(project_huuid.clone());
                     self.collaboration.network.project_matches = project_matches;
                     self.collaboration.network.invitation_project_mode = project_mode;
-                    self.collaboration.network.invitation_project_file_name = project_file_name.clone();
+                    self.collaboration.network.invitation_project_file_name =
+                        project_file_name.clone();
                     if project_mode == crate::protocol::InvitationProjectMode::RequireMatch
                         && !project_matches
                         && self.jobs.pending_import_job.is_none()
@@ -6498,21 +6523,38 @@ impl State {
                     // only offer the save-and-replace path when a saved project exists.
                     let dirty =
                         self.project_session.project_path.is_some() && self.project_session.dirty;
+                    let actor_transfer = matches!(
+                        self.ui_shell.ui.recording_role(),
+                        crate::ui::recording_workspace::RecordingRole::Actor
+                    );
                     self.project_transfer = Some(ProjectTransferRuntime {
                         metadata,
                         status: None,
                         receiver: crate::file_transfer::FileTransferReceiver::default(),
                     });
                     self.project_transfer_waiting_dismissed = None;
-                    self.ui_shell.ui.open_project_transfer_modal(
-                        self.project_transfer.as_ref().expect("transfer exists").metadata.clone(),
-                        false,
-                        dirty,
-                    );
-                    self.announce_open_container(
-                        crate::i18n::t("recording.project_transfer.title"),
-                        crate::i18n::t("recording.project_transfer_request_received").to_string(),
-                    );
+                    if actor_transfer {
+                        // The participant side is deliberately non-modal: the
+                        // transfer is exposed only through the non-blocking
+                        // task row. The director is the only role that gets
+                        // the full transfer modal.
+                        self.respond_to_project_transfer("accepted");
+                    } else {
+                        self.ui_shell.ui.open_project_transfer_modal(
+                            self.project_transfer
+                                .as_ref()
+                                .expect("transfer exists")
+                                .metadata
+                                .clone(),
+                            false,
+                            dirty,
+                        );
+                        self.announce_open_container(
+                            crate::i18n::t("recording.project_transfer.title"),
+                            crate::i18n::t("recording.project_transfer_request_received")
+                                .to_string(),
+                        );
+                    }
                     self.ui_shell.ui.sync_overlay = None;
                     self.ui_shell.ui.sync_progress = 0.0;
                 }
@@ -9374,14 +9416,15 @@ impl State {
                     crate::i18n::t("recording.project_transfer.title"),
                     crate::i18n::t("recording.project_transfer.waiting").to_string(),
                 );
-                self.collaboration
-                    .network
-                    .request_project_transfer_to(
-                        &metadata,
-                        self.project_transfer_target.as_deref(),
-                    );
-                self.ui_shell.ui.sync_overlay =
-                    Some(crate::i18n::t("recording.project_transfer_waiting").into());
+                self.collaboration.network.request_project_transfer_to(
+                    &metadata,
+                    self.project_transfer_target.as_deref(),
+                );
+                // The director already has the full transfer modal open here.
+                // Do not also show the legacy sync overlay underneath it: that
+                // creates a second, smaller "waiting for participants" modal
+                // for the same state.
+                self.ui_shell.ui.sync_overlay = None;
                 self.ui_shell.ui.sync_progress = 0.0;
             }
             Err(error) => {
@@ -9698,7 +9741,11 @@ impl State {
                         crate::packet::Packet::JoinRoom {
                             code: pending.room_code,
                             username: pending.username,
-                            project_huuid: self.project_session.huuid.as_ref().map(ToString::to_string),
+                            project_huuid: self
+                                .project_session
+                                .huuid
+                                .as_ref()
+                                .map(ToString::to_string),
                             project_mode: pending.mode,
                         },
                         pending.mode,
@@ -10224,11 +10271,7 @@ impl State {
             )
             .to_url()
         };
-        self.ui_shell.ui.open_room_invitation(
-            code,
-            link,
-            mode,
-        );
+        self.ui_shell.ui.open_room_invitation(code, link, mode);
         let first = self
             .ui_shell
             .ui
@@ -10244,13 +10287,20 @@ impl State {
         &mut self,
         mode: crate::protocol::InvitationProjectMode,
     ) {
-        let Some(code) = self.collaboration.network.room_code.clone() else { return };
+        let Some(code) = self.collaboration.network.room_code.clone() else {
+            return;
+        };
         let cfg = crate::config::get().clone();
         let server = format!("{}:{}", cfg.network.server_ip, cfg.network.server_port);
-        let Some(project_huuid) = self.project_session.huuid.as_ref().map(ToString::to_string) else {
-            self.show_toast("Enregistrez le projet avant de créer une invitation avec projet." , 5.0);
+        let Some(project_huuid) = self.project_session.huuid.as_ref().map(ToString::to_string)
+        else {
+            self.show_toast(
+                "Enregistrez le projet avant de créer une invitation avec projet.",
+                5.0,
+            );
             self.ui_shell.ui.set_room_invitation_link(
-                crate::protocol::ProtocolPayload::join(&server, cfg.network.password, code).to_url(),
+                crate::protocol::ProtocolPayload::join(&server, cfg.network.password, code)
+                    .to_url(),
                 crate::protocol::InvitationProjectMode::None,
             );
             return;
@@ -10272,13 +10322,12 @@ impl State {
                 mode,
                 project_huuid,
                 file_name.clone(),
-            ).to_url()
+            )
+            .to_url()
         };
-        let file_name_for_server = (mode != crate::protocol::InvitationProjectMode::None)
-            .then_some(file_name.as_str());
-        self.collaboration
-            .network
-            .invitation_project_mode = mode;
+        let file_name_for_server =
+            (mode != crate::protocol::InvitationProjectMode::None).then_some(file_name.as_str());
+        self.collaboration.network.invitation_project_mode = mode;
         self.collaboration.network.invitation_project_file_name =
             file_name_for_server.map(ToOwned::to_owned);
         self.collaboration
@@ -10311,7 +10360,10 @@ impl State {
                 ip,
                 port,
                 password,
-                crate::packet::Packet::CreateRoom { username, project_huuid },
+                crate::packet::Packet::CreateRoom {
+                    username,
+                    project_huuid,
+                },
                 mode,
             );
             return;
