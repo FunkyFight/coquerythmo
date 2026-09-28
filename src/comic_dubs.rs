@@ -8,6 +8,7 @@ use std::path::PathBuf;
 pub type PageId = u64;
 pub type BubbleId = u64;
 pub type ComicAudioId = u64;
+pub type ShotId = u64;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TextAlignment {
@@ -112,13 +113,11 @@ studio_choice!(
 );
 
 studio_choice!(
-    /// Where the virtual camera frames the page when the bubble plays.
-    CameraFocus {
+    /// How the camera reaches a shot.
+    ShotMovement {
         #[default]
-        Keep => "Garder le cadrage",
-        FullPage => "Page entière",
-        Bubble => "Zoom sur la bulle",
-        Region => "Zone personnalisée",
+        Smooth => "Mouvement fluide",
+        Cut => "Coupe franche",
     }
 );
 
@@ -209,6 +208,85 @@ impl Region {
             y: self.y + self.height * 0.5,
         }
     }
+
+    pub fn contains(self, point: Point) -> bool {
+        (self.x..=self.x + self.width).contains(&point.x)
+            && (self.y..=self.y + self.height).contains(&point.y)
+    }
+
+    /// Smallest region shaped like the video frame (`aspect` = width / height
+    /// in pixels) that contains `self`, kept on the page. Too large a region
+    /// shrinks around its center.
+    pub fn fitted(self, page_w: u32, page_h: u32, aspect: f32) -> Self {
+        let (page_w, page_h) = (page_w.max(1) as f32, page_h.max(1) as f32);
+        let aspect = if aspect.is_finite() && aspect > 0.0 {
+            aspect
+        } else {
+            16.0 / 9.0
+        };
+        let (mut width, mut height) = (self.width * page_w, self.height * page_h);
+        if width < height * aspect {
+            width = height * aspect;
+        } else {
+            height = width / aspect;
+        }
+        let shrink = (page_w / width).min(page_h / height).min(1.0);
+        width *= shrink;
+        height *= shrink;
+        let center = self.center();
+        let x = (center.x * page_w - width * 0.5).clamp(0.0, page_w - width);
+        let y = (center.y * page_h - height * 0.5).clamp(0.0, page_h - height);
+        Self {
+            x: x / page_w,
+            y: y / page_h,
+            width: width / page_w,
+            height: height / page_h,
+        }
+    }
+}
+
+/// A camera framing of a page. Shots play in their order: the camera moves
+/// to the shot, then the bubbles it frames are read.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CameraShot {
+    pub id: ShotId,
+    /// `None` frames the whole page.
+    #[serde(default)]
+    pub region: Option<Region>,
+    #[serde(default)]
+    pub movement: ShotMovement,
+    #[serde(default = "default_shot_move_ms")]
+    pub move_ms: u64,
+    /// Time spent on the shot before its first bubble (or alone when it
+    /// frames no bubble).
+    #[serde(default)]
+    pub hold_ms: u64,
+}
+
+const fn default_shot_move_ms() -> u64 {
+    800
+}
+
+/// Duration of a shot that frames no bubble and has no explicit hold.
+pub const EMPTY_SHOT_HOLD_MS: u64 = 1_500;
+
+impl CameraShot {
+    pub fn sanitized(mut self) -> Self {
+        self.region = self.region.and_then(Region::sanitized);
+        self.move_ms = self.move_ms.clamp(100, 5_000);
+        self.hold_ms = self.hold_ms.min(20_000);
+        self
+    }
+
+    /// Area used to pick the most specific shot framing a bubble.
+    fn area(&self) -> f32 {
+        self.region
+            .map_or(1.0, |region| region.width * region.height)
+    }
+
+    fn frames(&self, point: Point) -> bool {
+        self.region.is_none_or(|region| region.contains(point))
+    }
 }
 
 /// Visual extras of a bubble on top of the historical fill and text style.
@@ -252,7 +330,7 @@ impl BubbleLook {
     }
 }
 
-/// Animation, screen effects and camera choices of a bubble.
+/// Animation and screen effects of a bubble, and the shot that frames it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BubbleFx {
@@ -269,9 +347,9 @@ pub struct BubbleFx {
     pub screen_effect_ms: u64,
     /// Fade the text (or the whole bubble) out once its line is over.
     pub exit_after: bool,
-    pub camera: CameraFocus,
-    pub camera_region: Option<Region>,
-    pub camera_ms: u64,
+    /// Shot that frames this bubble; `None` picks the smallest shot of the
+    /// page containing it.
+    pub shot: Option<ShotId>,
 }
 
 impl Default for BubbleFx {
@@ -286,9 +364,7 @@ impl Default for BubbleFx {
             screen_effect: ScreenEffect::None,
             screen_effect_ms: 450,
             exit_after: false,
-            camera: CameraFocus::Keep,
-            camera_region: None,
-            camera_ms: 700,
+            shot: None,
         }
     }
 }
@@ -302,8 +378,6 @@ impl BubbleFx {
         self.entrance_ms = self.entrance_ms.clamp(50, 5_000);
         self.emphasis_strength = finite_or(self.emphasis_strength, 1.0).clamp(0.25, 3.0);
         self.screen_effect_ms = self.screen_effect_ms.clamp(100, 5_000);
-        self.camera_region = self.camera_region.and_then(Region::sanitized);
-        self.camera_ms = self.camera_ms.min(5_000);
         self
     }
 }
@@ -558,6 +632,71 @@ pub struct Page {
     pub bubbles: Vec<Bubble>,
     #[serde(default, skip_serializing_if = "PageFx::is_default")]
     pub fx: PageFx,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shots: Vec<CameraShot>,
+}
+
+impl Page {
+    /// Shot index of every bubble: its chosen shot, else the smallest shot
+    /// framing its center, else the shot of the previous bubble, else the
+    /// first shot. `None` everywhere when the page has no shot.
+    pub fn bubble_shots(&self) -> Vec<Option<usize>> {
+        let mut previous = None;
+        self.bubbles
+            .iter()
+            .map(|bubble| {
+                if self.shots.is_empty() {
+                    return None;
+                }
+                let explicit = bubble
+                    .fx
+                    .shot
+                    .and_then(|id| self.shots.iter().position(|shot| shot.id == id));
+                let center = bubble_center(&bubble.points);
+                let framing = || {
+                    self.shots
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, shot)| shot.frames(center))
+                        .min_by(|a, b| a.1.area().total_cmp(&b.1.area()))
+                        .map(|(index, _)| index)
+                };
+                let shot = explicit.or_else(framing).or(previous).unwrap_or(0);
+                previous = Some(shot);
+                Some(shot)
+            })
+            .collect()
+    }
+
+    pub fn shot_index(&self, id: ShotId) -> Option<usize> {
+        self.shots.iter().position(|shot| shot.id == id)
+    }
+}
+
+/// Center of a polygon's bounding box.
+pub fn bubble_center(points: &[Point]) -> Point {
+    let min_x = points.iter().map(|point| point.x).fold(1.0, f32::min);
+    let max_x = points.iter().map(|point| point.x).fold(0.0, f32::max);
+    let min_y = points.iter().map(|point| point.y).fold(1.0, f32::min);
+    let max_y = points.iter().map(|point| point.y).fold(0.0, f32::max);
+    Point {
+        x: (min_x + max_x) * 0.5,
+        y: (min_y + max_y) * 0.5,
+    }
+}
+
+/// Bounding box of a polygon as a region (unsanitized).
+pub fn bubble_bounds(points: &[Point]) -> Region {
+    let min_x = points.iter().map(|point| point.x).fold(1.0, f32::min);
+    let max_x = points.iter().map(|point| point.x).fold(0.0, f32::max);
+    let min_y = points.iter().map(|point| point.y).fold(1.0, f32::min);
+    let max_y = points.iter().map(|point| point.y).fold(0.0, f32::max);
+    Region {
+        x: min_x,
+        y: min_y,
+        width: (max_x - min_x).max(0.0),
+        height: (max_y - min_y).max(0.0),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -751,6 +890,7 @@ impl ComicDubsProject {
             image_path,
             bubbles: Vec::new(),
             fx: PageFx::default(),
+            shots: Vec::new(),
         });
         self.active_page = Some(id);
         id
@@ -1190,7 +1330,7 @@ impl ComicDubsProject {
     }
 
     /// Copies the look, text style and effects of `source`, keeping the
-    /// target's text, shape, audio and camera framing.
+    /// target's text, shape, audio and shot.
     pub fn copy_bubble_style(&mut self, target: BubbleId, source: &Bubble) -> bool {
         let Some(bubble) = self.bubble_mut(target) else {
             return false;
@@ -1224,6 +1364,122 @@ impl ComicDubsProject {
         changed
     }
 
+    pub fn shot(&self, id: ShotId) -> Option<&CameraShot> {
+        self.pages
+            .iter()
+            .flat_map(|page| &page.shots)
+            .find(|shot| shot.id == id)
+    }
+
+    pub fn page_of_shot(&self, id: ShotId) -> Option<PageId> {
+        self.pages
+            .iter()
+            .find(|page| page.shot_index(id).is_some())
+            .map(|page| page.id)
+    }
+
+    /// Adds a shot at the end of the page's shot order.
+    pub fn add_shot(&mut self, page_id: PageId, region: Option<Region>) -> Option<ShotId> {
+        let region = match region {
+            Some(region) => Some(region.sanitized()?),
+            None => None,
+        };
+        self.page(page_id)?;
+        let id = self.allocate_id();
+        let page = self.pages.iter_mut().find(|page| page.id == page_id)?;
+        page.shots.push(CameraShot {
+            id,
+            region,
+            movement: ShotMovement::Smooth,
+            move_ms: default_shot_move_ms(),
+            hold_ms: 0,
+        });
+        Some(id)
+    }
+
+    /// Adds a shot framing a bubble with some margin, placed right after the
+    /// shot that currently frames it so the reading order stays natural.
+    pub fn add_shot_around_bubble(&mut self, bubble_id: BubbleId, aspect: f32) -> Option<ShotId> {
+        let page_id = self.page_of_bubble(bubble_id)?;
+        let page = self.page(page_id)?;
+        let index = page
+            .bubbles
+            .iter()
+            .position(|bubble| bubble.id == bubble_id)?;
+        let bounds = bubble_bounds(&page.bubbles[index].points);
+        let margin_x = bounds.width * 0.25 + 0.03;
+        let margin_y = bounds.height * 0.25 + 0.03;
+        let region = Region {
+            x: bounds.x - margin_x,
+            y: bounds.y - margin_y,
+            width: bounds.width + margin_x * 2.0,
+            height: bounds.height + margin_y * 2.0,
+        }
+        .fitted(page.width, page.height, aspect)
+        .sanitized()?;
+        let position = page.bubble_shots()[index].map_or(page.shots.len(), |shot| shot + 1);
+        let id = self.add_shot(page_id, Some(region))?;
+        let page = self.pages.iter_mut().find(|page| page.id == page_id)?;
+        let shot = page.shots.pop()?;
+        let position = position.min(page.shots.len());
+        page.shots.insert(position, shot);
+        Some(id)
+    }
+
+    /// Updates a shot's framing and timing; its id selects it.
+    pub fn set_shot(&mut self, shot: CameraShot) -> bool {
+        let shot = shot.sanitized();
+        let Some(current) = self
+            .pages
+            .iter_mut()
+            .flat_map(|page| &mut page.shots)
+            .find(|candidate| candidate.id == shot.id)
+        else {
+            return false;
+        };
+        if *current == shot {
+            return false;
+        }
+        *current = shot;
+        true
+    }
+
+    pub fn remove_shot(&mut self, id: ShotId) -> bool {
+        for page in &mut self.pages {
+            let before = page.shots.len();
+            page.shots.retain(|shot| shot.id != id);
+            if page.shots.len() != before {
+                for bubble in &mut page.bubbles {
+                    if bubble.fx.shot == Some(id) {
+                        bubble.fx.shot = None;
+                    }
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn move_shot(&mut self, id: ShotId, delta: isize) -> bool {
+        let Some(page) = self
+            .pages
+            .iter_mut()
+            .find(|page| page.shot_index(id).is_some())
+        else {
+            return false;
+        };
+        let from = page.shot_index(id).unwrap();
+        let to = from
+            .saturating_add_signed(delta)
+            .min(page.shots.len().saturating_sub(1));
+        if from == to {
+            return false;
+        }
+        let shot = page.shots.remove(from);
+        page.shots.insert(to, shot);
+        true
+    }
+
     pub fn page_of_bubble(&self, id: BubbleId) -> Option<PageId> {
         self.pages
             .iter()
@@ -1253,6 +1509,10 @@ impl ComicDubsProject {
         translate_poses(&mut bubble, offset);
         let id = bubble.id;
         let page = self.pages.iter_mut().find(|page| page.id == page_id)?;
+        bubble.fx.shot = bubble
+            .fx
+            .shot
+            .filter(|shot| page.shot_index(*shot).is_some());
         let index = after
             .and_then(|after| page.bubbles.iter().position(|bubble| bubble.id == after))
             .map_or(page.bubbles.len(), |index| index + 1);
@@ -1424,7 +1684,21 @@ impl ComicDubsProject {
                 return Err("invalid Comic Dubs page".into());
             }
             page.fx = page.fx.sanitized();
+            for shot in &mut page.shots {
+                *shot = shot.sanitized();
+                if !ids.insert(shot.id) {
+                    return Err("invalid Comic Dubs shot".into());
+                }
+            }
+            let shot_ids = page
+                .shots
+                .iter()
+                .map(|shot| shot.id)
+                .collect::<HashSet<_>>();
             for bubble in &mut page.bubbles {
+                if bubble.fx.shot.is_some_and(|id| !shot_ids.contains(&id)) {
+                    bubble.fx.shot = None;
+                }
                 bubble.look = bubble.look.sanitized();
                 bubble.fx = bubble.fx.sanitized();
                 bubble.sound = bubble.sound.sanitized();
@@ -1556,17 +1830,10 @@ fn copy_style(target: &mut Bubble, source: &Bubble) {
     target.strikethrough = source.strikethrough;
     target.underline = source.underline;
     target.look = source.look;
-    let camera = (
-        target.fx.camera,
-        target.fx.camera_region,
-        target.fx.camera_ms,
-    );
-    target.fx = source.fx;
-    (
-        target.fx.camera,
-        target.fx.camera_region,
-        target.fx.camera_ms,
-    ) = camera;
+    target.fx = BubbleFx {
+        shot: target.fx.shot,
+        ..source.fx
+    };
 }
 
 fn apply_preset(bubble: &mut Bubble, preset: BubblePreset, default_font_size: f32) {
@@ -1584,9 +1851,7 @@ fn apply_preset(bubble: &mut Bubble, preset: BubblePreset, default_font_size: f3
         ..BubbleLook::default()
     };
     bubble.fx = BubbleFx {
-        camera: bubble.fx.camera,
-        camera_region: bubble.fx.camera_region,
-        camera_ms: bubble.fx.camera_ms,
+        shot: bubble.fx.shot,
         entrance: BubbleEntrance::Fade,
         entrance_ms: 220,
         ..BubbleFx::default()
@@ -1998,5 +2263,102 @@ mod tests {
         assert_eq!(project.studio().music_audio_id, None);
         assert_eq!(BubbleEntrance::Cut.cycled(-1), BubbleEntrance::Drop);
         assert_eq!(PageTransition::Cut.cycled(1), PageTransition::FadeBlack);
+    }
+
+    #[test]
+    fn shots_are_ordered_framed_and_cleaned_up() {
+        let mut project = ComicDubsProject::default();
+        let page = project.add_page("p.png".into(), "p.png".into(), 900, 1_600);
+        let bubble = project
+            .add_bubble(
+                page,
+                vec![
+                    Point { x: 0.1, y: 0.1 },
+                    Point { x: 0.3, y: 0.1 },
+                    Point { x: 0.3, y: 0.2 },
+                    Point { x: 0.1, y: 0.2 },
+                ],
+            )
+            .unwrap();
+        let whole = project.add_shot(page, None).unwrap();
+        let later = project
+            .add_shot(
+                page,
+                Some(Region {
+                    x: 0.5,
+                    y: 0.5,
+                    width: 0.4,
+                    height: 0.2,
+                }),
+            )
+            .unwrap();
+        assert!(project
+            .add_shot(
+                page,
+                Some(Region {
+                    x: 0.5,
+                    y: 0.5,
+                    width: 0.001,
+                    height: 0.2,
+                })
+            )
+            .is_none());
+        // Framing a bubble inserts the shot right after the one showing it.
+        let close = project.add_shot_around_bubble(bubble, 16.0 / 9.0).unwrap();
+        let shots = &project.page(page).unwrap().shots;
+        assert_eq!(
+            shots.iter().map(|shot| shot.id).collect::<Vec<_>>(),
+            vec![whole, close, later]
+        );
+        let region = shots[1].region.unwrap();
+        let aspect = region.width * 900.0 / (region.height * 1_600.0);
+        assert!((aspect - 16.0 / 9.0).abs() < 0.01, "{aspect}");
+        assert!(region.contains(bubble_center(&project.bubble(bubble).unwrap().points)));
+        assert_eq!(project.page(page).unwrap().bubble_shots(), vec![Some(1)]);
+
+        assert!(project.move_shot(later, -2));
+        assert_eq!(project.page(page).unwrap().shots[0].id, later);
+        let mut settings = *project.shot(close).unwrap();
+        settings.move_ms = 0;
+        settings.hold_ms = 99_000;
+        assert!(project.set_shot(settings));
+        let stored = project.shot(close).unwrap();
+        assert_eq!((stored.move_ms, stored.hold_ms), (100, 20_000));
+
+        let mut fx = project.bubble(bubble).unwrap().fx;
+        fx.shot = Some(whole);
+        project.set_bubble_fx(bubble, fx);
+        assert!(project.remove_shot(whole));
+        assert_eq!(project.bubble(bubble).unwrap().fx.shot, None);
+        assert_eq!(project.page_of_shot(close), Some(page));
+
+        // Saved shots survive a round trip; dangling references are dropped.
+        let mut json = serde_json::to_value(&project).unwrap();
+        json["pages"][0]["bubbles"][0]["fx"] = serde_json::json!({ "shot": 424242 });
+        let mut loaded: ComicDubsProject = serde_json::from_value(json).unwrap();
+        loaded.validate().unwrap();
+        assert_eq!(loaded.page(page).unwrap().shots.len(), 2);
+        assert_eq!(loaded.bubble(bubble).unwrap().fx.shot, None);
+    }
+
+    #[test]
+    fn fitted_regions_take_the_video_shape_and_stay_on_the_page() {
+        let region = Region {
+            x: 0.9,
+            y: 0.0,
+            width: 0.1,
+            height: 0.1,
+        }
+        .fitted(1_000, 1_000, 2.0);
+        assert!((region.width - 0.2).abs() < 0.001 && (region.height - 0.1).abs() < 0.001);
+        assert!((region.x + region.width - 1.0).abs() < 0.001);
+        let huge = Region {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        }
+        .fitted(1_000, 1_000, 2.0);
+        assert!((huge.width - 1.0).abs() < 0.001 && (huge.height - 0.5).abs() < 0.001);
     }
 }

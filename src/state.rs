@@ -224,6 +224,64 @@ fn convert_comic_image(source: &Path, output: &Path) -> Result<(u32, u32), Strin
     Ok(dimensions)
 }
 
+/// Continuous edits (slider drags) record a single undo step: the first
+/// change of the gesture.
+#[derive(Debug, Default)]
+struct GestureUndo {
+    active: bool,
+    recorded: bool,
+}
+
+impl GestureUndo {
+    fn begin_step(&mut self, first: bool) {
+        if first {
+            self.recorded = false;
+        }
+        self.active = true;
+    }
+
+    fn end_step(&mut self) {
+        self.active = false;
+    }
+
+    /// Whether a change records an undo snapshot.
+    fn record(&mut self) -> bool {
+        let record = !(self.active && self.recorded);
+        if record {
+            self.recorded = self.active;
+        }
+        record
+    }
+}
+
+#[cfg(test)]
+mod gesture_undo_tests {
+    use super::GestureUndo;
+
+    #[test]
+    fn a_slider_drag_records_one_undo_step() {
+        let mut gesture = GestureUndo::default();
+        assert!(gesture.record());
+        gesture.begin_step(true);
+        assert!(gesture.record());
+        gesture.end_step();
+        for _ in 0..5 {
+            gesture.begin_step(false);
+            assert!(!gesture.record());
+            gesture.end_step();
+        }
+        // Edits outside a gesture always record.
+        assert!(gesture.record());
+        // A drag whose first step changed nothing still records its first change.
+        gesture.begin_step(true);
+        gesture.end_step();
+        gesture.begin_step(false);
+        assert!(gesture.record());
+        assert!(!gesture.record());
+        gesture.end_step();
+    }
+}
+
 #[derive(Clone)]
 struct LineClipboardEntry {
     line: RythmoLine,
@@ -547,6 +605,7 @@ pub struct State {
     comic_dubs_imports: Vec<PendingComicDubsImport>,
     comic_dubs_undo: Vec<crate::comic_dubs::ComicDubsProject>,
     comic_dubs_redo: Vec<crate::comic_dubs::ComicDubsProject>,
+    comic_dubs_gesture: GestureUndo,
     project_transfer: Option<ProjectTransferRuntime>,
     project_transfer_prepare: Option<Receiver<Result<ProjectTransferMetadata, String>>>,
     project_transfer_source: Option<PathBuf>,
@@ -729,6 +788,7 @@ impl State {
             comic_dubs_imports: Vec::new(),
             comic_dubs_undo: Vec::new(),
             comic_dubs_redo: Vec::new(),
+            comic_dubs_gesture: GestureUndo::default(),
             project_transfer: None,
             project_transfer_prepare: None,
             project_transfer_source: None,
@@ -2010,7 +2070,7 @@ impl State {
         self.comic_dubs_commit(before);
     }
 
-    fn toggle_comic_dubs_playback(&mut self) {
+    pub(crate) fn toggle_comic_dubs_playback(&mut self) {
         if self.comic_dubs_playback.is_some() {
             // A manual stop keeps the frame on screen as a paused preview.
             let at_ms = self.ui_shell.ui.comic_dubs_preview_ms();
@@ -2606,7 +2666,30 @@ impl State {
                 self.comic_dubs_project
                     .assign_audio(capture.bubble_id, Some(audio_id));
                 self.comic_dubs_commit(before);
-                self.show_toast("Voix enregistrée et associée à la bulle", 3.0);
+                // Chain takes: the next silent bubble of the page is ready.
+                let next = self
+                    .comic_dubs_project
+                    .page_of_bubble(capture.bubble_id)
+                    .and_then(|page| self.comic_dubs_project.page(page))
+                    .and_then(|page| {
+                        let index = page
+                            .bubbles
+                            .iter()
+                            .position(|bubble| bubble.id == capture.bubble_id)?;
+                        page.bubbles[index + 1..]
+                            .iter()
+                            .find(|bubble| bubble.audio_id.is_none())
+                            .map(|bubble| bubble.id)
+                    });
+                if let Some(next) = next {
+                    self.ui_shell.ui.select_comic_dubs_bubble(Some(next));
+                    self.show_toast(
+                        "Voix enregistrée • bulle suivante sélectionnée, prête à enregistrer",
+                        3.0,
+                    );
+                } else {
+                    self.show_toast("Voix enregistrée et associée à la bulle", 3.0);
+                }
             }
             Err(error) => {
                 let _ = std::fs::remove_file(&capture.output_path);
@@ -2683,14 +2766,64 @@ impl State {
         if self.comic_dubs_playback.is_some() {
             self.stop_comic_dubs_playback();
         }
-        // ponytail: snapshots are capped; use operation deltas only if large comics make this measurable.
-        if self.comic_dubs_undo.len() == 20 {
-            self.comic_dubs_undo.remove(0);
+        if self.comic_dubs_gesture.record() {
+            // ponytail: snapshots are capped; use operation deltas only if large comics make this measurable.
+            if self.comic_dubs_undo.len() == 20 {
+                self.comic_dubs_undo.remove(0);
+            }
+            self.comic_dubs_undo.push(before);
+            self.comic_dubs_redo.clear();
         }
-        self.comic_dubs_undo.push(before);
-        self.comic_dubs_redo.clear();
         self.comic_dubs_revision = self.comic_dubs_revision.wrapping_add(1);
         self.project_session.dirty = true;
+    }
+
+    /// Wraps one step of a continuous edit; `first` starts a new gesture.
+    pub fn comic_dubs_gesture_step(&mut self, first: bool, active: bool) {
+        if active {
+            self.comic_dubs_gesture.begin_step(first);
+        } else {
+            self.comic_dubs_gesture.end_step();
+        }
+    }
+
+    /// Width / height of the exported video frame.
+    pub fn comic_dubs_frame_aspect(&self) -> Option<f32> {
+        self.comic_dubs_project.pages().first().map(|page| {
+            let (width, height) = crate::configured_export::resolve_video_dimensions(
+                &self.project_session.project.settings().export_configuration,
+                page.width,
+                page.height,
+            );
+            width as f32 / height.max(1) as f32
+        })
+    }
+
+    pub fn comic_dubs_add_shot(
+        &mut self,
+        page_id: crate::comic_dubs::PageId,
+        region: Option<crate::comic_dubs::Region>,
+    ) {
+        let before = self.comic_dubs_project.clone();
+        let shot = self.comic_dubs_project.add_shot(page_id, region);
+        self.comic_dubs_commit(before);
+        match shot {
+            Some(shot) => self.ui_shell.ui.select_comic_dubs_shot(Some(shot)),
+            None => self.show_toast("Plan trop petit : tracez un cadre plus grand", 3.0),
+        }
+    }
+
+    pub fn comic_dubs_add_shot_around_bubble(&mut self, bubble_id: crate::comic_dubs::BubbleId) {
+        let aspect = self.comic_dubs_frame_aspect().unwrap_or(16.0 / 9.0);
+        let before = self.comic_dubs_project.clone();
+        let shot = self
+            .comic_dubs_project
+            .add_shot_around_bubble(bubble_id, aspect);
+        self.comic_dubs_commit(before);
+        if let Some(shot) = shot {
+            self.ui_shell.ui.select_comic_dubs_shot(Some(shot));
+            self.show_toast("Plan ajouté : ajustez-le directement sur la page", 3.0);
+        }
     }
 
     pub fn comic_dubs_undo(&mut self) {
@@ -11741,14 +11874,7 @@ impl State {
         // Bridge the line clipboard fact for the contextual shortcut panel.
         self.ui_shell.ui.line_clipboard_available = self.line_clipboard.is_some();
         if self.active_workspace() == WorkspaceId::ComicDubs {
-            let aspect = self.comic_dubs_project.pages().first().map(|page| {
-                let (width, height) = crate::configured_export::resolve_video_dimensions(
-                    &self.project_session.project.settings().export_configuration,
-                    page.width,
-                    page.height,
-                );
-                width as f32 / height.max(1) as f32
-            });
+            let aspect = self.comic_dubs_frame_aspect();
             self.ui_shell.ui.set_comic_dubs_frame_aspect(aspect);
         }
         self.ui_shell.ui.render(

@@ -594,6 +594,30 @@ impl CommandDispatcher {
             UiAction::ComicDubsSelectAdjacentBubble(direction) => {
                 state.comic_dubs_select_adjacent_bubble(direction)
             }
+            UiAction::ComicDubsTogglePlayback => state.toggle_comic_dubs_playback(),
+            UiAction::ComicDubsGesture { first, action } => {
+                state.comic_dubs_gesture_step(first, true);
+                let exit = Self::dispatch_inner(*action, state, elwt, false);
+                state.comic_dubs_gesture_step(false, false);
+                if exit {
+                    return true;
+                }
+            }
+            UiAction::ComicDubsAddShot { page_id, region } => {
+                state.comic_dubs_add_shot(page_id, region)
+            }
+            UiAction::ComicDubsAddShotAroundBubble(bubble_id) => {
+                state.comic_dubs_add_shot_around_bubble(bubble_id)
+            }
+            UiAction::ComicDubsSetShot(shot) => {
+                state.comic_dubs_edit(|project| project.set_shot(shot));
+            }
+            UiAction::ComicDubsRemoveShot(shot_id) => {
+                state.comic_dubs_edit(|project| project.remove_shot(shot_id));
+            }
+            UiAction::ComicDubsMoveShot { shot_id, delta } => {
+                state.comic_dubs_edit(|project| project.move_shot(shot_id, delta));
+            }
             UiAction::ComicDubsStepCue(direction) => state.comic_dubs_step_cue(direction),
             UiAction::ComicDubsEditSelectedText => {
                 if let Some(bubble) = state

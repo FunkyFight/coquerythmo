@@ -118,21 +118,26 @@ l’ancre.
 | `Ctrl + ←` / `Ctrl + →` | Aller à la bulle précédente/suivante de la timeline (aperçu) |
 | `Maj + ←` / `Maj + →` | Sélectionner la bulle précédente/suivante dans l’ordre de lecture, puis lire son texte |
 | `Entrée` | Modifier le texte de la bulle sélectionnée |
+| `←` / `→` / `Début` / `Fin` pendant l’écriture | Déplacer le curseur dans le texte de la bulle |
 | `↑` / `↓` / `←` / `→` | Déplacer la bulle sélectionnée (quand la planche ou la bulle a le focus) |
+| `←` / `→` sur un curseur de réglage | Diminuer / augmenter la valeur (`Maj` : par grands pas) |
+| `Entrée` sur une liste déroulante | Ouvrir la liste ; `↑` / `↓` puis `Entrée` pour choisir, `Échap` pour fermer |
 | `Ctrl + Maj + ←` / `Ctrl + Maj + →` | Déplacer la bulle sélectionnée vers la gauche/droite |
 | `Ctrl + C` / `Ctrl + X` / `Ctrl + V` | Copier / couper / coller une bulle (le collage se fait sur la page active) |
 | `Ctrl + Maj + V` | Coller le style copié sur la bulle sélectionnée |
 | `Ctrl + D` | Dupliquer la bulle sélectionnée |
-| `Suppr` | Supprimer la bulle sélectionnée |
+| `Suppr` | Supprimer la bulle ou le plan sélectionné |
+| `Ctrl + molette` sur la planche | Zoomer autour du pointeur |
+| Molette / clic molette glissé sur la planche zoomée | Se déplacer dans la planche |
 | `Maj + clic` sur un bord / un sommet | Ajouter / retirer un sommet de la bulle sélectionnée |
-| `Ctrl + clic` sur la page | Commencer un polygone libre |
-| `Échap` | Annuler le tracé en cours, quitter l’aperçu, revenir à l’outil Sélection puis désélectionner |
-| `Ctrl + Z` / `Ctrl + Maj + Z` | Annuler / rétablir |
+| `Ctrl + clic` sur la page | Commencer une forme libre |
+| `Échap` | Fermer la liste ouverte, finir l’écriture, annuler le tracé en cours, quitter l’aperçu, revenir à l’outil Sélection puis désélectionner |
+| `Ctrl + Z` / `Ctrl + Maj + Z` | Annuler / rétablir (un réglage glissé compte pour une seule étape) |
 
-Tous les contrôles du studio (outils, onglets de l’inspecteur, curseurs,
-sélecteurs et blocs de la timeline) sont atteignables avec `Tab` et s’activent
-avec `Entrée` ou `Espace`. Les sélecteurs exposent deux boutons « précédent » et
-« suivant », les réglages numériques deux boutons « diminuer » et « augmenter ».
+Tous les contrôles du studio (outils, plans, sections et réglages de
+l’inspecteur, pages, sons et blocs de la timeline) sont atteignables avec `Tab`
+et s’activent avec `Entrée` ou `Espace`. Les boutons à icône ont un nom et une
+infobulle.
 
 ## Export et proxy
 

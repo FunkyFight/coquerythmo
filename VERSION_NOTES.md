@@ -1,57 +1,81 @@
 # Comic Dubs Studio
 
 Le mode Comic Dubs devient un vrai petit studio de doublage de BD : on y
-dessine les bulles, on les anime, on cadre la caméra, on mixe voix, bruitages
-et musique, et l’aperçu montre exactement la vidéo exportée.
+dessine les bulles, on place les plans de caméra case par case, on anime, on
+enregistre et on mixe voix, bruitages et musique, et l’aperçu montre
+exactement la vidéo exportée.
 
-## Outils de dessin
+## Plans caméra
 
-- Nouvelle boîte à outils à gauche de la planche : Sélection, Polygone libre,
-  Bulle ronde, Bulle rectangulaire, Bulle de cri, Bulle de pensée, Cartouche de
-  narration et Cadrage caméra. Glissez sur la page pour tracer une bulle ; un
-  simple clic crée une bulle de taille standard.
-- `Maj + clic` sur un bord ajoute un sommet, sur un sommet le retire. « Ajouter
-  une queue » et « Arrondir » retouchent la forme ; les poses animées des
-  sommets suivent automatiquement.
+- Les cadrages sont désormais des **plans** posés sur la page, autant qu’on
+  veut : outil « Plan caméra » dans la barre d’outils (ou « Tracer un plan »
+  dans les réglages de la page), puis glisser sur la page. Le cadre suit
+  toujours le format de la vidéo exportée ; un simple clic crée un plan
+  standard.
+- Les plans sont **toujours visibles** sur la page, numérotés (« PLAN 1 »,
+  « PLAN 2 »…). On les déplace en glissant leur étiquette ou leur bord, on les
+  redimensionne par les coins ; le plan sélectionné assombrit ce qu’il laisse
+  hors champ. Le bouton « Plans » de la barre d’outils les masque.
+- La vidéo enchaîne les plans dans leur ordre : la caméra rejoint le plan
+  (mouvement fluide réglable ou coupe franche), marque une pause si besoin,
+  puis ses bulles sont lues. Chaque bulle est montrée par le plus petit plan
+  qui la contient (ou un plan choisi à la main) ; un plan sans bulle est tenu
+  seul, comme un plan d’ensemble. « Page entière » crée un plan d’ensemble.
+- Chaque bulle affiche le plan qui la montre (« P2 ») ; une bulle lue pendant
+  un plan qui ne la cadre pas est signalée en rouge sur la page, dans
+  l’inspecteur et sur la timeline, avec un bouton « Nouveau plan cadré sur
+  cette bulle ».
+- La timeline a une piste « Plans » ; cliquer un plan le sélectionne.
 
-## Inspecteur à onglets
+## Espace de travail
 
-- **Texte** : taille, espacements, gras, italique, barré, souligné, alignement,
-  couleur et contour du texte.
-- **Style** : sept préréglages (Classique, Cri, Pensée, Chuchotement,
-  Narration, Radio / écran, Onomatopée), couleur et épaisseur du contour, ombre
-  portée, copier/coller le style, appliquer le style à toute la page,
-  dupliquer.
-- **Anim** : apparition (fondu, pop, zoom, glissements, chute avec rebond),
-  bulle entière cachée avant son tour, révélation du texte en machine à écrire
-  ou mot par mot, emphase pendant la réplique (tremblement, pulsation,
-  flottement, sautillement), effets d’écran (secousse, flash, impact) et
-  disparition après la réplique.
-- **Caméra** : garder le cadrage, revenir à la page entière, zoomer sur la
-  bulle ou cadrer une zone tracée avec l’outil Caméra, avec une durée de
-  mouvement. Le texte et la voix arrivent quand la caméra est en place.
-- **Son** : voix de la bulle, écoute, enregistrement direct au micro, volume,
-  délai avant la voix, effet sonore à l’apparition et maintien après la
-  réplique.
-- **Page** : transition d’entrée (fondu au noir, fondu enchaîné, glissements,
-  zoom, flash), pause avant la première bulle et mouvement lent de caméra.
-- **Projet** : musique de fond (boucle, atténuation automatique sous les voix,
-  fondu de fin), couleur de fond, vitesse de la machine à écrire, bilan des
-  bulles sans voix ou sans texte, script et sous-titres.
+- Barre d’outils au-dessus de la planche avec de vraies icônes et des
+  infobulles : Sélection, Bulle ronde, Bulle rectangulaire, Bulle de cri,
+  Bulle de pensée, Cartouche de narration, Forme libre et Plan caméra. Après
+  avoir tracé une bulle, on revient à la Sélection et on écrit directement son
+  texte.
+- Zoom sur la planche : `Ctrl` + molette autour du pointeur, molette ou clic
+  molette pour se déplacer, bouton du zoom (« 100 % ») pour tout revoir.
+- Panneau de gauche : miniatures des planches (monter, descendre, supprimer)
+  et bibliothèque de sons (écouter, supprimer, glisser sur une bulle).
+- L’inspecteur suit la sélection : **bulle** (Texte, Apparence, Animation,
+  Son, Caméra, Organisation), **plan** (cadrage, arrivée, pause, bulles
+  montrées, ordre, aperçu) ou, sans sélection, **Page** et **Projet**. Les
+  sections se replient d’un clic.
+- Réglages avec des curseurs (glisser, flèches du clavier ; un glissé = une
+  seule étape d’annulation), des listes déroulantes qui montrent tous les
+  choix, des interrupteurs et des boutons segmentés. Plus aucun symbole
+  typographique en guise de bouton.
+- Texte des bulles modifiable directement, avec un vrai curseur (flèches,
+  `Début`, `Fin`, `Suppr`).
+- Enregistrement à la chaîne : après chaque prise au micro, la bulle suivante
+  sans voix est sélectionnée, prête à enregistrer.
+- Une ligne d’aide contextuelle au-dessus de la timeline explique l’outil en
+  cours.
+
+## Effets
+
+- Apparition des bulles (fondu, pop, zoom, glissements, chute avec rebond),
+  bulle entière cachée avant son tour, machine à écrire ou mot par mot,
+  emphase pendant la réplique (tremblement, pulsation, flottement,
+  sautillement), effets d’écran (secousse, flash, impact), disparition après
+  la réplique, sept préréglages de style, ombre portée, contour du texte.
+- Transitions de page (fondu au noir, fondu enchaîné, glissements, zoom,
+  flash), pause avant la première bulle, mouvement lent de caméra.
+- Musique de fond en boucle, baissée automatiquement sous les voix, avec fondu
+  de fin ; volume et délai de chaque voix, bruitage à l’apparition.
 
 ## Timeline et aperçu
 
-- Une timeline sous la planche montre les pages, les transitions, chaque bulle
-  (déplacement caméra, réplique, voix, bruitage) et la musique avec ses
-  atténuations. Cliquer ou glisser dessus affiche l’image exacte du rendu à cet
-  instant ; cliquer une bulle la sélectionne.
+- Pistes Pages, Plans, Bulles, Sons et Musique. Glisser sur la règle affiche
+  l’image exacte du rendu ; cliquer un bloc sélectionne la bulle ou le plan
+  (et change de page si besoin) ; bouton Lire / Arrêter.
 - La lecture suit cette timeline : musique, voix et bruitages sont joués
   ensemble, et la bulle suivante n’arrive jamais avant la fin de la voix.
-- L’aperçu est cadré au format de la vidéo exportée.
 
 ## Export
 
-- Le rendu vidéo est recalculé image par image : caméra, transitions,
+- Le rendu vidéo est recalculé image par image : plans caméra, transitions,
   animations, contours anti-crénelés, ombres, texte en italique et contour du
   texte sont identiques à l’aperçu. La musique de fond, les bruitages et le
   volume de chaque voix sont mixés dans la vidéo.
@@ -59,17 +83,17 @@ et musique, et l’aperçu montre exactement la vidéo exportée.
   sont calculées qu’une fois.
 - Le texte des bulles n’est plus légèrement écrasé verticalement à l’export.
 - Nouveaux exports « Sous-titres des bulles (SRT) » et « Script de traduction
-  (TXT) » dans le menu Export, et « Importer un script de traduction (TXT) »
-  dans Imports : une ligne par bulle dans l’ordre de lecture, `# Page N` pour
-  se recaler, `-` pour une bulle sans texte.
+  (TXT) », et import d’un script : une ligne par bulle dans l’ordre de
+  lecture, `# Page N` pour se recaler, `-` pour une bulle sans texte.
 
 ## Clavier et accessibilité
 
 - Copier, couper, coller, dupliquer et déplacer les bulles au clavier, bulle
-  précédente/suivante avec lecture de son texte, navigation d’une bulle à
-  l’autre dans la timeline. Voir [`RACCOURCIS_CLAVIER.md`](RACCOURCIS_CLAVIER.md).
-- Chaque outil, onglet, réglage et bloc de timeline est un contrôle nommé pour
-  les lecteurs d’écran.
+  précédente/suivante avec lecture de son texte, `Suppr` retire la bulle ou le
+  plan sélectionné. Voir [`RACCOURCIS_CLAVIER.md`](RACCOURCIS_CLAVIER.md).
+- Chaque outil, réglage, plan et bloc de timeline est un contrôle nommé pour
+  les lecteurs d’écran ; les curseurs se règlent aux flèches et les listes
+  s’ouvrent avec `Entrée`.
 
 # 5.2.0
 

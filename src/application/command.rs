@@ -180,6 +180,24 @@ pub enum UiAction {
         dy: f32,
     },
     ComicDubsSelectAdjacentBubble(isize),
+    ComicDubsTogglePlayback,
+    /// A continuous edit (slider drag): only the `first` step of a gesture
+    /// creates an undo entry.
+    ComicDubsGesture {
+        first: bool,
+        action: Box<UiAction>,
+    },
+    ComicDubsAddShot {
+        page_id: crate::comic_dubs::PageId,
+        region: Option<crate::comic_dubs::Region>,
+    },
+    ComicDubsAddShotAroundBubble(crate::comic_dubs::BubbleId),
+    ComicDubsSetShot(crate::comic_dubs::CameraShot),
+    ComicDubsRemoveShot(crate::comic_dubs::ShotId),
+    ComicDubsMoveShot {
+        shot_id: crate::comic_dubs::ShotId,
+        delta: isize,
+    },
     ComicDubsStepCue(isize),
     ComicDubsEditSelectedText,
     VoicelinesImportAudio,

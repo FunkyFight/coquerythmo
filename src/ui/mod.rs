@@ -179,6 +179,9 @@ pub struct Ui {
     comic_dubs_layout: comic_dubs_workspace::ComicDubsLayout,
     comic_dubs_scene: comic_dubs_workspace::ComicDubsScene,
     comic_dubs_textures: std::collections::HashMap<crate::comic_dubs::PageId, ComicDubsTexture>,
+    /// Small previews of the page list, loaded a few per frame.
+    comic_dubs_thumbnails: std::collections::HashMap<crate::comic_dubs::PageId, ComicDubsTexture>,
+    comic_dubs_thumbnails_pending: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -223,6 +226,64 @@ struct ComicDubsTexture {
     path: std::path::PathBuf,
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
+}
+
+fn upload_comic_dubs_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &UiRenderer,
+    image: &image::RgbaImage,
+) -> (wgpu::Texture, wgpu::BindGroup) {
+    let (width, height) = image.dimensions();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Comic Dubs page"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        image.as_raw(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * width),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Comic Dubs page bind group"),
+        layout: renderer.texture_bind_group_layout(),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(renderer.texture_sampler()),
+            },
+        ],
+    });
+    (texture, bind_group)
 }
 
 fn recording_drop_target(
@@ -311,7 +372,9 @@ impl Ui {
         ];
         let icon_uvs: std::collections::HashMap<String, [f32; 4]> = icon_names
             .iter()
-            .map(|&name| {
+            .copied()
+            .chain(icon_atlas.names().filter(|name| name.starts_with("comic/")))
+            .map(|name| {
                 (
                     name.to_string(),
                     icon_atlas.get_uv(name).unwrap_or([0.0; 4]),
@@ -415,6 +478,8 @@ impl Ui {
             }),
             comic_dubs_scene: comic_dubs_workspace::ComicDubsScene::default(),
             comic_dubs_textures: std::collections::HashMap::new(),
+            comic_dubs_thumbnails: std::collections::HashMap::new(),
+            comic_dubs_thumbnails_pending: false,
             active_mode: Some(ToolMode::Select),
             brush_color: [1.0, 1.0, 1.0, 1.0],
             brush_radius_index: 0,
@@ -1948,13 +2013,10 @@ impl Ui {
 
         if self.active_workspace == WorkspaceId::ComicDubs {
             let selection_before = self.comic_dubs_ui.selected_bubble();
-            // Arrows move the selected bubble unless an inspector or toolbox
-            // control owns the keyboard.
-            let canvas_focus = self
-                .focus
-                .current_id()
-                .is_none_or(|id| id.0.starts_with("comic.canvas.bubble."));
-            self.comic_dubs_ui.set_arrow_nudge(canvas_focus);
+            // Arrows move the selected bubble on the canvas and adjust a
+            // focused slider.
+            let focused = self.focus.current_id().map(|id| id.0.clone());
+            self.comic_dubs_ui.set_focused_control(focused.as_deref());
             let response =
                 self.comic_dubs_ui
                     .handle_event(event, comic_dubs_project, self.comic_dubs_layout);
@@ -2783,6 +2845,23 @@ impl Ui {
             });
             return;
         }
+        if self.active_workspace == WorkspaceId::ComicDubs {
+            if let Some(text) = self
+                .comic_dubs_scene
+                .controls
+                .iter()
+                .rev()
+                .find(|control| control.bounds.contains(cx, cy))
+                .and_then(|control| control.tooltip.clone())
+            {
+                self.tooltip = Some(TooltipState {
+                    text,
+                    cursor_x: cx,
+                    cursor_y: cy,
+                });
+                return;
+            }
+        }
         for widget in self
             .topbar_widgets
             .iter()
@@ -3013,6 +3092,8 @@ impl Ui {
             || self.toasts.has_active()
             || self.project_transfer_modal.is_some()
             || self.comic_dubs_ui.needs_animation()
+            || (self.active_workspace == WorkspaceId::ComicDubs
+                && self.comic_dubs_thumbnails_pending)
             || self.rythmo_state.needs_animation_or_interaction()
             || self.file_tree_animating
     }
@@ -3350,6 +3431,11 @@ impl Ui {
 
     pub fn select_comic_dubs_bubble(&mut self, bubble_id: Option<crate::comic_dubs::BubbleId>) {
         self.comic_dubs_ui.select_bubble(bubble_id);
+        self.rebuild_topbar(self.network_in_room);
+    }
+
+    pub fn select_comic_dubs_shot(&mut self, shot_id: Option<crate::comic_dubs::ShotId>) {
+        self.comic_dubs_ui.select_shot(shot_id);
         self.rebuild_topbar(self.network_in_room);
     }
 
@@ -3947,7 +4033,42 @@ impl Ui {
                     ));
                 }
             }
-            popup_quads.extend(self.comic_dubs_scene.top_quads.iter().copied());
+            for layer in &self.comic_dubs_scene.thumbnails {
+                if let Some(texture) = self.comic_dubs_thumbnails.get(&layer.page_id) {
+                    base_textured.push((
+                        IconInstance {
+                            rect: [
+                                layer.rect.x,
+                                layer.rect.y,
+                                layer.rect.width,
+                                layer.rect.height,
+                            ],
+                            uv_rect: layer.uv,
+                            tint: layer.tint,
+                            transform: [0.0, 0.0, 0.5, 0.5],
+                        },
+                        &texture.bind_group,
+                    ));
+                }
+            }
+            let uv = |name: &str| self.icon_uvs.get(name).copied().unwrap_or([0.0; 4]);
+            icons.extend(comic_dubs_workspace::ComicDubsScene::icon_instances(
+                &self.comic_dubs_scene.icons,
+                uv,
+            ));
+            overlay_icons.extend(comic_dubs_workspace::ComicDubsScene::icon_instances(
+                &self.comic_dubs_scene.overlay_icons,
+                uv,
+            ));
+            popup_icons.extend(comic_dubs_workspace::ComicDubsScene::icon_instances(
+                &self.comic_dubs_scene.popup_icons,
+                uv,
+            ));
+            comic_dubs_workspace::append_popup(
+                &mut popup_quads,
+                &mut popup_labels,
+                &self.comic_dubs_scene,
+            );
             comic_dubs_workspace::append_overlay(
                 &mut overlay_quads,
                 &mut overlay_labels,
@@ -4823,60 +4944,60 @@ impl Ui {
                     continue;
                 }
             };
-            let (width, height) = image.dimensions();
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Comic Dubs page"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                image.as_raw(),
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(4 * width),
-                    rows_per_image: Some(height),
-                },
-                wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-            );
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Comic Dubs page bind group"),
-                layout: renderer.texture_bind_group_layout(),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(renderer.texture_sampler()),
-                    },
-                ],
-            });
+            let (_texture, bind_group) = upload_comic_dubs_texture(device, queue, renderer, &image);
             self.comic_dubs_textures.insert(
                 page_id,
                 ComicDubsTexture {
                     path: page.image_path.clone(),
-                    _texture: texture,
+                    _texture,
+                    bind_group,
+                },
+            );
+        }
+        self.ensure_comic_dubs_thumbnails(device, queue, renderer, project);
+    }
+
+    fn ensure_comic_dubs_thumbnails(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        renderer: &UiRenderer,
+        project: &crate::comic_dubs::ComicDubsProject,
+    ) {
+        self.comic_dubs_thumbnails
+            .retain(|page_id, _| project.page(*page_id).is_some());
+        let missing = self
+            .comic_dubs_scene
+            .thumbnails
+            .iter()
+            .filter_map(|layer| project.page(layer.page_id))
+            .filter(|page| {
+                self.comic_dubs_thumbnails
+                    .get(&page.id)
+                    .is_none_or(|texture| texture.path != page.image_path)
+            })
+            .map(|page| (page.id, page.image_path.clone()))
+            .collect::<Vec<_>>();
+        // A couple of pages per frame keeps the studio responsive.
+        const PER_FRAME: usize = 2;
+        self.comic_dubs_thumbnails_pending = missing.len() > PER_FRAME;
+        for (page_id, path) in missing.into_iter().take(PER_FRAME) {
+            let image = match image::open(&path) {
+                Ok(image) => image.thumbnail(160, 220).to_rgba8(),
+                Err(error) => {
+                    log::warn!(
+                        "Could not preview Comic Dubs page {}: {error}",
+                        path.display()
+                    );
+                    image::RgbaImage::from_pixel(4, 4, image::Rgba([40, 40, 48, 255]))
+                }
+            };
+            let (_texture, bind_group) = upload_comic_dubs_texture(device, queue, renderer, &image);
+            self.comic_dubs_thumbnails.insert(
+                page_id,
+                ComicDubsTexture {
+                    path,
+                    _texture,
                     bind_group,
                 },
             );

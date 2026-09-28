@@ -1414,8 +1414,7 @@ fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::comic_dubs::{
-        BubbleFx, BubbleLook, BubblePreset, BubbleSound, CameraFocus, PageFx, PageMotion,
-        PageTransition, StudioSettings,
+        BubbleLook, BubblePreset, BubbleSound, PageFx, PageMotion, PageTransition, StudioSettings,
     };
     use crate::recording::{RecordedAudio, WaveformData};
 
@@ -1708,12 +1707,11 @@ mod tests {
             project.set_bubble_text(bubble, "BOUM ! Ça marche".into());
             project.apply_bubble_preset(bubble, preset);
             project.assign_audio(bubble, Some(voice));
-            let fx = BubbleFx {
-                camera: CameraFocus::Bubble,
-                camera_ms: 200,
-                ..project.bubble(bubble).unwrap().fx
-            };
-            project.set_bubble_fx(bubble, fx);
+            project.add_shot(page, None);
+            let shot = project.add_shot_around_bubble(bubble, 16.0 / 9.0).unwrap();
+            let mut settings = *project.shot(shot).unwrap();
+            settings.move_ms = 200;
+            project.set_shot(settings);
             project.set_bubble_look(
                 bubble,
                 BubbleLook {

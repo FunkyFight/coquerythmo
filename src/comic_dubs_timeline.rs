@@ -6,26 +6,18 @@
 //! effects and typewriter reveals are all pure functions of the time.
 
 use crate::comic_dubs::{
-    Bubble, BubbleEmphasis, BubbleEntrance, CameraFocus, ComicAudioId, ComicDubsProject, Page,
-    PageMotion, PageTransition, Point, Region, ScreenEffect, TextReveal,
+    Bubble, BubbleEmphasis, BubbleEntrance, ComicAudioId, ComicDubsProject, Page, PageMotion,
+    PageTransition, Point, Region, ScreenEffect, ShotMovement, TextReveal, EMPTY_SHOT_HOLD_MS,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Fade length of bubbles marked "disappears after its line".
 const EXIT_MS: u64 = 250;
-/// Margin kept around a bubble when the camera zooms on it.
-const BUBBLE_FOCUS_MARGIN: f32 = 0.35;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CameraTarget {
-    FullPage,
-    Region(Region),
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cue {
     pub bubble_index: usize,
-    /// Slot start: a camera move toward this bubble begins here.
+    /// Slot start (equal to the reveal: camera moves belong to shots).
     pub start_ms: u64,
     /// The bubble text (or the whole bubble) appears; SFX and screen effects fire.
     pub reveal_ms: u64,
@@ -37,8 +29,18 @@ pub struct Cue {
     pub reveal_duration_ms: u64,
     pub speak_end_ms: u64,
     pub end_ms: u64,
-    pub camera: Option<CameraTarget>,
-    pub camera_ms: u64,
+}
+
+/// A camera shot on the timeline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShotCue {
+    pub shot_index: usize,
+    /// The camera starts moving toward the shot.
+    pub start_ms: u64,
+    /// The shot is fully framed.
+    pub arrive_ms: u64,
+    /// The next shot starts, or the page ends.
+    pub end_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +50,35 @@ pub struct PageSpan {
     pub end_ms: u64,
     pub transition_ms: u64,
     pub cues: Vec<Cue>,
+    pub shots: Vec<ShotCue>,
+}
+
+/// One beat of a page, in playback order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Shot(usize),
+    Bubble(usize),
+}
+
+/// Playback order of a page: without shots, its bubbles in reading order;
+/// with shots, each shot followed by the bubbles it frames.
+pub fn page_steps(page: &Page) -> Vec<Step> {
+    if page.shots.is_empty() {
+        return (0..page.bubbles.len()).map(Step::Bubble).collect();
+    }
+    let assignment = page.bubble_shots();
+    let mut steps = Vec::with_capacity(page.shots.len() + page.bubbles.len());
+    for shot in 0..page.shots.len() {
+        steps.push(Step::Shot(shot));
+        steps.extend(
+            assignment
+                .iter()
+                .enumerate()
+                .filter(|(_, assigned)| **assigned == Some(shot))
+                .map(|(bubble, _)| Step::Bubble(bubble)),
+        );
+    }
+    steps
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -58,14 +89,17 @@ pub struct Timeline {
 
 impl Timeline {
     /// Plans the ordered playback. Without `page_filter`, pages without
-    /// bubbles are skipped, exactly like the historical player.
+    /// bubbles or shots are skipped, like the historical player.
     pub fn build(project: &ComicDubsProject, page_filter: Option<usize>, minimum_ms: u64) -> Self {
         let playable = project
             .pages()
             .iter()
             .enumerate()
             .filter(|(index, page)| {
-                page_filter.map_or(!page.bubbles.is_empty(), |filter| filter == *index)
+                page_filter.map_or(
+                    !page.bubbles.is_empty() || !page.shots.is_empty(),
+                    |filter| filter == *index,
+                )
             })
             .collect::<Vec<_>>();
         let minimum_ms = minimum_ms.max(1);
@@ -76,7 +110,13 @@ impl Timeline {
             let transition_ms = page.fx.effective_transition_ms();
             let lead_ms = page.fx.intro_ms.max(transition_ms);
             let last_page = position + 1 == playable.len();
-            if page.bubbles.is_empty() {
+            let page_gap_ms = if last_page {
+                project.page_gap_ms().max(1_000)
+            } else {
+                project.page_gap_ms()
+            };
+            let steps = page_steps(page);
+            if steps.is_empty() {
                 let end_ms = start_ms + lead_ms + project.page_gap_ms().max(1_000);
                 pages.push(PageSpan {
                     page_index: *page_index,
@@ -84,72 +124,98 @@ impl Timeline {
                     end_ms,
                     transition_ms,
                     cues: Vec::new(),
+                    shots: Vec::new(),
                 });
                 elapsed = end_ms;
                 continue;
             }
+            let framed = page.bubble_shots();
             let mut cursor = start_ms + lead_ms;
-            let mut current_camera = CameraTarget::FullPage;
             let mut cues = Vec::with_capacity(page.bubbles.len());
-            for (bubble_index, bubble) in page.bubbles.iter().enumerate() {
-                let camera = camera_target(bubble);
-                let camera_lead = match camera {
-                    Some(target) if target != current_camera => bubble.fx.camera_ms,
-                    _ => 0,
-                };
-                if let Some(target) = camera {
-                    current_camera = target;
-                }
-                let voice_audio = bubble.audio_id.filter(|id| project.audio(*id).is_some());
-                let voice_ms = voice_audio
-                    .and_then(|id| project.audio(id))
-                    .map_or(0, |audio| audio.duration_ms());
-                let reveal_ms = cursor + camera_lead;
-                let voice_start_ms = reveal_ms + bubble.sound.audio_delay_ms;
-                let reveal_duration_ms = match bubble.fx.text_reveal {
-                    TextReveal::Instant => 0,
-                    _ if voice_ms > 0 => voice_ms * 9 / 10,
-                    _ => {
-                        let characters = bubble.text.trim().graphemes(true).count() as f32;
-                        (characters / project.studio().typewriter_cps.max(1.0) * 1_000.0) as u64
+            let mut shots: Vec<ShotCue> = Vec::with_capacity(page.shots.len());
+            for (step_index, step) in steps.iter().enumerate() {
+                let last_step = step_index + 1 == steps.len();
+                match *step {
+                    Step::Shot(shot_index) => {
+                        let shot = &page.shots[shot_index];
+                        let move_ms = if shots.is_empty() || shot.movement == ShotMovement::Cut {
+                            0
+                        } else {
+                            shot.move_ms
+                        };
+                        let hold_ms = if framed.contains(&Some(shot_index)) || shot.hold_ms > 0 {
+                            shot.hold_ms
+                        } else {
+                            EMPTY_SHOT_HOLD_MS
+                        };
+                        if let Some(previous) = shots.last_mut() {
+                            previous.end_ms = cursor;
+                        }
+                        shots.push(ShotCue {
+                            shot_index,
+                            start_ms: cursor,
+                            arrive_ms: cursor + move_ms,
+                            end_ms: cursor + move_ms + hold_ms,
+                        });
+                        cursor += move_ms + hold_ms;
+                        if last_step {
+                            cursor += page_gap_ms;
+                        }
                     }
-                };
-                let entrance_ms = if bubble.fx.entrance == BubbleEntrance::Cut {
-                    0
-                } else {
-                    bubble.fx.entrance_ms
-                };
-                let speaking_ms = (bubble.sound.audio_delay_ms + voice_ms)
-                    .max(bubble.vertex_animation_duration_ms())
-                    .max(entrance_ms)
-                    .max(bubble.sound.audio_delay_ms + reveal_duration_ms);
-                let speak_end_ms = reveal_ms + speaking_ms + bubble.sound.extra_hold_ms;
-                let gap_ms = if bubble_index + 1 < page.bubbles.len() {
-                    project.bubble_gap_ms()
-                } else if !last_page {
-                    project.page_gap_ms()
-                } else {
-                    project.page_gap_ms().max(1_000)
-                };
-                let end_ms = (speak_end_ms + gap_ms).max(cursor + minimum_ms);
-                cues.push(Cue {
-                    bubble_index,
-                    start_ms: cursor,
-                    reveal_ms,
-                    voice_start_ms,
-                    voice_ms,
-                    voice_audio,
-                    sfx_audio: bubble
-                        .sound
-                        .sfx_audio_id
-                        .filter(|id| project.audio(*id).is_some()),
-                    reveal_duration_ms,
-                    speak_end_ms,
-                    end_ms,
-                    camera,
-                    camera_ms: bubble.fx.camera_ms,
-                });
-                cursor = end_ms;
+                    Step::Bubble(bubble_index) => {
+                        let bubble = &page.bubbles[bubble_index];
+                        let voice_audio = bubble.audio_id.filter(|id| project.audio(*id).is_some());
+                        let voice_ms = voice_audio
+                            .and_then(|id| project.audio(id))
+                            .map_or(0, |audio| audio.duration_ms());
+                        let reveal_ms = cursor;
+                        let voice_start_ms = reveal_ms + bubble.sound.audio_delay_ms;
+                        let reveal_duration_ms = match bubble.fx.text_reveal {
+                            TextReveal::Instant => 0,
+                            _ if voice_ms > 0 => voice_ms * 9 / 10,
+                            _ => {
+                                let characters = bubble.text.trim().graphemes(true).count() as f32;
+                                (characters / project.studio().typewriter_cps.max(1.0) * 1_000.0)
+                                    as u64
+                            }
+                        };
+                        let entrance_ms = if bubble.fx.entrance == BubbleEntrance::Cut {
+                            0
+                        } else {
+                            bubble.fx.entrance_ms
+                        };
+                        let speaking_ms = (bubble.sound.audio_delay_ms + voice_ms)
+                            .max(bubble.vertex_animation_duration_ms())
+                            .max(entrance_ms)
+                            .max(bubble.sound.audio_delay_ms + reveal_duration_ms);
+                        let speak_end_ms = reveal_ms + speaking_ms + bubble.sound.extra_hold_ms;
+                        let gap_ms = if last_step {
+                            page_gap_ms
+                        } else {
+                            project.bubble_gap_ms()
+                        };
+                        let end_ms = (speak_end_ms + gap_ms).max(cursor + minimum_ms);
+                        cues.push(Cue {
+                            bubble_index,
+                            start_ms: cursor,
+                            reveal_ms,
+                            voice_start_ms,
+                            voice_ms,
+                            voice_audio,
+                            sfx_audio: bubble
+                                .sound
+                                .sfx_audio_id
+                                .filter(|id| project.audio(*id).is_some()),
+                            reveal_duration_ms,
+                            speak_end_ms,
+                            end_ms,
+                        });
+                        cursor = end_ms;
+                    }
+                }
+            }
+            if let Some(last) = shots.last_mut() {
+                last.end_ms = cursor;
             }
             pages.push(PageSpan {
                 page_index: *page_index,
@@ -157,6 +223,7 @@ impl Timeline {
                 end_ms: cursor,
                 transition_ms,
                 cues,
+                shots,
             });
             elapsed = cursor;
         }
@@ -219,31 +286,6 @@ impl Timeline {
     }
 }
 
-/// Framing requested by a bubble, `None` when it keeps the current one.
-pub fn camera_target(bubble: &Bubble) -> Option<CameraTarget> {
-    match bubble.fx.camera {
-        CameraFocus::Keep => None,
-        CameraFocus::FullPage => Some(CameraTarget::FullPage),
-        CameraFocus::Region => bubble.fx.camera_region.map(CameraTarget::Region),
-        CameraFocus::Bubble => {
-            let points = bubble.points_at(0);
-            let min_x = points.iter().map(|point| point.x).fold(1.0, f32::min);
-            let max_x = points.iter().map(|point| point.x).fold(0.0, f32::max);
-            let min_y = points.iter().map(|point| point.y).fold(1.0, f32::min);
-            let max_y = points.iter().map(|point| point.y).fold(0.0, f32::max);
-            let (width, height) = (max_x - min_x, max_y - min_y);
-            Region {
-                x: min_x - width * BUBBLE_FOCUS_MARGIN,
-                y: min_y - height * BUBBLE_FOCUS_MARGIN,
-                width: width * (1.0 + 2.0 * BUBBLE_FOCUS_MARGIN),
-                height: height * (1.0 + 2.0 * BUBBLE_FOCUS_MARGIN),
-            }
-            .sanitized()
-            .map(CameraTarget::Region)
-        }
-    }
-}
-
 /// Page-normalized point placed at the center of the view, and the zoom
 /// relative to "whole page fitted in the view".
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -269,6 +311,33 @@ impl Camera {
             cx: center.x,
             cy: center.y,
             zoom: (needed / fit.max(f32::EPSILON)).clamp(1.0, 6.0),
+        }
+    }
+
+    /// Framing of a shot (`None` region = whole page), kept on the page.
+    pub fn for_shot(region: Option<Region>, page_w: f32, page_h: f32, view_aspect: f32) -> Self {
+        match region {
+            Some(region) => Self::framing(region, page_w, page_h, view_aspect).clamped(
+                page_w,
+                page_h,
+                view_aspect,
+            ),
+            None => Self::FULL,
+        }
+    }
+
+    /// Page-normalized area this camera shows in a view of `view_aspect`
+    /// (it can extend past the page when the page is letterboxed).
+    pub fn visible_region(self, page_w: f32, page_h: f32, view_aspect: f32) -> Region {
+        let fit = (view_aspect / page_w).min(1.0 / page_h);
+        let scale = fit * self.zoom;
+        let half_w = view_aspect * 0.5 / (page_w * scale);
+        let half_h = 0.5 / (page_h * scale);
+        Region {
+            x: self.cx - half_w,
+            y: self.cy - half_h,
+            width: half_w * 2.0,
+            height: half_h * 2.0,
         }
     }
 
@@ -563,35 +632,26 @@ fn evaluate_layer(
 
 fn camera_at(page: &Page, span: &PageSpan, at_ms: u64, view_aspect: f32) -> Camera {
     let (page_w, page_h) = (page.width.max(1) as f32, page.height.max(1) as f32);
-    let resolve = |target: CameraTarget| match target {
-        CameraTarget::FullPage => Camera::FULL,
-        CameraTarget::Region(region) => Camera::framing(region, page_w, page_h, view_aspect)
-            .clamped(page_w, page_h, view_aspect),
+    let resolve = |cue: &ShotCue| {
+        let region = page.shots.get(cue.shot_index).and_then(|shot| shot.region);
+        Camera::for_shot(region, page_w, page_h, view_aspect)
     };
-    let interpolate = |from: Camera, to: Camera, start: u64, duration: u64, at: u64| {
-        if duration == 0 || at >= start + duration {
-            to
-        } else {
-            from.lerp(
-                to,
-                ease_in_out(at.saturating_sub(start) as f32 / duration as f32),
-            )
-        }
+    let current = span
+        .shots
+        .iter()
+        .rposition(|cue| cue.start_ms <= at_ms)
+        .unwrap_or(0);
+    let mut camera = match span.shots.get(current) {
+        None => Camera::FULL,
+        Some(cue) if current == 0 || at_ms >= cue.arrive_ms => resolve(cue),
+        Some(cue) => resolve(&span.shots[current - 1]).lerp(
+            resolve(cue),
+            ease_in_out(
+                at_ms.saturating_sub(cue.start_ms) as f32
+                    / cue.arrive_ms.saturating_sub(cue.start_ms).max(1) as f32,
+            ),
+        ),
     };
-    let (mut from, mut to) = (Camera::FULL, Camera::FULL);
-    let (mut start, mut duration) = (span.start_ms, 0);
-    let mut current = CameraTarget::FullPage;
-    for cue in span.cues.iter().take_while(|cue| cue.start_ms <= at_ms) {
-        let Some(target) = cue.camera.filter(|target| *target != current) else {
-            continue;
-        };
-        from = interpolate(from, to, start, duration, cue.start_ms);
-        to = resolve(target);
-        start = cue.start_ms;
-        duration = cue.camera_ms;
-        current = target;
-    }
-    let mut camera = interpolate(from, to, start, duration, at_ms);
 
     let strength = page.fx.motion_strength;
     let length = span.end_ms.saturating_sub(span.start_ms).max(1);
@@ -1000,7 +1060,7 @@ mod tests {
     }
 
     #[test]
-    fn transitions_intro_and_camera_moves_delay_the_reveal() {
+    fn transitions_and_intro_delay_the_first_shot_and_bubble() {
         let mut project = ComicDubsProject::default();
         project.set_gaps(100, 100);
         let page = project.add_page("p.png".into(), "p.png".into(), 100, 100);
@@ -1013,26 +1073,126 @@ mod tests {
                 ..PageFx::default()
             },
         );
-        let bubble = project.add_bubble(page, square(0.1, 0.1)).unwrap();
-        project.set_bubble_fx(
-            bubble,
-            BubbleFx {
-                camera: CameraFocus::Bubble,
-                camera_ms: 500,
-                ..BubbleFx::default()
-            },
+        project.add_bubble(page, square(0.1, 0.1)).unwrap();
+        project.add_shot(
+            page,
+            Some(Region {
+                x: 0.0,
+                y: 0.0,
+                width: 0.5,
+                height: 0.5,
+            }),
         );
         let timeline = Timeline::build(&project, None, 40);
-        let cue = &timeline.pages[0].cues[0];
-        assert_eq!(cue.start_ms, 800);
-        assert_eq!(cue.reveal_ms, 1_300);
-        let before = evaluate(&project, &timeline, 1_000, 1.0);
-        let after = evaluate(&project, &timeline, 1_400, 1.0);
-        assert!(!before.layers[0].bubbles[0].show_text);
-        assert!(after.layers[0].camera.zoom > 1.5);
-        // Fade through black starts from darkness.
+        let span = &timeline.pages[0];
+        assert_eq!(span.shots[0].start_ms, 800);
+        assert_eq!(span.shots[0].arrive_ms, 800);
+        assert_eq!(span.cues[0].reveal_ms, 800);
+        // The first shot is framed from the very start of the page.
         let dark = evaluate(&project, &timeline, 500, 1.0);
         assert!(dark.layers[0].brightness < 0.3);
+        assert!(dark.layers[0].camera.zoom > 1.5);
+        assert!(!evaluate(&project, &timeline, 700, 1.0).layers[0].bubbles[0].show_text);
+    }
+
+    #[test]
+    fn shots_play_in_order_and_frame_their_bubbles() {
+        let mut project = ComicDubsProject::default();
+        project.set_gaps(100, 100);
+        let page = project.add_page("p.png".into(), "p.png".into(), 100, 100);
+        let first = project.add_bubble(page, square(0.1, 0.1)).unwrap();
+        let second = project.add_bubble(page, square(0.6, 0.6)).unwrap();
+        for id in [first, second] {
+            project.set_bubble_text(id, "Texte".into());
+        }
+        let whole = project.add_shot(page, None).unwrap();
+        let top = project
+            .add_shot(
+                page,
+                Some(Region {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 0.5,
+                    height: 0.5,
+                }),
+            )
+            .unwrap();
+        let bottom = project
+            .add_shot(
+                page,
+                Some(Region {
+                    x: 0.5,
+                    y: 0.5,
+                    width: 0.5,
+                    height: 0.5,
+                }),
+            )
+            .unwrap();
+        let mut shot = *project.shot(top).unwrap();
+        shot.move_ms = 500;
+        project.set_shot(shot);
+        let mut shot = *project.shot(bottom).unwrap();
+        shot.movement = ShotMovement::Cut;
+        project.set_shot(shot);
+        let page_ref = &project.pages()[0];
+        assert_eq!(page_ref.bubble_shots(), vec![Some(1), Some(2)]);
+        assert_eq!(
+            page_steps(page_ref),
+            vec![
+                Step::Shot(0),
+                Step::Shot(1),
+                Step::Bubble(0),
+                Step::Shot(2),
+                Step::Bubble(1)
+            ]
+        );
+        let timeline = Timeline::build(&project, None, 40);
+        let span = &timeline.pages[0];
+        // The establishing shot frames no bubble: it holds on its own.
+        assert_eq!(span.shots[0].end_ms, EMPTY_SHOT_HOLD_MS);
+        assert_eq!(
+            (span.shots[1].start_ms, span.shots[1].arrive_ms),
+            (EMPTY_SHOT_HOLD_MS, EMPTY_SHOT_HOLD_MS + 500)
+        );
+        assert_eq!(span.cues[0].reveal_ms, EMPTY_SHOT_HOLD_MS + 500);
+        // A cut shot starts right where the previous bubble ends.
+        assert_eq!(span.shots[2].start_ms, span.cues[0].end_ms);
+        assert_eq!(span.shots[2].arrive_ms, span.shots[2].start_ms);
+        assert_eq!(span.cues[1].reveal_ms, span.shots[2].start_ms);
+
+        let camera = |at_ms| evaluate(&project, &timeline, at_ms, 1.0).layers[0].camera;
+        assert_eq!(camera(100), Camera::FULL);
+        let moving = camera(EMPTY_SHOT_HOLD_MS + 250);
+        let framed = camera(EMPTY_SHOT_HOLD_MS + 540);
+        assert!(moving.zoom > 1.0 && moving.zoom < framed.zoom);
+        assert!((framed.cx - 0.25).abs() < 0.01 && framed.zoom > 1.9);
+        let cut = camera(span.shots[2].start_ms);
+        assert!((cut.cx - 0.75).abs() < 0.01);
+
+        // Choosing another shot for a bubble moves it in the reading order.
+        let mut fx = project.bubble(second).unwrap().fx;
+        fx.shot = Some(whole);
+        project.set_bubble_fx(second, fx);
+        assert_eq!(
+            page_steps(&project.pages()[0]),
+            vec![
+                Step::Shot(0),
+                Step::Bubble(1),
+                Step::Shot(1),
+                Step::Bubble(0),
+                Step::Shot(2)
+            ]
+        );
+    }
+
+    #[test]
+    fn pages_with_only_shots_are_played() {
+        let mut project = ComicDubsProject::default();
+        let page = project.add_page("p.png".into(), "p.png".into(), 100, 100);
+        project.add_shot(page, None);
+        let timeline = Timeline::build(&project, None, 40);
+        assert_eq!(timeline.pages.len(), 1);
+        assert!(timeline.total_ms >= EMPTY_SHOT_HOLD_MS);
     }
 
     #[test]
@@ -1144,6 +1304,21 @@ mod tests {
             Camera::FULL.clamped(1_000.0, 1_500.0, 16.0 / 9.0),
             Camera::FULL
         );
+        // A region shaped like the video is exactly what the camera shows.
+        let fitted = region.fitted(1_000, 1_500, 16.0 / 9.0);
+        let visible = Camera::for_shot(Some(fitted), 1_000.0, 1_500.0, 16.0 / 9.0).visible_region(
+            1_000.0,
+            1_500.0,
+            16.0 / 9.0,
+        );
+        for (a, b) in [
+            (fitted.x, visible.x),
+            (fitted.y, visible.y),
+            (fitted.width, visible.width),
+            (fitted.height, visible.height),
+        ] {
+            assert!((a - b).abs() < 0.001, "{fitted:?} vs {visible:?}");
+        }
     }
 
     #[test]

@@ -470,13 +470,14 @@ pub(crate) fn build_topbar(
                         height: 28.0,
                     },
                     vec![
-                        "Animer les sommets de la bulle".into(),
+                        "Animer la forme de la bulle (poses)".into(),
                         "Aperçu de la bulle".into(),
                         "Dupliquer la bulle (Ctrl+D)".into(),
                         "Copier le style".into(),
                         "Coller le style (Ctrl+Maj+V)".into(),
                         "Ajouter une queue".into(),
                         "Enregistrer la voix au micro".into(),
+                        "Nouveau plan cadré sur la bulle".into(),
                     ],
                     move |index, _| match index {
                         0 => EventResponse::Action(UiAction::ComicDubsOpenVertexEditor(bubble_id)),
@@ -488,6 +489,9 @@ pub(crate) fn build_topbar(
                         6 => EventResponse::Action(UiAction::ComicDubsToggleVoiceRecording(
                             bubble_id,
                         )),
+                        7 => {
+                            EventResponse::Action(UiAction::ComicDubsAddShotAroundBubble(bubble_id))
+                        }
                         _ => EventResponse::Consumed,
                     },
                 )
