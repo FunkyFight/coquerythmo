@@ -280,18 +280,27 @@ pub(crate) fn build_topbar(
             width: 80.0,
             height: 28.0,
         },
-        vec![t(if voicelines {
-            "menu.export.voicelines_audio"
-        } else {
-            "menu.export.mp4"
-        })
-        .into()],
-        move |index, _label| match index {
-            0 => EventResponse::Action(if voicelines {
+        {
+            let mut items = vec![t(if voicelines {
+                "menu.export.voicelines_audio"
+            } else {
+                "menu.export.mp4"
+            })
+            .to_string()];
+            if comic_dubs {
+                items.push("Sous-titres des bulles (SRT)…".into());
+                items.push("Script de traduction (TXT)…".into());
+            }
+            items
+        },
+        move |index, _label| match (index, comic_dubs) {
+            (0, _) => EventResponse::Action(if voicelines {
                 UiAction::VoicelinesExportAll
             } else {
                 UiAction::OpenExportModal
             }),
+            (1, true) => EventResponse::Action(UiAction::ComicDubsExportSrt),
+            (2, true) => EventResponse::Action(UiAction::ComicDubsExportScript),
             _ => EventResponse::Consumed,
         },
     )
@@ -432,10 +441,15 @@ pub(crate) fn build_topbar(
                         width: 96.0,
                         height: 28.0,
                     },
-                    vec!["Importer des images".into(), "Importer des audios".into()],
+                    vec![
+                        "Importer des images".into(),
+                        "Importer des audios".into(),
+                        "Importer un script de traduction (TXT)".into(),
+                    ],
                     |index, _| match index {
                         0 => EventResponse::Action(UiAction::ComicDubsImportImages),
                         1 => EventResponse::Action(UiAction::ComicDubsImportAudios),
+                        2 => EventResponse::Action(UiAction::ComicDubsImportScript),
                         _ => EventResponse::Consumed,
                     },
                 )
@@ -455,9 +469,25 @@ pub(crate) fn build_topbar(
                         width: 88.0,
                         height: 28.0,
                     },
-                    vec!["Animer les sommets de la bulle".into()],
+                    vec![
+                        "Animer les sommets de la bulle".into(),
+                        "Aperçu de la bulle".into(),
+                        "Dupliquer la bulle (Ctrl+D)".into(),
+                        "Copier le style".into(),
+                        "Coller le style (Ctrl+Maj+V)".into(),
+                        "Ajouter une queue".into(),
+                        "Enregistrer la voix au micro".into(),
+                    ],
                     move |index, _| match index {
                         0 => EventResponse::Action(UiAction::ComicDubsOpenVertexEditor(bubble_id)),
+                        1 => EventResponse::Action(UiAction::ComicDubsPreviewBubble(bubble_id)),
+                        2 => EventResponse::Action(UiAction::ComicDubsDuplicateBubble(bubble_id)),
+                        3 => EventResponse::Action(UiAction::ComicDubsCopyStyle(bubble_id)),
+                        4 => EventResponse::Action(UiAction::ComicDubsPasteStyle(bubble_id)),
+                        5 => EventResponse::Action(UiAction::ComicDubsAddBubbleTail(bubble_id)),
+                        6 => EventResponse::Action(UiAction::ComicDubsToggleVoiceRecording(
+                            bubble_id,
+                        )),
                         _ => EventResponse::Consumed,
                     },
                 )

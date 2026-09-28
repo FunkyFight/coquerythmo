@@ -1,3 +1,76 @@
+# Comic Dubs Studio
+
+Le mode Comic Dubs devient un vrai petit studio de doublage de BD : on y
+dessine les bulles, on les anime, on cadre la caméra, on mixe voix, bruitages
+et musique, et l’aperçu montre exactement la vidéo exportée.
+
+## Outils de dessin
+
+- Nouvelle boîte à outils à gauche de la planche : Sélection, Polygone libre,
+  Bulle ronde, Bulle rectangulaire, Bulle de cri, Bulle de pensée, Cartouche de
+  narration et Cadrage caméra. Glissez sur la page pour tracer une bulle ; un
+  simple clic crée une bulle de taille standard.
+- `Maj + clic` sur un bord ajoute un sommet, sur un sommet le retire. « Ajouter
+  une queue » et « Arrondir » retouchent la forme ; les poses animées des
+  sommets suivent automatiquement.
+
+## Inspecteur à onglets
+
+- **Texte** : taille, espacements, gras, italique, barré, souligné, alignement,
+  couleur et contour du texte.
+- **Style** : sept préréglages (Classique, Cri, Pensée, Chuchotement,
+  Narration, Radio / écran, Onomatopée), couleur et épaisseur du contour, ombre
+  portée, copier/coller le style, appliquer le style à toute la page,
+  dupliquer.
+- **Anim** : apparition (fondu, pop, zoom, glissements, chute avec rebond),
+  bulle entière cachée avant son tour, révélation du texte en machine à écrire
+  ou mot par mot, emphase pendant la réplique (tremblement, pulsation,
+  flottement, sautillement), effets d’écran (secousse, flash, impact) et
+  disparition après la réplique.
+- **Caméra** : garder le cadrage, revenir à la page entière, zoomer sur la
+  bulle ou cadrer une zone tracée avec l’outil Caméra, avec une durée de
+  mouvement. Le texte et la voix arrivent quand la caméra est en place.
+- **Son** : voix de la bulle, écoute, enregistrement direct au micro, volume,
+  délai avant la voix, effet sonore à l’apparition et maintien après la
+  réplique.
+- **Page** : transition d’entrée (fondu au noir, fondu enchaîné, glissements,
+  zoom, flash), pause avant la première bulle et mouvement lent de caméra.
+- **Projet** : musique de fond (boucle, atténuation automatique sous les voix,
+  fondu de fin), couleur de fond, vitesse de la machine à écrire, bilan des
+  bulles sans voix ou sans texte, script et sous-titres.
+
+## Timeline et aperçu
+
+- Une timeline sous la planche montre les pages, les transitions, chaque bulle
+  (déplacement caméra, réplique, voix, bruitage) et la musique avec ses
+  atténuations. Cliquer ou glisser dessus affiche l’image exacte du rendu à cet
+  instant ; cliquer une bulle la sélectionne.
+- La lecture suit cette timeline : musique, voix et bruitages sont joués
+  ensemble, et la bulle suivante n’arrive jamais avant la fin de la voix.
+- L’aperçu est cadré au format de la vidéo exportée.
+
+## Export
+
+- Le rendu vidéo est recalculé image par image : caméra, transitions,
+  animations, contours anti-crénelés, ombres, texte en italique et contour du
+  texte sont identiques à l’aperçu. La musique de fond, les bruitages et le
+  volume de chaque voix sont mixés dans la vidéo.
+- Le rendu utilise tous les cœurs du processeur et les images identiques ne
+  sont calculées qu’une fois.
+- Le texte des bulles n’est plus légèrement écrasé verticalement à l’export.
+- Nouveaux exports « Sous-titres des bulles (SRT) » et « Script de traduction
+  (TXT) » dans le menu Export, et « Importer un script de traduction (TXT) »
+  dans Imports : une ligne par bulle dans l’ordre de lecture, `# Page N` pour
+  se recaler, `-` pour une bulle sans texte.
+
+## Clavier et accessibilité
+
+- Copier, couper, coller, dupliquer et déplacer les bulles au clavier, bulle
+  précédente/suivante avec lecture de son texte, navigation d’une bulle à
+  l’autre dans la timeline. Voir [`RACCOURCIS_CLAVIER.md`](RACCOURCIS_CLAVIER.md).
+- Chaque outil, onglet, réglage et bloc de timeline est un contrôle nommé pour
+  les lecteurs d’écran.
+
 # 5.2.0
 
 ## Communauté

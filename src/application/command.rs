@@ -113,6 +113,75 @@ pub enum UiAction {
         bubble_id: crate::comic_dubs::BubbleId,
         delta: isize,
     },
+    /// Bubble drawn with a studio shape tool, styled with a preset.
+    ComicDubsAddStyledBubble {
+        page_id: crate::comic_dubs::PageId,
+        points: Vec<crate::comic_dubs::Point>,
+        preset: crate::comic_dubs::BubblePreset,
+    },
+    ComicDubsSetBubbleFx {
+        bubble_id: crate::comic_dubs::BubbleId,
+        fx: crate::comic_dubs::BubbleFx,
+    },
+    ComicDubsSetBubbleLook {
+        bubble_id: crate::comic_dubs::BubbleId,
+        look: crate::comic_dubs::BubbleLook,
+    },
+    ComicDubsSetBubbleSound {
+        bubble_id: crate::comic_dubs::BubbleId,
+        sound: crate::comic_dubs::BubbleSound,
+    },
+    ComicDubsSetPageFx {
+        page_id: crate::comic_dubs::PageId,
+        fx: crate::comic_dubs::PageFx,
+    },
+    ComicDubsSetStudio(crate::comic_dubs::StudioSettings),
+    ComicDubsApplyPreset {
+        bubble_id: crate::comic_dubs::BubbleId,
+        preset: crate::comic_dubs::BubblePreset,
+    },
+    ComicDubsDuplicateBubble(crate::comic_dubs::BubbleId),
+    ComicDubsCopyStyle(crate::comic_dubs::BubbleId),
+    ComicDubsPasteStyle(crate::comic_dubs::BubbleId),
+    ComicDubsApplyStyleToPage(crate::comic_dubs::BubbleId),
+    ComicDubsAddBubbleTail(crate::comic_dubs::BubbleId),
+    ComicDubsSmoothBubble(crate::comic_dubs::BubbleId),
+    ComicDubsInsertBubbleVertex {
+        bubble_id: crate::comic_dubs::BubbleId,
+        after: usize,
+        point: crate::comic_dubs::Point,
+    },
+    ComicDubsRemoveBubbleVertex {
+        bubble_id: crate::comic_dubs::BubbleId,
+        index: usize,
+    },
+    ComicDubsNudgeBubble {
+        bubble_id: crate::comic_dubs::BubbleId,
+        dx: f32,
+        dy: f32,
+    },
+    /// Shows (or plays from) this timeline position.
+    ComicDubsSeek(u64),
+    ComicDubsPlayFrom(u64),
+    ComicDubsPreviewBubble(crate::comic_dubs::BubbleId),
+    ComicDubsPlayAudio(crate::comic_dubs::ComicAudioId),
+    ComicDubsToggleVoiceRecording(crate::comic_dubs::BubbleId),
+    ComicDubsImportScript,
+    ComicDubsExportScript,
+    ComicDubsExportSrt,
+    /// Keyboard commands acting on the bubble selected in the studio.
+    ComicDubsCopySelected,
+    ComicDubsCutSelected,
+    ComicDubsPaste,
+    ComicDubsPasteStyleOnSelected,
+    ComicDubsDuplicateSelected,
+    ComicDubsNudgeSelected {
+        dx: f32,
+        dy: f32,
+    },
+    ComicDubsSelectAdjacentBubble(isize),
+    ComicDubsStepCue(isize),
+    ComicDubsEditSelectedText,
     VoicelinesImportAudio,
     VoicelinesSelectAudio(crate::voicelines::AudioId),
     VoicelinesRemoveAudio(crate::voicelines::AudioId),
@@ -914,6 +983,9 @@ pub enum FilePickerIntent {
     ComicDubsExport {
         configuration: crate::project::ExportConfiguration,
     },
+    ComicDubsScript,
+    ComicDubsScriptExport,
+    ComicDubsSrtExport,
     RecordingAudio,
     VoicelinesAudio,
     VoicelinesExportRegion {

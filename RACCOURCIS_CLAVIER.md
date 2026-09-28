@@ -110,6 +110,30 @@ Lorsqu’une détection est sélectionnée, `Maj + ←`/`Maj + →` déplacent s
 de synchronisation d’un grapheme. Appuyer sur `Maj` seul bascule l’affinité de
 l’ancre.
 
+## Comic Dubs (studio)
+
+| Raccourci | Action |
+|---|---|
+| `Espace` | Lire depuis la page active ou depuis la position d’aperçu, puis arrêter |
+| `Ctrl + ←` / `Ctrl + →` | Aller à la bulle précédente/suivante de la timeline (aperçu) |
+| `Maj + ←` / `Maj + →` | Sélectionner la bulle précédente/suivante dans l’ordre de lecture, puis lire son texte |
+| `Entrée` | Modifier le texte de la bulle sélectionnée |
+| `↑` / `↓` / `←` / `→` | Déplacer la bulle sélectionnée (quand la planche ou la bulle a le focus) |
+| `Ctrl + Maj + ←` / `Ctrl + Maj + →` | Déplacer la bulle sélectionnée vers la gauche/droite |
+| `Ctrl + C` / `Ctrl + X` / `Ctrl + V` | Copier / couper / coller une bulle (le collage se fait sur la page active) |
+| `Ctrl + Maj + V` | Coller le style copié sur la bulle sélectionnée |
+| `Ctrl + D` | Dupliquer la bulle sélectionnée |
+| `Suppr` | Supprimer la bulle sélectionnée |
+| `Maj + clic` sur un bord / un sommet | Ajouter / retirer un sommet de la bulle sélectionnée |
+| `Ctrl + clic` sur la page | Commencer un polygone libre |
+| `Échap` | Annuler le tracé en cours, quitter l’aperçu, revenir à l’outil Sélection puis désélectionner |
+| `Ctrl + Z` / `Ctrl + Maj + Z` | Annuler / rétablir |
+
+Tous les contrôles du studio (outils, onglets de l’inspecteur, curseurs,
+sélecteurs et blocs de la timeline) sont atteignables avec `Tab` et s’activent
+avec `Entrée` ou `Espace`. Les sélecteurs exposent deux boutons « précédent » et
+« suivant », les réglages numériques deux boutons « diminuer » et « augmenter ».
+
 ## Export et proxy
 
 | Raccourci | Action |

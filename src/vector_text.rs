@@ -573,6 +573,68 @@ pub fn render_text_natural_with_family_spacing_and_style_standalone(
     })
 }
 
+/// Rasterizes one Comic Dubs bubble line. The pixmap is `ceil(1.4 × size)`
+/// tall (no vertical distortion) and starts `left_pad` pixels before the
+/// first glyph so italic overhangs are not clipped.
+#[allow(clippy::too_many_arguments)]
+pub fn render_bubble_line_standalone(
+    text: &str,
+    font_size: f32,
+    font_family: Option<&str>,
+    letter_spacing: f32,
+    bold: bool,
+    italic: bool,
+    strikethrough: bool,
+    underline: bool,
+    left_pad: f32,
+) -> Option<VectorTextPixmap> {
+    if text.trim().is_empty() || !font_size.is_finite() || font_size <= 0.0 {
+        return None;
+    }
+    let font_family = font_family.unwrap_or("sans-serif");
+    let measured = measure_text_width_with_family_standalone(text, font_size, Some(font_family))
+        .unwrap_or(font_size * text.chars().count() as f32 * 0.6);
+    let spacing = letter_spacing.max(0.0) * text.chars().count() as f32;
+    let width_factor = if bold { 1.08 } else { 1.0 };
+    let dest_w = (measured * width_factor + spacing + left_pad * 2.0 + font_size * 0.35)
+        .ceil()
+        .clamp(1.0, 16_384.0) as u32;
+    let line_height = (font_size * 1.4).ceil().max(1.0);
+    let dest_h = line_height as u32;
+    let escaped_text = escape_xml(text);
+    let escaped_family = escape_xml(font_family);
+    let decoration = match (underline, strikethrough) {
+        (true, true) => r#" text-decoration="underline line-through""#,
+        (true, false) => r#" text-decoration="underline""#,
+        (false, true) => r#" text-decoration="line-through""#,
+        (false, false) => "",
+    };
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{dest_w}" height="{dest_h}" viewBox="0 0 {dest_w} {line_height:.3}">
+<text x="{left_pad:.3}" y="{font_size:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white"{style}{weight}{decoration} letter-spacing="{letter_spacing:.3}" xml:space="preserve">{escaped_text}</text>
+</svg>"#,
+        style = if italic {
+            r#" font-style="italic""#
+        } else {
+            ""
+        },
+        weight = if bold { r#" font-weight="700""# } else { "" },
+    );
+    let mut options = resvg::usvg::Options::default();
+    options.font_family = font_family.to_string();
+    options.font_size = font_size;
+    options.fontdb = system_fontdb();
+    let tree = resvg::usvg::Tree::from_data(svg.as_bytes(), &options).ok()?;
+    let mut pixmap = Pixmap::new(dest_w, dest_h)?;
+    resvg::render(&tree, Transform::identity(), &mut pixmap.as_mut());
+    Some(VectorTextPixmap {
+        pixels: pixmap.data().to_vec(),
+        width: dest_w,
+        height: dest_h,
+        char_x_ratios: Vec::new(),
+    })
+}
+
 fn render_rythmo_text_impl(
     font_system: &mut FontSystem,
     text: &str,

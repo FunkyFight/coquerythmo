@@ -101,34 +101,40 @@ fn workspace_shows_project_video(workspace: WorkspaceId) -> bool {
     matches!(workspace, WorkspaceId::Rythmo | WorkspaceId::Recording)
 }
 
-fn next_comic_dubs_position(
+/// Where Comic Dubs playback starts: the paused preview position, otherwise
+/// the first playable page from the active one.
+fn comic_dubs_start_ms(
     project: &crate::comic_dubs::ComicDubsProject,
-    page_index: usize,
-    bubble_index: usize,
-) -> Option<(usize, usize, u64)> {
-    let page = project.pages().get(page_index)?;
-    if bubble_index + 1 < page.bubbles.len() {
-        return Some((page_index, bubble_index + 1, project.bubble_gap_ms()));
+    plan: &crate::comic_dubs_timeline::Timeline,
+    preview_ms: Option<u64>,
+) -> u64 {
+    if let Some(at_ms) = preview_ms.filter(|at_ms| *at_ms + 50 < plan.total_ms) {
+        return at_ms;
     }
-    project
-        .pages()
+    let active = project
+        .active_page_id()
+        .and_then(|id| project.pages().iter().position(|page| page.id == id))
+        .unwrap_or(0);
+    plan.pages
         .iter()
-        .enumerate()
-        .skip(page_index + 1)
-        .find(|(_, page)| !page.bubbles.is_empty())
-        .map(|(page_index, _)| (page_index, 0, project.page_gap_ms()))
+        .find(|span| span.page_index >= active)
+        .map_or(0, |span| span.start_ms)
 }
 
-fn comic_dubs_start_page(project: &crate::comic_dubs::ComicDubsProject) -> Option<usize> {
-    let active = project.active_page_id()?;
-    let start = project.pages().iter().position(|page| page.id == active)?;
-    project
-        .pages()
+/// Music gain under the voices, with 250 ms ramps like the export.
+fn comic_dubs_duck(intervals: &[(u64, u64)], at_ms: u64) -> f32 {
+    const RAMP: f32 = 250.0;
+    let presence = intervals
         .iter()
-        .enumerate()
-        .skip(start)
-        .find(|(_, page)| !page.bubbles.is_empty())
-        .map(|(index, _)| index)
+        .map(|(start, end)| {
+            let at = at_ms as f32;
+            let rise = ((at - (*start as f32 - RAMP)) / RAMP).clamp(0.0, 1.0);
+            let fall = ((*end as f32 + RAMP - at) / RAMP).clamp(0.0, 1.0);
+            rise * fall
+        })
+        .sum::<f32>()
+        .min(1.0);
+    1.0 - 0.65 * presence
 }
 
 fn recording_workspace_has_content(
@@ -136,10 +142,6 @@ fn recording_workspace_has_content(
     revision: u64,
 ) -> bool {
     revision != 0 || project.assets().len() != 0 || project.clips().len() != 0
-}
-
-fn comic_dubs_playback_due(now: Instant, deadline: Instant, audio_playing: bool) -> bool {
-    now >= deadline && !audio_playing
 }
 
 fn recording_added_assets<'a>(
@@ -278,10 +280,9 @@ mod clipboard_tests {
 #[cfg(test)]
 mod playback_tests {
     use super::{
-        comic_dubs_playback_due, comic_dubs_start_page, next_comic_dubs_position,
-        recording_playback_is_blocked_during_countdown, recording_playback_waits_for_mix,
-        recording_timeline_audio_ready, recording_workspace_has_content,
-        workspace_shows_project_video, WorkspaceId,
+        comic_dubs_duck, comic_dubs_start_ms, recording_playback_is_blocked_during_countdown,
+        recording_playback_waits_for_mix, recording_timeline_audio_ready,
+        recording_workspace_has_content, workspace_shows_project_video, WorkspaceId,
     };
     use crate::comic_dubs::{ComicDubsProject, Point};
     use crate::recording::{AudioAssetId, AudioClipId, AudioTrackId, CaptureState, CaptureTarget};
@@ -391,11 +392,12 @@ mod playback_tests {
     }
 
     #[test]
-    fn comic_dubs_sequence_uses_bubble_then_page_gaps() {
+    fn comic_dubs_playback_starts_on_the_active_page_or_the_preview() {
         let mut project = ComicDubsProject::default();
         project.set_gaps(250, 900);
         let first = project.add_page("1.png".into(), "1.png".into(), 10, 10);
-        let second = project.add_page("2.png".into(), "2.png".into(), 10, 10);
+        let empty = project.add_page("2.png".into(), "2.png".into(), 10, 10);
+        let third = project.add_page("3.png".into(), "3.png".into(), 10, 10);
         let triangle = || {
             vec![
                 Point { x: 0.1, y: 0.1 },
@@ -405,38 +407,27 @@ mod playback_tests {
         };
         project.add_bubble(first, triangle());
         project.add_bubble(first, triangle());
-        project.add_bubble(second, triangle());
-
-        assert_eq!(next_comic_dubs_position(&project, 0, 0), Some((0, 1, 250)));
-        assert_eq!(next_comic_dubs_position(&project, 0, 1), Some((1, 0, 900)));
-        assert_eq!(next_comic_dubs_position(&project, 1, 0), None);
+        project.add_bubble(third, triangle());
+        let plan = crate::comic_dubs_timeline::Timeline::build(&project, None, 40);
+        project.select_page(empty);
+        assert_eq!(comic_dubs_start_ms(&project, &plan, None), 1_150);
+        assert_eq!(comic_dubs_start_ms(&project, &plan, Some(300)), 300);
+        // A preview parked at the very end restarts from the active page.
+        assert_eq!(
+            comic_dubs_start_ms(&project, &plan, Some(plan.total_ms)),
+            1_150
+        );
     }
 
     #[test]
-    fn comic_dubs_sequence_starts_on_the_active_page() {
-        let mut project = ComicDubsProject::default();
-        let first = project.add_page("1.png".into(), "1.png".into(), 10, 10);
-        let second = project.add_page("2.png".into(), "2.png".into(), 10, 10);
-        let triangle = || {
-            vec![
-                Point { x: 0.1, y: 0.1 },
-                Point { x: 0.9, y: 0.1 },
-                Point { x: 0.5, y: 0.9 },
-            ]
-        };
-        project.add_bubble(first, triangle());
-        project.add_bubble(second, triangle());
-        project.select_page(second);
-
-        assert_eq!(comic_dubs_start_page(&project), Some(1));
-    }
-
-    #[test]
-    fn comic_dubs_never_advances_before_audio_finishes() {
-        let deadline = std::time::Instant::now();
-        let after = deadline + Duration::from_secs(1);
-        assert!(!comic_dubs_playback_due(after, deadline, true));
-        assert!(comic_dubs_playback_due(after, deadline, false));
+    fn comic_dubs_music_ducks_smoothly_under_voices() {
+        let intervals = [(1_000, 2_000)];
+        assert_eq!(comic_dubs_duck(&intervals, 0), 1.0);
+        assert!((comic_dubs_duck(&intervals, 1_500) - 0.35).abs() < 0.001);
+        let ramp = comic_dubs_duck(&intervals, 875);
+        assert!(ramp < 1.0 && ramp > 0.35);
+        assert_eq!(comic_dubs_duck(&intervals, 3_000), 1.0);
+        let _ = Duration::from_millis(1);
     }
 
     #[test]
@@ -547,7 +538,12 @@ pub struct State {
     pub comic_dubs_project: crate::comic_dubs::ComicDubsProject,
     comic_dubs_revision: u64,
     comic_dubs_player: Option<VideoPlayer>,
+    comic_dubs_sfx_player: Option<VideoPlayer>,
+    comic_dubs_music_player: Option<VideoPlayer>,
     comic_dubs_playback: Option<ComicDubsPlayback>,
+    comic_dubs_clipboard: Option<crate::comic_dubs::Bubble>,
+    comic_dubs_style_clipboard: Option<crate::comic_dubs::Bubble>,
+    comic_dubs_capture: Option<ComicDubsCapture>,
     comic_dubs_imports: Vec<PendingComicDubsImport>,
     comic_dubs_undo: Vec<crate::comic_dubs::ComicDubsProject>,
     comic_dubs_redo: Vec<crate::comic_dubs::ComicDubsProject>,
@@ -668,10 +664,27 @@ enum PendingComicDubsImport {
 }
 
 struct ComicDubsPlayback {
-    page_index: usize,
-    bubble_index: usize,
-    started_at: Instant,
-    deadline: Instant,
+    plan: crate::comic_dubs_timeline::Timeline,
+    origin: Instant,
+    origin_ms: u64,
+    /// `None` until the first tick, so events exactly at the start fire.
+    last_ms: Option<u64>,
+    end_ms: u64,
+    music_restarted: Instant,
+    /// The playing voice holds the clock at this time until it finishes.
+    voice_hold_ms: Option<u64>,
+    /// When the clock started waiting for the voice; a stuck or silent audio
+    /// output never holds playback for more than a moment.
+    held_since: Option<Instant>,
+    ducking: Vec<(u64, u64)>,
+}
+
+/// Microphone take recorded straight onto a bubble.
+struct ComicDubsCapture {
+    bubble_id: crate::comic_dubs::BubbleId,
+    recorder: crate::media_recording::FfmpegFlacRecorder,
+    output_path: PathBuf,
+    started: Instant,
 }
 
 impl State {
@@ -707,7 +720,12 @@ impl State {
             comic_dubs_project: crate::comic_dubs::ComicDubsProject::default(),
             comic_dubs_revision: 0,
             comic_dubs_player: None,
+            comic_dubs_sfx_player: None,
+            comic_dubs_music_player: None,
             comic_dubs_playback: None,
+            comic_dubs_clipboard: None,
+            comic_dubs_style_clipboard: None,
+            comic_dubs_capture: None,
             comic_dubs_imports: Vec::new(),
             comic_dubs_undo: Vec::new(),
             comic_dubs_redo: Vec::new(),
@@ -1942,20 +1960,42 @@ impl State {
         let before = self.comic_dubs_project.clone();
         self.comic_dubs_project.assign_audio(bubble_id, audio_id);
         self.comic_dubs_commit(before);
-        let Some(audio) = audio_id.and_then(|id| self.comic_dubs_project.audio(id)) else {
+        if let Some(audio_id) = audio_id {
+            self.comic_dubs_play_audio(audio_id);
+        }
+    }
+
+    /// Plays one library audio on its own (listening, assignment feedback).
+    pub fn comic_dubs_play_audio(&mut self, audio_id: crate::comic_dubs::ComicAudioId) {
+        self.stop_comic_dubs_playback();
+        let Some(audio) = self.comic_dubs_project.audio(audio_id) else {
             return;
         };
-        let mut player = VideoPlayer::new();
-        match player.load_audio_only(&audio.playback_path, audio.duration_ms() as f64 / 1_000.0) {
-            Ok(()) => {
-                player.set_volume(self.ui_shell.ui.volume());
-                let _ = player.toggle();
+        let (path, duration_ms) = (audio.playback_path.clone(), audio.duration_ms());
+        match Self::comic_dubs_start_player(&path, duration_ms, 0, self.ui_shell.ui.volume()) {
+            Ok(player) => {
                 self.ui_shell.ui.total_frames = player.total_frames();
                 self.ui_shell.ui.set_playing(true);
                 self.comic_dubs_player = Some(player);
             }
             Err(error) => self.show_toast(format!("Audio Comic Dubs : {error}"), 5.0),
         }
+    }
+
+    fn comic_dubs_start_player(
+        path: &Path,
+        duration_ms: u64,
+        offset_ms: u64,
+        volume: f32,
+    ) -> Result<VideoPlayer, String> {
+        let mut player = VideoPlayer::new();
+        player.load_audio_only(path, duration_ms as f64 / 1_000.0)?;
+        player.set_volume(volume.clamp(0.0, 1.0));
+        if offset_ms > 30 {
+            player.seek_to_frame_instant((offset_ms / 10) as i64);
+        }
+        let _ = player.toggle();
+        Ok(player)
     }
 
     pub fn comic_dubs_remove_bubble(&mut self, bubble_id: crate::comic_dubs::BubbleId) {
@@ -1972,130 +2012,662 @@ impl State {
 
     fn toggle_comic_dubs_playback(&mut self) {
         if self.comic_dubs_playback.is_some() {
+            // A manual stop keeps the frame on screen as a paused preview.
+            let at_ms = self.ui_shell.ui.comic_dubs_preview_ms();
             self.stop_comic_dubs_playback();
+            self.ui_shell.ui.set_comic_dubs_preview(at_ms, false);
             return;
         }
-        let Some(page_index) = comic_dubs_start_page(&self.comic_dubs_project) else {
+        let plan = crate::comic_dubs_timeline::Timeline::build(&self.comic_dubs_project, None, 40);
+        if plan.is_empty() {
             self.show_toast("Aucune bulle à lire", 3.0);
             return;
-        };
-        self.comic_dubs_playback = Some(ComicDubsPlayback {
-            page_index,
-            bubble_index: 0,
-            started_at: Instant::now(),
-            deadline: Instant::now(),
-        });
-        self.ui_shell.ui.set_playing(true);
-        self.start_comic_dubs_bubble(Instant::now());
+        }
+        let from = comic_dubs_start_ms(
+            &self.comic_dubs_project,
+            &plan,
+            self.ui_shell.ui.comic_dubs_preview_ms(),
+        );
+        self.start_comic_dubs_playback(from, None);
     }
 
-    fn start_comic_dubs_bubble(&mut self, now: Instant) {
-        let Some(playback) = self.comic_dubs_playback.as_ref() else {
+    /// Plays the timeline from `from_ms` until `end_ms` (the end by default).
+    pub fn start_comic_dubs_playback(&mut self, from_ms: u64, end_ms: Option<u64>) {
+        self.stop_comic_dubs_playback();
+        self.stop_comic_dubs_capture();
+        let plan = crate::comic_dubs_timeline::Timeline::build(&self.comic_dubs_project, None, 40);
+        if plan.is_empty() {
+            self.show_toast("Aucune bulle à lire", 3.0);
             return;
-        };
-        let page_index = playback.page_index;
-        let bubble_index = playback.bubble_index;
-        let Some(page) = self.comic_dubs_project.pages().get(page_index) else {
-            self.stop_comic_dubs_playback();
-            return;
-        };
-        let Some(bubble) = page.bubbles.get(bubble_index) else {
-            self.stop_comic_dubs_playback();
-            return;
-        };
-        let animation_duration_ms = bubble.vertex_animation_duration_ms();
-        let page_id = page.id;
-        let audio = bubble.audio_id.and_then(|id| {
-            self.comic_dubs_project
-                .audio(id)
-                .map(|audio| (audio.playback_path.clone(), audio.duration_ms()))
-        });
-        let gap_ms = next_comic_dubs_position(&self.comic_dubs_project, page_index, bubble_index)
-            .map(|(_, _, gap_ms)| gap_ms)
-            .unwrap_or(0);
-
-        self.comic_dubs_project.select_page(page_id);
-        self.ui_shell
-            .ui
-            .set_comic_dubs_playback(Some(page_id), bubble_index + 1, 0);
-        self.comic_dubs_player = None;
-        let mut duration_ms = 0;
-        if let Some((path, audio_duration_ms)) = audio {
-            let mut player = VideoPlayer::new();
-            match player.load_audio_only(&path, audio_duration_ms as f64 / 1_000.0) {
-                Ok(()) => {
-                    player.set_volume(self.ui_shell.ui.volume());
-                    let _ = player.toggle();
-                    self.ui_shell.ui.total_frames = player.total_frames();
-                    duration_ms = audio_duration_ms;
-                    self.comic_dubs_player = Some(player);
-                }
-                Err(error) => self.show_toast(format!("Audio Comic Dubs : {error}"), 5.0),
+        }
+        let from_ms = from_ms.min(plan.total_ms.saturating_sub(1));
+        let end_ms = end_ms.unwrap_or(plan.total_ms).min(plan.total_ms);
+        let volume = self.ui_shell.ui.volume();
+        // A voice already under way at the start point resumes mid-line.
+        let voice = plan
+            .cues()
+            .find(|(_, cue)| {
+                cue.voice_ms > 0
+                    && cue.voice_start_ms < from_ms
+                    && from_ms < cue.voice_start_ms + cue.voice_ms
+            })
+            .and_then(|(_, cue)| {
+                let audio = self.comic_dubs_project.audio(cue.voice_audio?)?;
+                Some((
+                    audio.playback_path.clone(),
+                    audio.duration_ms(),
+                    from_ms - cue.voice_start_ms,
+                    cue.end_ms,
+                ))
+            });
+        let mut voice_hold_ms = None;
+        if let Some((path, duration_ms, offset_ms, hold_ms)) = voice {
+            if let Ok(player) = Self::comic_dubs_start_player(&path, duration_ms, offset_ms, volume)
+            {
+                self.comic_dubs_player = Some(player);
+                voice_hold_ms = Some(hold_ms);
             }
         }
-        if let Some(playback) = self.comic_dubs_playback.as_mut() {
-            playback.started_at = now;
-            playback.deadline = now
-                + Duration::from_millis(
-                    duration_ms
-                        .max(animation_duration_ms)
-                        .saturating_add(gap_ms),
-                );
+        let studio = *self.comic_dubs_project.studio();
+        if let Some(music) = studio
+            .music_audio_id
+            .and_then(|id| self.comic_dubs_project.audio(id))
+            .filter(|_| studio.music_volume > 0.0)
+        {
+            let duration_ms = music.duration_ms().max(1);
+            let offset_ms = if studio.music_loop {
+                Some(from_ms % duration_ms)
+            } else {
+                (from_ms < duration_ms).then_some(from_ms)
+            };
+            if let Some(offset_ms) = offset_ms {
+                let path = music.playback_path.clone();
+                match Self::comic_dubs_start_player(
+                    &path,
+                    duration_ms,
+                    offset_ms,
+                    volume * studio.music_volume,
+                ) {
+                    Ok(player) => self.comic_dubs_music_player = Some(player),
+                    Err(error) => self.show_toast(format!("Musique Comic Dubs : {error}"), 5.0),
+                }
+            }
         }
+        let ducking = if studio.music_ducking {
+            plan.voice_intervals()
+        } else {
+            Vec::new()
+        };
+        self.comic_dubs_playback = Some(ComicDubsPlayback {
+            plan,
+            origin: Instant::now(),
+            origin_ms: from_ms,
+            last_ms: None,
+            end_ms,
+            held_since: None,
+            music_restarted: Instant::now(),
+            voice_hold_ms,
+            ducking,
+        });
+        self.ui_shell.ui.set_playing(true);
+        self.ui_shell.ui.set_comic_dubs_preview(Some(from_ms), true);
+        self.sync_comic_dubs_active_page(from_ms);
+    }
+
+    fn sync_comic_dubs_active_page(&mut self, at_ms: u64) {
+        let plan = match self.comic_dubs_playback.as_ref() {
+            Some(playback) => playback.plan.clone(),
+            None => crate::comic_dubs_timeline::Timeline::build(&self.comic_dubs_project, None, 40),
+        };
+        let Some(page_id) = plan
+            .span_index_at(at_ms)
+            .and_then(|index| {
+                self.comic_dubs_project
+                    .pages()
+                    .get(plan.pages[index].page_index)
+            })
+            .map(|page| page.id)
+        else {
+            return;
+        };
+        // Following the playhead is navigation, not an undoable edit.
+        self.comic_dubs_project.select_page(page_id);
     }
 
     fn tick_comic_dubs_playback(&mut self, now: Instant) {
-        if let Some(playback) = self.comic_dubs_playback.as_ref() {
-            if let Some(page) = self.comic_dubs_project.pages().get(playback.page_index) {
-                self.ui_shell.ui.set_comic_dubs_playback(
-                    Some(page.id),
-                    playback.bubble_index + 1,
-                    now.saturating_duration_since(playback.started_at)
-                        .as_millis() as u64,
-                );
-            }
-        }
-        let deadline = self
-            .comic_dubs_playback
-            .as_ref()
-            .map(|playback| playback.deadline);
-        let audio_playing = self
+        let voice_playing = self
             .comic_dubs_player
             .as_ref()
             .is_some_and(|player| player.is_playing());
-        if !deadline.is_some_and(|deadline| comic_dubs_playback_due(now, deadline, audio_playing)) {
-            return;
-        }
-        let Some(playback) = self.comic_dubs_playback.as_ref() else {
+        let Some(playback) = self.comic_dubs_playback.as_mut() else {
             return;
         };
-        let next = next_comic_dubs_position(
-            &self.comic_dubs_project,
-            playback.page_index,
-            playback.bubble_index,
-        );
-        if let Some((page_index, bubble_index, _)) = next {
-            let playback = self.comic_dubs_playback.as_mut().unwrap();
-            playback.page_index = page_index;
-            playback.bubble_index = bubble_index;
-            self.start_comic_dubs_bubble(now);
-        } else {
-            self.stop_comic_dubs_playback();
+        let mut at_ms =
+            playback.origin_ms + now.saturating_duration_since(playback.origin).as_millis() as u64;
+        match playback.voice_hold_ms {
+            // Never move to the next bubble before its voice has finished.
+            Some(hold) if voice_playing && at_ms >= hold => {
+                let held_since = *playback.held_since.get_or_insert(now);
+                if now.saturating_duration_since(held_since) > Duration::from_secs(2) {
+                    playback.voice_hold_ms = None;
+                    playback.held_since = None;
+                } else {
+                    at_ms = hold
+                        .saturating_sub(1)
+                        .max(playback.last_ms.unwrap_or(playback.origin_ms));
+                    playback.origin = now;
+                    playback.origin_ms = at_ms;
+                }
+            }
+            Some(_) if !voice_playing => {
+                playback.voice_hold_ms = None;
+                playback.held_since = None;
+            }
+            _ => {}
         }
+        let (previous_ms, first_tick) = match playback.last_ms {
+            Some(previous) => (previous, false),
+            None => (playback.origin_ms, true),
+        };
+        playback.last_ms = Some(at_ms);
+        let end_ms = playback.end_ms;
+        let duck = comic_dubs_duck(&playback.ducking, at_ms);
+        let fired = |event_ms: u64| {
+            (previous_ms < event_ms || (first_tick && previous_ms == event_ms)) && event_ms <= at_ms
+        };
+        let mut voice = None;
+        let mut sfx = None;
+        for (page_index, cue) in playback.plan.cues() {
+            let bubble = self
+                .comic_dubs_project
+                .pages()
+                .get(page_index)
+                .and_then(|page| page.bubbles.get(cue.bubble_index));
+            if cue.voice_ms > 0 && fired(cue.voice_start_ms) {
+                voice = cue.voice_audio.map(|audio| {
+                    (
+                        audio,
+                        cue.end_ms,
+                        bubble.map_or(1.0, |bubble| bubble.sound.voice_volume),
+                    )
+                });
+            }
+            if fired(cue.reveal_ms) {
+                if let Some(audio) = cue.sfx_audio {
+                    sfx = Some((audio, bubble.map_or(1.0, |bubble| bubble.sound.sfx_volume)));
+                }
+            }
+        }
+        let volume = self.ui_shell.ui.volume();
+        if let Some((audio_id, hold_ms, gain)) = voice {
+            if let Some(audio) = self.comic_dubs_project.audio(audio_id) {
+                let (path, duration_ms) = (audio.playback_path.clone(), audio.duration_ms());
+                match Self::comic_dubs_start_player(&path, duration_ms, 0, volume * gain) {
+                    Ok(player) => {
+                        self.comic_dubs_player = Some(player);
+                        if let Some(playback) = self.comic_dubs_playback.as_mut() {
+                            playback.voice_hold_ms = Some(hold_ms);
+                            playback.held_since = None;
+                        }
+                    }
+                    Err(error) => self.show_toast(format!("Audio Comic Dubs : {error}"), 5.0),
+                }
+            }
+        }
+        if let Some((audio_id, gain)) = sfx {
+            if let Some(audio) = self.comic_dubs_project.audio(audio_id) {
+                let (path, duration_ms) = (audio.playback_path.clone(), audio.duration_ms());
+                if let Ok(player) =
+                    Self::comic_dubs_start_player(&path, duration_ms, 0, volume * gain)
+                {
+                    self.comic_dubs_sfx_player = Some(player);
+                }
+            }
+        }
+        let studio = *self.comic_dubs_project.studio();
+        if let Some(player) = self.comic_dubs_music_player.as_mut() {
+            player.set_volume((volume * studio.music_volume * duck).clamp(0.0, 1.0));
+        }
+        let restart_due = self
+            .comic_dubs_playback
+            .as_ref()
+            .is_some_and(|playback| playback.music_restarted.elapsed() > Duration::from_secs(1));
+        if studio.music_loop
+            && restart_due
+            && self
+                .comic_dubs_music_player
+                .as_ref()
+                .is_some_and(|player| !player.is_playing())
+        {
+            if let Some(playback) = self.comic_dubs_playback.as_mut() {
+                playback.music_restarted = now;
+            }
+            if let Some(music) = studio
+                .music_audio_id
+                .and_then(|id| self.comic_dubs_project.audio(id))
+            {
+                let (path, duration_ms) = (music.playback_path.clone(), music.duration_ms());
+                self.comic_dubs_music_player = Self::comic_dubs_start_player(
+                    &path,
+                    duration_ms,
+                    0,
+                    volume * studio.music_volume * duck,
+                )
+                .ok();
+            }
+        }
+        if at_ms >= end_ms {
+            self.stop_comic_dubs_playback();
+            return;
+        }
+        self.ui_shell.ui.set_comic_dubs_preview(Some(at_ms), true);
+        self.sync_comic_dubs_active_page(at_ms);
     }
 
     fn stop_comic_dubs_playback(&mut self) {
+        for player in [
+            &mut self.comic_dubs_player,
+            &mut self.comic_dubs_sfx_player,
+            &mut self.comic_dubs_music_player,
+        ] {
+            if let Some(player) = player {
+                player.pause_for_seek();
+            }
+            *player = None;
+        }
+        self.comic_dubs_playback = None;
+        self.ui_shell.ui.set_comic_dubs_preview(None, false);
+        self.ui_shell.ui.set_playing(false);
+    }
+
+    /// Shows the timeline frame at `at_ms`, or keeps playing from there.
+    pub fn comic_dubs_seek(&mut self, at_ms: u64) {
+        if self.comic_dubs_playback.is_some() {
+            let end = self
+                .comic_dubs_playback
+                .as_ref()
+                .map(|playback| playback.end_ms)
+                .filter(|end| *end > at_ms);
+            self.start_comic_dubs_playback(at_ms, end);
+            return;
+        }
         if let Some(player) = &mut self.comic_dubs_player {
             player.pause_for_seek();
         }
         self.comic_dubs_player = None;
-        self.comic_dubs_playback = None;
-        self.ui_shell.ui.set_comic_dubs_playback(None, 0, 0);
         self.ui_shell.ui.set_playing(false);
+        self.ui_shell.ui.set_comic_dubs_preview(Some(at_ms), false);
+        self.sync_comic_dubs_active_page(at_ms);
+    }
+
+    pub fn comic_dubs_preview_bubble(&mut self, bubble_id: crate::comic_dubs::BubbleId) {
+        let plan = crate::comic_dubs_timeline::Timeline::build(&self.comic_dubs_project, None, 40);
+        let Some(cue) =
+            self.comic_dubs_project
+                .pages()
+                .iter()
+                .enumerate()
+                .find_map(|(page_index, page)| {
+                    let bubble_index = page
+                        .bubbles
+                        .iter()
+                        .position(|bubble| bubble.id == bubble_id)?;
+                    plan.cue_for(page_index, bubble_index).cloned()
+                })
+        else {
+            self.show_toast("Cette bulle n'est pas sur la timeline", 3.0);
+            return;
+        };
+        self.start_comic_dubs_playback(cue.start_ms, Some(cue.end_ms));
+    }
+
+    /// Previous/next bubble on the timeline (Ctrl+←/→ in the studio).
+    pub fn comic_dubs_step_cue(&mut self, direction: isize) {
+        let plan = crate::comic_dubs_timeline::Timeline::build(&self.comic_dubs_project, None, 40);
+        let marks = plan.reveal_marks();
+        if marks.is_empty() {
+            return;
+        }
+        let current = self.ui_shell.ui.comic_dubs_preview_ms().unwrap_or_else(|| {
+            comic_dubs_start_ms(&self.comic_dubs_project, &plan, None).saturating_sub(1)
+        });
+        let target = if direction < 0 {
+            marks
+                .iter()
+                .rev()
+                .find(|mark| **mark + 1 < current)
+                .copied()
+        } else {
+            marks.iter().find(|mark| **mark > current).copied()
+        };
+        let Some(target) = target.or(if direction < 0 {
+            marks.first().copied()
+        } else {
+            marks.last().copied()
+        }) else {
+            return;
+        };
+        self.comic_dubs_seek(target);
+        let found = plan
+            .cues()
+            .find(|(_, cue)| cue.reveal_ms == target)
+            .map(|(page_index, cue)| (page_index, cue.bubble_index));
+        if let Some((page_index, bubble_index)) = found {
+            let bubble = self
+                .comic_dubs_project
+                .pages()
+                .get(page_index)
+                .and_then(|page| page.bubbles.get(bubble_index))
+                .cloned();
+            if let Some(bubble) = bubble {
+                self.ui_shell.ui.select_comic_dubs_bubble(Some(bubble.id));
+                self.set_comic_dubs_preview_keep(target);
+                self.announce_comic_dubs_bubble(&bubble, page_index, bubble_index);
+            }
+        }
+    }
+
+    fn set_comic_dubs_preview_keep(&mut self, at_ms: u64) {
+        if self.comic_dubs_playback.is_none() {
+            self.ui_shell.ui.set_comic_dubs_preview(Some(at_ms), false);
+        }
+    }
+
+    fn announce_comic_dubs_bubble(
+        &self,
+        bubble: &crate::comic_dubs::Bubble,
+        page_index: usize,
+        bubble_index: usize,
+    ) {
+        let text = bubble.text.trim();
+        self.announce_accessibility(AccessibilityEvent::Selection {
+            label: format!(
+                "Page {}, bulle {} : {}",
+                page_index + 1,
+                bubble_index + 1,
+                if text.is_empty() { "sans texte" } else { text }
+            ),
+        });
+    }
+
+    pub fn comic_dubs_select_adjacent_bubble(&mut self, direction: isize) {
+        let order = self
+            .comic_dubs_project
+            .pages()
+            .iter()
+            .enumerate()
+            .flat_map(|(page_index, page)| {
+                page.bubbles
+                    .iter()
+                    .enumerate()
+                    .map(move |(bubble_index, bubble)| (page_index, bubble_index, bubble.id))
+            })
+            .collect::<Vec<_>>();
+        if order.is_empty() {
+            return;
+        }
+        let selected = self.ui_shell.ui.comic_dubs_selected_bubble();
+        let index = match selected.and_then(|id| order.iter().position(|entry| entry.2 == id)) {
+            Some(index) => index.saturating_add_signed(direction).min(order.len() - 1),
+            None => {
+                let active = self
+                    .comic_dubs_project
+                    .active_page_id()
+                    .and_then(|id| {
+                        self.comic_dubs_project
+                            .pages()
+                            .iter()
+                            .position(|page| page.id == id)
+                    })
+                    .unwrap_or(0);
+                order
+                    .iter()
+                    .position(|entry| entry.0 >= active)
+                    .unwrap_or(0)
+            }
+        };
+        let (page_index, bubble_index, bubble_id) = order[index];
+        let page_id = self.comic_dubs_project.pages()[page_index].id;
+        self.comic_dubs_project.select_page(page_id);
+        self.ui_shell.ui.set_comic_dubs_preview(None, false);
+        self.ui_shell.ui.select_comic_dubs_bubble(Some(bubble_id));
+        if let Some(bubble) = self.comic_dubs_project.bubble(bubble_id).cloned() {
+            self.announce_comic_dubs_bubble(&bubble, page_index, bubble_index);
+        }
+    }
+
+    pub fn comic_dubs_add_styled_bubble(
+        &mut self,
+        page_id: crate::comic_dubs::PageId,
+        points: Vec<crate::comic_dubs::Point>,
+        preset: crate::comic_dubs::BubblePreset,
+    ) {
+        let before = self.comic_dubs_project.clone();
+        let id = self.comic_dubs_project.add_bubble(page_id, points);
+        if let Some(id) = id {
+            self.comic_dubs_project.apply_bubble_preset(id, preset);
+        }
+        self.comic_dubs_commit(before);
+        if let Some(id) = id {
+            self.ui_shell
+                .ui
+                .begin_comic_dubs_text_edit(id, String::new());
+        }
+    }
+
+    /// Applies one model mutation as a single undoable step.
+    pub fn comic_dubs_edit(
+        &mut self,
+        edit: impl FnOnce(&mut crate::comic_dubs::ComicDubsProject) -> bool,
+    ) -> bool {
+        let before = self.comic_dubs_project.clone();
+        let changed = edit(&mut self.comic_dubs_project);
+        self.comic_dubs_commit(before);
+        changed
+    }
+
+    pub fn comic_dubs_duplicate_bubble(&mut self, bubble_id: crate::comic_dubs::BubbleId) {
+        let before = self.comic_dubs_project.clone();
+        let copy = self.comic_dubs_project.duplicate_bubble(bubble_id);
+        self.comic_dubs_commit(before);
+        if let Some(copy) = copy {
+            self.ui_shell.ui.select_comic_dubs_bubble(Some(copy));
+            self.show_toast("Bulle dupliquée", 2.0);
+        }
+    }
+
+    pub fn comic_dubs_copy_selected(&mut self, cut: bool) {
+        let Some(bubble) = self
+            .ui_shell
+            .ui
+            .comic_dubs_selected_bubble()
+            .and_then(|id| self.comic_dubs_project.bubble(id))
+            .cloned()
+        else {
+            self.show_toast("Sélectionnez une bulle à copier", 3.0);
+            return;
+        };
+        self.comic_dubs_style_clipboard = Some(bubble.clone());
+        self.comic_dubs_clipboard = Some(bubble.clone());
+        if cut {
+            self.comic_dubs_remove_bubble(bubble.id);
+            self.show_toast("Bulle coupée", 2.0);
+        } else {
+            self.show_toast("Bulle copiée", 2.0);
+        }
+    }
+
+    pub fn comic_dubs_paste(&mut self) {
+        let Some(bubble) = self.comic_dubs_clipboard.clone() else {
+            self.show_toast("Aucune bulle copiée", 3.0);
+            return;
+        };
+        let Some(page) = self.comic_dubs_project.active_page() else {
+            return;
+        };
+        let page_id = page.id;
+        // Offset only when the copy would sit exactly on its original.
+        let offset = if page
+            .bubbles
+            .iter()
+            .any(|candidate| candidate.points == bubble.points)
+        {
+            crate::comic_dubs::Point { x: 0.02, y: 0.02 }
+        } else {
+            crate::comic_dubs::Point { x: 0.0, y: 0.0 }
+        };
+        let before = self.comic_dubs_project.clone();
+        let pasted = self
+            .comic_dubs_project
+            .paste_bubble(page_id, &bubble, offset, None);
+        self.comic_dubs_commit(before);
+        if let Some(pasted) = pasted {
+            self.ui_shell.ui.select_comic_dubs_bubble(Some(pasted));
+            self.show_toast("Bulle collée", 2.0);
+        }
+    }
+
+    pub fn comic_dubs_copy_style(&mut self, bubble_id: crate::comic_dubs::BubbleId) {
+        if let Some(bubble) = self.comic_dubs_project.bubble(bubble_id).cloned() {
+            self.comic_dubs_style_clipboard = Some(bubble);
+            self.show_toast("Style copié", 2.0);
+        }
+    }
+
+    pub fn comic_dubs_paste_style(&mut self, bubble_id: crate::comic_dubs::BubbleId) {
+        let Some(style) = self.comic_dubs_style_clipboard.clone() else {
+            self.show_toast("Aucun style copié", 3.0);
+            return;
+        };
+        if self.comic_dubs_edit(|project| project.copy_bubble_style(bubble_id, &style)) {
+            self.show_toast("Style collé", 2.0);
+        }
+    }
+
+    pub fn comic_dubs_toggle_voice_recording(&mut self, bubble_id: crate::comic_dubs::BubbleId) {
+        if self.comic_dubs_capture.is_some() {
+            self.stop_comic_dubs_capture();
+            return;
+        }
+        if self.comic_dubs_project.bubble(bubble_id).is_none() {
+            return;
+        }
+        self.stop_comic_dubs_playback();
+        let output_path = self
+            .recording_runtime
+            .allocate_external_audio_path(Path::new("voix-bulle.flac"), "comic-dubs-voice");
+        let mut recorder = crate::media_recording::FfmpegFlacRecorder::new(&output_path)
+            .with_input_device(crate::config::recording_input_device());
+        match crate::recording::AudioRecorder::start(&mut recorder) {
+            Ok(()) => {
+                self.comic_dubs_capture = Some(ComicDubsCapture {
+                    bubble_id,
+                    recorder,
+                    output_path,
+                    started: Instant::now(),
+                });
+                self.ui_shell
+                    .ui
+                    .set_comic_dubs_recording(Some((bubble_id, 0.0)));
+                self.show_toast("Enregistrement de la voix… « Arrêter » pour terminer", 3.0);
+            }
+            Err(error) => self.show_toast(format!("Micro indisponible : {error}"), 6.0),
+        }
+    }
+
+    /// Stops the microphone take and attaches it to its bubble.
+    fn stop_comic_dubs_capture(&mut self) {
+        let Some(mut capture) = self.comic_dubs_capture.take() else {
+            return;
+        };
+        self.ui_shell.ui.set_comic_dubs_recording(None);
+        match crate::recording::AudioRecorder::stop(&mut capture.recorder) {
+            Ok(recorded) => {
+                self.recording_runtime
+                    .remember_external_audio(&recorded, capture.output_path.clone());
+                let name = self
+                    .comic_dubs_project
+                    .pages()
+                    .iter()
+                    .enumerate()
+                    .find_map(|(page_index, page)| {
+                        page.bubbles
+                            .iter()
+                            .position(|bubble| bubble.id == capture.bubble_id)
+                            .map(|bubble_index| {
+                                format!("Voix p{} b{}.flac", page_index + 1, bubble_index + 1)
+                            })
+                    })
+                    .unwrap_or_else(|| "Voix enregistrée.flac".into());
+                let before = self.comic_dubs_project.clone();
+                let audio_id =
+                    self.comic_dubs_project
+                        .add_audio(name, capture.output_path, recorded);
+                self.comic_dubs_project
+                    .assign_audio(capture.bubble_id, Some(audio_id));
+                self.comic_dubs_commit(before);
+                self.show_toast("Voix enregistrée et associée à la bulle", 3.0);
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&capture.output_path);
+                self.show_toast(format!("Enregistrement interrompu : {error}"), 6.0);
+            }
+        }
+    }
+
+    pub fn comic_dubs_import_script(&mut self, path: PathBuf) {
+        let script = match std::fs::read_to_string(&path) {
+            Ok(script) => script,
+            Err(error) => {
+                self.show_toast(format!("Script illisible : {error}"), 5.0);
+                return;
+            }
+        };
+        let before = self.comic_dubs_project.clone();
+        let (filled, total) = self.comic_dubs_project.apply_script(&script);
+        self.comic_dubs_commit(before);
+        self.show_toast(
+            format!("Script importé : {filled} réplique(s) placée(s) sur {total} bulle(s)"),
+            4.0,
+        );
+    }
+
+    pub fn comic_dubs_export_script(&mut self, mut path: PathBuf, srt: bool) {
+        let extension = if srt { "srt" } else { "txt" };
+        if !path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+        {
+            path.set_extension(extension);
+        }
+        let content = if srt {
+            let plan =
+                crate::comic_dubs_timeline::Timeline::build(&self.comic_dubs_project, None, 40);
+            crate::comic_dubs_timeline::srt(&self.comic_dubs_project, &plan)
+        } else {
+            self.comic_dubs_project.script_text()
+        };
+        match std::fs::write(&path, content) {
+            Ok(()) => self.show_toast(
+                if srt {
+                    "Sous-titres exportés"
+                } else {
+                    "Script exporté"
+                },
+                3.0,
+            ),
+            Err(error) => self.show_toast(format!("Export impossible : {error}"), 5.0),
+        }
     }
 
     pub(crate) fn reset_comic_dubs_document(&mut self) {
         self.stop_comic_dubs_playback();
+        if let Some(mut capture) = self.comic_dubs_capture.take() {
+            let _ = crate::recording::AudioRecorder::stop(&mut capture.recorder);
+            let _ = std::fs::remove_file(&capture.output_path);
+            self.ui_shell.ui.set_comic_dubs_recording(None);
+        }
         self.comic_dubs_project = crate::comic_dubs::ComicDubsProject::default();
         self.comic_dubs_revision = 0;
         self.comic_dubs_undo.clear();
@@ -2282,6 +2854,7 @@ impl State {
         if previous != workspace {
             if previous == WorkspaceId::ComicDubs {
                 self.stop_comic_dubs_playback();
+                self.stop_comic_dubs_capture();
             } else if previous == WorkspaceId::Voicelines {
                 if let Some(player) = &mut self.voicelines_player {
                     player.pause_for_seek();
@@ -6041,8 +6614,8 @@ impl State {
             WorkspaceId::Voicelines | WorkspaceId::ComicDubs
         ) {
             if self.active_workspace() == WorkspaceId::ComicDubs {
-                self.comic_dubs_playback = None;
-                self.ui_shell.ui.set_comic_dubs_playback(None, 0, 0);
+                self.comic_dubs_step_cue(-1);
+                return;
             }
             self.seek_relative_internal(-1, false);
             return;
@@ -6089,8 +6662,8 @@ impl State {
             WorkspaceId::Voicelines | WorkspaceId::ComicDubs
         ) {
             if self.active_workspace() == WorkspaceId::ComicDubs {
-                self.comic_dubs_playback = None;
-                self.ui_shell.ui.set_comic_dubs_playback(None, 0, 0);
+                self.comic_dubs_step_cue(1);
+                return;
             }
             self.seek_relative_internal(1, false);
             return;
@@ -6126,8 +6699,7 @@ impl State {
     fn seek_absolute_internal(&mut self, frame: i64, broadcast: bool) {
         let mut playback = None;
         if self.active_workspace() == WorkspaceId::ComicDubs {
-            self.comic_dubs_playback = None;
-            self.ui_shell.ui.set_comic_dubs_playback(None, 0, 0);
+            self.stop_comic_dubs_playback();
         }
         let player = match self.active_workspace() {
             WorkspaceId::Voicelines => &mut self.voicelines_player,
@@ -9467,7 +10039,32 @@ impl State {
             }
         }
         if comic_dubs {
+            let (bgl, sampler) = (
+                self.render.ui_renderer.texture_bind_group_layout(),
+                self.render.ui_renderer.texture_sampler(),
+            );
+            for player in [
+                &mut self.comic_dubs_sfx_player,
+                &mut self.comic_dubs_music_player,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                player.tick_at(
+                    now,
+                    &self.render.gfx.device,
+                    &self.render.gfx.queue,
+                    bgl,
+                    sampler,
+                );
+            }
             self.tick_comic_dubs_playback(now);
+            if let Some(capture) = &self.comic_dubs_capture {
+                self.ui_shell.ui.set_comic_dubs_recording(Some((
+                    capture.bubble_id,
+                    capture.started.elapsed().as_secs_f32(),
+                )));
+            }
         }
     }
 
@@ -9923,8 +10520,7 @@ impl State {
                 self.voicelines_play_until_ms = None;
                 self.comic_dubs_project = comic_dubs_project;
                 self.comic_dubs_revision = 0;
-                self.comic_dubs_player = None;
-                self.comic_dubs_playback = None;
+                self.stop_comic_dubs_playback();
                 self.comic_dubs_undo.clear();
                 self.comic_dubs_redo.clear();
                 self.comic_dubs_imports.clear();
@@ -11144,6 +11740,17 @@ impl State {
             .refresh(&self.project_session.project);
         // Bridge the line clipboard fact for the contextual shortcut panel.
         self.ui_shell.ui.line_clipboard_available = self.line_clipboard.is_some();
+        if self.active_workspace() == WorkspaceId::ComicDubs {
+            let aspect = self.comic_dubs_project.pages().first().map(|page| {
+                let (width, height) = crate::configured_export::resolve_video_dimensions(
+                    &self.project_session.project.settings().export_configuration,
+                    page.width,
+                    page.height,
+                );
+                width as f32 / height.max(1) as f32
+            });
+            self.ui_shell.ui.set_comic_dubs_frame_aspect(aspect);
+        }
         self.ui_shell.ui.render(
             &mut self.render.ui_renderer,
             &self.render.gfx.device,

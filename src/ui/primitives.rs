@@ -41,8 +41,21 @@ pub enum Overflow {
     #[default]
     Clip,
     ClipWithLetterSpacing(f32),
+    /// Clip glyphs to an independent rectangle (layout still uses the label
+    /// bounds) with letter spacing, opacity and weight/slant. Used by
+    /// animated canvases such as the Comic Dubs studio.
+    Styled(StyledText),
     Ellipsis,
     Visible,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StyledText {
+    pub letter_spacing: f32,
+    pub clip: Rect,
+    pub alpha: u8,
+    pub bold: bool,
+    pub italic: bool,
 }
 
 pub struct LabelInfo<'a> {
