@@ -22,6 +22,8 @@ struct FontDbCache {
     db: Arc<resvg::usvg::fontdb::Database>,
 }
 
+static SESSION_FONT_FAMILY: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+
 static PROJECT_FONT: OnceLock<RwLock<Option<ProjectFont>>> = OnceLock::new();
 static SYSTEM_FONT_DB: OnceLock<RwLock<Option<FontDbCache>>> = OnceLock::new();
 
@@ -36,7 +38,28 @@ pub struct VectorTextPixmap {
     pub char_x_ratios: Vec<f32>,
 }
 
+/// Follow the room's font selection without saving over local preferences.
+pub fn set_session_font_family(family: Option<String>) -> bool {
+    let mut current = SESSION_FONT_FAMILY
+        .get_or_init(|| RwLock::new(None))
+        .write()
+        .unwrap();
+    if *current == family {
+        return false;
+    }
+    *current = family;
+    true
+}
+
 pub fn rythmo_font_family_name() -> String {
+    if let Some(family) = SESSION_FONT_FAMILY
+        .get_or_init(|| RwLock::new(None))
+        .read()
+        .unwrap()
+        .as_ref()
+    {
+        return family.clone();
+    }
     if let Some(font) = project_font() {
         return font.family;
     }

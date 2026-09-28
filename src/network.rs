@@ -17,6 +17,12 @@ use rust_socketio::{ClientBuilder, Event, Payload, RawClient};
 
 use crate::packet::Packet;
 
+#[cfg(test)]
+mod integration_tests;
+pub(crate) mod replication;
+mod rpc;
+pub(crate) mod rythmo;
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NetworkMember {
     pub id: String,
@@ -68,6 +74,19 @@ pub struct ProjectTransferMetadata {
     pub sha1: String,
 }
 
+impl ProjectTransferMetadata {
+    fn file_metadata(&self) -> crate::file_transfer::FileTransferMetadata {
+        crate::file_transfer::FileTransferMetadata {
+            transfer_id: self.request_id.clone(),
+            file_name: self.file_name.clone(),
+            total_bytes: self.total_bytes,
+            total_chunks: self.total_chunks,
+            chunk_size: self.chunk_size,
+            sha1: self.sha1.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProjectTransferParticipant {
     pub member_id: String,
@@ -104,6 +123,8 @@ pub enum IncomingMessage {
     Connected,
     Disconnected(String),
     Error(String),
+    ConnectionFailed(String),
+    ProtocolMismatch,
     SyncRequested {
         requester: String,
     },
@@ -158,15 +179,14 @@ pub enum IncomingMessage {
         member_id: String,
     },
     ProjectTransferRequest(ProjectTransferMetadata),
+    ProjectAvailable {
+        project_huuid: String,
+    },
     ProjectTransferReady(ProjectTransferMetadata),
     ProjectTransferStatus(ProjectTransferStatus),
-    ProjectTransferChunk {
+    ProjectDownloadFinished {
         request_id: String,
-        index: usize,
-        data_base64: String,
-    },
-    ProjectTransferEnd {
-        request_id: String,
+        result: Result<PathBuf, String>,
     },
     BigBegin(crate::big_event::BigEventBegin),
     BigChunk {
@@ -186,6 +206,7 @@ pub enum IncomingMessage {
 /// a newly connected peer to the same transaction-chain tip.
 enum OutgoingMessage {
     Direct(String, serde_json::Value),
+    Acknowledged(String, serde_json::Value, mpsc::Sender<Result<(), String>>),
     Big(BigSendJob),
 }
 
@@ -220,10 +241,14 @@ struct AudioSendJob {
 }
 
 pub struct NetworkClient {
-    _client: Option<rust_socketio::client::Client>,
+    _client: Arc<Mutex<Option<rust_socketio::client::Client>>>,
     out_tx: Option<mpsc::SyncSender<OutgoingMessage>>,
     audio_tx: Option<mpsc::Sender<AudioSendJob>>,
     rx: Option<mpsc::Receiver<IncomingMessage>>,
+    in_tx: Option<mpsc::Sender<IncomingMessage>>,
+    rpc: rpc::RpcClient,
+    pub(crate) replication: Option<replication::Replicator>,
+    download: Option<(String, Arc<AtomicBool>)>,
     session_id: String,
     /// Packet re-emitted on every automatic reconnect. Starts as the initial
     /// create/join packet and becomes a `join_room` once a room is known, so
@@ -255,10 +280,14 @@ impl Default for NetworkClient {
 impl NetworkClient {
     pub fn new() -> Self {
         Self {
-            _client: None,
+            _client: Arc::new(Mutex::new(None)),
             out_tx: None,
             audio_tx: None,
             rx: None,
+            in_tx: None,
+            rpc: rpc::RpcClient::new(),
+            replication: None,
+            download: None,
             session_id: format!("{:032x}", rand::random::<u128>()),
             rejoin_slot: None,
             username: None,
@@ -288,7 +317,7 @@ impl NetworkClient {
         let (Some(slot), Some(username)) = (&self.rejoin_slot, &self.username) else {
             return;
         };
-        let project_huuid = self.local_huuid.clone();
+        let project_huuid = self.rejoin_project_huuid();
         if let Ok(mut slot) = slot.lock() {
             let project_mode = self.invitation_project_mode;
             *slot = Some(Packet::JoinRoom {
@@ -300,10 +329,19 @@ impl NetworkClient {
         }
     }
 
-    /// Keep the rejoin packet's project HUUID in sync with the local project.
-    /// Every successful save or import assigns a fresh HUUID; rejoining with
-    /// a stale one would report `project_matches = false` and skip the sync
-    /// request that restores the session.
+    fn rejoin_project_huuid(&self) -> Option<String> {
+        if self.project_matches {
+            self.project_huuid
+                .clone()
+                .or_else(|| self.local_huuid.clone())
+        } else {
+            self.local_huuid.clone()
+        }
+    }
+
+    /// Local saves get a fresh HUUID. While following the room, keep the
+    /// published archive's identity for reconnection so a save does not make
+    /// an already-loaded participant wait for a second import.
     pub fn update_local_huuid(&mut self, huuid: Option<String>) {
         if self.rejoin_slot.is_none() {
             return;
@@ -314,7 +352,7 @@ impl NetworkClient {
         };
         if let Ok(mut slot) = slot.lock() {
             if let Some(Packet::JoinRoom { project_huuid, .. }) = slot.as_mut() {
-                *project_huuid = self.local_huuid.clone();
+                *project_huuid = self.rejoin_project_huuid();
             }
         }
     }
@@ -345,6 +383,9 @@ impl NetworkClient {
             self.disconnect();
         }
         self.state = ConnectionState::Connecting;
+        self._client = Arc::new(Mutex::new(None));
+        self.rpc = rpc::RpcClient::new();
+        self.replication = Some(replication::Replicator::start(self.rpc.clone()));
 
         match &first_packet {
             Packet::CreateRoom {
@@ -373,6 +414,7 @@ impl NetworkClient {
         self.rejoin_slot = Some(Arc::clone(&rejoin_slot));
 
         let (in_tx, in_rx) = mpsc::channel::<IncomingMessage>();
+        self.in_tx = Some(in_tx.clone());
         // Bound queued payloads so a multi-gigabyte take cannot be expanded
         // to base64 in memory faster than Socket.IO can emit it.
         let (out_tx, out_rx) = mpsc::sync_channel::<OutgoingMessage>(32);
@@ -383,6 +425,8 @@ impl NetworkClient {
         let tx_disconnect = in_tx.clone();
         let tx_close = in_tx.clone();
         let tx_room_created = in_tx.clone();
+        let tx_version_created = in_tx.clone();
+        let tx_version_joined = in_tx.clone();
         let tx_room_joined = in_tx.clone();
         let tx_join_error = in_tx.clone();
         let tx_member_joined = in_tx.clone();
@@ -409,33 +453,51 @@ impl NetworkClient {
         let tx_recording_view = in_tx.clone();
         let tx_actor_request = in_tx.clone();
         let tx_project_transfer_request = in_tx.clone();
+        let tx_project_available = in_tx.clone();
         let tx_project_transfer_auto_request = in_tx.clone();
         let tx_project_transfer_ready = in_tx.clone();
         let tx_project_transfer_status = in_tx.clone();
-        let tx_project_transfer_chunk = in_tx.clone();
-        let tx_project_transfer_end = in_tx.clone();
         let tx_big_begin = in_tx.clone();
         let tx_big_chunk = in_tx.clone();
         let tx_big_end = in_tx.clone();
 
+        let rejoin_created = Arc::clone(&rejoin_slot);
+        let rejoin_joined = Arc::clone(&rejoin_slot);
+        let rejoin_template_created = Packet::JoinRoom {
+            code: String::new(),
+            username: self.username.clone().unwrap_or_default(),
+            project_huuid: self.local_huuid.clone(),
+            project_mode: self.invitation_project_mode,
+        };
+        let rejoin_template_joined = rejoin_template_created.clone();
         let connect_first_packet = first_packet.clone();
         let connect_session_id = self.session_id.clone();
         let out_rx = Mutex::new(Some(out_rx));
-        let sender_client = Arc::new(Mutex::new(None::<RawClient>));
         let sender_started = Arc::new(AtomicBool::new(false));
-        let sender_client_on_connect = Arc::clone(&sender_client);
-        let sender_client_on_close = Arc::clone(&sender_client);
-        let sender_client_for_thread = Arc::clone(&sender_client);
         let sender_started_on_connect = Arc::clone(&sender_started);
+        let rpc_reply = self.rpc.clone();
+        let rpc_close = self.rpc.clone();
+        let rpc_created = self.rpc.clone();
+        let rpc_joined = self.rpc.clone();
+        let replication_created = self.replication.as_ref().unwrap().signal();
+        let replication_joined = replication_created.clone();
+        let replication_changed = replication_created.clone();
+        let connect_lifetime = self.rpc.clone();
+        let sender_lifetime = self.rpc.clone();
+        let sender_errors = in_tx.clone();
 
         let builder = ClientBuilder::new(&url)
-            .auth(serde_json::json!({ "password": password }))
+            .auth(serde_json::json!({ "password": password, "protocol_version": rpc::PROTOCOL_VERSION }))
+            .transport_type(rust_socketio::TransportType::Websocket)
             .reconnect(true)
+            .reconnect_delay(500, 10_000)
             .reconnect_on_disconnect(true)
+            .on("protocol_reply", move |payload, _| {
+                if let Some(value) = payload_to_value(&payload) { rpc_reply.receive(value); }
+            })
+            .on("state_changed", move |_, _| replication_changed.changed())
             .on(Event::Connect, move |_, client: RawClient| {
-                if let Ok(mut active_client) = sender_client_on_connect.lock() {
-                    *active_client = Some(client.clone());
-                }
+                if connect_lifetime.is_stopped() { let _ = client.disconnect(); return; }
                 let _ = tx_connect.send(IncomingMessage::Connected);
                 // On an automatic reconnect, rejoin the known room instead of
                 // re-running the initial packet: re-emitting `create_room`
@@ -454,17 +516,16 @@ impl NetworkClient {
                     // Take out_rx once and route it through the socket that most recently
                     // connected. The Socket.IO crate replaces its RawClient on reconnect.
                     if let Some(rx) = out_rx.lock().unwrap().take() {
-                        let active_client = Arc::clone(&sender_client_for_thread);
+                        let lifetime = sender_lifetime.clone();
+                        let errors = sender_errors.clone();
                         thread::spawn(move || {
-                            run_outgoing_sender(rx, active_client);
+                            run_outgoing_sender(rx, lifetime, errors);
                         });
                     }
                 }
             })
             .on(Event::Close, move |_, _| {
-                if let Ok(mut active_client) = sender_client_on_close.lock() {
-                    *active_client = None;
-                }
+                rpc_close.set_client(None);
                 // Notify the app that the transport dropped. Without this the
                 // session state (room, sync request flag) was never reset on
                 // an automatic reconnect, leaving peers stuck waiting for a
@@ -484,8 +545,17 @@ impl NetworkClient {
                 };
                 let _ = tx_disconnect.send(IncomingMessage::Error(msg));
             })
-            .on("room_created", move |payload, _| {
+            .on("room_created", move |payload, client| {
+                if payload_to_value(&payload).and_then(|value| value["protocol_version"].as_u64()) != Some(rpc::PROTOCOL_VERSION as u64) {
+                    let _ = tx_version_created.send(IncomingMessage::ProtocolMismatch);
+                    return;
+                }
+                rpc_created.set_client(Some(client));
+                replication_created.admitted(true);
                 let code = extract_string_field(&payload, "code");
+                let mut rejoin = rejoin_template_created.clone();
+                if let Packet::JoinRoom { code: target, .. } = &mut rejoin { *target = code.clone(); }
+                *rejoin_created.lock().unwrap() = Some(rejoin);
                 let member_id = extract_string_field(&payload, "member_id");
                 let project_huuid = extract_string_field(&payload, "project_huuid");
                 let _ = tx_room_metadata_created.send(IncomingMessage::RoomMetadata {
@@ -497,10 +567,21 @@ impl NetworkClient {
                 });
                 let _ = tx_room_created.send(IncomingMessage::Packet(Packet::RoomCreated { code }));
             })
-            .on("room_joined", move |payload, _client: RawClient| {
+            .on("room_joined", move |payload, client: RawClient| {
+                if payload_to_value(&payload).and_then(|value| value["protocol_version"].as_u64()) != Some(rpc::PROTOCOL_VERSION as u64) {
+                    let _ = tx_version_joined.send(IncomingMessage::ProtocolMismatch);
+                    return;
+                }
+                rpc_joined.set_client(Some(client));
                 if let Some(obj) = payload_to_value(&payload) {
                     let code = obj["code"].as_str().unwrap_or("").to_string();
+                    let mut slot = rejoin_joined.lock().unwrap();
+                    let mut rejoin = slot.clone().unwrap_or_else(|| rejoin_template_joined.clone());
+                    if let Packet::JoinRoom { code: target, .. } = &mut rejoin { *target = code.clone(); }
+                    *slot = Some(rejoin);
+                    drop(slot);
                     let role = obj["role"].as_str().unwrap_or("user").to_string();
+                    replication_joined.admitted(role == "admin");
                     let members = obj["members"]
                         .as_array()
                         .map(|a| {
@@ -763,6 +844,10 @@ impl NetworkClient {
                     }
                 }
             })
+            .on("project_available", move |payload, _| {
+                let project_huuid = extract_string_field(&payload, "project_huuid");
+                let _ = tx_project_available.send(IncomingMessage::ProjectAvailable { project_huuid });
+            })
             .on("project_transfer_auto_request", move |payload, _| {
                 if let Some(value) = payload_to_value(&payload) {
                     let member_id = value["member_id"].as_str().unwrap_or("").to_string();
@@ -787,25 +872,6 @@ impl NetworkClient {
                             .send(IncomingMessage::ProjectTransferStatus(status));
                     }
                 }
-            })
-            .on("project_transfer_chunk", move |payload, _| {
-                if let Some(value) = payload_to_value(&payload) {
-                    let request_id = value["request_id"].as_str().unwrap_or("").to_string();
-                    let index = value["index"].as_u64().unwrap_or(0) as usize;
-                    let data_base64 = value["data"].as_str().unwrap_or("").to_string();
-                    let _ = tx_project_transfer_chunk.send(IncomingMessage::ProjectTransferChunk {
-                        request_id,
-                        index,
-                        data_base64,
-                    });
-                }
-            })
-            .on("project_transfer_end", move |payload, _| {
-                let request_id = payload_to_value(&payload)
-                    .and_then(|value| value["request_id"].as_str().map(String::from))
-                    .unwrap_or_default();
-                let _ = tx_project_transfer_end
-                    .send(IncomingMessage::ProjectTransferEnd { request_id });
             })
             .on("big_begin", move |payload, _| {
                 let Some(value) = payload_to_value(&payload) else {
@@ -840,36 +906,43 @@ impl NetworkClient {
                 let _ = tx_big_end.send(IncomingMessage::BigEnd { transfer_id });
             });
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| builder.connect()));
-        let result = match result {
-            Ok(Ok(client)) => Ok(client),
-            Ok(Err(e)) => Err(format!("{e}")),
-            Err(_) => Err("Connexion échouée (panic)".into()),
-        };
+        let (audio_tx, audio_rx) = mpsc::channel();
+        let audio_out_tx = out_tx.clone();
+        thread::spawn(move || run_audio_sender(audio_rx, audio_out_tx));
+        self.audio_tx = Some(audio_tx);
+        self.out_tx = Some(out_tx);
+        self.rx = Some(in_rx);
 
-        match result {
-            Ok(client) => {
-                let (audio_tx, audio_rx) = mpsc::channel();
-                let audio_out_tx = out_tx.clone();
-                if let Err(error) = thread::Builder::new()
-                    .name("recording-audio-uploads".into())
-                    .spawn(move || run_audio_sender(audio_rx, audio_out_tx))
-                {
-                    log::error!("cannot start the recording audio sender: {error}");
-                } else {
-                    self.audio_tx = Some(audio_tx);
+        let client_slot = self._client.clone();
+        let lifetime = self.rpc.clone();
+        // DNS, TCP and the WebSocket handshake may all stall. None of them
+        // belongs on the UI thread, including an unsuccessful first attempt.
+        thread::spawn(move || {
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| builder.connect()));
+            let result = match result {
+                Ok(Ok(client)) => Ok(client),
+                Ok(Err(error)) => Err(error.to_string()),
+                Err(_) => Err("Connexion échouée (panic)".into()),
+            };
+            match result {
+                Ok(client) => {
+                    let mut slot = client_slot.lock().unwrap();
+                    if lifetime.is_stopped() {
+                        drop(slot);
+                        let _ = client.disconnect();
+                    } else {
+                        *slot = Some(client);
+                    }
                 }
-                self._client = Some(client);
-                self.out_tx = Some(out_tx);
-                self.rx = Some(in_rx);
+                Err(error) if !lifetime.is_stopped() => {
+                    lifetime.stop();
+                    log::error!("Socket.io connection failed: {error}");
+                    let _ = in_tx.send(IncomingMessage::ConnectionFailed(error));
+                }
+                Err(_) => {}
             }
-            Err(e) => {
-                log::error!("Socket.io connection failed: {e}");
-                let _ = in_tx.send(IncomingMessage::Error(format!("Connexion échouée: {e}")));
-                self.rx = Some(in_rx);
-                self.state = ConnectionState::Disconnected;
-            }
-        }
+        });
     }
 
     /// Send a packet via the sender thread.
@@ -881,8 +954,19 @@ impl NetworkClient {
     /// Send a raw event via the sender thread.
     pub fn send_raw(&self, event: &str, payload: serde_json::Value) {
         log::debug!("Sending event: {event}");
+        self.enqueue(OutgoingMessage::Direct(event.to_string(), payload));
+    }
+
+    fn enqueue(&self, message: OutgoingMessage) {
         if let Some(tx) = &self.out_tx {
-            let _ = tx.send(OutgoingMessage::Direct(event.to_string(), payload));
+            if let Err(error) = tx.try_send(message) {
+                log::error!("outgoing network queue unavailable: {error}");
+                if let Some(tx) = &self.in_tx {
+                    let _ = tx.send(IncomingMessage::Error(
+                        "La file réseau est saturée. L’action n’a pas été envoyée.".into(),
+                    ));
+                }
+            }
         }
     }
 
@@ -890,6 +974,16 @@ impl NetworkClient {
         if let Ok(payload) = serde_json::to_value(transaction) {
             self.send_raw("recording_transaction", payload);
         }
+    }
+
+    pub fn initialize_created_room(&mut self, code: &str, prepare: &RecordingPreparePayload) {
+        self.state = ConnectionState::InRoom;
+        self.room_code = Some(code.to_owned());
+        self.role = Some("admin".into());
+        self.set_rejoin_code(code);
+        // Even a project with no takes already has the default-track transaction.
+        // Initialize the server chain before any subsequent mute/solo operation.
+        self.send_recording_prepare(prepare);
     }
 
     /// Send an event directly when its serialized payload fits in one
@@ -912,16 +1006,14 @@ impl NetworkClient {
             if let Some(target) = target {
                 payload["_target"] = serde_json::Value::String(target.to_owned());
             }
-            if let Some(tx) = &self.out_tx {
-                let _ = tx.send(OutgoingMessage::Direct(event.to_string(), payload));
-            }
+            self.enqueue(OutgoingMessage::Direct(event.to_string(), payload));
             return;
         }
         if serialized.len() as u64 > crate::big_event::MAX_BIG_EVENT_BYTES {
             log::error!("{event} payload exceeds the big event size limit");
             return;
         }
-        let Some(out_tx) = &self.out_tx else {
+        let Some(_) = &self.out_tx else {
             log::warn!("dropping oversized {event}: network is not connected");
             return;
         };
@@ -933,14 +1025,7 @@ impl NetworkClient {
                 .then(|| recording_snapshot_chain(&payload))
                 .flatten(),
         };
-        if out_tx.send(OutgoingMessage::Big(job)).is_err() {
-            log::error!("the network sender stopped");
-        }
-    }
-
-    /// Send a full project sync, chunked when the project is large.
-    pub fn send_sync(&self, payload: serde_json::Value, target: Option<&str>) {
-        self.send_big_event("sync", payload, target);
+        self.enqueue(OutgoingMessage::Big(job));
     }
 
     pub fn send_recording_prepare(&self, prepare: &RecordingPreparePayload) {
@@ -998,53 +1083,82 @@ impl NetworkClient {
         metadata: &ProjectTransferMetadata,
         member_id: Option<&str>,
     ) {
-        if let Ok(payload) = serde_json::to_value(metadata) {
-            let mut payload = payload;
-            if let Some(member_id) = member_id {
-                payload["member_id"] = serde_json::Value::String(member_id.to_owned());
-            }
-            self.send_raw("project_transfer_request", payload);
+        let rpc = self.rpc.clone();
+        let Some(in_tx) = self.in_tx.clone() else {
+            return;
+        };
+        let metadata = metadata.clone();
+        let mut payload = serde_json::to_value(&metadata).expect("transfer metadata serializes");
+        if let Some(id) = member_id {
+            payload["member_id"] = id.into();
         }
+        thread::spawn(move || match rpc.call("project_begin", payload) {
+            Ok(reply) => match serde_json::from_value(reply["metadata"].clone()) {
+                Ok(canonical) => {
+                    let _ = in_tx.send(IncomingMessage::ProjectTransferReady(canonical));
+                }
+                Err(error) => {
+                    let _ = in_tx.send(IncomingMessage::Error(format!(
+                        "invalid upload metadata: {error}"
+                    )));
+                }
+            },
+            Err(error) => {
+                let _ = in_tx.send(IncomingMessage::ProjectTransferStatus(
+                    ProjectTransferStatus {
+                        request_id: metadata.request_id,
+                        phase: "cancelled".into(),
+                        total_bytes: metadata.total_bytes,
+                        transferred_bytes: 0,
+                        participants: Vec::new(),
+                        cancel_reason: Some(error.clone()),
+                    },
+                ));
+                let _ = in_tx.send(IncomingMessage::Error(error));
+            }
+        });
+    }
+
+    fn project_rpc(&self, method: &'static str, payload: serde_json::Value) {
+        let rpc = self.rpc.clone();
+        let in_tx = self.in_tx.clone();
+        thread::spawn(move || {
+            if let Err(error) = rpc.call(method, payload) {
+                if let Some(tx) = in_tx {
+                    let _ = tx.send(IncomingMessage::Error(error));
+                }
+            }
+        });
     }
 
     pub fn respond_project_transfer(&self, request_id: &str, response: &str) {
-        self.send_raw(
-            "project_transfer_response",
-            serde_json::json!({ "request_id": request_id, "response": response }),
-        );
-    }
-
-    pub fn start_project_transfer(&self, metadata: &ProjectTransferMetadata) {
-        if let Ok(payload) = serde_json::to_value(metadata) {
-            self.send_raw("project_transfer_start", payload);
+        // Acceptance is acknowledged by the download worker before reading.
+        if response != "accepted" {
+            self.project_rpc(
+                "project_response",
+                serde_json::json!({ "request_id": request_id, "response": response }),
+            );
         }
     }
 
-    pub fn send_project_transfer_chunk(&self, request_id: &str, index: usize, data: &str) {
-        self.send_raw(
-            "project_transfer_chunk",
-            serde_json::json!({ "request_id": request_id, "index": index, "data": data }),
-        );
-    }
-
-    pub fn finish_project_transfer(&self, request_id: &str) {
-        self.send_raw(
-            "project_transfer_end",
-            serde_json::json!({ "request_id": request_id }),
-        );
-    }
-
     pub fn report_project_transfer_loading(&self, request_id: &str) {
-        self.send_raw(
-            "project_transfer_loading",
+        self.project_rpc(
+            "project_loading",
             serde_json::json!({ "request_id": request_id }),
         );
     }
 
     pub fn report_project_transfer(&self, request_id: &str, success: bool, error: Option<&str>) {
-        self.send_raw(
-            "project_transfer_result",
+        self.project_rpc(
+            "project_result",
             serde_json::json!({ "request_id": request_id, "success": success, "error": error }),
+        );
+    }
+
+    pub fn abort_project_upload(&self, request_id: &str, error: &str) {
+        self.project_rpc(
+            "project_abort",
+            serde_json::json!({ "request_id": request_id, "error": error }),
         );
     }
 
@@ -1054,45 +1168,97 @@ impl NetworkClient {
         metadata: ProjectTransferMetadata,
     ) -> mpsc::Receiver<Result<(), String>> {
         let (result_tx, result_rx) = mpsc::channel();
-        let Some(out_tx) = self.out_tx.clone() else {
-            let _ = result_tx.send(Err("network is not connected".into()));
-            return result_rx;
-        };
-        std::thread::spawn(move || {
+        let rpc = self.rpc.clone();
+        thread::spawn(move || {
             let result = (|| {
-                let generic = crate::file_transfer::FileTransferMetadata {
-                    transfer_id: metadata.request_id.clone(),
-                    file_name: metadata.file_name.clone(),
-                    total_bytes: metadata.total_bytes,
-                    total_chunks: metadata.total_chunks,
-                    chunk_size: metadata.chunk_size,
-                    sha1: metadata.sha1.clone(),
-                };
+                let generic = metadata.file_metadata();
                 generic.validate()?;
-                out_tx
-                    .send(OutgoingMessage::Direct(
-                        "project_transfer_start".into(),
-                        serde_json::to_value(&metadata).map_err(|error| error.to_string())?,
-                    ))
-                    .map_err(|_| "network sender stopped".to_string())?;
-                for chunk in crate::file_transfer::FileChunkReader::open(&path, &generic)? {
-                    let (index, data) = chunk?;
-                    out_tx.send(OutgoingMessage::Direct(
-                        "project_transfer_chunk".into(),
-                        serde_json::json!({ "request_id": &metadata.request_id, "index": index, "data": data }),
-                    )).map_err(|_| "network sender stopped".to_string())?;
+                let begin = rpc.call(
+                    "project_begin",
+                    serde_json::to_value(&metadata).map_err(|error| error.to_string())?,
+                )?;
+                if begin["complete"] == true {
+                    return Ok(());
                 }
-                out_tx
-                    .send(OutgoingMessage::Direct(
-                        "project_transfer_end".into(),
-                        serde_json::json!({ "request_id": metadata.request_id }),
-                    ))
-                    .map_err(|_| "network sender stopped".to_string())?;
+                let next = begin["next_index"]
+                    .as_u64()
+                    .ok_or("invalid upload acknowledgement")? as usize;
+                for chunk in crate::file_transfer::FileChunkReader::open_at(&path, &generic, next)?
+                {
+                    let (index, data) = chunk?;
+                    let reply = rpc.call("project_write", serde_json::json!({ "request_id": metadata.request_id, "index": index, "data": data }))?;
+                    if reply["next_index"].as_u64() != Some(index as u64 + 1) {
+                        return Err("invalid chunk acknowledgement".into());
+                    }
+                }
+                rpc.call(
+                    "project_commit",
+                    serde_json::json!({ "request_id": metadata.request_id }),
+                )?;
                 Ok(())
             })();
             let _ = result_tx.send(result);
         });
         result_rx
+    }
+
+    pub fn cancel_project_download(&mut self) {
+        if let Some((_, cancelled)) = self.download.take() {
+            cancelled.store(true, Ordering::Release);
+        }
+    }
+
+    pub fn download_project(&mut self, metadata: ProjectTransferMetadata, destination: PathBuf) {
+        if self
+            .download
+            .as_ref()
+            .is_some_and(|(id, _)| id == &metadata.request_id)
+        {
+            return;
+        }
+        self.cancel_project_download();
+        let Some(in_tx) = self.in_tx.clone() else {
+            return;
+        };
+        let rpc = self.rpc.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.download = Some((metadata.request_id.clone(), cancelled.clone()));
+        thread::spawn(move || {
+            let result = (|| {
+                let mut receiver = crate::file_transfer::FileTransferReceiver::default();
+                receiver.begin(metadata.file_metadata(), &destination)?;
+                rpc.call_cancellable("project_response", serde_json::json!({ "request_id": metadata.request_id, "response": "accepted" }), &cancelled)?;
+                for index in 0..metadata.total_chunks {
+                    let reply = rpc.call_cancellable(
+                        "project_read",
+                        serde_json::json!({ "request_id": metadata.request_id, "index": index }),
+                        &cancelled,
+                    )?;
+                    if reply["request_id"].as_str() != Some(&metadata.request_id)
+                        || reply["index"].as_u64() != Some(index as u64)
+                    {
+                        return Err("invalid project download reply".into());
+                    }
+                    receiver.push_base64(
+                        index,
+                        reply["data"].as_str().ok_or("missing project chunk")?,
+                    )?;
+                }
+                let received = receiver.finish(&metadata.request_id)?;
+                rpc.call_cancellable(
+                    "project_loading",
+                    serde_json::json!({ "request_id": metadata.request_id }),
+                    &cancelled,
+                )?;
+                Ok(received.path)
+            })();
+            if !cancelled.load(Ordering::Acquire) {
+                let _ = in_tx.send(IncomingMessage::ProjectDownloadFinished {
+                    request_id: metadata.request_id,
+                    result,
+                });
+            }
+        });
     }
 
     pub fn set_co_director(&self, member_id: &str, enabled: bool) {
@@ -1166,11 +1332,17 @@ impl NetworkClient {
 
     pub fn disconnect(&mut self) {
         log::info!("Disconnecting from server");
+        self.rpc.stop();
+        self.replication = None;
+        self.cancel_project_download();
+        self.in_tx = None;
         // Drop out_tx first to stop sender thread
         self.audio_tx = None;
         self.out_tx = None;
-        if let Some(client) = self._client.take() {
-            let _ = client.disconnect();
+        if let Some(client) = self._client.lock().unwrap().take() {
+            thread::spawn(move || {
+                let _ = client.disconnect();
+            });
         }
         self.rx = None;
         self.rejoin_slot = None;
@@ -1251,35 +1423,37 @@ fn extract_string_field(payload: &Payload, field: &str) -> String {
 }
 
 fn run_audio_sender(rx: mpsc::Receiver<AudioSendJob>, out_tx: mpsc::SyncSender<OutgoingMessage>) {
+    // Keep at most one audio block in the FIFO so interactive room commands
+    // can run between blocks. Success means that the server accepted audio_end.
+    let send = |event: &str, payload| -> Result<(), String> {
+        let (result, received) = mpsc::channel();
+        out_tx
+            .send(OutgoingMessage::Acknowledged(event.into(), payload, result))
+            .map_err(|_| "network sender stopped".to_string())?;
+        received
+            .recv()
+            .map_err(|_| "network sender stopped".to_string())?
+    };
     while let Ok(job) = rx.recv() {
         let result = (|| {
             for (path, metadata) in job.files {
                 metadata.validate()?;
-                let start = serde_json::to_value(&metadata)
-                    .map_err(|error| format!("cannot serialize FLAC metadata: {error}"))?;
-                out_tx
-                    .send(OutgoingMessage::Direct("audio_start".into(), start))
-                    .map_err(|_| "network sender stopped".to_string())?;
-                let reader = crate::audio_transfer::AudioChunkReader::open(&path, &metadata)?;
-                for chunk in reader {
+                send(
+                    "audio_start",
+                    serde_json::to_value(&metadata).map_err(|error| error.to_string())?,
+                )?;
+                for chunk in crate::audio_transfer::AudioChunkReader::open(&path, &metadata)? {
                     let chunk = chunk?;
-                    out_tx
-                        .send(OutgoingMessage::Direct(
-                            "audio_chunk".into(),
-                            serde_json::json!({
-                                "transfer_id": &metadata.transfer_id,
-                                "index": chunk.index,
-                                "data": chunk.data_base64,
-                            }),
-                        ))
-                        .map_err(|_| "network sender stopped".to_string())?;
+                    send(
+                        "audio_chunk",
+                        serde_json::json!({"transfer_id": metadata.transfer_id,
+                        "index": chunk.index, "data": chunk.data_base64}),
+                    )?;
                 }
-                out_tx
-                    .send(OutgoingMessage::Direct(
-                        "audio_end".into(),
-                        serde_json::json!({ "transfer_id": &metadata.transfer_id }),
-                    ))
-                    .map_err(|_| "network sender stopped".to_string())?;
+                send(
+                    "audio_end",
+                    serde_json::json!({"transfer_id": metadata.transfer_id}),
+                )?;
             }
             Ok(())
         })();
@@ -1295,17 +1469,28 @@ fn run_audio_sender(rx: mpsc::Receiver<AudioSendJob>, out_tx: mpsc::SyncSender<O
 /// a live transaction cannot overtake a preceding snapshot or sync event.
 fn run_outgoing_sender(
     rx: mpsc::Receiver<OutgoingMessage>,
-    active_client: Arc<Mutex<Option<RawClient>>>,
+    lifetime: rpc::RpcClient,
+    errors: mpsc::Sender<IncomingMessage>,
 ) {
     use std::sync::atomic::AtomicU64;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static BIG_TRANSFER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    while let Ok(message) = rx.recv() {
+    while !lifetime.is_stopped() {
+        let message = match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(message) => message,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match message {
             OutgoingMessage::Direct(event, payload) => {
-                emit_with_retry(&active_client, &event, &payload);
+                if let Err(error) = emit_with_retry(&lifetime, &event, &payload) {
+                    let _ = errors.send(IncomingMessage::Error(error));
+                }
+            }
+            OutgoingMessage::Acknowledged(event, payload, result) => {
+                let _ = result.send(emit_with_retry(&lifetime, &event, &payload));
             }
             OutgoingMessage::Big(job) => {
                 let result: Result<(), String> = (|| {
@@ -1332,17 +1517,17 @@ fn run_outgoing_sender(
                     if let Some(chain) = &job.recording_chain {
                         begin["recording_chain"] = chain.clone();
                     }
-                    emit_with_retry(&active_client, "big_begin", &begin);
+                    emit_with_retry(&lifetime, "big_begin", &begin)?;
                     for (index, data) in chunks.iter().enumerate() {
                         let payload = serde_json::json!({
                             "transfer_id": transfer_id,
                             "index": index,
                             "data": data,
                         });
-                        emit_with_retry(&active_client, "big_chunk", &payload);
+                        emit_with_retry(&lifetime, "big_chunk", &payload)?;
                     }
                     let payload = serde_json::json!({ "transfer_id": transfer_id });
-                    emit_with_retry(&active_client, "big_end", &payload);
+                    emit_with_retry(&lifetime, "big_end", &payload)?;
                     log::info!(
                         "Sent chunked {} ({} bytes, {} chunks)",
                         job.event,
@@ -1353,6 +1538,7 @@ fn run_outgoing_sender(
                 })();
                 if let Err(error) = result {
                     log::error!("cannot send chunked {}: {error}", job.event);
+                    let _ = errors.send(IncomingMessage::Error(error));
                 }
             }
         }
@@ -1360,27 +1546,151 @@ fn run_outgoing_sender(
 }
 
 fn emit_with_retry(
-    active_client: &Arc<Mutex<Option<RawClient>>>,
+    lifetime: &rpc::RpcClient,
     event: &str,
     payload: &serde_json::Value,
-) {
-    loop {
-        let client = active_client.lock().ok().and_then(|active| active.clone());
-        let Some(client) = client else {
-            thread::sleep(Duration::from_millis(25));
-            continue;
-        };
-        if client.emit(event, payload.clone()).is_ok() {
-            return;
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
+) -> Result<(), String> {
+    lifetime
+        .call(
+            "event",
+            serde_json::json!({ "event": event, "payload": payload }),
+        )
+        .map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[test]
+    fn a_silent_server_does_not_block_connect_or_cancellation() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if let Ok((connection, _)) = listener.accept() {
+                    thread::sleep(Duration::from_secs(1));
+                    drop(connection);
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let mut network = NetworkClient::new();
+        let started = std::time::Instant::now();
+        network.connect_and_send(
+            "127.0.0.1",
+            port,
+            "",
+            Packet::CreateRoom {
+                username: "DA".into(),
+                project_huuid: "project".into(),
+            },
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "connection blocked its caller"
+        );
+        let cancelled = std::time::Instant::now();
+        network.disconnect();
+        assert!(
+            cancelled.elapsed() < Duration::from_millis(500),
+            "cancellation blocked its caller"
+        );
+        assert!(network.rpc.is_stopped());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_local_save_preserves_the_published_archive_identity_for_reconnection() {
+        let mut network = NetworkClient::new();
+        network.username = Some("Actor".into());
+        network.project_matches = true;
+        network.project_huuid = Some("published-archive".into());
+        network.local_huuid = Some("published-archive".into());
+        network.rejoin_slot = Some(Arc::new(Mutex::new(None)));
+        network.set_rejoin_code("ABC123");
+        network.update_local_huuid(Some("new-local-save".into()));
+        network.set_rejoin_code("ABC123");
+        let slot = network.rejoin_slot.as_ref().unwrap().lock().unwrap();
+        let Some(Packet::JoinRoom { project_huuid, .. }) = slot.as_ref() else {
+            panic!("missing rejoin packet")
+        };
+        assert_eq!(project_huuid.as_deref(), Some("published-archive"));
+        assert_eq!(network.local_huuid.as_deref(), Some("new-local-save"));
+    }
+
+    #[test]
+    fn created_room_prepares_the_default_track_before_mute_and_solo() {
+        use crate::recording::{RecordingOperation, RecordingProject, TransactionLog};
+
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let mut network = NetworkClient::new();
+        network.out_tx = Some(sender);
+        let session = crate::application::project_service::ProjectSession::new();
+        let mut project = session.recording_project;
+        let mut transactions = session.recording_transactions;
+        assert_eq!(project.clips().len(), 0);
+        let track_id = project.tracks().next().unwrap().id;
+
+        network.initialize_created_room(
+            "ABCDEF",
+            &RecordingPreparePayload {
+                project: project.clone(),
+                transactions: transactions.clone(),
+                current_frame: 0,
+                capture_target: None,
+            },
+        );
+        let OutgoingMessage::Direct(event, payload) = receiver
+            .try_recv()
+            .expect("room creation must initialize the server recording journal")
+        else {
+            panic!("expected initial recording snapshot");
+        };
+        assert_eq!(event, "recording_prepare");
+        let prepare: RecordingPreparePayload = serde_json::from_value(payload).unwrap();
+        let mut remote = RecordingProject::new(project.timeline_fps()).unwrap();
+        let mut remote_log: TransactionLog = prepare.transactions;
+        remote = remote_log.rebuild_from_base(&remote).unwrap();
+        assert_eq!(remote, prepare.project);
+
+        for operation in [
+            RecordingOperation::SetTrackMuted {
+                track_id,
+                muted: true,
+            },
+            RecordingOperation::SetTrackSolo {
+                track_id,
+                solo: true,
+            },
+            RecordingOperation::SetTrackMuted {
+                track_id,
+                muted: false,
+            },
+        ] {
+            let transaction = transactions
+                .append_and_apply(&mut project, operation)
+                .unwrap();
+            network.send_recording_transaction(transaction);
+            let OutgoingMessage::Direct(event, payload) = receiver.recv().unwrap() else {
+                panic!("expected recording transaction");
+            };
+            assert_eq!(event, "recording_transaction");
+            remote_log
+                .append_received_and_apply(&mut remote, serde_json::from_value(payload).unwrap())
+                .unwrap();
+            assert_eq!(remote, project);
+            assert_eq!(
+                remote.is_track_audible(track_id),
+                project.is_track_audible(track_id)
+            );
+        }
+    }
 
     #[test]
     fn recording_view_preserves_absolute_instrumental_offset() {
@@ -1449,10 +1759,12 @@ mod tests {
         match receiver.recv().unwrap() {
             OutgoingMessage::Big(job) => assert_eq!(job.event, "recording_prepare"),
             OutgoingMessage::Direct(event, _) => panic!("received direct event first: {event}"),
+            OutgoingMessage::Acknowledged(..) => panic!("unexpected audio event"),
         }
         match receiver.recv().unwrap() {
             OutgoingMessage::Direct(event, _) => assert_eq!(event, "recording_transaction"),
             OutgoingMessage::Big(job) => panic!("received chunked event second: {}", job.event),
+            OutgoingMessage::Acknowledged(..) => panic!("unexpected audio event"),
         }
     }
 }

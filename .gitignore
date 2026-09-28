@@ -8,3 +8,5 @@ graphify-out/**
 skills/**
 .codex-check-target/**
 plans/**
+VERSION_NOTES.md
+AGENTS.md

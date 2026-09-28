@@ -574,19 +574,14 @@ fn push_toggle<'a>(
     text: &'a str,
     checked: bool,
 ) {
-    push_quad(
+    push_checkbox(
         quads,
+        labels,
         Rect {
             width: 20.0,
             ..rect
         },
-        if checked {
-            [0.90, 0.72, 0.12, 1.0]
-        } else {
-            [0.08, 0.08, 0.10, 1.0]
-        },
-        [0.45, 0.45, 0.52, 0.8],
-        4.0,
+        checked,
     );
     push_label(
         labels,
@@ -600,6 +595,38 @@ fn push_toggle<'a>(
         12.0,
         None,
     );
+}
+
+fn push_checkbox(
+    quads: &mut Vec<QuadInstance>,
+    labels: &mut Vec<LabelInfo<'_>>,
+    rect: Rect,
+    checked: bool,
+) {
+    push_quad(
+        quads,
+        rect,
+        if checked {
+            [0.20, 0.43, 0.82, 1.0]
+        } else {
+            [0.07, 0.075, 0.095, 1.0]
+        },
+        [0.28, 0.34, 0.46, 1.0],
+        4.0,
+    );
+    if checked {
+        labels.push(LabelInfo {
+            text: "✓",
+            bounds: rect,
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Ellipsis,
+            padding: 0.0,
+            font_size_override: Some(14.0),
+            color_override: None,
+            font_family_override: None,
+        });
+    }
 }
 
 fn push_button<'a>(

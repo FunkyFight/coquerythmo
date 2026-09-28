@@ -90,6 +90,9 @@ struct StatusIcon<'a> {
 
 pub struct FileTree {
     open: bool,
+    /// Keys reach the tree only while it has focus: opening it or clicking
+    /// inside grants it, clicking elsewhere hands the keyboard back.
+    keyboard_focus: bool,
     expanded: ExpandedSet,
     selected: Option<RowId>,
     focused: Option<RowId>,
@@ -155,6 +158,7 @@ impl FileTree {
     pub fn new() -> Self {
         Self {
             open: false,
+            keyboard_focus: false,
             expanded: ExpandedSet::all_expanded(),
             selected: None,
             focused: None,
@@ -178,6 +182,7 @@ impl FileTree {
 
     pub fn open(&mut self) {
         self.open = true;
+        self.keyboard_focus = true;
         self.focused = Some(RowId::Root);
         self.enter.clear();
         self.entry_pending = true;
@@ -185,6 +190,7 @@ impl FileTree {
 
     pub fn close(&mut self) {
         self.open = false;
+        self.keyboard_focus = false;
         self.cancel_rename();
         self.context_menu = None;
         self.drag = None;
@@ -198,6 +204,10 @@ impl FileTree {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    pub fn has_keyboard_focus(&self) -> bool {
+        self.open && self.keyboard_focus
     }
 
     pub fn hovered_tooltip(&self) -> Option<&str> {
@@ -278,7 +288,7 @@ impl FileTree {
     }
 
     pub fn captures_keyboard_event(&self, event: &UiEvent) -> bool {
-        self.open
+        self.has_keyboard_focus()
             && matches!(
                 event,
                 UiEvent::KeyInput { .. }
@@ -331,6 +341,15 @@ impl FileTree {
         }
         self.clamp_scroll(panel, data);
         self.hydrate_rename(data);
+
+        if let Some((x, y)) = pointer_press_position(event) {
+            self.keyboard_focus = panel.contains(x, y) || self.menu_contains(x, y, data);
+            if !self.keyboard_focus && self.rename.is_some() {
+                // Like a click inside the panel, clicking away commits the
+                // rename instead of leaving a field that keeps typed keys.
+                return Some(self.finish_rename(data));
+            }
+        }
 
         if let Some(response) = self.handle_rename_keyboard(event, data) {
             return Some(response);
@@ -680,6 +699,17 @@ impl FileTree {
     }
 
     pub fn begin_rename(&mut self, target: RenameTarget, value: &str) {
+        // A band created from a collapsed group header must still show its
+        // rename field.
+        let group = match target {
+            RenameTarget::Video(_) => GroupKind::Videos,
+            RenameTarget::Audio(_) => GroupKind::Audios,
+            RenameTarget::Band(_) => GroupKind::Bands,
+        };
+        if !self.expanded.get(group) {
+            self.expanded.toggle(group);
+        }
+        self.keyboard_focus = true;
         self.rename = Some((target, value.to_string()));
         self.rename_original = value.to_string();
         self.rename_hydrated = !value.is_empty();
@@ -1024,6 +1054,25 @@ impl FileTree {
         } else {
             EventResponse::Consumed
         }
+    }
+
+    fn menu_contains(&self, x: f32, y: f32, data: &FileTreeData) -> bool {
+        let Some(menu) = self.context_menu.as_ref() else {
+            return false;
+        };
+        let menu_rect = Rect {
+            x: menu.anchor.0,
+            y: menu.anchor.1,
+            width: MENU_W,
+            height: context_menu_items(menu.target, data).len() as f32 * MENU_ROW_H,
+        };
+        let submenu_rect = menu.submenu.as_ref().map(|submenu| Rect {
+            x: submenu.anchor.0,
+            y: submenu.anchor.1,
+            width: SUBMENU_W,
+            height: submenu_items(submenu.kind, data, menu.target).len() as f32 * MENU_ROW_H,
+        });
+        menu_rect.contains(x, y) || submenu_rect.is_some_and(|rect| rect.contains(x, y))
     }
 
     fn handle_menu_pointer(
@@ -1832,7 +1881,7 @@ impl FileTree {
         let body = body_rect(panel);
         let indent = row_indent(row);
         let selected = self.selected == Some(row.id);
-        let focused = self.focused == Some(row.id);
+        let focused = self.keyboard_focus && self.focused == Some(row.id);
         let tint = |color| faded_text_color(color, opacity);
 
         if let Some(kind) = row_category(row.id) {
@@ -2229,6 +2278,7 @@ fn context_menu_items(row: RowId, data: &FileTreeData) -> Vec<MenuItem> {
             submenu: None,
             action: Box::new(|| EventResponse::Action(UiAction::AddMediaAudio)),
         }],
+        RowId::Group(GroupKind::Bands) => vec![add_band_item()],
         RowId::Video(id) => {
             let Some(video) = data.videos.iter().find(|v| v.id == id) else {
                 return Vec::new();
@@ -2364,9 +2414,19 @@ fn context_menu_items(row: RowId, data: &FileTreeData) -> Vec<MenuItem> {
                 submenu: None,
                 action: Box::new(move || EventResponse::Action(UiAction::DeleteLanguage { id })),
             });
+            items.push(add_band_item());
             items
         }
         _ => Vec::new(),
+    }
+}
+
+fn add_band_item() -> MenuItem {
+    MenuItem {
+        label: t("file_tree.menu.add_band").to_string(),
+        enabled: true,
+        submenu: None,
+        action: Box::new(|| EventResponse::Action(UiAction::AddLanguage)),
     }
 }
 
@@ -2723,6 +2783,18 @@ fn clamped_menu_origin(panel: Rect, x: f32, y: f32, width: f32, height: f32) -> 
     (x.clamp(min_x, max_x), y.clamp(min_y, max_y))
 }
 
+fn pointer_press_position(e: &UiEvent) -> Option<(f32, f32)> {
+    match e {
+        UiEvent::MousePress { x, y }
+        | UiEvent::DoubleClick { x, y }
+        | UiEvent::CtrlClick { x, y }
+        | UiEvent::ShiftMousePress { x, y }
+        | UiEvent::ContextMenu { x, y }
+        | UiEvent::MiddlePress { x, y } => Some((*x, *y)),
+        _ => None,
+    }
+}
+
 fn event_xy(e: &UiEvent) -> (f32, f32) {
     match e {
         UiEvent::MouseMove { x, y }
@@ -2961,6 +3033,37 @@ mod tests {
     }
 
     #[test]
+    fn bands_group_context_menu_adds_a_band() {
+        let (data, ..) = sample();
+        let mut tree = FileTree::new();
+        tree.open();
+        let (x, y) = center(&tree, &data, RowId::Group(GroupKind::Bands));
+        tree.handle_event(&UiEvent::ContextMenu { x, y }, panel(), &data);
+        let anchor = tree.context_menu.as_ref().unwrap().anchor;
+
+        assert!(matches!(
+            tree.handle_event(
+                &UiEvent::MousePress {
+                    x: anchor.0 + 8.0,
+                    y: anchor.1 + MENU_ROW_H * 0.5,
+                },
+                panel(),
+                &data,
+            ),
+            Some(EventResponse::Action(UiAction::AddLanguage))
+        ));
+    }
+
+    #[test]
+    fn renaming_a_band_expands_its_collapsed_group() {
+        let (data, ..) = sample();
+        let mut tree = FileTree::new();
+        tree.toggle_group(GroupKind::Bands, &data);
+        tree.begin_rename(RenameTarget::Band(data.bands[0].id), "");
+        assert!(tree.expanded.get(GroupKind::Bands));
+    }
+
+    #[test]
     fn video_reordering_uses_the_videos_group_index() {
         let (data, source, second, ..) = sample();
         let mut tree = FileTree::new();
@@ -2999,6 +3102,42 @@ mod tests {
             EventResponse::Action(UiAction::SetLanguageInstrumentalAudioPath { id, path })
                 if id == band && path == "C:/audio/inst.wav"
         ));
+    }
+
+    #[test]
+    fn clicking_outside_hands_the_keyboard_back_until_the_tree_is_clicked_again() {
+        let (data, source, ..) = sample();
+        let mut tree = FileTree::new();
+        tree.open();
+        assert!(tree.captures_keyboard_event(&UiEvent::CursorDown));
+
+        let outside = UiEvent::MousePress { x: 600.0, y: 200.0 };
+        assert_eq!(tree.handle_event(&outside, panel(), &data), None);
+        assert!(!tree.has_keyboard_focus());
+        assert_eq!(
+            tree.handle_event(&UiEvent::CursorDown, panel(), &data),
+            None
+        );
+
+        let (x, y) = center(&tree, &data, RowId::Video(source));
+        tree.handle_event(&UiEvent::MousePress { x, y }, panel(), &data);
+        assert!(tree.has_keyboard_focus());
+    }
+
+    #[test]
+    fn clicking_outside_commits_a_pending_rename() {
+        let (data, source, ..) = sample();
+        let mut tree = FileTree::new();
+        tree.open();
+        tree.begin_rename(RenameTarget::Video(source), "");
+        tree.handle_event(&UiEvent::KeyInput { text: "!".into() }, panel(), &data);
+
+        assert!(matches!(
+            tree.handle_event(&UiEvent::MousePress { x: 600.0, y: 200.0 }, panel(), &data),
+            Some(EventResponse::Action(UiAction::MediaVideoRename { id, name }))
+                if id == source && name == "Source!"
+        ));
+        assert!(!tree.is_editing_text());
     }
 
     #[test]

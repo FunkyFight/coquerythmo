@@ -1,10 +1,10 @@
 //! Project session state owned by application use cases.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use crate::command::CommandHistory;
-use crate::project::Project;
+use crate::project::{LanguageId, Project};
 use crate::render_index::ProjectRenderIndex;
 
 /// Project data and its derived session state.
@@ -33,6 +33,9 @@ pub struct ProjectSession {
     pub recording_revision: u64,
     /// Keeps extracted bundle assets alive while media decoders use them.
     pub loaded_project: Option<crate::project_archive::LoadedProject>,
+    /// Bands read from DETX timecodes before a video fixed the frame rate.
+    /// The first video retimes them by timecode instead of by clock.
+    pub provisional_timecode_languages: BTreeSet<LanguageId>,
 }
 
 impl ProjectSession {
@@ -105,6 +108,7 @@ impl ProjectSession {
             recording_asset_paths: BTreeMap::new(),
             recording_revision: 0,
             loaded_project: None,
+            provisional_timecode_languages: BTreeSet::new(),
         }
     }
 
@@ -119,6 +123,7 @@ impl ProjectSession {
             Self::new_recording_session(timeline_fps);
         self.recording_asset_paths.clear();
         self.recording_revision = 0;
+        self.provisional_timecode_languages.clear();
     }
 
     pub fn reset_recording_document(&mut self, timeline_fps: f64) {

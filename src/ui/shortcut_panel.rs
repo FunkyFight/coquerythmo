@@ -98,6 +98,7 @@ fn is_applicable(action: &UiAction, s: &PanelSituation) -> bool {
         UiAction::SelectLineAtPlayhead => s.line_at_playhead,
         UiAction::NavigateLines { .. } => s.has_lines,
         UiAction::TogglePlayPause
+        | UiAction::ToggleReversePlayback
         | UiAction::PrevFrame
         | UiAction::NextFrame
         | UiAction::BeginKeyboardPan { .. }

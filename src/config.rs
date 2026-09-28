@@ -88,6 +88,8 @@ pub struct UiConfig {
     pub video_split: f32,
     /// Show the contextual shortcut panel in the bottom-left corner.
     pub show_controls_hint: bool,
+    /// Hide the rythmo formatting diagnostics (warnings and errors).
+    pub hide_formatting_hints: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +174,7 @@ impl Default for UiConfig {
             rythmo_font: None,
             video_split: 0.48,
             show_controls_hint: true,
+            hide_formatting_hints: false,
         }
     }
 }
@@ -592,6 +595,20 @@ pub fn set_show_controls_hint(enabled: bool) {
     let lock = INSTANCE.get().expect("config not initialized");
     let mut cfg = lock.write().unwrap();
     cfg.ui.show_controls_hint = enabled;
+    cfg.save();
+}
+
+pub fn hide_formatting_hints() -> bool {
+    INSTANCE
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .is_some_and(|cfg| cfg.ui.hide_formatting_hints)
+}
+
+pub fn set_hide_formatting_hints(hidden: bool) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    cfg.ui.hide_formatting_hints = hidden;
     cfg.save();
 }
 

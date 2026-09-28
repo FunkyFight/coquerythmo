@@ -293,6 +293,7 @@ pub fn panel_label_key_for_action(
             "panel.extend_selection"
         }
         UiAction::TogglePlayPause => "panel.play_pause",
+        UiAction::ToggleReversePlayback => "toolbar.play_reverse",
         UiAction::ToggleKaraokeForSelection => "panel.toggle_karaoke",
         UiAction::SelectLineAtPlayhead => "panel.select_line_at_playhead",
         UiAction::BeginKeyboardPan { direction } if *direction < 0 => "panel.pan_left",
@@ -314,24 +315,10 @@ pub fn panel_label_key_for_action(
     Some(key)
 }
 
-// Emit the short progress tone used for export and proxy percentages.
-// Higher progress produces a lower pitch so the operation audibly descends
-// towards completion.
 #[cfg(target_os = "windows")]
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn Beep(dw_freq: u32, dw_duration: u32) -> i32;
-}
-
-#[cfg(target_os = "windows")]
-pub fn progress_tone(percent: u32) {
-    let percent = percent.min(100);
-    let frequency = 300 + (100 - percent) * 9;
-    // Keep the tone short: progress updates are throttled to one per percent
-    // by State, so this never blocks the UI for long at a time.
-    unsafe {
-        let _ = Beep(frequency, 35);
-    }
 }
 
 #[cfg(target_os = "windows")]

@@ -78,6 +78,7 @@ impl EditExecutor {
     pub fn apply_import(session: &mut ProjectSession, data: ImportProjectData, fps: f64) {
         data.apply_to_project(&mut session.project, fps);
         session.replace_transaction_checkpoint(fps);
+        session.provisional_timecode_languages.clear();
         Self::mark_dirty(session, EditOrigin::Import);
     }
 

@@ -309,6 +309,8 @@ pub enum UiAction {
     CreateLanguage {
         name: String,
     },
+    /// Create a rythmo band with a unique default name, then rename it inline.
+    AddLanguage,
     RenameLanguage {
         id: u64,
         name: String,
@@ -437,6 +439,7 @@ pub enum UiAction {
     QuickSave,
     CancelExport,
     TogglePlayPause,
+    ToggleReversePlayback,
     SetVolume(f32),
     AdjustVolume(f32),
     ToggleMute,
@@ -637,6 +640,7 @@ pub enum UiAction {
         lang: String,
         temporary_directory: std::path::PathBuf,
         show_controls_hint: bool,
+        hide_formatting_hints: bool,
     },
     SaveProjectSettings {
         rythmo_font: Option<String>,
@@ -714,7 +718,10 @@ pub enum UiAction {
     },
     // Pricing / support page
     OpenPricingPage,
+    /// Shows the support-expectations notice before leaving for Discord.
     OpenDiscord,
+    /// Opens the Discord invite in the browser (after the notice).
+    OpenDiscordLink,
     SubscribePlan {
         plan: String,
     },
@@ -739,6 +746,7 @@ impl UiAction {
             Self::Undo
                 | Self::Redo
                 | Self::CreateLanguage { .. }
+                | Self::AddLanguage
                 | Self::RenameLanguage { .. }
                 | Self::DeleteLanguage { .. }
                 | Self::SelectLanguage { .. }

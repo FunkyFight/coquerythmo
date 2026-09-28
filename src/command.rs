@@ -4,7 +4,7 @@
 //! snapshot of one user operation.
 #![allow(clippy::large_enum_variant)]
 
-use crate::project::{Character, LineCharacterNameChange, Project};
+use crate::project::{Character, DeletedLanguage, LanguageId, LineCharacterNameChange, Project};
 use crate::rythmo_drawing::DrawingStroke;
 use crate::rythmo_line::{LinePresence, RythmoLine, RythmoMarker, TextEmotionSpan};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
@@ -535,9 +535,17 @@ impl Command {
     }
 }
 
+/// A band deletion clears the line history, so it always sits below every
+/// command: it is undone once the undo stack is empty and redone first.
+enum LanguageDeletion {
+    Undoable(DeletedLanguage),
+    Redoable(LanguageId),
+}
+
 pub struct CommandHistory {
     undo_stack: Vec<Command>,
     redo_stack: Vec<Command>,
+    language_deletion: Option<LanguageDeletion>,
 }
 
 impl CommandHistory {
@@ -545,18 +553,68 @@ impl CommandHistory {
         Self {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            language_deletion: None,
         }
     }
 
     pub fn clear(&mut self) {
         self.undo_stack.clear();
         self.redo_stack.clear();
+        self.language_deletion = None;
     }
 
     /// Push a command that has ALREADY been applied to the project.
     pub fn push(&mut self, cmd: Command) {
         self.undo_stack.push(cmd);
         self.redo_stack.clear();
+        if matches!(self.language_deletion, Some(LanguageDeletion::Redoable(_))) {
+            self.language_deletion = None;
+        }
+    }
+
+    /// Start a fresh history whose only undoable step is this deletion.
+    pub fn record_language_deletion(&mut self, deleted: DeletedLanguage) {
+        self.clear();
+        self.language_deletion = Some(LanguageDeletion::Undoable(deleted));
+    }
+
+    /// The deleted band to restore, once every later command is undone.
+    pub fn take_language_restore(&mut self) -> Option<DeletedLanguage> {
+        if !self.undo_stack.is_empty() {
+            return None;
+        }
+        match self.language_deletion.take() {
+            Some(LanguageDeletion::Undoable(deleted)) => Some(deleted),
+            other => {
+                self.language_deletion = other;
+                None
+            }
+        }
+    }
+
+    /// Restoring the band that was active selects it again, so commands
+    /// redone afterwards would target the wrong band: drop them.
+    pub fn record_language_restore(&mut self, id: LanguageId, reselected: bool) {
+        if reselected {
+            self.redo_stack.clear();
+        }
+        self.language_deletion = Some(LanguageDeletion::Redoable(id));
+    }
+
+    /// The band to delete again: its deletion precedes every redoable command.
+    pub fn take_language_redelete(&mut self) -> Option<LanguageId> {
+        match self.language_deletion.take() {
+            Some(LanguageDeletion::Redoable(id)) => Some(id),
+            other => {
+                self.language_deletion = other;
+                None
+            }
+        }
+    }
+
+    /// Unlike a new deletion, a redone one keeps the later commands redoable.
+    pub fn record_language_redelete(&mut self, deleted: DeletedLanguage) {
+        self.language_deletion = Some(LanguageDeletion::Undoable(deleted));
     }
 
     /// Update the last command's "new" state (for coalescing text edits / drag).
@@ -644,6 +702,35 @@ mod tests {
         let mut p = Project::new();
         let id = p.add_line_full(0, 48, 0.5, "test".into(), "Char".into(), [1.0; 4]);
         (p, id)
+    }
+
+    #[test]
+    fn band_deletion_is_undone_after_later_commands_and_redone_before_them() {
+        let (mut project, id) = make_project_with_line();
+        let english = project.create_language_named("English");
+        let deleted = project.take_language(english).unwrap();
+        let mut history = CommandHistory::new();
+        history.record_language_deletion(deleted);
+
+        project.get_line_mut(id).unwrap().start_frame = 100;
+        history.push(Command::MoveLine {
+            line_id: id,
+            old_start: 0,
+            old_y_slot: 0.5,
+            new_start: 100,
+            new_y_slot: 0.5,
+        });
+        assert!(history.take_language_restore().is_none());
+
+        history.undo(&mut project);
+        let deleted = history.take_language_restore().unwrap();
+        assert!(project.restore_language(deleted));
+        history.record_language_restore(english, true);
+        assert!(!history.can_redo());
+
+        assert_eq!(history.take_language_redelete(), Some(english));
+        history.clear();
+        assert!(history.take_language_redelete().is_none());
     }
 
     #[test]

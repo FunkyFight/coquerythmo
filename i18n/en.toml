@@ -152,7 +152,9 @@
 "recording.project_transfer_requires_save" = "Save your changes before transferring the project."
 "recording.project_transfer.save_and_transfer" = "Save and transfer"
 "recording.project_transfer_preparing" = "Preparing project transfer…"
-"recording.project_transfer_waiting" = "Waiting for participant responses…"
+"recording.project_transfer_waiting" = "Uploading the project to the server…"
+"recording.project_transfer.uploading" = "Uploading to the server"
+"recording.project_transfer.server_ready" = "Project available — each participant downloads independently."
 "recording.project_transfer_request_received" = "The director wants to send and load the project."
 "recording.project_transfer.title" = "Project transfer"
 "recording.project_transfer.accept" = "Receive and load"
@@ -405,6 +407,7 @@
 "toolbar.unmute" = "Unmute"
 "toolbar.prev_frame" = "Previous frame"
 "toolbar.next_frame" = "Next frame"
+"toolbar.play_reverse" = "Play backward"
 "toolbar.boucle" = "Add a loop"
 "toolbar.out" = "Add an out"
 "toolbar.scene" = "Scene change"
@@ -475,7 +478,7 @@
 "toast.rename_character_name_required" = "The new character name is required."
 "toast.character_renamed" = "Character renamed."
 "toast.video_load_failed" = "Video loading failed:"
-"toast.export_completed" = "Export completed."
+"toast.reverse_playback_in_room" = "Backward playback is unavailable during a shared recording session."
 "toast.export_failed" = "Export failed:"
 "toast.import_failed" = "Rythmo band load failed:"
 "toast.subtitle_imported" = "Subtitles imported into the active language."
@@ -571,6 +574,8 @@
 "file_tree.menu.use" = "Use"
 "file_tree.menu.add_video" = "Add video…"
 "file_tree.menu.add_audio" = "Add audio…"
+"file_tree.menu.add_band" = "Add rythmo band"
+"file_tree.new_band" = "Rythmo band {n}"
 "file_tree.menu.make_default" = "Make default"
 "file_tree.menu.dissociate_proxy" = "Unlink proxy"
 "file_tree.menu.create_proxy" = "Create proxy"
@@ -636,6 +641,7 @@
 "toast.language_created" = "Language created, duplicated and selected:"
 "toast.language_selected" = "Language selected:"
 "toast.language_deleted" = "Language deleted:"
+"toast.language_restored" = "Rythmo band restored:"
 "toast.language_renamed" = "Language renamed:"
 
 # Export hub
@@ -683,6 +689,7 @@
 "settings.temporary_directory" = "Application temporary directory"
 "settings.browse" = "Browse"
 "settings.show_controls" = "Enable the controls display"
+"settings.hide_formatting_hints" = "Hide formatting hints"
 "settings.tooltip" = "Settings"
 "project_settings.title" = "Rythmo band settings"
 "project_settings.tooltip" = "Rythmo band settings"
@@ -714,6 +721,21 @@
 # Topbar — Support
 "topbar.support" = "Support Coquerythmo"
 "topbar.discord" = "Discord"
+
+# Notice shown before opening the Discord
+"discord_notice.title" = "Before joining the Discord"
+"discord_notice.creator" = "Coquerythmo is completely free and open source, but that doesn't mean its creator can also provide support: not everyone will necessarily get a reply."
+"discord_notice.community" = "The community will be happy to answer your questions!"
+"discord_notice.priority" = "Priority support is available, priced according to your organization (pricing to be announced)."
+"discord_notice.join" = "Join the Discord"
+"discord_notice.cancel" = "Cancel"
+
+# End of export: confirmation and reminder to credit the software
+"export_done.title" = "Export completed"
+"export_done.message" = "Your export finished successfully."
+"export_done.free" = "Coquerythmo is completely free and relies on its generous users to spread the word."
+"export_done.credit" = "If it helped you produce any kind of media, please credit it in the end credits or in the description!"
+"export_done.close" = "OK"
 
 # Pricing (support page)
 "pricing.title" = "Coquerythmo is free for everyone."

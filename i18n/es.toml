@@ -145,7 +145,9 @@
 "recording.project_transfer_requires_save" = "Guarda los cambios antes de transferir el proyecto."
 "recording.project_transfer.save_and_transfer" = "Guardar y transferir"
 "recording.project_transfer_preparing" = "Preparando la transferencia del proyecto…"
-"recording.project_transfer_waiting" = "Esperando las respuestas de los participantes…"
+"recording.project_transfer_waiting" = "Subiendo el proyecto al servidor…"
+"recording.project_transfer.uploading" = "Subiendo al servidor"
+"recording.project_transfer.server_ready" = "Proyecto disponible — cada participante descarga a su ritmo."
 "recording.project_transfer_request_received" = "El director propone recibir y cargar el proyecto."
 "recording.project_transfer.title" = "Transferencia del proyecto"
 "recording.project_transfer.accept" = "Recibir y cargar"
@@ -397,6 +399,7 @@
 "toolbar.unmute" = "Reactivar sonido"
 "toolbar.prev_frame" = "Fotograma anterior"
 "toolbar.next_frame" = "Fotograma siguiente"
+"toolbar.play_reverse" = "Reproducir al revés"
 "toolbar.boucle" = "Añadir un bucle"
 "toolbar.out" = "Añadir un final"
 "toolbar.scene" = "Cambio de escena"
@@ -467,7 +470,7 @@
 "toast.rename_character_name_required" = "El nuevo nombre del personaje es obligatorio."
 "toast.character_renamed" = "Personaje renombrado."
 "toast.video_load_failed" = "Error al cargar el vídeo:"
-"toast.export_completed" = "Exportación completada."
+"toast.reverse_playback_in_room" = "La reproducción al revés no está disponible durante una sesión de grabación compartida."
 "toast.export_failed" = "Error al exportar:"
 "toast.import_failed" = "Error al cargar la banda rythmo:"
 "toast.subtitle_imported" = "Subtítulos importados en el idioma activo."
@@ -563,6 +566,8 @@
 "file_tree.menu.use" = "Usar"
 "file_tree.menu.add_video" = "Añadir vídeo…"
 "file_tree.menu.add_audio" = "Añadir audio…"
+"file_tree.menu.add_band" = "Añadir banda rythmo"
+"file_tree.new_band" = "Banda rythmo {n}"
 "file_tree.menu.make_default" = "Definir como predeterminado"
 "file_tree.menu.dissociate_proxy" = "Desvincular proxy"
 "file_tree.menu.create_proxy" = "Crear proxy"
@@ -628,6 +633,7 @@
 "toast.language_created" = "Idioma creado, duplicado y seleccionado:"
 "toast.language_selected" = "Idioma seleccionado:"
 "toast.language_deleted" = "Idioma eliminado:"
+"toast.language_restored" = "Banda rythmo restaurada:"
 "toast.language_renamed" = "Idioma renombrado:"
 
 # Centro de exportación
@@ -675,6 +681,7 @@
 "settings.temporary_directory" = "Carpeta temporal de la aplicación"
 "settings.browse" = "Examinar"
 "settings.show_controls" = "Activar la visualización de los controles"
+"settings.hide_formatting_hints" = "Ocultar las indicaciones de formato"
 "settings.tooltip" = "Ajustes"
 "project_settings.title" = "Ajustes de la banda rythmo"
 "project_settings.tooltip" = "Ajustes de la banda rythmo"
@@ -706,6 +713,21 @@
 # Topbar — Support
 "topbar.support" = "Apoya Coquerythmo"
 "topbar.discord" = "Discord"
+
+# Aviso antes de abrir el Discord
+"discord_notice.title" = "Antes de unirte al Discord"
+"discord_notice.creator" = "Coquerythmo es totalmente gratuito y libre, pero eso no significa que su creador pueda ofrecer también soporte: no siempre podrá responder a todo el mundo."
+"discord_notice.community" = "¡La comunidad estará encantada de responder a tus preguntas!"
+"discord_notice.priority" = "Hay soporte prioritario disponible, con un precio que varía según la organización (tarifas por anunciar)."
+"discord_notice.join" = "Unirse al Discord"
+"discord_notice.cancel" = "Cancelar"
+
+# Fin de la exportación: confirmación y recordatorio de mencionar el programa
+"export_done.title" = "Exportación completada"
+"export_done.message" = "La exportación ha terminado correctamente."
+"export_done.free" = "Coquerythmo es totalmente gratuito y cuenta con la generosidad de sus usuarios para darse a conocer."
+"export_done.credit" = "Si te ha servido para producir cualquier tipo de contenido, ¡menciónalo en los créditos o en la descripción!"
+"export_done.close" = "OK"
 
 # Pricing (support page)
 "pricing.title" = "Coquerythmo es gratuito para todos."

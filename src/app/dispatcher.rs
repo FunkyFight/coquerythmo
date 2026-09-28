@@ -771,6 +771,9 @@ impl CommandDispatcher {
             UiAction::TogglePlayPause => {
                 state.toggle_play_pause();
             }
+            UiAction::ToggleReversePlayback => {
+                state.toggle_reverse_playback();
+            }
             UiAction::SetVolume(vol) => {
                 state.set_volume(vol);
             }
@@ -1142,6 +1145,7 @@ impl CommandDispatcher {
                 state.set_language_instrumental_audio_by_media_id(band_id, media_id)
             }
             UiAction::CreateLanguage { name } => state.create_language(name),
+            UiAction::AddLanguage => state.add_language(),
             UiAction::RenameLanguage { id, name } => state.rename_language(id, name),
             UiAction::DeleteLanguage { id } => state.delete_language(id),
             UiAction::SelectLanguage { id } => state.select_language(id),
@@ -1475,7 +1479,6 @@ impl CommandDispatcher {
                 state.cancel_export();
             }
             UiAction::StopEditing => {
-                state.broadcast_finalize();
                 state.announce_selected_line();
             }
             UiAction::OpenRecentProject {
@@ -1624,6 +1627,9 @@ impl CommandDispatcher {
                 state.open_pricing_page();
             }
             UiAction::OpenDiscord => {
+                state.open_discord_notice();
+            }
+            UiAction::OpenDiscordLink => {
                 if let Err(e) = open::that("https://discord.gg/fpdsUyWuwN") {
                     log::warn!("Failed to open Discord link: {e}");
                 }
@@ -1683,10 +1689,12 @@ impl CommandDispatcher {
                 lang,
                 temporary_directory,
                 show_controls_hint,
+                hide_formatting_hints,
             } => {
                 let rythmo_font = crate::config::get().ui.rythmo_font.clone();
                 crate::config::save_settings(lang, rythmo_font, temporary_directory);
                 crate::config::set_show_controls_hint(show_controls_hint);
+                crate::config::set_hide_formatting_hints(hide_formatting_hints);
                 state.recording_runtime.refresh_temporary_directory();
                 state.close_settings_modal();
             }

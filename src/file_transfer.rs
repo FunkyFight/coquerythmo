@@ -1,7 +1,7 @@
 //! Bounded, integrity-checked file transfers shared by online assets.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -98,12 +98,30 @@ pub struct FileChunkReader {
 
 impl FileChunkReader {
     pub fn open(path: &Path, metadata: &FileTransferMetadata) -> Result<Self, String> {
+        Self::open_at(path, metadata, 0)
+    }
+
+    pub fn open_at(
+        path: &Path,
+        metadata: &FileTransferMetadata,
+        index: usize,
+    ) -> Result<Self, String> {
         metadata.validate()?;
+        if index > metadata.total_chunks {
+            return Err("invalid resume index".into());
+        }
+        let mut file =
+            File::open(path).map_err(|error| format!("cannot open transfer file: {error}"))?;
+        if file.metadata().map_err(|error| error.to_string())?.len() != metadata.total_bytes {
+            return Err("project file changed since transfer preparation".into());
+        }
+        let offset = (index as u64 * metadata.chunk_size as u64).min(metadata.total_bytes);
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|error| error.to_string())?;
         Ok(Self {
-            file: File::open(path)
-                .map_err(|error| format!("cannot open transfer file: {error}"))?,
+            file,
             metadata: metadata.clone(),
-            index: 0,
+            index,
         })
     }
 }
@@ -115,13 +133,13 @@ impl Iterator for FileChunkReader {
         if self.index >= self.metadata.total_chunks {
             return None;
         }
-        let mut bytes = vec![0_u8; self.metadata.chunk_size];
-        let read = match self.file.read(&mut bytes) {
-            Ok(read) if read > 0 => read,
-            Ok(_) => return Some(Err("transfer file ended early".into())),
-            Err(error) => return Some(Err(format!("cannot read transfer chunk: {error}"))),
-        };
-        bytes.truncate(read);
+        let remaining =
+            self.metadata.total_bytes - self.index as u64 * self.metadata.chunk_size as u64;
+        let mut bytes = vec![0_u8; remaining.min(self.metadata.chunk_size as u64) as usize];
+        if let Err(error) = self.file.read_exact(&mut bytes) {
+            self.index = self.metadata.total_chunks;
+            return Some(Err(format!("cannot read transfer chunk: {error}")));
+        }
         let chunk = (self.index, STANDARD.encode(bytes));
         self.index += 1;
         Some(Ok(chunk))
@@ -196,7 +214,12 @@ impl FileTransferReceiver {
         let bytes = STANDARD
             .decode(data)
             .map_err(|error| format!("invalid project chunk: {error}"))?;
-        if bytes.is_empty() || bytes.len() > transfer.metadata.chunk_size {
+        let expected_bytes = transfer
+            .metadata
+            .total_bytes
+            .saturating_sub(transfer.received_bytes)
+            .min(transfer.metadata.chunk_size as u64) as usize;
+        if bytes.is_empty() || bytes.len() != expected_bytes {
             return Err("project chunk size is invalid".into());
         }
         let received = transfer.received_bytes.saturating_add(bytes.len() as u64);

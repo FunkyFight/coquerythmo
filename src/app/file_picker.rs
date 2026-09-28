@@ -208,11 +208,13 @@ pub(crate) fn import_cappela_from_path(state: &mut State, path: PathBuf) {
     let fps = state.fps();
     match export::import_cappela(&path, fps) {
         Ok(data) => {
-            crate::application::edit_service::EditExecutor::apply_subtitle_import(
+            if crate::application::edit_service::EditExecutor::apply_subtitle_import(
                 &mut state.project_session,
                 data,
                 fps,
-            );
+            ) {
+                state.note_imported_band_timebase(crate::project::TimebaseAnchor::Timecode);
+            }
             state.project_session.project_path = None;
         }
         Err(e) => log::error!("Cappela import failed: {e}"),
@@ -246,11 +248,17 @@ pub(crate) fn import_subtitle_from_path(state: &mut State, path: PathBuf) {
                     "Subtitle import clipped to video duration: {clipped} shortened, {skipped} skipped"
                 );
             }
-            crate::application::edit_service::EditExecutor::apply_subtitle_import(
+            if crate::application::edit_service::EditExecutor::apply_subtitle_import(
                 &mut state.project_session,
                 data,
                 fps,
-            );
+            ) {
+                state.note_imported_band_timebase(if extension == "detx" {
+                    crate::project::TimebaseAnchor::Timecode
+                } else {
+                    crate::project::TimebaseAnchor::Clock
+                });
+            }
             state.project_session.project_path = None;
             state.show_toast(i18n::t("toast.subtitle_imported"), 4.0);
         }

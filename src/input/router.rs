@@ -204,13 +204,6 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
 
     router.bind(
         InputContext::Workspace,
-        KeyCode::Space,
-        Modifiers::NONE,
-        RepeatPolicy::PressAndRepeat,
-        UiAction::TogglePlayPause,
-    );
-    router.bind(
-        InputContext::Workspace,
         KeyCode::Escape,
         Modifiers::NONE,
         RepeatPolicy::PressOnly,
@@ -301,46 +294,6 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
     );
     router.bind(
         InputContext::Workspace,
-        KeyCode::Character('q'),
-        Modifiers::NONE,
-        RepeatPolicy::PressOnly,
-        UiAction::BeginKeyboardPan { direction: -1 },
-    );
-    router.bind(
-        InputContext::Workspace,
-        KeyCode::Character('d'),
-        Modifiers::NONE,
-        RepeatPolicy::PressOnly,
-        UiAction::BeginKeyboardPan { direction: 1 },
-    );
-    router.bind_release(
-        InputContext::Workspace,
-        KeyCode::Character('q'),
-        Modifiers::NONE,
-        UiAction::EndKeyboardPan,
-    );
-    router.bind_release(
-        InputContext::Workspace,
-        KeyCode::Character('d'),
-        Modifiers::NONE,
-        UiAction::EndKeyboardPan,
-    );
-    router.bind(
-        InputContext::Workspace,
-        KeyCode::ArrowLeft,
-        ctrl,
-        RepeatPolicy::PressAndRepeat,
-        UiAction::PrevFrame,
-    );
-    router.bind(
-        InputContext::Workspace,
-        KeyCode::ArrowRight,
-        ctrl,
-        RepeatPolicy::PressAndRepeat,
-        UiAction::NextFrame,
-    );
-    router.bind(
-        InputContext::Workspace,
         KeyCode::ArrowLeft,
         ctrl_shift,
         RepeatPolicy::PressAndRepeat,
@@ -352,20 +305,6 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         ctrl_shift,
         RepeatPolicy::PressAndRepeat,
         UiAction::NudgeSelectedLines { delta_frames: 1 },
-    );
-    router.bind(
-        InputContext::Workspace,
-        KeyCode::ArrowLeft,
-        shift,
-        RepeatPolicy::PressAndRepeat,
-        UiAction::NavigateLines { direction: -1 },
-    );
-    router.bind(
-        InputContext::Workspace,
-        KeyCode::ArrowRight,
-        shift,
-        RepeatPolicy::PressAndRepeat,
-        UiAction::NavigateLines { direction: 1 },
     );
     router.bind(
         InputContext::Workspace,
@@ -381,27 +320,83 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         RepeatPolicy::PressOnly,
         UiAction::MoveSelectedLineTrack { direction: 1 },
     );
-    router.bind(
-        InputContext::Workspace,
-        KeyCode::ArrowUp,
-        shift,
-        RepeatPolicy::PressAndRepeat,
-        UiAction::AdjustVolume(0.05),
-    );
-    router.bind(
-        InputContext::Workspace,
-        KeyCode::ArrowDown,
-        shift,
-        RepeatPolicy::PressAndRepeat,
-        UiAction::AdjustVolume(-0.05),
-    );
-    router.bind(
-        InputContext::Workspace,
-        KeyCode::NumpadSubtract,
-        shift,
-        RepeatPolicy::PressOnly,
-        UiAction::ToggleMute,
-    );
+    // Timeline navigation reads the same in the editing and recording
+    // workspaces; only the editing commands above are rythmo-specific.
+    for context in [InputContext::Workspace, InputContext::RecordingTimeline] {
+        for (key, modifiers, repeat, command) in [
+            (
+                KeyCode::Space,
+                Modifiers::NONE,
+                RepeatPolicy::PressAndRepeat,
+                UiAction::TogglePlayPause,
+            ),
+            (
+                KeyCode::Space,
+                shift,
+                RepeatPolicy::PressOnly,
+                UiAction::ToggleReversePlayback,
+            ),
+            (
+                KeyCode::Character('q'),
+                Modifiers::NONE,
+                RepeatPolicy::PressOnly,
+                UiAction::BeginKeyboardPan { direction: -1 },
+            ),
+            (
+                KeyCode::Character('d'),
+                Modifiers::NONE,
+                RepeatPolicy::PressOnly,
+                UiAction::BeginKeyboardPan { direction: 1 },
+            ),
+            (
+                KeyCode::ArrowLeft,
+                ctrl,
+                RepeatPolicy::PressAndRepeat,
+                UiAction::PrevFrame,
+            ),
+            (
+                KeyCode::ArrowRight,
+                ctrl,
+                RepeatPolicy::PressAndRepeat,
+                UiAction::NextFrame,
+            ),
+            (
+                KeyCode::ArrowLeft,
+                shift,
+                RepeatPolicy::PressAndRepeat,
+                UiAction::NavigateLines { direction: -1 },
+            ),
+            (
+                KeyCode::ArrowRight,
+                shift,
+                RepeatPolicy::PressAndRepeat,
+                UiAction::NavigateLines { direction: 1 },
+            ),
+            (
+                KeyCode::ArrowUp,
+                shift,
+                RepeatPolicy::PressAndRepeat,
+                UiAction::AdjustVolume(0.05),
+            ),
+            (
+                KeyCode::ArrowDown,
+                shift,
+                RepeatPolicy::PressAndRepeat,
+                UiAction::AdjustVolume(-0.05),
+            ),
+            (
+                KeyCode::NumpadSubtract,
+                shift,
+                RepeatPolicy::PressOnly,
+                UiAction::ToggleMute,
+            ),
+        ] {
+            router.bind(context, key, modifiers, repeat, command);
+        }
+        for key in [KeyCode::Character('q'), KeyCode::Character('d')] {
+            router.bind_release(context, key, Modifiers::NONE, UiAction::EndKeyboardPan);
+        }
+    }
     router.bind(
         InputContext::Global,
         KeyCode::Character('k'),
@@ -660,6 +655,56 @@ mod tests {
         assert!(router
             .resolve(&stroke(KeyCode::F5, Modifiers::NONE, true), &contexts)
             .is_none());
+    }
+
+    #[test]
+    fn recording_timeline_shares_rythmo_navigation_but_not_editing() {
+        let router = existing_shortcuts();
+        let recording = InputContextStack::new([
+            InputContext::Recording,
+            InputContext::RecordingTimeline,
+            InputContext::Global,
+        ]);
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::NONE
+        };
+        let resolve = |key, modifiers| router.resolve(&stroke(key, modifiers, false), &recording);
+
+        assert_eq!(
+            resolve(KeyCode::ArrowLeft, ctrl),
+            Some(&UiAction::PrevFrame)
+        );
+        assert_eq!(
+            resolve(KeyCode::ArrowRight, ctrl),
+            Some(&UiAction::NextFrame)
+        );
+        assert_eq!(
+            resolve(KeyCode::Character('q'), Modifiers::NONE),
+            Some(&UiAction::BeginKeyboardPan { direction: -1 })
+        );
+        assert_eq!(
+            resolve(KeyCode::Space, shift),
+            Some(&UiAction::ToggleReversePlayback)
+        );
+        assert_eq!(resolve(KeyCode::Numpad1, Modifiers::NONE), None);
+        assert_eq!(resolve(KeyCode::Character('i'), Modifiers::NONE), None);
+
+        let release = KeyStroke {
+            pressed: false,
+            ..stroke(KeyCode::Character('d'), Modifiers::NONE, false)
+        };
+        assert_eq!(
+            router.resolve(
+                &release,
+                &InputContextStack::new([InputContext::RecordingTimeline])
+            ),
+            Some(&UiAction::EndKeyboardPan)
+        );
     }
 
     #[test]

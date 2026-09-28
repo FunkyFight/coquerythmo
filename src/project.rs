@@ -376,6 +376,29 @@ struct StoredLanguageSnapshot {
     band: BandSnapshot,
 }
 
+/// Everything [`Project::restore_language`] needs to undo a band deletion.
+pub struct DeletedLanguage {
+    stored: StoredLanguageSnapshot,
+    order_index: usize,
+    was_active: bool,
+    export_index: Option<usize>,
+    export_audio: Option<AudioSelection>,
+}
+
+impl DeletedLanguage {
+    pub fn id(&self) -> LanguageId {
+        self.stored.language.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.stored.language.name
+    }
+
+    pub fn was_active(&self) -> bool {
+        self.was_active
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Character {
     pub name: String,
@@ -504,6 +527,90 @@ impl MediaLibrary {
         }
 
         Ok(())
+    }
+}
+
+/// What a band's frame positions keep when the timeline changes frame rate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimebaseAnchor {
+    /// Keep clock time: subtitles, JSON projects and hand-made edits.
+    Clock,
+    /// Keep `HH:MM:SS:FF` timecodes: DETX frame digits count at the video's
+    /// own rate, which stays unknown until the video is loaded.
+    Timecode,
+}
+
+/// Frames per timecode second. Non-drop-frame timecodes count 24 frames at
+/// 23.976 fps and 30 at 29.97 fps.
+pub fn nominal_timecode_fps(fps: f64) -> i64 {
+    fps.round().max(1.0) as i64
+}
+
+#[derive(Clone, Copy)]
+struct Retiming {
+    from_fps: f64,
+    to_fps: f64,
+    anchor: TimebaseAnchor,
+}
+
+impl Retiming {
+    fn clock_ratio(self) -> f64 {
+        self.to_fps / self.from_fps
+    }
+
+    fn frame(self, frame: i64) -> i64 {
+        match self.anchor {
+            TimebaseAnchor::Clock => (frame as f64 * self.clock_ratio()).round() as i64,
+            TimebaseAnchor::Timecode => {
+                let from = nominal_timecode_fps(self.from_fps);
+                let to = nominal_timecode_fps(self.to_fps);
+                // A frame digit the target rate cannot count stays at the end
+                // of its second, so positions keep their order.
+                frame.div_euclid(from) * to + frame.rem_euclid(from).min(to - 1)
+            }
+        }
+    }
+
+    fn position(self, frame: f64) -> f64 {
+        match self.anchor {
+            TimebaseAnchor::Clock => frame * self.clock_ratio(),
+            TimebaseAnchor::Timecode => {
+                let from = nominal_timecode_fps(self.from_fps) as f64;
+                let to = nominal_timecode_fps(self.to_fps) as f64;
+                let second = (frame / from).floor();
+                second * to + (frame - second * from).min(to)
+            }
+        }
+    }
+
+    fn band(
+        self,
+        lines: &mut HashMap<u64, RythmoLine>,
+        markers: &mut [RythmoMarker],
+        drawing: &mut RythmoDrawing,
+        settings: &mut ProjectSettings,
+    ) {
+        for line in lines.values_mut() {
+            let start = self.frame(line.start_frame);
+            let end = self.frame(line.end_frame());
+            line.start_frame = start;
+            line.duration_frames = (end - start).max(1);
+        }
+        for marker in markers {
+            marker.frame = self.frame(marker.frame);
+        }
+        for stroke in &mut drawing.strokes {
+            for (frame, _) in &mut stroke.points {
+                *frame = self.position(*frame);
+            }
+        }
+        // Audio stays on the clock whatever the band's anchor.
+        let ratio = self.clock_ratio();
+        settings.source_audio_offset_frames =
+            (settings.source_audio_offset_frames as f64 * ratio).round() as i64;
+        settings.instrumental_audio_offset_frames =
+            (settings.instrumental_audio_offset_frames as f64 * ratio).round() as i64;
+        settings.detections = settings.detections.scaled_time(ratio);
     }
 }
 
@@ -974,35 +1081,60 @@ impl Project {
     }
 
     pub fn delete_language(&mut self, id: LanguageId) -> bool {
+        self.take_language(id).is_some()
+    }
+
+    /// Delete a language and keep what [`Self::restore_language`] needs.
+    pub fn take_language(&mut self, id: LanguageId) -> Option<DeletedLanguage> {
         if self.language_order.len() <= 1 {
-            return false;
+            return None;
         }
-        let Some(index) = self
+        let index = self
             .language_order
             .iter()
-            .position(|language_id| *language_id == id)
-        else {
-            return false;
-        };
+            .position(|language_id| *language_id == id)?;
 
         let mut global_export_configuration = self.settings.export_configuration.clone();
+        let export_index = global_export_configuration
+            .selected_language_ids
+            .iter()
+            .position(|language_id| *language_id == id);
         global_export_configuration
             .selected_language_ids
             .retain(|language_id| *language_id != id);
-        global_export_configuration.audio_by_language.remove(&id);
+        let export_audio = global_export_configuration.audio_by_language.remove(&id);
 
-        self.language_order.remove(index);
         if id != self.active_language.id {
-            self.language_snapshots.remove(&id);
+            let stored = self.language_snapshots.remove(&id)?;
+            self.language_order.remove(index);
             self.settings.export_configuration = global_export_configuration;
-            return true;
+            return Some(DeletedLanguage {
+                stored,
+                order_index: index,
+                was_active: false,
+                export_index,
+                export_audio,
+            });
         }
 
-        let replacement_index = index.min(self.language_order.len() - 1);
-        let replacement_id = self.language_order[replacement_index];
-        let Some(mut replacement) = self.language_snapshots.remove(&replacement_id) else {
-            return false;
+        let replacement_index = if index + 1 < self.language_order.len() {
+            index + 1
+        } else {
+            index - 1
         };
+        let replacement_id = self.language_order[replacement_index];
+        let mut replacement = self.language_snapshots.remove(&replacement_id)?;
+        let deleted = DeletedLanguage {
+            stored: StoredLanguageSnapshot {
+                language: self.active_language.clone(),
+                band: self.current_band_snapshot(),
+            },
+            order_index: index,
+            was_active: true,
+            export_index,
+            export_audio,
+        };
+        self.language_order.remove(index);
         let previous_revision = self.revision;
         let highlight_read_word = self.settings.highlight_read_word;
         let scrolling_text_uses_character_color = self.settings.scrolling_text_uses_character_color;
@@ -1014,6 +1146,32 @@ impl Project {
             .scrolling_text_uses_character_color = scrolling_text_uses_character_color;
         self.active_language = replacement.language;
         self.restore_band_snapshot(replacement.band, previous_revision);
+        Some(deleted)
+    }
+
+    /// Undo [`Self::take_language`]: the band returns at its position, with
+    /// its export selection, and is selected again if it was active.
+    pub fn restore_language(&mut self, deleted: DeletedLanguage) -> bool {
+        let id = deleted.id();
+        if self.language_order.contains(&id) {
+            return false;
+        }
+        let export_configuration = &mut self.settings.export_configuration;
+        if let Some(index) = deleted.export_index {
+            let index = index.min(export_configuration.selected_language_ids.len());
+            export_configuration.selected_language_ids.insert(index, id);
+        }
+        if let Some(audio) = deleted.export_audio {
+            export_configuration.audio_by_language.insert(id, audio);
+        }
+        let index = deleted.order_index.min(self.language_order.len());
+        self.language_order.insert(index, id);
+        self.language_snapshots.insert(id, deleted.stored);
+        if deleted.was_active {
+            self.select_language(id);
+        } else {
+            self.bump_revision();
+        }
         true
     }
 
@@ -1878,6 +2036,48 @@ impl Project {
         }
     }
 
+    /// Re-express every language band counted at `from_fps` at `to_fps`.
+    /// `anchor` tells, per language, whether positions keep their clock time
+    /// or their timecode.
+    pub fn retime(
+        &mut self,
+        from_fps: f64,
+        to_fps: f64,
+        anchor: impl Fn(LanguageId) -> TimebaseAnchor,
+    ) {
+        let valid = |fps: f64| fps.is_finite() && fps > 0.0;
+        if !valid(from_fps)
+            || !valid(to_fps)
+            || crate::project_metadata::fps_matches(from_fps, to_fps)
+        {
+            return;
+        }
+        let retiming = |language| Retiming {
+            from_fps,
+            to_fps,
+            anchor: anchor(language),
+        };
+        retiming(self.active_language.id).band(
+            &mut self.line_map,
+            &mut self.markers,
+            &mut self.drawing,
+            &mut self.settings,
+        );
+        self.drawing_revision = self.drawing_revision.wrapping_add(1);
+        self.bump_revision();
+        for stored in self.language_snapshots.values_mut() {
+            let band = &mut stored.band;
+            retiming(stored.language.id).band(
+                &mut band.line_map,
+                &mut band.markers,
+                &mut band.drawing,
+                &mut band.settings,
+            );
+            band.revision = band.revision.wrapping_add(1);
+            band.drawing_revision = band.drawing_revision.wrapping_add(1);
+        }
+    }
+
     // -- Character management --
 
     pub fn set_character(&mut self, line_id: u64, name: String, color: [f32; 4]) {
@@ -2511,6 +2711,48 @@ mod tests {
     }
 
     #[test]
+    fn restoring_the_active_deleted_band_brings_back_its_place_text_and_export_choice() {
+        let mut project = Project::new_with_language("Français", "fr-fr");
+        let french_id = project.active_language_id();
+        let line_id = project.add_line_full(0, 24, 0.25, "Bonjour".into(), "A".into(), [1.0; 4]);
+        let english_id = project.create_language_named("English");
+        let spanish_id = project.create_language_named("Español");
+        assert!(project.select_language(english_id));
+        project.get_line_mut(line_id).unwrap().text = "Hello".into();
+        let order = vec![french_id, english_id, spanish_id];
+        let export_ids = project.settings().export_configuration.selected_language_ids.clone();
+
+        let deleted = project.take_language(english_id).unwrap();
+        assert_eq!(project.active_language_id(), spanish_id);
+        assert!(project.language(english_id).is_none());
+
+        assert!(project.restore_language(deleted));
+        assert_eq!(project.active_language_id(), english_id);
+        assert_eq!(project.get_line(line_id).unwrap().text, "Hello");
+        let restored_order: Vec<_> = project.languages().iter().map(|l| l.id).collect();
+        assert_eq!(restored_order, order);
+        assert_eq!(
+            project.settings().export_configuration.selected_language_ids,
+            export_ids
+        );
+    }
+
+    #[test]
+    fn restoring_an_inactive_deleted_band_keeps_the_active_one() {
+        let mut project = Project::new_with_language("Français", "fr-fr");
+        let french_id = project.active_language_id();
+        let english_id = project.create_language_named("English");
+        assert!(project.select_language(french_id));
+
+        let deleted = project.take_language(english_id).unwrap();
+        assert!(!deleted.was_active());
+        assert!(project.restore_language(deleted));
+
+        assert_eq!(project.active_language_id(), french_id);
+        assert_eq!(project.language(english_id).unwrap().name, "English");
+    }
+
+    #[test]
     fn creating_language_preserves_manual_syllable_timings() {
         let mut project = Project::new_with_language("Français", "fr-fr");
         let french_id = project.active_language_id();
@@ -2797,5 +3039,56 @@ mod tests {
         assert!(project.remove_media_audio(audio));
         assert_eq!(project.language_instrumental_audio_path(french), None);
         assert_eq!(project.language_instrumental_audio_path(english), None);
+    }
+
+    #[test]
+    fn retime_keeps_clock_or_timecode_per_language() {
+        let mut project = Project::new();
+        let subtitles = project.active_language_id();
+        // 10.000 s -> 11.433 s at 30 fps.
+        project.add_line(300, 43, 0.25);
+        project.adjust_source_audio_offset(-60);
+        project.add_drawing_stroke(DrawingStroke {
+            id: 1,
+            points: vec![(300.0, 0.5), (345.0, 0.5)],
+            color: [1.0; 4],
+            radius_frac: 0.1,
+        });
+        let detx = project.create_language_named("English");
+        project.clear_lines();
+        // 00:00:10:20 -> 00:00:11:06, counted at 30 fps.
+        project.add_line(320, 16, 0.25);
+
+        project.retime(30.0, 25.0, |language| {
+            if language == detx {
+                TimebaseAnchor::Timecode
+            } else {
+                TimebaseAnchor::Clock
+            }
+        });
+
+        let line = project.lines().next().unwrap();
+        assert_eq!((line.start_frame, line.duration_frames), (270, 11));
+        assert!(project.select_language(subtitles));
+        let line = project.lines().next().unwrap();
+        assert_eq!((line.start_frame, line.duration_frames), (250, 36));
+        assert_eq!(project.settings().source_audio_offset_frames, -50);
+        assert_eq!(
+            project.drawing().strokes[0].points,
+            vec![(250.0, 0.5), (287.5, 0.5)]
+        );
+    }
+
+    #[test]
+    fn timecode_retime_keeps_positions_ordered() {
+        let retiming = Retiming {
+            from_fps: 30.0,
+            to_fps: 25.0,
+            anchor: TimebaseAnchor::Timecode,
+        };
+        let frames: Vec<_> = (0..90).map(|frame| retiming.frame(frame)).collect();
+        assert!(frames.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert_eq!(retiming.frame(29), 24);
+        assert_eq!(retiming.frame(30), 25);
     }
 }

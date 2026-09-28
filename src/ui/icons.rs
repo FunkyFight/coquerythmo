@@ -160,6 +160,7 @@ impl IconAtlas {
         let entries = vec![
             AtlasEntry::svg("pause", include_bytes!("../icons/pause.svg")),
             AtlasEntry::svg("resume", include_bytes!("../icons/resume.svg")),
+            AtlasEntry::flipped_svg("play_reverse", include_bytes!("../icons/resume.svg")),
             AtlasEntry::svg("select-mode", include_bytes!("../icons/select-mode.svg")),
             AtlasEntry::svg("draw-mode", include_bytes!("../icons/draw-mode.svg")),
             AtlasEntry::svg("eraser", include_bytes!("../icons/eraser.svg")),

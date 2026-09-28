@@ -56,6 +56,10 @@ impl ProjectTransferModal {
             (status.transferred_bytes.saturating_mul(100) / status.total_bytes).min(100)
         };
         self.phase_label = match status.phase.as_str() {
+            "uploading" => format!(
+                "{} - {percent} %",
+                t("recording.project_transfer.uploading")
+            ),
             "transferring" => format!(
                 "{} - {percent} %",
                 t("recording.project_transfer.receiving")
@@ -252,7 +256,15 @@ impl ProjectTransferModal {
             font_family_override: None,
         });
         let summary = if self.is_director {
-            t("recording.project_transfer.waiting")
+            if self
+                .status
+                .as_ref()
+                .is_none_or(|status| status.phase == "uploading")
+            {
+                t("recording.project_transfer.uploading")
+            } else {
+                t("recording.project_transfer.server_ready")
+            }
         } else {
             t("recording.project_transfer_request_received")
         };
@@ -312,8 +324,10 @@ impl ProjectTransferModal {
             });
         }
         if let Some(status) = &self.status {
-            // Collecting responses is not file transfer yet.
-            if matches!(status.phase.as_str(), "transferring" | "finishing") {
+            if matches!(
+                status.phase.as_str(),
+                "uploading" | "transferring" | "finishing"
+            ) {
                 let progress = if status.total_bytes == 0 {
                     0.0
                 } else {

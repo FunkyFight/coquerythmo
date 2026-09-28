@@ -347,7 +347,6 @@ pub fn run(startup: Option<super::StartupInput>) {
                                     &mut state,
                                     elwt,
                                 );
-                                state.broadcast_finalize();
                             }
                         },
                         WindowEvent::KeyboardInput { event, .. } => {
@@ -565,10 +564,14 @@ pub fn run(startup: Option<super::StartupInput>) {
                     // Release-driven commands (notably continuous Q/D panning)
                     // must be routed even though text input only consumes presses.
                     if event.state == ElementState::Released {
-                        if !state.is_editing_text()
-                            && !state.captures_modal_input()
-                            && state.active_workspace() == WorkspaceId::Rythmo
-                        {
+                        let timeline_context = match state.active_workspace() {
+                            WorkspaceId::Rythmo => Some(InputContext::Workspace),
+                            WorkspaceId::Recording => Some(InputContext::RecordingTimeline),
+                            _ => None,
+                        };
+                        if let Some(timeline_context) = timeline_context.filter(|_| {
+                            !state.is_editing_text() && !state.captures_modal_input()
+                        }) {
                             if let Some(stroke) = KeyStroke::from_winit(
                                 &event,
                                 keyboard_modifiers,
@@ -577,7 +580,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                                 if let Some(action) = shortcuts
                                     .resolve(
                                         &stroke,
-                                        &InputContextStack::new([InputContext::Workspace]),
+                                        &InputContextStack::new([timeline_context]),
                                     )
                                     .cloned()
                                 {
@@ -886,7 +889,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                             && !state.captures_modal_input()
                             && !state.is_editing_text()
                             && !state.side_panel_open()
-                            && !state.file_tree_open()
+                            && !state.file_tree_focused()
                             && state.has_keyboard_focus()
                         {
                             dispatch(
@@ -917,7 +920,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                             state.request_redraw();
                             return;
                         }
-                        if state.file_tree_open()
+                        if state.file_tree_focused()
                             && !event.repeat
                             && matches!(event.logical_key, Key::Named(NamedKey::F2))
                         {
@@ -929,7 +932,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                             state.request_redraw();
                             return;
                         }
-                        if (state.side_panel_open() || state.file_tree_open()) && ctrl_held {
+                        if (state.side_panel_open() || state.file_tree_focused()) && ctrl_held {
                             if state.is_editing_text()
                                 && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v"))
                             {
@@ -986,7 +989,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                                 return;
                             }
                         }
-                        if (state.side_panel_open() || state.file_tree_open()) && !ctrl_held {
+                        if (state.side_panel_open() || state.file_tree_focused()) && !ctrl_held {
                             let panel_event = match &event.logical_key {
                                 Key::Named(NamedKey::Escape) => Some(UiEvent::KeyInput {
                                     text: "\x1b".to_string(),
@@ -1545,8 +1548,6 @@ pub fn run(startup: Option<super::StartupInput>) {
                                 dispatch(UiEvent::MouseRelease {
                                     x: cursor_pos.0, y: cursor_pos.1,
                                 }, &mut state, elwt);
-                                // Broadcast coalesced command on drag end
-                                state.broadcast_finalize();
                             }
                     }
                 }

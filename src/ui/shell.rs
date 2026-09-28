@@ -662,6 +662,11 @@ pub(crate) fn build_toolbar(ctx: ToolbarBuildContext<'_>) -> Vec<Box<dyn Widget>
             || EventResponse::Action(UiAction::PrevFrame),
             "toolbar.prev_frame"
         );
+        btn!(
+            "play_reverse",
+            || EventResponse::Action(UiAction::ToggleReversePlayback),
+            "toolbar.play_reverse"
+        );
         let play_uv = if ctx.playing {
             icon_uv(ctx.icon_uvs, "pause")
         } else {

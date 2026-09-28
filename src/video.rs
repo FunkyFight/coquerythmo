@@ -1,6 +1,6 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, RwLock};
@@ -27,6 +27,17 @@ pub enum AudioTrack {
     Instrumental,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaybackDirection {
+    Forward,
+    Reverse,
+}
+
+/// Memory FFmpeg may hold, as YUV 4:2:0 frames, to reverse one video chunk.
+const REVERSE_CHUNK_BYTES: usize = 96 * 1024 * 1024;
+/// Seconds of audio FFmpeg reverses at once.
+const REVERSE_AUDIO_CHUNK_SECONDS: f64 = 1.0;
+
 fn ffmpeg_command() -> Command {
     crate::media_binary::command("ffmpeg")
 }
@@ -50,6 +61,8 @@ pub struct VideoPlayer {
     height: u32,
     fps: f64,
     playing: bool,
+    /// Direction of the current playback; meaningless while paused.
+    direction: PlaybackDirection,
     playback_start_time: Option<Instant>,
     playback_start_frame: i64,
     playback_start_audio_frame: u64,
@@ -117,6 +130,8 @@ struct AudioOutputState {
     /// feed. Updated on every seek so the recording mix stays in sync while
     /// the output stream itself persists.
     timeline_start_bits: AtomicU64,
+    /// The feed plays the timeline backward from `timeline_start_bits`.
+    reverse: AtomicBool,
     /// When false, playback progress falls back to wall time (audio deferred
     /// by a positive offset, or decoders stopped by a seek).
     clock_active: AtomicBool,
@@ -131,6 +146,7 @@ impl AudioOutputState {
             frames_written: AtomicU64::new(0),
             underruns: AtomicU64::new(0),
             timeline_start_bits: AtomicU64::new(0.0f64.to_bits()),
+            reverse: AtomicBool::new(false),
             clock_active: AtomicBool::new(true),
             snapshot: Mutex::new(AudioClockSnapshot {
                 wall_instant: Instant::now(),
@@ -143,9 +159,11 @@ impl AudioOutputState {
     /// Restart the clock for a decoder feed that begins at
     /// `timeline_start_seconds`. Used on every seek while the output stream
     /// itself stays alive.
-    fn reset(&self, timeline_start_seconds: f64) {
+    fn reset(&self, timeline_start_seconds: f64, direction: PlaybackDirection) {
         self.timeline_start_bits
             .store(timeline_start_seconds.to_bits(), Ordering::Relaxed);
+        self.reverse
+            .store(direction == PlaybackDirection::Reverse, Ordering::Relaxed);
         self.frames_written.store(0, Ordering::Relaxed);
         self.clock_active.store(true, Ordering::Relaxed);
         if let Ok(mut snapshot) = self.snapshot.lock() {
@@ -159,6 +177,16 @@ impl AudioOutputState {
 
     fn timeline_start_seconds(&self) -> f64 {
         f64::from_bits(self.timeline_start_bits.load(Ordering::Relaxed))
+    }
+
+    /// Timeline position of the feed sample `frames` after its first one.
+    fn timeline_seconds_after(&self, frames: u64) -> f64 {
+        let elapsed = frames as f64 / f64::from(self.sample_rate);
+        if self.reverse.load(Ordering::Relaxed) {
+            self.timeline_start_seconds() - elapsed
+        } else {
+            self.timeline_start_seconds() + elapsed
+        }
     }
 
     fn set_clock_active(&self, active: bool) {
@@ -237,6 +265,7 @@ impl VideoPlayer {
             height: 0,
             fps: 30.0,
             playing: false,
+            direction: PlaybackDirection::Forward,
             playback_start_time: None,
             playback_start_frame: 0,
             playback_start_audio_frame: 0,
@@ -379,6 +408,11 @@ impl VideoPlayer {
     }
 
     pub fn set_instrumental_audio_path(&mut self, path: Option<PathBuf>) {
+        // Remote document edits reapply all audio settings, including while drawing.
+        // Keep the decoded peaks and the current audio feed when the media is unchanged.
+        if self.instrumental_audio_path == path {
+            return;
+        }
         self.instrumental_audio_path = path;
         if self.active_audio_track == AudioTrack::Instrumental
             && self.instrumental_audio_path.is_none()
@@ -419,9 +453,12 @@ impl VideoPlayer {
     }
 
     pub fn set_audio_offsets(&mut self, source_frames: i64, instrumental_frames: i64) {
+        let previous_active_offset = self.active_audio_offset_frames();
         self.source_audio_offset_frames = source_frames;
         self.instrumental_audio_offset_frames = instrumental_frames;
-        self.reload_audio_at_current_frame();
+        if self.active_audio_offset_frames() != previous_active_offset {
+            self.reload_audio_at_current_frame();
+        }
     }
 
     pub fn adjust_active_audio_offset(&mut self, delta_frames: i64) {
@@ -461,6 +498,9 @@ impl VideoPlayer {
     }
 
     pub fn toggle(&mut self) -> bool {
+        if self.is_playing_reverse() {
+            return self.toggle_reverse();
+        }
         if self.finished {
             return false;
         }
@@ -476,6 +516,7 @@ impl VideoPlayer {
 
         self.playing = !self.playing;
         if self.playing {
+            self.direction = PlaybackDirection::Forward;
             if self.receiver.is_none() {
                 let ts = self.current_frame as f64 / self.fps;
                 self.start_decoders_at(ts, true);
@@ -509,6 +550,42 @@ impl VideoPlayer {
 
     pub fn is_playing(&self) -> bool {
         self.playing
+    }
+
+    pub fn is_playing_reverse(&self) -> bool {
+        self.playing && self.direction == PlaybackDirection::Reverse
+    }
+
+    /// Play backward from the current frame, or pause a backward playback.
+    /// Video and audio are decoded in reversed chunks: intra-frame codecs and
+    /// proxies stay smooth, long-GOP sources may stutter at chunk boundaries.
+    pub fn toggle_reverse(&mut self) -> bool {
+        let now = Instant::now();
+        if self
+            .last_toggle
+            .is_some_and(|last| now.duration_since(last).as_millis() < 50)
+        {
+            return false;
+        }
+        if self.is_playing_reverse() {
+            self.last_toggle = Some(now);
+            self.playing = false;
+            self.stop_decoders();
+            return true;
+        }
+        if self.audio_only || self.path.is_none() || self.current_frame <= 0 {
+            return false;
+        }
+        self.last_toggle = Some(now);
+        self.stop_decoders();
+        self.playing = true;
+        self.direction = PlaybackDirection::Reverse;
+        self.finished = false;
+        // The decoder sends the current frame first; the clock starts on it.
+        self.start_reverse_decoders();
+        self.waiting_for_first_frame = true;
+        self.playback_start_time = None;
+        true
     }
 
     /// Stop playback and discard its buffered frames before an interactive seek.
@@ -565,8 +642,13 @@ impl VideoPlayer {
             return;
         }
 
-        let timestamp = self.current_frame as f64 / self.fps.max(1.0);
-        self.start_decoders_at(timestamp, true);
+        match self.direction {
+            PlaybackDirection::Forward => {
+                let timestamp = self.current_frame as f64 / self.fps.max(1.0);
+                self.start_decoders_at(timestamp, true);
+            }
+            PlaybackDirection::Reverse => self.start_reverse_decoders(),
+        }
         self.waiting_for_first_frame = true;
         self.playback_start_time = None;
     }
@@ -659,6 +741,16 @@ impl VideoPlayer {
         let Some(target_playback_frame) = self.playback_frame_at(now) else {
             return;
         };
+        if self.direction == PlaybackDirection::Reverse {
+            self.advance_reverse_playback(
+                target_playback_frame,
+                device,
+                queue,
+                bind_group_layout,
+                sampler,
+            );
+            return;
+        }
         self.start_pending_audio_if_due(target_playback_frame, now);
         let target_render_frame = self.clamp_render_frame(target_playback_frame);
         let target_frame = target_render_frame.floor() as i64;
@@ -716,6 +808,47 @@ impl VideoPlayer {
         }
     }
 
+    /// Consume reversed frames down to `target_playback_frame` and stop on the
+    /// first frame of the video.
+    fn advance_reverse_playback(
+        &mut self,
+        target_playback_frame: f64,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+    ) {
+        let target_frame = self.clamp_render_frame(target_playback_frame).floor() as i64;
+        let mut last_frame = None;
+        let mut exhausted = false;
+        if let Some(rx) = &self.receiver {
+            while self.current_frame > target_frame {
+                match rx.try_recv() {
+                    Ok(frame) => {
+                        if let Some(previous) = last_frame.replace(frame) {
+                            recycle_frame(previous, self.frame_recycler.as_ref());
+                        }
+                        self.current_frame -= 1;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        exhausted = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(frame) = last_frame {
+            self.upload_frame(&frame, device, queue, bind_group_layout, sampler);
+            recycle_frame(frame, self.frame_recycler.as_ref());
+        }
+        if self.current_frame <= 0 || exhausted {
+            self.playing = false;
+            self.stop_decoders();
+            log::info!("Reverse playback stopped at frame {}", self.current_frame);
+        }
+    }
+
     fn consume_current_decoder_frame_at(
         &mut self,
         now: Instant,
@@ -750,7 +883,7 @@ impl VideoPlayer {
     }
 
     fn try_start_playback_clock(&mut self, now: Instant) {
-        if !self.audio_should_wait_at(self.current_frame as f64 / self.fps.max(1.0)) {
+        if self.audio_gates_playback_clock() {
             let Some(ready) = self.audio_ready.as_ref() else {
                 return;
             };
@@ -760,6 +893,17 @@ impl VideoPlayer {
         }
         self.waiting_for_first_frame = false;
         self.start_playback_clock(now);
+    }
+
+    /// Whether the playback clock waits for the audio prebuffer.
+    fn audio_gates_playback_clock(&self) -> bool {
+        match self.direction {
+            PlaybackDirection::Forward => {
+                !self.audio_should_wait_at(self.current_frame as f64 / self.fps.max(1.0))
+            }
+            // Backward playback before the audio's start has no feed to wait for.
+            PlaybackDirection::Reverse => self.audio_ready.is_some(),
+        }
     }
 
     fn start_playback_clock(&mut self, now: Instant) {
@@ -772,7 +916,9 @@ impl VideoPlayer {
             .map(|clock| clock.audible_frame_at(now))
             .unwrap_or(0);
 
-        if self.audio_should_wait_at(self.current_frame as f64 / self.fps.max(1.0)) {
+        if self.direction == PlaybackDirection::Forward
+            && self.audio_should_wait_at(self.current_frame as f64 / self.fps.max(1.0))
+        {
             self.defer_audio_start();
         } else if let Some(stream) = &self.audio_stream {
             if let Err(e) = stream.play() {
@@ -810,8 +956,12 @@ impl VideoPlayer {
     }
 
     fn playback_frame_at(&self, now: Instant) -> Option<f64> {
-        let elapsed = self.playback_elapsed_seconds_at(now)?;
-        Some(self.playback_start_frame as f64 + elapsed * self.fps)
+        let elapsed_frames = self.playback_elapsed_seconds_at(now)? * self.fps;
+        let start = self.playback_start_frame as f64;
+        Some(match self.direction {
+            PlaybackDirection::Forward => start + elapsed_frames,
+            PlaybackDirection::Reverse => start - elapsed_frames,
+        })
     }
 
     fn playback_render_frame_at(&self, now: Instant) -> Option<f64> {
@@ -858,11 +1008,34 @@ impl VideoPlayer {
     }
 
     fn start_decoders_at(&mut self, timestamp: f64, with_audio: bool) {
+        self.spawn_video_decoder(move |path, width, height, tx, free_rx, kill| {
+            decode_video_stream_from(path, width, height, timestamp, tx, free_rx, kill);
+        });
+        if with_audio {
+            self.start_audio_at(timestamp);
+        }
+    }
+
+    /// Decode backward from the current frame, which the decoder sends first.
+    fn start_reverse_decoders(&mut self) {
+        let fps = self.fps;
+        let first_frame = self.current_frame;
+        self.spawn_video_decoder(move |path, width, height, tx, free_rx, kill| {
+            decode_video_reverse_from(path, width, height, fps, first_frame, tx, free_rx, kill);
+        });
+        self.start_reverse_audio_at(first_frame as f64 / fps.max(1.0));
+    }
+
+    fn spawn_video_decoder<F>(&mut self, decode: F)
+    where
+        F: FnOnce(PathBuf, u32, u32, SyncSender<VideoFrame>, Receiver<Vec<u8>>, Arc<AtomicBool>)
+            + Send
+            + 'static,
+    {
         // Fresh kill signal for new decoders
         self.kill_signal = Arc::new(AtomicBool::new(false));
 
         if let Some(path) = self.path.clone() {
-            // Video decoder
             let frame_size = (self.width * self.height * 4) as usize;
             let (tx, rx) = mpsc::sync_channel::<VideoFrame>(3);
             let (free_tx, free_rx) = mpsc::sync_channel::<Vec<u8>>(3);
@@ -874,9 +1047,7 @@ impl VideoPlayer {
             let w = self.width;
             let h = self.height;
             let kill = self.kill_signal.clone();
-            let vid_handle = thread::spawn(move || {
-                decode_video_stream_from(path, w, h, timestamp, tx, free_rx, kill);
-            });
+            let vid_handle = thread::spawn(move || decode(path, w, h, tx, free_rx, kill));
             self.receiver = Some(rx);
             self.receiver_has_current_frame = true;
             self.frame_recycler = Some(free_tx);
@@ -886,10 +1057,6 @@ impl VideoPlayer {
             self.receiver_has_current_frame = false;
             self.frame_recycler = None;
             self.decoder_handle = None;
-        }
-
-        if with_audio {
-            self.start_audio_at(timestamp);
         }
     }
 
@@ -907,6 +1074,7 @@ impl VideoPlayer {
                 &audio_path,
                 self.audio_timestamp_for_video_timestamp(video_timestamp),
                 video_timestamp,
+                PlaybackDirection::Forward,
             )
             .is_ok()
         {
@@ -915,6 +1083,41 @@ impl VideoPlayer {
                 if let Some(stream) = &self.audio_stream {
                     let _ = stream.pause();
                 }
+            }
+        }
+    }
+
+    /// Feed the audio backward from `video_timestamp`. The playback clock
+    /// starts the paused stream once the reversed prebuffer is ready.
+    fn start_reverse_audio_at(&mut self, video_timestamp: f64) {
+        self.pending_audio_start_at = None;
+        self.detach_audio_feed();
+        if let Some(clock) = &self.audio_clock {
+            clock.freeze();
+            clock.set_clock_active(false);
+        }
+        if let Some(stream) = &self.audio_stream {
+            let _ = stream.pause();
+        }
+        let offset_seconds = self.active_audio_offset_frames() as f64 / self.fps.max(1.0);
+        let audio_timestamp = video_timestamp - offset_seconds;
+        // Before the audio's own start there is nothing to hear: the wall
+        // clock drives playback.
+        let Some(audio_path) = self.active_audio_path().filter(|_| audio_timestamp > 0.0) else {
+            return;
+        };
+        if self
+            .setup_audio_from(
+                &audio_path,
+                audio_timestamp,
+                video_timestamp,
+                PlaybackDirection::Reverse,
+            )
+            .is_ok()
+        {
+            self.set_volume(self.volume);
+            if let Some(stream) = &self.audio_stream {
+                let _ = stream.pause();
             }
         }
     }
@@ -969,6 +1172,7 @@ impl VideoPlayer {
                 &audio_path,
                 self.audio_timestamp_for_video_timestamp(video_timestamp),
                 video_timestamp,
+                PlaybackDirection::Forward,
             )
             .is_ok()
         {
@@ -987,6 +1191,12 @@ impl VideoPlayer {
     }
 
     fn reload_audio_at_current_frame(&mut self) {
+        if self.is_playing_reverse() {
+            self.start_reverse_audio_at(self.current_frame as f64 / self.fps.max(1.0));
+            self.playback_start_time = None;
+            self.waiting_for_first_frame = true;
+            return;
+        }
         let Some(audio_path) = self.active_audio_path() else {
             return;
         };
@@ -1010,7 +1220,12 @@ impl VideoPlayer {
 
         let timestamp = self.audio_timestamp_for_video_timestamp(video_timestamp);
         if self
-            .setup_audio_from(&audio_path, timestamp, video_timestamp)
+            .setup_audio_from(
+                &audio_path,
+                timestamp,
+                video_timestamp,
+                PlaybackDirection::Forward,
+            )
             .is_ok()
         {
             self.set_volume(self.volume);
@@ -1105,6 +1320,7 @@ impl VideoPlayer {
         path: &Path,
         decode_timestamp: f64,
         timeline_start_seconds: f64,
+        direction: PlaybackDirection,
     ) -> Result<(), String> {
         let (audio_tx, audio_rx) = mpsc::sync_channel::<Vec<f32>>(24);
         let path_clone = path.to_path_buf();
@@ -1121,7 +1337,7 @@ impl VideoPlayer {
             // new one. This is important when rewinding: the old decoder may
             // already have queued chunks that otherwise play after the seek.
             self.audio_feed_generation.fetch_add(1, Ordering::AcqRel);
-            clock.reset(timeline_start_seconds);
+            clock.reset(timeline_start_seconds, direction);
             {
                 // Replacing the receiver disconnects the previous decoder's
                 // sender, which makes its thread kill its ffmpeg and exit.
@@ -1130,15 +1346,14 @@ impl VideoPlayer {
                 };
                 *guard = Some(audio_rx);
             }
-            let audio_handle = thread::spawn(move || {
-                decode_audio_stream_from(
-                    path_clone,
-                    decode_timestamp,
-                    sample_rate,
-                    audio_tx,
-                    decoder_ready,
-                );
-            });
+            let audio_handle = spawn_audio_decoder(
+                direction,
+                path_clone,
+                decode_timestamp,
+                sample_rate,
+                audio_tx,
+                decoder_ready,
+            );
             self.audio_thread = Some(audio_handle);
             self.audio_ready = Some(audio_ready);
             return Ok(());
@@ -1155,15 +1370,14 @@ impl VideoPlayer {
         let sample_rate = config.sample_rate.0;
         let channels = config.channels as usize;
 
-        let audio_handle = thread::spawn(move || {
-            decode_audio_stream_from(
-                path_clone,
-                decode_timestamp,
-                sample_rate,
-                audio_tx,
-                decoder_ready,
-            );
-        });
+        let audio_handle = spawn_audio_decoder(
+            direction,
+            path_clone,
+            decode_timestamp,
+            sample_rate,
+            audio_tx,
+            decoder_ready,
+        );
 
         let output_volume = if self.has_recording_mix() {
             1.0
@@ -1171,7 +1385,7 @@ impl VideoPlayer {
             self.volume
         };
         let state = Arc::new(AudioOutputState::new(sample_rate, output_volume));
-        state.reset(timeline_start_seconds);
+        state.reset(timeline_start_seconds, direction);
         let slot = Arc::new(Mutex::new(Some(audio_rx)));
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => build_audio_stream::<f32>(
@@ -1482,8 +1696,7 @@ fn write_audio_output<T>(
             }
         };
         let stereo = recording_mix.as_ref().map_or(source, |mix| {
-            let timeline_seconds = state.timeline_start_seconds()
-                + (frames_before + index as u64) as f64 / f64::from(sample_rate);
+            let timeline_seconds = state.timeline_seconds_after(frames_before + index as u64);
             mix.mix_stereo(timeline_seconds, source)
         });
         write_output_frame(frame, stereo, volume);
@@ -1672,38 +1885,131 @@ fn decode_video_stream_from(
         }
     };
 
-    let stdout = child.stdout.take().unwrap();
-    let mut reader =
-        std::io::BufReader::with_capacity(width as usize * height as usize * 4, stdout);
-
-    loop {
-        // Check kill signal
-        if kill.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return;
-        }
-        let mut frame_data = match free_rx.recv() {
-            Ok(buf) => buf,
-            Err(_) => break,
-        };
-        match reader.read_exact(&mut frame_data) {
-            Ok(()) => {
-                let frame = VideoFrame {
-                    data: frame_data,
-                    width,
-                    height,
-                };
-                if tx.send(frame).is_err() {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-
+    pipe_video_frames(&mut child, width, height, &tx, &free_rx, &kill);
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Forward raw frames from an FFmpeg child until its output ends. Returns
+/// false once playback no longer wants frames.
+fn pipe_video_frames(
+    child: &mut Child,
+    width: u32,
+    height: u32,
+    tx: &SyncSender<VideoFrame>,
+    free_rx: &Receiver<Vec<u8>>,
+    kill: &AtomicBool,
+) -> bool {
+    let Some(stdout) = child.stdout.take() else {
+        return false;
+    };
+    let mut reader =
+        std::io::BufReader::with_capacity(width as usize * height as usize * 4, stdout);
+    loop {
+        if kill.load(Ordering::Relaxed) {
+            return false;
+        }
+        let Ok(mut frame_data) = free_rx.recv() else {
+            return false;
+        };
+        if reader.read_exact(&mut frame_data).is_err() {
+            return true;
+        }
+        let frame = VideoFrame {
+            data: frame_data,
+            width,
+            height,
+        };
+        if tx.send(frame).is_err() {
+            return false;
+        }
+    }
+}
+
+/// Frames per reversed chunk, bounded so FFmpeg's reverse buffer stays small.
+fn reverse_chunk_frames(width: u32, height: u32, fps: f64) -> i64 {
+    let frame_bytes = (width as usize * height as usize * 3 / 2).max(1);
+    let by_memory = (REVERSE_CHUNK_BYTES / frame_bytes) as i64;
+    by_memory.clamp(8, (fps.round() as i64 * 2).max(8))
+}
+
+/// Send frames `first_frame`, `first_frame - 1`, … down to 0. FFmpeg decodes
+/// each chunk forward and reverses it; the next chunk is spawned before the
+/// current one is read so its decode overlaps playback.
+#[allow(clippy::too_many_arguments)]
+fn decode_video_reverse_from(
+    path: PathBuf,
+    width: u32,
+    height: u32,
+    fps: f64,
+    first_frame: i64,
+    tx: SyncSender<VideoFrame>,
+    free_rx: Receiver<Vec<u8>>,
+    kill: Arc<AtomicBool>,
+) {
+    let chunk = reverse_chunk_frames(width, height, fps);
+    let spawn = |last: i64| {
+        let start = (last + 1 - chunk).max(0);
+        (
+            start,
+            spawn_reversed_video_chunk(&path, fps, start, last + 1 - start),
+        )
+    };
+    let mut next = Some(spawn(first_frame.max(0)));
+    while let Some((start, child)) = next.take() {
+        let Some(mut child) = child else {
+            break;
+        };
+        if start > 0 {
+            next = Some(spawn(start - 1));
+        }
+        let wanted = pipe_video_frames(&mut child, width, height, &tx, &free_rx, &kill);
+        let _ = child.kill();
+        let _ = child.wait();
+        if !wanted {
+            break;
+        }
+    }
+    if let Some((_, Some(mut child))) = next {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn spawn_reversed_video_chunk(path: &Path, fps: f64, start: i64, count: i64) -> Option<Child> {
+    let fps = fps.max(1.0);
+    // Seek half a frame early so timestamp rounding never drops the first
+    // frame; `trim` then keeps exactly `count` frames.
+    let seek = ((start as f64 - 0.5) / fps).max(0.0);
+    let duration = (count + 2) as f64 / fps;
+    ffmpeg_command()
+        .args([
+            "-ss",
+            &format!("{seek:.6}"),
+            "-t",
+            &format!("{duration:.6}"),
+        ])
+        .arg("-i")
+        .arg(path)
+        .args([
+            "-an",
+            "-sn",
+            "-dn",
+            "-vf",
+            &format!("trim=end_frame={count},reverse"),
+            "-pix_fmt",
+            VIDEO_PIX_FMT,
+            "-f",
+            "rawvideo",
+            "-v",
+            "error",
+            "pipe:1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| log::error!("Failed to spawn ffmpeg reverse video decoder: {e}"))
+        .ok()
 }
 
 fn decode_audio_stream_from(
@@ -1747,12 +2053,38 @@ fn decode_audio_stream_from(
         }
     };
 
-    let stdout = child.stdout.take().unwrap();
+    if let Some(stdout) = child.stdout.take() {
+        pipe_pcm(stdout, &tx, &ready);
+    }
+    ready.store(true, Ordering::Release);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn spawn_audio_decoder(
+    direction: PlaybackDirection,
+    path: PathBuf,
+    timestamp: f64,
+    sample_rate: u32,
+    tx: SyncSender<Vec<f32>>,
+    ready: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    thread::spawn(move || match direction {
+        PlaybackDirection::Forward => {
+            decode_audio_stream_from(path, timestamp, sample_rate, tx, ready)
+        }
+        PlaybackDirection::Reverse => {
+            decode_audio_reverse_from(path, timestamp, sample_rate, tx, ready)
+        }
+    })
+}
+
+/// Stream f32 PCM chunks from an FFmpeg output until it ends. Returns false
+/// once a seek has retired the feed.
+fn pipe_pcm(stdout: impl Read, tx: &SyncSender<Vec<f32>>, ready: &AtomicBool) -> bool {
     let mut reader = std::io::BufReader::new(stdout);
     let chunk_samples = AUDIO_CHUNK_FRAMES * AUDIO_CHANNELS as usize;
-    let chunk_bytes = chunk_samples * 4;
-    let mut buf = vec![0u8; chunk_bytes];
-
+    let mut buf = vec![0u8; chunk_samples * 4];
     while let Ok(len) = read_pcm_chunk(&mut reader, &mut buf) {
         if len == 0 {
             break;
@@ -1762,17 +2094,99 @@ fn decode_audio_stream_from(
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
         if tx.send(samples).is_err() {
-            break;
+            return false;
         }
         ready.store(true, Ordering::Release);
         if len < buf.len() {
             break;
         }
     }
+    true
+}
 
+/// Decode the audio backward from `timestamp` to its start, one reversed
+/// chunk at a time, prefetching the next chunk while the current one plays.
+fn decode_audio_reverse_from(
+    path: PathBuf,
+    timestamp: f64,
+    sample_rate: u32,
+    tx: SyncSender<Vec<f32>>,
+    ready: Arc<AtomicBool>,
+) {
+    let chunk = ((f64::from(sample_rate) * REVERSE_AUDIO_CHUNK_SECONDS) as i64).max(1);
+    let spawn = |end: i64| {
+        let start = (end - chunk).max(0);
+        (
+            start,
+            spawn_reversed_audio_chunk(&path, sample_rate, start, end - start),
+        )
+    };
+    let end = (timestamp.max(0.0) * f64::from(sample_rate)).round() as i64;
+    let mut next = (end > 0).then(|| spawn(end));
+    while let Some((start, child)) = next.take() {
+        let Some(mut child) = child else {
+            break;
+        };
+        if start > 0 {
+            next = Some(spawn(start));
+        }
+        let wanted = child
+            .stdout
+            .take()
+            .is_some_and(|stdout| pipe_pcm(stdout, &tx, &ready));
+        let _ = child.kill();
+        let _ = child.wait();
+        if !wanted {
+            break;
+        }
+    }
     ready.store(true, Ordering::Release);
-    let _ = child.kill();
-    let _ = child.wait();
+    if let Some((_, Some(mut child))) = next {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn spawn_reversed_audio_chunk(
+    path: &Path,
+    sample_rate: u32,
+    start: i64,
+    count: i64,
+) -> Option<Child> {
+    let rate = f64::from(sample_rate);
+    let seek = start as f64 / rate;
+    let duration = count as f64 / rate + 0.1;
+    ffmpeg_command()
+        .args(["-threads", "1"])
+        .args([
+            "-ss",
+            &format!("{seek:.6}"),
+            "-t",
+            &format!("{duration:.6}"),
+        ])
+        .arg("-i")
+        .arg(path)
+        .args([
+            "-vn",
+            "-af",
+            &format!("aresample={sample_rate},atrim=end_sample={count},areverse"),
+            "-f",
+            "f32le",
+            "-acodec",
+            "pcm_f32le",
+            "-ar",
+            &sample_rate.to_string(),
+            "-ac",
+            &AUDIO_CHANNELS.to_string(),
+            "-v",
+            "error",
+            "pipe:1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| log::error!("Failed to spawn ffmpeg reverse audio decoder: {e}"))
+        .ok()
 }
 
 fn read_pcm_chunk(reader: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
@@ -1860,13 +2274,51 @@ fn decode_waveform_peaks(path: &Path, fps: f64, total_frames: usize) -> Result<V
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::path::PathBuf;
     use std::sync::{mpsc, Arc};
     use std::time::{Duration, Instant};
 
     use super::{
-        playback_end_frame, read_pcm_chunk, AudioOutputState, AudioSampleReader, AudioTrack,
-        VideoPlayer,
+        playback_end_frame, read_pcm_chunk, reverse_chunk_frames, AudioOutputState,
+        AudioSampleReader, AudioTrack, PlaybackDirection, VideoPlayer, REVERSE_CHUNK_BYTES,
     };
+
+    #[test]
+    fn unchanged_instrumental_path_preserves_waveform_during_document_sync() {
+        let mut player = VideoPlayer::new();
+        let path = PathBuf::from("unchanged-instrumental.flac");
+        player.instrumental_audio_path = Some(path.clone());
+        let peaks = vec![0.0, 0.8, 0.1, 0.0];
+        *player.instrumental_waveform.write().unwrap() = peaks.clone();
+
+        for _ in 0..3 {
+            player.set_instrumental_audio_path(Some(path.clone()));
+            assert_eq!(*player.instrumental_waveform.read().unwrap(), peaks);
+            assert_eq!(player.waveform_revision(), 0);
+            assert!(!player.is_waveform_decoding());
+        }
+    }
+
+    #[test]
+    fn only_active_offset_changes_restart_audio_without_redecoding_waveforms() {
+        let mut player = VideoPlayer::new();
+        player.source_audio_path = Some(PathBuf::from("source.flac"));
+        player.fps = 24.0;
+        player.playing = true;
+        player.source_audio_offset_frames = 24;
+        *player.waveform.write().unwrap() = vec![0.0, 0.8, 0.1];
+
+        player.set_audio_offsets(24, 0);
+        player.set_audio_offsets(24, 48);
+        assert_eq!(player.pending_audio_start_at, None);
+        assert_eq!(player.instrumental_audio_offset_frames, 48);
+
+        player.set_audio_offsets(48, 48);
+        assert_eq!(player.pending_audio_start_at, Some(2.0));
+        assert_eq!(*player.waveform.read().unwrap(), vec![0.0, 0.8, 0.1]);
+        assert_eq!(player.waveform_revision(), 0);
+        assert!(!player.is_waveform_decoding());
+    }
 
     #[test]
     fn hardware_latency_cannot_end_playback_before_the_last_audio_frame() {
@@ -2115,5 +2567,61 @@ mod tests {
             let frame = player.current_frame_for_render_at(start + elapsed);
             assert!((frame - expected).abs() < 1.0e-9);
         }
+    }
+
+    #[test]
+    fn reverse_visual_clock_runs_backward() {
+        let mut player = VideoPlayer::new();
+        let start = Instant::now();
+        player.playing = true;
+        player.direction = PlaybackDirection::Reverse;
+        player.fps = 24.0;
+        player.current_frame = 100;
+        player.playback_start_frame = 100;
+        player.playback_start_time = Some(start);
+
+        let frame = player.current_frame_for_render_at(start + Duration::from_millis(500));
+        assert!((frame - 88.0).abs() < 1.0e-9);
+        let frame = player.current_frame_for_render_at(start + Duration::from_secs(10));
+        assert_eq!(frame, 0.0);
+    }
+
+    #[test]
+    fn play_pause_stops_a_reverse_playback() {
+        let mut player = VideoPlayer::new();
+        player.playing = true;
+        player.direction = PlaybackDirection::Reverse;
+
+        assert!(player.toggle());
+        assert!(!player.is_playing());
+        assert!(!player.is_playing_reverse());
+    }
+
+    #[test]
+    fn reverse_playback_needs_a_video_and_earlier_frames() {
+        let mut player = VideoPlayer::new();
+        player.current_frame = 50;
+        assert!(!player.toggle_reverse());
+
+        player.path = Some(PathBuf::from("video.mp4"));
+        player.current_frame = 0;
+        assert!(!player.toggle_reverse());
+    }
+
+    #[test]
+    fn reverse_audio_feed_maps_samples_back_in_time() {
+        let clock = AudioOutputState::new(48_000, 1.0);
+        clock.reset(10.0, PlaybackDirection::Reverse);
+        assert_eq!(clock.timeline_seconds_after(24_000), 9.5);
+        clock.reset(10.0, PlaybackDirection::Forward);
+        assert_eq!(clock.timeline_seconds_after(24_000), 10.5);
+    }
+
+    #[test]
+    fn reverse_chunks_stay_within_their_memory_budget() {
+        assert_eq!(reverse_chunk_frames(640, 360, 25.0), 50);
+        let full_hd = reverse_chunk_frames(1920, 1080, 25.0);
+        assert!(full_hd as usize * 1920 * 1080 * 3 / 2 <= REVERSE_CHUNK_BYTES);
+        assert_eq!(reverse_chunk_frames(7680, 4320, 25.0), 8);
     }
 }

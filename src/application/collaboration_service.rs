@@ -18,6 +18,7 @@ pub struct PingResult {
 pub struct CollaborationSession {
     pub network: NetworkClient,
     pub ping_results: Arc<Mutex<Vec<PingResult>>>,
+    pub applied_document_revision: Option<u64>,
 }
 
 impl CollaborationSession {
@@ -25,6 +26,7 @@ impl CollaborationSession {
         Self {
             network: NetworkClient::new(),
             ping_results: Arc::new(Mutex::new(Vec::new())),
+            applied_document_revision: None,
         }
     }
 }

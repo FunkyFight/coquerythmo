@@ -955,7 +955,7 @@ fn timecode_to_frames(tc: &str, fps: f64) -> Result<i64, String> {
     let f: i64 = parts[3]
         .parse()
         .map_err(|_| format!("Invalid frames in timecode: '{}'", parts[3]))?;
-    Ok((h * 3600 + m * 60 + s) * fps as i64 + f)
+    Ok((h * 3600 + m * 60 + s) * crate::project::nominal_timecode_fps(fps) + f)
 }
 
 /// Parse a hex color "#RRGGBB" into RGBA [f32; 4] (0.0–1.0).
@@ -1211,8 +1211,8 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
     let offset = video_offset_frames.unwrap_or_else(|| {
         if let Some(first_line) = lines.first() {
             // Parfois, le timecode commence à 10:00:00:00 ou 01:00:00:00 dans le doublage sans header videofile
-            let h = first_line.start_frame / (3600 * fps as i64);
-            h * 3600 * fps as i64
+            let hour_frames = 3600 * crate::project::nominal_timecode_fps(fps);
+            first_line.start_frame / hour_frames * hour_frames
         } else {
             0
         }
@@ -1997,5 +1997,56 @@ mod tests {
         let data = import_cappela(&path, 24.0).unwrap();
         assert_eq!(data.lines[0].note, "Voix off");
         assert_eq!(data.lines[0].y_slot, 0.5); // track 1
+    }
+
+    #[test]
+    fn detx_timecodes_count_nominal_frames_at_fractional_rates() {
+        let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<detx>\n  <body>\n    <loop timecode=\"00:00:10:05\"/>\n  </body>\n</detx>";
+        let dir = std::env::temp_dir().join("coquerythmo_test_cappela_ntsc");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ntsc.detx");
+        std::fs::write(&path, xml).unwrap();
+
+        let film = import_cappela(&path, 24_000.0 / 1_001.0).unwrap();
+        assert_eq!(film.markers[0].frame, 10 * 24 + 5);
+        let video = import_cappela(&path, 30_000.0 / 1_001.0).unwrap();
+        assert_eq!(video.markers[0].frame, 10 * 30 + 5);
+    }
+
+    #[test]
+    fn detx_imported_before_video_matches_import_after_video() {
+        // "On y va ?" lasts 11 frames at 25 fps but 16 when its timecodes are
+        // counted at the 30 fps placeholder, because it crosses a second.
+        let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<detx>\n  <roles>\n    <role id=\"a\" name=\"A\" color=\"#FF0000\"/>\n  </roles>\n  <body>\n    <loop timecode=\"01:19:57:23\"/>\n    <line role=\"a\" track=\"0\">\n      <lipsync timecode=\"01:00:10:20\" type=\"in_open\"/>\n      <text>On y va ?</text>\n      <lipsync timecode=\"01:00:11:06\" type=\"out_open\"/>\n    </line>\n  </body>\n</detx>";
+        let dir = std::env::temp_dir().join("coquerythmo_test_cappela_placeholder");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("placeholder.detx");
+        std::fs::write(&path, xml).unwrap();
+
+        let mut after_video = Project::new();
+        import_cappela(&path, 25.0)
+            .unwrap()
+            .apply_to_project(&mut after_video, 25.0);
+        let mut before_video = Project::new();
+        import_cappela(&path, 30.0)
+            .unwrap()
+            .apply_to_project(&mut before_video, 30.0);
+        assert_eq!(before_video.lines().next().unwrap().duration_frames, 16);
+
+        before_video.retime(30.0, 25.0, |_| crate::project::TimebaseAnchor::Timecode);
+
+        let expected = after_video.lines().next().unwrap();
+        let retimed = before_video.lines().next().unwrap();
+        assert_eq!(expected.duration_frames, 11);
+        assert_eq!(
+            (retimed.start_frame, retimed.duration_frames),
+            (expected.start_frame, expected.duration_frames)
+        );
+        // 19m57s23f must not drift to 23m57s08f.
+        assert_eq!(after_video.markers()[0].frame, (19 * 60 + 57) * 25 + 23);
+        assert_eq!(
+            before_video.markers()[0].frame,
+            after_video.markers()[0].frame
+        );
     }
 }

@@ -7,6 +7,8 @@
 
 use super::comic_dubs_settings_modal::ComicDubsSettingsModal;
 use super::connect_modal::ConnectModal;
+use super::discord_notice_modal::DiscordNoticeModal;
+use super::export_done_modal::ExportDoneModal;
 use super::export_modal::ExportModal;
 use super::invitation_modal::InvitationModal;
 use super::microphone_modal::{MicrophoneModal, RecordingActorMenuModal};
@@ -101,6 +103,8 @@ pub struct ModalHost {
     pub pricing_page: Option<PricingPage>,
     pub pricing_plan: Option<PricingPlanModal>,
     pub pricing_license: Option<PricingLicenseModal>,
+    pub discord_notice: Option<DiscordNoticeModal>,
+    pub export_done: Option<ExportDoneModal>,
 }
 
 impl ModalHost {
@@ -125,6 +129,8 @@ impl ModalHost {
             pricing_page: None,
             pricing_plan: None,
             pricing_license: None,
+            discord_notice: None,
+            export_done: None,
         }
     }
 
@@ -148,6 +154,8 @@ impl ModalHost {
             || self.pricing_page.is_some()
             || self.pricing_plan.is_some()
             || self.pricing_license.is_some()
+            || self.discord_notice.is_some()
+            || self.export_done.is_some()
     }
 
     pub fn is_editing_text(&self) -> bool {
@@ -207,6 +215,22 @@ impl ModalHost {
         if self.proxy_error.is_some() {
             let translated = legacy_keyboard_event(event);
             return Some(self.handle_proxy_error_event(
+                translated.as_ref().unwrap_or(event),
+                screen_w,
+                screen_h,
+            ));
+        }
+        if self.discord_notice.is_some() {
+            let translated = legacy_keyboard_event(event);
+            return Some(self.handle_discord_notice_event(
+                translated.as_ref().unwrap_or(event),
+                screen_w,
+                screen_h,
+            ));
+        }
+        if self.export_done.is_some() {
+            let translated = legacy_keyboard_event(event);
+            return Some(self.handle_export_done_event(
                 translated.as_ref().unwrap_or(event),
                 screen_w,
                 screen_h,
@@ -534,12 +558,14 @@ impl ModalHost {
                 lang,
                 temporary_directory,
                 show_controls_hint,
+                hide_formatting_hints,
             } => {
                 self.settings = None;
                 ModalOutcome::Action(UiAction::SaveSettings {
                     lang,
                     temporary_directory,
                     show_controls_hint,
+                    hide_formatting_hints,
                 })
             }
             super::settings_modal::SettingsModalResult::BrowseTemporaryDirectory => {
@@ -1038,6 +1064,91 @@ impl ModalHost {
         }
     }
 
+    fn handle_discord_notice_event(
+        &mut self,
+        event: &UiEvent,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> ModalOutcome {
+        let focus_navigation = matches!(
+            event,
+            UiEvent::FocusNext
+                | UiEvent::FocusPrevious
+                | UiEvent::CursorUp
+                | UiEvent::CursorDown
+                | UiEvent::CursorLeft
+                | UiEvent::CursorRight
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let result = self
+            .discord_notice
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h);
+        if focus_navigation {
+            if let Some(modal) = self.discord_notice.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label(),
+                        role: "button".to_string(),
+                    },
+                ));
+            }
+        }
+        match result {
+            super::discord_notice_modal::DiscordNoticeResult::Consumed => ModalOutcome::Consumed,
+            super::discord_notice_modal::DiscordNoticeResult::Join => {
+                self.discord_notice = None;
+                action_closed_modal(
+                    UiAction::OpenDiscordLink,
+                    crate::i18n::t("discord_notice.title"),
+                )
+            }
+            super::discord_notice_modal::DiscordNoticeResult::Cancel => {
+                self.discord_notice = None;
+                closed_modal(crate::i18n::t("discord_notice.title"))
+            }
+        }
+    }
+
+    fn handle_export_done_event(
+        &mut self,
+        event: &UiEvent,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> ModalOutcome {
+        let focus_navigation = matches!(
+            event,
+            UiEvent::FocusNext
+                | UiEvent::FocusPrevious
+                | UiEvent::CursorUp
+                | UiEvent::CursorDown
+                | UiEvent::CursorLeft
+                | UiEvent::CursorRight
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let result = self
+            .export_done
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h);
+        if focus_navigation {
+            if let Some(modal) = self.export_done.as_ref() {
+                return ModalOutcome::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label(),
+                        role: "button".to_string(),
+                    },
+                ));
+            }
+        }
+        match result {
+            super::export_done_modal::ExportDoneResult::Consumed => ModalOutcome::Consumed,
+            super::export_done_modal::ExportDoneResult::Close => {
+                self.export_done = None;
+                closed_modal(crate::i18n::t("export_done.title"))
+            }
+        }
+    }
+
     fn handle_whats_new_event(
         &mut self,
         event: &UiEvent,
@@ -1441,6 +1552,14 @@ impl ModalHost {
         ));
     }
 
+    pub fn open_discord_notice(&mut self) {
+        self.discord_notice = Some(DiscordNoticeModal::new());
+    }
+
+    pub fn open_export_done(&mut self) {
+        self.export_done = Some(ExportDoneModal::new());
+    }
+
     pub fn open_save_prompt(&mut self, kind: super::save_prompt_modal::SavePromptKind) {
         self.save_prompt = Some(super::save_prompt_modal::SavePromptModal::new(kind));
     }
@@ -1655,6 +1774,22 @@ impl ModalHost {
             );
         }
         if let Some(modal) = &self.proxy_error {
+            modal.render(
+                modal_overlay_quads,
+                modal_overlay_labels,
+                screen_w,
+                screen_h,
+            );
+        }
+        if let Some(modal) = &self.discord_notice {
+            modal.render(
+                modal_overlay_quads,
+                modal_overlay_labels,
+                screen_w,
+                screen_h,
+            );
+        }
+        if let Some(modal) = &self.export_done {
             modal.render(
                 modal_overlay_quads,
                 modal_overlay_labels,

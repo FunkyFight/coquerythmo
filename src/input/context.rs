@@ -8,6 +8,9 @@ pub enum InputContext {
     Modal,
     TextEditing,
     Recording,
+    /// Timeline navigation in the recording workspace, active like
+    /// `Workspace` only while no control owns the keyboard.
+    RecordingTimeline,
     Workspace,
     Global,
 }

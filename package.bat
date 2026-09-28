@@ -48,4 +48,13 @@ if errorlevel 1 (
 echo.
 echo === Done! ===
 echo   target\release\coquerythmo-v%VERSION%-windows-portable.zip
+
+echo.
+echo === Publishing to GitHub ===
+powershell -NoProfile -ExecutionPolicy Bypass -File publish.ps1 %VERSION%
+if errorlevel 1 (
+    echo Publish failed!
+    pause
+    exit /b 1
+)
 pause

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crate::accessibility::{AccessibilityEvent, NarrationService};
 use crate::application::collaboration_service::{CollaborationSession, PingResult};
 use crate::application::context::AppContext;
-use crate::application::delta_codec::{decode_delta, encode_delta};
+use crate::application::delta_codec::decode_delta;
 use crate::application::edit_service::{EditExecutor, EditOrigin};
 use crate::application::job_service::{
     JobManager, PendingExportJob, PendingImportJob, PendingProxyJob, PendingRecordingMixJob,
@@ -610,7 +610,8 @@ pub(crate) enum PendingProtocolStage {
 struct ProjectTransferRuntime {
     metadata: ProjectTransferMetadata,
     status: Option<ProjectTransferStatus>,
-    receiver: crate::file_transfer::FileTransferReceiver,
+    receiving: bool,
+    failed: bool,
 }
 
 struct PendingVoicelinesImport {
@@ -3466,7 +3467,7 @@ impl State {
                 runtime.metadata.request_id.clone(),
                 runtime.status.as_ref().map(|status| status.phase.clone()),
                 response,
-                runtime.receiver.is_active(),
+                runtime.receiving,
             )
         });
 
@@ -3494,7 +3495,7 @@ impl State {
         }
 
         if let Some(runtime) = self.project_transfer.as_mut() {
-            runtime.receiver.cancel();
+            runtime.receiving = false;
         }
         self.project_transfer = None;
         self.project_transfer_target = None;
@@ -3517,6 +3518,9 @@ impl State {
                 crate::ui::recording_workspace::RecordingRole::Director
             )
         {
+            return;
+        }
+        if self.project_transfer_prepare.is_some() || self.project_transfer_send.is_some() {
             return;
         }
         self.project_transfer_target = target_member_id;
@@ -3633,24 +3637,15 @@ impl State {
             return;
         };
         let destination = crate::media_binary::user_data_dir().join("transferred_projects");
-        let result = self.project_transfer.as_mut().map(|runtime| {
-            runtime.receiver.begin(
-                crate::file_transfer::FileTransferMetadata {
-                    transfer_id: metadata.request_id.clone(),
-                    file_name: metadata.file_name.clone(),
-                    total_bytes: metadata.total_bytes,
-                    total_chunks: metadata.total_chunks,
-                    chunk_size: metadata.chunk_size,
-                    sha1: metadata.sha1.clone(),
-                },
-                &destination,
-            )
-        });
-        if let Some(Err(error)) = result {
-            self.collaboration
-                .network
-                .report_project_transfer(request_id, false, Some(&error));
+        if metadata.request_id != request_id {
+            return;
         }
+        if let Some(runtime) = self.project_transfer.as_mut() {
+            runtime.receiving = true;
+        }
+        self.collaboration
+            .network
+            .download_project(metadata, destination);
     }
 
     pub fn accept_project_transfer_after_save(&mut self) {
@@ -4231,9 +4226,6 @@ impl State {
             |project| project.set_settings(settings),
         );
         self.automation_last_run = None;
-        if self.collaboration.network.is_in_room() {
-            self.broadcast_full_sync();
-        }
     }
 
     pub fn automation_add_node(
@@ -4454,6 +4446,22 @@ impl State {
         self.ui_shell.ui.open_pricing_page();
     }
 
+    pub fn open_discord_notice(&mut self) {
+        self.ui_shell.ui.open_discord_notice();
+        self.announce_open_container(
+            crate::i18n::t("discord_notice.title"),
+            crate::ui::discord_notice_modal::DiscordNoticeModal::accessibility_label(),
+        );
+    }
+
+    pub fn open_export_done(&mut self) {
+        self.ui_shell.ui.open_export_done();
+        self.announce_open_container(
+            crate::i18n::t("export_done.title"),
+            crate::ui::export_done_modal::ExportDoneModal::accessibility_label(),
+        );
+    }
+
     pub fn close_pricing_page(&mut self) {
         self.ui_shell.ui.close_pricing_page();
     }
@@ -4515,7 +4523,7 @@ impl State {
             .flatten()
             .collect();
         for command in commands {
-            self.execute_and_broadcast(command);
+            self.execute_local_command(command);
         }
         if let Some(enabled) = announced_state {
             self.narration
@@ -4538,7 +4546,7 @@ impl State {
         if old_presence == presence {
             return;
         }
-        self.execute_and_broadcast(Command::SetLinePresence {
+        self.execute_local_command(Command::SetLinePresence {
             line_id,
             old_presence,
             new_presence: presence,
@@ -4665,6 +4673,29 @@ impl State {
         );
     }
 
+    /// File-tree entry point: the band gets a unique placeholder name (renamed
+    /// inline right after) and keeps the syllable language of the band it
+    /// duplicates instead of guessing one from that placeholder.
+    pub fn add_language(&mut self) {
+        let project = &self.project_session.project;
+        let syllable_language = project.language_syllable_language(project.active_language_id());
+        let existing: Vec<String> = project
+            .languages()
+            .into_iter()
+            .map(|language| language.name)
+            .collect();
+        let name = (existing.len() + 1..)
+            .map(|n| crate::i18n::t("file_tree.new_band").replace("{n}", &n.to_string()))
+            .find(|name| !existing.iter().any(|other| other.eq_ignore_ascii_case(name)))
+            .expect("an unused band name exists");
+        self.create_language(name);
+        let id = self.project_session.project.active_language_id();
+        if let Some(language) = syllable_language {
+            self.set_language_syllable_language(id, language);
+        }
+        self.begin_rename_language(id);
+    }
+
     pub fn rename_language(&mut self, id: u64, name: String) {
         if self
             .project_session
@@ -4703,23 +4734,23 @@ impl State {
     }
 
     pub fn delete_language(&mut self, id: u64) {
-        let name = self
-            .project_session
-            .project
-            .language(id)
-            .map(|language| language.name)
-            .unwrap_or_default();
-        if self.project_session.project.delete_language(id) {
-            self.project_session.dirty = true;
-            self.project_session.history.clear();
-            self.project_session.render_index = crate::render_index::ProjectRenderIndex::new();
-            self.ui_shell.ui.clear_selection();
-            self.sync_audio_settings_to_player();
-            self.show_toast(
-                format!("{} {}", crate::i18n::t("toast.language_deleted"), name),
-                3.0,
-            );
-        }
+        let Some(deleted) = self.project_session.project.take_language(id) else {
+            return;
+        };
+        let name = deleted.name().to_string();
+        self.project_session.history.record_language_deletion(deleted);
+        self.refresh_after_language_change();
+        self.show_toast(
+            format!("{} {}", crate::i18n::t("toast.language_deleted"), name),
+            3.0,
+        );
+    }
+
+    fn refresh_after_language_change(&mut self) {
+        self.project_session.dirty = true;
+        self.project_session.render_index = crate::render_index::ProjectRenderIndex::new();
+        self.ui_shell.ui.clear_selection();
+        self.sync_audio_settings_to_player();
     }
 
     pub fn set_language_syllable_language(
@@ -4843,7 +4874,19 @@ impl State {
     }
 
     pub fn disconnect_network(&mut self) {
+        if crate::vector_text::set_session_font_family(None) {
+            self.render.ui_renderer.clear_text_cache();
+        }
         self.collaboration.network.disconnect();
+        self.project_transfer = None;
+        self.project_transfer_prepare = None;
+        self.project_transfer_send = None;
+        self.project_transfer_source = None;
+        self.project_transfer_target = None;
+        self.project_transfer_loading_request = None;
+        self.collaboration.applied_document_revision = None;
+        self.ui_shell.ui.close_project_transfer_modal();
+        self.ui_shell.ui.sync_overlay = None;
         self.set_network_status("");
         self.rebuild_topbar_for_network();
     }
@@ -5568,7 +5611,11 @@ impl State {
         self.playback.source_video_path = Some(source_path.to_path_buf());
         self.playback.source_video_size = source_size;
         self.playback.proxy_video_path = active_proxy_path;
+        let placeholder_fps = self.playback.video_player.is_none().then(|| self.fps());
         self.playback.video_player = Some(player);
+        if let Some(placeholder_fps) = placeholder_fps {
+            self.retime_rythmo_to_video(placeholder_fps, fps);
+        }
         self.sync_audio_settings_to_player();
         self.playback.timeline.emit(TimelineEvent::VideoLoaded {
             fps,
@@ -5582,6 +5629,48 @@ impl State {
         self.rebuild_topbar_for_network();
         self.schedule_recording_mix();
         true
+    }
+
+    /// Without a video the rythmo counts frames at a placeholder rate. Once
+    /// the first video is known, re-express those frames at its real rate so
+    /// bands imported beforehand stay in sync.
+    fn retime_rythmo_to_video(&mut self, placeholder_fps: f64, video_fps: f64) {
+        let timecode_languages =
+            std::mem::take(&mut self.project_session.provisional_timecode_languages);
+        // A room shares frames at the host's rate, never at the placeholder.
+        if self.collaboration.network.is_in_room() {
+            return;
+        }
+        let session = &mut self.project_session;
+        session
+            .project
+            .retime(placeholder_fps, video_fps, |language| {
+                if timecode_languages.contains(&language) {
+                    crate::project::TimebaseAnchor::Timecode
+                } else {
+                    crate::project::TimebaseAnchor::Clock
+                }
+            });
+        // Undo entries still hold positions counted at the placeholder rate.
+        session.history.clear();
+        session.replace_transaction_checkpoint(video_fps);
+        if !session.project.is_empty() {
+            session.dirty = true;
+        }
+    }
+
+    /// Remember whether the active band was read from DETX timecodes before a
+    /// video fixed the frame rate, so the first video retimes it exactly.
+    pub(crate) fn note_imported_band_timebase(&mut self, anchor: crate::project::TimebaseAnchor) {
+        let language = self.project_session.project.active_language_id();
+        let languages = &mut self.project_session.provisional_timecode_languages;
+        if anchor == crate::project::TimebaseAnchor::Timecode
+            && self.playback.video_player.is_none()
+        {
+            languages.insert(language);
+        } else {
+            languages.remove(&language);
+        }
     }
 
     pub fn toggle_play_pause(&mut self) {
@@ -5678,6 +5767,53 @@ impl State {
         }
     }
 
+    /// Play backward from the playhead, with sound, to check line starts.
+    pub fn toggle_reverse_playback(&mut self) {
+        let workspace = self.active_workspace();
+        let capturing = !matches!(
+            self.recording_runtime.capture_state(),
+            None | Some(crate::recording::CaptureState::Idle)
+        );
+        if !matches!(workspace, WorkspaceId::Rythmo | WorkspaceId::Recording)
+            || capturing
+            || self.recording_playback_is_read_only()
+        {
+            return;
+        }
+        // Shared recording playback is broadcast as a forward position.
+        if workspace == WorkspaceId::Recording && self.collaboration.network.is_in_room() {
+            self.show_toast(crate::i18n::t("toast.reverse_playback_in_room"), 4.0);
+            return;
+        }
+        let Some(player) = &mut self.playback.video_player else {
+            return;
+        };
+        let was_playing = player.is_playing();
+        if !player.toggle_reverse() {
+            return;
+        }
+        let playing = player.is_playing();
+        if self.ui_shell.ui.is_playing() != playing {
+            self.ui_shell.ui.toggle_play_pause();
+        }
+        if playing != was_playing {
+            self.playback.timeline.emit(if playing {
+                TimelineEvent::PlaybackStarted
+            } else {
+                TimelineEvent::PlaybackStopped
+            });
+        }
+        self.narration
+            .announce_event(AccessibilityEvent::Activation {
+                label: crate::i18n::t(if playing {
+                    "toolbar.play_reverse"
+                } else {
+                    "toolbar.stop"
+                })
+                .to_string(),
+            });
+    }
+
     pub fn toggle_active_audio(&mut self) {
         let Some(player) = &mut self.playback.video_player else {
             return;
@@ -5698,7 +5834,10 @@ impl State {
             language_id: self.project_session.project.active_language_id(),
             instrumental: self.active_audio_is_instrumental(),
             instrumental_audio_offset_frames: Some(
-                self.project_session.project.settings().instrumental_audio_offset_frames,
+                self.project_session
+                    .project
+                    .settings()
+                    .instrumental_audio_offset_frames,
             ),
         }
     }
@@ -6282,7 +6421,12 @@ impl State {
         }
         self.select_language(view.language_id);
         if let Some(offset) = view.instrumental_audio_offset_frames.filter(|offset| {
-            *offset != self.project_session.project.settings().instrumental_audio_offset_frames
+            *offset
+                != self
+                    .project_session
+                    .project
+                    .settings()
+                    .instrumental_audio_offset_frames
         }) {
             EditExecutor::apply_domain_change(
                 &mut self.project_session,
@@ -6295,7 +6439,10 @@ impl State {
             );
             if let Some(player) = &mut self.playback.video_player {
                 player.set_audio_offsets(
-                    self.project_session.project.settings().source_audio_offset_frames,
+                    self.project_session
+                        .project
+                        .settings()
+                        .source_audio_offset_frames,
                     offset,
                 );
             }
@@ -6376,6 +6523,111 @@ impl State {
         }
     }
 
+    fn tick_rythmo_replication(&mut self) -> bool {
+        if !self.collaboration.network.is_in_room() {
+            return false;
+        }
+        let error = self
+            .collaboration
+            .network
+            .replication
+            .as_ref()
+            .and_then(|replication| replication.take_error());
+        if let Some(error) = error {
+            self.set_network_status(format!("Synchronisation : {error}"));
+        }
+        if self.collaboration.network.role.as_deref() == Some("admin") {
+            let transport = crate::network::rythmo::Transport {
+                frame: self.current_frame().max(0),
+                playing: self
+                    .playback
+                    .video_player
+                    .as_ref()
+                    .is_some_and(|player| player.is_playing()),
+                fps: self.fps(),
+                instrumental: self.active_audio_is_instrumental(),
+                rythmo: self.active_workspace() == WorkspaceId::Rythmo,
+            };
+            let view = crate::network::rythmo::DirectorView {
+                selection: self.ui_shell.ui.rythmo_state.selected.clone(),
+                compact_empty_tracks: self.ui_shell.ui.rythmo_state.compact_empty_tracks,
+                active_stroke: self.ui_shell.ui.rythmo_state.active_stroke.clone(),
+                font_family: crate::vector_text::rythmo_font_family_name(),
+            };
+            // HUUID identifies the published archive. Saving local edits may
+            // assign a new local HUUID without changing the room's media.
+            let huuid = self
+                .collaboration
+                .network
+                .project_huuid
+                .clone()
+                .unwrap_or_default();
+            if let Some(replication) = self.collaboration.network.replication.as_mut() {
+                replication.offer(&self.project_session.project, &huuid, transport, view);
+            }
+            return false;
+        }
+        // Applying a snapshot before archive import completes would let the
+        // older archive overwrite edits received during the download.
+        if !self.collaboration.network.project_matches
+            || self.jobs.pending_import_job.is_some()
+            || self.is_project_save_in_progress()
+        {
+            return false;
+        }
+        let received = self
+            .collaboration
+            .network
+            .replication
+            .as_ref()
+            .and_then(|replication| replication.take_received());
+        let Some(received) = received else {
+            return false;
+        };
+        if self.collaboration.network.project_huuid.as_deref()
+            != Some(&received.document.manifest.project_huuid)
+        {
+            return false;
+        }
+        if self.collaboration.applied_document_revision != Some(received.document_revision) {
+            if let Err(error) = received.document.apply(&mut self.project_session.project) {
+                self.set_network_status(format!("Synchronisation : {error}"));
+                return false;
+            }
+            self.collaboration.applied_document_revision = Some(received.document_revision);
+            self.project_session.render_index = crate::render_index::ProjectRenderIndex::new();
+            self.sync_audio_settings_to_player();
+        }
+        if crate::vector_text::set_session_font_family(Some(received.view.font_family.clone())) {
+            self.render.ui_renderer.clear_text_cache();
+        }
+        self.ui_shell.ui.rythmo_state.selected = received.view.selection.clone();
+        self.ui_shell.ui.rythmo_state.compact_empty_tracks = received.view.compact_empty_tracks;
+        self.ui_shell.ui.rythmo_state.active_stroke = received.view.active_stroke.clone();
+        if received.transport.rythmo {
+            let frame = received.frame();
+            let playing = self
+                .playback
+                .video_player
+                .as_ref()
+                .is_some_and(|player| player.is_playing());
+            if (self.current_frame() - frame).unsigned_abs() > if playing { 2 } else { 0 }
+                || playing != received.transport.playing
+            {
+                self.receive_recording_playback(crate::network::RecordingPlaybackPayload {
+                    frame,
+                    playing: received.transport.playing,
+                });
+            }
+            if self.active_audio_is_instrumental() != received.transport.instrumental {
+                self.toggle_active_audio();
+            }
+        }
+        self.ui_shell.ui.sync_overlay = None;
+        self.set_network_status("Salon synchronisé");
+        true
+    }
+
     pub fn tick_network(&mut self) -> bool {
         let prev_state = self.collaboration.network.state;
         let mut changed = false;
@@ -6390,23 +6642,15 @@ impl State {
                 IncomingMessage::Packet(packet) => self.handle_network_packet(packet),
                 IncomingMessage::Disconnected(reason) => {
                     log::info!("Disconnected: {reason}");
-                    if let Some(runtime) = self.project_transfer.as_mut() {
-                        runtime.receiver.cancel();
-                    }
-                    self.project_transfer = None;
-                    self.project_transfer_prepare = None;
-                    self.project_transfer_source = None;
-                    self.project_transfer_target = None;
-                    self.project_transfer_send = None;
-                    self.project_transfer_loading_request = None;
-                    self.project_transfer_waiting_dismissed = None;
+                    // A transport interruption pauses the workers; their files and
+                    // acknowledged offsets survive until the same room is rejoined.
                     self.recording_input_preflight = None;
                     self.recording_uploads.clear();
                     self.recording_upload_acks.clear();
                     self.big_receives.clear();
                     self.ui_shell.ui.close_project_transfer_modal();
                     self.ui_shell.ui.sync_overlay = None;
-                    self.collaboration.network.state = ConnectionState::Disconnected;
+                    self.collaboration.network.state = ConnectionState::Connecting;
                     self.collaboration.network.room_code = None;
                     self.collaboration.network.role = None;
                     self.collaboration.network.members.clear();
@@ -6421,6 +6665,16 @@ impl State {
                 IncomingMessage::Error(err) => {
                     log::error!("Network error: {err}");
                     self.set_network_status(format!("Erreur: {err}"));
+                }
+                IncomingMessage::ConnectionFailed(error) => {
+                    self.disconnect_network();
+                    self.set_network_status(format!("Connexion échouée : {error}"));
+                }
+                IncomingMessage::ProtocolMismatch => {
+                    self.disconnect_network();
+                    self.set_network_status(
+                        "Serveur incompatible : mettez le serveur à jour vers le protocole 2.",
+                    );
                 }
                 IncomingMessage::RoomMetadata {
                     member_id,
@@ -6518,7 +6772,19 @@ impl State {
                     // the same save, metadata and chunk integrity checks.
                     self.request_actors_project_transfer_to(Some(member_id));
                 }
+                IncomingMessage::ProjectAvailable { project_huuid } => {
+                    self.collaboration.network.project_huuid = Some(project_huuid);
+                }
                 IncomingMessage::ProjectTransferRequest(metadata) => {
+                    if self
+                        .project_transfer
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.metadata == metadata && !runtime.failed)
+                    {
+                        continue;
+                    }
+                    self.collaboration.network.cancel_project_download();
+                    self.collaboration.network.project_matches = false;
                     // A fresh in-memory document is not a local project to protect:
                     // only offer the save-and-replace path when a saved project exists.
                     let dirty =
@@ -6530,10 +6796,11 @@ impl State {
                     self.project_transfer = Some(ProjectTransferRuntime {
                         metadata,
                         status: None,
-                        receiver: crate::file_transfer::FileTransferReceiver::default(),
+                        receiving: false,
+                        failed: false,
                     });
                     self.project_transfer_waiting_dismissed = None;
-                    if actor_transfer {
+                    if actor_transfer && !dirty {
                         // The participant side is deliberately non-modal: the
                         // transfer is exposed only through the non-blocking
                         // task row. The director is the only role that gets
@@ -6559,6 +6826,18 @@ impl State {
                     self.ui_shell.ui.sync_progress = 0.0;
                 }
                 IncomingMessage::ProjectTransferReady(metadata) => {
+                    if self.project_transfer_send.is_some() {
+                        continue;
+                    }
+                    if !self.project_transfer.as_ref().is_some_and(|runtime| {
+                        runtime.metadata.project_huuid == metadata.project_huuid
+                            && runtime.metadata.sha1 == metadata.sha1
+                    }) {
+                        continue;
+                    }
+                    if let Some(runtime) = self.project_transfer.as_mut() {
+                        runtime.metadata = metadata.clone();
+                    }
                     if let Some(path) = self.project_transfer_source.clone() {
                         let request_id = metadata.request_id.clone();
                         let receiver = self.collaboration.network.send_project_file(path, metadata);
@@ -6566,6 +6845,15 @@ impl State {
                     }
                 }
                 IncomingMessage::ProjectTransferStatus(mut status) => {
+                    // A replacement upload and downloads of the published
+                    // archive can coexist. Only update this client's task.
+                    if !self
+                        .project_transfer
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.metadata.request_id == status.request_id)
+                    {
+                        continue;
+                    }
                     let dismissed = self.project_transfer_waiting_dismissed.as_deref()
                         == Some(status.request_id.as_str());
                     if self.project_transfer_loading_request.as_deref()
@@ -6581,6 +6869,35 @@ impl State {
                             }
                         }
                     }
+                    // Upload progress belongs to the DA; recipients display
+                    // their own download, independently of other participants.
+                    if status.phase != "uploading" {
+                        if self.collaboration.network.role.as_deref() == Some("admin") {
+                            let active: Vec<_> = status
+                                .participants
+                                .iter()
+                                .filter(|participant| participant.response != "refused")
+                                .collect();
+                            if !active.is_empty() {
+                                let progress = active
+                                    .iter()
+                                    .map(|participant| participant.progress.clamp(0.0, 1.0))
+                                    .sum::<f32>()
+                                    / active.len() as f32;
+                                status.transferred_bytes =
+                                    (progress as f64 * status.total_bytes as f64) as u64;
+                            }
+                        } else if let Some(participant) =
+                            status.participants.iter().find(|participant| {
+                                Some(participant.member_id.as_str())
+                                    == self.collaboration.network.member_id.as_deref()
+                            })
+                        {
+                            status.transferred_bytes = (participant.progress.clamp(0.0, 1.0) as f64
+                                * status.total_bytes as f64)
+                                as u64;
+                        }
+                    }
                     let progress = if status.total_bytes == 0 {
                         0.0
                     } else {
@@ -6592,6 +6909,11 @@ impl State {
                         Some((progress * 100.0).round() as u32),
                     );
                     if let Some(runtime) = self.project_transfer.as_mut() {
+                        runtime.failed |= status.participants.iter().any(|participant| {
+                            Some(participant.member_id.as_str())
+                                == self.collaboration.network.member_id.as_deref()
+                                && participant.response == "failed"
+                        });
                         runtime.status = Some(status.clone());
                     }
                     self.ui_shell.ui.set_project_transfer_status(status.clone());
@@ -6608,7 +6930,7 @@ impl State {
                             // cours..." overlay until the sync truly arrives.
                             if self.project_transfer.is_some() {
                                 if let Some(runtime) = self.project_transfer.as_mut() {
-                                    runtime.receiver.cancel();
+                                    runtime.receiving = false;
                                 }
                                 if self.collaboration.network.project_matches {
                                     self.ui_shell.ui.sync_overlay = None;
@@ -6628,75 +6950,39 @@ impl State {
                         }
                     }
                 }
-                IncomingMessage::ProjectTransferChunk {
-                    request_id,
-                    index,
-                    data_base64,
-                } => {
-                    if let Some(runtime) = self.project_transfer.as_mut() {
-                        if runtime.metadata.request_id == request_id {
-                            if let Err(error) = runtime.receiver.push_base64(index, &data_base64) {
-                                runtime.receiver.cancel();
-                                self.collaboration.network.report_project_transfer(
-                                    &request_id,
-                                    false,
-                                    Some(&error),
-                                );
-                            }
-                        }
-                    }
-                }
-                IncomingMessage::ProjectTransferEnd { request_id } => {
+                IncomingMessage::ProjectDownloadFinished { request_id, result } => {
                     let is_current = self
                         .project_transfer
                         .as_ref()
                         .is_some_and(|runtime| runtime.metadata.request_id == request_id);
-                    if is_current {
-                        self.project_transfer_loading_request = Some(request_id.clone());
-                        self.update_project_transfer_response("loading");
-                        self.collaboration
-                            .network
-                            .report_project_transfer_loading(&request_id);
-                        let result = self
-                            .project_transfer
-                            .as_mut()
-                            .expect("the current transfer exists")
-                            .receiver
-                            .finish(&request_id);
-                        match result {
-                            Ok(received) => {
-                                if self.is_project_save_in_progress() {
-                                    if let Some(request_id) =
-                                        self.project_transfer_loading_request.take()
-                                    {
-                                        self.collaboration.network.report_project_transfer(
-                                            &request_id,
-                                            false,
-                                            Some("project save is still in progress"),
-                                        );
-                                    }
-                                } else {
-                                    self.start_br_import(received.path);
-                                }
-                            }
-                            Err(error) => {
-                                self.project_transfer_loading_request = None;
-                                self.collaboration.network.report_project_transfer(
-                                    &request_id,
-                                    false,
-                                    Some(&error),
-                                );
-                            }
+                    if !is_current {
+                        continue;
+                    }
+                    self.collaboration.network.cancel_project_download();
+                    if let Some(runtime) = self.project_transfer.as_mut() {
+                        runtime.receiving = false;
+                        runtime.failed = result.is_err() || self.jobs.pending_save_job.is_some();
+                    }
+                    match result {
+                        Ok(path) if !self.is_project_save_in_progress() => {
+                            self.project_transfer_loading_request = Some(request_id);
+                            self.update_project_transfer_response("loading");
+                            self.start_br_import(path);
                         }
+                        Ok(_) => self.collaboration.network.report_project_transfer(
+                            &request_id,
+                            false,
+                            Some("project save is still in progress"),
+                        ),
+                        Err(error) => self.collaboration.network.report_project_transfer(
+                            &request_id,
+                            false,
+                            Some(&error),
+                        ),
                     }
                 }
                 IncomingMessage::SyncRequested { requester } => {
                     log::info!("Sync requested by {requester}");
-                    let data = ProjectData::from_project(&self.project_session.project);
-                    let json = serde_json::json!({ "project": data });
-                    self.collaboration
-                        .network
-                        .send_sync(json, (!requester.is_empty()).then_some(requester.as_str()));
                     let prepare = crate::network::RecordingPreparePayload {
                         project: self.project_session.recording_project.clone(),
                         transactions: self.project_session.recording_transactions.clone(),
@@ -6796,10 +7082,15 @@ impl State {
     fn handle_network_packet(&mut self, packet: Packet) {
         match packet {
             Packet::RoomCreated { code } => {
-                self.collaboration.network.state = ConnectionState::InRoom;
-                self.collaboration.network.room_code = Some(code.clone());
-                self.collaboration.network.role = Some("admin".into());
-                self.collaboration.network.set_rejoin_code(&code);
+                let prepare = crate::network::RecordingPreparePayload {
+                    project: self.project_session.recording_project.clone(),
+                    transactions: self.project_session.recording_transactions.clone(),
+                    current_frame: self.current_frame(),
+                    capture_target: None,
+                };
+                self.collaboration
+                    .network
+                    .initialize_created_room(&code, &prepare);
                 self.set_network_status("Salon créé");
                 self.show_toast(
                     format!("{}{code}", crate::i18n::t("toast.room_created")),
@@ -6807,11 +7098,7 @@ impl State {
                 );
                 log::info!("Room created: {code}");
                 self.enter_online_recording_view();
-                // No recording_prepare broadcast here: a freshly created room
-                // is empty so it is a no-op, while on a promotion (director
-                // lost, oldest member promoted) it would clobber every peer
-                // with this member's possibly stale recording state. Late
-                // joiners are prepared through their sync request instead.
+                self.request_actors_project_transfer();
             }
             Packet::RoomJoined {
                 code,
@@ -6839,6 +7126,7 @@ impl State {
             }
             Packet::JoinError { reason } => {
                 log::error!("Join failed: {reason}");
+                self.disconnect_network();
                 self.set_network_status(format!("Échec: {reason}"));
             }
             Packet::MemberJoined { username } => {
@@ -6927,88 +7215,51 @@ impl State {
             log::warn!("Rejected malformed or unknown delta payload");
         }
     }
-    /// Apply a canonical local command, record it, then broadcast its legacy
-    /// delta. Encoding happens before `apply` because move-marker deltas read
-    /// the marker's current position from the project.
-    fn execute_and_broadcast(&mut self, cmd: Command) {
-        let requires_full_sync = matches!(
-            cmd,
-            Command::InsertLines { .. } | Command::DeleteLines { .. }
-        ) && self.collaboration.network.is_in_room();
-        let payload = if self.collaboration.network.is_in_room() {
-            encode_delta(&cmd, &self.project_session.project)
-        } else {
-            None
-        };
+    /// Replication observes the resulting domain revision, including all
+    /// coalesced gestures, undo/redo and changes without a Command payload.
+    fn execute_local_command(&mut self, cmd: Command) {
         EditExecutor::execute(&mut self.project_session, cmd, EditOrigin::Local);
-        if let Some(payload) = payload {
-            self.collaboration.network.send_raw("delta", payload);
-        } else if requires_full_sync {
-            self.broadcast_full_sync();
-        }
-    }
-
-    /// Broadcast a single command as a delta via the "delta" event.
-    fn broadcast_delta(&self, cmd: &Command) {
-        if !self.collaboration.network.is_in_room() {
-            return;
-        }
-        let Some(payload) = encode_delta(cmd, &self.project_session.project) else {
-            return;
-        };
-        self.collaboration.network.send_raw("delta", payload);
-    }
-
-    /// Broadcast coalesced final state on mouse release / StopEditing.
-    pub fn broadcast_finalize(&self) {
-        if !self.collaboration.network.is_in_room() {
-            return;
-        }
-        if let Some(cmd) = self.project_session.history.last() {
-            if matches!(
-                cmd,
-                Command::MoveLine { .. }
-                    | Command::ResizeLine { .. }
-                    | Command::MoveLines { .. }
-                    | Command::UpdateLineText { .. }
-                    | Command::SetCharacter { .. }
-                    | Command::SetCharacterColor { .. }
-                    | Command::SetLineKaraoke { .. }
-                    | Command::SetSyllableRatios { .. }
-                    | Command::SetVoiceActors { .. }
-                    | Command::MoveMarker { .. }
-                    | Command::AddDrawingStroke { .. }
-                    | Command::EraseDrawingStrokes { .. }
-                    | Command::TransformStrokes { .. }
-            ) {
-                self.broadcast_delta(cmd);
-            }
-        }
-    }
-
-    /// Broadcast full project state (only for undo/redo/join sync).
-    fn broadcast_full_sync(&self) {
-        if !self.collaboration.network.is_in_room() {
-            return;
-        }
-        let data = ProjectData::from_project(&self.project_session.project);
-        self.collaboration
-            .network
-            .send_sync(serde_json::json!({ "project": data }), None);
     }
 
     // -- Undo / Redo --
 
     pub fn undo(&mut self) {
         if EditExecutor::undo(&mut self.project_session) {
-            self.broadcast_full_sync();
+            return;
+        }
+        let Some(deleted) = self.project_session.history.take_language_restore() else {
+            return;
+        };
+        let (id, reselected) = (deleted.id(), deleted.was_active());
+        let name = deleted.name().to_string();
+        if self.project_session.project.restore_language(deleted) {
+            self.project_session
+                .history
+                .record_language_restore(id, reselected);
+            self.refresh_after_language_change();
+            self.show_toast(
+                format!("{} {}", crate::i18n::t("toast.language_restored"), name),
+                3.0,
+            );
         }
     }
 
     pub fn redo(&mut self) {
-        if EditExecutor::redo(&mut self.project_session) {
-            self.broadcast_full_sync();
+        if let Some(id) = self.project_session.history.take_language_redelete() {
+            if let Some(deleted) = self.project_session.project.take_language(id) {
+                let name = deleted.name().to_string();
+                self.project_session
+                    .history
+                    .record_language_redelete(deleted);
+                self.refresh_after_language_change();
+                self.show_toast(
+                    format!("{} {}", crate::i18n::t("toast.language_deleted"), name),
+                    3.0,
+                );
+            }
+            return;
         }
+        EditExecutor::redo(&mut self.project_session);
     }
 
     pub fn clear_history(&mut self) {
@@ -7138,7 +7389,7 @@ impl State {
 
         let old_known_characters = self.project_session.project.known_characters().to_vec();
         let new_known_characters = self.known_characters_after_rename(&old_name, &new_name);
-        self.execute_and_broadcast(Command::RenameCharacter {
+        self.execute_local_command(Command::RenameCharacter {
             changes,
             old_known_characters,
             new_known_characters,
@@ -7199,7 +7450,7 @@ impl State {
                         self.project_session.project.get_line(*id).cloned(),
                         self.project_session.project.line_index(*id),
                     ) {
-                        self.execute_and_broadcast(Command::DeleteLine { snapshot, index });
+                        self.execute_local_command(Command::DeleteLine { snapshot, index });
                         deleted_lines = 1;
                     }
                 }
@@ -7218,12 +7469,12 @@ impl State {
                         .collect();
                     if !lines.is_empty() {
                         deleted_lines = lines.len();
-                        self.execute_and_broadcast(Command::DeleteLines { lines });
+                        self.execute_local_command(Command::DeleteLines { lines });
                     }
                 }
                 Selection::Marker(idx) => {
                     if let Some(marker) = self.project_session.project.marker(*idx).cloned() {
-                        self.execute_and_broadcast(Command::RemoveMarker {
+                        self.execute_local_command(Command::RemoveMarker {
                             marker,
                             index: *idx,
                         });
@@ -7246,7 +7497,7 @@ impl State {
                         .collect();
                     if !lines.is_empty() {
                         deleted_lines = lines.len();
-                        self.execute_and_broadcast(Command::DeleteLines { lines });
+                        self.execute_local_command(Command::DeleteLines { lines });
                     }
                 }
                 Selection::Strokes(ids) => {
@@ -7296,9 +7547,9 @@ impl State {
         }
         if deleted_lines == 1 {
             let (snapshot, index) = lines.into_iter().next().unwrap();
-            self.execute_and_broadcast(Command::DeleteLine { snapshot, index });
+            self.execute_local_command(Command::DeleteLine { snapshot, index });
         } else {
-            self.execute_and_broadcast(Command::DeleteLines { lines });
+            self.execute_local_command(Command::DeleteLines { lines });
         }
         if announce {
             self.announce_accessibility(AccessibilityEvent::Success {
@@ -7523,9 +7774,9 @@ impl State {
         let pasted_ids: Vec<u64> = inserted_lines.iter().map(|(line, _)| line.id).collect();
         if inserted_lines.len() == 1 {
             let (snapshot, index) = inserted_lines.pop().unwrap();
-            self.execute_and_broadcast(Command::InsertLine { snapshot, index });
+            self.execute_local_command(Command::InsertLine { snapshot, index });
         } else {
-            self.execute_and_broadcast(Command::InsertLines {
+            self.execute_local_command(Command::InsertLines {
                 lines: inserted_lines,
             });
         }
@@ -7550,7 +7801,7 @@ impl State {
     }
 
     pub fn add_drawing_stroke(&mut self, stroke: crate::rythmo_drawing::DrawingStroke) {
-        self.execute_and_broadcast(Command::AddDrawingStroke { stroke });
+        self.execute_local_command(Command::AddDrawingStroke { stroke });
     }
 
     pub fn erase_drawing_strokes(&mut self, ids: Vec<u64>) {
@@ -7559,7 +7810,7 @@ impl State {
             .filter_map(|id| self.project_session.project.drawing().get(id).cloned())
             .collect();
         if !strokes.is_empty() {
-            self.execute_and_broadcast(Command::EraseDrawingStrokes { strokes });
+            self.execute_local_command(Command::EraseDrawingStrokes { strokes });
         }
     }
 
@@ -7716,7 +7967,7 @@ impl State {
             crate::workspaces::rythmo::view::Selection::Line(second_line.id),
         );
 
-        self.execute_and_broadcast(Command::SplitLine {
+        self.execute_local_command(Command::SplitLine {
             old_line,
             old_index,
             first_line,
@@ -7772,7 +8023,7 @@ impl State {
             return;
         }
         let old_frame = self.project_session.project.marker(index).unwrap().frame;
-        self.execute_and_broadcast(Command::MoveMarker {
+        self.execute_local_command(Command::MoveMarker {
             index,
             old_frame,
             new_frame: frame,
@@ -7783,7 +8034,7 @@ impl State {
         let frame = self.current_frame();
         let marker = crate::rythmo_line::RythmoMarker { kind, frame };
         let index = self.project_session.project.marker_count();
-        self.execute_and_broadcast(Command::AddMarker { marker, index });
+        self.execute_local_command(Command::AddMarker { marker, index });
     }
 
     pub fn add_ambiance_line(&mut self, liaison: crate::rythmo_line::MarkerKind) {
@@ -7832,7 +8083,6 @@ impl State {
                 .project_session
                 .transaction_journal
                 .replace_last(command.clone());
-            self.broadcast_delta(&command);
         }
         let rythmo_state = &mut self.ui_shell.ui.rythmo_state;
         rythmo_state.selected = Some(crate::workspaces::rythmo::view::Selection::Line(line_id));
@@ -7861,9 +8111,7 @@ impl State {
     pub fn add_quick_line(&mut self, text: String) {
         let frame = self.current_frame();
         let dur = (self.fps() * 1.0) as i64; // 1 second
-        let (_, command) =
-            EditExecutor::create_line(&mut self.project_session, frame, dur, 0.0, text);
-        self.broadcast_delta(&command);
+        let _ = EditExecutor::create_line(&mut self.project_session, frame, dur, 0.0, text);
     }
 
     pub fn create_line(&mut self, frame: i64, y_slot: f32) -> u64 {
@@ -7877,9 +8125,8 @@ impl State {
             .min()
             .map(|start| (start - frame - constants::TICK_GAP_FRAMES).clamp(1, default_dur))
             .unwrap_or(default_dur);
-        let (line_id, command) =
+        let (line_id, _) =
             EditExecutor::create_line(&mut self.project_session, frame, dur, y_slot, String::new());
-        self.broadcast_delta(&command);
         line_id
     }
 
@@ -8043,11 +8290,16 @@ impl State {
                 };
                 // Convention diagnostics are appended last so AccessKit reads
                 // the normal line description before its line and zone issues.
-                if let Some(suffix) = crate::lint::line_description_suffix(
-                    &self.project_session.project,
-                    self.fps(),
-                    id,
-                ) {
+                let suffix = (!crate::config::hide_formatting_hints())
+                    .then(|| {
+                        crate::lint::line_description_suffix(
+                            &self.project_session.project,
+                            self.fps(),
+                            id,
+                        )
+                    })
+                    .flatten();
+                if let Some(suffix) = suffix {
                     format!("{label}. {suffix}")
                 } else {
                     label
@@ -8408,7 +8660,7 @@ impl State {
         } else if let Some(line) = self.project_session.project.get_line(id) {
             let old_start = line.start_frame;
             let old_y = line.y_slot;
-            self.execute_and_broadcast(Command::MoveLine {
+            self.execute_local_command(Command::MoveLine {
                 line_id: id,
                 old_start,
                 old_y_slot: old_y,
@@ -8495,7 +8747,7 @@ impl State {
             return;
         }
 
-        self.execute_and_broadcast(Command::MoveLines {
+        self.execute_local_command(Command::MoveLines {
             moves: command_moves,
         });
     }
@@ -8533,7 +8785,7 @@ impl State {
         } else if let Some(line) = self.project_session.project.get_line(id) {
             let old_start = line.start_frame;
             let old_dur = line.duration_frames;
-            self.execute_and_broadcast(Command::ResizeLine {
+            self.execute_local_command(Command::ResizeLine {
                 line_id: id,
                 old_start,
                 old_dur,
@@ -8629,7 +8881,7 @@ impl State {
                 .unwrap_or_default();
             let new_emotions =
                 crate::rythmo_line::rebase_text_emotions(&old_emotions, &old_text, &text);
-            self.execute_and_broadcast(Command::UpdateLineText {
+            self.execute_local_command(Command::UpdateLineText {
                 line_id: id,
                 old_text,
                 new_text: text,
@@ -8658,7 +8910,7 @@ impl State {
         if old_emotions == changed.text_emotions {
             return;
         }
-        self.execute_and_broadcast(Command::SetTextEmotions {
+        self.execute_local_command(Command::SetTextEmotions {
             line_id,
             old_emotions,
             new_emotions: changed.text_emotions,
@@ -8712,7 +8964,7 @@ impl State {
             return;
         }
 
-        self.execute_and_broadcast(Command::SetSyllableRatios {
+        self.execute_local_command(Command::SetSyllableRatios {
             line_id,
             old_ratios,
             new_ratios: ratios,
@@ -8743,7 +8995,7 @@ impl State {
             return;
         }
 
-        self.execute_and_broadcast(Command::SetCharacter {
+        self.execute_local_command(Command::SetCharacter {
             line_id,
             old_name,
             old_color,
@@ -8801,7 +9053,7 @@ impl State {
                 .get_line(line_id)
                 .map(|l| l.character_color)
                 .unwrap_or_default();
-            self.execute_and_broadcast(Command::SetCharacterColor {
+            self.execute_local_command(Command::SetCharacterColor {
                 line_id,
                 old_color,
                 new_color: color,
@@ -8886,7 +9138,7 @@ impl State {
                     .map(|l| l.character_color)
                     .unwrap_or_default()
             });
-            self.execute_and_broadcast(Command::SetCharacter {
+            self.execute_local_command(Command::SetCharacter {
                 line_id,
                 old_name,
                 old_color,
@@ -8943,7 +9195,7 @@ impl State {
             icon_path,
             icon_png_base64,
         };
-        self.execute_and_broadcast(Command::CreateVoiceActor { actor });
+        self.execute_local_command(Command::CreateVoiceActor { actor });
         self.show_toast(crate::i18n::t("toast.voice_actor_created"), 3.0);
     }
 
@@ -9030,7 +9282,7 @@ impl State {
             return;
         }
 
-        self.execute_and_broadcast(Command::SetVoiceActors { changes });
+        self.execute_local_command(Command::SetVoiceActors { changes });
     }
 
     pub fn start_editing_note(&mut self, line_id: u64) {
@@ -9056,7 +9308,7 @@ impl State {
             .map(|l| l.note.is_empty())
             .unwrap_or(true)
         {
-            self.execute_and_broadcast(Command::UpdateLineNote {
+            self.execute_local_command(Command::UpdateLineNote {
                 line_id,
                 old_note: String::new(),
                 new_note: "Note".to_string(),
@@ -9105,7 +9357,7 @@ impl State {
                 .get_line(id)
                 .map(|l| l.note.clone())
                 .unwrap_or_default();
-            self.execute_and_broadcast(Command::UpdateLineNote {
+            self.execute_local_command(Command::UpdateLineNote {
                 line_id: id,
                 old_note,
                 new_note: note,
@@ -9328,7 +9580,7 @@ impl State {
         match result {
             Ok(()) => {
                 log::info!("Export completed");
-                self.show_toast(crate::i18n::t("toast.export_completed"), 4.0);
+                self.open_export_done();
             }
             Err(e) => {
                 if crate::video_export::is_cancelled_error(&e) {
@@ -9391,9 +9643,8 @@ impl State {
         self.project_transfer_prepare = None;
         match result {
             Ok(metadata) => {
-                if self.project_session.dirty
-                    || self.project_session.project_path.as_ref()
-                        != self.project_transfer_source.as_ref()
+                if self.project_session.project_path.as_ref()
+                    != self.project_transfer_source.as_ref()
                     || self.project_session.huuid.as_ref().map(ToString::to_string)
                         != Some(metadata.project_huuid.clone())
                 {
@@ -9407,14 +9658,15 @@ impl State {
                 self.project_transfer = Some(ProjectTransferRuntime {
                     metadata: metadata.clone(),
                     status: None,
-                    receiver: crate::file_transfer::FileTransferReceiver::default(),
+                    receiving: false,
+                    failed: false,
                 });
                 self.ui_shell
                     .ui
                     .open_project_transfer_modal(metadata.clone(), true, false);
                 self.announce_open_container(
                     crate::i18n::t("recording.project_transfer.title"),
-                    crate::i18n::t("recording.project_transfer.waiting").to_string(),
+                    crate::i18n::t("recording.project_transfer.uploading").to_string(),
                 );
                 self.collaboration.network.request_project_transfer_to(
                     &metadata,
@@ -9458,7 +9710,7 @@ impl State {
         if let Err(error) = result {
             self.collaboration
                 .network
-                .report_project_transfer(&request_id, false, Some(&error));
+                .abort_project_upload(&request_id, &error);
             self.show_toast(
                 format!(
                     "{} {error}",
@@ -9636,12 +9888,15 @@ impl State {
                 loaded
                     .project_data
                     .apply_to_project(&mut self.project_session.project, fps);
+                self.project_session.provisional_timecode_languages.clear();
                 let media_library_migrated = self.migrate_media_library_from_legacy(
                     legacy_source.as_deref(),
                     legacy_proxy.as_deref(),
                     legacy_default_uses_proxy,
                 );
                 self.load_default_media_video();
+                // The default video may have replaced the placeholder rate.
+                let fps = self.fps();
                 self.project_session.history.clear();
                 self.project_session.transaction_journal = loaded_transaction_journal
                     .unwrap_or_else(|| {
@@ -9707,6 +9962,10 @@ impl State {
                     .set_project_load_progress("loading_project.ready", 1.0);
                 self.ui_shell.ui.finish_project_load();
                 if let Some(request_id) = transfer_request_id.as_deref() {
+                    self.collaboration.applied_document_revision = None;
+                    if let Some(replication) = &self.collaboration.network.replication {
+                        replication.refresh();
+                    }
                     self.collaboration.network.project_matches = true;
                     self.ui_shell
                         .ui
@@ -9778,6 +10037,9 @@ impl State {
                     ),
                 });
                 if let Some(request_id) = transfer_request_id.as_deref() {
+                    if let Some(runtime) = self.project_transfer.as_mut() {
+                        runtime.failed = true;
+                    }
                     self.collaboration
                         .network
                         .report_project_transfer(request_id, false, Some(&e));
@@ -10054,12 +10316,6 @@ impl State {
                     self.last_progress_percent = Some(percent);
                     self.narration
                         .publish_progress(self.active_progress_label(), Some(percent));
-                    #[cfg(target_os = "windows")]
-                    // A screen reader receives the persistent AccessKit
-                    // progress node; an additional beep would be redundant.
-                    if !self.narration.is_enabled() {
-                        crate::accessibility::progress_tone(percent);
-                    }
                 }
                 let now = Instant::now();
                 if self
@@ -10097,6 +10353,7 @@ impl State {
         changed |= self.poll_save_job();
         changed |= self.poll_pending_protocol();
         changed |= self.poll_waveform_change();
+        changed |= self.tick_rythmo_replication();
         changed
     }
 
@@ -11297,6 +11554,10 @@ impl State {
 
     pub fn file_tree_open(&self) -> bool {
         self.ui_shell.ui.file_tree_open()
+    }
+
+    pub fn file_tree_focused(&self) -> bool {
+        self.ui_shell.ui.file_tree_focused()
     }
 
     pub fn file_tree_drop_target(

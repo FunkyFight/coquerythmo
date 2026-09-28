@@ -7,7 +7,6 @@ use crate::detection::{
     DetectionAddress, DetectionChange, DetectionCue, DetectionCueId, DetectionKind,
     LineDetectionData, MediaTick, TextAnchor,
 };
-use crate::packet::ProjectData;
 use crate::state::State;
 use crate::workspaces::rythmo::view::Selection;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -331,7 +330,6 @@ impl State {
                 },
                 EditOrigin::Local,
             );
-            self.broadcast_detection_sync();
         } else {
             self.execute_detection_command(command);
         }
@@ -543,7 +541,6 @@ impl State {
                 },
                 EditOrigin::Local,
             );
-            self.broadcast_detection_sync();
         } else {
             self.execute_detection_command(command);
         }
@@ -696,17 +693,6 @@ impl State {
 
     fn execute_detection_command(&mut self, command: Command) {
         EditExecutor::execute(&mut self.project_session, command, EditOrigin::Local);
-        self.broadcast_detection_sync();
-    }
-
-    fn broadcast_detection_sync(&mut self) {
-        if !self.collaboration.network.is_in_room() {
-            return;
-        }
-        let data = ProjectData::from_project(&self.project_session.project);
-        self.collaboration
-            .network
-            .send_sync(serde_json::json!({ "project": data }), None);
     }
 
     /// AccessKit receives only the visual object and operation for edits.

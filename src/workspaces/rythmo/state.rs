@@ -3,7 +3,7 @@
 use super::*;
 
 /// What is currently selected in the BR.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Selection {
     Line(u64),
     Lines(Vec<u64>),
@@ -69,6 +69,7 @@ struct CachedKaraokeUiIndex {
 struct CachedLintDiagnostics {
     project_revision: u64,
     fps_bits: u64,
+    hidden: bool,
     diagnostics: Vec<crate::lint::Diagnostic>,
     severity_by_line: HashMap<u64, crate::lint::Severity>,
     zone_diagnostics: Vec<crate::lint::Diagnostic>,
@@ -314,8 +315,9 @@ impl RythmoState {
         })
     }
 
-    /// Project-wide linting is O(lines). It changes after a domain edit or an
-    /// FPS change, not merely because the playhead moved.
+    /// Project-wide linting is O(lines). It changes after a domain edit, an
+    /// FPS change or when formatting hints are hidden, not merely because the
+    /// playhead moved.
     pub(crate) fn cached_lint_diagnostics(
         &self,
         project: &Project,
@@ -323,15 +325,22 @@ impl RythmoState {
     ) -> Ref<'_, Vec<crate::lint::Diagnostic>> {
         let project_revision = project.revision();
         let fps_bits = fps.to_bits();
+        let hidden = crate::config::hide_formatting_hints();
         let valid = self
             .lint_diagnostics_cache
             .borrow()
             .as_ref()
             .is_some_and(|cached| {
-                cached.project_revision == project_revision && cached.fps_bits == fps_bits
+                cached.project_revision == project_revision
+                    && cached.fps_bits == fps_bits
+                    && cached.hidden == hidden
             });
         if !valid {
-            let diagnostics = crate::lint::analyze(project, fps);
+            let diagnostics = if hidden {
+                Vec::new()
+            } else {
+                crate::lint::analyze(project, fps)
+            };
             let mut severity_by_line: HashMap<u64, crate::lint::Severity> = HashMap::new();
             let mut zone_diagnostics = Vec::new();
             for diagnostic in &diagnostics {
@@ -363,6 +372,7 @@ impl RythmoState {
             *self.lint_diagnostics_cache.borrow_mut() = Some(CachedLintDiagnostics {
                 project_revision,
                 fps_bits,
+                hidden,
                 diagnostics,
                 severity_by_line,
                 zone_diagnostics,

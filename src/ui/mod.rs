@@ -12,7 +12,9 @@ pub mod comic_dubs_settings_modal;
 pub mod comic_dubs_workspace;
 pub mod connect_modal;
 pub mod context_menu;
+pub mod discord_notice_modal;
 pub mod dropdown;
+pub mod export_done_modal;
 pub mod export_modal;
 pub mod file_explorer;
 pub mod focus;
@@ -258,6 +260,7 @@ impl Ui {
 
         let icon_names = [
             "resume",
+            "play_reverse",
             "pause",
             "prev_frame",
             "next_frame",
@@ -566,7 +569,10 @@ impl Ui {
                 WorkspaceId::Rythmo | WorkspaceId::Voicelines | WorkspaceId::ComicDubs => {
                     contexts.push(InputContext::Workspace)
                 }
-                WorkspaceId::Recording => contexts.push(InputContext::Recording),
+                WorkspaceId::Recording => {
+                    contexts.push(InputContext::Recording);
+                    contexts.push(InputContext::RecordingTimeline);
+                }
             }
             contexts.push(InputContext::Global);
         }
@@ -584,6 +590,13 @@ impl Ui {
     }
 
     fn focus_widget_at(&mut self, x: f32, y: f32) {
+        if self.active_workspace == WorkspaceId::Rythmo
+            && self.file_tree.is_open()
+            && self.layout.properties.is_some_and(|panel| panel.contains(x, y))
+        {
+            self.focus.focus(&FocusId::new("file-tree"));
+            return;
+        }
         if let Some((index, _)) = self
             .topbar_widgets
             .iter()
@@ -2724,6 +2737,10 @@ impl Ui {
         self.file_tree.is_open()
     }
 
+    pub fn file_tree_focused(&self) -> bool {
+        self.active_workspace == WorkspaceId::Rythmo && self.file_tree.has_keyboard_focus()
+    }
+
     pub fn begin_rename_media_video(&mut self, id: crate::project::MediaId) {
         self.file_tree
             .begin_rename(crate::ui::file_explorer::RenameTarget::Video(id), "");
@@ -3413,6 +3430,14 @@ impl Ui {
 
     pub fn close_pricing_page(&mut self) {
         self.modal_host.close_pricing_page();
+    }
+
+    pub fn open_discord_notice(&mut self) {
+        self.modal_host.open_discord_notice();
+    }
+
+    pub fn open_export_done(&mut self) {
+        self.modal_host.open_export_done();
     }
 
     pub fn open_server_browser(&mut self) {
