@@ -1083,6 +1083,7 @@ impl UiRenderer {
         match overflow {
             Overflow::Clip => 0,
             Overflow::ClipWithLetterSpacing(_) => 0,
+            Overflow::Styled(style) => 3 + u8::from(style.bold) + 2 * u8::from(style.italic),
             Overflow::Ellipsis => 1,
             Overflow::Visible => 2,
         }
@@ -1106,6 +1107,7 @@ impl UiRenderer {
             overflow: Self::overflow_key(label.overflow),
             letter_spacing_bits: match label.overflow {
                 Overflow::ClipWithLetterSpacing(spacing) => spacing.to_bits(),
+                Overflow::Styled(style) => style.letter_spacing.to_bits(),
                 _ => 0,
             },
             font_family_hash: Self::hash_text(family),
@@ -1133,7 +1135,10 @@ impl UiRenderer {
         };
 
         match label.overflow {
-            Overflow::Clip | Overflow::ClipWithLetterSpacing(_) | Overflow::Visible => {
+            Overflow::Clip
+            | Overflow::ClipWithLetterSpacing(_)
+            | Overflow::Styled(_)
+            | Overflow::Visible => {
                 buffer.set_wrap(font_system, Wrap::None);
             }
             Overflow::Ellipsis => {
@@ -1149,6 +1154,19 @@ impl UiRenderer {
         let attrs = Attrs::new().family(label_family);
         let attrs = match label.overflow {
             Overflow::ClipWithLetterSpacing(spacing) => attrs.letter_spacing(spacing / fs),
+            Overflow::Styled(style) => {
+                let attrs = attrs.letter_spacing(style.letter_spacing / fs);
+                let attrs = if style.bold {
+                    attrs.weight(glyphon::Weight::BOLD)
+                } else {
+                    attrs
+                };
+                if style.italic {
+                    attrs.style(glyphon::Style::Italic)
+                } else {
+                    attrs
+                }
+            }
             _ => attrs,
         };
         buffer.set_text(font_system, label.text, &attrs, Shaping::Advanced, None);
@@ -1266,6 +1284,12 @@ impl UiRenderer {
                         right: i32::MAX,
                         bottom: i32::MAX,
                     },
+                    Overflow::Styled(style) => TextBounds {
+                        left: (style.clip.x * ui_scale).floor() as i32,
+                        top: (style.clip.y * ui_scale).floor() as i32,
+                        right: ((style.clip.x + style.clip.width) * ui_scale).ceil() as i32,
+                        bottom: ((style.clip.y + style.clip.height) * ui_scale).ceil() as i32,
+                    },
                     _ => TextBounds {
                         left: (rect.x * ui_scale).floor() as i32,
                         top: (rect.y * ui_scale).floor() as i32,
@@ -1274,9 +1298,13 @@ impl UiRenderer {
                     },
                 };
 
+                let alpha = match label.overflow {
+                    Overflow::Styled(style) => style.alpha,
+                    _ => 255,
+                };
                 let text_color = match label.color_override {
-                    Some([r, g, b]) => GlyphonColor::rgb(r, g, b),
-                    None => GlyphonColor::rgb(224, 224, 224),
+                    Some([r, g, b]) => GlyphonColor::rgba(r, g, b, alpha),
+                    None => GlyphonColor::rgba(224, 224, 224, alpha),
                 };
 
                 Some(TextArea {

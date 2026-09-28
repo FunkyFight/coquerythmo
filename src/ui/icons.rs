@@ -4,6 +4,26 @@ const ICON_SIZE: u32 = 32;
 const RHUBARB_ICON_SIZE: u32 = 128;
 const STRETCHABLE_ICON_WIDTH: u32 = 512;
 const STRETCHABLE_ICON_HEIGHT: u32 = 64;
+/// Comic Dubs studio icons are drawn larger than the classic toolbar set.
+const COMIC_ICON_SIZE: u32 = 48;
+/// Atlas rows wrap at this width so the texture stays within GPU limits.
+const ATLAS_MAX_ROW_WIDTH: u32 = 4096;
+/// Empty pixels between entries so linear filtering never bleeds neighbours.
+const ATLAS_GUTTER: u32 = 2;
+
+/// Names of the Comic Dubs studio icons, registered as `comic/<name>`.
+macro_rules! comic_icons {
+    ($($name:literal),* $(,)?) => {
+        pub const COMIC_ICON_NAMES: &[&str] = &[$($name),*];
+
+        fn comic_icon_entries() -> Vec<AtlasEntry> {
+            vec![$(AtlasEntry::comic(
+                concat!("comic/", $name),
+                include_bytes!(concat!("../icons/comic/", $name, ".svg")),
+            )),*]
+        }
+    };
+}
 
 pub struct IconAtlas {
     pub texture: wgpu::Texture,
@@ -31,7 +51,73 @@ struct AtlasEntry {
     flip_h: bool,
 }
 
+comic_icons!(
+    "align-center",
+    "align-left",
+    "align-right",
+    "arrow-down",
+    "arrow-up",
+    "audio",
+    "brush",
+    "check",
+    "chevron-down",
+    "chevron-left",
+    "chevron-right",
+    "chevron-up",
+    "close",
+    "copy",
+    "cut",
+    "download",
+    "duplicate",
+    "ellipse",
+    "eye",
+    "first",
+    "image",
+    "last",
+    "layers",
+    "mic",
+    "music",
+    "narration",
+    "page",
+    "paste",
+    "pause",
+    "play",
+    "plus",
+    "polygon",
+    "record",
+    "rectangle",
+    "script",
+    "select",
+    "sfx",
+    "shot",
+    "shot-add",
+    "shout",
+    "smooth",
+    "sparkle",
+    "speaker",
+    "stop",
+    "subtitles",
+    "tail",
+    "text",
+    "thought",
+    "trash",
+    "upload",
+    "vertices",
+    "wave",
+);
+
 impl AtlasEntry {
+    const fn comic(name: &'static str, data: &'static [u8]) -> Self {
+        Self {
+            name,
+            data,
+            kind: AtlasEntryKind::Svg,
+            width: COMIC_ICON_SIZE,
+            height: COMIC_ICON_SIZE,
+            flip_h: false,
+        }
+    }
+
     const fn svg(name: &'static str, data: &'static [u8]) -> Self {
         Self {
             name,
@@ -157,7 +243,7 @@ impl AtlasEntry {
 
 impl IconAtlas {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        let entries = vec![
+        let mut entries = vec![
             AtlasEntry::svg("pause", include_bytes!("../icons/pause.svg")),
             AtlasEntry::svg("resume", include_bytes!("../icons/resume.svg")),
             AtlasEntry::flipped_svg("play_reverse", include_bytes!("../icons/resume.svg")),
@@ -291,31 +377,38 @@ impl IconAtlas {
             ),
         ];
 
-        let atlas_width = entries.iter().map(|entry| entry.width).sum::<u32>();
-        let atlas_height = entries
+        entries.extend(comic_icon_entries());
+
+        let placements = pack_rows(&entries);
+        let atlas_width = placements
             .iter()
-            .map(|entry| entry.height)
+            .zip(&entries)
+            .map(|((x, _), entry)| x + entry.width)
+            .max()
+            .unwrap_or(ICON_SIZE);
+        let atlas_height = placements
+            .iter()
+            .zip(&entries)
+            .map(|((_, y), entry)| y + entry.height)
             .max()
             .unwrap_or(ICON_SIZE);
         let mut atlas_data = vec![0_u8; (atlas_width * atlas_height * 4) as usize];
         let mut icon_positions = HashMap::new();
-        let mut x_offset = 0_u32;
 
-        for entry in &entries {
+        for (entry, (x_offset, y_offset)) in entries.iter().zip(placements) {
             let pixels = entry.rasterize();
             icon_positions.insert(
                 entry.name.to_string(),
-                (x_offset, 0, entry.width, entry.height),
+                (x_offset, y_offset, entry.width, entry.height),
             );
             for y in 0..entry.height {
                 for x in 0..entry.width {
                     let source = ((y * entry.width + x) * 4) as usize;
-                    let destination = ((y * atlas_width + x_offset + x) * 4) as usize;
+                    let destination = (((y_offset + y) * atlas_width + x_offset + x) * 4) as usize;
                     atlas_data[destination..destination + 4]
                         .copy_from_slice(&pixels[source..source + 4]);
                 }
             }
-            x_offset += entry.width;
         }
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -406,6 +499,10 @@ impl IconAtlas {
         }
     }
 
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.icon_positions.keys().map(String::as_str)
+    }
+
     pub fn get_uv(&self, name: &str) -> Option<[f32; 4]> {
         self.icon_positions.get(name).map(|&(x, y, width, height)| {
             let u_min = x as f32 / self.atlas_width as f32;
@@ -415,6 +512,26 @@ impl IconAtlas {
             [u_min, v_min, u_max, v_max]
         })
     }
+}
+
+/// Shelf packing: entries left to right, wrapping into a new row when the
+/// current one would exceed [`ATLAS_MAX_ROW_WIDTH`].
+fn pack_rows(entries: &[AtlasEntry]) -> Vec<(u32, u32)> {
+    let (mut x, mut y, mut row_height) = (0_u32, 0_u32, 0_u32);
+    entries
+        .iter()
+        .map(|entry| {
+            if x > 0 && x + entry.width > ATLAS_MAX_ROW_WIDTH {
+                x = 0;
+                y += row_height + ATLAS_GUTTER;
+                row_height = 0;
+            }
+            let position = (x, y);
+            x += entry.width + ATLAS_GUTTER;
+            row_height = row_height.max(entry.height);
+            position
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -435,5 +552,27 @@ mod tests {
             resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default())
                 .expect("file tree SVG should parse");
         }
+    }
+
+    #[test]
+    fn comic_icons_parse_and_the_atlas_fits_gpu_limits() {
+        let entries = super::comic_icon_entries();
+        assert_eq!(entries.len(), super::COMIC_ICON_NAMES.len());
+        for entry in &entries {
+            let pixels = entry.rasterize();
+            assert!(
+                pixels.chunks_exact(4).any(|pixel| pixel[3] > 200),
+                "{} renders nothing",
+                entry.name
+            );
+        }
+        let placements = super::pack_rows(&entries);
+        let width = placements
+            .iter()
+            .zip(&entries)
+            .map(|((x, _), entry)| x + entry.width)
+            .max()
+            .unwrap();
+        assert!(width <= super::ATLAS_MAX_ROW_WIDTH);
     }
 }

@@ -24,6 +24,39 @@ use winit::dpi::LogicalSize;
 
 pub(crate) struct CommandDispatcher;
 
+/// In the Comic Dubs studio, the shared editing chords act on bubbles
+/// instead of rythmo lines (copy/paste, duplicate, nudge, navigation).
+fn comic_dubs_shortcut(action: UiAction, state: &State) -> UiAction {
+    if state.active_workspace() != crate::application::workspace_service::WorkspaceId::ComicDubs
+        || state.ui_shell.ui.is_editing_text()
+    {
+        return action;
+    }
+    const STEP: f32 = 0.004;
+    match action {
+        UiAction::CopySelectedLine => UiAction::ComicDubsCopySelected,
+        UiAction::CutSelectedLine => UiAction::ComicDubsCutSelected,
+        UiAction::PasteLine => UiAction::ComicDubsPaste,
+        UiAction::PasteLineWithTrackCharacter => UiAction::ComicDubsPasteStyleOnSelected,
+        UiAction::SetToolMode(crate::application::command::ToolMode::Draw) => {
+            UiAction::ComicDubsDuplicateSelected
+        }
+        UiAction::MoveSelectedLineTrack { direction } => UiAction::ComicDubsNudgeSelected {
+            dx: 0.0,
+            dy: direction as f32 * STEP,
+        },
+        UiAction::NudgeSelectedLines { delta_frames } => UiAction::ComicDubsNudgeSelected {
+            dx: delta_frames as f32 * STEP,
+            dy: 0.0,
+        },
+        UiAction::NavigateLines { direction } => {
+            UiAction::ComicDubsSelectAdjacentBubble(direction as isize)
+        }
+        UiAction::SelectLineAtPlayhead => UiAction::ComicDubsEditSelectedText,
+        other => other,
+    }
+}
+
 pub(crate) fn handle_file_picker_selected(
     intent: FilePickerIntent,
     path: PathBuf,
@@ -45,6 +78,9 @@ pub(crate) fn handle_file_picker_selected(
         FilePickerIntent::ComicDubsExport { configuration } => {
             state.start_comic_dubs_export(path, configuration)
         }
+        FilePickerIntent::ComicDubsScript => state.comic_dubs_import_script(path),
+        FilePickerIntent::ComicDubsScriptExport => state.comic_dubs_export_script(path, false),
+        FilePickerIntent::ComicDubsSrtExport => state.comic_dubs_export_script(path, true),
         FilePickerIntent::RecordingAudio => state.recording_begin_audio_import(path, None),
         FilePickerIntent::VoicelinesAudio => state.voicelines_begin_audio_import(path),
         FilePickerIntent::VoicelinesExportRegion {
@@ -191,6 +227,7 @@ impl CommandDispatcher {
         state: &mut State,
         elwt: &EventLoopWindowTarget<AppEvent>,
     ) -> bool {
+        let action = comic_dubs_shortcut(action, state);
         // Pan is driven by holding Q/D. The key itself stays silent so
         // continuous panning does not flood the speech output.
         if matches!(&action, UiAction::BeginKeyboardPan { .. }) {
@@ -290,6 +327,7 @@ impl CommandDispatcher {
         elwt: &EventLoopWindowTarget<AppEvent>,
         announce_action: bool,
     ) -> bool {
+        let action = comic_dubs_shortcut(action, state);
         let workspace_history = matches!(
             state.active_workspace(),
             crate::application::workspace_service::WorkspaceId::Voicelines
@@ -421,6 +459,179 @@ impl CommandDispatcher {
             UiAction::ComicDubsRemoveBubble(bubble_id) => state.comic_dubs_remove_bubble(bubble_id),
             UiAction::ComicDubsMoveBubble { bubble_id, delta } => {
                 state.comic_dubs_move_bubble(bubble_id, delta)
+            }
+            UiAction::ComicDubsAddStyledBubble {
+                page_id,
+                points,
+                preset,
+            } => state.comic_dubs_add_styled_bubble(page_id, points, preset),
+            UiAction::ComicDubsSetBubbleFx { bubble_id, fx } => {
+                state.comic_dubs_edit(|project| project.set_bubble_fx(bubble_id, fx));
+            }
+            UiAction::ComicDubsSetBubbleLook { bubble_id, look } => {
+                state.comic_dubs_edit(|project| project.set_bubble_look(bubble_id, look));
+            }
+            UiAction::ComicDubsSetBubbleSound { bubble_id, sound } => {
+                state.comic_dubs_edit(|project| project.set_bubble_sound(bubble_id, sound));
+            }
+            UiAction::ComicDubsSetPageFx { page_id, fx } => {
+                state.comic_dubs_edit(|project| project.set_page_fx(page_id, fx));
+            }
+            UiAction::ComicDubsSetStudio(settings) => {
+                state.comic_dubs_edit(|project| project.set_studio(settings));
+            }
+            UiAction::ComicDubsApplyPreset { bubble_id, preset } => {
+                if state.comic_dubs_edit(|project| project.apply_bubble_preset(bubble_id, preset)) {
+                    state.show_toast(format!("Préréglage « {} » appliqué", preset.label()), 2.0);
+                }
+            }
+            UiAction::ComicDubsDuplicateBubble(bubble_id) => {
+                state.comic_dubs_duplicate_bubble(bubble_id)
+            }
+            UiAction::ComicDubsCopyStyle(bubble_id) => state.comic_dubs_copy_style(bubble_id),
+            UiAction::ComicDubsPasteStyle(bubble_id) => state.comic_dubs_paste_style(bubble_id),
+            UiAction::ComicDubsApplyStyleToPage(bubble_id) => {
+                if state.comic_dubs_edit(|project| project.apply_bubble_style_to_page(bubble_id)) {
+                    state.show_toast("Style appliqué à toute la page", 2.0);
+                }
+            }
+            UiAction::ComicDubsAddBubbleTail(bubble_id) => {
+                if !state.comic_dubs_edit(|project| project.add_bubble_tail(bubble_id)) {
+                    state.show_toast("Impossible d'ajouter une queue à cette forme", 3.0);
+                }
+            }
+            UiAction::ComicDubsSmoothBubble(bubble_id) => {
+                if !state.comic_dubs_edit(|project| project.smooth_bubble(bubble_id)) {
+                    state.show_toast("La bulle a déjà le maximum de sommets", 3.0);
+                }
+            }
+            UiAction::ComicDubsInsertBubbleVertex {
+                bubble_id,
+                after,
+                point,
+            } => {
+                state.comic_dubs_edit(|project| {
+                    project.insert_bubble_vertex(bubble_id, after, point)
+                });
+            }
+            UiAction::ComicDubsRemoveBubbleVertex { bubble_id, index } => {
+                if !state.comic_dubs_edit(|project| project.remove_bubble_vertex(bubble_id, index))
+                {
+                    state.show_toast("Une bulle garde au moins trois sommets", 3.0);
+                }
+            }
+            UiAction::ComicDubsNudgeBubble { bubble_id, dx, dy } => {
+                state.comic_dubs_edit(|project| {
+                    project.translate_bubble(bubble_id, crate::comic_dubs::Point { x: dx, y: dy })
+                });
+            }
+            UiAction::ComicDubsSeek(at_ms) => state.comic_dubs_seek(at_ms),
+            UiAction::ComicDubsPlayFrom(at_ms) => state.start_comic_dubs_playback(at_ms, None),
+            UiAction::ComicDubsPreviewBubble(bubble_id) => {
+                state.comic_dubs_preview_bubble(bubble_id)
+            }
+            UiAction::ComicDubsPlayAudio(audio_id) => state.comic_dubs_play_audio(audio_id),
+            UiAction::ComicDubsToggleVoiceRecording(bubble_id) => {
+                state.comic_dubs_toggle_voice_recording(bubble_id)
+            }
+            UiAction::ComicDubsImportScript => {
+                open_file_picker(
+                    state,
+                    elwt,
+                    "Importer un script Comic Dubs",
+                    FilePickerMode::Open,
+                    FilePickerIntent::ComicDubsScript,
+                    open_dialog_filters("Script texte", &["txt"]),
+                    project_or_video_dir(state),
+                    None,
+                );
+            }
+            UiAction::ComicDubsExportScript => {
+                open_file_picker(
+                    state,
+                    elwt,
+                    "Exporter le script Comic Dubs",
+                    FilePickerMode::Save,
+                    FilePickerIntent::ComicDubsScriptExport,
+                    save_dialog_filters("Script texte", &["txt"]),
+                    project_or_video_dir(state),
+                    Some("txt"),
+                );
+            }
+            UiAction::ComicDubsExportSrt => {
+                open_file_picker(
+                    state,
+                    elwt,
+                    "Exporter les sous-titres Comic Dubs",
+                    FilePickerMode::Save,
+                    FilePickerIntent::ComicDubsSrtExport,
+                    save_dialog_filters("Sous-titres SubRip", &["srt"]),
+                    project_or_video_dir(state),
+                    Some("srt"),
+                );
+            }
+            UiAction::ComicDubsCopySelected => state.comic_dubs_copy_selected(false),
+            UiAction::ComicDubsCutSelected => state.comic_dubs_copy_selected(true),
+            UiAction::ComicDubsPaste => state.comic_dubs_paste(),
+            UiAction::ComicDubsPasteStyleOnSelected => {
+                if let Some(bubble_id) = state.ui_shell.ui.comic_dubs_selected_bubble() {
+                    state.comic_dubs_paste_style(bubble_id);
+                }
+            }
+            UiAction::ComicDubsDuplicateSelected => {
+                if let Some(bubble_id) = state.ui_shell.ui.comic_dubs_selected_bubble() {
+                    state.comic_dubs_duplicate_bubble(bubble_id);
+                }
+            }
+            UiAction::ComicDubsNudgeSelected { dx, dy } => {
+                if let Some(bubble_id) = state.ui_shell.ui.comic_dubs_selected_bubble() {
+                    state.comic_dubs_edit(|project| {
+                        project
+                            .translate_bubble(bubble_id, crate::comic_dubs::Point { x: dx, y: dy })
+                    });
+                }
+            }
+            UiAction::ComicDubsSelectAdjacentBubble(direction) => {
+                state.comic_dubs_select_adjacent_bubble(direction)
+            }
+            UiAction::ComicDubsTogglePlayback => state.toggle_comic_dubs_playback(),
+            UiAction::ComicDubsGesture { first, action } => {
+                state.comic_dubs_gesture_step(first, true);
+                let exit = Self::dispatch_inner(*action, state, elwt, false);
+                state.comic_dubs_gesture_step(false, false);
+                if exit {
+                    return true;
+                }
+            }
+            UiAction::ComicDubsAddShot { page_id, region } => {
+                state.comic_dubs_add_shot(page_id, region)
+            }
+            UiAction::ComicDubsAddShotAroundBubble(bubble_id) => {
+                state.comic_dubs_add_shot_around_bubble(bubble_id)
+            }
+            UiAction::ComicDubsSetShot(shot) => {
+                state.comic_dubs_edit(|project| project.set_shot(shot));
+            }
+            UiAction::ComicDubsRemoveShot(shot_id) => {
+                state.comic_dubs_edit(|project| project.remove_shot(shot_id));
+            }
+            UiAction::ComicDubsMoveShot { shot_id, delta } => {
+                state.comic_dubs_edit(|project| project.move_shot(shot_id, delta));
+            }
+            UiAction::ComicDubsStepCue(direction) => state.comic_dubs_step_cue(direction),
+            UiAction::ComicDubsEditSelectedText => {
+                if let Some(bubble) = state
+                    .ui_shell
+                    .ui
+                    .comic_dubs_selected_bubble()
+                    .and_then(|id| state.comic_dubs_project.bubble(id))
+                    .cloned()
+                {
+                    state
+                        .ui_shell
+                        .ui
+                        .begin_comic_dubs_text_edit(bubble.id, bubble.text);
+                }
             }
             UiAction::VoicelinesImportAudio => {
                 let filters = open_dialog_filters(
