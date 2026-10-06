@@ -29,6 +29,28 @@ pub(super) fn cpu_fit_and_stack_filter(
     )
 }
 
+/// Places the video and the band on a black canvas following a custom
+/// export layout. Layers may extend past the canvas; overlay crops them.
+/// The band input is rendered at least as large as its rect (see
+/// `export_layout::band_render_width`), so its scale only ever shrinks it;
+/// Lanczos keeps the text crisp while doing so.
+pub(super) fn cpu_layout_filter(
+    layout: &crate::export_layout::ComposedLayout,
+    fps: f64,
+    source_duration_secs: f64,
+    pre_roll_secs: f64,
+) -> String {
+    let total_duration = source_duration_secs + pre_roll_secs;
+    let canvas_w = layout.canvas_width;
+    let canvas_h = layout.canvas_height;
+    let video = layout.video;
+    let band = layout.band;
+    format!(
+        "color=c=black:s={canvas_w}x{canvas_h}:r={fps}:d={total_duration},format=yuv420p[canvas];[0:v]trim=duration={source_duration_secs},setpts=PTS-STARTPTS,tpad=start_duration={pre_roll_secs}:start_mode=add:color=black,scale={}:{},setsar=1,fps={fps},format=yuv420p[v];[1:v]trim=duration={total_duration},setpts=PTS-STARTPTS,scale={}:{}:flags=lanczos,setsar=1,format=yuv420p[br];[canvas][v]overlay=x={}:y={}:shortest=1[tmp];[tmp][br]overlay=x={}:y={}:shortest=1[out]",
+        video.width, video.height, band.width, band.height, video.x, video.y, band.x, band.y
+    )
+}
+
 pub(super) fn cuda_fit_and_stack_filter(
     out_w: u32,
     vid_h: u32,
@@ -351,6 +373,26 @@ mod timeline_tests {
 
     #[test]
     fn cpu_filter_prepends_black_video_but_keeps_br_for_full_timeline() {
+        let layout = crate::export_layout::compose(
+            1920,
+            1080,
+            180,
+            1920,
+            1080,
+            &crate::export_layout::ExportLayout {
+                band: crate::export_layout::LayerTransform {
+                    offset_y: -0.5,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let custom = cpu_layout_filter(&layout, 24.0, 10.0, 2.5);
+        assert!(custom.contains("color=c=black:s=1920x1080"));
+        assert!(custom.contains("scale=1600:900"));
+        assert!(custom.contains("overlay=x=160:y=0"));
+        assert!(custom.contains("overlay=x=0:y=360"));
+        assert!(custom.contains("scale=1920:180:flags=lanczos"));
         let filter = cpu_fit_and_stack_filter(1920, 900, 24.0, 10.0, 2.5);
         assert!(filter.contains("tpad=start_duration=2.5:start_mode=add:color=black"));
         assert!(filter.contains("[1:v]trim=duration=12.5"));

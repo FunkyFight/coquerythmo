@@ -119,6 +119,7 @@ pub(crate) fn handle_mouse_press(
                     ratio,
                 );
                 state.line_input.start_selection(char_pos);
+                remember_clicked_segment(ctx.project, state, line.id, ratio);
             }
             // Add a special drag handle for mouse selection to allow mouse drag selection
             state.dragging = Some(DragState {

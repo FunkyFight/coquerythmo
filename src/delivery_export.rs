@@ -8,7 +8,7 @@
 use crate::export::ProjectData;
 use crate::media_binary;
 use crate::project::Project;
-use crate::rythmo_line::{MarkerKind, RythmoLine};
+use crate::rythmo_line::{MarkerKind, RythmoLine, TextStyle};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as FmtWrite;
 use std::io::Read;
@@ -86,7 +86,9 @@ pub fn srt_document(project: &Project, fps: f64) -> Result<String, String> {
             srt_timestamp(end_ms)
         )
         .expect("String writes cannot fail");
-        document.push_str(&normalized_text(&line.text));
+        document.push_str(&styled_text(line, srt_style_open, srt_style_close, |text| {
+            text.to_string()
+        }));
         document.push_str("\n\n");
     }
     Ok(document.replace('\n', "\r\n"))
@@ -146,7 +148,7 @@ pub fn ass_document(project: &Project, fps: f64, language_name: &str) -> Result<
             ass_timestamp(end_ms),
             style,
             ass_header_field(&line.character_name),
-            ass_text(&line.text)
+            styled_text(line, ass_style_open, ass_style_close, ass_text_piece)
         )
         .expect("String writes cannot fail");
     }
@@ -392,9 +394,123 @@ fn ass_header_field(text: &str) -> String {
     single_line_text(text).replace(',', ";")
 }
 
-fn ass_text(text: &str) -> String {
-    normalized_text(text)
-        .replace('\\', "\\\\")
+/// Trimmed line text with its formatting written as tags around each styled
+/// run. Lines without formatting give the same text as `normalized_text`.
+fn styled_text(
+    line: &RythmoLine,
+    open: fn(TextStyle) -> String,
+    close: fn(TextStyle) -> String,
+    escape: fn(&str) -> String,
+) -> String {
+    let chars = line.text.chars().collect::<Vec<_>>();
+    let start = chars
+        .iter()
+        .position(|c| !c.is_whitespace())
+        .unwrap_or(chars.len());
+    let end = chars
+        .iter()
+        .rposition(|c| !c.is_whitespace())
+        .map_or(start, |index| index + 1);
+    let mut out = String::new();
+    let mut index = start;
+    while index < end {
+        let style = if line.can_have_text_styles() {
+            line.style_at_char(index)
+        } else {
+            TextStyle::default()
+        };
+        let mut next = index + 1;
+        while next < end
+            && line.can_have_text_styles()
+            && line.style_at_char(next) == style
+        {
+            next += 1;
+        }
+        let piece = chars[index..next]
+            .iter()
+            .collect::<String>()
+            .replace("\r\n", "\n")
+            .replace('\r', "\n");
+        if style.is_plain() {
+            out.push_str(&escape(&piece));
+        } else {
+            out.push_str(&open(style));
+            out.push_str(&escape(&piece));
+            out.push_str(&close(style));
+        }
+        index = next;
+    }
+    out
+}
+
+fn srt_style_open(style: TextStyle) -> String {
+    let mut tags = String::new();
+    if style.bold {
+        tags.push_str("<b>");
+    }
+    if style.italic {
+        tags.push_str("<i>");
+    }
+    if style.underline {
+        tags.push_str("<u>");
+    }
+    if style.strikethrough {
+        tags.push_str("<s>");
+    }
+    tags
+}
+
+fn srt_style_close(style: TextStyle) -> String {
+    let mut tags = String::new();
+    if style.strikethrough {
+        tags.push_str("</s>");
+    }
+    if style.underline {
+        tags.push_str("</u>");
+    }
+    if style.italic {
+        tags.push_str("</i>");
+    }
+    if style.bold {
+        tags.push_str("</b>");
+    }
+    tags
+}
+
+fn ass_style_open(style: TextStyle) -> String {
+    let mut tags = String::from("{");
+    for (on, tag) in [
+        (style.bold, "\\b1"),
+        (style.italic, "\\i1"),
+        (style.underline, "\\u1"),
+        (style.strikethrough, "\\s1"),
+    ] {
+        if on {
+            tags.push_str(tag);
+        }
+    }
+    tags.push('}');
+    tags
+}
+
+fn ass_style_close(style: TextStyle) -> String {
+    let mut tags = String::from("{");
+    for (on, tag) in [
+        (style.bold, "\\b0"),
+        (style.italic, "\\i0"),
+        (style.underline, "\\u0"),
+        (style.strikethrough, "\\s0"),
+    ] {
+        if on {
+            tags.push_str(tag);
+        }
+    }
+    tags.push('}');
+    tags
+}
+
+fn ass_text_piece(text: &str) -> String {
+    text.replace('\\', "\\\\")
         .replace('{', "\\{")
         .replace('}', "\\}")
         .replace('\n', "\\N")
@@ -1846,6 +1962,20 @@ mod tests {
         assert!(srt.contains("1\r\n00:00:01,000 --> 00:00:02,000\r\nBonjour\r\nle monde"));
         assert!(srt.contains("2\r\n00:00:02,000 --> 00:00:03,000"));
         assert!(srt.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn subtitles_keep_text_formatting() {
+        use crate::rythmo_line::TextStyleKind;
+        let mut project = Project::new();
+        let id = project.add_line_full(24, 24, 0.5, "Tu viens ?".into(), "A".into(), [1.0; 4]);
+        let line = project.get_line_mut(id).unwrap();
+        line.toggle_text_style(0, 2, TextStyleKind::Bold);
+        line.toggle_text_style(3, 8, TextStyleKind::Italic);
+        let srt = srt_document(&project, 24.0).unwrap();
+        assert!(srt.contains("<b>Tu</b> <i>viens</i> ?"));
+        let ass = ass_document(&project, 24.0, "").unwrap();
+        assert!(ass.contains("{\\b1}Tu{\\b0} {\\i1}viens{\\i0} ?"));
     }
 
     #[test]

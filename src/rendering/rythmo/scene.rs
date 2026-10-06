@@ -506,6 +506,7 @@ mod tests {
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
             text_emotions: Vec::new(),
+            text_styles: Vec::new(),
         };
         let scene_line = SceneLine {
             line,
@@ -539,6 +540,7 @@ mod tests {
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
             text_emotions: Vec::new(),
+            text_styles: Vec::new(),
         };
         let scene_line = SceneLine {
             line,
@@ -572,6 +574,7 @@ mod tests {
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
             text_emotions: Vec::new(),
+            text_styles: Vec::new(),
         };
         project.insert_line(line);
         id
@@ -611,6 +614,7 @@ mod tests {
                 note: String::new(),
                 presence: crate::rythmo_line::LinePresence::On,
                 text_emotions: Vec::new(),
+                text_styles: Vec::new(),
             },
             track_index: 0,
             karaoke_progress: if active { Some(0.5) } else { None },
@@ -713,6 +717,7 @@ mod tests {
                 id: far_line_id,
                 start_frame: 96,
                 text_emotions: Vec::new(),
+                text_styles: Vec::new(),
                 ..near.line.clone()
             },
             ..near

@@ -42,6 +42,8 @@ pub enum Overflow {
     Clip,
     ClipWithLetterSpacing(f32),
     Ellipsis,
+    /// Wrap words, falling back to glyph boundaries for words wider than the box.
+    Wrap,
     Visible,
 }
 

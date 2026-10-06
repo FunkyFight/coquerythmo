@@ -23,7 +23,12 @@ pub(crate) fn handle_text_undo(ctx: &RythmoCtx, state: &mut RythmoState) -> Even
     if let Some(line_id) = state.editing_line {
         if let Some(line) = ctx.project.get_line(line_id) {
             if let Some(text) = state.line_input.undo(&line.text) {
-                return EventResponse::Action(UiAction::UpdateLineText { id: line_id, text });
+                state.sync_caret_segment = None;
+                return EventResponse::Action(UiAction::UpdateLineText {
+                    id: line_id,
+                    text,
+                    edit: None,
+                });
             }
         }
         return EventResponse::Consumed;

@@ -31,6 +31,15 @@ pub struct VoiceActorIconDraw {
     pub rect: Rect,
 }
 
+/// One textured layer of the karaoke dot (shadow, rim or dot), drawn with
+/// the texture whose key is `texture_key` (see
+/// `crate::karaoke_dot::texture_key`).
+pub struct KaraokeDotDraw {
+    pub rect: Rect,
+    pub tint: [f32; 4],
+    pub texture_key: u64,
+}
+
 pub struct LineContextMenu {
     pub line_id: u64,
     pub x: f32,
@@ -45,6 +54,12 @@ pub struct LineContextMenu {
     pub hover_actor_index: Option<usize>,
     pub hover_action_index: Option<usize>,
     pub actor_scroll: f32,
+    /// "Karaoké" root item (or its submenus, with the mouse).
+    pub hover_karaoke: bool,
+    /// Item of the karaoke submenu: default dot, groups, then "specific".
+    pub hover_karaoke_index: Option<usize>,
+    /// Item of the "dot specific to this character" submenu.
+    pub hover_karaoke_specific: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -88,6 +103,9 @@ struct LeadingVisualSpanCache {
     span: f32,
 }
 
+/// Rest time on a creation spot before its tooltip appears.
+pub const SYNC_TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
 pub struct RythmoState {
     pub hovered_line: Option<u64>,
     pub hovered_track: Option<usize>,
@@ -99,6 +117,10 @@ pub struct RythmoState {
     pub selected: Option<Selection>,
     pub editing_line: Option<u64>,
     pub line_input: crate::ui::text_input::TextInputState,
+    /// Segment (between two synchronization limits) that owns the caret when
+    /// it sits exactly on a limit: `(line id, segment index)`. Elsewhere the
+    /// caret's segment follows from its position.
+    pub(crate) sync_caret_segment: Option<(u64, usize)>,
     pub(crate) line_lowercase_override: bool,
     pub editing_character: Option<u64>,
     pub char_input: crate::ui::text_input::TextInputState,
@@ -114,6 +136,9 @@ pub struct RythmoState {
     pub panning: bool,
     pub audio_offset_mode: bool,
     pub audio_offset_drag: Option<AudioOffsetDrag>,
+    /// Reading bar being moved by its handle.
+    pub playhead_drag: Option<PlayheadDrag>,
+    pub playhead_handle_hover: bool,
     pub pending_cursor_click: Option<(f32, bool)>, // (x_ratio, is_shift_click)
     pub pan_last_x: f32,
     pub pan_accum: f32,
@@ -123,6 +148,12 @@ pub struct RythmoState {
     pub compact_empty_tracks: bool,
     pub syllable_drag: Option<SyllableDrag>,
     pub context_menu: Option<LineContextMenu>,
+    pub sync_point_menu: Option<SyncPointMenu>,
+    /// Button of the formatting bar under the pointer.
+    pub format_toolbar_hover: Option<usize>,
+    /// Spot where a click would create a synchronization point, as
+    /// `(line id, character index)`, and since when the pointer rests on it.
+    pub(crate) sync_create_hover: Option<((u64, usize), std::time::Instant)>,
     pub detection_hover: Option<DetectionHover>,
     pub detection_menu: Option<DetectionMenu>,
     pub detection_drag: Option<DetectionDrag>,
@@ -237,6 +268,11 @@ pub struct TransformHandle {
 }
 
 impl RythmoState {
+    /// Whether a line or synchronization point context menu is open.
+    pub fn has_context_menu(&self) -> bool {
+        self.context_menu.is_some() || self.sync_point_menu.is_some()
+    }
+
     pub fn new() -> Self {
         Self {
             hovered_line: None,
@@ -247,6 +283,7 @@ impl RythmoState {
             selected: None,
             editing_line: None,
             line_input: crate::ui::text_input::TextInputState::new(),
+            sync_caret_segment: None,
             line_lowercase_override: false,
             editing_character: None,
             char_input: crate::ui::text_input::TextInputState::new(),
@@ -262,6 +299,8 @@ impl RythmoState {
             panning: false,
             audio_offset_mode: false,
             audio_offset_drag: None,
+            playhead_drag: None,
+            playhead_handle_hover: false,
             pending_cursor_click: None,
             pan_last_x: 0.0,
             pan_accum: 0.0,
@@ -271,6 +310,9 @@ impl RythmoState {
             compact_empty_tracks: false,
             syllable_drag: None,
             context_menu: None,
+            sync_point_menu: None,
+            format_toolbar_hover: None,
+            sync_create_hover: None,
             detection_hover: None,
             detection_menu: None,
             detection_drag: None,
@@ -711,10 +753,22 @@ impl RythmoState {
             || self.transform_handle.is_some()
             || self.panning
             || self.audio_offset_drag.is_some()
+            || self.playhead_drag.is_some()
             || self.syllable_drag.is_some()
             || self.detection_drag.is_some()
             || self.active_stroke.is_some()
             || self.ctrl_held
+    }
+
+    /// When the "create the synchronization point" tooltip becomes due.
+    pub fn sync_tooltip_deadline(&self) -> Option<std::time::Instant> {
+        self.sync_create_hover
+            .map(|(_, since)| since + SYNC_TOOLTIP_DELAY)
+    }
+
+    pub fn sync_tooltip_due(&self, now: std::time::Instant) -> bool {
+        self.sync_tooltip_deadline()
+            .is_some_and(|deadline| deadline <= now)
     }
 
     pub fn next_cursor_blink_deadline(&self) -> Option<std::time::Instant> {
@@ -730,6 +784,7 @@ impl RythmoState {
 
     pub fn stop_line_editing(&mut self) {
         self.editing_line = None;
+        self.sync_caret_segment = None;
         self.line_lowercase_override = false;
         self.line_input.deactivate();
     }
@@ -747,6 +802,7 @@ impl RythmoState {
 
     pub fn start_editing_line(&mut self, line_id: u64, text: &str) {
         self.editing_line = Some(line_id);
+        self.sync_caret_segment = None;
         self.line_lowercase_override = false;
         self.line_input.activate(text);
         self.selected = Some(Selection::Line(line_id));
@@ -782,6 +838,7 @@ impl RythmoState {
         self.keyboard_pan_accum_px = 0.0;
         self.syllable_drag = None;
         self.context_menu = None;
+        self.sync_point_menu = None;
         self.detection_hover = None;
         self.detection_menu = None;
         self.detection_drag = None;

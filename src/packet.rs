@@ -111,10 +111,18 @@ pub enum CommandPayload {
         text: String,
         #[serde(default)]
         text_emotions: Vec<crate::rythmo_line::TextEmotionSpan>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        text_styles: Vec<crate::rythmo_line::TextStyleSpan>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edit: Option<crate::detection::TextEditSpan>,
     },
     SetTextEmotions {
         line_id: u64,
         text_emotions: Vec<crate::rythmo_line::TextEmotionSpan>,
+    },
+    SetTextStyles {
+        line_id: u64,
+        text_styles: Vec<crate::rythmo_line::TextStyleSpan>,
     },
     UpdateLineNote {
         line_id: u64,
@@ -288,11 +296,15 @@ impl Packetable for Command {
                 line_id,
                 new_text,
                 new_emotions,
+                new_styles,
+                edit,
                 ..
             } => CommandPayload::UpdateLineText {
                 line_id: *line_id,
                 text: new_text.clone(),
                 text_emotions: new_emotions.clone(),
+                text_styles: new_styles.clone(),
+                edit: *edit,
             },
             Command::SetTextEmotions {
                 line_id,
@@ -301,6 +313,14 @@ impl Packetable for Command {
             } => CommandPayload::SetTextEmotions {
                 line_id: *line_id,
                 text_emotions: new_emotions.clone(),
+            },
+            Command::SetTextStyles {
+                line_id,
+                new_styles,
+                ..
+            } => CommandPayload::SetTextStyles {
+                line_id: *line_id,
+                text_styles: new_styles.clone(),
             },
             Command::UpdateLineNote {
                 line_id, new_note, ..
@@ -449,6 +469,7 @@ mod tests {
                 note: String::new(),
                 presence: crate::rythmo_line::LinePresence::On,
                 text_emotions: Vec::new(),
+                text_styles: Vec::new(),
             },
         };
         let json = serde_json::to_string(&payload).unwrap();

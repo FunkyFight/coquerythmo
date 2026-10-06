@@ -15,6 +15,50 @@ use wgpu::MultisampleState;
 use super::icons::IconAtlas;
 use super::primitives::{HAlign, IconInstance, LabelInfo, Overflow, QuadInstance, Rect, VAlign};
 
+/// Measure with the same shaping, font fallback and wrapping as the UI renderer.
+/// The small per-thread cache avoids reshaping unchanged popup text every frame.
+pub(crate) fn measure_wrapped_text(text: &str, size: f32, width: f32) -> (f32, f32) {
+    thread_local! {
+        static MEASURE: std::cell::RefCell<(FontSystem, HashMap<UiTextKey, (f32, f32)>)> =
+            std::cell::RefCell::new((FontSystem::new(), HashMap::new()));
+    }
+    let label = LabelInfo {
+        text,
+        bounds: Rect {
+            width: width.max(1.0),
+            height: 100_000.0,
+            ..Rect::default()
+        },
+        h_align: HAlign::Left,
+        v_align: VAlign::Top,
+        overflow: Overflow::Wrap,
+        padding: 0.0,
+        font_size_override: Some(size),
+        color_override: None,
+        font_family_override: None,
+    };
+    let (key, inner_width, fs, lh) = UiRenderer::ui_text_key(&label, size);
+    MEASURE.with(|measure| {
+        let mut measure = measure.borrow_mut();
+        let (font_system, cache) = &mut *measure;
+        if let Some(metrics) = cache.get(&key) {
+            return *metrics;
+        }
+        let shaped = UiRenderer::build_ui_text_buffer(font_system, &label, inner_width, fs, lh, 0);
+        let width = shaped
+            .buffer
+            .layout_runs()
+            .map(|run| run.line_w)
+            .fold(0.0, f32::max);
+        let metrics = (width.ceil(), shaped.text_height.ceil());
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        cache.insert(key, metrics);
+        metrics
+    })
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
@@ -36,6 +80,7 @@ struct TextRasterRequest {
     height: u32,
     stretch: bool,
     emphasized: bool,
+    text_styles: Vec<crate::vector_text::TextStyleRun>,
 }
 
 struct TextRasterResult {
@@ -53,7 +98,19 @@ fn spawn_text_raster_worker() -> (SyncSender<TextRasterRequest>, Receiver<TextRa
         .spawn(move || {
             let mut font_system = FontSystem::new();
             while let Ok(request) = request_rx.recv() {
-                let rendered = if request.emphasized {
+                let rendered = if !request.text_styles.is_empty() {
+                    crate::vector_text::render_rythmo_text_styled(
+                        &mut font_system,
+                        &request.text,
+                        request.font_size,
+                        request.width,
+                        request.height,
+                        request.stretch && !request.emphasized,
+                        request.stretch && !request.emphasized,
+                        request.emphasized,
+                        &request.text_styles,
+                    )
+                } else if request.emphasized {
                     crate::vector_text::render_rythmo_text_natural_emphasized(
                         &mut font_system,
                         &request.text,
@@ -174,6 +231,8 @@ pub struct StretchedText {
     pub prewarm: bool,
     pub emphasized: bool,
     pub transform: [f32; 4],
+    /// Per-character styles of `text`; empty for plain and karaoke text.
+    pub text_styles: Vec<crate::vector_text::TextStyleRun>,
 }
 
 impl StretchedText {
@@ -190,6 +249,7 @@ impl StretchedText {
             prewarm: false,
             emphasized: false,
             transform: [0.0, 0.0, 0.5, 0.5],
+            text_styles: Vec::new(),
         }
     }
 
@@ -212,6 +272,7 @@ impl StretchedText {
             prewarm: false,
             emphasized: false,
             transform: [0.0, 0.0, 0.5, 0.5],
+            text_styles: Vec::new(),
         }
     }
 
@@ -233,6 +294,7 @@ impl StretchedText {
             prewarm: true,
             emphasized: false,
             transform: [0.0, 0.0, 0.5, 0.5],
+            text_styles: Vec::new(),
         }
     }
 
@@ -263,6 +325,7 @@ impl StretchedText {
             prewarm: false,
             emphasized: false,
             transform: [0.0, 0.0, 0.5, 0.5],
+            text_styles: Vec::new(),
         })
     }
 }
@@ -291,6 +354,66 @@ pub enum UiLayer {
 mod layer_tests {
     use super::{FontSystem, UiLayer, UiRenderer};
     use crate::ui::primitives::{HAlign, LabelInfo, Overflow, Rect, VAlign};
+
+    #[test]
+    fn stretched_text_cache_hash_follows_text_styles() {
+        crate::config::init();
+        let bold = crate::rythmo_line::TextStyle {
+            bold: true,
+            ..Default::default()
+        };
+        let underline = crate::rythmo_line::TextStyle {
+            underline: true,
+            ..Default::default()
+        };
+        let hash = |styles: &[crate::vector_text::TextStyleRun]| {
+            UiRenderer::hash_stretched_text("Salut", 24.0, 120, 34, true, false, styles)
+        };
+        assert_ne!(hash(&[]), hash(&[(0, 2, bold)]));
+        assert_ne!(hash(&[(0, 2, bold)]), hash(&[(0, 2, underline)]));
+        assert_eq!(hash(&[(1, 4, underline)]), hash(&[(1, 4, underline)]));
+    }
+
+    #[test]
+    fn wrapped_text_uses_the_rendered_height_and_preserves_long_words() {
+        let text = "Une dentale est un son articulé avec la langue contre les dents supérieures.";
+        let (_, wide_height) = super::measure_wrapped_text(text, 13.0, 400.0);
+        let (_, narrow_height) = super::measure_wrapped_text(text, 13.0, 140.0);
+        assert!(narrow_height > wide_height);
+
+        let mut font_system = FontSystem::new();
+        let label = LabelInfo {
+            text: "anticonstitutionnellement",
+            bounds: Rect {
+                width: 60.0,
+                height: 1_000.0,
+                ..Rect::default()
+            },
+            h_align: HAlign::Left,
+            v_align: VAlign::Top,
+            overflow: Overflow::Wrap,
+            padding: 0.0,
+            font_size_override: Some(13.0),
+            color_override: None,
+            font_family_override: None,
+        };
+        let rendered =
+            UiRenderer::build_ui_text_buffer(&mut font_system, &label, 60.0, 13.0, 17.0, 0);
+        assert!(rendered.buffer.layout_runs().count() > 1);
+        assert!(rendered.buffer.layout_runs().all(|run| run.line_w <= 60.0));
+        assert_eq!(
+            rendered
+                .buffer
+                .layout_runs()
+                .map(|run| run.glyphs.len())
+                .sum::<usize>(),
+            label.text.len()
+        );
+        assert_eq!(
+            rendered.text_height,
+            super::measure_wrapped_text(label.text, 13.0, 60.0).1
+        );
+    }
 
     #[test]
     fn semantic_layers_have_one_stable_back_to_front_order() {
@@ -825,6 +948,7 @@ impl UiRenderer {
                 tex_h,
                 st.stretch,
                 st.emphasized,
+                &st.text_styles,
             );
 
             // Check cache
@@ -853,6 +977,7 @@ impl UiRenderer {
                         height: tex_h,
                         stretch: st.stretch,
                         emphasized: st.emphasized,
+                        text_styles: st.text_styles.clone(),
                     };
                     if self.text_raster_requests.try_send(request).is_ok() {
                         self.pending_text_rasters.insert(st.line_id, cache_hash);
@@ -862,7 +987,19 @@ impl UiRenderer {
                 // Editing and paused views keep their immediate text response. Only
                 // playback misses are rasterized away from the render thread.
                 self.pending_text_rasters.remove(&st.line_id);
-                let rendered = if st.emphasized {
+                let rendered = if !st.text_styles.is_empty() {
+                    crate::vector_text::render_rythmo_text_styled(
+                        &mut self.font_system,
+                        &st.text,
+                        effective_font_size,
+                        tex_w,
+                        tex_h,
+                        st.stretch && !st.emphasized,
+                        st.stretch && !st.emphasized,
+                        st.emphasized,
+                        &st.text_styles,
+                    )
+                } else if st.emphasized {
                     crate::vector_text::render_rythmo_text_natural_emphasized(
                         &mut self.font_system,
                         &st.text,
@@ -1035,10 +1172,14 @@ impl UiRenderer {
         dest_h: u32,
         stretch: bool,
         emphasized: bool,
+        text_styles: &[crate::vector_text::TextStyleRun],
     ) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         "vector-rythmo".hash(&mut hasher);
+        if !text_styles.is_empty() {
+            text_styles.hash(&mut hasher);
+        }
         text.hash(&mut hasher);
         font_size.to_bits().hash(&mut hasher);
         dest_w.hash(&mut hasher);
@@ -1085,6 +1226,7 @@ impl UiRenderer {
             Overflow::ClipWithLetterSpacing(_) => 0,
             Overflow::Ellipsis => 1,
             Overflow::Visible => 2,
+            Overflow::Wrap => 3,
         }
     }
 
@@ -1140,6 +1282,7 @@ impl UiRenderer {
                 buffer.set_wrap(font_system, Wrap::None);
                 buffer.set_ellipsize(font_system, Ellipsize::End(EllipsizeHeightLimit::Lines(1)));
             }
+            Overflow::Wrap => buffer.set_wrap(font_system, Wrap::WordOrGlyph),
         }
 
         let label_family = match label.font_family_override {

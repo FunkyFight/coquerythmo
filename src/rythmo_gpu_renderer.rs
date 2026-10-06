@@ -73,7 +73,9 @@ fn push_playhead_segments(
     width: f32,
     height: f32,
     skip_ranges: &[(f32, f32)],
+    color: [f32; 4],
 ) {
+    let [r, g, b, a] = color;
     let mut ranges: Vec<(f32, f32)> = skip_ranges
         .iter()
         .map(|(start, end)| (start.max(0.0), end.min(height)))
@@ -89,10 +91,10 @@ fn push_playhead_segments(
                 y,
                 width,
                 skip_start - y,
-                217.0 / 255.0,
-                38.0 / 255.0,
-                38.0 / 255.0,
-                1.0,
+                r,
+                g,
+                b,
+                a,
             ));
         }
         y = y.max(skip_end);
@@ -103,10 +105,10 @@ fn push_playhead_segments(
             y,
             width,
             height - y,
-            217.0 / 255.0,
-            38.0 / 255.0,
-            38.0 / 255.0,
-            1.0,
+            r,
+            g,
+            b,
+            a,
         ));
     }
 }
@@ -121,9 +123,56 @@ fn push_karaoke_dot(
     width: f32,
     scale: f32,
 ) {
-    let Some(progress) = line.karaoke_progress(current_frame) else {
+    let Some((dx, dy, size)) = karaoke_dot_rect(line, lang, current_frame, x, y, width, scale)
+    else {
         return;
     };
+
+    // Shadow and rim scale with the band like the textured dot layers.
+    let unit = scale.max(0.5);
+    let expand = 1.5 * unit;
+    let [sr, sg, sb, sa] = crate::karaoke_dot::SHADOW_TINT;
+    let mut shadow = quad(
+        dx - expand,
+        dy - expand,
+        size + expand * 2.0,
+        size + expand * 2.0,
+        sr,
+        sg,
+        sb,
+        sa,
+    );
+    shadow.border_radius = size / 2.0 + expand;
+    quads.push(shadow);
+
+    let mut dot = quad(
+        dx,
+        dy,
+        size,
+        size,
+        line.character_color[0].clamp(0.0, 1.0),
+        line.character_color[1].clamp(0.0, 1.0),
+        line.character_color[2].clamp(0.0, 1.0),
+        1.0,
+    );
+    dot.color_bottom = dot.color;
+    dot.border_color = crate::karaoke_dot::RIM_TINT;
+    dot.border_width = unit;
+    dot.border_radius = size / 2.0;
+    quads.push(dot);
+}
+
+/// Top-left corner and size of the bouncing karaoke dot of `line`.
+fn karaoke_dot_rect(
+    line: &RythmoLine,
+    lang: &str,
+    current_frame: f64,
+    x: f32,
+    y: f32,
+    width: f32,
+    scale: f32,
+) -> Option<(f32, f32, f32)> {
+    let progress = line.karaoke_progress(current_frame)?;
     let ratios = crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
     let local_progress = crate::syllable::active_syllable_local_progress(&ratios, progress)
         .unwrap_or(progress)
@@ -143,35 +192,7 @@ fn push_karaoke_dot(
     };
     let dx = center_x - size / 2.0;
     let dy = y + 3.0 * scale.max(0.5) - bounce * size * constants::KARAOKE_DOT_BOUNCE_AMPLITUDE;
-
-    let mut shadow = quad(
-        dx - 1.5,
-        dy - 1.5,
-        size + 3.0,
-        size + 3.0,
-        0.0,
-        0.0,
-        0.0,
-        0.35,
-    );
-    shadow.border_radius = (size + 3.0) / 2.0;
-    quads.push(shadow);
-
-    let mut dot = quad(
-        dx,
-        dy,
-        size,
-        size,
-        line.character_color[0].clamp(0.0, 1.0),
-        line.character_color[1].clamp(0.0, 1.0),
-        line.character_color[2].clamp(0.0, 1.0),
-        1.0,
-    );
-    dot.color_bottom = dot.color;
-    dot.border_color = [1.0, 1.0, 1.0, 0.85];
-    dot.border_width = 1.0;
-    dot.border_radius = size / 2.0;
-    quads.push(dot);
+    Some((dx, dy, size))
 }
 
 fn karaoke_count_in_dot_rect(
@@ -203,17 +224,21 @@ fn push_karaoke_count_in_dot(
     };
 
     let (dx, dy, size) = karaoke_count_in_dot_rect(x, y, count_in_progress, scale);
+    // Shadow and rim scale with the band like the textured dot layers.
+    let unit = scale.max(0.5);
+    let expand = 1.5 * unit;
+    let [sr, sg, sb, sa] = crate::karaoke_dot::SHADOW_TINT;
     let mut shadow = quad(
-        dx - 1.5,
-        dy - 1.5,
-        size + 3.0,
-        size + 3.0,
-        0.0,
-        0.0,
-        0.0,
-        0.35,
+        dx - expand,
+        dy - expand,
+        size + expand * 2.0,
+        size + expand * 2.0,
+        sr,
+        sg,
+        sb,
+        sa,
     );
-    shadow.border_radius = (size + 3.0) / 2.0;
+    shadow.border_radius = size / 2.0 + expand;
     quads.push(shadow);
 
     let mut dot = quad(
@@ -227,10 +252,20 @@ fn push_karaoke_count_in_dot(
         1.0,
     );
     dot.color_bottom = dot.color;
-    dot.border_color = [1.0, 1.0, 1.0, 0.85];
-    dot.border_width = 1.0;
+    dot.border_color = crate::karaoke_dot::RIM_TINT;
+    dot.border_width = unit;
     dot.border_radius = size / 2.0;
     quads.push(dot);
+}
+
+/// Opaque tint for an 8-bit sRGB text colour.
+fn text_tint(color: [u8; 3]) -> [f32; 4] {
+    [
+        color[0] as f32 / 255.0,
+        color[1] as f32 / 255.0,
+        color[2] as f32 / 255.0,
+        1.0,
+    ]
 }
 
 fn text_hash(
@@ -259,10 +294,14 @@ fn text_tile_hash(
     height: u32,
     tile_x: u32,
     tile_width: u32,
+    text_styles: &[crate::vector_text::TextStyleRun],
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     kind.hash(&mut h);
+    if !text_styles.is_empty() {
+        text_styles.hash(&mut h);
+    }
     text.hash(&mut h);
     font_size.to_bits().hash(&mut h);
     full_width.hash(&mut h);
@@ -270,6 +309,14 @@ fn text_tile_hash(
     tile_x.hash(&mut h);
     tile_width.hash(&mut h);
     crate::vector_text::rythmo_font_family_name().hash(&mut h);
+    h.finish()
+}
+
+fn karaoke_dot_texture_hash(key: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    "export-karaoke-dot".hash(&mut h);
+    key.hash(&mut h);
     h.finish()
 }
 
@@ -512,6 +559,10 @@ struct CachedText {
     bind_group: wgpu::BindGroup,
     width: u32,
     height: u32,
+    /// Text rasters are premultiplied (tiny-skia pixmaps, glyph masks with
+    /// rgb = alpha) and use the premultiplied text pipeline, like the
+    /// editor. Icons and dot textures are straight alpha.
+    premultiplied: bool,
 }
 
 struct CachedActorIconRef {
@@ -545,7 +596,6 @@ struct IconBatch {
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const BASE_TICK_WIDTH: f32 = 1.5;
-const BASE_PLAYHEAD_WIDTH: f32 = 3.0;
 
 const INITIAL_QUAD_CAP: usize = 512;
 const INITIAL_ICON_CAP: usize = 256;
@@ -562,6 +612,8 @@ pub struct GpuRenderer {
     queue: wgpu::Queue,
     quad_pipeline: wgpu::RenderPipeline,
     icon_pipeline: wgpu::RenderPipeline,
+    /// Premultiplied text textures, drawn like the editor's band text.
+    text_pipeline: wgpu::RenderPipeline,
     nv12_pipeline: wgpu::ComputePipeline,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
@@ -574,6 +626,10 @@ pub struct GpuRenderer {
     text_cache: HashMap<u64, CachedText>,
     actor_icon_cache: HashMap<String, CachedActorIconRef>,
     failed_actor_icon_cache: HashMap<String, FailedActorIconRef>,
+    /// Smooth, mipmapped sampling for karaoke dot textures drawn far below
+    /// their texture size.
+    karaoke_dot_sampler: wgpu::Sampler,
+    failed_karaoke_dots: std::collections::HashSet<u64>,
     drawing_overlay: Option<DrawingOverlayTexture>,
     offscreen: Option<OffscreenTarget>,
     nv12: Option<Nv12Target>,
@@ -794,59 +850,80 @@ impl GpuRenderer {
             immediate_size: 0,
         });
 
-        let icon_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Export Icon Pipeline"),
-            layout: Some(&icon_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &icon_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<IconInstance>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: 0,
-                            shader_location: 0,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: 16,
-                            shader_location: 1,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: 32,
-                            shader_location: 2,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: 48,
-                            shader_location: 3,
-                        },
-                    ],
-                }],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &icon_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: FORMAT,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
+        let textured_pipeline = |label: &str,
+                                 shader: &wgpu::ShaderModule,
+                                 blend: wgpu::BlendState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&icon_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<IconInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 0,
+                                shader_location: 0,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 16,
+                                shader_location: 1,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 32,
+                                shader_location: 2,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 48,
+                                shader_location: 3,
+                            },
+                        ],
+                    }],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: FORMAT,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let icon_pipeline = textured_pipeline(
+            "Export Icon Pipeline",
+            &icon_shader,
+            wgpu::BlendState::ALPHA_BLENDING,
+        );
+        // Same shader and blending as the editor's band text: the tint is
+        // premultiplied and the texture keeps its premultiplied alpha, so
+        // glyph edges are not darkened by a second alpha multiplication.
+        let text_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Export Text Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("ui/rythmo_text.wgsl").into()),
         });
+        let text_pipeline = textured_pipeline(
+            "Export Text Pipeline",
+            &text_shader,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        );
 
         let nv12_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Export NV12 BGL"),
@@ -908,6 +985,14 @@ impl GpuRenderer {
             ..Default::default()
         });
 
+        let karaoke_dot_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Export Karaoke Dot Sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+
         // Pre-allocated vertex buffers
         let quad_buf = create_vertex_buffer(
             &device,
@@ -925,6 +1010,7 @@ impl GpuRenderer {
             queue,
             quad_pipeline,
             icon_pipeline,
+            text_pipeline,
             nv12_pipeline,
             uniform_buffer,
             uniform_bind_group,
@@ -937,6 +1023,8 @@ impl GpuRenderer {
             text_cache: HashMap::new(),
             actor_icon_cache: HashMap::new(),
             failed_actor_icon_cache: HashMap::new(),
+            karaoke_dot_sampler,
+            failed_karaoke_dots: std::collections::HashSet::new(),
             drawing_overlay: None,
             offscreen: None,
             nv12: None,
@@ -1246,6 +1334,7 @@ impl GpuRenderer {
                 bind_group,
                 width: w,
                 height: h,
+                premultiplied: true,
             },
         );
 
@@ -1372,6 +1461,7 @@ impl GpuRenderer {
                 bind_group,
                 width: VOICE_ACTOR_ICON_SIZE,
                 height: VOICE_ACTOR_ICON_SIZE,
+                premultiplied: false,
             },
         );
 
@@ -1391,6 +1481,138 @@ impl GpuRenderer {
         Some(hash)
     }
 
+    /// Uploads the texture of a non-circle karaoke dot face once per export.
+    fn get_or_upload_karaoke_dot(
+        &mut self,
+        dot: &crate::band_style::KaraokeDot,
+        face: crate::karaoke_dot::DotFace,
+    ) -> Option<u64> {
+        let key = crate::karaoke_dot::texture_key(dot, face)?;
+        let hash = karaoke_dot_texture_hash(key);
+        if self.text_cache.contains_key(&hash) {
+            return Some(hash);
+        }
+        if self.failed_karaoke_dots.contains(&hash) {
+            return None;
+        }
+        let Some(levels) =
+            crate::karaoke_dot::mip_chain(dot, face, crate::karaoke_dot::TEXTURE_BASE_SIZE)
+        else {
+            log::warn!("Failed to rasterize the karaoke dot texture");
+            self.failed_karaoke_dots.insert(hash);
+            return None;
+        };
+        let base = crate::karaoke_dot::TEXTURE_BASE_SIZE;
+        self.stats.texture_creations += 1;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Export Karaoke Dot Tex"),
+            size: wgpu::Extent3d {
+                width: base,
+                height: base,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: levels.len() as u32,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for (mip_level, (size, rgba)) in levels.iter().enumerate() {
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: mip_level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * size),
+                    rows_per_image: Some(*size),
+                },
+                wgpu::Extent3d {
+                    width: *size,
+                    height: *size,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.stats.bind_groups_created += 1;
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Export Karaoke Dot BG"),
+            layout: &self.texture_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.karaoke_dot_sampler),
+                },
+            ],
+        });
+        self.text_cache.insert(
+            hash,
+            CachedText {
+                bind_group,
+                width: base,
+                height: base,
+                premultiplied: false,
+            },
+        );
+        Some(hash)
+    }
+
+    /// Draws a non-circle karaoke dot whose rectangle is `x`, `y`,
+    /// `size` x `size` as textured layers (see `crate::karaoke_dot::layers`).
+    #[allow(clippy::too_many_arguments)]
+    fn push_textured_karaoke_dot(
+        &mut self,
+        dot: &crate::band_style::KaraokeDot,
+        face: crate::karaoke_dot::DotFace,
+        line: &RythmoLine,
+        x: f32,
+        y: f32,
+        size: f32,
+        scale: f32,
+        all_icons: &mut Vec<IconInstance>,
+        icon_batches: &mut Vec<IconBatch>,
+    ) {
+        let Some(hash) = self.get_or_upload_karaoke_dot(dot, face) else {
+            return;
+        };
+        let color = [
+            line.character_color[0],
+            line.character_color[1],
+            line.character_color[2],
+            1.0,
+        ];
+        let layers = crate::karaoke_dot::layers(dot, color, scale);
+        let start = all_icons.len() as u32;
+        for layer in &layers {
+            all_icons.push(IconInstance {
+                rect: [
+                    x - layer.expand,
+                    y - layer.expand,
+                    size + layer.expand * 2.0,
+                    size + layer.expand * 2.0,
+                ],
+                uv_rect: [0.0, 0.0, 1.0, 1.0],
+                tint: layer.tint,
+                transform: [0.0, 0.0, 0.5, 0.5],
+            });
+        }
+        icon_batches.push(IconBatch {
+            hash,
+            start,
+            count: layers.len() as u32,
+        });
+    }
+
     fn get_or_upload_rythmo_text_tile(
         &mut self,
         text: &str,
@@ -1401,7 +1623,15 @@ impl GpuRenderer {
         tile_w: u32,
     ) -> u64 {
         self.get_or_upload_rythmo_text_tile_with_mode(
-            text, font_size, full_w, dest_h, tile_x, tile_w, true, false,
+            text,
+            font_size,
+            full_w,
+            dest_h,
+            tile_x,
+            tile_w,
+            true,
+            false,
+            &[],
         )
     }
 
@@ -1415,7 +1645,15 @@ impl GpuRenderer {
         tile_w: u32,
     ) -> u64 {
         self.get_or_upload_rythmo_text_tile_with_mode(
-            text, font_size, full_w, dest_h, tile_x, tile_w, false, false,
+            text,
+            font_size,
+            full_w,
+            dest_h,
+            tile_x,
+            tile_w,
+            false,
+            false,
+            &[],
         )
     }
 
@@ -1429,7 +1667,15 @@ impl GpuRenderer {
         tile_w: u32,
     ) -> u64 {
         self.get_or_upload_rythmo_text_tile_with_mode(
-            text, font_size, full_w, dest_h, tile_x, tile_w, false, true,
+            text,
+            font_size,
+            full_w,
+            dest_h,
+            tile_x,
+            tile_w,
+            false,
+            true,
+            &[],
         )
     }
 
@@ -1443,6 +1689,7 @@ impl GpuRenderer {
         tile_w: u32,
         stretch: bool,
         emphasized: bool,
+        text_styles: &[crate::vector_text::TextStyleRun],
     ) -> u64 {
         let tile_w = tile_w.min(full_w.saturating_sub(tile_x)).max(1);
         let kind = if emphasized {
@@ -1452,7 +1699,16 @@ impl GpuRenderer {
         } else {
             "vector-rythmo-tile-natural"
         };
-        let hash = text_tile_hash(kind, text, font_size, full_w, dest_h, tile_x, tile_w);
+        let hash = text_tile_hash(
+            kind,
+            text,
+            font_size,
+            full_w,
+            dest_h,
+            tile_x,
+            tile_w,
+            text_styles,
+        );
         if self.text_cache.contains_key(&hash) {
             return hash;
         }
@@ -1468,7 +1724,18 @@ impl GpuRenderer {
         }
 
         let upload_start = Instant::now();
-        let rendered = if emphasized {
+        let rendered = if !text_styles.is_empty() && !emphasized {
+            crate::vector_text::render_rythmo_text_tile_styled(
+                text,
+                font_size,
+                full_w,
+                dest_h,
+                tile_x,
+                tile_w,
+                stretch,
+                text_styles,
+            )
+        } else if emphasized {
             // Ambiance labels are short; they fit one tile. Rendering the
             // complete styled SVG preserves the selected user font.
             crate::vector_text::render_rythmo_text_natural_emphasized(
@@ -1565,6 +1832,7 @@ impl GpuRenderer {
                 bind_group,
                 width: rendered.width,
                 height: rendered.height,
+                premultiplied: true,
             },
         );
 
@@ -1585,12 +1853,18 @@ impl GpuRenderer {
         segment_start: usize,
         highlight_end: Option<usize>,
         base_tint: [f32; 4],
+        line_styles: &[crate::rythmo_line::TextStyleSpan],
         all_icons: &mut Vec<IconInstance>,
         icon_batches: &mut Vec<IconBatch>,
     ) {
         let count = text.chars().count();
+        let text_styles = if line_styles.is_empty() {
+            Vec::new()
+        } else {
+            crate::rythmo_line::text_style_runs(line_styles, segment_start, segment_start + count)
+        };
         let Some(highlight_end) = highlight_end else {
-            self.push_rythmo_text_icons_tinted_clipped(
+            self.push_rythmo_text_icons_styled_clipped(
                 text,
                 font_size,
                 x,
@@ -1599,13 +1873,14 @@ impl GpuRenderer {
                 h,
                 base_tint,
                 1.0,
+                &text_styles,
                 all_icons,
                 icon_batches,
             );
             return;
         };
         if count == 0 || highlight_end <= segment_start {
-            self.push_rythmo_text_icons_tinted_clipped(
+            self.push_rythmo_text_icons_styled_clipped(
                 text,
                 font_size,
                 x,
@@ -1614,6 +1889,7 @@ impl GpuRenderer {
                 h,
                 base_tint,
                 1.0,
+                &text_styles,
                 all_icons,
                 icon_batches,
             );
@@ -1621,7 +1897,7 @@ impl GpuRenderer {
         }
         let end_ratio = ((highlight_end - segment_start) as f32 / count as f32).min(1.0);
         if end_ratio < 1.0 {
-            self.push_rythmo_text_icons_tinted_clipped(
+            self.push_rythmo_text_icons_styled_clipped(
                 text,
                 font_size,
                 x,
@@ -1630,11 +1906,12 @@ impl GpuRenderer {
                 h,
                 base_tint,
                 1.0,
+                &text_styles,
                 all_icons,
                 icon_batches,
             );
         }
-        self.push_rythmo_text_icons_tinted_clipped(
+        self.push_rythmo_text_icons_styled_clipped(
             text,
             font_size,
             x,
@@ -1643,6 +1920,40 @@ impl GpuRenderer {
             h,
             [1.0, 0.82, 0.08, 1.0],
             end_ratio,
+            &text_styles,
+            all_icons,
+            icon_batches,
+        );
+    }
+
+    /// Stretched band text carrying per-character styles; empty `text_styles`
+    /// draws exactly like `push_rythmo_text_icons_tinted_clipped`.
+    fn push_rythmo_text_icons_styled_clipped(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        tint: [f32; 4],
+        clip_ratio: f32,
+        text_styles: &[crate::vector_text::TextStyleRun],
+        all_icons: &mut Vec<IconInstance>,
+        icon_batches: &mut Vec<IconBatch>,
+    ) {
+        self.push_rythmo_text_icons_tinted_clipped_with_mode(
+            text,
+            font_size,
+            x,
+            y,
+            w,
+            h,
+            tint,
+            clip_ratio,
+            true,
+            false,
+            text_styles,
             all_icons,
             icon_batches,
         );
@@ -1672,6 +1983,7 @@ impl GpuRenderer {
             clip_ratio,
             true,
             false,
+            &[],
             all_icons,
             icon_batches,
         );
@@ -1701,6 +2013,7 @@ impl GpuRenderer {
             clip_ratio,
             false,
             false,
+            &[],
             all_icons,
             icon_batches,
         );
@@ -1729,6 +2042,7 @@ impl GpuRenderer {
             1.0,
             false,
             true,
+            &[],
             all_icons,
             icon_batches,
         );
@@ -1773,7 +2087,17 @@ impl GpuRenderer {
             let gx = x + start_ratio * w;
             let gw = ((end_ratio - start_ratio) * w).max(0.5);
             let first = all_icons.len();
-            self.push_rythmo_text_icons_tinted_clipped(
+            let style = if line.can_have_text_styles() {
+                line.style_at_char(char_start)
+            } else {
+                crate::rythmo_line::TextStyle::default()
+            };
+            let style_runs = if style.is_plain() {
+                Vec::new()
+            } else {
+                vec![(0, char_end - char_start, style)]
+            };
+            self.push_rythmo_text_icons_styled_clipped(
                 grapheme,
                 font_size,
                 gx,
@@ -1782,6 +2106,7 @@ impl GpuRenderer {
                 h,
                 tint,
                 1.0,
+                &style_runs,
                 all_icons,
                 icon_batches,
             );
@@ -1809,7 +2134,7 @@ impl GpuRenderer {
                 }
                 if show_lane {
                     let (copy_y, copy_height) = rythmo_layout::text_emotion_copy_rect(y, h, scale);
-                    self.push_rythmo_text_icons_tinted_clipped(
+                    self.push_rythmo_text_icons_styled_clipped(
                         grapheme,
                         font_size * 0.68,
                         gx,
@@ -1818,6 +2143,7 @@ impl GpuRenderer {
                         copy_height,
                         [tint[0], tint[1], tint[2], 0.82],
                         1.0,
+                        &style_runs,
                         all_icons,
                         icon_batches,
                     );
@@ -1839,6 +2165,7 @@ impl GpuRenderer {
         clip_ratio: f32,
         stretch: bool,
         emphasized: bool,
+        text_styles: &[crate::vector_text::TextStyleRun],
         all_icons: &mut Vec<IconInstance>,
         icon_batches: &mut Vec<IconBatch>,
     ) {
@@ -1863,7 +2190,19 @@ impl GpuRenderer {
                 break;
             }
             let visible_tile_w = tile_w.min(clip_px - tile_x).max(1);
-            let hash = if emphasized {
+            let hash = if !text_styles.is_empty() && !emphasized {
+                self.get_or_upload_rythmo_text_tile_with_mode(
+                    text,
+                    font_size,
+                    full_w,
+                    full_h,
+                    tile_x,
+                    tile_w,
+                    stretch,
+                    false,
+                    text_styles,
+                )
+            } else if emphasized {
                 self.get_or_upload_rythmo_text_tile_emphasized(
                     text, font_size, full_w, full_h, tile_x, tile_w,
                 )
@@ -1915,7 +2254,7 @@ impl GpuRenderer {
         all_icons: &mut Vec<IconInstance>,
         icon_batches: &mut Vec<IconBatch>,
     ) {
-        let font_size = (size * 0.55).max(1.0);
+        let font_size = (size * crate::band_visuals::ACTOR_FALLBACK_FONT_RATIO).max(1.0);
         let hash = self.get_or_upload_text(text, font_size);
         let Some(cached) = self.text_cache.get(&hash) else {
             return;
@@ -1937,7 +2276,37 @@ impl GpuRenderer {
                 draw_h,
             ],
             uv_rect: [0.0, 0.0, draw_w / tw, draw_h / th],
-            tint: [230.0 / 255.0, 230.0 / 255.0, 238.0 / 255.0, 1.0],
+            tint: text_tint(crate::band_visuals::ACTOR_FALLBACK_TEXT_COLOR),
+            transform: [0.0, 0.0, 0.5, 0.5],
+        });
+        icon_batches.push(IconBatch {
+            hash,
+            start,
+            count: 1,
+        });
+    }
+
+    /// Draws a small marker label (loop number, "out") with its top-left at
+    /// `x`, `y`.
+    fn push_marker_label(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        x: f32,
+        y: f32,
+        color: [u8; 3],
+        all_icons: &mut Vec<IconInstance>,
+        icon_batches: &mut Vec<IconBatch>,
+    ) {
+        let hash = self.get_or_upload_text(text, font_size.max(1.0));
+        let Some(cached) = self.text_cache.get(&hash) else {
+            return;
+        };
+        let start = all_icons.len() as u32;
+        all_icons.push(IconInstance {
+            rect: [x, y, cached.width as f32, cached.height as f32],
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            tint: text_tint(color),
             transform: [0.0, 0.0, 0.5, 0.5],
         });
         icon_batches.push(IconBatch {
@@ -1952,8 +2321,8 @@ impl GpuRenderer {
         scene: &GpuExportScene<'_>,
         line: &RythmoLine,
         x: f32,
-        y: f32,
-        _badge_w: f32,
+        badge_y: f32,
+        badge_h: f32,
         icon_size: f32,
         scale: f32,
         surface_w: f32,
@@ -1965,27 +2334,26 @@ impl GpuRenderer {
             return;
         }
 
+        use crate::band_visuals as visuals;
         let icon_size = icon_size.max(1.0);
-        let gap = 3.0 * scale;
+        let gap = visuals::ACTOR_ICON_GAP * scale;
         // The badge ends immediately before the line body. Keep actor icons
         // on the outer side of the badge so they cannot cover the line text.
         let mut icon_x = x - gap - icon_size;
+        let y = badge_y + (badge_h - icon_size) * 0.5;
 
         for actor_name in &line.voice_actor_names {
             if icon_x > surface_w {
                 break;
             }
 
-            quads.push(quad(
-                icon_x,
-                y,
-                icon_size,
-                icon_size,
-                10.0 / 255.0,
-                10.0 / 255.0,
-                14.0 / 255.0,
-                235.0 / 255.0,
-            ));
+            let mut background = quad(icon_x, y, icon_size, icon_size, 0.0, 0.0, 0.0, 0.0);
+            background.color = visuals::ACTOR_ICON_BG_TOP;
+            background.color_bottom = visuals::ACTOR_ICON_BG_BOTTOM;
+            background.border_color = visuals::ACTOR_ICON_BORDER;
+            background.border_width = visuals::ACTOR_ICON_BORDER_WIDTH * scale;
+            background.border_radius = visuals::ACTOR_ICON_RADIUS * scale;
+            quads.push(background);
 
             let mut drew_icon = false;
             if let Some(actor) = scene.voice_actor(actor_name) {
@@ -2169,7 +2537,7 @@ impl GpuRenderer {
         let tick_long = constants::TICK_LONG * s;
         let tick_short = constants::TICK_SHORT * s;
         let tick_w = BASE_TICK_WIDTH * s;
-        let playhead_w = BASE_PLAYHEAD_WIDTH * s;
+        let playhead_w = scene.project.settings().band_style.playhead_width * s;
         let badge_h = constants::BADGE_HEIGHT * s;
         let badge_gap = constants::BADGE_GAP * s;
         let actor_icon_size = constants::VOICE_ACTOR_DISPLAY_ICON_SIZE * s;
@@ -2288,7 +2656,14 @@ impl GpuRenderer {
                 }
             })
             .collect();
-        push_playhead_segments(&mut quads, playhead_x, playhead_w, h, &playhead_gaps);
+        push_playhead_segments(
+            &mut quads,
+            playhead_x,
+            playhead_w,
+            h,
+            &playhead_gaps,
+            scene.project.settings().band_style.playhead,
+        );
 
         // ── Lines ──
         // Precompute every visible line's rect + character name so a badge can be tested
@@ -2473,54 +2848,39 @@ impl GpuRenderer {
                 ));
             }
 
-            // Overlap detection vs OTHER lines: hide if same character, 60% opacity if different
-            let mut badge_hidden = false;
-            let mut badge_overlap_alpha = 1.0_f32;
-            for (&oid, (other_rect, other_name)) in &line_rects {
-                if oid == line.id {
-                    continue;
-                }
-                let overlap = badge_x < other_rect.x + other_rect.width
-                    && badge_x + badge_w > other_rect.x
-                    && badge_y < other_rect.y + other_rect.height
-                    && badge_y + badge_h > other_rect.y;
-                if overlap {
-                    if other_name == &line.character_name {
-                        badge_hidden = true;
-                        break;
-                    } else {
-                        badge_overlap_alpha = constants::CHARACTER_BADGE_COLLISION_OPACITY;
-                    }
-                }
-            }
-
-            // Store badge info for later drawing (after text)
-            let badge_info = if show_badge && !badge_hidden && !line.character_name.is_empty() {
-                let luminance = 0.299 * cr + 0.587 * cg + 0.114 * cb;
-                let (tr, tg, tb) = if luminance > 0.55 {
-                    (0.0_f32, 0.0, 0.0)
-                } else {
-                    (224.0 / 255.0, 224.0 / 255.0, 230.0 / 255.0)
-                };
-                let hash = self.get_or_upload_text(&line.character_name, font_size);
-                Some((
-                    badge_x,
-                    badge_y,
-                    badge_w,
-                    badge_h,
-                    cr,
-                    cg,
-                    cb,
-                    badge_overlap_alpha,
-                    hash,
-                    tr,
-                    tg,
-                    tb,
-                ))
+            // Against OTHER line bodies: hidden over the same character,
+            // shrunk to fit (fully opaque) over another one, like the editor.
+            let badge_info = if show_badge && !line.character_name.is_empty() {
+                let fit = crate::band_visuals::fit_character_badge_among_lines(
+                    Rect {
+                        x: badge_x,
+                        y: badge_y,
+                        width: badge_w,
+                        height: badge_h,
+                    },
+                    x1,
+                    badge_gap,
+                    line.id,
+                    &line.character_name,
+                    &line_rects,
+                );
+                (!fit.hidden).then_some((fit.rect, fit.scale))
             } else {
                 None
             };
 
+            let scrolling_text_tint = if line.kind.is_ambiance() {
+                [0.95, 0.12, 0.16, 1.0]
+            } else if scene.project.settings().scrolling_text_uses_character_color {
+                [
+                    line.character_color[0].clamp(0.0, 1.0),
+                    line.character_color[1].clamp(0.0, 1.0),
+                    line.character_color[2].clamp(0.0, 1.0),
+                    1.0,
+                ]
+            } else {
+                [1.0; 4]
+            };
             if !line.text.is_empty() && line.text != "\u{2191}" && line.text != "\u{2193}" {
                 let read_highlight_end =
                     if scene.project.settings().highlight_read_word && !line.karaoke {
@@ -2535,18 +2895,6 @@ impl GpuRenderer {
                     } else {
                         None
                     };
-                let scrolling_text_tint = if line.kind.is_ambiance() {
-                    [0.95, 0.12, 0.16, 1.0]
-                } else if scene.project.settings().scrolling_text_uses_character_color {
-                    [
-                        line.character_color[0].clamp(0.0, 1.0),
-                        line.character_color[1].clamp(0.0, 1.0),
-                        line.character_color[2].clamp(0.0, 1.0),
-                        1.0,
-                    ]
-                } else {
-                    [1.0; 4]
-                };
                 if line.kind.is_ambiance() {
                     let reserve = (54.0 * s).min(lw);
                     let (text_x, text_w) =
@@ -2630,6 +2978,12 @@ impl GpuRenderer {
                         &mut icon_batches,
                     );
                 } else {
+                    let line_styles: &[crate::rythmo_line::TextStyleSpan] =
+                        if line.can_have_text_styles() {
+                            &line.text_styles
+                        } else {
+                            &[]
+                        };
                     let lang = scene.project.syllable_language_code();
                     let base_breaks = crate::syllable::syllable_breaks(&line.text, lang);
                     let base_ratios =
@@ -2666,6 +3020,7 @@ impl GpuRenderer {
                                     prev_break,
                                     read_highlight_end,
                                     scrolling_text_tint,
+                                    line_styles,
                                     &mut all_icons,
                                     &mut icon_batches,
                                 );
@@ -2684,6 +3039,7 @@ impl GpuRenderer {
                             0,
                             read_highlight_end,
                             scrolling_text_tint,
+                            line_styles,
                             &mut all_icons,
                             &mut icon_batches,
                         );
@@ -2692,12 +3048,19 @@ impl GpuRenderer {
             }
 
             if !line.presence.is_on() && !line.text.is_empty() {
-                let underline_y = line_y + body_h - (3.0 * s).max(1.0);
-                let thickness = (1.5 * s).max(1.0);
+                // Same underline as the editor, in the scrolling text colour.
+                use crate::band_visuals::{
+                    PRESENCE_DASH_LENGTH, PRESENCE_DASH_PERIOD, PRESENCE_UNDERLINE_BOTTOM_OFFSET,
+                    PRESENCE_UNDERLINE_THICKNESS,
+                };
+                let underline_y = line_y + body_h - PRESENCE_UNDERLINE_BOTTOM_OFFSET * s;
+                let thickness = PRESENCE_UNDERLINE_THICKNESS * s;
+                let [ur, ug, ub, ua] = scrolling_text_tint;
                 if line.presence == crate::rythmo_line::LinePresence::Off {
-                    quads.push(quad(x1, underline_y, lw, thickness, 1.0, 1.0, 1.0, 1.0));
+                    quads.push(quad(x1, underline_y, lw, thickness, ur, ug, ub, ua));
                 } else {
-                    let (dash, gap) = ((8.0 * s).max(2.0), (5.0 * s).max(2.0));
+                    let dash = PRESENCE_DASH_LENGTH * s;
+                    let period = (PRESENCE_DASH_PERIOD * s).max(0.5);
                     let mut x = x1;
                     while x < x1 + lw {
                         quads.push(quad(
@@ -2705,12 +3068,12 @@ impl GpuRenderer {
                             underline_y,
                             dash.min(x1 + lw - x),
                             thickness,
-                            1.0,
-                            1.0,
-                            1.0,
-                            1.0,
+                            ur,
+                            ug,
+                            ub,
+                            ua,
                         ));
-                        x += dash + gap;
+                        x += period;
                     }
                 }
             }
@@ -2771,48 +3134,46 @@ impl GpuRenderer {
 
             // Draw the character label after the scrolling text, using the
             // same emphasized, double-underlined treatment as ambiances.
-            if let Some((badge_x, badge_y, badge_w, badge_h, cr, cg, cb, ba, hash, tr, tg, tb)) =
-                badge_info
-            {
-                let _ = (hash, tr, tg, tb);
-                let underline_x = badge_x + character_label_font * 0.25;
+            if let Some((badge, badge_scale)) = badge_info {
+                let label_font = character_label_font * badge_scale;
+                let underline_x = badge.x + label_font * 0.25;
                 let underline_w = crate::vector_text::measure_rythmo_text_width_standalone(
                     &line.character_name,
-                    character_label_font,
+                    label_font,
                 )
-                .unwrap_or(badge_w)
-                .min((badge_x + badge_w - underline_x).max(0.0));
+                .unwrap_or(badge.width)
+                .min((badge.x + badge.width - underline_x).max(0.0));
                 self.push_rythmo_text_icons_emphasized(
                     &line.character_name,
-                    character_label_font,
-                    badge_x,
-                    badge_y,
-                    badge_w,
-                    badge_h,
-                    [cr, cg, cb, ba],
+                    label_font,
+                    badge.x,
+                    badge.y,
+                    badge.width,
+                    badge.height,
+                    [cr, cg, cb, 1.0],
                     &mut all_icons,
                     &mut icon_batches,
                 );
                 for y_offset in [2.0, 5.5] {
                     quads.push(quad(
                         underline_x,
-                        badge_y + badge_h - y_offset * s,
+                        badge.y + badge.height - y_offset * s * badge_scale,
                         underline_w,
-                        1.5 * s,
+                        1.5 * s * badge_scale,
                         cr,
                         cg,
                         cb,
-                        ba,
+                        1.0,
                     ));
                 }
 
                 self.push_voice_actor_icons(
                     scene,
                     line,
-                    badge_x,
-                    badge_y,
-                    badge_w,
-                    actor_icon_size,
+                    badge.x,
+                    badge.y,
+                    badge.height,
+                    actor_icon_size * badge_scale,
                     s,
                     w,
                     &mut quads,
@@ -2822,30 +3183,74 @@ impl GpuRenderer {
             }
 
             if line.text == "\u{2191}" || line.text == "\u{2193}" {
+                use crate::band_visuals::{
+                    breath_arrow_bars, BREATH_ARROW_COLOR, BREATH_ARROW_HEAD_LENGTH,
+                    BREATH_ARROW_MARGIN, BREATH_ARROW_THICKNESS,
+                };
                 let up = line.text == "\u{2191}";
-                let margin = 4.0;
+                let margin = BREATH_ARROW_MARGIN * s;
                 if lw > margin * 2.0 + 1.0 && body_h > margin * 2.0 + 1.0 {
-                    let dx = lw - margin * 2.0;
-                    let dy = body_h - margin * 2.0;
-                    let length = (dx * dx + dy * dy).sqrt();
-                    let cx = x1 + lw / 2.0;
-                    let cy = line_y + body_h / 2.0;
-                    let angle = if up { (-dy).atan2(dx) } else { dy.atan2(dx) };
-                    quads.push(rotated_line(
-                        cx,
-                        cy,
-                        length,
-                        2.0 * s,
-                        angle,
-                        220.0 / 255.0,
-                        220.0 / 255.0,
-                        230.0 / 255.0,
-                        230.0 / 255.0,
-                    ));
+                    let [r, g, b, a] = BREATH_ARROW_COLOR;
+                    let body = Rect {
+                        x: x1,
+                        y: line_y,
+                        width: lw,
+                        height: body_h,
+                    };
+                    for (cx, cy, length, angle) in
+                        breath_arrow_bars(body, up, margin, BREATH_ARROW_HEAD_LENGTH * s)
+                    {
+                        quads.push(rotated_line(
+                            cx,
+                            cy,
+                            length,
+                            BREATH_ARROW_THICKNESS * s,
+                            angle,
+                            r,
+                            g,
+                            b,
+                            a,
+                        ));
+                    }
                 }
             }
 
-            if karaoke_count_in {
+            let karaoke_dot = scene
+                .project
+                .settings()
+                .band_style
+                .dot_for_character(&line.character_name);
+            if !karaoke_dot.is_circle() {
+                let dot_rect = if karaoke_count_in {
+                    scene_line
+                        .karaoke_count_in_progress
+                        .map(|progress| karaoke_count_in_dot_rect(x1, line_y, progress, s))
+                } else {
+                    karaoke_dot_rect(
+                        line,
+                        scene.project.syllable_language_code(),
+                        current_frame,
+                        x1,
+                        line_y,
+                        lw,
+                        s,
+                    )
+                };
+                if let Some((dx, dy, size)) = dot_rect {
+                    let face = crate::karaoke_dot::face_for_dot(line_y, dy, size, s);
+                    self.push_textured_karaoke_dot(
+                        karaoke_dot,
+                        face,
+                        line,
+                        dx,
+                        dy,
+                        size,
+                        s,
+                        &mut all_icons,
+                        &mut icon_batches,
+                    );
+                }
+            } else if karaoke_count_in {
                 push_karaoke_count_in_dot(
                     &mut quads,
                     line,
@@ -2896,6 +3301,7 @@ impl GpuRenderer {
         }
 
         // ── Markers ──
+        use crate::band_visuals as visuals;
         for marker in &common_scene.markers {
             let mx = rythmo_layout::export_timeline_x(
                 marker.frame,
@@ -2909,106 +3315,70 @@ impl GpuRenderer {
             }
             match &marker.kind {
                 MarkerKind::Boucle => {
-                    quads.push(quad(
-                        mx - 1.0 * s,
-                        0.0,
-                        2.0 * s,
-                        h,
-                        1.0,
-                        0.02,
-                        0.05,
-                        230.0 / 255.0,
-                    ));
+                    let [r, g, b, a] = visuals::LOOP_MARKER_COLOR;
+                    let bar_w = visuals::MARKER_BAR_WIDTH * s;
+                    quads.push(quad(mx - bar_w / 2.0, 0.0, bar_w, h, r, g, b, a));
                     let cy = h / 2.0;
-                    let arm = 10.0 * s;
-                    let diag_len = arm * 2.0 * std::f32::consts::SQRT_2;
-                    quads.push(rotated_line(
-                        mx,
-                        cy,
-                        diag_len,
-                        2.5 * s,
-                        std::f32::consts::FRAC_PI_4,
-                        1.0,
-                        0.02,
-                        0.05,
-                        230.0 / 255.0,
-                    ));
-                    quads.push(rotated_line(
-                        mx,
-                        cy,
-                        diag_len,
-                        2.5 * s,
-                        -std::f32::consts::FRAC_PI_4,
-                        217.0 / 255.0,
-                        38.0 / 255.0,
-                        38.0 / 255.0,
-                        230.0 / 255.0,
-                    ));
+                    for angle in [std::f32::consts::FRAC_PI_4, -std::f32::consts::FRAC_PI_4] {
+                        quads.push(rotated_line(
+                            mx,
+                            cy,
+                            visuals::LOOP_MARKER_X_BAR_LENGTH * s,
+                            visuals::LOOP_MARKER_X_THICKNESS * s,
+                            angle,
+                            r,
+                            g,
+                            b,
+                            a,
+                        ));
+                    }
                     if let Some(number) = marker.loop_number {
-                        let hash =
-                            self.get_or_upload_text(&number.to_string(), (18.0 * s).max(1.0));
-                        if let Some(cached) = self.text_cache.get(&hash) {
-                            let start = all_icons.len() as u32;
-                            all_icons.push(IconInstance {
-                                rect: [
-                                    mx + 8.0 * s,
-                                    cy + 5.0 * s,
-                                    cached.width as f32,
-                                    cached.height as f32,
-                                ],
-                                uv_rect: [0.0, 0.0, 1.0, 1.0],
-                                tint: [217.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0],
-                                transform: [0.0, 0.0, 0.5, 0.5],
-                            });
-                            icon_batches.push(IconBatch {
-                                hash,
-                                start,
-                                count: 1,
-                            });
-                        }
+                        self.push_marker_label(
+                            &number.to_string(),
+                            visuals::LOOP_NUMBER_FONT_SIZE * s,
+                            mx + visuals::LOOP_NUMBER_OFFSET[0] * s,
+                            cy + visuals::LOOP_NUMBER_OFFSET[1] * s,
+                            visuals::LOOP_NUMBER_COLOR,
+                            &mut all_icons,
+                            &mut icon_batches,
+                        );
                     }
                 }
                 MarkerKind::Out => {
-                    quads.push(quad(
-                        mx - 1.0 * s,
-                        0.0,
-                        2.0 * s,
-                        h,
-                        217.0 / 255.0,
-                        115.0 / 255.0,
-                        115.0 / 255.0,
-                        180.0 / 255.0,
-                    ));
+                    let [r, g, b, a] = visuals::OUT_MARKER_COLOR;
+                    let bar_w = visuals::MARKER_BAR_WIDTH * s;
+                    quads.push(quad(mx - bar_w / 2.0, 0.0, bar_w, h, r, g, b, a));
                     let cy = h / 2.0;
-                    let bh = h * 0.15;
-                    for &offset in &[-5.0_f32, 5.0] {
-                        let dx = bh * 0.3;
-                        let length = (dx * 2.0_f32).hypot(bh * 2.0);
-                        let angle = (bh * 2.0).atan2(dx * 2.0);
+                    for offset in visuals::OUT_MARKER_BAR_OFFSETS {
                         quads.push(rotated_line(
                             mx + offset * s,
                             cy,
-                            length,
-                            2.0 * s,
-                            angle,
-                            217.0 / 255.0,
-                            115.0 / 255.0,
-                            115.0 / 255.0,
-                            180.0 / 255.0,
+                            h * visuals::OUT_MARKER_BAR_LENGTH_RATIO,
+                            visuals::OUT_MARKER_BAR_THICKNESS * s,
+                            visuals::OUT_MARKER_BAR_ANGLE,
+                            r,
+                            g,
+                            b,
+                            a,
                         ));
                     }
+                    let font = visuals::OUT_LABEL_FONT_SIZE * s;
+                    // Vertically centred on the band, like the editor label.
+                    let label_h = (font * 1.4).ceil();
+                    self.push_marker_label(
+                        visuals::OUT_LABEL,
+                        font,
+                        mx + visuals::OUT_LABEL_OFFSET_X * s,
+                        cy - label_h / 2.0,
+                        visuals::OUT_LABEL_COLOR,
+                        &mut all_icons,
+                        &mut icon_batches,
+                    );
                 }
                 MarkerKind::SceneChange => {
-                    quads.push(quad(
-                        mx - 1.0 * s,
-                        0.0,
-                        2.0 * s,
-                        h,
-                        230.0 / 255.0,
-                        230.0 / 255.0,
-                        240.0 / 255.0,
-                        200.0 / 255.0,
-                    ));
+                    let [r, g, b, a] = visuals::SCENE_CHANGE_COLOR;
+                    let bar_w = visuals::MARKER_BAR_WIDTH * s;
+                    quads.push(quad(mx - bar_w / 2.0, 0.0, bar_w, h, r, g, b, a));
                 }
                 MarkerKind::LiaisonLeft | MarkerKind::LiaisonRight => {
                     let is_left = matches!(marker.kind, MarkerKind::LiaisonLeft);
@@ -3026,10 +3396,10 @@ impl GpuRenderer {
                             length,
                             1.5 * s,
                             angle,
-                            180.0 / 255.0,
-                            180.0 / 255.0,
-                            190.0 / 255.0,
-                            200.0 / 255.0,
+                            visuals::LIAISON_MARKER_TINT[0],
+                            visuals::LIAISON_MARKER_TINT[1],
+                            visuals::LIAISON_MARKER_TINT[2],
+                            visuals::LIAISON_MARKER_TINT[3],
                         ));
                     }
                 }
@@ -3087,6 +3457,7 @@ impl GpuRenderer {
                 label: Some("Export Encoder"),
             });
 
+        let background = scene.project.settings().band_style.background;
         {
             let offscreen = self.offscreen.as_ref().unwrap();
             {
@@ -3097,9 +3468,9 @@ impl GpuRenderer {
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 5.0 / 255.0,
-                                g: 5.0 / 255.0,
-                                b: 8.0 / 255.0,
+                                r: background[0] as f64,
+                                g: background[1] as f64,
+                                b: background[2] as f64,
                                 a: 1.0,
                             }),
                             store: wgpu::StoreOp::Store,
@@ -3118,11 +3489,19 @@ impl GpuRenderer {
                     pass.draw(0..6, 0..quads.len() as u32);
                 }
                 if !all_icons.is_empty() {
-                    pass.set_pipeline(&self.icon_pipeline);
-                    pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
                     pass.set_vertex_buffer(0, self.icon_buf.slice(..));
+                    let mut premultiplied_pipeline = None;
                     for batch in &icon_batches {
                         if let Some(cached) = self.text_cache.get(&batch.hash) {
+                            if premultiplied_pipeline != Some(cached.premultiplied) {
+                                pass.set_pipeline(if cached.premultiplied {
+                                    &self.text_pipeline
+                                } else {
+                                    &self.icon_pipeline
+                                });
+                                pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
+                                premultiplied_pipeline = Some(cached.premultiplied);
+                            }
                             pass.set_bind_group(1, &cached.bind_group, &[]);
                             pass.draw(0..6, batch.start..batch.start + batch.count);
                         }
@@ -3130,6 +3509,9 @@ impl GpuRenderer {
                     if let (Some(index), Some(overlay)) =
                         (drawing_icon_index, self.drawing_overlay.as_ref())
                     {
+                        // The drawing overlay is straight alpha.
+                        pass.set_pipeline(&self.icon_pipeline);
+                        pass.set_bind_group(0, &self.uniform_bind_group_for_icons, &[]);
                         pass.set_bind_group(1, &overlay.bind_group, &[]);
                         pass.draw(0..6, index..index + 1);
                     }

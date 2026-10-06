@@ -92,6 +92,7 @@ fn packet_and_command_payload_match_legacy_goldens() {
             note: String::new(),
             presence: coquerythmo::rythmo_line::LinePresence::On,
             text_emotions: Vec::new(),
+            text_styles: Vec::new(),
         },
     };
     assert_eq!(
@@ -120,6 +121,9 @@ fn local_edit_undo_redo_preserves_revision_and_values() {
             new_text: "after".into(),
             old_emotions: Vec::new(),
             new_emotions: Vec::new(),
+            old_styles: Vec::new(),
+            new_styles: Vec::new(),
+            edit: None,
         },
         EditOrigin::Local,
     );

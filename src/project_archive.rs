@@ -2617,6 +2617,49 @@ mod tests {
     }
 
     #[test]
+    fn bundle_round_trip_keeps_the_export_layout_of_every_language() {
+        let dir = TestDir::new();
+        let source = dir.path("source.mp4");
+        let bundle = dir.path("layout.coquerythmo");
+        fs::write(&source, b"source").unwrap();
+
+        let mut project = sample_project(None);
+        let first_language = project.active_language_id();
+        project.create_language("English", "en");
+        let mut settings = project.settings().clone();
+        settings.export_configuration.layout = crate::export_layout::ExportLayout {
+            video: crate::export_layout::LayerTransform {
+                offset_x: -0.12,
+                offset_y: 0.05,
+                scale_x: 0.8,
+                scale_y: 0.8,
+            },
+            band: crate::export_layout::LayerTransform {
+                offset_x: 0.0,
+                offset_y: -0.4,
+                scale_x: 4.0,
+                scale_y: 1.5,
+            },
+        };
+        settings.export_configuration.br_scale = 1.3;
+        settings.export_configuration.karaoke_text_scale = 0.7;
+        let expected = settings.export_configuration.clone();
+        project.set_settings(settings);
+
+        save_bundle(&project, 24.0, &bundle, &source, None, None).unwrap();
+        let loaded = load_project_file(&bundle).unwrap();
+        assert_eq!(loaded.project_data.settings.export_configuration, expected);
+
+        let mut restored = Project::new();
+        loaded.project_data.apply_to_project(&mut restored, 24.0);
+        assert_eq!(restored.settings().export_configuration, expected);
+        // Shared by every language: switching keeps it.
+        restored.select_language(first_language);
+        assert_eq!(restored.settings().export_configuration.layout, expected.layout);
+        assert_eq!(restored.settings().export_configuration.br_scale, 1.3);
+    }
+
+    #[test]
     fn bundle_round_trip_keeps_the_original_as_default_when_a_proxy_is_embedded() {
         let dir = TestDir::new();
         let source = dir.path("source.mp4");
@@ -2842,6 +2885,9 @@ mod tests {
             new_text: "Bonsoir".into(),
             old_emotions: Vec::new(),
             new_emotions: Vec::new(),
+            old_styles: Vec::new(),
+            new_styles: Vec::new(),
+            edit: None,
         };
         journal.append(language_id, command.clone()).unwrap();
         command.apply(&mut project);

@@ -416,6 +416,168 @@ pub fn rebase_text_emotions(
     merged
 }
 
+/// Typographic style of a run of non-karaoke dialogue text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TextStyle {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bold: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub italic: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub underline: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strikethrough: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextStyleKind {
+    Bold,
+    Italic,
+    Underline,
+    Strikethrough,
+}
+
+impl TextStyleKind {
+    pub const ALL: [Self; 4] = [
+        Self::Bold,
+        Self::Italic,
+        Self::Underline,
+        Self::Strikethrough,
+    ];
+
+    pub const fn i18n_key(self) -> &'static str {
+        match self {
+            Self::Bold => "text_style.bold",
+            Self::Italic => "text_style.italic",
+            Self::Underline => "text_style.underline",
+            Self::Strikethrough => "text_style.strikethrough",
+        }
+    }
+}
+
+impl TextStyle {
+    pub fn is_plain(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn has(&self, kind: TextStyleKind) -> bool {
+        match kind {
+            TextStyleKind::Bold => self.bold,
+            TextStyleKind::Italic => self.italic,
+            TextStyleKind::Underline => self.underline,
+            TextStyleKind::Strikethrough => self.strikethrough,
+        }
+    }
+
+    pub fn with(mut self, kind: TextStyleKind, on: bool) -> Self {
+        match kind {
+            TextStyleKind::Bold => self.bold = on,
+            TextStyleKind::Italic => self.italic = on,
+            TextStyleKind::Underline => self.underline = on,
+            TextStyleKind::Strikethrough => self.strikethrough = on,
+        }
+        self
+    }
+}
+
+/// Half-open character range sharing one style. Spans never overlap and plain
+/// text has no span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TextStyleSpan {
+    pub start: u32,
+    pub end: u32,
+    pub style: TextStyle,
+}
+
+fn char_styles(spans: &[TextStyleSpan], len: usize) -> Vec<TextStyle> {
+    let mut styles = vec![TextStyle::default(); len];
+    for span in spans {
+        let end = (span.end as usize).min(len);
+        for style in styles.iter_mut().take(end).skip(span.start as usize) {
+            *style = span.style;
+        }
+    }
+    styles
+}
+
+fn spans_from_char_styles(styles: &[TextStyle]) -> Vec<TextStyleSpan> {
+    let mut spans: Vec<TextStyleSpan> = Vec::new();
+    for (index, style) in styles.iter().enumerate() {
+        if style.is_plain() {
+            continue;
+        }
+        match spans.last_mut() {
+            Some(last) if last.end as usize == index && last.style == *style => {
+                last.end += 1;
+            }
+            _ => spans.push(TextStyleSpan {
+                start: index as u32,
+                end: index as u32 + 1,
+                style: *style,
+            }),
+        }
+    }
+    spans
+}
+
+/// Follows an edit of the text. Inserted text takes the style of the text it
+/// replaces, or of the character before it, as in a word processor.
+pub fn rebase_text_styles(
+    spans: &[TextStyleSpan],
+    old_text: &str,
+    new_text: &str,
+) -> Vec<TextStyleSpan> {
+    if spans.is_empty() {
+        return Vec::new();
+    }
+    let old: Vec<char> = old_text.chars().collect();
+    let new: Vec<char> = new_text.chars().collect();
+    let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let old_end = old.len() - suffix;
+    let new_end = new.len() - suffix;
+    let old_styles = char_styles(spans, old.len());
+    let inserted = if old_end > prefix {
+        old_styles[prefix]
+    } else if prefix > 0 {
+        old_styles[prefix - 1]
+    } else {
+        TextStyle::default()
+    };
+    let mut styles = Vec::with_capacity(new.len());
+    styles.extend_from_slice(&old_styles[..prefix]);
+    styles.extend(std::iter::repeat(inserted).take(new_end - prefix));
+    styles.extend_from_slice(&old_styles[old_end..]);
+    spans_from_char_styles(&styles)
+}
+
+/// Styled runs inside the character range `start..end`, as ranges relative to
+/// `start`.
+pub fn text_style_runs(
+    spans: &[TextStyleSpan],
+    start: usize,
+    end: usize,
+) -> Vec<(usize, usize, TextStyle)> {
+    spans
+        .iter()
+        .filter_map(|span| {
+            let run_start = (span.start as usize).max(start);
+            let run_end = (span.end as usize).min(end);
+            (run_start < run_end).then(|| (run_start - start, run_end - start, span.style))
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinePresence {
@@ -489,6 +651,8 @@ pub struct RythmoLine {
     pub presence: LinePresence,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub text_emotions: Vec<TextEmotionSpan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text_styles: Vec<TextStyleSpan>,
 }
 
 impl LinePresence {
@@ -552,6 +716,71 @@ impl RythmoLine {
         }
         spans.sort_by_key(|span| (span.start, span.end));
         self.text_emotions = spans;
+    }
+
+    pub fn can_have_text_styles(&self) -> bool {
+        self.can_have_text_emotions()
+    }
+
+    /// Character range snapped outward to grapheme boundaries. An empty range
+    /// stands for the whole line.
+    fn style_range(&self, start: usize, end: usize) -> (usize, usize) {
+        let len = self.text.chars().count();
+        let (start, end) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        if start == end {
+            return (0, len);
+        }
+        let mut start = start.min(len);
+        let mut end = end.min(len);
+        let mut cursor = 0;
+        for grapheme in self.text.graphemes(true) {
+            let next = cursor + grapheme.chars().count();
+            if cursor < start && start < next {
+                start = cursor;
+            }
+            if cursor < end && end < next {
+                end = next;
+            }
+            cursor = next;
+        }
+        (start, end)
+    }
+
+    /// Whether every character of the range carries `kind`. An empty range
+    /// stands for the whole line.
+    pub fn text_style_active(&self, start: usize, end: usize, kind: TextStyleKind) -> bool {
+        let (start, end) = self.style_range(start, end);
+        if start >= end {
+            return false;
+        }
+        let styles = char_styles(&self.text_styles, self.text.chars().count());
+        styles[start..end].iter().all(|style| style.has(kind))
+    }
+
+    /// Adds `kind` to the range, or removes it when the whole range has it.
+    pub fn toggle_text_style(&mut self, start: usize, end: usize, kind: TextStyleKind) {
+        if !self.can_have_text_styles() {
+            return;
+        }
+        let on = !self.text_style_active(start, end, kind);
+        let (start, end) = self.style_range(start, end);
+        let mut styles = char_styles(&self.text_styles, self.text.chars().count());
+        for style in &mut styles[start..end] {
+            *style = style.with(kind, on);
+        }
+        self.text_styles = spans_from_char_styles(&styles);
+    }
+
+    pub fn style_at_char(&self, index: usize) -> TextStyle {
+        self.text_styles
+            .iter()
+            .find(|span| span.start as usize <= index && index < span.end as usize)
+            .map(|span| span.style)
+            .unwrap_or_default()
     }
 
     pub fn emotion_at_char(&self, index: usize) -> Option<TextEmotion> {
@@ -658,6 +887,98 @@ pub struct RythmoMarker {
 mod tests {
     use super::*;
 
+    fn styled_line(text: &str) -> RythmoLine {
+        RythmoLine {
+            id: 1,
+            start_frame: 0,
+            duration_frames: 24,
+            y_slot: 0.0,
+            text: text.into(),
+            character_name: String::new(),
+            character_color: [1.0; 4],
+            kind: RythmoLineKind::Dialogue,
+            voice_actor_names: Vec::new(),
+            syllable_ratios: Vec::new(),
+            karaoke: false,
+            note: String::new(),
+            presence: LinePresence::On,
+            text_emotions: Vec::new(),
+            text_styles: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn toggling_a_style_twice_restores_plain_text() {
+        let mut line = styled_line("bonjour");
+        line.toggle_text_style(0, 3, TextStyleKind::Bold);
+        assert_eq!(line.text_styles.len(), 1);
+        assert!(line.style_at_char(2).bold);
+        assert!(!line.style_at_char(3).bold);
+        line.toggle_text_style(0, 3, TextStyleKind::Bold);
+        assert!(line.text_styles.is_empty());
+    }
+
+    #[test]
+    fn partially_styled_range_gets_the_style_everywhere() {
+        let mut line = styled_line("bonjour");
+        line.toggle_text_style(0, 2, TextStyleKind::Italic);
+        line.toggle_text_style(0, 5, TextStyleKind::Italic);
+        assert!(line.text_style_active(0, 5, TextStyleKind::Italic));
+        line.toggle_text_style(2, 4, TextStyleKind::Bold);
+        assert_eq!(line.text_styles.len(), 3);
+    }
+
+    #[test]
+    fn empty_range_styles_the_whole_line() {
+        let mut line = styled_line("salut");
+        line.toggle_text_style(2, 2, TextStyleKind::Underline);
+        assert!(line.text_style_active(0, 5, TextStyleKind::Underline));
+    }
+
+    #[test]
+    fn karaoke_lines_cannot_be_styled() {
+        let mut line = styled_line("salut");
+        line.karaoke = true;
+        line.toggle_text_style(0, 5, TextStyleKind::Bold);
+        assert!(line.text_styles.is_empty());
+    }
+
+    #[test]
+    fn typing_inside_a_styled_run_extends_it() {
+        let bold = TextStyle::default().with(TextStyleKind::Bold, true);
+        let spans = vec![TextStyleSpan {
+            start: 0,
+            end: 3,
+            style: bold,
+        }];
+        let rebased = rebase_text_styles(&spans, "bonjour", "bonnjour");
+        assert_eq!(
+            rebased,
+            vec![TextStyleSpan {
+                start: 0,
+                end: 4,
+                style: bold
+            }]
+        );
+        let shifted = rebase_text_styles(&spans, "bonjour", "Xbonjour");
+        assert_eq!(shifted[0].start, 1);
+        assert_eq!(shifted[0].end, 4);
+        let deleted = rebase_text_styles(&spans, "bonjour", "bjour");
+        assert_eq!(deleted[0].end, 1);
+    }
+
+    #[test]
+    fn style_runs_are_relative_to_the_segment() {
+        let bold = TextStyle::default().with(TextStyleKind::Bold, true);
+        let spans = vec![TextStyleSpan {
+            start: 2,
+            end: 6,
+            style: bold,
+        }];
+        assert_eq!(text_style_runs(&spans, 4, 8), vec![(0, 2, bold)]);
+        assert!(text_style_runs(&spans, 6, 8).is_empty());
+    }
+
     #[test]
     fn ambiance_prefix_is_permanent_and_never_duplicated() {
         assert_eq!(ambiance_label(""), "amb.");
@@ -701,6 +1022,7 @@ mod tests {
             note: String::new(),
             presence: LinePresence::On,
             text_emotions: vec![],
+            text_styles: Vec::new(),
         };
         line.set_text_emotion(0, 7, Some(TextEmotion::Wave));
         line.set_text_emotion(2, 5, Some(TextEmotion::Bounce));

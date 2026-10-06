@@ -783,6 +783,24 @@ pub fn run(startup: Option<super::StartupInput>) {
                         // Modal controls do not depend on the shell focus tree:
                         // they always receive Escape, arrows, Enter and Space.
                         if state.captures_modal_input() {
+                            // The export layout step has its own undo history
+                            // (Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z); the project's
+                            // must not run behind the window.
+                            if ctrl_held && !keyboard_modifiers.alt {
+                                let redo = match &event.logical_key {
+                                    Key::Character(c) if c.eq_ignore_ascii_case("z") => {
+                                        Some(shift_held)
+                                    }
+                                    Key::Character(c) if c.eq_ignore_ascii_case("y") => Some(true),
+                                    _ => None,
+                                };
+                                if let Some(redo) = redo {
+                                    if state.export_layout_history(redo) {
+                                        state.request_redraw();
+                                        return;
+                                    }
+                                }
+                            }
                             let modal_event = match &event.logical_key {
                                 Key::Named(NamedKey::Escape) => Some(UiEvent::KeyInput {
                                     text: "\x1b".into(),
@@ -1455,7 +1473,21 @@ pub fn run(startup: Option<super::StartupInput>) {
                     let panel_resize_cursor = state.hovering_panel_resize_handle()
                         || state.dragging_panel_resize_handle();
 
-                    let next_cursor_icon = if panel_resize_cursor {
+                    let export_layout_cursor = state.export_layout_cursor().map(|cursor| {
+                        use crate::ui::export_layout_page::LayoutCursor;
+                        match cursor {
+                            LayoutCursor::Move => winit::window::CursorIcon::Move,
+                            LayoutCursor::ResizeHorizontal => winit::window::CursorIcon::EwResize,
+                            LayoutCursor::ResizeVertical => winit::window::CursorIcon::NsResize,
+                            LayoutCursor::ResizeDiagonalDown => {
+                                winit::window::CursorIcon::NwseResize
+                            }
+                            LayoutCursor::ResizeDiagonalUp => winit::window::CursorIcon::NeswResize,
+                        }
+                    });
+                    let next_cursor_icon = if let Some(icon) = export_layout_cursor {
+                        icon
+                    } else if panel_resize_cursor {
                         winit::window::CursorIcon::EwResize
                     } else if resize_cursor {
                         winit::window::CursorIcon::NsResize

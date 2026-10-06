@@ -19,7 +19,8 @@ use super::capabilities::{
     probe_cuda_rgba_br_graph,
 };
 use super::ffmpeg::{
-    cpu_fit_and_stack_filter, cuda_fit_and_stack_filter, cuda_rgba_fit_and_stack_filter,
+    cpu_fit_and_stack_filter, cpu_layout_filter, cuda_fit_and_stack_filter,
+    cuda_rgba_fit_and_stack_filter,
     run_baked_single_pass,
 };
 use super::progress::{
@@ -49,6 +50,7 @@ pub fn export_mp4(
     karaoke_announcer_enabled: bool,
     double_export_instrumental: bool,
     pre_roll_seconds: f64,
+    layout: &crate::export_layout::ExportLayout,
     render_backend_status: Option<Arc<AtomicU32>>,
     cancel: Arc<AtomicBool>,
     progress_cb: impl FnMut(f32) + Send + 'static,
@@ -85,13 +87,18 @@ pub fn export_mp4(
         karaoke_announcer_enabled,
         double_export_instrumental,
         pre_roll_seconds,
+        layout,
         render_backend_status.as_deref(),
         &cancel,
         &progress_cb,
     )
 }
 
-fn effective_export_scales(br_scale: f32, karaoke_text_scale: f32) -> (f32, f32) {
+/// Widest band rendered for the export (largest GPU texture side).
+const MAX_BAND_RENDER_WIDTH: u32 = 8192;
+
+/// Band and karaoke scales used by the export for the 100%-based UI values.
+pub fn effective_export_scales(br_scale: f32, karaoke_text_scale: f32) -> (f32, f32) {
     let br = if br_scale.is_finite() {
         br_scale.clamp(0.5, 2.0) * 0.5
     } else {
@@ -121,6 +128,7 @@ pub(super) fn export_baked_mp4(
     karaoke_announcer_enabled: bool,
     double_export_instrumental: bool,
     pre_roll_seconds: f64,
+    layout: &crate::export_layout::ExportLayout,
     render_backend_status: Option<&AtomicU32>,
     cancel: &AtomicBool,
     progress_cb: &ProgressCallback,
@@ -178,7 +186,35 @@ pub(super) fn export_baked_mp4(
     }
 
     let capability_start = Instant::now();
-    let use_cuda_graph = has_cuda_filter_graph();
+    // A custom layout composes the layers on a canvas with the CPU filters.
+    let custom_layout = (!layout.is_default()).then(|| {
+        crate::export_layout::compose(
+            out_w,
+            vid_h + br_h_even,
+            br_h_even,
+            info.width,
+            info.height,
+            layout,
+        )
+    });
+    // The CPU filters scale the band to its rect. An enlarged band is
+    // rendered wider (same scale, so the same time window) and shrunk by
+    // ffmpeg, never stretched: its text stays sharp.
+    let (cpu_band_w, cpu_band_h, cpu_band_h_even) = if custom_layout.is_some() {
+        let width = crate::export_layout::band_render_width(out_w, layout, MAX_BAND_RENDER_WIDTH);
+        let height = rythmo_cpu_renderer::br_height(project, width, br_scale);
+        (width, height, (height + 1) & !1)
+    } else {
+        (out_w, br_h, br_h_even)
+    };
+    if cpu_band_w != out_w {
+        log::info!(
+            "Export band rendered at {}x{} then scaled down to its layout rect",
+            cpu_band_w,
+            cpu_band_h_even
+        );
+    }
+    let use_cuda_graph = custom_layout.is_none() && has_cuda_filter_graph();
     log::info!(
         "Export ffmpeg capability checks completed in {:.2}ms",
         ms(capability_start.elapsed())
@@ -243,8 +279,13 @@ pub(super) fn export_baked_mp4(
     } else {
         BrInputFormat::Nv12
     };
-    let cpu_filter =
-        cpu_fit_and_stack_filter(out_w, vid_h, fps, info.duration_secs, pre_roll_seconds);
+    let cpu_filter = match &custom_layout {
+        Some(composed) => {
+            log::info!("Export layout: {composed:?}");
+            cpu_layout_filter(composed, fps, info.duration_secs, pre_roll_seconds)
+        }
+        None => cpu_fit_and_stack_filter(out_w, vid_h, fps, info.duration_secs, pre_roll_seconds),
+    };
     let needs_audio_mux = instrumental_audio.is_some()
         || source_audio_offset_frames != 0
         || instrumental_audio_offset_frames != 0
@@ -303,9 +344,9 @@ pub(super) fn export_baked_mp4(
                 source_fps,
                 br_scale,
                 karaoke_text_scale,
-                out_w,
-                br_h,
-                br_h_even,
+                cpu_band_w,
+                cpu_band_h,
+                cpu_band_h_even,
                 total_frames,
                 total_duration_secs,
                 timeline_start_source_frame,
@@ -329,9 +370,9 @@ pub(super) fn export_baked_mp4(
             source_fps,
             br_scale,
             karaoke_text_scale,
-            out_w,
-            br_h,
-            br_h_even,
+            cpu_band_w,
+            cpu_band_h,
+            cpu_band_h_even,
             total_frames,
             total_duration_secs,
             timeline_start_source_frame,

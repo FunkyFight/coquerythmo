@@ -73,11 +73,25 @@ pub enum Command {
         old_emotions: Vec<TextEmotionSpan>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         new_emotions: Vec<TextEmotionSpan>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        old_styles: Vec<crate::rythmo_line::TextStyleSpan>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        new_styles: Vec<crate::rythmo_line::TextStyleSpan>,
+        /// Exact place of the edit when the editor knows it. Keeps the
+        /// synchronization limits where the caret was, whichever letters
+        /// surround it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edit: Option<crate::detection::TextEditSpan>,
     },
     SetTextEmotions {
         line_id: u64,
         old_emotions: Vec<TextEmotionSpan>,
         new_emotions: Vec<TextEmotionSpan>,
+    },
+    SetTextStyles {
+        line_id: u64,
+        old_styles: Vec<crate::rythmo_line::TextStyleSpan>,
+        new_styles: Vec<crate::rythmo_line::TextStyleSpan>,
     },
     SetLineKaraoke {
         line_id: u64,
@@ -223,11 +237,19 @@ impl Command {
                 old_text,
                 new_text,
                 new_emotions,
+                new_styles,
+                edit,
                 ..
             } => {
-                project.set_line_text_rebasing_sync_points(*line_id, old_text, new_text);
+                project.set_line_text_rebasing_sync_points(
+                    *line_id,
+                    old_text,
+                    new_text,
+                    edit.as_ref(),
+                );
                 if let Some(line) = project.get_line_mut(*line_id) {
                     line.text_emotions = new_emotions.clone();
+                    line.text_styles = new_styles.clone();
                 }
             }
             Command::SetTextEmotions {
@@ -237,6 +259,15 @@ impl Command {
             } => {
                 if let Some(line) = project.get_line_mut(*line_id) {
                     line.text_emotions = new_emotions.clone();
+                }
+            }
+            Command::SetTextStyles {
+                line_id,
+                new_styles,
+                ..
+            } => {
+                if let Some(line) = project.get_line_mut(*line_id) {
+                    line.text_styles = new_styles.clone();
                 }
             }
             Command::SetLineKaraoke {
@@ -427,11 +458,19 @@ impl Command {
                 old_text,
                 new_text,
                 old_emotions,
+                old_styles,
+                edit,
                 ..
             } => {
-                project.set_line_text_rebasing_sync_points(*line_id, new_text, old_text);
+                project.set_line_text_rebasing_sync_points(
+                    *line_id,
+                    new_text,
+                    old_text,
+                    edit.map(crate::detection::TextEditSpan::reversed).as_ref(),
+                );
                 if let Some(line) = project.get_line_mut(*line_id) {
                     line.text_emotions = old_emotions.clone();
+                    line.text_styles = old_styles.clone();
                 }
             }
             Command::SetTextEmotions {
@@ -441,6 +480,15 @@ impl Command {
             } => {
                 if let Some(line) = project.get_line_mut(*line_id) {
                     line.text_emotions = old_emotions.clone();
+                }
+            }
+            Command::SetTextStyles {
+                line_id,
+                old_styles,
+                ..
+            } => {
+                if let Some(line) = project.get_line_mut(*line_id) {
+                    line.text_styles = old_styles.clone();
                 }
             }
             Command::SetLineKaraoke {
@@ -698,6 +746,53 @@ impl Default for CommandHistory {
 mod tests {
     use super::*;
 
+    #[test]
+    fn text_styles_undo_and_follow_text_edits() {
+        let (mut project, id) = make_project_with_line();
+        let mut styled = project.get_line(id).unwrap().clone();
+        styled.toggle_text_style(0, 2, crate::rythmo_line::TextStyleKind::Bold);
+        let mut history = CommandHistory::new();
+        apply_and_push(
+            &mut history,
+            Command::SetTextStyles {
+                line_id: id,
+                old_styles: Vec::new(),
+                new_styles: styled.text_styles.clone(),
+            },
+            &mut project,
+        );
+        assert!(project.get_line(id).unwrap().style_at_char(1).bold);
+
+        let new_styles =
+            crate::rythmo_line::rebase_text_styles(&styled.text_styles, "test", "tXest");
+        apply_and_push(
+            &mut history,
+            Command::UpdateLineText {
+                line_id: id,
+                old_text: "test".into(),
+                new_text: "tXest".into(),
+                old_emotions: Vec::new(),
+                new_emotions: Vec::new(),
+                old_styles: styled.text_styles.clone(),
+                new_styles,
+                edit: None,
+            },
+            &mut project,
+        );
+        assert!(project.get_line(id).unwrap().style_at_char(2).bold);
+        assert!(!project.get_line(id).unwrap().style_at_char(3).bold);
+
+        history.undo(&mut project);
+        assert_eq!(project.get_line(id).unwrap().text_styles, styled.text_styles);
+        history.undo(&mut project);
+        assert!(project.get_line(id).unwrap().text_styles.is_empty());
+    }
+
+    fn apply_and_push(history: &mut CommandHistory, command: Command, project: &mut Project) {
+        command.apply(project);
+        history.push(command);
+    }
+
     fn make_project_with_line() -> (Project, u64) {
         let mut p = Project::new();
         let id = p.add_line_full(0, 48, 0.5, "test".into(), "Char".into(), [1.0; 4]);
@@ -805,6 +900,64 @@ mod tests {
     }
 
     #[test]
+    fn typing_on_a_limit_grows_the_segment_of_the_caret_and_undo_restores_the_limit() {
+        let (mut project, id) = make_project_with_line();
+        project.get_line_mut(id).unwrap().text = "abcdef".into();
+        let address = crate::detection::DetectionAddress {
+            line_id: id,
+            detection_id: crate::detection::DetectionCueId(1),
+        };
+        Command::Detection {
+            change: crate::detection::DetectionChange::Add {
+                address,
+                cue: crate::detection::DetectionCue {
+                    id: address.detection_id,
+                    kind: crate::detection::DetectionKind::TextSyncPoint,
+                    media_tick: crate::detection::MediaTick::from_frame(20),
+                    duration: crate::detection::MediaTick::ZERO,
+                    target: crate::detection::TextAnchor::Grapheme { index: 3 },
+                },
+            },
+        }
+        .apply(&mut project);
+        let limit = |project: &Project| {
+            project
+                .detections()
+                .sync_limit_positions(id, &project.get_line(id).unwrap().text)[0]
+        };
+        assert_eq!(limit(&project), 3);
+
+        // "abc|def": typing "X" with the caret after "c", in the segment before
+        // the limit, then with the caret before "d", in the segment after it.
+        for (limits_before, expected_text, expected_limit) in
+            [(0, "abcXdef", 4), (1, "abcXdef", 3)]
+        {
+            let command = Command::UpdateLineText {
+                line_id: id,
+                old_text: "abcdef".into(),
+                new_text: "abcXdef".into(),
+                old_emotions: Vec::new(),
+                new_emotions: Vec::new(),
+                old_styles: Vec::new(),
+                new_styles: Vec::new(),
+                edit: Some(crate::detection::TextEditSpan {
+                    start: 3,
+                    removed: 0,
+                    inserted: 1,
+                    limits_before,
+                }),
+            };
+            command.apply(&mut project);
+            assert_eq!(project.get_line(id).unwrap().text, expected_text);
+            assert_eq!(limit(&project), expected_limit);
+
+            command.unapply(&mut project);
+            assert_eq!(project.get_line(id).unwrap().text, "abcdef");
+            assert_eq!(limit(&project), 3, "undo puts the limit back");
+        }
+    }
+
+    #[test]
     fn test_undo_redo_delete() {
         let (mut project, id) = make_project_with_line();
         let mut history = CommandHistory::new();
@@ -894,6 +1047,9 @@ mod tests {
             new_text: "modified".into(),
             old_emotions: Vec::new(),
             new_emotions: Vec::new(),
+            old_styles: Vec::new(),
+            new_styles: Vec::new(),
+            edit: None,
         });
 
         history.undo(&mut project);
@@ -1161,6 +1317,9 @@ mod tests {
             new_text: "ab".into(),
             old_emotions: Vec::new(),
             new_emotions: Vec::new(),
+            old_styles: Vec::new(),
+            new_styles: Vec::new(),
+            edit: None,
         });
         assert!(history.last_matches(id, CommandKind::UpdateLineText));
         assert!(!history.last_matches(id, CommandKind::MoveLine));
@@ -1179,6 +1338,9 @@ mod tests {
             new_text: "v1".into(),
             old_emotions: Vec::new(),
             new_emotions: Vec::new(),
+            old_styles: Vec::new(),
+            new_styles: Vec::new(),
+            edit: None,
         });
         history.undo(&mut project);
 
@@ -1190,6 +1352,9 @@ mod tests {
             new_text: "v2".into(),
             old_emotions: Vec::new(),
             new_emotions: Vec::new(),
+            old_styles: Vec::new(),
+            new_styles: Vec::new(),
+            edit: None,
         });
         // Redo should do nothing (stack cleared)
         history.redo(&mut project);

@@ -75,9 +75,25 @@ pub fn encode_delta(command: &Command, project: &Project) -> Option<serde_json::
             line_id,
             new_text,
             new_emotions,
+            new_styles,
+            edit,
             ..
         } => {
-            serde_json::json!({ "action": "update_text", "line_id": line_id, "text": new_text, "text_emotions": new_emotions })
+            let mut delta = serde_json::json!({ "action": "update_text", "line_id": line_id, "text": new_text, "text_emotions": new_emotions });
+            if !new_styles.is_empty() {
+                delta["text_styles"] = serde_json::json!(new_styles);
+            }
+            if let Some(edit) = edit {
+                delta["edit"] = serde_json::json!(edit);
+            }
+            delta
+        }
+        Command::SetTextStyles {
+            line_id,
+            new_styles,
+            ..
+        } => {
+            serde_json::json!({ "action": "set_text_styles", "line_id": line_id, "text_styles": new_styles })
         }
         Command::SetTextEmotions {
             line_id,
@@ -228,10 +244,21 @@ pub fn decode_delta(data: &serde_json::Value) -> Option<CommandPayload> {
                 .get("text_emotions")
                 .and_then(|value| serde_json::from_value(value.clone()).ok())
                 .unwrap_or_default(),
+            text_styles: data
+                .get("text_styles")
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or_default(),
+            edit: data
+                .get("edit")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
         }),
         "set_text_emotions" => Some(CommandPayload::SetTextEmotions {
             line_id: data.get("line_id")?.as_u64()?,
             text_emotions: serde_json::from_value(data.get("text_emotions")?.clone()).ok()?,
+        }),
+        "set_text_styles" => Some(CommandPayload::SetTextStyles {
+            line_id: data.get("line_id")?.as_u64()?,
+            text_styles: serde_json::from_value(data.get("text_styles")?.clone()).ok()?,
         }),
         "update_note" => Some(CommandPayload::UpdateLineNote {
             line_id: data.get("line_id")?.as_u64()?,

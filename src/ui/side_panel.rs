@@ -1187,6 +1187,7 @@ impl SidePanel {
             EditField::LineText(id) => EventResponse::Action(UiAction::UpdateLineText {
                 id,
                 text: self.edit_buffer.clone(),
+                edit: None,
             }),
             EditField::RoleName => EventResponse::Action(UiAction::RenameCharacter {
                 old_name: self.edit_original.clone(),

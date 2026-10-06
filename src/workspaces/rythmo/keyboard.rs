@@ -99,12 +99,51 @@ pub(crate) fn handle_key_input(
             } else {
                 text.to_string()
             };
+            // Between two synchronization limits, an edit only concerns the
+            // segment the caret is in.
+            let sync = SyncSegments::for_line(ctx.project, line).map(|segments| {
+                let owner = segments.owner(
+                    state.line_input.cursor_pos,
+                    remembered_caret_segment(state, line_id),
+                );
+                (segments, owner)
+            });
+            if let Some((segments, owner)) = &sync {
+                if segments.blocks_erase(
+                    &input,
+                    state.line_input.cursor_pos,
+                    state.line_input.has_selection(),
+                    *owner,
+                ) {
+                    return EventResponse::Action(UiAction::Accessibility(
+                        crate::accessibility::AccessibilityEvent::Activation {
+                            label: t("accessibility.sync_limit").to_string(),
+                        },
+                    ));
+                }
+            }
+            let planned = planned_edit(
+                &input,
+                state.line_input.cursor_pos,
+                state.line_input.selection_range(),
+                line.text.chars().count(),
+            );
             match state.line_input.handle_key(&input, &line.text) {
                 Some(TextInputAction::Changed(new_text)) => {
+                    let edit = sync
+                        .as_ref()
+                        .zip(planned)
+                        .and_then(|((segments, owner), planned)| {
+                            segments.edit_span(&line.text, &new_text, planned, *owner)
+                        });
+                    if let Some((_, owner)) = &sync {
+                        state.sync_caret_segment = Some((line_id, *owner));
+                    }
                     return EventResponse::Action(UiAction::UpdateLineText {
                         id: line_id,
                         text: new_text,
-                    })
+                        edit,
+                    });
                 }
                 Some(TextInputAction::Finished) => {
                     state.stop_line_editing();

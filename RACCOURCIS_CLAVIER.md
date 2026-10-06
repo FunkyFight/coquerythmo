@@ -43,11 +43,16 @@ l’annulation est annoncée en priorité.
 | `Ctrl + M` | Ouvrir l’export du projet |
 | `Ctrl + Maj + P` | Ouvrir la création d’un proxy |
 | `Ctrl + O` | Ouvrir les paramètres du projet |
+| `Ctrl + Maj + O` | Ouvrir le style de la bande (couleurs, barre de lecture, presets) |
+| `Ctrl + Z` / `Ctrl + Y` | Dans la mise en page de l’export : annuler / rétablir le dernier réglage |
 | `Ctrl + N` | Créer un nouveau projet |
 | `Ctrl + I` | Ouvrir le panneau des lignes |
 | `Ctrl + P` | Ouvrir le panneau des rôles |
 | `Ctrl + L` | Ouvrir ou fermer les fichiers du projet (espace Rythmo, hors modale) |
 | `Alt + E` | Ouvrir le menu des émotions du texte |
+| `Ctrl + B` | Mettre en gras ou non la sélection, ou la ligne sélectionnée (hors karaoké) |
+| `Ctrl + I` | Pendant l’édition du texte : mettre en italique ou non la sélection |
+| `Ctrl + U` | Souligner ou non la sélection, ou la ligne sélectionnée (hors karaoké) |
 | `Ctrl + K` | Scinder le dialogue à la position du caret |
 
 Dans la liste des projets récents, `↑`/`↓` parcourent les projets, `Entrée`
@@ -109,6 +114,13 @@ déplacent le caret et ne modifient pas le volume.
 Lorsqu’une détection est sélectionnée, `Maj + ←`/`Maj + →` déplacent son ancre
 de synchronisation d’un grapheme. Appuyer sur `Maj` seul bascule l’affinité de
 l’ancre.
+
+Pendant l’édition d’une réplique qui contient des points de synchronisation,
+le texte tapé ou effacé ne change que la partie comprise entre deux limites :
+`Retour arrière` s’arrête au début de cette partie et `Suppr` à sa fin. Sur une
+limite, le caret appartient à la partie d’où il vient (`→` : celle de gauche,
+`←` : celle de droite) ; un clic près d’une limite choisit la partie sous le
+pointeur.
 
 ## Export et proxy
 
