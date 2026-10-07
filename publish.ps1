@@ -36,6 +36,14 @@ $Assets = @(
 foreach ($asset in $Assets) {
     if (-not (Test-Path $asset)) { throw "Fichier introuvable : $asset" }
 }
+# Un installateur plus ancien que l'exe installerait une version precedente :
+# il faut le recompiler (build_installer.ps1, lance par package.bat).
+$exe = Get-Item 'target\release\coquerythmo.exe'
+$installer = Get-Item 'target\release\Output\Coquerythmo-Installer.exe'
+if ($installer.LastWriteTime -lt $exe.LastWriteTime) {
+    throw ("Installateur perime ({0:g}) : plus ancien que coquerythmo.exe ({1:g}). " +
+        "Lance build_installer.ps1 $Version.") -f $installer.LastWriteTime, $exe.LastWriteTime
+}
 
 $Notes = Get-Content VERSION_NOTES.md -Raw -Encoding UTF8
 

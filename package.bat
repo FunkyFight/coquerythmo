@@ -46,8 +46,18 @@ if errorlevel 1 (
 )
 
 echo.
+echo === Building installer: Coquerythmo-Installer.exe ===
+powershell -NoProfile -ExecutionPolicy Bypass -File build_installer.ps1 %VERSION%
+if errorlevel 1 (
+    echo Installer build failed!
+    pause
+    exit /b 1
+)
+
+echo.
 echo === Done! ===
 echo   target\release\coquerythmo-v%VERSION%-windows-portable.zip
+echo   target\release\Output\Coquerythmo-Installer.exe
 
 echo.
 echo === Publishing to GitHub ===
