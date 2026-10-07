@@ -31,66 +31,6 @@ thread_local! {
     static MEASURE_FONT_SYSTEM: RefCell<FontSystem> = RefCell::new(FontSystem::new());
 }
 
-thread_local! {
-    static INK_EXTENT_CACHE: RefCell<std::collections::HashMap<(String, u32), (f32, f32)>> =
-        RefCell::new(std::collections::HashMap::new());
-}
-
-/// Vertical ink extent `(top, height)` of the rythmo font, in the
-/// `line_height` box whose baseline sits at `font_size`. Cropping the SVG
-/// viewBox to it makes the glyphs fill the whole line height instead of
-/// leaving the font's empty leading above and below them, so the text matches
-/// the line box (and its hover highlight) in the editor and in the export.
-fn ink_vertical_extent(font_family: &str, font_size: f32, line_height: f32) -> (f32, f32) {
-    let full = (0.0, line_height);
-    let key = (font_family.to_string(), font_size.to_bits());
-    if let Some(cached) = INK_EXTENT_CACHE.with(|cache| cache.borrow().get(&key).copied()) {
-        return cached;
-    }
-    let extent = measure_ink_vertical_extent(font_family, font_size, line_height).unwrap_or(full);
-    INK_EXTENT_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.len() > 256 {
-            cache.clear();
-        }
-        cache.insert(key, extent);
-    });
-    extent
-}
-
-fn measure_ink_vertical_extent(
-    font_family: &str,
-    font_size: f32,
-    line_height: f32,
-) -> Option<(f32, f32)> {
-    let width = (font_size * 6.0).ceil().max(8.0) as u32;
-    let height = line_height.ceil().max(1.0) as u32;
-    let svg = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
-<text x="0" y="{font_size:.3}" font-family="{}" font-size="{font_size:.3}" fill="white" xml:space="preserve">Hhgpyj|</text>
-</svg>"#,
-        escape_xml(font_family)
-    );
-    let mut options = resvg::usvg::Options::default();
-    options.font_family = font_family.to_string();
-    options.font_size = font_size;
-    options.fontdb = system_fontdb();
-    let tree = resvg::usvg::Tree::from_data(svg.as_bytes(), &options).ok()?;
-    let mut pixmap = Pixmap::new(width, height)?;
-    resvg::render(&tree, Transform::identity(), &mut pixmap.as_mut());
-    let row_has_ink = |row: u32| {
-        pixmap.data()[(row * width * 4) as usize..((row + 1) * width * 4) as usize]
-            .chunks_exact(4)
-            .any(|px| px[3] > 8)
-    };
-    let first = (0..height).find(|&row| row_has_ink(row))?;
-    let last = (0..height).rev().find(|&row| row_has_ink(row))?;
-    let top = first as f32;
-    let bottom = (last + 1) as f32;
-    // Keep a margin of the full box if the measure is implausibly small.
-    (bottom - top >= font_size * 0.5).then_some((top, bottom - top))
-}
-
 pub struct VectorTextPixmap {
     pub pixels: Vec<u8>,
     pub width: u32,
@@ -1073,10 +1013,9 @@ fn build_svg_styled(
     // Starting at x=0 clips the first grapheme regardless of destination
     // width, so reserve explicit ink space inside emphasized label textures.
     let text_x = if emphasized { font_size * 0.25 } else { 0.0 };
-    let (view_y, view_h) = ink_vertical_extent(font_family, font_size, line_height);
 
     format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{dest_w}" height="{dest_h}" viewBox="0 {view_y:.3} {dest_w} {view_h:.3}" preserveAspectRatio="none">
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{dest_w}" height="{dest_h}" viewBox="0 0 {dest_w} {line_height:.3}" preserveAspectRatio="none">
 <text x="{text_x:.3}" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white"{emphasis}{decoration}{spacing}{stretch_attrs} xml:space="preserve">{escaped_text}</text>
 </svg>"#
     )
@@ -1102,10 +1041,9 @@ fn build_svg_tile(
     } else {
         String::new()
     };
-    let (view_y, view_h) = ink_vertical_extent(font_family, font_size, line_height);
 
     format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{tile_w}" height="{dest_h}" viewBox="{tile_x} {view_y:.3} {tile_w} {view_h:.3}" preserveAspectRatio="none">
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{tile_w}" height="{dest_h}" viewBox="{tile_x} 0 {tile_w} {line_height:.3}" preserveAspectRatio="none">
 <text x="0" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white"{stretch_attrs} xml:space="preserve">{escaped_text}</text>
 </svg>"#
     )
@@ -1183,9 +1121,8 @@ fn build_svg_stretched_runs(
         }
         start = end;
     }
-    let (view_y, view_h) = ink_vertical_extent(font_family, font_size, line_height);
     format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{view_w}" height="{dest_h}" viewBox="{view_x} {view_y:.3} {view_w} {view_h:.3}" preserveAspectRatio="none">
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{view_w}" height="{dest_h}" viewBox="{view_x} 0 {view_w} {line_height:.3}" preserveAspectRatio="none">
 {elements}</svg>"#
     )
 }

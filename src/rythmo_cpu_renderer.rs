@@ -1181,7 +1181,7 @@ impl CpuRenderer {
             let y_base = ruler_h + track.top;
             let body_y = y_base + slot_header_h + badge_gap;
             let mut line_y = body_y;
-            let mut body_h = normal_slot_h;
+            let mut body_h = rythmo_layout::line_body_height(line, track, normal_slot_h);
             if line.karaoke {
                 line_y = karaoke_stack_y(body_y, track.body_h, scene_line.karaoke_stack_row, s);
                 body_h = karaoke_stack_height(track.body_h, s);
@@ -1260,7 +1260,7 @@ impl CpuRenderer {
             let y_base = ruler_h + track.top;
             let body_y = y_base + slot_header_h + badge_gap;
             let mut line_y = body_y;
-            let mut body_h = normal_slot_h;
+            let mut body_h = rythmo_layout::line_body_height(line, track, normal_slot_h);
             if line.karaoke {
                 line_y = karaoke_stack_y(body_y, track.body_h, scene_line.karaoke_stack_row, s);
                 body_h = karaoke_stack_height(track.body_h, s);

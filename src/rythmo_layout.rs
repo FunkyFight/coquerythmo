@@ -29,7 +29,31 @@ pub struct TrackLayout {
     /// single row without moving any following track.
     pub reserved_h: f32,
     pub body_h: f32,
+    /// Body height reserved for the track (`reserved_h` without header and
+    /// badge gap). Plain lines fill all of it so they never look squashed next
+    /// to taller karaoke or text-effect lines of the same track.
+    pub reserved_body_h: f32,
     pub has_karaoke: bool,
+}
+
+/// Plain dialogue lines (no karaoke, no text effect) fill the whole reserved
+/// body of their track instead of a single row.
+pub fn line_fills_track_body(line: &crate::rythmo_line::RythmoLine) -> bool {
+    line.kind.is_dialogue() && !line.karaoke && line.text_emotions.is_empty()
+}
+
+/// Height of a line's rectangle: one row, except plain lines which fill the
+/// reserved body of their track.
+pub fn line_body_height(
+    line: &crate::rythmo_line::RythmoLine,
+    track: &TrackLayout,
+    row_height: f32,
+) -> f32 {
+    if line_fills_track_body(line) {
+        track.reserved_body_h.max(row_height)
+    } else {
+        row_height
+    }
 }
 
 pub fn track_count() -> usize {
@@ -334,6 +358,7 @@ pub fn build_track_layouts(
                 total_h,
                 reserved_h: total_h,
                 body_h,
+                reserved_body_h: body_h,
                 has_karaoke,
             };
             top += total_h;
@@ -389,6 +414,7 @@ pub fn build_track_layouts_at_frame(
                 total_h,
                 reserved_h,
                 body_h,
+                reserved_body_h,
                 has_karaoke,
             };
             top += reserved_h;

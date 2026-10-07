@@ -383,6 +383,7 @@ pub(crate) fn build_track_layouts_from_karaoke_flags(
                 total_h,
                 reserved_h,
                 body_h,
+                reserved_body_h,
                 has_karaoke,
             };
             top += reserved_h;
@@ -634,8 +635,18 @@ impl EditorLayoutCtx {
             x: x1,
             y: body_rect.y,
             width,
-            height: self.normal_body_h,
+            height: self.line_body_height(line),
         }
+    }
+
+    /// Plain lines fill the reserved body of their track; karaoke and
+    /// text-effect lines keep a single row.
+    pub(crate) fn line_body_height(&self, line: &crate::rythmo_line::RythmoLine) -> f32 {
+        rythmo_layout::line_body_height(
+            line,
+            self.track_for_y_slot(line.y_slot),
+            self.normal_body_h,
+        )
     }
 
     pub(crate) fn badge_rect_for_name(
@@ -648,7 +659,7 @@ impl EditorLayoutCtx {
         fps: f64,
     ) -> Rect {
         let body_rect = self.track_body_rect(line.y_slot, zone);
-        let badge_h = self.normal_body_h;
+        let badge_h = self.line_body_height(line);
         let w = if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
             ambiance_badge_width(name)
         } else {

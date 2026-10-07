@@ -97,9 +97,10 @@ exactement la vidéo exportée.
 
 ## Bande rythmo
 
-- Le texte des répliques occupe maintenant toute la hauteur de la ligne : au
-  survol, la zone illuminée ne dépasse plus au-dessus et en dessous du texte.
-  Le changement s’applique aussi à l’export vidéo.
+- Les répliques simples (sans effet de texte ni karaoké) occupent maintenant
+  toute la hauteur de leur piste, même quand elle contient aussi des lignes
+  karaoké ou des effets de texte : elles ne paraissent plus écrasées. Le
+  changement s’applique aussi à l’export vidéo.
 - La piste survolée n’est plus éclairée en entier : seule la réplique sous le
   pointeur est mise en évidence.
 

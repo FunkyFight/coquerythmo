@@ -684,6 +684,58 @@ mod tests {
     }
 
     #[test]
+    fn plain_line_fills_the_body_of_a_karaoke_or_text_effect_track() {
+        crate::config::init();
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 300.0,
+        };
+
+        // Track 0 holds a plain line next to a karaoke line, track 1 a plain
+        // line next to a text-effect line, track 2 only plain lines.
+        let mut project = Project::new();
+        let plain_k = project.add_line(0, 24, 0.0);
+        let karaoke = project.add_line(100, 24, 0.0);
+        let plain_e = project.add_line(0, 24, 0.25);
+        let effect = project.add_line(100, 24, 0.25);
+        let plain_n = project.add_line(0, 24, 0.5);
+        project.get_line_mut(karaoke).unwrap().karaoke = true;
+        let line = project.get_line_mut(effect).unwrap();
+        line.text = "Bonjour".into();
+        line.set_text_emotion(0, 7, Some(crate::rythmo_line::TextEmotion::Wave));
+
+        let layout = EditorLayoutCtx::new_at_frame(&project, 0.0, &zone);
+        let rect_of = |id: u64| {
+            let line = project.get_line(id).unwrap();
+            let rect =
+                layout.line_rect_with_karaoke_width(line, 0.0, &zone, false, None, 0.0, 24.0);
+            let badge = layout.badge_rect_for_name(line, "A", rect.x, &zone, 0.0, 24.0);
+            let body = layout.track_body_rect(line.y_slot, &zone);
+            (rect, badge, body)
+        };
+
+        for id in [plain_k, plain_e] {
+            let (rect, badge, body) = rect_of(id);
+            let reserved = layout.track_for_y_slot(project.get_line(id).unwrap().y_slot).reserved_body_h;
+            assert!((rect.height - reserved).abs() < 0.01);
+            assert!(body.height <= reserved + 0.01);
+            assert!((rect.y - body.y).abs() < f32::EPSILON);
+            assert!(rect.height > layout.normal_body_h);
+            assert_eq!(badge.height, rect.height);
+        }
+        for id in [karaoke, effect] {
+            let (rect, _, body) = rect_of(id);
+            assert!((rect.height - layout.normal_body_h).abs() < f32::EPSILON);
+            assert!(rect.height < layout.track_for_y_slot(project.get_line(id).unwrap().y_slot).reserved_body_h);
+        }
+        let (rect, _, body) = rect_of(plain_n);
+        assert!((rect.height - layout.normal_body_h).abs() < f32::EPSILON);
+        assert!((body.height - layout.normal_body_h).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn caret_hit_test_uses_the_rendered_character_widths() {
         crate::config::init();
         let mut project = Project::new();
@@ -4431,7 +4483,15 @@ pub fn render_lines<'a>(
         let ghost_bg = [0.25, 0.25, 0.35, 0.2];
         let ghost_border = [0.5, 0.5, 0.6, 0.3];
         quads.push(QuadInstance {
-            rect: [ghost_rect_x, body_rect.y, ghost_w, layout_ctx.normal_body_h],
+            rect: [
+                ghost_rect_x,
+                body_rect.y,
+                ghost_w,
+                layout_ctx
+                    .track_for_y_slot(ghost.y_slot)
+                    .reserved_body_h
+                    .max(layout_ctx.normal_body_h),
+            ],
             color: ghost_bg,
             color_bottom: ghost_bg,
             border_color: ghost_border,
