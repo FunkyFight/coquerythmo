@@ -24,7 +24,6 @@ use unicode_segmentation::UnicodeSegmentation;
 
 // Local constants not shared with the UI
 const BASE_TICK_WIDTH: f32 = 1.5;
-const BASE_PLAYHEAD_WIDTH: f32 = 3.0;
 const MAX_RYTHMO_TEXT_CACHE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_RYTHMO_TEXT_CACHE_ENTRIES: usize = 512;
 
@@ -34,6 +33,7 @@ fn blit_playhead_segments(
     width: f32,
     height: f32,
     skip_ranges: &[(f32, f32)],
+    color: [u8; 4],
 ) {
     let mut ranges: Vec<(f32, f32)> = skip_ranges
         .iter()
@@ -45,12 +45,12 @@ fn blit_playhead_segments(
     let mut y = 0.0;
     for (skip_start, skip_end) in ranges {
         if skip_start > y {
-            blit_rect(pixmap, x, y, width, skip_start - y, [255, 5, 13, 255]);
+            blit_rect(pixmap, x, y, width, skip_start - y, color);
         }
         y = y.max(skip_end);
     }
     if y < height {
-        blit_rect(pixmap, x, y, width, height - y, [255, 5, 13, 255]);
+        blit_rect(pixmap, x, y, width, height - y, color);
     }
 }
 
@@ -69,6 +69,7 @@ pub struct CpuRenderer {
     render_index: ProjectRenderIndex,
     rythmo_text_cache: HashMap<u64, CachedCpuRythmoText>,
     voice_actor_icon_cache: HashMap<u64, Vec<u8>>,
+    karaoke_dot_sprites: crate::karaoke_dot::CpuDotSprites,
     rythmo_text_cache_bytes: usize,
     cache_tick: u64,
 }
@@ -87,6 +88,7 @@ impl CpuRenderer {
             render_index: ProjectRenderIndex::new(),
             rythmo_text_cache: HashMap::new(),
             voice_actor_icon_cache: HashMap::new(),
+            karaoke_dot_sprites: crate::karaoke_dot::CpuDotSprites::new(),
             rythmo_text_cache_bytes: 0,
             cache_tick: 0,
         }
@@ -99,10 +101,14 @@ impl CpuRenderer {
         dest_h: u32,
         stretch: bool,
         emphasized: bool,
+        text_styles: &[crate::vector_text::TextStyleRun],
     ) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         text.hash(&mut h);
+        if !text_styles.is_empty() {
+            text_styles.hash(&mut h);
+        }
         font_size.to_bits().hash(&mut h);
         dest_w.hash(&mut h);
         dest_h.hash(&mut h);
@@ -119,7 +125,7 @@ impl CpuRenderer {
         dest_w: u32,
         dest_h: u32,
     ) -> Option<u64> {
-        self.get_or_render_rythmo_text_with_mode(text, font_size, dest_w, dest_h, true, false)
+        self.get_or_render_rythmo_text_with_mode(text, font_size, dest_w, dest_h, true, false, &[])
     }
 
     fn get_or_render_rythmo_text_natural(
@@ -129,7 +135,7 @@ impl CpuRenderer {
         dest_w: u32,
         dest_h: u32,
     ) -> Option<u64> {
-        self.get_or_render_rythmo_text_with_mode(text, font_size, dest_w, dest_h, false, false)
+        self.get_or_render_rythmo_text_with_mode(text, font_size, dest_w, dest_h, false, false, &[])
     }
 
     fn get_or_render_rythmo_text_natural_emphasized(
@@ -139,7 +145,7 @@ impl CpuRenderer {
         dest_w: u32,
         dest_h: u32,
     ) -> Option<u64> {
-        self.get_or_render_rythmo_text_with_mode(text, font_size, dest_w, dest_h, false, true)
+        self.get_or_render_rythmo_text_with_mode(text, font_size, dest_w, dest_h, false, true, &[])
     }
 
     fn get_or_render_rythmo_text_with_mode(
@@ -150,15 +156,36 @@ impl CpuRenderer {
         dest_h: u32,
         stretch: bool,
         emphasized: bool,
+        text_styles: &[crate::vector_text::TextStyleRun],
     ) -> Option<u64> {
         self.cache_tick = self.cache_tick.wrapping_add(1);
-        let key = Self::rythmo_text_cache_key(text, font_size, dest_w, dest_h, stretch, emphasized);
+        let key = Self::rythmo_text_cache_key(
+            text,
+            font_size,
+            dest_w,
+            dest_h,
+            stretch,
+            emphasized,
+            text_styles,
+        );
         if let Some(cached) = self.rythmo_text_cache.get_mut(&key) {
             cached.last_used = self.cache_tick;
             return Some(key);
         }
 
-        let rendered = if emphasized {
+        let rendered = if !text_styles.is_empty() && !emphasized {
+            crate::vector_text::render_rythmo_text_styled(
+                &mut self.font_system,
+                text,
+                font_size,
+                dest_w,
+                dest_h,
+                false,
+                stretch,
+                false,
+                text_styles,
+            )?
+        } else if emphasized {
             crate::vector_text::render_rythmo_text_natural_emphasized(
                 &mut self.font_system,
                 text,
@@ -330,33 +357,51 @@ impl CpuRenderer {
             .map(|data| data.as_slice())
     }
 
+    /// Voice actor icons beside the character label `badge`. `frames`
+    /// draws their backgrounds (under the text, like the editor's quads),
+    /// otherwise their pictures or names (over it).
     fn render_voice_actor_icons(
         &mut self,
         pixmap: &mut Pixmap,
         project: &Project,
         line: &crate::rythmo_line::RythmoLine,
-        x: f32,
-        y: f32,
-        _badge_w: f32,
+        badge: Rect,
         icon_size: f32,
         scale: f32,
+        frames: bool,
     ) {
+        use crate::band_visuals as visuals;
         if line.karaoke || line.voice_actor_names.is_empty() {
             return;
         }
 
         let icon_size = icon_size.max(1.0);
+        let gap = visuals::ACTOR_ICON_GAP * scale;
         // The badge ends immediately before the line body. Keep actor icons
         // on the outer side of the badge so they cannot cover the line text.
-        let mut icon_x = x - 3.0 * scale - icon_size;
+        let mut icon_x = badge.x - gap - icon_size;
+        let y = badge.y + (badge.height - icon_size) * 0.5;
 
         for actor_name in &line.voice_actor_names {
             if icon_x > pixmap.width() as f32 {
                 break;
             }
-            blit_rect(pixmap, icon_x, y, icon_size, icon_size, [10, 10, 14, 235]);
-
-            if let Some(actor) = project.find_voice_actor(actor_name) {
+            if frames {
+                blit_quad(
+                    pixmap,
+                    Rect {
+                        x: icon_x,
+                        y,
+                        width: icon_size,
+                        height: icon_size,
+                    },
+                    visuals::ACTOR_ICON_BG_TOP,
+                    visuals::ACTOR_ICON_BG_BOTTOM,
+                    visuals::ACTOR_ICON_BORDER,
+                    visuals::ACTOR_ICON_BORDER_WIDTH * scale,
+                    visuals::ACTOR_ICON_RADIUS * scale,
+                );
+            } else if let Some(actor) = project.find_voice_actor(actor_name) {
                 if let Some(icon) = self.cached_voice_actor_icon(actor) {
                     blit_actor_icon(pixmap, icon, icon_x, y, icon_size);
                 } else {
@@ -365,29 +410,61 @@ impl CpuRenderer {
             } else {
                 self.blit_actor_fallback(pixmap, actor_name, icon_x, y, icon_size);
             }
-            icon_x -= icon_size + 3.0 * scale;
+            icon_x -= icon_size + gap;
         }
     }
 
     fn blit_actor_fallback(&mut self, pixmap: &mut Pixmap, text: &str, x: f32, y: f32, size: f32) {
-        self.blit_actor_fallback_tinted(pixmap, text, x, y, size, [230, 230, 238]);
-    }
-
-    fn blit_actor_fallback_tinted(
-        &mut self,
-        pixmap: &mut Pixmap,
-        text: &str,
-        x: f32,
-        y: f32,
-        size: f32,
-        color: [u8; 3],
-    ) {
-        let (tex, tw, th) = self.rasterize_text(text, size * 0.55);
+        let font_size = size * crate::band_visuals::ACTOR_FALLBACK_FONT_RATIO;
+        let (tex, tw, th) = self.rasterize_text(text, font_size);
         if tw == 0 || th == 0 {
             return;
         }
         let tx = x + (size - tw as f32) / 2.0;
         let ty = y + (size - th as f32) / 2.0;
+        Self::blit_text_mask(
+            pixmap,
+            &tex,
+            tw,
+            th,
+            tx,
+            ty,
+            size,
+            crate::band_visuals::ACTOR_FALLBACK_TEXT_COLOR,
+        );
+    }
+
+    /// Draws a small marker label (loop number, "out") at `font_size` with
+    /// its top-left at `x`, `y`.
+    fn blit_marker_label(
+        &mut self,
+        pixmap: &mut Pixmap,
+        text: &str,
+        font_size: f32,
+        x: f32,
+        y: f32,
+        color: [u8; 3],
+    ) {
+        let (tex, tw, th) = self.rasterize_text(text, font_size.max(1.0));
+        if tw == 0 || th == 0 {
+            return;
+        }
+        Self::blit_text_mask(pixmap, &tex, tw, th, x, y, f32::INFINITY, color);
+    }
+
+    /// Blends the coverage of a rasterized text `tex` (`tw` x `th`, at most
+    /// `max_width` pixels wide) tinted with `color`.
+    fn blit_text_mask(
+        pixmap: &mut Pixmap,
+        tex: &[u8],
+        tw: u32,
+        th: u32,
+        tx: f32,
+        ty: f32,
+        max_width: f32,
+        color: [u8; 3],
+    ) {
+        let size = max_width;
         let pm_w = pixmap.width() as i32;
         let pm_h = pixmap.height() as i32;
         let pm_data = pixmap.data_mut();
@@ -430,27 +507,33 @@ impl CpuRenderer {
         segment_start: usize,
         highlight_end: Option<usize>,
         base_tint: [u8; 3],
+        line_styles: &[crate::rythmo_line::TextStyleSpan],
     ) {
         let count = text.chars().count();
+        let styles = if line_styles.is_empty() {
+            Vec::new()
+        } else {
+            crate::rythmo_line::text_style_runs(line_styles, segment_start, segment_start + count)
+        };
         let Some(highlight_end) = highlight_end else {
-            self.blit_rythmo_text_tinted_clipped(
-                pixmap, text, x, y, dest_w, dest_h, font_size, base_tint, 1.0,
+            self.blit_rythmo_text_styled_clipped(
+                pixmap, text, x, y, dest_w, dest_h, font_size, base_tint, 1.0, &styles,
             );
             return;
         };
         if count == 0 || highlight_end <= segment_start {
-            self.blit_rythmo_text_tinted_clipped(
-                pixmap, text, x, y, dest_w, dest_h, font_size, base_tint, 1.0,
+            self.blit_rythmo_text_styled_clipped(
+                pixmap, text, x, y, dest_w, dest_h, font_size, base_tint, 1.0, &styles,
             );
             return;
         }
         let end_ratio = ((highlight_end - segment_start) as f32 / count as f32).min(1.0);
         if end_ratio < 1.0 {
-            self.blit_rythmo_text_tinted_clipped(
-                pixmap, text, x, y, dest_w, dest_h, font_size, base_tint, 1.0,
+            self.blit_rythmo_text_styled_clipped(
+                pixmap, text, x, y, dest_w, dest_h, font_size, base_tint, 1.0, &styles,
             );
         }
-        self.blit_rythmo_text_tinted_clipped(
+        self.blit_rythmo_text_styled_clipped(
             pixmap,
             text,
             x,
@@ -460,6 +543,70 @@ impl CpuRenderer {
             font_size,
             [255, 209, 20],
             end_ratio,
+            &styles,
+        );
+    }
+
+    /// Stretched band text carrying per-character styles; empty `text_styles`
+    /// draws exactly like `blit_rythmo_text_tinted_clipped`.
+    fn blit_rythmo_text_styled_clipped(
+        &mut self,
+        pixmap: &mut Pixmap,
+        text: &str,
+        x: f32,
+        y: f32,
+        dest_w: f32,
+        dest_h: f32,
+        font_size: f32,
+        tint: [u8; 3],
+        clip_ratio: f32,
+        text_styles: &[crate::vector_text::TextStyleRun],
+    ) {
+        self.blit_rythmo_text_tinted_clipped_with_mode(
+            pixmap,
+            text,
+            x,
+            y,
+            dest_w,
+            dest_h,
+            font_size,
+            tint,
+            clip_ratio,
+            true,
+            false,
+            text_styles,
+            255,
+        );
+    }
+
+    /// Like `blit_rythmo_text_styled_clipped`, with an opacity.
+    fn blit_rythmo_text_styled_clipped_alpha(
+        &mut self,
+        pixmap: &mut Pixmap,
+        text: &str,
+        x: f32,
+        y: f32,
+        dest_w: f32,
+        dest_h: f32,
+        font_size: f32,
+        tint: [u8; 3],
+        alpha: u8,
+        text_styles: &[crate::vector_text::TextStyleRun],
+    ) {
+        self.blit_rythmo_text_tinted_clipped_with_mode(
+            pixmap,
+            text,
+            x,
+            y,
+            dest_w,
+            dest_h,
+            font_size,
+            tint,
+            1.0,
+            true,
+            false,
+            text_styles,
+            alpha,
         );
     }
 
@@ -476,7 +623,19 @@ impl CpuRenderer {
         clip_ratio: f32,
     ) {
         self.blit_rythmo_text_tinted_clipped_with_mode(
-            pixmap, text, x, y, dest_w, dest_h, font_size, tint, clip_ratio, true, false,
+            pixmap,
+            text,
+            x,
+            y,
+            dest_w,
+            dest_h,
+            font_size,
+            tint,
+            clip_ratio,
+            true,
+            false,
+            &[],
+            255,
         );
     }
 
@@ -493,7 +652,19 @@ impl CpuRenderer {
         clip_ratio: f32,
     ) {
         self.blit_rythmo_text_tinted_clipped_with_mode(
-            pixmap, text, x, y, dest_w, dest_h, font_size, tint, clip_ratio, false, false,
+            pixmap,
+            text,
+            x,
+            y,
+            dest_w,
+            dest_h,
+            font_size,
+            tint,
+            clip_ratio,
+            false,
+            false,
+            &[],
+            255,
         );
     }
 
@@ -509,7 +680,19 @@ impl CpuRenderer {
         tint: [u8; 3],
     ) {
         self.blit_rythmo_text_tinted_clipped_with_mode(
-            pixmap, text, x, y, dest_w, dest_h, font_size, tint, 1.0, false, true,
+            pixmap,
+            text,
+            x,
+            y,
+            dest_w,
+            dest_h,
+            font_size,
+            tint,
+            1.0,
+            false,
+            true,
+            &[],
+            255,
         );
     }
 
@@ -526,10 +709,25 @@ impl CpuRenderer {
         clip_ratio: f32,
         stretch: bool,
         emphasized: bool,
+        text_styles: &[crate::vector_text::TextStyleRun],
+        alpha: u8,
     ) {
+        if alpha == 0 {
+            return;
+        }
         let tex_w = dest_w.max(1.0).ceil() as u32;
         let tex_h = dest_h.max(1.0).ceil() as u32;
-        let cache_key = if emphasized {
+        let cache_key = if !text_styles.is_empty() && !emphasized {
+            self.get_or_render_rythmo_text_with_mode(
+                text,
+                font_size,
+                tex_w,
+                tex_h,
+                stretch,
+                false,
+                text_styles,
+            )
+        } else if emphasized {
             self.get_or_render_rythmo_text_natural_emphasized(text, font_size, tex_w, tex_h)
         } else if stretch {
             self.get_or_render_rythmo_text(text, font_size, tex_w, tex_h)
@@ -581,14 +779,17 @@ impl CpuRenderer {
                     continue;
                 }
 
-                let sa = rendered.pixels[src_idx + 3] as u32;
+                // Premultiplied source, like the editor's band text shader.
+                let sa = rendered.pixels[src_idx + 3] as u32 * alpha as u32 / 255;
                 if sa == 0 {
                     continue;
                 }
 
                 let inv_a = 255 - sa;
                 for c in 0..3 {
-                    let src = (rendered.pixels[src_idx + c] as u32 * tint[c] as u32) / 255;
+                    let src = rendered.pixels[src_idx + c] as u32 * tint[c] as u32 / 255
+                        * alpha as u32
+                        / 255;
                     let dst = pm_data[dst_idx + c] as u32;
                     pm_data[dst_idx + c] = (src + (dst * inv_a) / 255).min(255) as u8;
                 }
@@ -634,6 +835,16 @@ impl CpuRenderer {
                 .unwrap_or(char_end as f32 / char_count as f32);
             let gx = x + start_ratio * width;
             let gw = ((end_ratio - start_ratio) * width).max(0.5);
+            let style = if line.can_have_text_styles() {
+                line.style_at_char(char_start)
+            } else {
+                crate::rythmo_line::TextStyle::default()
+            };
+            let style_runs = if style.is_plain() {
+                Vec::new()
+            } else {
+                vec![(0, char_end - char_start, style)]
+            };
             if let Some(emotion) = line.emotion_at_char(char_start) {
                 let animation = crate::rythmo_line::text_emotion_transform(
                     emotion,
@@ -654,11 +865,14 @@ impl CpuRenderer {
                         (tint[2] as f32 * animation.tint[2]).round() as u8,
                     ]
                 };
-                let key = self.get_or_render_rythmo_text(
+                let key = self.get_or_render_rythmo_text_with_mode(
                     grapheme,
                     font_size,
                     gw.ceil() as u32,
                     height.ceil() as u32,
+                    true,
+                    false,
+                    &style_runs,
                 );
                 if let Some(rendered) = key.and_then(|key| self.rythmo_text_cache.get(&key)) {
                     Self::blit_cached_transformed(
@@ -668,12 +882,13 @@ impl CpuRenderer {
                         y + animation.offset[1] - height * 0.08,
                         animation.transform,
                         animated_tint,
+                        color_channel(animation.tint[3]),
                     );
                 }
                 if show_lane {
                     let (copy_y, copy_height) =
                         rythmo_layout::text_emotion_copy_rect(y, height, scale);
-                    self.blit_rythmo_text_tinted_clipped(
+                    self.blit_rythmo_text_styled_clipped_alpha(
                         pixmap,
                         grapheme,
                         gx,
@@ -682,12 +897,22 @@ impl CpuRenderer {
                         copy_height,
                         font_size * 0.68,
                         tint,
-                        1.0,
+                        color_channel(crate::band_visuals::TEXT_EMOTION_LANE_ALPHA),
+                        &style_runs,
                     );
                 }
             } else {
-                self.blit_rythmo_text_tinted_clipped(
-                    pixmap, grapheme, gx, y, gw, height, font_size, tint, 1.0,
+                self.blit_rythmo_text_styled_clipped(
+                    pixmap,
+                    grapheme,
+                    gx,
+                    y,
+                    gw,
+                    height,
+                    font_size,
+                    tint,
+                    1.0,
+                    &style_runs,
                 );
             }
             char_start = char_end;
@@ -701,7 +926,11 @@ impl CpuRenderer {
         y: f32,
         transform: [f32; 4],
         tint: [u8; 3],
+        opacity: u8,
     ) {
+        if opacity == 0 {
+            return;
+        }
         let [angle, skew, pivot_x, pivot_y] = transform;
         let (sin, cos) = angle.sin_cos();
         let pivot = [
@@ -729,14 +958,17 @@ impl CpuRenderer {
                 }
                 let source = ((sy as u32 * rendered.width + sx as u32) * 4) as usize;
                 let destination = ((py as u32 * pm_w + px as u32) * 4) as usize;
-                let alpha = rendered.pixels[source + 3] as u32;
+                let alpha = rendered.pixels[source + 3] as u32 * opacity as u32 / 255;
                 if alpha == 0 {
                     continue;
                 }
                 let inverse_alpha = 255 - alpha;
                 for channel in 0..3 {
-                    let source_channel =
-                        rendered.pixels[source + channel] as u32 * tint[channel] as u32 / 255;
+                    let source_channel = rendered.pixels[source + channel] as u32
+                        * tint[channel] as u32
+                        / 255
+                        * opacity as u32
+                        / 255;
                     data[destination + channel] = (source_channel
                         + data[destination + channel] as u32 * inverse_alpha / 255)
                         .min(255) as u8;
@@ -775,7 +1007,7 @@ impl CpuRenderer {
         let tick_long = constants::TICK_LONG * s;
         let tick_short = constants::TICK_SHORT * s;
         let tick_w = BASE_TICK_WIDTH * s;
-        let playhead_w = BASE_PLAYHEAD_WIDTH * s;
+        let playhead_w = project.settings().band_style.playhead_width * s;
         let badge_h = constants::BADGE_HEIGHT * s;
         let badge_gap = constants::BADGE_GAP * s;
         let actor_icon_size = constants::VOICE_ACTOR_DISPLAY_ICON_SIZE * s;
@@ -814,7 +1046,9 @@ impl CpuRenderer {
         let height = (ruler_h + rythmo_layout::total_tracks_height(track_layouts)).ceil() as u32;
 
         let mut pixmap = Pixmap::new(width, height).unwrap();
-        pixmap.fill(tiny_skia::Color::from_rgba8(5, 5, 8, 255));
+        let [bg_r, bg_g, bg_b, _] =
+            crate::band_style::to_rgba8(project.settings().band_style.background);
+        pixmap.fill(tiny_skia::Color::from_rgba8(bg_r, bg_g, bg_b, 255));
 
         let w = width as f32;
         let h = height as f32;
@@ -873,7 +1107,28 @@ impl CpuRenderer {
                 }
             })
             .collect();
-        blit_playhead_segments(&mut pixmap, playhead_x, playhead_w, h, &playhead_gaps);
+        blit_playhead_segments(
+            &mut pixmap,
+            playhead_x,
+            playhead_w,
+            h,
+            &playhead_gaps,
+            crate::band_style::to_rgba8(project.settings().band_style.playhead),
+        );
+
+        // -- Markers, under the lines like the editor's band quads --
+        self.render_markers(
+            &mut pixmap,
+            &scene.markers,
+            current_frame,
+            center_x,
+            ppf,
+            offset_frames,
+            w,
+            h,
+            s,
+            false,
+        );
 
         // -- Lines (no handles, no border -- clean export) --
         // Precompute every visible line's rect + character name so a badge can be tested
@@ -1011,46 +1266,253 @@ impl CpuRenderer {
                 body_h = karaoke_stack_height(track.body_h, s);
             }
 
-            // Calculate badge position/size for later drawing (on top of text)
+            // Calculate badge position/size.
             // Rectangular, top-aligned, with right edge a few px left of the line's left edge.
             let badge_h = body_h;
             let [cr, cg, cb, _] = line.character_color;
             let badge_y = line_y;
+            let character_rgb = [color_channel(cr), color_channel(cg), color_channel(cb)];
+            let scrolling_text_tint = if line.kind.is_ambiance() {
+                [242, 31, 41]
+            } else if project.settings().scrolling_text_uses_character_color {
+                character_rgb
+            } else {
+                [255; 3]
+            };
+            let karaoke_dot = project
+                .settings()
+                .band_style
+                .dot_for_character(&line.character_name);
 
-            if matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart) {
-                let ambiance_label = crate::rythmo_line::ambiance_label(&line.character_name);
+            // Against OTHER line bodies: hidden over the same character,
+            // shrunk to fit (fully opaque) over another one, like the editor.
+            let badge_info = if show_badge && !line.character_name.is_empty() {
+                let fit = crate::band_visuals::fit_character_badge_among_lines(
+                    Rect {
+                        x: badge_x,
+                        y: badge_y,
+                        width: badge_w,
+                        height: badge_h,
+                    },
+                    x1,
+                    badge_gap,
+                    line.id,
+                    &line.character_name,
+                    &line_rects,
+                );
+                (!fit.hidden).then_some((fit.rect, fit.scale))
+            } else {
+                None
+            };
+
+            // -- Geometry, drawn under the text like the editor's band quads --
+            if karaoke_dot.is_circle() {
+                if karaoke_count_in {
+                    blit_karaoke_count_in_dot(
+                        &mut pixmap,
+                        line,
+                        x1,
+                        line_y,
+                        scene_line.karaoke_count_in_progress,
+                        s,
+                    );
+                } else {
+                    blit_karaoke_dot(
+                        &mut pixmap,
+                        line,
+                        scene.syllable_language.code(),
+                        current_frame,
+                        x1,
+                        line_y,
+                        lw,
+                        s,
+                    );
+                }
+            }
+
+            let ambiance_label = matches!(
+                line.kind,
+                crate::rythmo_line::RythmoLineKind::AmbianceStart
+            )
+            .then(|| crate::rythmo_line::ambiance_label(&line.character_name));
+            if let Some(ambiance_label) = &ambiance_label {
                 let underline_x = badge_x + character_label_font * 0.25;
                 let underline_w = crate::vector_text::measure_rythmo_text_width_standalone(
-                    &ambiance_label,
+                    ambiance_label,
                     character_label_font,
                 )
                 .unwrap_or(badge_w)
                 .min((badge_x + badge_w - underline_x).max(0.0));
+                for y_offset in [2.0, 5.5] {
+                    blit_rect(
+                        &mut pixmap,
+                        underline_x,
+                        badge_y + badge_h - y_offset * s,
+                        underline_w,
+                        1.5 * s,
+                        [51, 140, 255, 255],
+                    );
+                }
+            }
+
+            if !line.presence.is_on() && !line.text.is_empty() {
+                // Same underline as the editor, in the scrolling text colour.
+                use crate::band_visuals::{
+                    PRESENCE_DASH_LENGTH, PRESENCE_DASH_PERIOD, PRESENCE_UNDERLINE_BOTTOM_OFFSET,
+                    PRESENCE_UNDERLINE_THICKNESS,
+                };
+                let underline_y = line_y + body_h - PRESENCE_UNDERLINE_BOTTOM_OFFSET * s;
+                let thickness = PRESENCE_UNDERLINE_THICKNESS * s;
+                let [ur, ug, ub] = scrolling_text_tint;
+                if line.presence == crate::rythmo_line::LinePresence::Off {
+                    blit_rect(
+                        &mut pixmap,
+                        x1,
+                        underline_y,
+                        lw,
+                        thickness,
+                        [ur, ug, ub, 255],
+                    );
+                } else {
+                    let dash = PRESENCE_DASH_LENGTH * s;
+                    let period = (PRESENCE_DASH_PERIOD * s).max(0.5);
+                    let mut x = x1;
+                    while x < x1 + lw {
+                        blit_rect(
+                            &mut pixmap,
+                            x,
+                            underline_y,
+                            dash.min(x1 + lw - x),
+                            thickness,
+                            [ur, ug, ub, 255],
+                        );
+                        x += period;
+                    }
+                }
+            }
+
+            if line.kind.is_ambiance() {
+                let at_start =
+                    matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart);
+                let gutter = (46.0 * s).min(lw);
+                let gx = if at_start { x1 } else { x1 + lw - gutter };
+                let dir = if at_start { 1.0 } else { -1.0 };
+                let cy = line_y + body_h * 0.5;
+                let tip_x = if at_start {
+                    gx + gutter - 5.0 * s
+                } else {
+                    gx + 5.0 * s
+                };
+                let base_x = tip_x - dir * 15.0 * s;
+                for dy in [-10.0 * s, 10.0 * s] {
+                    blit_thick_line(
+                        &mut pixmap,
+                        base_x,
+                        cy + dy,
+                        tip_x,
+                        cy,
+                        5.0 * s,
+                        [255, 255, 255, 255],
+                    );
+                }
+                blit_thick_line(
+                    &mut pixmap,
+                    gx + 5.0 * s,
+                    cy,
+                    gx + gutter - 5.0 * s,
+                    cy,
+                    5.0 * s,
+                    [255, 255, 255, 255],
+                );
+                let bar_x = if at_start {
+                    gx + 3.0 * s
+                } else {
+                    gx + gutter - 3.0 * s
+                };
+                blit_thick_line(
+                    &mut pixmap,
+                    bar_x,
+                    cy - 13.0 * s,
+                    bar_x,
+                    cy + 13.0 * s,
+                    5.0 * s,
+                    [255, 255, 255, 255],
+                );
+            }
+
+            // Breath arrows, with their arrowhead like in the editor.
+            if line.text == "↑" || line.text == "↓" {
+                use crate::band_visuals::{
+                    breath_arrow_bars, rgba8, rotated_bar_ends, BREATH_ARROW_COLOR,
+                    BREATH_ARROW_HEAD_LENGTH, BREATH_ARROW_MARGIN, BREATH_ARROW_THICKNESS,
+                };
+                let up = line.text == "↑";
+                let margin = BREATH_ARROW_MARGIN * s;
+                if lw > margin * 2.0 + 1.0 && body_h > margin * 2.0 + 1.0 {
+                    let body = Rect {
+                        x: x1,
+                        y: line_y,
+                        width: lw,
+                        height: body_h,
+                    };
+                    for (cx, cy, length, angle) in
+                        breath_arrow_bars(body, up, margin, BREATH_ARROW_HEAD_LENGTH * s)
+                    {
+                        let [(x0, y0), (x1, y1)] = rotated_bar_ends(cx, cy, length, angle);
+                        blit_thick_line(
+                            &mut pixmap,
+                            x0,
+                            y0,
+                            x1,
+                            y1,
+                            BREATH_ARROW_THICKNESS * s,
+                            rgba8(BREATH_ARROW_COLOR),
+                        );
+                    }
+                }
+            }
+
+            if let Some((badge, badge_scale)) = badge_info {
+                let label_font = character_label_font * badge_scale;
+                let underline_x = badge.x + label_font * 0.25;
+                let underline_w = crate::vector_text::measure_rythmo_text_width_standalone(
+                    &line.character_name,
+                    label_font,
+                )
+                .unwrap_or(badge.width)
+                .min((badge.x + badge.width - underline_x).max(0.0));
+                for y_offset in [2.0, 5.5] {
+                    blit_rect(
+                        &mut pixmap,
+                        underline_x,
+                        badge.y + badge.height - y_offset * s * badge_scale,
+                        underline_w,
+                        1.5 * s * badge_scale,
+                        [character_rgb[0], character_rgb[1], character_rgb[2], 255],
+                    );
+                }
+                self.render_voice_actor_icons(
+                    &mut pixmap,
+                    project,
+                    line,
+                    badge,
+                    actor_icon_size * badge_scale,
+                    s,
+                    true,
+                );
+            }
+
+            // -- Text --
+            if let Some(ambiance_label) = &ambiance_label {
                 self.blit_rythmo_text_natural_emphasized_tinted(
                     &mut pixmap,
-                    &ambiance_label,
+                    ambiance_label,
                     badge_x,
                     badge_y,
                     badge_w,
                     badge_h,
                     character_label_font,
                     [51, 140, 255],
-                );
-                blit_rect(
-                    &mut pixmap,
-                    underline_x,
-                    badge_y + badge_h - 2.0 * s,
-                    underline_w,
-                    1.5 * s,
-                    [51, 140, 255, 255],
-                );
-                blit_rect(
-                    &mut pixmap,
-                    underline_x,
-                    badge_y + badge_h - 5.5 * s,
-                    underline_w,
-                    1.5 * s,
-                    [51, 140, 255, 255],
                 );
             }
 
@@ -1068,17 +1530,6 @@ impl CpuRenderer {
                     )
                 } else {
                     None
-                };
-                let scrolling_text_tint = if line.kind.is_ambiance() {
-                    [242, 31, 41]
-                } else if project.settings().scrolling_text_uses_character_color {
-                    [
-                        color_channel(line.character_color[0]),
-                        color_channel(line.character_color[1]),
-                        color_channel(line.character_color[2]),
-                    ]
-                } else {
-                    [255; 3]
                 };
                 if line.kind.is_ambiance() {
                     let reserve = (54.0 * s).min(lw);
@@ -1158,6 +1609,12 @@ impl CpuRenderer {
                         project.settings().show_text_emotion_lanes,
                     );
                 } else {
+                    let line_styles: &[crate::rythmo_line::TextStyleSpan] =
+                        if line.can_have_text_styles() {
+                            &line.text_styles
+                        } else {
+                            &[]
+                        };
                     let lang = scene.syllable_language.code();
                     let base_breaks = crate::syllable::syllable_breaks(&line.text, lang);
                     let base_ratios =
@@ -1194,6 +1651,7 @@ impl CpuRenderer {
                                     prev_break,
                                     read_highlight_end,
                                     scrolling_text_tint,
+                                    line_styles,
                                 );
                             }
                             seg_x += seg_w;
@@ -1211,201 +1669,74 @@ impl CpuRenderer {
                             0,
                             read_highlight_end,
                             scrolling_text_tint,
+                            line_styles,
                         );
-                    }
-                }
-            }
-
-            if !line.presence.is_on() && !line.text.is_empty() {
-                let underline_y = line_y + body_h - (3.0 * s).max(1.0);
-                let thickness = (1.5 * s).max(1.0);
-                if line.presence == crate::rythmo_line::LinePresence::Off {
-                    blit_rect(
-                        &mut pixmap,
-                        x1,
-                        underline_y,
-                        lw,
-                        thickness,
-                        [255, 255, 255, 255],
-                    );
-                } else {
-                    let (dash, gap) = ((8.0 * s).max(2.0), (5.0 * s).max(2.0));
-                    let mut x = x1;
-                    while x < x1 + lw {
-                        blit_rect(
-                            &mut pixmap,
-                            x,
-                            underline_y,
-                            dash.min(x1 + lw - x),
-                            thickness,
-                            [255, 255, 255, 255],
-                        );
-                        x += dash + gap;
-                    }
-                }
-            }
-
-            if line.kind.is_ambiance() {
-                let at_start =
-                    matches!(line.kind, crate::rythmo_line::RythmoLineKind::AmbianceStart);
-                let gutter = (46.0 * s).min(lw);
-                let gx = if at_start { x1 } else { x1 + lw - gutter };
-                let dir = if at_start { 1.0 } else { -1.0 };
-                let cy = line_y + body_h * 0.5;
-                let tip_x = if at_start {
-                    gx + gutter - 5.0 * s
-                } else {
-                    gx + 5.0 * s
-                };
-                let base_x = tip_x - dir * 15.0 * s;
-                for dy in [-10.0 * s, 10.0 * s] {
-                    blit_thick_line(
-                        &mut pixmap,
-                        base_x,
-                        cy + dy,
-                        tip_x,
-                        cy,
-                        5.0 * s,
-                        [255, 255, 255, 255],
-                    );
-                }
-                blit_thick_line(
-                    &mut pixmap,
-                    gx + 5.0 * s,
-                    cy,
-                    gx + gutter - 5.0 * s,
-                    cy,
-                    5.0 * s,
-                    [255, 255, 255, 255],
-                );
-                let bar_x = if at_start {
-                    gx + 3.0 * s
-                } else {
-                    gx + gutter - 3.0 * s
-                };
-                blit_thick_line(
-                    &mut pixmap,
-                    bar_x,
-                    cy - 13.0 * s,
-                    bar_x,
-                    cy + 13.0 * s,
-                    5.0 * s,
-                    [255, 255, 255, 255],
-                );
-            }
-
-            // Overlap detection vs OTHER lines: hide if same character, 60% opacity if different
-            let mut badge_hidden = false;
-            let mut badge_overlap_alpha = 255u8;
-            for (&oid, (other_rect, other_name)) in &line_rects {
-                if oid == line.id {
-                    continue;
-                }
-                let overlap = badge_x < other_rect.x + other_rect.width
-                    && badge_x + badge_w > other_rect.x
-                    && badge_y < other_rect.y + other_rect.height
-                    && badge_y + badge_h > other_rect.y;
-                if overlap {
-                    if other_name == &line.character_name {
-                        badge_hidden = true;
-                        break;
-                    } else {
-                        badge_overlap_alpha =
-                            (255.0 * constants::CHARACTER_BADGE_COLLISION_OPACITY) as u8;
                     }
                 }
             }
 
             // Same emphasized typography as ambiance labels, tinted with the
-            // character colour and deliberately left without an underline.
-            if show_badge && !badge_hidden {
-                let underline_x = badge_x + character_label_font * 0.25;
-                let underline_w = crate::vector_text::measure_rythmo_text_width_standalone(
-                    &line.character_name,
-                    character_label_font,
-                )
-                .unwrap_or(badge_w)
-                .min((badge_x + badge_w - underline_x).max(0.0));
+            // character colour.
+            if let Some((badge, badge_scale)) = badge_info {
                 self.blit_rythmo_text_natural_emphasized_tinted(
                     &mut pixmap,
                     &line.character_name,
-                    badge_x,
-                    badge_y,
-                    badge_w,
-                    badge_h,
-                    character_label_font,
-                    [color_channel(cr), color_channel(cg), color_channel(cb)],
+                    badge.x,
+                    badge.y,
+                    badge.width,
+                    badge.height,
+                    character_label_font * badge_scale,
+                    character_rgb,
                 );
-                for y_offset in [2.0, 5.5] {
-                    blit_rect(
-                        &mut pixmap,
-                        underline_x,
-                        badge_y + badge_h - y_offset * s,
-                        underline_w,
-                        1.5 * s,
-                        [
-                            color_channel(cr),
-                            color_channel(cg),
-                            color_channel(cb),
-                            badge_overlap_alpha,
-                        ],
-                    );
-                }
+            }
 
+            // -- Textures drawn over the text, like the editor --
+            if let Some((badge, badge_scale)) = badge_info {
                 self.render_voice_actor_icons(
                     &mut pixmap,
                     project,
                     line,
-                    badge_x,
-                    badge_y,
-                    badge_w,
-                    actor_icon_size,
+                    badge,
+                    actor_icon_size * badge_scale,
                     s,
+                    false,
                 );
             }
 
-            // Breath arrows
-            if line.text == "↑" || line.text == "↓" {
-                let up = line.text == "↑";
-                let margin = 4.0 * s.max(1.0);
-                if lw > margin * 2.0 + 1.0 && body_h > margin * 2.0 + 1.0 {
-                    let (y0, y1) = if up {
-                        (line_y + body_h - margin, line_y + margin)
-                    } else {
-                        (line_y + margin, line_y + body_h - margin)
-                    };
-                    blit_thick_line(
+            if !karaoke_dot.is_circle() {
+                let dot_rect = if karaoke_count_in {
+                    scene_line
+                        .karaoke_count_in_progress
+                        .map(|progress| karaoke_count_in_dot_rect(x1, line_y, progress, s))
+                } else {
+                    karaoke_dot_center(
+                        line,
+                        scene.syllable_language.code(),
+                        current_frame,
+                        x1,
+                        line_y,
+                        lw,
+                        s,
+                    )
+                    .map(|(cx, cy, size)| (cx - size / 2.0, cy - size / 2.0, size))
+                };
+                if let Some((dx, dy, size)) = dot_rect {
+                    self.karaoke_dot_sprites.draw(
                         &mut pixmap,
-                        x1 + margin,
-                        y0,
-                        x1 + lw - margin,
-                        y1,
-                        2.0 * s,
-                        [220, 220, 230, 230],
+                        karaoke_dot,
+                        crate::karaoke_dot::face_for_dot(line_y, dy, size, s),
+                        dx,
+                        dy,
+                        size,
+                        [
+                            line.character_color[0],
+                            line.character_color[1],
+                            line.character_color[2],
+                            1.0,
+                        ],
+                        s,
                     );
                 }
-            }
-
-            if karaoke_count_in {
-                blit_karaoke_count_in_dot(
-                    &mut pixmap,
-                    line,
-                    x1,
-                    line_y,
-                    scene_line.karaoke_count_in_progress,
-                    s,
-                );
-            } else {
-                blit_karaoke_dot(
-                    &mut pixmap,
-                    line,
-                    scene.syllable_language.code(),
-                    current_frame,
-                    x1,
-                    line_y,
-                    lw,
-                    s,
-                );
             }
 
             // Note text (discrete, at the bottom of the line)
@@ -1455,18 +1786,7 @@ impl CpuRenderer {
         }
 
         // Drawings are an overlay in the editor, so composite them last in the
-        // exported BR as well (above lines, labels and markers).
-        self.render_markers(
-            &mut pixmap,
-            &scene.markers,
-            current_frame,
-            center_x,
-            ppf,
-            offset_frames,
-            w,
-            h,
-            s,
-        );
+        // exported BR as well (above lines and markers).
         let (first_frame, last_frame) = crate::rythmo_drawing::visible_frame_window(
             width as f32,
             current_frame,
@@ -1492,10 +1812,24 @@ impl CpuRenderer {
             );
             crate::rythmo_drawing::composite_rgba_over(pixmap.data_mut(), &drawing);
         }
+        // The editor draws marker labels with the other UI text, last.
+        self.render_markers(
+            &mut pixmap,
+            &scene.markers,
+            current_frame,
+            center_x,
+            ppf,
+            offset_frames,
+            w,
+            h,
+            s,
+            true,
+        );
 
         pixmap.data().to_vec()
     }
 
+    /// Draws the markers: their bars, or their labels when `labels` is set.
     fn render_markers(
         &mut self,
         pixmap: &mut Pixmap,
@@ -1507,8 +1841,12 @@ impl CpuRenderer {
         w: f32,
         h: f32,
         s: f32,
+        labels: bool,
     ) {
+        use crate::band_visuals::{self as visuals, rgba8, rotated_bar_ends};
         use crate::rythmo_line::MarkerKind;
+        let bar_w = visuals::MARKER_BAR_WIDTH * s;
+        let cy = h / 2.0;
         for marker in markers {
             let mx = rythmo_layout::export_timeline_x(
                 marker.frame,
@@ -1521,80 +1859,100 @@ impl CpuRenderer {
                 continue;
             }
             match &marker.kind {
-                MarkerKind::Boucle => {
-                    blit_rect(pixmap, mx - 1.0 * s, 0.0, 2.0 * s, h, [230, 38, 38, 230]);
-                    let cy = h / 2.0;
-                    let arm = 10.0 * s;
-                    blit_thick_line(
-                        pixmap,
-                        mx - arm / 2.0,
-                        cy - arm / 2.0,
-                        mx + arm / 2.0,
-                        cy + arm / 2.0,
-                        2.5 * s,
-                        [230, 38, 38, 230],
-                    );
-                    blit_thick_line(
-                        pixmap,
-                        mx - arm / 2.0,
-                        cy + arm / 2.0,
-                        mx + arm / 2.0,
-                        cy - arm / 2.0,
-                        2.5 * s,
-                        [217, 38, 38, 230],
-                    );
+                MarkerKind::Boucle if labels => {
                     if let Some(number) = marker.loop_number {
-                        self.blit_actor_fallback_tinted(
+                        self.blit_marker_label(
                             pixmap,
                             &number.to_string(),
-                            mx + 8.0 * s,
-                            cy + 5.0 * s,
-                            18.0 * s,
-                            [217, 38, 38],
+                            visuals::LOOP_NUMBER_FONT_SIZE * s,
+                            mx + visuals::LOOP_NUMBER_OFFSET[0] * s,
+                            cy + visuals::LOOP_NUMBER_OFFSET[1] * s,
+                            visuals::LOOP_NUMBER_COLOR,
                         );
                     }
                 }
-                MarkerKind::Out => {
-                    blit_rect(pixmap, mx - 1.0 * s, 0.0, 2.0 * s, h, [217, 115, 115, 180]);
-                    let cy = h / 2.0;
-                    let bh = h * 0.15;
-                    for &offset in &[-5.0_f32, 5.0] {
-                        let dx = bh * 0.3;
-                        let length = (dx * 2.0_f32).hypot(bh * 2.0);
-                        let angle = (bh * 2.0).atan2(dx * 2.0);
-                        let cx = mx + offset * s;
+                MarkerKind::Boucle => {
+                    let color = rgba8(visuals::LOOP_MARKER_COLOR);
+                    blit_rect(pixmap, mx - bar_w / 2.0, 0.0, bar_w, h, color);
+                    for angle in [std::f32::consts::FRAC_PI_4, -std::f32::consts::FRAC_PI_4] {
+                        let [(x0, y0), (x1, y1)] = rotated_bar_ends(
+                            mx,
+                            cy,
+                            visuals::LOOP_MARKER_X_BAR_LENGTH * s,
+                            angle,
+                        );
                         blit_thick_line(
                             pixmap,
-                            cx - angle.cos() * length / 2.0,
-                            cy - angle.sin() * length / 2.0,
-                            cx + angle.cos() * length / 2.0,
-                            cy + angle.sin() * length / 2.0,
-                            2.0 * s,
-                            [217, 115, 115, 180],
+                            x0,
+                            y0,
+                            x1,
+                            y1,
+                            visuals::LOOP_MARKER_X_THICKNESS * s,
+                            color,
                         );
                     }
                 }
+                MarkerKind::Out if labels => {
+                    let font = visuals::OUT_LABEL_FONT_SIZE * s;
+                    // Vertically centred on the band, like the editor label.
+                    let label_h = (font * 1.4).ceil();
+                    self.blit_marker_label(
+                        pixmap,
+                        visuals::OUT_LABEL,
+                        font,
+                        mx + visuals::OUT_LABEL_OFFSET_X * s,
+                        cy - label_h / 2.0,
+                        visuals::OUT_LABEL_COLOR,
+                    );
+                }
+                MarkerKind::Out => {
+                    let color = rgba8(visuals::OUT_MARKER_COLOR);
+                    blit_rect(pixmap, mx - bar_w / 2.0, 0.0, bar_w, h, color);
+                    for offset in visuals::OUT_MARKER_BAR_OFFSETS {
+                        let [(x0, y0), (x1, y1)] = rotated_bar_ends(
+                            mx + offset * s,
+                            cy,
+                            h * visuals::OUT_MARKER_BAR_LENGTH_RATIO,
+                            visuals::OUT_MARKER_BAR_ANGLE,
+                        );
+                        blit_thick_line(
+                            pixmap,
+                            x0,
+                            y0,
+                            x1,
+                            y1,
+                            visuals::OUT_MARKER_BAR_THICKNESS * s,
+                            color,
+                        );
+                    }
+                }
+                _ if labels => {}
                 MarkerKind::SceneChange => {
-                    blit_rect(pixmap, mx - 1.0 * s, 0.0, 2.0 * s, h, [230, 230, 240, 200]);
+                    blit_rect(
+                        pixmap,
+                        mx - bar_w / 2.0,
+                        0.0,
+                        bar_w,
+                        h,
+                        rgba8(visuals::SCENE_CHANGE_COLOR),
+                    );
                 }
                 MarkerKind::LiaisonLeft | MarkerKind::LiaisonRight => {
                     let is_left = matches!(marker.kind, MarkerKind::LiaisonLeft);
                     let ay = constants::RULER_HEIGHT * s / 2.0;
                     let arm_x = if is_left { -3.0 } else { 3.0 } * s;
                     let arm_y = 4.0 * s;
-                    let tip_x = mx + arm_x;
+                    // Two full arms from the vertex to the tips, like the GPU
+                    // export.
                     for &dy in &[-arm_y, arm_y] {
-                        let sx = mx - arm_x;
-                        let length = ((tip_x - sx).powi(2) + dy.powi(2)).sqrt();
-                        let angle = dy.atan2(tip_x - sx);
                         blit_thick_line(
                             pixmap,
-                            (sx + tip_x) / 2.0,
-                            ay + dy / 2.0,
-                            (sx + tip_x) / 2.0 + angle.cos() * length / 2.0,
-                            ay + dy / 2.0 + angle.sin() * length / 2.0,
+                            mx - arm_x,
+                            ay,
+                            mx + arm_x,
+                            ay + dy,
                             1.5 * s,
-                            [180, 180, 190, 200],
+                            rgba8(visuals::LIAISON_MARKER_TINT),
                         );
                     }
                 }
@@ -1617,9 +1975,73 @@ fn blit_karaoke_dot(
     width: f32,
     scale: f32,
 ) {
-    let Some(progress) = line.karaoke_progress(current_frame) else {
+    let Some((cx, cy, size)) = karaoke_dot_center(line, lang, current_frame, x, y, width, scale)
+    else {
         return;
     };
+    blit_karaoke_circle(
+        pixmap,
+        cx - size / 2.0,
+        cy - size / 2.0,
+        size,
+        line.character_color,
+        scale,
+    );
+}
+
+/// Round karaoke dot like the editor: a soft shadow, the character colour
+/// and a white rim.
+fn blit_karaoke_circle(pixmap: &mut Pixmap, x: f32, y: f32, size: f32, color: [f32; 4], scale: f32) {
+    let unit = scale.max(0.5);
+    let expand = 1.5 * unit;
+    let shadow = crate::karaoke_dot::SHADOW_TINT;
+    blit_quad(
+        pixmap,
+        Rect {
+            x: x - expand,
+            y: y - expand,
+            width: size + expand * 2.0,
+            height: size + expand * 2.0,
+        },
+        shadow,
+        shadow,
+        [0.0; 4],
+        0.0,
+        size / 2.0 + expand,
+    );
+    let color = [
+        color[0].clamp(0.0, 1.0),
+        color[1].clamp(0.0, 1.0),
+        color[2].clamp(0.0, 1.0),
+        1.0,
+    ];
+    blit_quad(
+        pixmap,
+        Rect {
+            x,
+            y,
+            width: size,
+            height: size,
+        },
+        color,
+        color,
+        crate::karaoke_dot::RIM_TINT,
+        unit,
+        size / 2.0,
+    );
+}
+
+/// Centre and size of the bouncing karaoke dot of `line`.
+fn karaoke_dot_center(
+    line: &crate::rythmo_line::RythmoLine,
+    lang: &str,
+    current_frame: f64,
+    x: f32,
+    y: f32,
+    width: f32,
+    scale: f32,
+) -> Option<(f32, f32, f32)> {
+    let progress = line.karaoke_progress(current_frame)?;
     let ratios = crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
     let local_progress = crate::syllable::active_syllable_local_progress(&ratios, progress)
         .unwrap_or(progress)
@@ -1639,25 +2061,7 @@ fn blit_karaoke_dot(
     };
     let cy = y + 3.0 * scale.max(0.5) + size / 2.0
         - bounce * size * constants::KARAOKE_DOT_BOUNCE_AMPLITUDE;
-    blit_circle(
-        pixmap,
-        cx,
-        cy,
-        size / 2.0 + 1.5 * scale.max(0.5),
-        [0, 0, 0, 90],
-    );
-    blit_circle(
-        pixmap,
-        cx,
-        cy,
-        size / 2.0,
-        [
-            color_channel(line.character_color[0]),
-            color_channel(line.character_color[1]),
-            color_channel(line.character_color[2]),
-            255,
-        ],
-    );
+    Some((cx, cy, size))
 }
 
 fn karaoke_count_in_dot_rect(
@@ -1689,59 +2093,92 @@ fn blit_karaoke_count_in_dot(
     };
 
     let (dx, dy, size) = karaoke_count_in_dot_rect(x, y, count_in_progress, scale);
-    blit_circle(
-        pixmap,
-        dx + size / 2.0,
-        dy + size / 2.0,
-        size / 2.0 + 1.5 * scale.max(0.5),
-        [0, 0, 0, 90],
-    );
-    blit_circle(
-        pixmap,
-        dx + size / 2.0,
-        dy + size / 2.0,
-        size / 2.0,
-        [
-            color_channel(line.character_color[0]),
-            color_channel(line.character_color[1]),
-            color_channel(line.character_color[2]),
-            255,
-        ],
-    );
+    blit_karaoke_circle(pixmap, dx, dy, size, line.character_color, scale);
 }
 
-fn blit_circle(pixmap: &mut Pixmap, cx: f32, cy: f32, radius: f32, color: [u8; 4]) {
-    if !cx.is_finite() || !cy.is_finite() || !radius.is_finite() || radius <= 0.0 || color[3] == 0 {
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn sdf_rounded_rect(x: f32, y: f32, half_w: f32, half_h: f32, radius: f32) -> f32 {
+    let qx = x.abs() - half_w + radius;
+    let qy = y.abs() - half_h + radius;
+    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius
+}
+
+/// Draws a band quad the way `ui/quad.wgsl` does (vertical gradient from
+/// `top` to `bottom`, inner border, rounded corners), so CPU exports share
+/// the editor's shapes. Colours are straight-alpha sRGB.
+fn blit_quad(
+    pixmap: &mut Pixmap,
+    rect: Rect,
+    top: [f32; 4],
+    bottom: [f32; 4],
+    border: [f32; 4],
+    border_width: f32,
+    radius: f32,
+) {
+    if !rect.x.is_finite()
+        || !rect.y.is_finite()
+        || !rect.width.is_finite()
+        || !rect.height.is_finite()
+        || rect.width <= 0.0
+        || rect.height <= 0.0
+    {
         return;
     }
-
     let pm_w = pixmap.width() as i32;
     let pm_h = pixmap.height() as i32;
-    let min_x = (cx - radius - 1.0).floor() as i32;
-    let max_x = (cx + radius + 1.0).ceil() as i32;
-    let min_y = (cy - radius - 1.0).floor() as i32;
-    let max_y = (cy + radius + 1.0).ceil() as i32;
+    let half_w = rect.width / 2.0;
+    let half_h = rect.height / 2.0;
+    let radius = radius.min(half_w.min(half_h)).max(0.0);
+    let center_x = rect.x + half_w;
+    let center_y = rect.y + half_h;
+    let min_x = ((rect.x - 1.0).floor() as i32).clamp(0, pm_w);
+    let max_x = ((rect.x + rect.width + 1.0).ceil() as i32).clamp(0, pm_w);
+    let min_y = ((rect.y - 1.0).floor() as i32).clamp(0, pm_h);
+    let max_y = ((rect.y + rect.height + 1.0).ceil() as i32).clamp(0, pm_h);
+    let mix = |a: f32, b: f32, t: f32| a + (b - a) * t;
     let data = pixmap.data_mut();
-
-    for py in min_y.max(0)..max_y.min(pm_h) {
-        for px in min_x.max(0)..max_x.min(pm_w) {
-            let dx = px as f32 + 0.5 - cx;
-            let dy = py as f32 + 0.5 - cy;
-            let dist = (dx * dx + dy * dy).sqrt();
-            let coverage = (radius + 1.0 - dist).clamp(0.0, 1.0);
-            if coverage <= 0.0 {
+    for py in min_y..max_y {
+        let local_y = py as f32 + 0.5 - center_y;
+        let t = ((local_y + half_h) / rect.height).clamp(0.0, 1.0);
+        for px in min_x..max_x {
+            let local_x = px as f32 + 0.5 - center_x;
+            let dist = sdf_rounded_rect(local_x, local_y, half_w, half_h, radius);
+            if dist > 0.5 {
                 continue;
             }
-            let alpha = (color[3] as f32 * coverage).round() as u32;
-            if alpha == 0 {
+            let inner = sdf_rounded_rect(
+                local_x,
+                local_y,
+                half_w - border_width,
+                half_h - border_width,
+                (radius - border_width).max(0.0),
+            );
+            let border_mask = smoothstep(-0.5, 0.5, inner);
+            let aa = 1.0 - smoothstep(-0.5, 0.5, dist);
+            let mut color = [0.0; 4];
+            for (channel, value) in color.iter_mut().enumerate() {
+                let background = mix(top[channel], bottom[channel], t);
+                *value = mix(background, border[channel], border_mask);
+            }
+            let alpha = (color[3] * aa).clamp(0.0, 1.0);
+            if alpha <= 0.0 {
                 continue;
             }
-            let inv = 255 - alpha;
             let di = ((py as u32 * pm_w as u32 + px as u32) * 4) as usize;
-            data[di] = ((color[0] as u32 * alpha + data[di] as u32 * inv) / 255) as u8;
-            data[di + 1] = ((color[1] as u32 * alpha + data[di + 1] as u32 * inv) / 255) as u8;
-            data[di + 2] = ((color[2] as u32 * alpha + data[di + 2] as u32 * inv) / 255) as u8;
-            data[di + 3] = (alpha + (data[di + 3] as u32 * inv) / 255).min(255) as u8;
+            for channel in 0..3 {
+                let source = color[channel].clamp(0.0, 1.0) * 255.0;
+                let destination = data[di + channel] as f32;
+                data[di + channel] =
+                    (source * alpha + destination * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8;
+            }
+            let destination_alpha = data[di + 3] as f32;
+            data[di + 3] = (alpha * 255.0 + destination_alpha * (1.0 - alpha))
+                .round()
+                .clamp(0.0, 255.0) as u8;
         }
     }
 }
@@ -1929,6 +2366,26 @@ mod tests {
     use crate::rythmo_line::{MarkerKind, RythmoMarker};
 
     #[test]
+    fn rythmo_text_cache_key_follows_text_styles() {
+        crate::config::init();
+        let bold = crate::rythmo_line::TextStyle {
+            bold: true,
+            ..Default::default()
+        };
+        let italic = crate::rythmo_line::TextStyle {
+            italic: true,
+            ..Default::default()
+        };
+        let key = |styles: &[crate::vector_text::TextStyleRun]| {
+            CpuRenderer::rythmo_text_cache_key("Salut", 24.0, 120, 34, true, false, styles)
+        };
+        assert_ne!(key(&[]), key(&[(0, 2, bold)]));
+        assert_ne!(key(&[(0, 2, bold)]), key(&[(0, 2, italic)]));
+        assert_ne!(key(&[(0, 2, bold)]), key(&[(0, 3, bold)]));
+        assert_eq!(key(&[(0, 2, bold)]), key(&[(0, 2, bold)]));
+    }
+
+    #[test]
     fn br_height_doubles_only_tracks_with_karaoke() {
         let mut project = Project::new();
         let normal_id = project.add_line(0, 24, 0.0);
@@ -2010,6 +2467,67 @@ mod tests {
                 .karaoke_stack_row,
             0
         );
+    }
+
+    #[test]
+    fn cpu_karaoke_circle_dot_has_the_editor_white_rim() {
+        let mut pixmap = Pixmap::new(40, 40).unwrap();
+        pixmap.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
+        blit_karaoke_circle(&mut pixmap, 10.0, 10.0, 20.0, [0.0, 0.0, 1.0, 1.0], 1.0);
+        let pixel = |x: u32, y: u32| {
+            let i = ((y * 40 + x) * 4) as usize;
+            let data = pixmap.data();
+            [data[i], data[i + 1], data[i + 2]]
+        };
+        assert_eq!(pixel(20, 20), [0, 0, 255]);
+        let rim = pixel(10, 20);
+        assert!(rim[0] > 150 && rim[1] > 150, "rim pixel {rim:?}");
+        // The soft shadow lies just outside the dot.
+        let shadow = pixel(8, 20);
+        assert!(shadow[2] < 20 && shadow[0] < 20, "shadow pixel {shadow:?}");
+    }
+
+    #[test]
+    fn cpu_markers_are_drawn_under_the_line_text() {
+        crate::config::init();
+        let mut project = Project::new();
+        project.add_line_full(
+            0,
+            96,
+            0.0,
+            "IIIIIIIIIIIIIIIIIIIIIIII".into(),
+            String::new(),
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        for frame in 0..96 {
+            project.add_marker(RythmoMarker {
+                kind: MarkerKind::Boucle,
+                frame,
+            });
+        }
+
+        let width = constants::REF_WIDTH as u32;
+        let mut renderer = CpuRenderer::new();
+        let pixels = renderer.render_br(&project, 48.0, width, 24.0, 1.0, 1.0);
+        let height = pixels.len() / 4 / width as usize;
+        let pixel = |x: usize, y: usize| {
+            let i = (y * width as usize + x) * 4;
+            [pixels[i], pixels[i + 1], pixels[i + 2]]
+        };
+        // Columns crossed by a loop bar are red at the top of the ruler.
+        let marker_columns: Vec<usize> = (0..width as usize)
+            .filter(|&x| {
+                let [r, g, _] = pixel(x, 1);
+                r > 150 && g < 90
+            })
+            .collect();
+        assert!(!marker_columns.is_empty());
+        // Where the white text covers a bar, the text wins, like in the
+        // editor (bars drawn over the text would tint every pixel red).
+        let text_over_marker = marker_columns
+            .iter()
+            .any(|&x| (0..height).any(|y| pixel(x, y).iter().all(|&c| c >= 245)));
+        assert!(text_over_marker);
     }
 
     #[test]

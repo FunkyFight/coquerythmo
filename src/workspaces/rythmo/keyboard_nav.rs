@@ -228,6 +228,7 @@ pub(crate) fn handle_cursor_move(
                     state.line_input.move_right(&line.text);
                 }
             }
+            remember_caret_segment(ctx.project, state, dir > 0);
             return if shift {
                 selection_response(&state.line_input, &line.text)
             } else {
@@ -326,14 +327,18 @@ pub(crate) fn handle_word_move(
     } else {
         input.move_word_right(text);
     }
-    input
+    let response = input
         .word_at_cursor(text)
         .map(|word| {
             EventResponse::Action(UiAction::Accessibility(
                 crate::accessibility::AccessibilityEvent::Selection { label: word },
             ))
         })
-        .unwrap_or(EventResponse::Consumed)
+        .unwrap_or(EventResponse::Consumed);
+    if state.editing_character.is_none() && state.editing_line.is_some() {
+        remember_caret_segment(ctx.project, state, dir > 0);
+    }
+    response
 }
 
 fn editing_line_label(ctx: &RythmoCtx<'_>, line_id: u64) -> Option<String> {
@@ -377,6 +382,7 @@ pub(crate) fn handle_cursor_boundary(
             } else {
                 state.line_input.move_home(shift);
             }
+            remember_caret_segment(ctx.project, state, end);
             return EventResponse::Action(UiAction::Accessibility(
                 crate::accessibility::AccessibilityEvent::Activation {
                     label: crate::i18n::t(if end {

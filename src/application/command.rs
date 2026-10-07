@@ -552,6 +552,10 @@ pub enum UiAction {
     StartEditingSelectedLine,
     StartEditingSelectedCharacter,
     OpenTextEmotionMenu,
+    /// Toggles a text style from the formatting bar or its shortcuts.
+    ToggleTextStyle {
+        kind: crate::rythmo_line::TextStyleKind,
+    },
     SetTextEmotion {
         line_id: u64,
         range: Option<(usize, usize)>,
@@ -626,6 +630,9 @@ pub enum UiAction {
     UpdateLineText {
         id: u64,
         text: String,
+        /// Exact place of the edit, so synchronization limits stay where the
+        /// caret was.
+        edit: Option<crate::detection::TextEditSpan>,
     },
     SetCharacter {
         line_id: u64,
@@ -721,6 +728,39 @@ pub enum UiAction {
     // Settings
     OpenSettings,
     OpenProjectSettings,
+    OpenBandStyleModal,
+    /// Shows the reading bar at this offset while it is being dragged.
+    PreviewReadingBarOffset(f32),
+    CommitReadingBarOffset {
+        percent: f32,
+        original_percent: f32,
+    },
+    /// Shows a band style on the band while its window is open.
+    PreviewBandStyle(crate::band_style::BandStyle),
+    ApplyBandStyle {
+        style: crate::band_style::BandStyle,
+        original: crate::band_style::BandStyle,
+    },
+    SaveBandStylePresets(Vec<crate::band_style::BandStylePreset>),
+    ImportBandStylePreset,
+    ExportBandStylePreset(crate::band_style::BandStylePreset),
+    /// Opens a file picker for the karaoke dot image of the style window.
+    PickKaraokeDotImage,
+    /// Opens a file picker for the jump image of the style window's dot.
+    PickKaraokeDotJumpImage,
+    /// Gives the character of `line_id` a karaoke dot (`None`: the default
+    /// dot of the band style).
+    SetCharacterKaraokeDot {
+        line_id: u64,
+        choice: Option<crate::band_style::CharacterDot>,
+    },
+    /// Opens a file picker for a karaoke dot image of the character of
+    /// `line_id`: its ground (or single) image, or with `jump` its jump
+    /// image.
+    PickCharacterKaraokeDotImage {
+        line_id: u64,
+        jump: bool,
+    },
     RestoreBackup,
     PickTemporaryDirectory,
     SaveSettings {
@@ -874,6 +914,13 @@ impl UiAction {
                 | Self::AddSyncPointAtPlayhead
                 | Self::UpdateLineText { .. }
                 | Self::SetTextEmotion { .. }
+                | Self::ToggleTextStyle { .. }
+                | Self::PreviewBandStyle(_)
+                | Self::PreviewReadingBarOffset(_)
+                | Self::CommitReadingBarOffset { .. }
+                | Self::ApplyBandStyle { .. }
+                | Self::SetCharacterKaraokeDot { .. }
+                | Self::PickCharacterKaraokeDotImage { .. }
                 | Self::SetCharacter { .. }
                 | Self::SetCharacterColor { .. }
                 | Self::UpdateCharacterName { .. }

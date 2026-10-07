@@ -46,6 +46,8 @@ pub enum Overflow {
     /// animated canvases such as the Comic Dubs studio.
     Styled(StyledText),
     Ellipsis,
+    /// Wrap words, falling back to glyph boundaries for words wider than the box.
+    Wrap,
     Visible,
 }
 

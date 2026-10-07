@@ -159,6 +159,12 @@ pub struct ExportConfiguration {
     pub selected_language_ids: Vec<LanguageId>,
     #[serde(default)]
     pub audio_by_language: BTreeMap<LanguageId, AudioSelection>,
+    /// Position and size of the video and of the band in exported videos.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::export_layout::ExportLayout::is_default"
+    )]
+    pub layout: crate::export_layout::ExportLayout,
 }
 
 impl Default for ExportConfiguration {
@@ -183,6 +189,7 @@ impl Default for ExportConfiguration {
             countdown_start: default_countdown_start(),
             selected_language_ids: Vec::new(),
             audio_by_language: BTreeMap::new(),
+            layout: crate::export_layout::ExportLayout::default(),
         }
     }
 }
@@ -266,6 +273,8 @@ pub struct ProjectSettings {
     pub detections: crate::detection::DetectionDocument,
     #[serde(default, skip_serializing_if = "is_default_automation_graph")]
     pub automation: crate::automation::AutomationGraph,
+    #[serde(default, skip_serializing_if = "crate::band_style::BandStyle::is_default")]
+    pub band_style: crate::band_style::BandStyle,
 }
 
 impl Default for ProjectSettings {
@@ -283,6 +292,7 @@ impl Default for ProjectSettings {
             export_configuration: ExportConfiguration::default(),
             detections: crate::detection::DetectionDocument::default(),
             automation: crate::automation::AutomationGraph::default(),
+            band_style: crate::band_style::BandStyle::default(),
         }
     }
 }
@@ -299,6 +309,7 @@ impl ProjectSettings {
         } else {
             0.0
         };
+        self.band_style = std::mem::take(&mut self.band_style).normalized();
     }
 }
 
@@ -780,10 +791,11 @@ impl Project {
         line_id: u64,
         old_text: &str,
         new_text: &str,
+        edit: Option<&crate::detection::TextEditSpan>,
     ) {
         self.settings
             .detections
-            .rebase_sync_points(line_id, old_text, new_text);
+            .rebase_sync_points_for_edit(line_id, old_text, new_text, edit);
         if let Some(line) = self.get_line_mut(line_id) {
             line.text = new_text.to_string();
         }
@@ -1237,6 +1249,7 @@ impl Project {
             active.project.settings.scrolling_text_uses_character_color;
         let scroll_speed = active.project.settings.scroll_speed;
         let reading_bar_offset_percent = active.project.settings.reading_bar_offset_percent;
+        let band_style = active.project.settings.band_style.clone();
 
         self.language_order.clear();
         self.language_snapshots.clear();
@@ -1249,6 +1262,7 @@ impl Project {
             scrolling_text_uses_character_color;
         active_band.settings.scroll_speed = scroll_speed;
         active_band.settings.reading_bar_offset_percent = reading_bar_offset_percent;
+        active_band.settings.band_style = band_style.clone();
         self.restore_band_snapshot(active_band, previous_revision);
 
         for snapshot in unique {
@@ -1259,6 +1273,7 @@ impl Project {
             band.settings.scrolling_text_uses_character_color = scrolling_text_uses_character_color;
             band.settings.scroll_speed = scroll_speed;
             band.settings.reading_bar_offset_percent = reading_bar_offset_percent;
+            band.settings.band_style = band_style.clone();
             self.language_snapshots.insert(
                 id,
                 StoredLanguageSnapshot {
@@ -1689,6 +1704,7 @@ impl Project {
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
             text_emotions: Vec::new(),
+            text_styles: Vec::new(),
         };
         self.line_map.insert(id, line);
         self.line_order.push(id);
@@ -1743,6 +1759,7 @@ impl Project {
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
             text_emotions: Vec::new(),
+            text_styles: Vec::new(),
         };
         self.line_map.insert(id, line);
         self.line_order.push(id);
@@ -1932,6 +1949,7 @@ impl Project {
             let scrolling_text_uses_character_color = settings.scrolling_text_uses_character_color;
             let scroll_speed = settings.scroll_speed;
             let reading_bar_offset_percent = settings.reading_bar_offset_percent;
+            let band_style = settings.band_style.clone();
             self.settings = settings;
             for snapshot in self.language_snapshots.values_mut() {
                 snapshot.band.settings.export_configuration = export_configuration.clone();
@@ -1940,6 +1958,7 @@ impl Project {
                     scrolling_text_uses_character_color;
                 snapshot.band.settings.scroll_speed = scroll_speed;
                 snapshot.band.settings.reading_bar_offset_percent = reading_bar_offset_percent;
+                snapshot.band.settings.band_style = band_style.clone();
             }
             self.bump_revision();
         }
@@ -2466,6 +2485,7 @@ mod tests {
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
             text_emotions: Vec::new(),
+            text_styles: Vec::new(),
         };
         p.insert_line_at(1, line);
         let ids: Vec<u64> = p.lines().map(|l| l.id).collect();

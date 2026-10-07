@@ -57,6 +57,10 @@ pub fn handle_rythmo_event(
         return handle_read_only_event(&mut ctx, event, state);
     }
 
+    if let Some(response) = handle_playhead_drag_event(event, zone, project, state) {
+        return response;
+    }
+
     // Drawing mode handling - early return to block line editing.
     if active_mode == ToolMode::Draw {
         if let Some(response) =
@@ -328,6 +332,7 @@ fn handle_read_only_event(
     state.audio_offset_mode = false;
     state.audio_offset_drag = None;
     state.context_menu = None;
+    state.sync_point_menu = None;
     state.hovered_line = None;
     state.hovered_track = None;
     state.detection_hover = None;

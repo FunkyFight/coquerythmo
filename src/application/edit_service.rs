@@ -311,6 +311,8 @@ impl EditExecutor {
                 line_id,
                 text,
                 text_emotions,
+                text_styles,
+                edit,
             } => {
                 let line = project.get_line(line_id)?;
                 Command::UpdateLineText {
@@ -319,6 +321,9 @@ impl EditExecutor {
                     new_text: text,
                     old_emotions: line.text_emotions.clone(),
                     new_emotions: text_emotions,
+                    old_styles: line.text_styles.clone(),
+                    new_styles: text_styles,
+                    edit,
                 }
             }
             CommandPayload::SetTextEmotions {
@@ -328,6 +333,14 @@ impl EditExecutor {
                 line_id,
                 old_emotions: project.get_line(line_id)?.text_emotions.clone(),
                 new_emotions: text_emotions,
+            },
+            CommandPayload::SetTextStyles {
+                line_id,
+                text_styles,
+            } => Command::SetTextStyles {
+                line_id,
+                old_styles: project.get_line(line_id)?.text_styles.clone(),
+                new_styles: text_styles,
             },
             CommandPayload::UpdateLineNote { line_id, note } => Command::UpdateLineNote {
                 line_id,
@@ -594,6 +607,8 @@ mod tests {
                 line_id,
                 text: "after".into(),
                 text_emotions: Vec::new(),
+                text_styles: Vec::new(),
+                edit: None,
             },
             EditOrigin::Remote,
         );
@@ -662,6 +677,9 @@ mod tests {
                 new_text: "first".into(),
                 old_emotions: Vec::new(),
                 new_emotions: Vec::new(),
+                old_styles: Vec::new(),
+                new_styles: Vec::new(),
+                edit: None,
             },
             EditOrigin::Local,
         );
@@ -675,6 +693,9 @@ mod tests {
                 new_text: "replacement".into(),
                 old_emotions: Vec::new(),
                 new_emotions: Vec::new(),
+                old_styles: Vec::new(),
+                new_styles: Vec::new(),
+                edit: None,
             },
             |last| {
                 if let Command::UpdateLineText { new_text, .. } = last {

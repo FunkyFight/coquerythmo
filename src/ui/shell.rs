@@ -34,6 +34,14 @@ pub(crate) struct ToolbarBuildContext<'a> {
     pub(crate) playback_enabled: bool,
 }
 
+/// Atlas position of the band style (paint brush) icon, set once the icon
+/// atlas is built, so every topbar rebuild can use it.
+static BAND_STYLE_ICON_UV: std::sync::OnceLock<[f32; 4]> = std::sync::OnceLock::new();
+
+pub(crate) fn set_band_style_icon_uv(uv: [f32; 4]) {
+    let _ = BAND_STYLE_ICON_UV.set(uv);
+}
+
 fn icon_uv(icon_uvs: &HashMap<String, [f32; 4]>, name: &str) -> [f32; 4] {
     icon_uvs.get(name).copied().unwrap_or([0.0; 4])
 }
@@ -417,6 +425,26 @@ pub(crate) fn build_topbar(
     } else {
         t("project_settings.tooltip")
     });
+    // The band style sits beside the band settings, in the rythmo workspace.
+    let band_style_btn = (active_workspace == WorkspaceId::Rythmo).then(|| {
+        IconButton::new(
+            Rect {
+                x: project_x - settings_size - 8.0,
+                y: settings_y,
+                width: settings_size,
+                height: settings_size,
+            },
+            "",
+            BAND_STYLE_ICON_UV.get().copied().unwrap_or([0.0; 4]),
+            || EventResponse::Action(UiAction::OpenBandStyleModal),
+        )
+        .with_tooltip(t("band_style.tooltip"))
+    });
+    let topbar_left_edge = if band_style_btn.is_some() {
+        project_x - settings_size - 8.0
+    } else {
+        project_x
+    };
     let settings_btn = IconButton::new(
         Rect {
             x: settings_x,
@@ -565,7 +593,7 @@ pub(crate) fn build_topbar(
         let support_x = if !lic_key.is_empty() || !lic_type.is_empty() {
             let badge_w = 200.0;
             let badge_h = 24.0;
-            let badge_x = project_x - badge_w - 8.0;
+            let badge_x = topbar_left_edge - badge_w - 8.0;
             let badge_y = (TOPBAR_HEIGHT - badge_h) / 2.0;
             let badge_label = crate::config::license_display_label();
             let badge = super::license_badge::LicenseBadge::new(
@@ -582,7 +610,7 @@ pub(crate) fn build_topbar(
         } else {
             let support_w = 160.0;
             let support_h = 24.0;
-            let support_x = project_x - support_w - 8.0;
+            let support_x = topbar_left_edge - support_w - 8.0;
             let support_y = (TOPBAR_HEIGHT - support_h) / 2.0;
             let support_btn = TextButton::new(
                 Rect {
@@ -601,7 +629,7 @@ pub(crate) fn build_topbar(
         };
         support_x
     } else {
-        project_x - discord_w - 8.0
+        topbar_left_edge - discord_w - 8.0
     };
     let discord_y = (TOPBAR_HEIGHT - discord_h) / 2.0;
     let discord_btn = TextButton::new(
@@ -617,6 +645,9 @@ pub(crate) fn build_topbar(
     .with_tooltip(t("topbar.discord"));
 
     topbar_widgets.push(Box::new(discord_btn));
+    if let Some(band_style_btn) = band_style_btn {
+        topbar_widgets.push(Box::new(band_style_btn));
+    }
     topbar_widgets.push(Box::new(project_btn));
     topbar_widgets.push(Box::new(settings_btn));
     topbar_widgets

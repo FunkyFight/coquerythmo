@@ -201,6 +201,7 @@ pub fn event_for_action(
         UiAction::OpenRenameCharacterModal => "menu.tools.rename_character",
         UiAction::OpenProxyModal => "menu.tools.create_proxy",
         UiAction::OpenProjectSettings => "project_settings.title",
+        UiAction::OpenBandStyleModal => "band_style.title",
         UiAction::OpenSettings => "settings.title",
         UiAction::OpenRecordingActorMenu => "recording.actor_menu.title",
         UiAction::OpenRecordingInputDeviceModal => "recording.microphone.select",

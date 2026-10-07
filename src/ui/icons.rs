@@ -261,6 +261,8 @@ impl IconAtlas {
             AtlasEntry::flipped_svg("liaison_right", include_bytes!("../icons/liason.svg")),
             AtlasEntry::svg("settings", include_bytes!("../icons/settings.svg")),
             AtlasEntry::svg("project", include_bytes!("../icons/project.svg")),
+            // Paint brush by SVG Repo (svgrepo.com/svg/18025), CC0.
+            AtlasEntry::svg("band_style", include_bytes!("../icons/paint-brush.svg")),
             AtlasEntry::svg("stretcher", include_bytes!("../icons/stretcher.svg")),
             AtlasEntry::svg("br-edit", include_bytes!("../icons/br-edit.svg")),
             AtlasEntry::svg("note", include_bytes!("../icons/note.svg")),

@@ -5058,7 +5058,7 @@ impl State {
     }
 
     pub fn has_line_context_menu(&self) -> bool {
-        self.ui_shell.ui.rythmo_state().context_menu.is_some()
+        self.ui_shell.ui.rythmo_state().has_context_menu()
     }
 
     pub fn save_project_settings(
@@ -5097,6 +5097,261 @@ impl State {
         EditExecutor::apply_domain_change(&mut self.project_session, origin, |project| {
             project.set_settings(settings)
         });
+    }
+
+    /// Moves the reading bar without recording an edit, while it is dragged.
+    pub fn preview_reading_bar_offset(&mut self, percent: f32) {
+        let mut settings = self.project_session.project.settings().clone();
+        settings.reading_bar_offset_percent = percent;
+        self.project_session.project.set_settings(settings);
+    }
+
+    pub fn commit_reading_bar_offset(&mut self, percent: f32, original_percent: f32) {
+        self.preview_reading_bar_offset(original_percent);
+        if percent != original_percent {
+            let scroll_speed = self.project_session.project.settings().scroll_speed;
+            self.save_project_view_settings(scroll_speed, percent);
+        }
+        self.announce_accessibility(crate::accessibility::AccessibilityEvent::Activation {
+            label: format!(
+                "{} {:+.0} %",
+                crate::i18n::t("settings.reading_bar_offset"),
+                self.project_session.project.settings().reading_bar_offset_percent
+            ),
+        });
+    }
+
+    pub fn open_band_style_modal(&mut self) {
+        let style = self.project_session.project.settings().band_style.clone();
+        let presets = crate::config::band_style_presets();
+        self.ui_shell.ui.modal_host.open_band_style(style, presets);
+    }
+
+    pub fn band_style_modal_focus_label(&self) -> Option<String> {
+        self.ui_shell
+            .ui
+            .modal_host
+            .band_style
+            .as_ref()
+            .map(|modal| modal.keyboard_focus_label())
+    }
+
+    /// Shows `style` on the band without recording an edit: the style window
+    /// previews every change live and restores the original on cancel.
+    pub fn preview_band_style(&mut self, style: crate::band_style::BandStyle) {
+        let mut settings = self.project_session.project.settings().clone();
+        settings.band_style = style;
+        self.project_session.project.set_settings(settings);
+    }
+
+    pub fn apply_band_style(
+        &mut self,
+        style: crate::band_style::BandStyle,
+        original: crate::band_style::BandStyle,
+    ) {
+        self.preview_band_style(original.clone());
+        if style == original {
+            return;
+        }
+        let mut settings = self.project_session.project.settings().clone();
+        settings.band_style = style;
+        EditExecutor::apply_domain_change(
+            &mut self.project_session,
+            EditOrigin::Local,
+            |project| project.set_settings(settings),
+        );
+    }
+
+    pub fn import_band_style_preset(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(crate::i18n::t("band_style.import"))
+            .add_filter(
+                crate::i18n::t("band_style.file_type"),
+                &[crate::band_style::PRESET_EXTENSION],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        let preset = std::fs::read_to_string(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|text| crate::band_style::preset_from_json(&text));
+        let preset = match preset {
+            Ok(preset) => preset,
+            Err(error) => {
+                log::warn!("Failed to import band style {}: {error}", path.display());
+                self.show_toast(crate::i18n::t("toast.band_style_import_failed"), 5.0);
+                return;
+            }
+        };
+        let Some(modal) = self.ui_shell.ui.modal_host.band_style.as_mut() else {
+            return;
+        };
+        let presets = modal.import_preset(preset);
+        let style = modal.style();
+        crate::config::set_band_style_presets(presets);
+        self.preview_band_style(style);
+        self.show_toast(crate::i18n::t("toast.band_style_imported"), 3.0);
+    }
+
+    /// Asks for a karaoke dot image file and returns it as an embeddable
+    /// PNG; `None` when cancelled or unreadable (with a toast).
+    fn pick_karaoke_dot_image_file(&mut self, jump: bool) -> Option<String> {
+        let path = rfd::FileDialog::new()
+            .set_title(crate::i18n::t(if jump {
+                "band_style.karaoke_dot.pick_jump_image"
+            } else {
+                "band_style.karaoke_dot.pick_image"
+            }))
+            .add_filter(
+                crate::i18n::t("band_style.karaoke_dot.image_file_type"),
+                &["png", "webp", "gif", "bmp", "jpg", "jpeg", "ico"],
+            )
+            .pick_file()?;
+        match crate::band_style::load_custom_dot_image(&path) {
+            Ok(png_base64) => Some(png_base64),
+            Err(error) => {
+                log::warn!("Failed to load karaoke dot image {}: {error}", path.display());
+                self.show_toast(crate::i18n::t("toast.karaoke_dot_image_failed"), 5.0);
+                None
+            }
+        }
+    }
+
+    /// Lets the user pick an image for the karaoke dot and previews it in the
+    /// open style window.
+    pub fn pick_karaoke_dot_image(&mut self) {
+        let Some(png_base64) = self.pick_karaoke_dot_image_file(false) else {
+            return;
+        };
+        let Some(modal) = self.ui_shell.ui.modal_host.band_style.as_mut() else {
+            return;
+        };
+        let style = modal.set_custom_karaoke_dot(png_base64);
+        self.preview_band_style(style);
+    }
+
+    /// Lets the user pick the jump image of the style window's dot.
+    pub fn pick_karaoke_dot_jump_image(&mut self) {
+        let Some(png_base64) = self.pick_karaoke_dot_image_file(true) else {
+            return;
+        };
+        let Some(modal) = self.ui_shell.ui.modal_host.band_style.as_mut() else {
+            return;
+        };
+        let style = modal.set_custom_karaoke_dot_jump(png_base64);
+        self.preview_band_style(style);
+    }
+
+    /// Gives the character of `line_id` a karaoke dot (`None`: the band
+    /// style's default dot). Band style changes are project settings, so
+    /// this marks the project modified like the style window does; it is
+    /// not part of the undo history.
+    pub fn set_character_karaoke_dot(
+        &mut self,
+        line_id: u64,
+        choice: Option<crate::band_style::CharacterDot>,
+    ) {
+        let Some(character_name) = self
+            .project_session
+            .project
+            .get_line(line_id)
+            .map(|line| line.character_name.trim().to_string())
+            .filter(|name| !name.is_empty())
+        else {
+            return;
+        };
+        let mut settings = self.project_session.project.settings().clone();
+        if settings.band_style.character_dots.get(&character_name) == choice.as_ref() {
+            return;
+        }
+        settings
+            .band_style
+            .set_character_dot(&character_name, choice);
+        settings.band_style = settings.band_style.normalized();
+        EditExecutor::apply_domain_change(
+            &mut self.project_session,
+            EditOrigin::Local,
+            |project| project.set_settings(settings),
+        );
+        self.show_toast(crate::i18n::t("toast.character_karaoke_dot_set"), 3.0);
+    }
+
+    /// Lets the user pick an image for the dot of the character of
+    /// `line_id`: its ground (or single) image, or with `jump` its jump
+    /// image.
+    pub fn pick_character_karaoke_dot_image(&mut self, line_id: u64, jump: bool) {
+        let Some(character_name) = self
+            .project_session
+            .project
+            .get_line(line_id)
+            .map(|line| line.character_name.trim().to_string())
+            .filter(|name| !name.is_empty())
+        else {
+            return;
+        };
+        let Some(png_base64) = self.pick_karaoke_dot_image_file(jump) else {
+            return;
+        };
+        let current = match self
+            .project_session
+            .project
+            .settings()
+            .band_style
+            .character_dots
+            .get(&character_name)
+        {
+            Some(crate::band_style::CharacterDot::Dot(dot)) => Some(dot.clone()),
+            _ => None,
+        };
+        let dot = match (jump, current) {
+            (
+                true,
+                Some(crate::band_style::KaraokeDot::Custom {
+                    png_base64: ground, ..
+                }),
+            ) => crate::band_style::KaraokeDot::Custom {
+                png_base64: ground,
+                jump_png_base64: Some(png_base64),
+            },
+            (
+                false,
+                Some(crate::band_style::KaraokeDot::Custom {
+                    jump_png_base64, ..
+                }),
+            ) => crate::band_style::KaraokeDot::Custom {
+                png_base64,
+                jump_png_base64,
+            },
+            _ => crate::band_style::KaraokeDot::custom(png_base64),
+        };
+        self.set_character_karaoke_dot(line_id, Some(crate::band_style::CharacterDot::Dot(dot)));
+    }
+
+    pub fn export_band_style_preset(&mut self, preset: crate::band_style::BandStylePreset) {
+        let file_name = format!(
+            "{}.{}",
+            crate::band_style::file_stem(&preset.name),
+            crate::band_style::PRESET_EXTENSION
+        );
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(crate::i18n::t("band_style.export"))
+            .set_file_name(&file_name)
+            .add_filter(
+                crate::i18n::t("band_style.file_type"),
+                &[crate::band_style::PRESET_EXTENSION],
+            )
+            .save_file()
+        else {
+            return;
+        };
+        match std::fs::write(&path, crate::band_style::preset_to_json(&preset)) {
+            Ok(()) => self.show_toast(crate::i18n::t("toast.band_style_exported"), 3.0),
+            Err(error) => {
+                log::warn!("Failed to export band style {}: {error}", path.display());
+                self.show_toast(crate::i18n::t("toast.band_style_export_failed"), 5.0);
+            }
+        }
     }
 
     pub fn save_project_view_settings(
@@ -5321,6 +5576,20 @@ impl State {
         self.ui_shell
             .ui
             .open_export_modal(video_width, video_height, languages, configuration);
+        let project = &self.project_session.project;
+        let band_height_reference = crate::rythmo_cpu_renderer::br_height(
+            project,
+            crate::constants::REF_WIDTH as u32,
+            1.0,
+        ) as f32;
+        let band_style = &project.settings().band_style;
+        if let Some(modal) = self.ui_shell.ui.modal_host.export.as_mut() {
+            modal.set_layout_preview(
+                band_height_reference,
+                band_style.background,
+                band_style.playhead,
+            );
+        }
         if let Some(first_label) = self.export_modal_focus_label() {
             self.announce_open_container(crate::i18n::t("export_modal.title"), first_label);
         }
@@ -5514,6 +5783,33 @@ impl State {
         settings.export_configuration = configuration;
         self.project_session.project.set_settings(settings);
         self.project_session.dirty = true;
+    }
+
+    /// Ctrl+Z / Ctrl+Y in the export layout step undo or redo the layout,
+    /// never the project. Returns false when that step is not shown.
+    pub fn export_layout_history(&mut self, redo: bool) -> bool {
+        let Some(message) = self
+            .ui_shell
+            .ui
+            .modal_host
+            .export
+            .as_mut()
+            .and_then(|modal| modal.layout_history_step(redo))
+        else {
+            return false;
+        };
+        self.announce_accessibility(AccessibilityEvent::Activation { label: message });
+        true
+    }
+
+    /// Mouse cursor over the export layout preview, while it is shown.
+    pub fn export_layout_cursor(&self) -> Option<crate::ui::export_layout_page::LayoutCursor> {
+        self.ui_shell
+            .ui
+            .modal_host
+            .export
+            .as_ref()
+            .and_then(|modal| modal.layout_cursor())
     }
 
     pub fn open_voice_actor_modal(&mut self) {
@@ -8099,6 +8395,18 @@ impl State {
             old_known_characters,
             new_known_characters,
         });
+        // The renamed character keeps its karaoke dot.
+        let mut settings = self.project_session.project.settings().clone();
+        if settings
+            .band_style
+            .copy_character_dot(&old_name, &new_name)
+        {
+            EditExecutor::apply_domain_change(
+                &mut self.project_session,
+                EditOrigin::Local,
+                |project| project.set_settings(settings),
+            );
+        }
         self.show_toast(crate::i18n::t("toast.character_renamed"), 3.0);
     }
 
@@ -9500,7 +9808,12 @@ impl State {
         }
     }
 
-    pub fn update_line_text(&mut self, id: u64, text: String) {
+    pub fn update_line_text(
+        &mut self,
+        id: u64,
+        text: String,
+        edit: Option<crate::detection::TextEditSpan>,
+    ) {
         let generated_signs_became_stale = self
             .project_session
             .project
@@ -9546,20 +9859,30 @@ impl State {
             .history
             .last_matches(id, CommandKind::UpdateLineText)
         {
-            let (old_text, old_emotions) = self
+            let (old_text, old_emotions, old_styles) = self
                 .project_session
                 .project
                 .get_line(id)
-                .map(|line| (line.text.clone(), line.text_emotions.clone()))
+                .map(|line| {
+                    (
+                        line.text.clone(),
+                        line.text_emotions.clone(),
+                        line.text_styles.clone(),
+                    )
+                })
                 .unwrap_or_default();
             let new_emotions =
                 crate::rythmo_line::rebase_text_emotions(&old_emotions, &old_text, &text);
+            let new_styles = crate::rythmo_line::rebase_text_styles(&old_styles, &old_text, &text);
             let command = Command::UpdateLineText {
                 line_id: id,
                 old_text,
                 new_text: text.clone(),
                 old_emotions,
                 new_emotions: new_emotions.clone(),
+                old_styles,
+                new_styles: new_styles.clone(),
+                edit,
             };
             EditExecutor::coalesce(
                 &mut self.project_session,
@@ -9568,31 +9891,111 @@ impl State {
                     if let Command::UpdateLineText {
                         new_text,
                         new_emotions: emotions,
+                        new_styles: styles,
+                        edit,
                         ..
                     } = cmd
                     {
                         *new_text = text;
                         *emotions = new_emotions;
+                        *styles = new_styles;
+                        // The merged command spans several keystrokes: the
+                        // place of the last one no longer describes it.
+                        *edit = None;
                     }
                 },
                 EditOrigin::Local,
             );
         } else {
-            let (old_text, old_emotions) = self
+            let (old_text, old_emotions, old_styles) = self
                 .project_session
                 .project
                 .get_line(id)
-                .map(|line| (line.text.clone(), line.text_emotions.clone()))
+                .map(|line| {
+                    (
+                        line.text.clone(),
+                        line.text_emotions.clone(),
+                        line.text_styles.clone(),
+                    )
+                })
                 .unwrap_or_default();
             let new_emotions =
                 crate::rythmo_line::rebase_text_emotions(&old_emotions, &old_text, &text);
+            let new_styles = crate::rythmo_line::rebase_text_styles(&old_styles, &old_text, &text);
             self.execute_local_command(Command::UpdateLineText {
                 line_id: id,
                 old_text,
                 new_text: text,
                 old_emotions,
                 new_emotions,
+                old_styles,
+                new_styles,
+                edit,
             });
+        }
+    }
+
+    /// Toggles a text style on a line, over `range` or the whole line.
+    pub fn toggle_text_style(
+        &mut self,
+        line_id: u64,
+        range: Option<(usize, usize)>,
+        kind: crate::rythmo_line::TextStyleKind,
+    ) {
+        let Some(line) = self.project_session.project.get_line(line_id) else {
+            return;
+        };
+        if !line.can_have_text_styles() {
+            return;
+        }
+        let old_styles = line.text_styles.clone();
+        let mut changed = line.clone();
+        let (start, end) = range.unwrap_or((0, 0));
+        changed.toggle_text_style(start, end, kind);
+        if old_styles == changed.text_styles {
+            return;
+        }
+        let active = changed.text_style_active(start, end, kind);
+        self.execute_local_command(Command::SetTextStyles {
+            line_id,
+            old_styles,
+            new_styles: changed.text_styles,
+        });
+        let label = format!(
+            "{} {}",
+            crate::i18n::t(kind.i18n_key()),
+            crate::i18n::t(if active {
+                "text_style.on"
+            } else {
+                "text_style.off"
+            })
+        );
+        self.announce_accessibility(crate::accessibility::AccessibilityEvent::Activation {
+            label,
+        });
+    }
+
+    /// Line and character range the formatting bar applies to: the selection
+    /// of the line being edited, or the whole selected line.
+    pub fn text_style_target(&self) -> Option<(u64, Option<(usize, usize)>)> {
+        let rythmo = &self.ui_shell.ui.rythmo_state;
+        let line_id = rythmo.editing_line.or_else(|| match self.selected_line_ids().as_slice() {
+            [line_id] => Some(*line_id),
+            _ => None,
+        })?;
+        let line = self.project_session.project.get_line(line_id)?;
+        if !line.can_have_text_styles() || line.text.is_empty() {
+            return None;
+        }
+        let range = (rythmo.editing_line == Some(line_id))
+            .then(|| rythmo.line_input.selection_range())
+            .flatten();
+        Some((line_id, range))
+    }
+
+    pub fn toggle_text_style_on_target(&mut self, kind: crate::rythmo_line::TextStyleKind) {
+        if let Some((line_id, range)) = self.text_style_target() {
+            self.toggle_text_style(line_id, range, kind);
         }
     }
 
@@ -9657,6 +10060,9 @@ impl State {
                 hover_actor_index: None,
                 hover_action_index: None,
                 actor_scroll: 0.0,
+                hover_karaoke: false,
+                hover_karaoke_index: None,
+                hover_karaoke_specific: None,
             });
     }
 
@@ -11683,6 +12089,18 @@ impl State {
                 >= Duration::from_millis(100);
         }
 
+        if self
+            .ui_shell
+            .ui
+            .rythmo_state
+            .sync_tooltip_deadline()
+            .is_some_and(|deadline| {
+                deadline <= now && deadline > self.render.last_redraw()
+            })
+        {
+            return true;
+        }
+
         if self.ui_shell.ui.is_editing_text() {
             return self
                 .ui_shell
@@ -11733,6 +12151,12 @@ impl State {
             || self.ui_shell.ui.project_transfer_modal.is_some()
         {
             push_deadline(self.render.last_redraw() + Duration::from_millis(100));
+        }
+
+        if let Some(deadline) = self.ui_shell.ui.rythmo_state.sync_tooltip_deadline() {
+            if deadline > self.render.last_redraw() {
+                push_deadline(deadline);
+            }
         }
 
         if self.ui_shell.ui.is_editing_text() {
@@ -11838,7 +12262,18 @@ impl State {
         let recording_choice = self.active_workspace() == WorkspaceId::Recording
             && self.ui_shell.ui.recording_page()
                 == crate::ui::recording_workspace::RecordingPage::Choice;
-        let video_quad = if recording_choice
+        // The export layout preview shows the frame even when the editor
+        // would not (video on the secondary display, for instance).
+        let export_layout_preview = self
+            .ui_shell
+            .ui
+            .modal_host
+            .export
+            .as_ref()
+            .is_some_and(|modal| modal.is_layout_step());
+        let video_quad = if export_layout_preview {
+            build_video_quad(&self.playback.video_player, &self.ui_shell.ui)
+        } else if recording_choice
             || !workspace_shows_project_video(self.active_workspace())
             || self.window_manager.secondary_kind
                 == Some(crate::application::window_service::SecondaryWindowKind::Video)

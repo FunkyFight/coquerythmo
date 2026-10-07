@@ -6,7 +6,9 @@ use crate::project::{
     Character, LanguageId, LanguageSnapshot, Project, ProjectLanguage, ProjectSettings,
 };
 use crate::rythmo_drawing::{DrawingStroke, RythmoDrawing};
-use crate::rythmo_line::{LinePresence, MarkerKind, RythmoLineKind, RythmoMarker, TextEmotionSpan};
+use crate::rythmo_line::{
+    LinePresence, MarkerKind, RythmoLineKind, RythmoMarker, TextEmotionSpan, TextStyleSpan,
+};
 use crate::voice_actor::VoiceActor;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -86,6 +88,8 @@ pub struct LineData {
     pub karaoke: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub text_emotions: Vec<TextEmotionSpan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text_styles: Vec<TextStyleSpan>,
     #[serde(default)]
     pub note: String,
     #[serde(default, skip_serializing_if = "LinePresence::is_on")]
@@ -164,6 +168,7 @@ impl ProjectData {
                     syllable_ratios: l.syllable_ratios.clone(),
                     karaoke: l.karaoke,
                     text_emotions: l.text_emotions.clone(),
+                    text_styles: l.text_styles.clone(),
                     note: l.note.clone(),
                     presence: l.presence,
                 })
@@ -539,6 +544,7 @@ impl ProjectData {
                 note: l.note.clone(),
                 presence: l.presence,
                 text_emotions: l.text_emotions.clone(),
+                text_styles: l.text_styles.clone(),
             });
         }
         project.replace_lines(lines);
@@ -693,6 +699,7 @@ fn push_srt_block(block_lines: &[&str], fps: f64, lines: &mut Vec<LineData>) -> 
         syllable_ratios: Vec::new(),
         karaoke: false,
         text_emotions: Vec::new(),
+        text_styles: Vec::new(),
         note: String::new(),
     });
 
@@ -902,6 +909,7 @@ pub fn import_ass(path: &Path, fps: f64) -> Result<ProjectData, String> {
             syllable_ratios: Vec::new(),
             karaoke: false,
             text_emotions: Vec::new(),
+            text_styles: Vec::new(),
             note: String::new(),
         });
     }
@@ -1185,6 +1193,7 @@ pub fn import_cappela(path: &Path, fps: f64) -> Result<ProjectData, String> {
                                 syllable_ratios: Vec::new(),
                                 karaoke: false,
                                 text_emotions: Vec::new(),
+                                text_styles: Vec::new(),
                                 note,
                             });
 
@@ -1309,6 +1318,26 @@ mod tests {
                 emotion: crate::rythmo_line::TextEmotion::Bounce,
             }]
         );
+    }
+
+    #[test]
+    fn text_styles_survive_project_roundtrip() {
+        let mut project = Project::new();
+        let line_id = project.add_line_full(0, 48, 0.5, "hello".into(), "Alice".into(), [1.0; 4]);
+        project.get_line_mut(line_id).unwrap().toggle_text_style(
+            1,
+            4,
+            crate::rythmo_line::TextStyleKind::Italic,
+        );
+        let styles = project.get_line(line_id).unwrap().text_styles.clone();
+        assert_eq!(styles.len(), 1);
+
+        let encoded = serde_json::to_string(&ProjectData::from_project(&project, 24.0)).unwrap();
+        let decoded: ProjectData = serde_json::from_str(&encoded).unwrap();
+        let mut restored = Project::new();
+        decoded.apply_to_project(&mut restored, 24.0);
+
+        assert_eq!(restored.get_line(line_id).unwrap().text_styles, styles);
     }
 
     #[test]
@@ -1554,6 +1583,7 @@ mod tests {
                 syllable_ratios: Vec::new(),
                 karaoke: false,
                 text_emotions: Vec::new(),
+                text_styles: Vec::new(),
                 note: String::new(),
                 presence: LinePresence::On,
             }],
@@ -1595,6 +1625,7 @@ mod tests {
                     syllable_ratios: Vec::new(),
                     karaoke: false,
                     text_emotions: Vec::new(),
+                    text_styles: Vec::new(),
                     note: String::new(),
                     presence: LinePresence::On,
                 },
@@ -1611,6 +1642,7 @@ mod tests {
                     syllable_ratios: Vec::new(),
                     karaoke: false,
                     text_emotions: Vec::new(),
+                    text_styles: Vec::new(),
                     note: String::new(),
                     presence: LinePresence::On,
                 },
@@ -1656,6 +1688,7 @@ mod tests {
                 syllable_ratios: Vec::new(),
                 karaoke: false,
                 text_emotions: Vec::new(),
+                text_styles: Vec::new(),
                 note: String::new(),
                 presence: LinePresence::On,
             }],
@@ -1705,6 +1738,7 @@ mod tests {
                 syllable_ratios: Vec::new(),
                 karaoke: false,
                 text_emotions: Vec::new(),
+                text_styles: Vec::new(),
                 note: String::new(),
                 presence: LinePresence::On,
             }],
@@ -1757,6 +1791,7 @@ mod tests {
                     syllable_ratios: vec![0.2, 0.8],
                     karaoke: true,
                     text_emotions: Vec::new(),
+                    text_styles: Vec::new(),
                     note: String::new(),
                     presence: LinePresence::On,
                 },
@@ -1773,6 +1808,7 @@ mod tests {
                     syllable_ratios: vec![0.3, 0.7],
                     karaoke: false,
                     text_emotions: Vec::new(),
+                    text_styles: Vec::new(),
                     note: String::new(),
                     presence: LinePresence::On,
                 },

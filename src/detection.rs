@@ -651,6 +651,108 @@ impl TextSyncPoint {
             },
         }
     }
+
+    /// Whether the limit falls after its grapheme rather than before it, once
+    /// the affinity is resolved. `Auto` keeps punctuation with the text on its
+    /// left.
+    pub fn follows_grapheme(&self, graphemes: &[&str]) -> bool {
+        match self.affinity {
+            SyncAffinity::Left => true,
+            SyncAffinity::Right => false,
+            SyncAffinity::Auto => graphemes
+                .get(self.grapheme_boundary as usize)
+                .is_some_and(|grapheme| grapheme.chars().all(is_sync_punctuation)),
+        }
+    }
+
+    /// Place of the limit between graphemes, from `0` (before the first one)
+    /// to `graphemes.len()` (after the last one).
+    pub fn limit_position(&self, graphemes: &[&str]) -> usize {
+        (self.grapheme_boundary as usize + usize::from(self.follows_grapheme(graphemes)))
+            .min(graphemes.len())
+    }
+}
+
+/// Exact place of one contiguous text edit, counted in graphemes of the text
+/// before the edit. Comparing the old and new text cannot tell where the caret
+/// really was when neighbouring letters repeat, or on which side of a
+/// synchronization limit a character was typed. Carrying the span lets every
+/// peer keep the limits exactly where the author's edit left them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextEditSpan {
+    pub start: u32,
+    pub removed: u32,
+    pub inserted: u32,
+    /// Of the limits lying exactly at `start` (in time order), how many stay on
+    /// the left of the edit. The others follow the text that is inserted, so
+    /// the segment that received the caret is the one that grows.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub limits_before: u32,
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
+impl TextEditSpan {
+    /// The span that undoes this one.
+    pub const fn reversed(self) -> Self {
+        Self {
+            start: self.start,
+            removed: self.inserted,
+            inserted: self.removed,
+            limits_before: self.limits_before,
+        }
+    }
+
+    /// Converts a character-based edit (`removed_chars` characters replaced at
+    /// `start_char`) into grapheme units. `None` when it cuts through a
+    /// grapheme or the new text does not match the edit.
+    pub fn from_char_edit(
+        old_text: &str,
+        new_text: &str,
+        start_char: usize,
+        removed_chars: usize,
+    ) -> Option<Self> {
+        let old = UnicodeSegmentation::graphemes(old_text, true).collect::<Vec<_>>();
+        let mut char_boundaries = Vec::with_capacity(old.len() + 1);
+        let mut chars = 0usize;
+        char_boundaries.push(0);
+        for grapheme in &old {
+            chars += grapheme.chars().count();
+            char_boundaries.push(chars);
+        }
+        let start = char_boundaries
+            .iter()
+            .position(|boundary| *boundary == start_char)?;
+        let end = char_boundaries
+            .iter()
+            .position(|boundary| *boundary == start_char + removed_chars)?;
+        let new_len = UnicodeSegmentation::graphemes(new_text, true).count();
+        let inserted = (new_len + (end - start)).checked_sub(old.len())?;
+        let span = Self {
+            start: u32::try_from(start).ok()?,
+            removed: u32::try_from(end - start).ok()?,
+            inserted: u32::try_from(inserted).ok()?,
+            limits_before: 0,
+        };
+        let new = UnicodeSegmentation::graphemes(new_text, true).collect::<Vec<_>>();
+        span.matches(&old, &new).then_some(span)
+    }
+
+    /// Whether the span really transforms `old` into `new`.
+    fn matches(&self, old: &[&str], new: &[&str]) -> bool {
+        let (start, removed, inserted) = (
+            self.start as usize,
+            self.removed as usize,
+            self.inserted as usize,
+        );
+        start + removed <= old.len()
+            && start + inserted <= new.len()
+            && old.len() - removed + inserted == new.len()
+            && old[..start] == new[..start]
+            && old[start + removed..] == new[start + inserted..]
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -932,64 +1034,185 @@ impl DetectionDocument {
     /// corresponding boundary of the replacement; it is never discarded just
     /// because its former grapheme disappeared.
     pub fn rebase_sync_points(&mut self, line_id: u64, old_text: &str, new_text: &str) {
+        self.rebase_sync_points_for_edit(line_id, old_text, new_text, None);
+    }
+
+    /// Same as [`Self::rebase_sync_points`], but trusts the exact place of the
+    /// edit when it is known and consistent with both texts. Each limit is
+    /// followed as a position between two graphemes, so an edit never moves a
+    /// limit past text it did not touch, whichever side of its grapheme the
+    /// limit clings to.
+    pub fn rebase_sync_points_for_edit(
+        &mut self,
+        line_id: u64,
+        old_text: &str,
+        new_text: &str,
+        edit: Option<&TextEditSpan>,
+    ) {
         let old = UnicodeSegmentation::graphemes(old_text, true).collect::<Vec<_>>();
         let new = UnicodeSegmentation::graphemes(new_text, true).collect::<Vec<_>>();
-        let prefix = old
-            .iter()
-            .zip(&new)
-            .take_while(|(left, right)| left == right)
-            .count();
-        let suffix = old[prefix..]
-            .iter()
-            .rev()
-            .zip(new[prefix..].iter().rev())
-            .take_while(|(left, right)| left == right)
-            .count();
-        let old_changed_end = old.len().saturating_sub(suffix);
+        let exact = edit.filter(|edit| edit.matches(&old, &new));
+        let (prefix, old_changed_end, new_changed_end) = if let Some(edit) = exact {
+            let start = edit.start as usize;
+            (
+                start,
+                start + edit.removed as usize,
+                start + edit.inserted as usize,
+            )
+        } else {
+            let prefix = old
+                .iter()
+                .zip(&new)
+                .take_while(|(left, right)| left == right)
+                .count();
+            let suffix = old[prefix..]
+                .iter()
+                .rev()
+                .zip(new[prefix..].iter().rev())
+                .take_while(|(left, right)| left == right)
+                .count();
+            (
+                prefix,
+                old.len().saturating_sub(suffix),
+                new.len().saturating_sub(suffix),
+            )
+        };
         let delta = new.len() as i64 - old.len() as i64;
         let Some(data) = self.lines.get_mut(&line_id) else {
             return;
         };
-        let new_changed_end = new.len().saturating_sub(suffix);
-        let shared_insertion_anchors = if old_changed_end == prefix && new_changed_end > prefix {
+        let pure_insertion = old_changed_end == prefix && new_changed_end > prefix;
+        let limits = data
+            .sync_points
+            .iter()
+            .map(|point| (point.follows_grapheme(&old), point.limit_position(&old)))
+            .collect::<Vec<_>>();
+        // Without the exact span, limits opening on the grapheme where text is
+        // inserted are spread over the inserted text, so that rewriting a
+        // segment whose text was deleted puts the new text back between them.
+        let shared_insertion_limits = if exact.is_none() && pure_insertion {
             data.sync_points
                 .iter()
-                .filter(|point| point.grapheme_boundary as usize == prefix)
-                .map(|point| point.id)
+                .enumerate()
+                .filter(|(index, point)| {
+                    !limits[*index].0 && point.grapheme_boundary as usize == prefix
+                })
+                .map(|(index, _)| index)
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
-        for point in &mut data.sync_points {
-            let boundary = point.grapheme_boundary as usize;
-            if shared_insertion_anchors.len() > 1 && boundary == prefix {
-                let rank = shared_insertion_anchors
-                    .iter()
-                    .position(|id| *id == point.id)
-                    .unwrap_or(0);
-                let slots = shared_insertion_anchors.len() - 1;
-                let inserted_span = new_changed_end - prefix;
-                point.grapheme_boundary =
-                    (prefix + (rank * inserted_span + slots / 2) / slots) as u32;
-            } else if boundary > prefix && boundary < old_changed_end {
-                let old_span = old_changed_end.saturating_sub(prefix).max(1);
-                let new_span = new_changed_end.saturating_sub(prefix);
-                let offset = boundary.saturating_sub(prefix);
-                point.grapheme_boundary =
-                    (prefix + (offset * new_span + old_span / 2) / old_span) as u32;
-            } else if boundary >= old_changed_end {
-                point.grapheme_boundary = (point.grapheme_boundary as i64 + delta).max(0) as u32;
-            }
-            if new.is_empty() {
-                point.grapheme_boundary = 0;
+
+        let mut limits_at_insertion = 0usize;
+        let mut positions = Vec::with_capacity(limits.len());
+        for (index, &(follows, position)) in limits.iter().enumerate() {
+            let new_position = if position < prefix {
+                position
+            } else if position == prefix && pure_insertion {
+                match exact {
+                    Some(edit) => {
+                        let stays_before = limits_at_insertion < edit.limits_before as usize;
+                        limits_at_insertion += 1;
+                        if stays_before {
+                            position
+                        } else {
+                            new_changed_end
+                        }
+                    }
+                    None if shared_insertion_limits.len() > 1
+                        && shared_insertion_limits.contains(&index) =>
+                    {
+                        let rank = shared_insertion_limits
+                            .iter()
+                            .position(|shared| *shared == index)
+                            .unwrap_or(0);
+                        let slots = shared_insertion_limits.len() - 1;
+                        prefix + (rank * (new_changed_end - prefix) + slots / 2) / slots
+                    }
+                    // A limit that clings to the grapheme on its left keeps
+                    // the typed text on its right, except at the very end of
+                    // the line, where nothing can be written past the last
+                    // limit.
+                    None if follows && position < old.len() => position,
+                    None => new_changed_end,
+                }
+            } else if position == prefix {
+                prefix
+            } else if position < old_changed_end {
+                let old_span = old_changed_end - prefix;
+                let new_span = new_changed_end - prefix;
+                prefix + ((position - prefix) * new_span + old_span / 2) / old_span
             } else {
-                point.grapheme_boundary = point
-                    .grapheme_boundary
-                    .min(new.len().saturating_sub(1) as u32);
+                (position as i64 + delta).max(0) as usize
+            };
+            positions.push(new_position.min(new.len()));
+        }
+
+        // Bind every limit back to a grapheme. A limit that would cling to a
+        // grapheme outside the text switches side instead.
+        let mut rebound = limits
+            .iter()
+            .zip(&positions)
+            .map(|(&(follows, _), &position)| {
+                if new.is_empty() {
+                    return (0, follows, 0);
+                }
+                let mut follows = follows;
+                if follows && position == 0 {
+                    follows = false;
+                }
+                if !follows && position >= new.len() {
+                    follows = true;
+                }
+                (
+                    if follows { position - 1 } else { position },
+                    follows,
+                    position,
+                )
+            })
+            .collect::<Vec<_>>();
+        // Text order must stay monotonic in time order.
+        for index in 1..rebound.len() {
+            if rebound[index].0 < rebound[index - 1].0 {
+                let position = rebound[index].2;
+                let previous_position = rebound[index - 1].2;
+                if position < new.len() {
+                    rebound[index] = (position, false, position);
+                } else if previous_position >= 1 {
+                    rebound[index - 1] = (previous_position - 1, true, previous_position);
+                }
+                rebound[index].0 = rebound[index].0.max(rebound[index - 1].0);
             }
+        }
+        for (point, (grapheme, follows, _)) in data.sync_points.iter_mut().zip(rebound) {
+            point.grapheme_boundary = grapheme as u32;
+            let automatic = new
+                .get(grapheme)
+                .is_some_and(|text| text.chars().all(is_sync_punctuation));
+            point.affinity = if point.affinity == SyncAffinity::Auto && automatic == follows {
+                SyncAffinity::Auto
+            } else if follows {
+                SyncAffinity::Left
+            } else {
+                SyncAffinity::Right
+            };
         }
         data.sort_sync_points();
         self.prune_empty_line(line_id);
+    }
+
+    /// Place of every synchronization limit of the line between the graphemes
+    /// of `text`, in time order.
+    pub fn sync_limit_positions(&self, line_id: u64, text: &str) -> Vec<usize> {
+        let graphemes = UnicodeSegmentation::graphemes(text, true).collect::<Vec<_>>();
+        self.line(line_id)
+            .map(|data| {
+                data.sync_points()
+                    .iter()
+                    .map(|point| point.limit_position(&graphemes))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn ambiguous_sync_point_count(
@@ -1912,6 +2135,201 @@ mod tests {
         assert!(ratios.windows(2).all(|pair| pair[0] > 0.0 && pair[1] > 0.0));
         assert!((ratios[0] - 0.9).abs() < 0.0001);
         assert!((ratios.iter().sum::<f32>() - 1.0).abs() < 0.0001);
+    }
+
+    fn document_with_limit(
+        line_id: u64,
+        text: &str,
+        grapheme: u32,
+        affinity: SyncAffinity,
+    ) -> (DetectionDocument, DetectionAddress) {
+        let mut document = DetectionDocument::default();
+        let count = UnicodeSegmentation::graphemes(text, true).count();
+        let address = document
+            .add_sync_point(
+                line_id,
+                count,
+                MediaTick::ZERO,
+                MediaTick::from_frame(100),
+                grapheme,
+                MediaTick::from_frame(50),
+            )
+            .unwrap();
+        assert!(document.set_sync_affinity(address, affinity) || affinity == SyncAffinity::Auto);
+        (document, address)
+    }
+
+    fn limit_position(document: &DetectionDocument, line_id: u64, text: &str) -> usize {
+        document.sync_limit_positions(line_id, text)[0]
+    }
+
+    #[test]
+    fn deleting_the_text_a_limit_clings_to_does_not_pull_in_its_neighbour() {
+        // The limit sits after "b" (`Left`). Erasing "b" must leave it between
+        // "a" and "c", not after "c".
+        let (mut document, address) = document_with_limit(20, "abcd", 1, SyncAffinity::Left);
+        assert_eq!(limit_position(&document, 20, "abcd"), 2);
+
+        document.rebase_sync_points(20, "abcd", "acd");
+
+        assert_eq!(limit_position(&document, 20, "acd"), 1);
+        assert!(document.sync_point(address).is_some());
+    }
+
+    #[test]
+    fn deleting_before_a_limit_moves_it_with_the_text_it_follows() {
+        let (mut document, _) = document_with_limit(21, "abcd", 2, SyncAffinity::Right);
+
+        document.rebase_sync_points(21, "abcd", "acd");
+
+        assert_eq!(limit_position(&document, 21, "acd"), 1);
+    }
+
+    #[test]
+    fn deleting_after_a_limit_keeps_it_in_place() {
+        let (mut document, _) = document_with_limit(22, "abcd", 2, SyncAffinity::Right);
+
+        document.rebase_sync_points(22, "abcd", "abd");
+
+        assert_eq!(limit_position(&document, 22, "abd"), 2);
+    }
+
+    #[test]
+    fn typed_text_lands_on_the_side_of_the_limit_requested_by_the_edit() {
+        let span = |limits_before| TextEditSpan {
+            start: 2,
+            removed: 0,
+            inserted: 1,
+            limits_before,
+        };
+        for affinity in [SyncAffinity::Left, SyncAffinity::Right] {
+            let grapheme = if affinity == SyncAffinity::Left { 1 } else { 2 };
+
+            let (mut document, _) = document_with_limit(23, "abcd", grapheme, affinity);
+            document.rebase_sync_points_for_edit(23, "abcd", "abXcd", Some(&span(0)));
+            assert_eq!(
+                limit_position(&document, 23, "abXcd"),
+                3,
+                "the segment before the limit grows ({affinity:?})"
+            );
+
+            let (mut document, _) = document_with_limit(24, "abcd", grapheme, affinity);
+            document.rebase_sync_points_for_edit(24, "abcd", "abXcd", Some(&span(1)));
+            assert_eq!(
+                limit_position(&document, 24, "abXcd"),
+                2,
+                "the segment after the limit grows ({affinity:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_letters_next_to_a_limit_do_not_hide_the_real_edit() {
+        // "ab|bc": typing another "b" right before the limit.
+        let (mut document, _) = document_with_limit(25, "abbc", 2, SyncAffinity::Right);
+        let span = TextEditSpan {
+            start: 2,
+            removed: 0,
+            inserted: 1,
+            limits_before: 0,
+        };
+        document.rebase_sync_points_for_edit(25, "abbc", "abbbc", Some(&span));
+        assert_eq!(limit_position(&document, 25, "abbbc"), 3);
+
+        // Without the span the comparison cannot tell, and reads the letter as
+        // typed after the limit.
+        let (mut document, _) = document_with_limit(26, "abbc", 2, SyncAffinity::Right);
+        document.rebase_sync_points(26, "abbc", "abbbc");
+        assert_eq!(limit_position(&document, 26, "abbbc"), 2);
+    }
+
+    #[test]
+    fn several_limits_at_one_place_grow_the_segment_that_received_the_caret() {
+        // "aa||cc": the segment between the two limits is empty.
+        let build = |line_id| {
+            let mut document = DetectionDocument::default();
+            for (grapheme, frame) in [(2, 30), (2, 60)] {
+                document
+                    .add_sync_point(
+                        line_id,
+                        4,
+                        MediaTick::ZERO,
+                        MediaTick::from_frame(100),
+                        grapheme,
+                        MediaTick::from_frame(frame),
+                    )
+                    .unwrap();
+            }
+            document
+        };
+        let span = |limits_before| TextEditSpan {
+            start: 2,
+            removed: 0,
+            inserted: 1,
+            limits_before,
+        };
+        for (limits_before, expected) in [(0, vec![3, 3]), (1, vec![2, 3]), (2, vec![2, 2])] {
+            let mut document = build(27);
+            document.rebase_sync_points_for_edit(27, "aacc", "aaXcc", Some(&span(limits_before)));
+            assert_eq!(
+                document.sync_limit_positions(27, "aaXcc"),
+                expected,
+                "limits_before = {limits_before}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_inconsistent_span_falls_back_to_comparing_the_texts() {
+        let (mut document, _) = document_with_limit(28, "abcd", 2, SyncAffinity::Right);
+        let wrong = TextEditSpan {
+            start: 0,
+            removed: 0,
+            inserted: 1,
+            limits_before: 1,
+        };
+        document.rebase_sync_points_for_edit(28, "abcd", "abXcd", Some(&wrong));
+        assert_eq!(limit_position(&document, 28, "abXcd"), 3);
+    }
+
+    #[test]
+    fn edit_spans_are_built_from_character_edits() {
+        let span = TextEditSpan::from_char_edit("abcd", "abXcd", 2, 0).unwrap();
+        assert_eq!(
+            span,
+            TextEditSpan {
+                start: 2,
+                removed: 0,
+                inserted: 1,
+                limits_before: 0,
+            }
+        );
+        let span = TextEditSpan::from_char_edit("abcd", "acd", 1, 1).unwrap();
+        assert_eq!((span.start, span.removed, span.inserted), (1, 1, 0));
+        // A combining accent typed after its letter cuts through a grapheme.
+        assert!(TextEditSpan::from_char_edit("e\u{301}x", "e\u{301}\u{301}x", 1, 0).is_none());
+        // The new text has to match the edit.
+        assert!(TextEditSpan::from_char_edit("abcd", "zzzz", 2, 0).is_none());
+    }
+
+    #[test]
+    fn reversing_an_insertion_restores_the_limit_on_either_side() {
+        for limits_before in [0, 1] {
+            let (mut document, _) = document_with_limit(29, "abcd", 2, SyncAffinity::Right);
+            let before = document.clone();
+            let span = TextEditSpan {
+                start: 2,
+                removed: 0,
+                inserted: 2,
+                limits_before,
+            };
+            document.rebase_sync_points_for_edit(29, "abcd", "abXYcd", Some(&span));
+            document.rebase_sync_points_for_edit(29, "abXYcd", "abcd", Some(&span.reversed()));
+            assert_eq!(
+                document.sync_limit_positions(29, "abcd"),
+                before.sync_limit_positions(29, "abcd")
+            );
+        }
     }
 
     #[test]

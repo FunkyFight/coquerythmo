@@ -87,6 +87,7 @@ pub struct ModalHost {
     pub connect: Option<ConnectModal>,
     pub settings: Option<SettingsModal>,
     pub project_settings: Option<ProjectSettingsModal>,
+    pub band_style: Option<crate::ui::band_style_modal::BandStyleModal>,
     pub comic_dubs_settings: Option<ComicDubsSettingsModal>,
     pub export: Option<ExportModal>,
     pub invitation: Option<InvitationModal>,
@@ -113,6 +114,7 @@ impl ModalHost {
             connect: None,
             settings: None,
             project_settings: None,
+            band_style: None,
             comic_dubs_settings: None,
             export: None,
             invitation: None,
@@ -138,6 +140,7 @@ impl ModalHost {
         self.connect.is_some()
             || self.settings.is_some()
             || self.project_settings.is_some()
+            || self.band_style.is_some()
             || self.comic_dubs_settings.is_some()
             || self.export.is_some()
             || self.invitation.is_some()
@@ -161,6 +164,7 @@ impl ModalHost {
     pub fn is_editing_text(&self) -> bool {
         self.settings.is_some()
             || self.project_settings.is_some()
+            || self.band_style.is_some()
             || self.comic_dubs_settings.is_some()
             || self.connect.is_some()
             || self.export.is_some()
@@ -260,6 +264,9 @@ impl ModalHost {
         }
         if self.project_settings.is_some() {
             return Some(self.handle_project_settings_event(event, screen_w, screen_h));
+        }
+        if self.band_style.is_some() {
+            return Some(self.handle_band_style_event(event, screen_w, screen_h));
         }
         if self.comic_dubs_settings.is_some() {
             return Some(self.handle_comic_dubs_settings_event(event, screen_w, screen_h));
@@ -574,6 +581,66 @@ impl ModalHost {
         }
     }
 
+    fn handle_band_style_event(
+        &mut self,
+        event: &UiEvent,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> ModalOutcome {
+        use crate::ui::band_style_modal::BandStyleModalResult;
+        let focus_navigation = matches!(
+            event,
+            UiEvent::FocusNext | UiEvent::FocusPrevious | UiEvent::CursorUp | UiEvent::CursorDown
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let Some(modal) = self.band_style.as_mut() else {
+            return ModalOutcome::Consumed;
+        };
+        let result = modal.handle_event(event, screen_w, screen_h);
+        let focus = || {
+            UiAction::Accessibility(crate::accessibility::AccessibilityEvent::Focus {
+                label: modal.keyboard_focus_label(),
+                role: "control".to_string(),
+            })
+        };
+        match result {
+            BandStyleModalResult::Consumed if focus_navigation => ModalOutcome::Action(focus()),
+            BandStyleModalResult::Consumed => ModalOutcome::Consumed,
+            BandStyleModalResult::Preview(style) if focus_navigation => {
+                ModalOutcome::Actions(vec![UiAction::PreviewBandStyle(style), focus()])
+            }
+            BandStyleModalResult::Preview(style) => {
+                ModalOutcome::Action(UiAction::PreviewBandStyle(style))
+            }
+            BandStyleModalResult::SavePresets(presets) => {
+                ModalOutcome::Action(UiAction::SaveBandStylePresets(presets))
+            }
+            BandStyleModalResult::Import => ModalOutcome::Action(UiAction::ImportBandStylePreset),
+            BandStyleModalResult::PickKaraokeDotImage => {
+                ModalOutcome::Action(UiAction::PickKaraokeDotImage)
+            }
+            BandStyleModalResult::PickKaraokeDotJumpImage => {
+                ModalOutcome::Action(UiAction::PickKaraokeDotJumpImage)
+            }
+            BandStyleModalResult::Export(preset) => {
+                ModalOutcome::Action(UiAction::ExportBandStylePreset(preset))
+            }
+            BandStyleModalResult::Cancel(original) => {
+                self.band_style = None;
+                action_closed_modal(
+                    UiAction::PreviewBandStyle(original),
+                    crate::i18n::t("band_style.title"),
+                )
+            }
+            BandStyleModalResult::Apply { style, original } => {
+                self.band_style = None;
+                action_closed_modal(
+                    UiAction::ApplyBandStyle { style, original },
+                    crate::i18n::t("band_style.title"),
+                )
+            }
+        }
+    }
+
     fn handle_project_settings_event(
         &mut self,
         event: &UiEvent,
@@ -760,6 +827,30 @@ impl ModalHost {
         }
         match result {
             super::export_modal::ExportModalResult::Consumed => ModalOutcome::Consumed,
+            super::export_modal::ExportModalResult::StepChanged { save } => {
+                let Some(modal) = self.export.as_ref() else {
+                    return ModalOutcome::Consumed;
+                };
+                let announce = UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Activation {
+                        label: format!(
+                            "{} : {}",
+                            modal.step_title(),
+                            modal
+                                .keyboard_selection_label()
+                                .unwrap_or_else(|| modal.keyboard_focus_label())
+                        ),
+                    },
+                );
+                // Leaving the layout step saves it in the project at once.
+                match save {
+                    Some(configuration) => ModalOutcome::Actions(vec![
+                        UiAction::SaveExportConfiguration { configuration },
+                        announce,
+                    ]),
+                    None => ModalOutcome::Action(announce),
+                }
+            }
             super::export_modal::ExportModalResult::Close { configuration } => {
                 self.export = None;
                 action_closed_modal(
@@ -769,10 +860,17 @@ impl ModalHost {
             }
             super::export_modal::ExportModalResult::Export { configuration } => {
                 self.export = None;
-                action_closed_modal(
+                // Saved first, on its own: the export itself may be refused
+                // (another task running) or cancelled in the file picker.
+                ModalOutcome::Actions(vec![
+                    UiAction::SaveExportConfiguration {
+                        configuration: configuration.clone(),
+                    },
                     UiAction::StartConfiguredExport { configuration },
-                    crate::i18n::t("export_modal.title"),
-                )
+                    UiAction::Accessibility(crate::accessibility::AccessibilityEvent::Closed {
+                        label: crate::i18n::t("export_modal.title").to_string(),
+                    }),
+                ])
             }
         }
     }
@@ -1669,6 +1767,14 @@ impl ModalHost {
         }
     }
 
+    pub fn open_band_style(
+        &mut self,
+        style: crate::band_style::BandStyle,
+        presets: Vec<crate::band_style::BandStylePreset>,
+    ) {
+        self.band_style = Some(crate::ui::band_style_modal::BandStyleModal::new(style, presets));
+    }
+
     pub fn close_project_settings(&mut self) {
         self.project_settings = None;
     }
@@ -1710,6 +1816,9 @@ impl ModalHost {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
         if let Some(modal) = &self.project_settings {
+            modal.render(modal_quads, modal_labels, screen_w, screen_h);
+        }
+        if let Some(modal) = &self.band_style {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
         if let Some(modal) = &self.comic_dubs_settings {
@@ -1810,6 +1919,92 @@ impl Default for ModalHost {
 mod tests {
     use super::*;
     use crate::media_recording::InputDeviceInfo;
+
+    fn open_layout_step(host: &mut ModalHost) {
+        host.open_export(
+            1920,
+            1080,
+            vec![super::super::export_modal::ExportLanguageOption {
+                id: 1,
+                name: "Français".into(),
+                has_instrumental: false,
+            }],
+            crate::project::ExportConfiguration::default(),
+        );
+        let key = |text: &str| UiEvent::KeyInput {
+            text: text.to_string(),
+        };
+        for _ in 0..80 {
+            let modal = host.export.as_ref().unwrap();
+            if modal.keyboard_focus_label() == crate::i18n::t("export_layout.next") {
+                break;
+            }
+            host.handle_export_event(&key("\t"), 1600.0, 900.0);
+        }
+        host.handle_export_event(&key("\r"), 1600.0, 900.0);
+        assert!(host.export.as_ref().unwrap().is_layout_step());
+    }
+
+    fn saved_layouts(outcome: &ModalOutcome) -> Vec<crate::export_layout::ExportLayout> {
+        let actions = match outcome {
+            ModalOutcome::Action(action) => std::slice::from_ref(action),
+            ModalOutcome::Actions(actions) => actions.as_slice(),
+            ModalOutcome::Consumed => &[],
+        };
+        actions
+            .iter()
+            .filter_map(|action| match action {
+                UiAction::SaveExportConfiguration { configuration } => Some(configuration.layout),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn leaving_the_export_layout_step_saves_the_layout() {
+        let mut host = ModalHost::new();
+        open_layout_step(&mut host);
+        // Video X +1 %, then Escape (back to the first step): saved at once.
+        host.handle_export_event(&UiEvent::CursorRight, 1600.0, 900.0);
+        let escape = UiEvent::KeyInput {
+            text: "\x1b".to_string(),
+        };
+        let outcome = host.handle_export_event(&escape, 1600.0, 900.0);
+        let saved = saved_layouts(&outcome);
+        assert_eq!(saved.len(), 1);
+        assert!((saved[0].video.offset_x - 0.01).abs() < 1e-6);
+        // Closing the first step saves it again.
+        let outcome = host.handle_export_event(&escape, 1600.0, 900.0);
+        assert_eq!(saved_layouts(&outcome), saved);
+        assert!(host.export.is_none());
+    }
+
+    #[test]
+    fn launching_the_export_saves_the_layout_before_starting() {
+        let mut host = ModalHost::new();
+        open_layout_step(&mut host);
+        host.handle_export_event(&UiEvent::CursorRight, 1600.0, 900.0);
+        host.export.as_mut().unwrap().handle_event(
+            &UiEvent::KeyInput {
+                text: "\u{b}".to_string(),
+            },
+            1600.0,
+            900.0,
+        );
+        // Focus wraps to "Start export".
+        let outcome = host.handle_export_event(&UiEvent::Activate, 1600.0, 900.0);
+        let ModalOutcome::Actions(actions) = &outcome else {
+            panic!("expected the export to start");
+        };
+        assert!(matches!(
+            actions.first(),
+            Some(UiAction::SaveExportConfiguration { .. })
+        ));
+        assert!(actions
+            .iter()
+            .any(|action| matches!(action, UiAction::StartConfiguredExport { .. })));
+        assert!((saved_layouts(&outcome)[0].video.offset_x - 0.01).abs() < 1e-6);
+    }
 
     #[test]
     fn microphone_modal_is_routed_as_topmost_input() {

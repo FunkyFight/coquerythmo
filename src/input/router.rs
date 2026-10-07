@@ -116,6 +116,45 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         );
     }
 
+    // Formatting of non-karaoke text: the selection of the line being
+    // edited, or the whole selected line. `Ctrl + I` keeps opening the lines
+    // panel outside text editing.
+    for (context, key, kind) in [
+        (
+            InputContext::TextEditing,
+            'b',
+            crate::rythmo_line::TextStyleKind::Bold,
+        ),
+        (
+            InputContext::TextEditing,
+            'i',
+            crate::rythmo_line::TextStyleKind::Italic,
+        ),
+        (
+            InputContext::TextEditing,
+            'u',
+            crate::rythmo_line::TextStyleKind::Underline,
+        ),
+        (
+            InputContext::Workspace,
+            'b',
+            crate::rythmo_line::TextStyleKind::Bold,
+        ),
+        (
+            InputContext::Workspace,
+            'u',
+            crate::rythmo_line::TextStyleKind::Underline,
+        ),
+    ] {
+        router.bind(
+            context,
+            KeyCode::Character(key),
+            ctrl,
+            RepeatPolicy::PressOnly,
+            UiAction::ToggleTextStyle { kind },
+        );
+    }
+
     router.bind(
         InputContext::Accessibility,
         KeyCode::Character('n'),
@@ -511,6 +550,11 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
             UiAction::OpenProxyModal,
         ),
         (KeyCode::Character('o'), ctrl, UiAction::OpenProjectSettings),
+        (
+            KeyCode::Character('o'),
+            ctrl_shift,
+            UiAction::OpenBandStyleModal,
+        ),
     ] {
         router.bind(
             InputContext::Global,
@@ -1109,6 +1153,38 @@ mod tests {
                 Some(&UiAction::OpenTextEmotionMenu)
             );
         }
+    }
+
+    #[test]
+    fn formatting_shortcuts_follow_the_editing_context() {
+        use crate::rythmo_line::TextStyleKind;
+        let router = existing_shortcuts();
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        let editing = InputContextStack::new([InputContext::TextEditing, InputContext::Global]);
+        let workspace = InputContextStack::new([InputContext::Workspace, InputContext::Global]);
+        let resolve = |key, contexts: &InputContextStack| {
+            router.resolve(&stroke(KeyCode::Character(key), ctrl, false), contexts)
+        };
+        for (key, kind) in [
+            ('b', TextStyleKind::Bold),
+            ('i', TextStyleKind::Italic),
+            ('u', TextStyleKind::Underline),
+        ] {
+            assert_eq!(
+                resolve(key, &editing),
+                Some(&UiAction::ToggleTextStyle { kind })
+            );
+        }
+        assert_eq!(
+            resolve('b', &workspace),
+            Some(&UiAction::ToggleTextStyle {
+                kind: TextStyleKind::Bold
+            })
+        );
+        assert_eq!(resolve('i', &workspace), Some(&UiAction::OpenLinesPanel));
     }
 
     #[test]

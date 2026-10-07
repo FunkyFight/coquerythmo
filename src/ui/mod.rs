@@ -16,6 +16,8 @@ pub mod discord_notice_modal;
 pub mod dropdown;
 pub mod export_done_modal;
 pub mod export_modal;
+pub mod export_layout_page;
+pub mod export_preview_cache;
 pub mod file_explorer;
 pub mod focus;
 pub mod font_dropdown;
@@ -23,6 +25,7 @@ pub mod icon_button;
 pub mod icons;
 pub mod interactive;
 pub mod invitation_modal;
+pub mod karaoke_dot_cache;
 pub mod layout;
 pub mod license_badge;
 pub mod microphone_modal;
@@ -32,6 +35,8 @@ pub mod pricing_page;
 pub mod pricing_plan_modal;
 pub mod primitives;
 pub mod project_settings_modal;
+pub mod band_style_modal;
+pub mod hsv_picker;
 pub mod project_transfer_modal;
 pub mod proxy_error_modal;
 pub mod proxy_modal;
@@ -96,6 +101,17 @@ pub struct ProjectLoadUi {
     pub stage_index: usize,
 }
 
+/// Converts band quad colours from sRGB to linear for the sRGB surface. See
+/// the comment where line quads are converted.
+fn linearize_band_quads(quads: &mut [QuadInstance]) {
+    for quad in quads {
+        quad.color = color_picker::srgb_to_linear(quad.color);
+        quad.color_bottom = color_picker::srgb_to_linear(quad.color_bottom);
+        quad.border_color = color_picker::srgb_to_linear(quad.border_color);
+        quad.shadow_color = color_picker::srgb_to_linear(quad.shadow_color);
+    }
+}
+
 pub struct Ui {
     topbar_widgets: Vec<Box<dyn Widget>>,
     tab_widgets: Vec<Box<dyn Widget>>,
@@ -130,6 +146,8 @@ pub struct Ui {
     pub progress_prefix: String,
     pub modal_host: ModalHost,
     actor_icon_cache: ActorIconCache,
+    karaoke_dot_cache: karaoke_dot_cache::KaraokeDotTextureCache,
+    export_band_preview: export_preview_cache::ExportBandPreviewCache,
     network_in_room: bool,
     pub network_status: String,
     pub has_video: bool,
@@ -384,6 +402,7 @@ impl Ui {
 
         let settings_uv = icon_uvs.get("settings").copied().unwrap_or([0.0; 4]);
         let project_uv = icon_uvs.get("project").copied().unwrap_or([0.0; 4]);
+        shell::set_band_style_icon_uv(icon_atlas.get_uv("band_style").unwrap_or([0.0; 4]));
         let mut ui = Self {
             topbar_widgets: shell::build_topbar(
                 false,
@@ -426,6 +445,8 @@ impl Ui {
             progress_prefix: String::new(),
             modal_host: ModalHost::new(),
             actor_icon_cache: ActorIconCache::new(),
+            karaoke_dot_cache: karaoke_dot_cache::KaraokeDotTextureCache::new(),
+            export_band_preview: export_preview_cache::ExportBandPreviewCache::new(),
             network_in_room: false,
             network_status: "".into(),
             sync_overlay: None,
@@ -1686,7 +1707,7 @@ impl Ui {
             });
         }
 
-        if self.rythmo_state.context_menu.is_some()
+        if self.rythmo_state.has_context_menu()
             && (matches!(
                 event,
                 UiEvent::CursorLeft
@@ -1948,6 +1969,9 @@ impl Ui {
                     hover_actor_index: None,
                     hover_action_index: None,
                     actor_scroll: 0.0,
+                    hover_karaoke: false,
+                    hover_karaoke_index: None,
+                    hover_karaoke_specific: None,
                 });
                 return EventResponse::Action(UiAction::Accessibility(
                     crate::accessibility::AccessibilityEvent::Focus {
@@ -1959,8 +1983,7 @@ impl Ui {
             return EventResponse::Consumed;
         }
 
-        if self.rythmo_state.context_menu.is_some() || matches!(event, UiEvent::ContextMenu { .. })
-        {
+        if self.rythmo_state.has_context_menu() || matches!(event, UiEvent::ContextMenu { .. }) {
             let response = rythmo::handle_context_menu_event(
                 event,
                 project,
@@ -1972,6 +1995,19 @@ impl Ui {
                 &mut self.rythmo_state,
             );
             if response != EventResponse::Ignored {
+                return response;
+            }
+        }
+
+        if self.active_workspace == WorkspaceId::Rythmo {
+            if let Some(response) = rythmo::handle_format_toolbar_event(
+                event,
+                project,
+                render_frame,
+                &self.layout.rythmo,
+                fps,
+                &mut self.rythmo_state,
+            ) {
                 return response;
             }
         }
@@ -2713,6 +2749,7 @@ impl Ui {
         self.rythmo_state.stop_note_editing();
         self.rythmo_state.selected = None;
         self.rythmo_state.context_menu = None;
+        self.rythmo_state.sync_point_menu = None;
         self.automation_editor.open();
         self.tooltip = None;
     }
@@ -3833,6 +3870,41 @@ impl Ui {
             renderer.texture_bind_group_layout(),
             renderer.texture_sampler(),
         );
+        // Karaoke dot textures: the project's dots (default, groups and
+        // character dots) and, while the style window is open, its choices.
+        let style_window_dots = self
+            .modal_host
+            .band_style
+            .as_ref()
+            .map(|modal| modal.karaoke_dot_choices())
+            .unwrap_or(&[]);
+        self.karaoke_dot_cache.sync(
+            project
+                .settings()
+                .band_style
+                .all_karaoke_dots()
+                .chain(style_window_dots),
+            device,
+            queue,
+            renderer.texture_bind_group_layout(),
+            renderer.texture_sampler(),
+        );
+        // Band of the export layout preview, rendered like at export.
+        let export_band_request = self
+            .modal_host
+            .export
+            .as_ref()
+            .and_then(|modal| modal.band_preview_request(self.screen_w, self.screen_h, ui_scale));
+        self.export_band_preview.sync(
+            export_band_request,
+            project,
+            render_frame,
+            fps,
+            device,
+            queue,
+            renderer.texture_bind_group_layout(),
+            renderer.texture_sampler(),
+        );
 
         // Update drawing overlay texture if needed
         if show_rythmo {
@@ -3900,6 +3972,7 @@ impl Ui {
         let mut topmost_quads: Vec<QuadInstance> = Vec::new();
         let mut topmost_labels: Vec<LabelInfo> = Vec::new();
         let mut modal_overlay_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
+        let mut modal_textured: Vec<(IconInstance, &wgpu::BindGroup)> = Vec::new();
 
         // Pricing / support page replaces the entire layout while active.
         if self.modal_host.pricing_page.is_some() {
@@ -3995,6 +4068,12 @@ impl Ui {
                         self.rythmo_state.line_input.update_selection(closest_idx);
                     } else {
                         self.rythmo_state.line_input.set_cursor_pos(closest_idx);
+                        rythmo::remember_clicked_segment(
+                            project,
+                            &mut self.rythmo_state,
+                            line_id,
+                            ratio,
+                        );
                     }
                 }
             }
@@ -4093,6 +4172,7 @@ impl Ui {
         let mut syllable_quads: Vec<QuadInstance> = Vec::new();
         let mut note_icons: Vec<IconInstance> = Vec::new();
         let mut actor_icon_draws: Vec<rythmo::VoiceActorIconDraw> = Vec::new();
+        let mut karaoke_dot_draws: Vec<rythmo::KaraokeDotDraw> = Vec::new();
         let note_uv = self.uv("note");
         let detection_uvs = [
             "detection/labial",
@@ -4118,6 +4198,7 @@ impl Ui {
         let lint_diagnostics = self.rythmo_state.cached_lint_diagnostics(project, fps);
         let lint_severities = self.rythmo_state.cached_lint_severities();
         let lint_zones = self.rythmo_state.cached_lint_zones();
+        let first_line_quad = quads.len();
         let cursor_info = show_rythmo
             .then(|| {
                 rythmo::render_lines(
@@ -4136,14 +4217,26 @@ impl Ui {
                     &mut stretched_texts,
                     &mut note_icons,
                     &mut actor_icon_draws,
+                    &mut karaoke_dot_draws,
                     note_uv,
                     detection_uvs,
                 )
             })
             .flatten();
+        // Band colours are stored as sRGB values, which the exports write as
+        // is. The window surface is sRGB too, so convert them to linear here
+        // or the editor band would look lighter than the exported video.
+        linearize_band_quads(&mut quads[first_line_quad..]);
+        linearize_band_quads(&mut syllable_quads);
+        for text in &mut stretched_texts {
+            text.tint = color_picker::srgb_to_linear(text.tint);
+        }
+        for draw in &mut karaoke_dot_draws {
+            draw.tint = color_picker::srgb_to_linear(draw.tint);
+        }
         let lint_tooltip = if rythmo_editable
             && show_rythmo
-            && self.rythmo_state.context_menu.is_none()
+            && !self.rythmo_state.has_context_menu()
             && rythmo_zone.contains(self.cursor_pos.0, self.cursor_pos.1)
         {
             self.rythmo_state
@@ -4188,6 +4281,19 @@ impl Ui {
                         bind_group,
                     ));
                 }
+            }
+        }
+        for draw in karaoke_dot_draws {
+            if let Some(bind_group) = self.karaoke_dot_cache.bind_group_for_key(draw.texture_key) {
+                base_textured.push((
+                    IconInstance {
+                        rect: [draw.rect.x, draw.rect.y, draw.rect.width, draw.rect.height],
+                        uv_rect: [0.0, 0.0, 1.0, 1.0],
+                        tint: draw.tint,
+                        transform: [0.0, 0.0, 0.5, 0.5],
+                    },
+                    bind_group,
+                ));
             }
         }
 
@@ -4254,6 +4360,7 @@ impl Ui {
         // Markers
         let mut liaison_icons: Vec<IconInstance> = Vec::new();
         if show_rythmo {
+            let first_marker_quad = quads.len();
             rythmo::render_markers(
                 &rythmo_zone,
                 project,
@@ -4267,6 +4374,9 @@ impl Ui {
                 self.uv("liaison_left"),
                 self.uv("liaison_right"),
             );
+            // Marker colours are sRGB band colours too, shared with the
+            // exports (see `crate::band_visuals`).
+            linearize_band_quads(&mut quads[first_marker_quad..]);
             rythmo::render_ambiance_liaison_icons(
                 &rythmo_zone,
                 project,
@@ -4416,6 +4526,17 @@ impl Ui {
         }
 
         // Transient workspace surfaces use the popup layer.
+        if self.active_workspace == WorkspaceId::Rythmo && show_rythmo {
+            rythmo::render_format_toolbar(
+                project,
+                render_frame,
+                &rythmo_zone,
+                fps,
+                &self.rythmo_state,
+                &mut popup_quads,
+                &mut popup_labels,
+            );
+        }
         if self.active_workspace == WorkspaceId::Rythmo {
             rythmo::render_autocomplete(
                 &rythmo_zone,
@@ -4514,11 +4635,60 @@ impl Ui {
             );
         }
 
+        let format_tooltip = (rythmo_editable && show_rythmo)
+            .then(|| {
+                rythmo::format_toolbar_tooltip(
+                    project,
+                    &self.rythmo_state,
+                    render_frame,
+                    &rythmo_zone,
+                    fps,
+                    self.cursor_pos.0,
+                    self.cursor_pos.1,
+                )
+            })
+            .flatten()
+            .map(|text| tooltip::TooltipState {
+                text: text.to_string(),
+                cursor_x: self.cursor_pos.0,
+                cursor_y: self.cursor_pos.1,
+            });
+        // Hovering the spot where a click creates a synchronization point.
+        let sync_tooltip = (lint_tooltip.is_none()
+            && format_tooltip.is_none()
+            && rythmo_editable
+            && show_rythmo
+            && !self.rythmo_state.has_context_menu()
+            && self.rythmo_state.detection_menu.is_none()
+            && self.rythmo_state.detection_drag.is_none()
+            && self.rythmo_state.dragging.is_none()
+            && self.rythmo_state.detection_hover.is_some()
+            && self.rythmo_state.sync_tooltip_due(std::time::Instant::now())
+            && rythmo_zone.contains(self.cursor_pos.0, self.cursor_pos.1)
+            && rythmo::sync_placeholder_hovered(
+                project,
+                &self.rythmo_state,
+                self.cursor_pos.0,
+                self.cursor_pos.1,
+                render_frame,
+                &rythmo_zone,
+                fps,
+            ))
+        .then(|| tooltip::TooltipState {
+            text: crate::i18n::t("context.sync_point.create").to_string(),
+            cursor_x: self.cursor_pos.0,
+            cursor_y: self.cursor_pos.1,
+        });
+
         // Tooltip → overlay
         if let Some(tooltip) = lint_tooltip.as_ref() {
             tooltip_quads.extend(tooltip.render_quads(self.screen_w));
             tooltip_labels.extend(tooltip.render_labels(self.screen_w));
-        } else if let Some(tooltip) = &self.tooltip {
+        } else if let Some(tooltip) = format_tooltip
+            .as_ref()
+            .or(sync_tooltip.as_ref())
+            .or(self.tooltip.as_ref())
+        {
             tooltip_quads.extend(tooltip.render_quads(self.screen_w));
             tooltip_labels.extend(tooltip.render_labels(self.screen_w));
         }
@@ -4630,6 +4800,53 @@ impl Ui {
             self.screen_w,
             self.screen_h,
         );
+        let mut modal_foreground_quads: Vec<QuadInstance> = Vec::new();
+        if let Some(draws) = self
+            .modal_host
+            .export
+            .as_ref()
+            .and_then(|modal| modal.layout_preview_draws(self.screen_w, self.screen_h))
+        {
+            // Live export preview: the decoded video frame and the band
+            // rendered by the export renderer, placed like in the MP4.
+            let layers = [
+                (draws.video, video_quad.map(|(bind_group, _)| bind_group)),
+                (draws.band, self.export_band_preview.bind_group()),
+            ];
+            for (draw, bind_group) in layers {
+                if let (Some(draw), Some(bind_group)) = (draw, bind_group) {
+                    modal_textured.push((
+                        IconInstance {
+                            rect: [draw.rect.x, draw.rect.y, draw.rect.width, draw.rect.height],
+                            uv_rect: draw.uv,
+                            tint: [1.0; 4],
+                            transform: [0.0, 0.0, 0.5, 0.5],
+                        },
+                        bind_group,
+                    ));
+                }
+            }
+            modal_foreground_quads.extend(draws.outlines);
+        }
+        if let Some(modal) = &self.modal_host.band_style {
+            for preview in modal.karaoke_dot_previews(self.screen_w, self.screen_h) {
+                if let Some(bind_group) = self
+                    .karaoke_dot_cache
+                    .bind_group_for(preview.dot, crate::karaoke_dot::DotFace::Ground)
+                {
+                    let rect = preview.rect;
+                    modal_textured.push((
+                        IconInstance {
+                            rect: [rect.x, rect.y, rect.width, rect.height],
+                            uv_rect: [0.0, 0.0, 1.0, 1.0],
+                            tint: preview.tint,
+                            transform: [0.0, 0.0, 0.5, 0.5],
+                        },
+                        bind_group,
+                    ));
+                }
+            }
+        }
 
         if let Some(modal) = &self.project_transfer_modal {
             modal.render(
@@ -4746,8 +4963,8 @@ impl Ui {
             UiLayerBatch {
                 layer: UiLayer::Modal,
                 quads: &modal_quads,
-                textured: &[],
-                foreground_quads: &[],
+                textured: &modal_textured,
+                foreground_quads: &modal_foreground_quads,
                 icons: &[],
                 labels: &modal_labels,
             },
@@ -5274,10 +5491,12 @@ impl Ui {
         waveform_offset_frames: i64,
         waveform_is_instrumental: bool,
     ) {
+        let first_band_quad = quads.len();
+        let background = project.settings().band_style.background;
         quads.push(QuadInstance {
             rect: [zone.x, zone.y, zone.width, zone.height],
-            color: [0.02, 0.02, 0.03, 1.0],
-            color_bottom: [0.02, 0.02, 0.03, 1.0],
+            color: background,
+            color_bottom: background,
             border_color: [0.0; 4],
             border_width: 0.0,
             border_radius: 0.0,
@@ -5299,6 +5518,7 @@ impl Ui {
             fps,
             &self.rythmo_state,
         ));
+        linearize_band_quads(&mut quads[first_band_quad..]);
     }
 
     fn push_toolbar_zone(

@@ -255,6 +255,7 @@ impl CommandDispatcher {
                 },
             )),
             UiAction::OpenExportModal => Some(crate::i18n::t("export_modal.title")),
+            UiAction::OpenBandStyleModal => Some(crate::i18n::t("band_style.title")),
             UiAction::OpenRenameCharacterModal => {
                 Some(crate::i18n::t("rename_character_modal.title"))
             }
@@ -276,6 +277,7 @@ impl CommandDispatcher {
             UiAction::OpenProjectSettings => state.project_settings_modal_focus_label(),
             UiAction::OpenExportModal => state.export_modal_focus_label(),
             UiAction::OpenRenameCharacterModal => state.rename_character_modal_focus_label(),
+            UiAction::OpenBandStyleModal => state.band_style_modal_focus_label(),
             UiAction::OpenLinesPanel | UiAction::OpenRolesPanel => Some(
                 state
                     .ui_shell
@@ -801,7 +803,10 @@ impl CommandDispatcher {
             }
             UiAction::CloseSecondaryDisplay => state.close_secondary_display(),
             UiAction::Undo => {
-                if state.active_workspace()
+                // The export layout step has its own history: the project
+                // must not change behind it.
+                if state.export_layout_history(false) {
+                } else if state.active_workspace()
                     == crate::application::workspace_service::WorkspaceId::Voicelines
                 {
                     state.voicelines_undo();
@@ -814,7 +819,8 @@ impl CommandDispatcher {
                 }
             }
             UiAction::Redo => {
-                if state.active_workspace()
+                if state.export_layout_history(true) {
+                } else if state.active_workspace()
                     == crate::application::workspace_service::WorkspaceId::Voicelines
                 {
                     state.voicelines_redo();
@@ -1125,8 +1131,8 @@ impl CommandDispatcher {
             UiAction::AddSyncPointAtPlayhead => {
                 state.add_sync_point_at_playhead();
             }
-            UiAction::UpdateLineText { id, text } => {
-                state.update_line_text(id, text);
+            UiAction::UpdateLineText { id, text, edit } => {
+                state.update_line_text(id, text, edit);
             }
             UiAction::OpenTextEmotionMenu => {
                 state.open_text_emotion_menu();
@@ -1140,6 +1146,7 @@ impl CommandDispatcher {
                     },
                 );
             }
+            UiAction::ToggleTextStyle { kind } => state.toggle_text_style_on_target(kind),
             UiAction::SetTextEmotion {
                 line_id,
                 range,
@@ -1595,6 +1602,7 @@ impl CommandDispatcher {
                             false,
                             double_export_instrumental,
                             0.0,
+                            &project_snap.settings().export_configuration.layout.clone(),
                             Some(render_backend_status.clone()),
                             cancel_for_job,
                             move |v| {
@@ -1896,6 +1904,45 @@ impl CommandDispatcher {
             UiAction::OpenProjectSettings => {
                 state.open_project_settings_modal();
             }
+            UiAction::OpenBandStyleModal => {
+                state.open_band_style_modal();
+            }
+            UiAction::PreviewReadingBarOffset(percent) => {
+                state.preview_reading_bar_offset(percent);
+            }
+            UiAction::CommitReadingBarOffset {
+                percent,
+                original_percent,
+            } => {
+                state.commit_reading_bar_offset(percent, original_percent);
+            }
+            UiAction::PreviewBandStyle(style) => {
+                state.preview_band_style(style);
+            }
+            UiAction::ApplyBandStyle { style, original } => {
+                state.apply_band_style(style, original);
+            }
+            UiAction::SaveBandStylePresets(presets) => {
+                crate::config::set_band_style_presets(presets);
+            }
+            UiAction::ImportBandStylePreset => {
+                state.import_band_style_preset();
+            }
+            UiAction::ExportBandStylePreset(preset) => {
+                state.export_band_style_preset(preset);
+            }
+            UiAction::PickKaraokeDotImage => {
+                state.pick_karaoke_dot_image();
+            }
+            UiAction::PickKaraokeDotJumpImage => {
+                state.pick_karaoke_dot_jump_image();
+            }
+            UiAction::SetCharacterKaraokeDot { line_id, choice } => {
+                state.set_character_karaoke_dot(line_id, choice);
+            }
+            UiAction::PickCharacterKaraokeDotImage { line_id, jump } => {
+                state.pick_character_karaoke_dot_image(line_id, jump);
+            }
             UiAction::SaveSettings {
                 lang,
                 temporary_directory,
@@ -2098,7 +2145,7 @@ impl CommandDispatcher {
                 text,
             } => {
                 platform::clipboard_set(&clipboard);
-                state.update_line_text(id, text);
+                state.update_line_text(id, text, None);
             }
             UiAction::SetClipboardAndUpdateCharacterName {
                 clipboard,

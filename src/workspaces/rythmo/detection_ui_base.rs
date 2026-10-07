@@ -874,17 +874,35 @@ fn hit_sync_placeholder(
     x: f32,
     y: f32,
 ) -> Option<(u64, usize, MediaTick)> {
-    ctx.project.lines().find_map(|line| {
-        let placeholder = sync_placeholder_for_line(
-            ctx.project,
-            line,
-            state,
-            x,
-            y,
-            ctx.current_frame,
-            ctx.zone,
-            ctx.fps,
-        )?;
+    hit_sync_placeholder_at(ctx.project, state, x, y, ctx.current_frame, ctx.zone, ctx.fps)
+}
+
+/// Whether a click at `(x, y)` would create a synchronization point.
+pub(crate) fn sync_placeholder_hovered(
+    project: &Project,
+    state: &RythmoState,
+    x: f32,
+    y: f32,
+    current_frame: f64,
+    zone: &Rect,
+    fps: f64,
+) -> bool {
+    hit_sync_point(project, state, x, y, current_frame, zone, fps).is_none()
+        && hit_sync_placeholder_at(project, state, x, y, current_frame, zone, fps).is_some()
+}
+
+fn hit_sync_placeholder_at(
+    project: &Project,
+    state: &RythmoState,
+    x: f32,
+    y: f32,
+    current_frame: f64,
+    zone: &Rect,
+    fps: f64,
+) -> Option<(u64, usize, MediaTick)> {
+    project.lines().find_map(|line| {
+        let placeholder =
+            sync_placeholder_for_line(project, line, state, x, y, current_frame, zone, fps)?;
         let hit = expanded_rect(
             sync_dot_rect(placeholder.x, placeholder.line_rect),
             SYNC_DOT_HIT_PADDING,
@@ -895,6 +913,53 @@ fn hit_sync_placeholder(
             placeholder.media_tick,
         ))
     })
+}
+
+/// Synchronization point under `(x, y)`, with whether its limit currently
+/// falls after its character (the character stays with the left part).
+pub(crate) fn hit_sync_point(
+    project: &Project,
+    state: &RythmoState,
+    x: f32,
+    y: f32,
+    current_frame: f64,
+    zone: &Rect,
+    fps: f64,
+) -> Option<(DetectionAddress, bool)> {
+    for line in project.lines() {
+        if line.karaoke {
+            continue;
+        }
+        let Some(data) = project.detections().line(line.id) else {
+            continue;
+        };
+        let rect = line_rect(
+            project,
+            line,
+            current_frame,
+            zone,
+            crate::config::reading_bar_offset_seconds(),
+            fps,
+        );
+        for point in data.sync_points() {
+            let Some(cue_x) = sync_point_x(project, line, point, current_frame, zone, state, fps)
+            else {
+                continue;
+            };
+            if expanded_rect(sync_dot_rect(cue_x, rect), SYNC_DOT_HIT_PADDING).contains(x, y) {
+                let graphemes =
+                    UnicodeSegmentation::graphemes(line.text.as_str(), true).collect::<Vec<_>>();
+                return Some((
+                    DetectionAddress {
+                        line_id: line.id,
+                        detection_id: DetectionCueId(point.id.0),
+                    },
+                    point.follows_grapheme(&graphemes),
+                ));
+            }
+        }
+    }
+    None
 }
 
 fn hit_existing_detection(
@@ -1107,6 +1172,7 @@ pub(crate) fn render_sync_text_segments(
             start,
             read_highlight_end,
             tint,
+            drawable_text_styles(line),
         );
         cursor_segments.push(CursorSegmentInfo {
             cache_id,
@@ -1260,6 +1326,19 @@ pub(crate) fn handle_detection_event(
                     screen_y: *y,
                     track_rect: rect,
                 });
+            let create_spot = state
+                .detection_hover
+                .and_then(|_| hit_sync_placeholder(ctx, state, *x, *y))
+                .filter(|_| {
+                    hit_sync_point(ctx.project, state, *x, *y, ctx.current_frame, ctx.zone, ctx.fps)
+                        .is_none()
+                })
+                .map(|(line_id, character_index, _)| (line_id, character_index));
+            state.sync_create_hover = match (create_spot, state.sync_create_hover) {
+                (Some(spot), Some((previous, since))) if previous == spot => Some((spot, since)),
+                (Some(spot), _) => Some((spot, std::time::Instant::now())),
+                (None, _) => None,
+            };
 
             // Merely hovering a line that owns synchronization points must not
             // swallow the event. Mouse presses on an actual point or sync

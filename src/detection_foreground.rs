@@ -23,12 +23,12 @@ const MENU_COLUMNS: usize = 9;
 const MENU_WIDTH: f32 = MENU_PADDING * 2.0 + MENU_ICON_SIZE * 9.0 + MENU_GAP * 8.0;
 const MENU_HEIGHT: f32 = MENU_ICON_SIZE * 2.0 + MENU_GAP + MENU_PADDING * 2.0;
 const POPUP_CURSOR_GAP: f32 = 10.0;
+const INFO_DESCRIPTION_HEADING: &str = "Description";
+const INFO_SOUNDS_HEADING: &str = "Sons correspondants";
 const INFO_WIDTH: f32 = 470.0;
-const INFO_HEIGHT: f32 = 176.0;
 const INFO_PADDING: f32 = 12.0;
 const INFO_IMAGE_SIZE: f32 = 136.0;
-const TOOLTIP_WIDTH: f32 = 350.0;
-const TOOLTIP_HEIGHT: f32 = 90.0;
+const TOOLTIP_WIDTH: f32 = 420.0;
 const TOOLTIP_GAP: f32 = 12.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,16 +162,21 @@ struct Info {
     title: &'static str,
     description: &'static str,
     sounds: &'static str,
+    usage: &'static str,
     quick_label: &'static str,
     mouth: Mouth,
 }
 
+// Usage follows the UPAD Charte de la détection de doublage, pp. 2–7:
+// https://upad.fr/wp-content/uploads/2018/12/Charte-de-la-d%C3%A9tection-de-doublageY.J..pdf
+// TeethVisible is an application-specific visual cue, not a charter convention.
 fn info(sign: Sign) -> Info {
     match sign {
         Sign::Labial => Info {
             title: "Labiale",
             description: "Fermeture nette des lèvres.",
             sounds: "P, B, M",
+            usage: "À placer dès la fermeture complète des lèvres sur P, B ou M, vérifiée à l’image.",
             quick_label: "Labiale (P, B, M)",
             mouth: Mouth::Pbm,
         },
@@ -179,6 +184,7 @@ fn info(sign: Sign) -> Info {
             title: "Semi-labiale",
             description: "Contact lèvre-dents, fermeture labiale incomplète.",
             sounds: "F, V",
+            usage: "À placer sur le contact le plus marqué entre la lèvre inférieure et les dents, pour F ou V.",
             quick_label: "Semi-labiale (F, V)",
             mouth: Mouth::Fv,
         },
@@ -186,41 +192,47 @@ fn info(sign: Sign) -> Info {
             title: "Vague d'ouverture",
             description: "La bouche s’ouvre ou s’étire nettement.",
             sounds: "a / â ; é / er / ez ; è / ê / ai / ei ; i / y ; in / im / ain / ein ; parfois an / en",
+            usage: "À placer sur une ouverture visible (é, i, a…), y compris un mouvement sans parole.",
             quick_label: "Vague d'ouverture",
             mouth: Mouth::Aa,
         },
         Sign::MouthOpenArrow => Info {
             title: "Bouche ouverte",
-            description: "Bouche ouverte, repère d’articulation.",
-            sounds: "Voyelles ouvertes et attaques vocales",
+            description: "Début / fin de phrase, bouche ouverte.",
+            sounds: "État de la bouche à l’image",
+            usage: "À utiliser au début ou à la fin d’une phrase si la bouche est ouverte à cette image.",
             quick_label: "Bouche ouverte",
             mouth: Mouth::Aa,
         },
         Sign::MouthClosed => Info {
             title: "Bouche fermée",
-            description: "Bouche refermée ou occlusion visuelle.",
-            sounds: "Fermetures et attaques de consonnes occlusives",
-            quick_label: "Bouche fermée (fermetures, consonnes occlusives)",
+            description: "Début / fin de phrase, bouche fermée.",
+            sounds: "État de la bouche à l’image",
+            usage: "À utiliser au début ou à la fin d’une phrase si la bouche est fermée à cette image.",
+            quick_label: "Bouche fermée (début ou fin de phrase)",
             mouth: Mouth::Pbm,
         },
         Sign::TeethVisible => Info {
             title: "Dents visibles",
             description: "Dents apparentes, articulation tendue.",
-            sounds: "F, V, S, T, EE",
-            quick_label: "Dents visibles (F, V, S, T, EE)",
+            sounds: "À confirmer d’après l’image et le son",
+            usage: "Repère visuel de l’application pour des dents apparentes ; pas de correspondance automatique avec une consonne. Convention à valider en studio.",
+            quick_label: "Dents visibles (repère visuel)",
             mouth: Mouth::KstEe,
         },
         Sign::DentalTh => Info {
             title: "TH",
             description: "Articulation dentale appuyée du « th ».",
-            sounds: "TH, T et S appuyés",
-            quick_label: "TH (TH, T, S appuyés)",
+            sounds: "TH anglais : think, this",
+            usage: "Une dentale est un son articulé avec la langue contre les dents supérieures. Pour le TH anglais, placer le signe quand la langue apparaît nettement entre les dents.",
+            quick_label: "TH anglais (langue entre les dents)",
             mouth: Mouth::KstEe,
         },
         Sign::Breath => Info {
             title: "Respiration",
             description: "Souffle ou reprise d’air.",
             sounds: "Respiration, souffle et aspiration",
+            usage: "À placer sur une inspiration ou une expiration repérable au son et à l’image.",
             quick_label: "Respiration (souffle, aspiration)",
             mouth: Mouth::UwOwW,
         },
@@ -228,6 +240,7 @@ fn info(sign: Sign) -> Info {
             title: "Neutre / parenthèses",
             description: "Mouvement neutre ou intermédiaire.",
             sounds: "CH, dentales appuyées et articulation neutre",
+            usage: "Pour un CH ou une dentale très appuyée, selon la convention du détecteur. Une dentale est un son articulé avec la langue contre les dents supérieures.",
             quick_label: "Neutre / parenthèses (CH, dentales, neutre)",
             mouth: Mouth::EhAe,
         },
@@ -235,6 +248,7 @@ fn info(sign: Sign) -> Info {
             title: "Réaction",
             description: "Réaction vocale non verbale.",
             sounds: "Rires, exclamations et petits bruits vocaux",
+            usage: "Pour un rire, cri, pleur ou une toux ; compléter par une phonétique synchrone.",
             quick_label: "Réaction (rires, exclamations, bruits vocaux)",
             mouth: Mouth::Aa,
         },
@@ -242,6 +256,7 @@ fn info(sign: Sign) -> Info {
             title: "Cul de poule",
             description: "Les lèvres se resserrent et se projettent en petite moue.",
             sounds: "Lèvres pincées, baiser, petite projection labiale",
+            usage: "À placer sur le resserrement des lèvres le plus marqué.",
             quick_label: "Cul de poule",
             mouth: Mouth::UwOwW,
         },
@@ -249,12 +264,34 @@ fn info(sign: Sign) -> Info {
             title: "Vague d'avancée",
             description: "Les lèvres s’arrondissent et se projettent vers l’avant.",
             sounds: "o ; au / eau ; on / om ; ou ; u ; eu / œu ; parfois w dans oui, quoi, oiseau ou loin",
+            usage: "À placer sur une avancée visible des lèvres (on, o, ou, u, eu…), même sans parole.",
             quick_label: "Vague d'avancée",
             mouth: Mouth::UwOwW,
         },
-        Sign::Off => Info { title: "OFF", description: "Réplique hors caméra.", sounds: "Soulignage continu à l’export", quick_label: "Marquer la réplique comme OFF (hors caméra)", mouth: Mouth::EhAe },
-        Sign::Back => Info { title: "De dos", description: "Personnage filmé de dos.", sounds: "Soulignage pointillé à l’export", quick_label: "Marquer la réplique comme de dos", mouth: Mouth::EhAe },
-        Sign::RemoveUnderline => Info { title: "Retirer le soulignage", description: "Rétablir la ligne comme une réplique active.", sounds: "Ligne active", quick_label: "Retirer le soulignage", mouth: Mouth::EhAe },
+        Sign::Off => Info {
+            title: "OFF",
+            description: "Réplique hors caméra.",
+            sounds: "Soulignage continu à l’export",
+            usage: "Pour une voix dont le personnage est absent du plan.",
+            quick_label: "Marquer la réplique comme OFF (hors caméra)",
+            mouth: Mouth::EhAe,
+        },
+        Sign::Back => Info {
+            title: "De dos",
+            description: "Personnage filmé de dos.",
+            sounds: "Soulignage pointillé à l’export",
+            usage: "Pour un personnage présent de dos ou dont la bouche n’est pas visible.",
+            quick_label: "Marquer la réplique comme de dos",
+            mouth: Mouth::EhAe,
+        },
+        Sign::RemoveUnderline => Info {
+            title: "Retirer le soulignage",
+            description: "Rétablir la ligne comme une réplique active.",
+            sounds: "Ligne active",
+            usage: "Pour retirer le statut OFF ou de dos de la réplique sélectionnée.",
+            quick_label: "Retirer le soulignage",
+            mouth: Mouth::EhAe,
+        },
     }
 }
 
@@ -482,7 +519,11 @@ fn announce_palette_selection(
     let signs = palette_signs(line_presence);
     let details = info(signs[selected.min(signs.len() - 1)]);
     EventResponse::Action(UiAction::Accessibility(AccessibilityEvent::Selection {
-        label: details.quick_label.to_string(),
+        label: format!(
+            "{}. {}",
+            details.quick_label,
+            details.usage.replace('\n', " ")
+        ),
     }))
 }
 
@@ -729,12 +770,13 @@ pub fn sync_from_state(
             foreground.last_pointer.1,
         ),
     };
+    let layout = info_layout(info(sign), (zone.width - 16.0).max(1.0));
     let outer = clamp_popup(
         Rect {
             x: x + 8.0,
-            y: y - INFO_HEIGHT - 8.0,
-            width: INFO_WIDTH,
-            height: INFO_HEIGHT,
+            y: y - layout.height - 8.0,
+            width: layout.width,
+            height: layout.height,
         },
         zone,
     );
@@ -779,8 +821,11 @@ pub fn selected_info_accessibility_label(project: &Project, state: &RythmoState)
     let cue = project.detections().detection(selected_address(state)?)?;
     let details = info(Sign::from_cue(cue)?);
     Some(format!(
-        "Fiche de détection. {}. Description : {} Sons correspondants : {}.",
-        details.title, details.description, details.sounds
+        "Fiche de détection. {}. Description : {} Sons correspondants : {}. {}",
+        details.title,
+        details.description,
+        details.sounds,
+        details.usage.replace('\n', " ")
     ))
 }
 
@@ -836,6 +881,190 @@ fn push_label<'a>(
         color_override: Some(color),
         font_family_override: None,
     });
+}
+
+fn text_size(text: &str, size: f32, width: f32) -> (f32, f32) {
+    crate::ui::renderer::measure_wrapped_text(text, size, width)
+}
+
+fn push_wrapped<'a>(
+    labels: &mut Vec<LabelInfo<'a>>,
+    text: &'static str,
+    bounds: Rect,
+    size: f32,
+    color: [u8; 3],
+) {
+    push_label(labels, text, bounds, size, color, HAlign::Left, VAlign::Top);
+    labels.last_mut().unwrap().overflow = Overflow::Wrap;
+}
+
+#[derive(Clone, Copy)]
+struct InfoLayout {
+    width: f32,
+    height: f32,
+    image: Rect,
+    title: Rect,
+    description_heading: Rect,
+    description: Rect,
+    sounds_heading: Rect,
+    sounds: Rect,
+    usage: Rect,
+}
+
+fn info_layout(details: Info, available_width: f32) -> InfoLayout {
+    let natural_text_width = [
+        text_size(details.title, 18.0, 100_000.0).0,
+        text_size(details.description, 13.0, 100_000.0).0,
+        text_size(details.sounds, 13.0, 100_000.0).0,
+    ]
+    .into_iter()
+    .fold(0.0, f32::max);
+    let preferred = (natural_text_width + INFO_IMAGE_SIZE + 14.0 + INFO_PADDING * 2.0)
+        .max(text_size(details.usage, 13.0, 100_000.0).0 + INFO_PADDING * 2.0)
+        .clamp(280.0, INFO_WIDTH);
+    let width = preferred.min(available_width.max(1.0));
+    let content_width = (width - INFO_PADDING * 2.0).max(1.0);
+    let stacked = width < 340.0;
+    let image_size = INFO_IMAGE_SIZE.min(content_width);
+    let image = Rect {
+        x: INFO_PADDING,
+        y: INFO_PADDING,
+        width: image_size,
+        height: image_size,
+    };
+    let text_x = if stacked {
+        INFO_PADDING
+    } else {
+        INFO_PADDING + image_size + 14.0
+    };
+    let text_width = if stacked {
+        content_width
+    } else {
+        (width - INFO_PADDING - text_x).max(1.0)
+    };
+    let mut y = if stacked {
+        INFO_PADDING + image_size + 12.0
+    } else {
+        INFO_PADDING
+    };
+    let title = Rect {
+        x: text_x,
+        y,
+        width: text_width,
+        height: text_size(details.title, 18.0, text_width).1,
+    };
+    y += title.height + 12.0;
+    let description_heading = Rect {
+        x: text_x,
+        y,
+        width: text_width,
+        height: text_size(INFO_DESCRIPTION_HEADING, 11.0, text_width).1,
+    };
+    y += description_heading.height + 4.0;
+    let description = Rect {
+        x: text_x,
+        y,
+        width: text_width,
+        height: text_size(details.description, 13.0, text_width).1,
+    };
+    y += description.height + 12.0;
+    let sounds_heading = Rect {
+        x: text_x,
+        y,
+        width: text_width,
+        height: text_size(INFO_SOUNDS_HEADING, 11.0, text_width).1,
+    };
+    y += sounds_heading.height + 4.0;
+    let sounds = Rect {
+        x: text_x,
+        y,
+        width: text_width,
+        height: text_size(details.sounds, 13.0, text_width).1,
+    };
+    y = (y + sounds.height).max(image.y + image.height) + 14.0;
+    let usage = Rect {
+        x: INFO_PADDING,
+        y,
+        width: content_width,
+        height: text_size(details.usage, 13.0, content_width).1,
+    };
+    InfoLayout {
+        width,
+        height: y + usage.height + INFO_PADDING,
+        image,
+        title,
+        description_heading,
+        description,
+        sounds_heading,
+        sounds,
+        usage,
+    }
+}
+
+fn translated(rect: Rect, outer: Rect) -> Rect {
+    Rect {
+        x: outer.x + rect.x,
+        y: outer.y + rect.y,
+        ..rect
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TooltipLayout {
+    width: f32,
+    height: f32,
+    image: Rect,
+    title: Rect,
+    usage: Rect,
+}
+
+fn tooltip_layout(details: Info, available_width: f32) -> TooltipLayout {
+    let preferred = (text_size(details.quick_label, 13.0, 100_000.0).0 + 102.0)
+        .max(text_size(details.usage, 13.0, 100_000.0).0 + 24.0)
+        .clamp(220.0, TOOLTIP_WIDTH);
+    let width = preferred.min(available_width.max(1.0));
+    let content_width = (width - 24.0).max(1.0);
+    let image_size = 80.0_f32.min(content_width);
+    let image = Rect {
+        x: 12.0,
+        y: 12.0,
+        width: image_size,
+        height: image_size,
+    };
+    let stacked = width < 220.0;
+    let title_x = if stacked {
+        12.0
+    } else {
+        image.x + image.width + 10.0
+    };
+    let title_width = if stacked {
+        content_width
+    } else {
+        (width - 12.0 - title_x).max(1.0)
+    };
+    let title = Rect {
+        x: title_x,
+        y: if stacked {
+            image.y + image.height + 8.0
+        } else {
+            12.0
+        },
+        width: title_width,
+        height: text_size(details.quick_label, 13.0, title_width).1,
+    };
+    let usage = Rect {
+        x: 12.0,
+        y: (image.y + image.height).max(title.y + title.height) + 10.0,
+        width: content_width,
+        height: text_size(details.usage, 13.0, content_width).1,
+    };
+    TooltipLayout {
+        width,
+        height: usage.y + usage.height + 12.0,
+        image,
+        title,
+        usage,
+    }
 }
 
 struct MouthBitmap {
@@ -1078,126 +1307,99 @@ pub fn append_foreground<'a>(
             }
 
             let details = info(signs[selected.min(signs.len() - 1)]);
-            let tooltip_y = if outer.y + outer.height + TOOLTIP_GAP + TOOLTIP_HEIGHT <= screen_h {
+            let layout = tooltip_layout(details, (screen_w - 16.0).max(1.0));
+            let tooltip_y = if outer.y + outer.height + TOOLTIP_GAP + layout.height <= screen_h {
                 outer.y + outer.height + TOOLTIP_GAP
             } else {
-                (outer.y - TOOLTIP_HEIGHT - TOOLTIP_GAP).max(0.0)
+                outer.y - layout.height - TOOLTIP_GAP
             };
-            let tooltip = Rect {
-                x: (palette_item_rect(outer, selected).x + MENU_ICON_SIZE / 2.0
-                    - TOOLTIP_WIDTH / 2.0)
-                    .clamp(0.0, (screen_w - TOOLTIP_WIDTH).max(0.0)),
-                y: tooltip_y,
-                width: TOOLTIP_WIDTH.min(screen_w),
-                height: TOOLTIP_HEIGHT,
-            };
+            let tooltip = clamp_popup(
+                Rect {
+                    x: palette_item_rect(outer, selected).x + MENU_ICON_SIZE / 2.0
+                        - layout.width / 2.0,
+                    y: tooltip_y,
+                    width: layout.width,
+                    height: layout.height,
+                },
+                screen,
+            );
             push_panel_quad(quads, tooltip, [0.025, 0.028, 0.038, 0.999], 6.0);
-            let mouth_rect = Rect {
-                x: tooltip.x + 5.0,
-                y: tooltip.y + 5.0,
-                width: 80.0,
-                height: 80.0,
-            };
-            render_mouth_scaled(quads, mouth_rect, details.mouth);
-            push_label(
+            render_mouth_scaled(quads, translated(layout.image, tooltip), details.mouth);
+            push_wrapped(
                 labels,
                 details.quick_label,
-                Rect {
-                    x: mouth_rect.x + mouth_rect.width + 5.0,
-                    y: tooltip.y,
-                    width: (tooltip.width - 90.0).max(0.0),
-                    height: tooltip.height,
-                },
+                translated(layout.title, tooltip),
                 13.0,
                 [245, 247, 252],
-                HAlign::Center,
-                VAlign::Center,
+            );
+            push_wrapped(
+                labels,
+                details.usage,
+                translated(layout.usage, tooltip),
+                13.0,
+                [242, 244, 249],
             );
         }
         Popup::Info { visual, sign, .. } => {
-            let outer = clamp_popup(visual, screen);
             let details = info(sign);
+            let layout = info_layout(details, (screen_w - 16.0).max(1.0));
+            let outer = clamp_popup(
+                Rect {
+                    width: layout.width,
+                    height: layout.height,
+                    ..visual
+                },
+                screen,
+            );
+            // Keep pointer dismissal aligned with the actual card after a resize.
+            if let Popup::Info { visual, .. } = &mut lock_state().popup {
+                *visual = outer;
+            }
             push_panel_quad(quads, outer, [0.026, 0.030, 0.042, 0.999], 11.0);
-            let image_rect = Rect {
-                x: outer.x + INFO_PADDING,
-                y: outer.y + (outer.height - INFO_IMAGE_SIZE) / 2.0,
-                width: INFO_IMAGE_SIZE,
-                height: INFO_IMAGE_SIZE,
-            };
-            push_panel_quad(quads, image_rect, [0.10, 0.11, 0.14, 1.0], 8.0);
-            render_mouth(quads, image_rect, details.mouth);
-
-            let text_x = image_rect.x + image_rect.width + 14.0;
-            let text_width = (outer.x + outer.width - INFO_PADDING - text_x).max(0.0);
-            push_label(
+            let image = translated(layout.image, outer);
+            push_panel_quad(quads, image, [0.10, 0.11, 0.14, 1.0], 8.0);
+            render_mouth(quads, image, details.mouth);
+            push_wrapped(
                 labels,
                 details.title,
-                Rect {
-                    x: text_x,
-                    y: outer.y + 12.0,
-                    width: text_width,
-                    height: 28.0,
-                },
+                translated(layout.title, outer),
                 18.0,
                 [246, 248, 253],
-                HAlign::Left,
-                VAlign::Center,
             );
-            push_label(
+            push_wrapped(
                 labels,
-                "Description",
-                Rect {
-                    x: text_x,
-                    y: outer.y + 48.0,
-                    width: text_width,
-                    height: 18.0,
-                },
+                INFO_DESCRIPTION_HEADING,
+                translated(layout.description_heading, outer),
                 11.0,
                 [142, 164, 202],
-                HAlign::Left,
-                VAlign::Center,
             );
-            push_label(
+            push_wrapped(
                 labels,
                 details.description,
-                Rect {
-                    x: text_x,
-                    y: outer.y + 66.0,
-                    width: text_width,
-                    height: 28.0,
-                },
+                translated(layout.description, outer),
                 13.0,
                 [222, 227, 238],
-                HAlign::Left,
-                VAlign::Center,
             );
-            push_label(
+            push_wrapped(
                 labels,
-                "Sons correspondants",
-                Rect {
-                    x: text_x,
-                    y: outer.y + 104.0,
-                    width: text_width,
-                    height: 18.0,
-                },
+                INFO_SOUNDS_HEADING,
+                translated(layout.sounds_heading, outer),
                 11.0,
                 [142, 164, 202],
-                HAlign::Left,
-                VAlign::Center,
             );
-            push_label(
+            push_wrapped(
                 labels,
                 details.sounds,
-                Rect {
-                    x: text_x,
-                    y: outer.y + 122.0,
-                    width: text_width,
-                    height: 38.0,
-                },
+                translated(layout.sounds, outer),
                 13.0,
                 [242, 244, 249],
-                HAlign::Left,
-                VAlign::Top,
+            );
+            push_wrapped(
+                labels,
+                details.usage,
+                translated(layout.usage, outer),
+                13.0,
+                [242, 244, 249],
             );
         }
     }
@@ -1206,6 +1408,60 @@ pub fn append_foreground<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detection_panels_fit_all_content_at_wide_and_narrow_widths() {
+        for sign in Sign::ALL.into_iter().chain([Sign::RemoveUnderline]) {
+            let details = info(sign);
+            assert!(!details.usage.contains('\n'));
+            for width in [160.0, 280.0, 360.0, 470.0] {
+                let card = info_layout(details, width);
+                assert!(card.width <= width);
+                for rect in [
+                    card.image,
+                    card.title,
+                    card.description_heading,
+                    card.description,
+                    card.sounds_heading,
+                    card.sounds,
+                    card.usage,
+                ] {
+                    assert!(rect.x + rect.width <= card.width);
+                    assert!(rect.y + rect.height + INFO_PADDING <= card.height);
+                }
+                assert!(
+                    card.description.y
+                        >= card.description_heading.y + card.description_heading.height
+                );
+                assert!(card.sounds.y >= card.sounds_heading.y + card.sounds_heading.height);
+                assert!(card.usage.y >= card.sounds.y + card.sounds.height);
+                assert!(card.usage.y >= card.image.y + card.image.height);
+                assert_eq!(
+                    card.usage.height,
+                    text_size(details.usage, 13.0, card.usage.width).1
+                );
+
+                let tooltip = tooltip_layout(details, width);
+                assert!(tooltip.width <= width);
+                assert!(tooltip.usage.y >= tooltip.title.y + tooltip.title.height);
+                assert!(tooltip.usage.y >= tooltip.image.y + tooltip.image.height);
+                assert_eq!(
+                    tooltip.height,
+                    tooltip.usage.y + tooltip.usage.height + 12.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn panel_height_adapts_to_text_and_available_width() {
+        let short = tooltip_layout(info(Sign::Pucker), 420.0);
+        let long = tooltip_layout(info(Sign::DentalTh), 420.0);
+        let narrow = tooltip_layout(info(Sign::DentalTh), 160.0);
+        assert!(long.height > short.height);
+        assert!(narrow.height > long.height);
+        assert!(narrow.width < long.width);
+    }
 
     #[test]
     fn palette_navigation_wraps() {
@@ -1270,7 +1526,7 @@ mod tests {
             x: 10.0,
             y: 10.0,
             width: INFO_WIDTH,
-            height: INFO_HEIGHT,
+            height: info_layout(info(Sign::MouthOpen), INFO_WIDTH).height,
         };
         lock_state().popup = Popup::Info {
             visual: rect,

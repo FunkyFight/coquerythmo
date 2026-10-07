@@ -245,6 +245,7 @@ mod tests {
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
             text_emotions: Vec::new(),
+            text_styles: Vec::new(),
         }
     }
 

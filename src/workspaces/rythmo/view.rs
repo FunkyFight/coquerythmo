@@ -31,8 +31,6 @@ use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use unicode_segmentation::UnicodeSegmentation;
 
-const PLAYHEAD_WIDTH: f32 = 3.0;
-const PLAYHEAD_COLOR: [f32; 4] = [1.0, 0.02, 0.05, 1.0];
 
 const HANDLE_COLOR: [f32; 4] = [0.9, 0.9, 0.95, 0.8];
 const LINE_BORDER: [f32; 4] = [0.5, 0.5, 0.55, 0.3];
@@ -127,55 +125,36 @@ fn character_badge_collision_layout(
     grid: &BadgeCollisionGrid,
     scratch: &mut Vec<u32>,
 ) -> (bool, Rect, f32) {
-    if grid.same_character_overlap(badge_rect, line_id, character_name, scratch) {
-        return (true, *badge_rect, 1.0);
-    }
-    let mut collides = |candidate: &Rect| grid.any_overlap(candidate, line_id, scratch);
-    if !collides(badge_rect) {
-        return (false, *badge_rect, 1.0);
-    }
-
-    // Preserve the original full-size left alignment before considering a
-    // shrink. After that move, every smaller badge is a strict subset of the
-    // previous one, so collision is monotone in the shrink step.
-    let top = badge_rect.y;
-    let base_width = badge_rect.width;
-    let base_height = badge_rect.height;
-    let fitted_at = |step: i32| {
-        let scale = 1.0 - step as f32 * 0.01;
-        Rect {
-            x: line_x - BADGE_GAP - base_width * scale,
-            y: top,
-            width: base_width * scale,
-            height: base_height * scale,
-        }
-    };
-    let full_size_fitted = fitted_at(0);
-    if !collides(&full_size_fitted) {
-        return (false, full_size_fitted, 1.0);
-    }
-
-    // Find the first collision-free 1% step instead of testing all 95.
-    let mut lo = 1;
-    let mut hi = 95;
-    let mut best = 96; // sentinel: no collision-free step in 1..=95
-    while lo <= hi {
-        let mid = (lo + hi) / 2;
-        if collides(&fitted_at(mid)) {
-            lo = mid + 1;
-        } else {
-            best = mid;
-            hi = mid - 1;
-        }
-    }
-    let fitted = fitted_at(best.min(95));
-    let scale = 1.0 - (best.min(95) as f32) * 0.01;
-    (false, fitted, scale)
+    // Shared with the video exports so the exported labels shrink alike.
+    let fit = crate::band_visuals::fit_character_badge(
+        *badge_rect,
+        line_x,
+        BADGE_GAP,
+        |candidate, same_character_only| {
+            if same_character_only {
+                grid.same_character_overlap(candidate, line_id, character_name, scratch)
+            } else {
+                grid.any_overlap(candidate, line_id, scratch)
+            }
+        },
+    );
+    (fit.hidden, fit.rect, fit.scale)
 }
 
 #[path = "detection_ui.rs"]
 mod detection_ui;
 pub(crate) use detection_ui::*;
+#[path = "playhead_drag.rs"]
+mod playhead_drag;
+pub(crate) use playhead_drag::*;
+pub use playhead_drag::PlayheadDrag;
+#[path = "format_toolbar.rs"]
+mod format_toolbar;
+pub(crate) use format_toolbar::*;
+#[path = "sync_point_menu.rs"]
+mod sync_point_menu;
+pub(crate) use sync_point_menu::*;
+pub use sync_point_menu::SyncPointMenu;
 #[path = "state.rs"]
 mod state;
 pub use state::*;
@@ -216,6 +195,9 @@ pub(crate) use keyboard::*;
 #[path = "keyboard_nav.rs"]
 mod keyboard_nav;
 pub(crate) use keyboard_nav::*;
+#[path = "sync_edit.rs"]
+mod sync_edit;
+pub(crate) use sync_edit::*;
 
 #[cfg(test)]
 mod tests {
@@ -1534,6 +1516,7 @@ mod tests {
             &mut stretched,
             &mut notes,
             &mut actors,
+            &mut Vec::new(),
             [0.0; 4],
             [[0.0; 4]; 18],
         );
@@ -1677,6 +1660,9 @@ mod tests {
             hover_actor_index: None,
             hover_action_index: None,
             actor_scroll: 0.0,
+            hover_karaoke: false,
+            hover_karaoke_index: None,
+            hover_karaoke_specific: None,
         });
         let (_, actor_rect, _, _, _, _) = context_menu_layout(
             &project,
@@ -1727,6 +1713,9 @@ mod tests {
             hover_actor_index: None,
             hover_action_index: None,
             actor_scroll: 0.0,
+            hover_karaoke: false,
+            hover_karaoke_index: None,
+            hover_karaoke_specific: None,
         });
         let zone = Rect {
             x: 0.0,
@@ -1755,6 +1744,253 @@ mod tests {
         assert_eq!(
             state.context_menu.as_ref().unwrap().hover_emotion_index,
             Some(EMOTION_CATEGORIES.len())
+        );
+    }
+
+    fn karaoke_menu_project() -> (Project, u64, u32) {
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 24, 0.0);
+        {
+            let line = project.get_line_mut(line_id).unwrap();
+            line.karaoke = true;
+            line.character_name = "ALICE".into();
+        }
+        let mut settings = project.settings().clone();
+        let group = settings
+            .band_style
+            .add_dot_group("Héros".into(), crate::band_style::KaraokeDot::Heart)
+            .unwrap();
+        project.set_settings(settings);
+        (project, line_id, group)
+    }
+
+    fn open_menu(line_id: u64) -> RythmoState {
+        let mut state = RythmoState::new();
+        state.context_menu = Some(LineContextMenu {
+            line_id,
+            x: 100.0,
+            y: 100.0,
+            hover_main: true,
+            hover_change_character: false,
+            hover_text_emotion: false,
+            hover_generate_detection: false,
+            hover_emotion_index: None,
+            hover_emotion_variant: None,
+            text_range: None,
+            hover_actor_index: None,
+            hover_action_index: None,
+            actor_scroll: 0.0,
+            hover_karaoke: false,
+            hover_karaoke_index: None,
+            hover_karaoke_specific: None,
+        });
+        state
+    }
+
+    fn menu_event(project: &Project, state: &mut RythmoState, event: UiEvent) -> EventResponse {
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1200.0,
+            height: 800.0,
+        };
+        handle_context_menu_event(&event, project, 0.0, &zone, 1200.0, 800.0, 24.0, state)
+    }
+
+    fn apply_choice(project: &mut Project, response: EventResponse) {
+        let EventResponse::Action(UiAction::SetCharacterKaraokeDot { line_id, choice }) = response
+        else {
+            panic!("expected a karaoke dot assignment, got {response:?}");
+        };
+        let name = project.get_line(line_id).unwrap().character_name.clone();
+        let mut settings = project.settings().clone();
+        settings.band_style.set_character_dot(&name, choice);
+        project.set_settings(settings);
+    }
+
+    #[test]
+    fn karaoke_item_only_shows_on_karaoke_lines_of_a_character() {
+        let (mut project, line_id, _) = karaoke_menu_project();
+        let karaoke_index = karaoke_root_index(&project, line_id).unwrap();
+        assert_eq!(root_item_count(&project, line_id), karaoke_index + 1);
+        assert!(context_menu_accessibility_label(&project, line_id)
+            .contains(t("context.karaoke_dot.menu")));
+        project.get_line_mut(line_id).unwrap().karaoke = false;
+        assert_eq!(karaoke_root_index(&project, line_id), None);
+        project.get_line_mut(line_id).unwrap().karaoke = true;
+        project.get_line_mut(line_id).unwrap().character_name = "  ".into();
+        assert_eq!(karaoke_root_index(&project, line_id), None);
+    }
+
+    #[test]
+    fn karaoke_menu_assigns_groups_and_specific_dots_with_the_keyboard() {
+        let (mut project, line_id, group) = karaoke_menu_project();
+        let mut state = open_menu(line_id);
+        // Down from the first item reaches "Karaoké".
+        let karaoke_index = karaoke_root_index(&project, line_id).unwrap();
+        for _ in 0..karaoke_index {
+            menu_event(&project, &mut state, UiEvent::CursorDown);
+        }
+        assert!(state.context_menu.as_ref().unwrap().hover_karaoke);
+        let response = menu_event(&project, &mut state, UiEvent::Activate);
+        assert!(matches!(
+            response,
+            EventResponse::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Selection { ref label }
+            )) if label.contains(t("context.karaoke_dot.default"))
+                && label.contains(t("context.karaoke_dot.current"))
+        ));
+        // Second item: the group.
+        menu_event(&project, &mut state, UiEvent::CursorDown);
+        let response = menu_event(&project, &mut state, UiEvent::Activate);
+        assert!(state.context_menu.is_none());
+        apply_choice(&mut project, response);
+        assert_eq!(
+            project.settings().band_style.character_dots.get("ALICE"),
+            Some(&crate::band_style::CharacterDot::Group(group))
+        );
+        assert_eq!(
+            project.settings().band_style.dot_for_character("ALICE"),
+            &crate::band_style::KaraokeDot::Heart
+        );
+        assert_eq!(current_karaoke_item(&project, line_id), 1);
+
+        // "Specific" submenu: the star.
+        let mut state = open_menu(line_id);
+        {
+            let menu = state.context_menu.as_mut().unwrap();
+            set_root_hover(&project, menu, karaoke_index);
+        }
+        menu_event(&project, &mut state, UiEvent::CursorRight);
+        menu_event(&project, &mut state, UiEvent::CursorUp);
+        assert_eq!(
+            state.context_menu.as_ref().unwrap().hover_karaoke_index,
+            Some(karaoke_specific_item_index(&project))
+        );
+        menu_event(&project, &mut state, UiEvent::CursorRight);
+        let star = crate::band_style::KaraokeDot::BUILTINS
+            .iter()
+            .position(|dot| *dot == crate::band_style::KaraokeDot::Star)
+            .unwrap();
+        for _ in 0..star {
+            menu_event(&project, &mut state, UiEvent::CursorDown);
+        }
+        let response = menu_event(&project, &mut state, UiEvent::Activate);
+        apply_choice(&mut project, response);
+        assert_eq!(
+            project.settings().band_style.dot_for_character("ALICE"),
+            &crate::band_style::KaraokeDot::Star
+        );
+        assert_eq!(
+            current_karaoke_item(&project, line_id),
+            karaoke_specific_item_index(&project)
+        );
+        assert_eq!(current_karaoke_specific_item(&project, line_id), Some(star));
+
+        // Left goes back up one level at a time.
+        let mut state = open_menu(line_id);
+        {
+            let menu = state.context_menu.as_mut().unwrap();
+            menu.hover_main = false;
+            menu.hover_karaoke_index = Some(karaoke_specific_item_index(&project));
+            menu.hover_karaoke_specific = Some(0);
+        }
+        menu_event(&project, &mut state, UiEvent::CursorLeft);
+        assert_eq!(state.context_menu.as_ref().unwrap().hover_karaoke_specific, None);
+        menu_event(&project, &mut state, UiEvent::CursorLeft);
+        let menu = state.context_menu.as_ref().unwrap();
+        assert!(menu.hover_karaoke && menu.hover_karaoke_index.is_none());
+    }
+
+    #[test]
+    fn karaoke_menu_works_with_the_mouse() {
+        let (mut project, line_id, _) = karaoke_menu_project();
+        let mut settings = project.settings().clone();
+        settings.band_style.set_character_dot(
+            "ALICE",
+            Some(crate::band_style::CharacterDot::Dot(
+                crate::band_style::KaraokeDot::Ring,
+            )),
+        );
+        project.set_settings(settings);
+        let mut state = open_menu(line_id);
+        let menu = state.context_menu.as_ref().unwrap();
+        let (root_rect, ..) = context_menu_layout(&project, 1200.0, 800.0, menu);
+        let karaoke_index = karaoke_root_index(&project, line_id).unwrap();
+        // Hovering "Karaoké" opens its submenu.
+        menu_event(
+            &project,
+            &mut state,
+            UiEvent::MouseMove {
+                x: root_rect.x + 20.0,
+                y: root_rect.y + MENU_ITEM_H * (karaoke_index as f32 + 0.5),
+            },
+        );
+        let menu = state.context_menu.as_ref().unwrap();
+        assert!(karaoke_menu_visible(menu));
+        let (karaoke_rect, _) = karaoke_menu_rects(&project, 1200.0, 800.0, menu, root_rect);
+        // Hovering "specific" opens the shapes; clicking "Image…" asks for a file.
+        menu_event(
+            &project,
+            &mut state,
+            UiEvent::MouseMove {
+                x: karaoke_rect.x + 20.0,
+                y: karaoke_rect.y
+                    + MENU_ITEM_H * (karaoke_specific_item_index(&project) as f32 + 0.5),
+            },
+        );
+        let menu = state.context_menu.as_ref().unwrap();
+        assert!(karaoke_specific_menu_visible(&project, menu));
+        let (_, specific_rect) = karaoke_menu_rects(&project, 1200.0, 800.0, menu, root_rect);
+        let image_index = crate::band_style::KaraokeDot::BUILTINS.len();
+        menu_event(
+            &project,
+            &mut state,
+            UiEvent::MouseMove {
+                x: specific_rect.x + 20.0,
+                y: specific_rect.y + MENU_ITEM_H * (image_index as f32 + 0.5),
+            },
+        );
+        let response = menu_event(
+            &project,
+            &mut state,
+            UiEvent::MousePress {
+                x: specific_rect.x + 20.0,
+                y: specific_rect.y + MENU_ITEM_H * (image_index as f32 + 0.5),
+            },
+        );
+        assert_eq!(
+            response,
+            EventResponse::Action(UiAction::PickCharacterKaraokeDotImage {
+                line_id,
+                jump: false,
+            })
+        );
+
+        // Clicking "Point par défaut" clears the character's own dot.
+        let mut state = open_menu(line_id);
+        for (x, y) in [
+            (
+                root_rect.x + 20.0,
+                root_rect.y + MENU_ITEM_H * (karaoke_index as f32 + 0.5),
+            ),
+            (karaoke_rect.x + 20.0, karaoke_rect.y + MENU_ITEM_H * 0.5),
+        ] {
+            menu_event(&project, &mut state, UiEvent::MouseMove { x, y });
+        }
+        let response = menu_event(
+            &project,
+            &mut state,
+            UiEvent::MousePress {
+                x: karaoke_rect.x + 20.0,
+                y: karaoke_rect.y + MENU_ITEM_H * 0.5,
+            },
+        );
+        apply_choice(&mut project, response);
+        assert!(project.settings().band_style.character_dots.is_empty());
+        assert_eq!(
+            project.settings().band_style.dot_for_character("ALICE"),
+            &crate::band_style::KaraokeDot::Circle
         );
     }
 }
@@ -1857,7 +2093,8 @@ fn active_karaoke_skip_ranges(
             let karaoke_left = center_x - karaoke_width / 2.0;
             let karaoke_right = center_x + karaoke_width / 2.0;
 
-            if playhead_x + PLAYHEAD_WIDTH > karaoke_left && playhead_x < karaoke_right {
+            let playhead_width = project.settings().band_style.playhead_width;
+            if playhead_x + playhead_width > karaoke_left && playhead_x < karaoke_right {
                 Some((rect.y, rect.y + rect.height))
             } else {
                 None
@@ -2038,7 +2275,9 @@ pub fn render_rythmo_base(
     // Ticks removed from UI (kept in CPU/GPU export renderers)
 
     let offset_frames = crate::config::reading_bar_offset_seconds() * fps;
-    let playhead_x = zone.x + (zone.width - PLAYHEAD_WIDTH) / 2.0 - offset_frames as f32 * ppf();
+    let band_style = &project.settings().band_style;
+    let playhead_x =
+        zone.x + (zone.width - band_style.playhead_width) / 2.0 - offset_frames as f32 * ppf();
     let skip_ranges = active_karaoke_skip_ranges(
         project,
         render_index,
@@ -2052,10 +2291,10 @@ pub fn render_rythmo_base(
     push_playhead_segments(
         &mut quads,
         playhead_x,
-        PLAYHEAD_WIDTH,
+        band_style.playhead_width,
         zone.y,
         zone.height,
-        PLAYHEAD_COLOR,
+        playhead_display_color(project, state),
         [0.0; 4],
         0.0,
         &skip_ranges,
@@ -2075,7 +2314,7 @@ const AMBIANCE_LIAISON_GAP: f32 = 8.0;
 // Character badge overlaps the upper part of the line body.
 const BADGE_OVERLAP_HEIGHT_RATIO: f32 = constants::BADGE_OVERLAP_HEIGHT_RATIO;
 const ACTOR_ICON_SIZE: f32 = constants::VOICE_ACTOR_DISPLAY_ICON_SIZE;
-const ACTOR_ICON_GAP: f32 = 3.0;
+const ACTOR_ICON_GAP: f32 = crate::band_visuals::ACTOR_ICON_GAP;
 
 fn slot_header_height() -> f32 {
     BADGE_HEIGHT.max(ACTOR_ICON_SIZE)
@@ -2125,10 +2364,23 @@ fn push_plain_rythmo_text(
     text: String,
     dest_rect: Rect,
     tint: [f32; 4],
+    text_styles: Vec<crate::vector_text::TextStyleRun>,
 ) {
     let mut stretched_text = StretchedText::new(line_id, text, dest_rect);
     stretched_text.tint = tint;
+    stretched_text.text_styles = text_styles;
     stretched.push(stretched_text);
+}
+
+/// Per-character styles a line may draw: karaoke and ambiance lines have none.
+pub(crate) fn drawable_text_styles(
+    line: &crate::rythmo_line::RythmoLine,
+) -> &[crate::rythmo_line::TextStyleSpan] {
+    if line.can_have_text_styles() {
+        &line.text_styles
+    } else {
+        &[]
+    }
 }
 
 pub(crate) fn ambiance_description_rect(
@@ -2260,28 +2512,43 @@ fn push_read_word_rythmo_text(
     segment_start: usize,
     highlight_end: Option<usize>,
     base_tint: [f32; 4],
+    line_styles: &[crate::rythmo_line::TextStyleSpan],
 ) {
     let char_count = text.chars().count();
+    let text_styles = if line_styles.is_empty() {
+        Vec::new()
+    } else {
+        crate::rythmo_line::text_style_runs(line_styles, segment_start, segment_start + char_count)
+    };
     let Some(highlight_end) = highlight_end else {
-        push_plain_rythmo_text(stretched, line_id, text, dest_rect, base_tint);
+        push_plain_rythmo_text(stretched, line_id, text, dest_rect, base_tint, text_styles);
         return;
     };
     if char_count == 0 || highlight_end <= segment_start {
-        push_plain_rythmo_text(stretched, line_id, text, dest_rect, base_tint);
+        push_plain_rythmo_text(stretched, line_id, text, dest_rect, base_tint, text_styles);
         return;
     }
     if highlight_end >= segment_start + char_count {
         let mut highlighted = StretchedText::new(line_id, text, dest_rect);
         highlighted.tint = [1.0, 0.82, 0.08, 1.0];
+        highlighted.text_styles = text_styles;
         stretched.push(highlighted);
         return;
     }
-    push_plain_rythmo_text(stretched, line_id, text.clone(), dest_rect, base_tint);
+    push_plain_rythmo_text(
+        stretched,
+        line_id,
+        text.clone(),
+        dest_rect,
+        base_tint,
+        text_styles.clone(),
+    );
     let ratio = (highlight_end - segment_start) as f32 / char_count as f32;
     let mut overlay = StretchedText::new(line_id, text, dest_rect);
     overlay.draw_rect.width *= ratio;
     overlay.uv_rect[2] = ratio;
     overlay.tint = [1.0, 0.82, 0.08, 1.0];
+    overlay.text_styles = text_styles;
     stretched.push(overlay);
 }
 
@@ -2354,6 +2621,17 @@ fn push_emotional_text(
         let cache_id = emotion_grapheme_cache_id(line.id, index, false);
         let mut text = StretchedText::new(cache_id, (*grapheme).to_string(), glyph_rect);
         text.tint = base_tint;
+        let style = if line.can_have_text_styles() {
+            line.style_at_char(char_start)
+        } else {
+            crate::rythmo_line::TextStyle::default()
+        };
+        let style_runs = if style.is_plain() {
+            Vec::new()
+        } else {
+            vec![(0, char_end - char_start, style)]
+        };
+        text.text_styles = style_runs.clone();
         if let Some(emotion) = line.emotion_at_char(char_start) {
             let animation = crate::rythmo_line::text_emotion_transform(
                 emotion,
@@ -2391,7 +2669,13 @@ fn push_emotional_text(
                     },
                 );
                 readable.font_scale = 0.68;
-                readable.tint = [base_tint[0], base_tint[1], base_tint[2], 0.82];
+                readable.tint = [
+                    base_tint[0],
+                    base_tint[1],
+                    base_tint[2],
+                    crate::band_visuals::TEXT_EMOTION_LANE_ALPHA,
+                ];
+                readable.text_styles = style_runs.clone();
                 stretched.push(readable);
             }
         } else {
@@ -3291,6 +3575,7 @@ pub fn render_lines<'a>(
     stretched: &mut Vec<StretchedText>,
     note_icons: &mut Vec<IconInstance>,
     actor_icons: &mut Vec<VoiceActorIconDraw>,
+    karaoke_dots: &mut Vec<KaraokeDotDraw>,
     note_uv: [f32; 4],
     detection_uvs: [[f32; 4]; 18],
 ) -> Option<(
@@ -3821,6 +4106,7 @@ pub fn render_lines<'a>(
                                 prev_break,
                                 read_highlight_end,
                                 scrolling_text_tint,
+                                drawable_text_styles(line),
                             );
                         }
                         seg_x += seg_w;
@@ -3836,6 +4122,7 @@ pub fn render_lines<'a>(
                         0,
                         read_highlight_end,
                         scrolling_text_tint,
+                        drawable_text_styles(line),
                     );
                 }
             }
@@ -3855,11 +4142,15 @@ pub fn render_lines<'a>(
         }
 
         if !line.presence.is_on() && !line.text.is_empty() {
-            let y = data.rect.y + data.rect.height - 3.0;
+            use crate::band_visuals::{
+                PRESENCE_DASH_LENGTH, PRESENCE_DASH_PERIOD, PRESENCE_UNDERLINE_BOTTOM_OFFSET,
+                PRESENCE_UNDERLINE_THICKNESS,
+            };
+            let y = data.rect.y + data.rect.height - PRESENCE_UNDERLINE_BOTTOM_OFFSET;
             let color = scrolling_text_tint;
             if line.presence == crate::rythmo_line::LinePresence::Off {
                 quads.push(QuadInstance {
-                    rect: [data.rect.x, y, data.rect.width, 1.5],
+                    rect: [data.rect.x, y, data.rect.width, PRESENCE_UNDERLINE_THICKNESS],
                     color,
                     color_bottom: color,
                     border_color: [0.0; 4],
@@ -3875,7 +4166,12 @@ pub fn render_lines<'a>(
                 let mut x = data.rect.x;
                 while x < data.rect.x + data.rect.width {
                     quads.push(QuadInstance {
-                        rect: [x, y, 7.0_f32.min(data.rect.x + data.rect.width - x), 1.5],
+                        rect: [
+                            x,
+                            y,
+                            PRESENCE_DASH_LENGTH.min(data.rect.x + data.rect.width - x),
+                            PRESENCE_UNDERLINE_THICKNESS,
+                        ],
                         color,
                         color_bottom: color,
                         border_color: [0.0; 4],
@@ -3887,7 +4183,7 @@ pub fn render_lines<'a>(
                         rotation: 0.0,
                         _padding: [0.0; 2],
                     });
-                    x += 12.0;
+                    x += PRESENCE_DASH_PERIOD;
                 }
             }
         }
@@ -3908,6 +4204,10 @@ pub fn render_lines<'a>(
             }
         }
 
+        let karaoke_dot = project
+            .settings()
+            .band_style
+            .dot_for_character(&line.character_name);
         if data.karaoke_count_in {
             render_karaoke_count_in_dot_scaled(
                 line,
@@ -3915,10 +4215,19 @@ pub fn render_lines<'a>(
                 &data.rect,
                 karaoke_count_in_frame_count,
                 1.0,
+                karaoke_dot,
                 quads,
+                karaoke_dots,
             );
         } else if karaoke_playback_line {
-            render_karaoke_dot(line, &data.rect, data.karaoke_progress_info, quads);
+            render_karaoke_dot(
+                line,
+                &data.rect,
+                data.karaoke_progress_info,
+                karaoke_dot,
+                quads,
+                karaoke_dots,
+            );
         }
 
         let is_syllable_drag_line =
@@ -4209,11 +4518,11 @@ fn render_voice_actor_icons_for_line<'a>(
         };
         quads.push(QuadInstance {
             rect: [rect.x, rect.y, rect.width, rect.height],
-            color: [0.05, 0.05, 0.07, 0.92],
-            color_bottom: [0.02, 0.02, 0.03, 0.92],
-            border_color: [0.75, 0.75, 0.85, 0.45],
-            border_width: 1.0,
-            border_radius: 3.0,
+            color: crate::band_visuals::ACTOR_ICON_BG_TOP,
+            color_bottom: crate::band_visuals::ACTOR_ICON_BG_BOTTOM,
+            border_color: crate::band_visuals::ACTOR_ICON_BORDER,
+            border_width: crate::band_visuals::ACTOR_ICON_BORDER_WIDTH,
+            border_radius: crate::band_visuals::ACTOR_ICON_RADIUS,
             shadow_offset: [0.0; 2],
             shadow_color: [0.0; 4],
             shadow_blur: 0.0,
@@ -4235,8 +4544,10 @@ fn render_voice_actor_icons_for_line<'a>(
                     v_align: VAlign::Center,
                     overflow: Overflow::Clip,
                     padding: 1.0,
-                    font_size_override: Some((size * 0.55).max(8.0)),
-                    color_override: Some([230, 230, 238]),
+                    font_size_override: Some(
+                        (size * crate::band_visuals::ACTOR_FALLBACK_FONT_RATIO).max(8.0),
+                    ),
+                    color_override: Some(crate::band_visuals::ACTOR_FALLBACK_TEXT_COLOR),
                     font_family_override: None,
                 });
             }
@@ -4248,8 +4559,10 @@ fn render_voice_actor_icons_for_line<'a>(
                 v_align: VAlign::Center,
                 overflow: Overflow::Clip,
                 padding: 1.0,
-                font_size_override: Some((size * 0.55).max(8.0)),
-                color_override: Some([230, 230, 238]),
+                font_size_override: Some(
+                    (size * crate::band_visuals::ACTOR_FALLBACK_FONT_RATIO).max(8.0),
+                ),
+                color_override: Some(crate::band_visuals::ACTOR_FALLBACK_TEXT_COLOR),
                 font_family_override: None,
             });
         }
@@ -4260,93 +4573,82 @@ fn render_voice_actor_icons_for_line<'a>(
 /// Render a diagonal arrow for breath markers using rotated quads.
 /// `up` = bottom-left → top-right (inspiration), `!up` = top-left → bottom-right (expiration).
 fn render_breath_arrow(r: &Rect, up: bool, quads: &mut Vec<QuadInstance>) {
-    let margin = 4.0;
-    let cx = r.x + r.width / 2.0;
-    let cy = r.y + r.height / 2.0;
-    let dx = r.width - margin * 2.0;
-    let dy = r.height - margin * 2.0;
-    let length = (dx * dx + dy * dy).sqrt();
-    let angle = if up {
-        -(dy).atan2(dx) // bottom-left to top-right
-    } else {
-        (dy).atan2(dx) // top-left to bottom-right
+    use crate::band_visuals::{
+        breath_arrow_bars, BREATH_ARROW_COLOR, BREATH_ARROW_HEAD_LENGTH, BREATH_ARROW_MARGIN,
+        BREATH_ARROW_THICKNESS,
     };
-    let thickness = 2.0;
-    let color = [0.85, 0.85, 0.90, 0.9];
-
-    // Main diagonal line — a thin rectangle rotated
-    quads.push(QuadInstance {
-        rect: [cx - length / 2.0, cy - thickness / 2.0, length, thickness],
-        color,
-        color_bottom: color,
-        border_color: [0.0; 4],
-        border_width: 0.0,
-        border_radius: 0.0,
-        shadow_offset: [0.0; 2],
-        shadow_color: [0.0; 4],
-        shadow_blur: 0.0,
-        rotation: angle,
-        _padding: [0.0; 2],
-    });
-
-    // Arrowhead at the end (top-right for up, bottom-right for down)
-    let tip_x = r.x + r.width - margin;
-    let tip_y = if up {
-        r.y + margin
-    } else {
-        r.y + r.height - margin
-    };
-    let arrow_len = 8.0;
-    let arrow_thickness = 2.0;
-    let spread = 0.5; // ~30 degrees from the main line
-
-    // Two short lines forming the arrowhead
-    let base_angle = std::f32::consts::PI + angle;
-    quads.push(QuadInstance {
-        rect: [
-            tip_x - arrow_len / 2.0,
-            tip_y - arrow_thickness / 2.0,
-            arrow_len,
-            arrow_thickness,
-        ],
-        color,
-        color_bottom: color,
-        border_color: [0.0; 4],
-        border_width: 0.0,
-        border_radius: 0.0,
-        shadow_offset: [0.0; 2],
-        shadow_color: [0.0; 4],
-        shadow_blur: 0.0,
-        rotation: base_angle + spread,
-        _padding: [0.0; 2],
-    });
-    quads.push(QuadInstance {
-        rect: [
-            tip_x - arrow_len / 2.0,
-            tip_y - arrow_thickness / 2.0,
-            arrow_len,
-            arrow_thickness,
-        ],
-        color,
-        color_bottom: color,
-        border_color: [0.0; 4],
-        border_width: 0.0,
-        border_radius: 0.0,
-        shadow_offset: [0.0; 2],
-        shadow_color: [0.0; 4],
-        shadow_blur: 0.0,
-        rotation: base_angle - spread,
-        _padding: [0.0; 2],
-    });
+    let color = BREATH_ARROW_COLOR;
+    // Main diagonal line, then the two short bars of the arrowhead at its
+    // end (top-right for up, bottom-right for down).
+    for (cx, cy, length, angle) in
+        breath_arrow_bars(*r, up, BREATH_ARROW_MARGIN, BREATH_ARROW_HEAD_LENGTH)
+    {
+        quads.push(QuadInstance {
+            rect: [
+                cx - length / 2.0,
+                cy - BREATH_ARROW_THICKNESS / 2.0,
+                length,
+                BREATH_ARROW_THICKNESS,
+            ],
+            color,
+            color_bottom: color,
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            border_radius: 0.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: angle,
+            _padding: [0.0; 2],
+        });
+    }
 }
 
 fn render_karaoke_dot(
     line: &crate::rythmo_line::RythmoLine,
     line_rect: &Rect,
     progress_info: Option<KaraokeProgressRenderInfo>,
+    dot: &crate::band_style::KaraokeDot,
     quads: &mut Vec<QuadInstance>,
+    karaoke_dots: &mut Vec<KaraokeDotDraw>,
 ) {
-    render_karaoke_dot_scaled(line, line_rect, progress_info, 1.0, quads);
+    render_karaoke_dot_scaled(
+        line,
+        line_rect,
+        progress_info,
+        1.0,
+        dot,
+        quads,
+        karaoke_dots,
+    );
+}
+
+/// Queues the textured layers of a non-circle karaoke dot whose rectangle
+/// is `dot_rect`. The circle keeps its quad drawing.
+fn push_textured_karaoke_dot(
+    dot: &crate::band_style::KaraokeDot,
+    line_rect: &Rect,
+    dot_rect: Rect,
+    tint: [f32; 4],
+    scale: f32,
+    karaoke_dots: &mut Vec<KaraokeDotDraw>,
+) {
+    let face = crate::karaoke_dot::face_for_dot(line_rect.y, dot_rect.y, dot_rect.height, scale);
+    let Some(texture_key) = crate::karaoke_dot::texture_key(dot, face) else {
+        return;
+    };
+    for layer in crate::karaoke_dot::layers(dot, tint, scale) {
+        karaoke_dots.push(KaraokeDotDraw {
+            rect: Rect {
+                x: dot_rect.x - layer.expand,
+                y: dot_rect.y - layer.expand,
+                width: dot_rect.width + layer.expand * 2.0,
+                height: dot_rect.height + layer.expand * 2.0,
+            },
+            tint: layer.tint,
+            texture_key,
+        });
+    }
 }
 
 fn karaoke_count_in_dot_rect(line_rect: &Rect, count_in_progress: f32, scale: f32) -> Rect {
@@ -4372,7 +4674,9 @@ fn render_karaoke_count_in_dot_scaled(
     line_rect: &Rect,
     count_in_frames: i64,
     scale: f32,
+    dot_style: &crate::band_style::KaraokeDot,
     quads: &mut Vec<QuadInstance>,
+    karaoke_dots: &mut Vec<KaraokeDotDraw>,
 ) {
     let Some(count_in_progress) = karaoke_count_in_progress(line, current_frame, count_in_frames)
     else {
@@ -4381,6 +4685,10 @@ fn render_karaoke_count_in_dot_scaled(
 
     let dot = karaoke_count_in_dot_rect(line_rect, count_in_progress, scale);
     let tint = line_color_tint(line);
+    if !dot_style.is_circle() {
+        push_textured_karaoke_dot(dot_style, line_rect, dot, tint, scale, karaoke_dots);
+        return;
+    }
     quads.push(QuadInstance {
         rect: [dot.x - 1.5, dot.y - 1.5, dot.width + 3.0, dot.height + 3.0],
         color: [0.0, 0.0, 0.0, 0.35],
@@ -4414,7 +4722,9 @@ fn render_karaoke_dot_scaled(
     line_rect: &Rect,
     progress_info: Option<KaraokeProgressRenderInfo>,
     scale: f32,
+    dot_style: &crate::band_style::KaraokeDot,
     quads: &mut Vec<QuadInstance>,
+    karaoke_dots: &mut Vec<KaraokeDotDraw>,
 ) {
     let Some(progress_info) = progress_info else {
         return;
@@ -4432,6 +4742,16 @@ fn render_karaoke_dot_scaled(
     let y = line_rect.y + 3.0 * scale.max(0.5)
         - bounce * size * constants::KARAOKE_DOT_BOUNCE_AMPLITUDE;
     let tint = line_color_tint(line);
+    if !dot_style.is_circle() {
+        let dot = Rect {
+            x,
+            y,
+            width: size,
+            height: size,
+        };
+        push_textured_karaoke_dot(dot_style, line_rect, dot, tint, scale, karaoke_dots);
+        return;
+    }
 
     quads.push(QuadInstance {
         rect: [x - 1.5, y - 1.5, size + 3.0, size + 3.0],
@@ -4668,10 +4988,15 @@ pub fn render_markers<'a>(
 
         match &marker.kind {
             MarkerKind::Boucle => {
-                let red = [0.85, 0.15, 0.15, 0.9];
+                let red = crate::band_visuals::LOOP_MARKER_COLOR;
                 // Red vertical bar
                 quads.push(QuadInstance {
-                    rect: [x - 1.0, zone.y, 2.0, zone.height],
+                    rect: [
+                        x - crate::band_visuals::MARKER_BAR_WIDTH / 2.0,
+                        zone.y,
+                        crate::band_visuals::MARKER_BAR_WIDTH,
+                        zone.height,
+                    ],
                     color: red,
                     color_bottom: red,
                     border_color: [0.0; 4],
@@ -4685,8 +5010,8 @@ pub fn render_markers<'a>(
                 });
                 // Big "X" — two smooth rotated bars
                 let cy = zone.y + zone.height / 2.0;
-                let arm_len = 20.0;
-                let thickness = 2.5;
+                let arm_len = crate::band_visuals::LOOP_MARKER_X_BAR_LENGTH;
+                let thickness = crate::band_visuals::LOOP_MARKER_X_THICKNESS;
                 let pi4 = std::f32::consts::FRAC_PI_4;
                 // "\" bar
                 quads.push(QuadInstance {
@@ -4724,8 +5049,8 @@ pub fn render_markers<'a>(
                 labels.push(LabelInfo {
                     text: loop_number_label(number),
                     bounds: Rect {
-                        x: x + 8.0,
-                        y: zone.y + zone.height / 2.0 + 5.0,
+                        x: x + crate::band_visuals::LOOP_NUMBER_OFFSET[0],
+                        y: zone.y + zone.height / 2.0 + crate::band_visuals::LOOP_NUMBER_OFFSET[1],
                         width: 28.0,
                         height: 20.0,
                     },
@@ -4733,16 +5058,21 @@ pub fn render_markers<'a>(
                     v_align: VAlign::Top,
                     overflow: Overflow::Clip,
                     padding: 0.0,
-                    font_size_override: Some(18.0),
-                    color_override: Some([217, 38, 38]),
+                    font_size_override: Some(crate::band_visuals::LOOP_NUMBER_FONT_SIZE),
+                    color_override: Some(crate::band_visuals::LOOP_NUMBER_COLOR),
                     font_family_override: None,
                 });
             }
             MarkerKind::Out => {
-                let col = [0.85, 0.45, 0.45, 0.7];
+                let col = crate::band_visuals::OUT_MARKER_COLOR;
                 // Light red vertical bar
                 quads.push(QuadInstance {
-                    rect: [x - 1.0, zone.y, 2.0, zone.height],
+                    rect: [
+                        x - crate::band_visuals::MARKER_BAR_WIDTH / 2.0,
+                        zone.y,
+                        crate::band_visuals::MARKER_BAR_WIDTH,
+                        zone.height,
+                    ],
                     color: col,
                     color_bottom: col,
                     border_color: [0.0; 4],
@@ -4756,10 +5086,10 @@ pub fn render_markers<'a>(
                 });
                 // Two parallel oblique bars crossing the vertical bar
                 let cy = zone.y + zone.height / 2.0;
-                let bar_len = zone.height * 0.25;
-                let thickness = 2.0;
-                let angle = 0.5; // ~30 degrees
-                for offset in &[-5.0_f32, 5.0] {
+                let bar_len = zone.height * crate::band_visuals::OUT_MARKER_BAR_LENGTH_RATIO;
+                let thickness = crate::band_visuals::OUT_MARKER_BAR_THICKNESS;
+                let angle = crate::band_visuals::OUT_MARKER_BAR_ANGLE; // ~30 degrees
+                for offset in &crate::band_visuals::OUT_MARKER_BAR_OFFSETS {
                     quads.push(QuadInstance {
                         rect: [
                             x + offset - bar_len / 2.0,
@@ -4781,9 +5111,9 @@ pub fn render_markers<'a>(
                 }
                 // "out" text
                 labels.push(LabelInfo {
-                    text: "out",
+                    text: crate::band_visuals::OUT_LABEL,
                     bounds: Rect {
-                        x: x + 12.0,
+                        x: x + crate::band_visuals::OUT_LABEL_OFFSET_X,
                         y: cy - 8.0,
                         width: 30.0,
                         height: 16.0,
@@ -4792,17 +5122,22 @@ pub fn render_markers<'a>(
                     v_align: VAlign::Center,
                     overflow: Overflow::Clip,
                     padding: 0.0,
-                    font_size_override: Some(10.0),
-                    color_override: Some([220, 120, 120]),
+                    font_size_override: Some(crate::band_visuals::OUT_LABEL_FONT_SIZE),
+                    color_override: Some(crate::band_visuals::OUT_LABEL_COLOR),
                     font_family_override: None,
                 });
             }
             MarkerKind::SceneChange => {
                 // White bar
                 quads.push(QuadInstance {
-                    rect: [x - 1.0, zone.y, 2.0, zone.height],
-                    color: [0.9, 0.9, 0.95, 0.8],
-                    color_bottom: [0.9, 0.9, 0.95, 0.8],
+                    rect: [
+                        x - crate::band_visuals::MARKER_BAR_WIDTH / 2.0,
+                        zone.y,
+                        crate::band_visuals::MARKER_BAR_WIDTH,
+                        zone.height,
+                    ],
+                    color: crate::band_visuals::SCENE_CHANGE_COLOR,
+                    color_bottom: crate::band_visuals::SCENE_CHANGE_COLOR,
                     border_color: [0.0; 4],
                     border_width: 0.0,
                     border_radius: 0.0,
@@ -4818,7 +5153,7 @@ pub fn render_markers<'a>(
                 liaison_icons.push(IconInstance {
                     rect: [x - 8.0, zone.y, 16.0, constants::RULER_HEIGHT],
                     uv_rect: uv,
-                    tint: [0.7, 0.7, 0.75, 0.9],
+                    tint: crate::band_visuals::LIAISON_MARKER_TINT,
                     transform: [0.0, 0.0, 0.5, 0.5],
                 });
             }
@@ -4827,7 +5162,7 @@ pub fn render_markers<'a>(
                 liaison_icons.push(IconInstance {
                     rect: [x - 8.0, zone.y, 16.0, constants::RULER_HEIGHT],
                     uv_rect: uv,
-                    tint: [0.7, 0.7, 0.75, 0.9],
+                    tint: crate::band_visuals::LIAISON_MARKER_TINT,
                     transform: [0.0, 0.0, 0.5, 0.5],
                 });
             }
@@ -5130,6 +5465,9 @@ pub fn context_menu_accessibility_label(project: &Project, line_id: u64) -> Stri
     {
         items.push(t("text_emotion.menu"));
     }
+    if karaoke_menu_available(project, line_id) {
+        items.push(t("context.karaoke_dot.menu"));
+    }
     if can_generate_detection_signs(project, line_id) {
         items.push(t("context.generate_detection_signs"));
     }
@@ -5147,30 +5485,205 @@ fn can_generate_detection_signs(project: &Project, line_id: u64) -> bool {
         })
 }
 
+fn text_emotion_menu_available(project: &Project, line_id: u64) -> bool {
+    project
+        .get_line(line_id)
+        .is_some_and(|line| line.can_have_text_emotions())
+}
+
+/// The "Karaoké" item is offered on karaoke lines of a named character:
+/// karaoke dots are chosen per character.
+fn karaoke_menu_available(project: &Project, line_id: u64) -> bool {
+    project
+        .get_line(line_id)
+        .is_some_and(|line| line.karaoke && !line.character_name.trim().is_empty())
+}
+
+fn karaoke_root_index(project: &Project, line_id: u64) -> Option<usize> {
+    karaoke_menu_available(project, line_id)
+        .then(|| 2 + usize::from(text_emotion_menu_available(project, line_id)))
+}
+
 fn generation_root_index(project: &Project, line_id: u64) -> Option<usize> {
     can_generate_detection_signs(project, line_id).then(|| {
-        if project
-            .get_line(line_id)
-            .is_some_and(|line| line.can_have_text_emotions())
-        {
-            3
-        } else {
-            2
-        }
+        2 + usize::from(text_emotion_menu_available(project, line_id))
+            + usize::from(karaoke_menu_available(project, line_id))
     })
 }
 
 fn root_item_count(project: &Project, line_id: u64) -> usize {
-    if let Some(index) = generation_root_index(project, line_id) {
-        index + 1
-    } else if project
-        .get_line(line_id)
-        .is_some_and(|line| line.can_have_text_emotions())
-    {
-        3
-    } else {
-        2
+    2 + usize::from(text_emotion_menu_available(project, line_id))
+        + usize::from(karaoke_menu_available(project, line_id))
+        + usize::from(can_generate_detection_signs(project, line_id))
+}
+
+/// Entries of the karaoke submenu: default dot, each group, then the
+/// "specific to this character" submenu.
+fn karaoke_item_count(project: &Project) -> usize {
+    project.settings().band_style.karaoke_dot_groups.len() + 2
+}
+
+fn karaoke_specific_item_index(project: &Project) -> usize {
+    karaoke_item_count(project) - 1
+}
+
+/// Entries of the "specific dot" submenu: the built-in shapes, "Image…",
+/// and "Jump image…" when the character already has its own image.
+fn karaoke_specific_item_count(project: &Project, line_id: u64) -> usize {
+    let has_image = matches!(
+        current_character_dot(project, line_id),
+        Some(crate::band_style::CharacterDot::Dot(dot)) if dot.is_custom()
+    );
+    crate::band_style::KaraokeDot::BUILTINS.len() + 1 + usize::from(has_image)
+}
+
+fn current_character_dot<'a>(
+    project: &'a Project,
+    line_id: u64,
+) -> Option<&'a crate::band_style::CharacterDot> {
+    let line = project.get_line(line_id)?;
+    project
+        .settings()
+        .band_style
+        .character_dots
+        .get(line.character_name.trim())
+}
+
+/// Karaoke submenu item matching the character's current dot.
+fn current_karaoke_item(project: &Project, line_id: u64) -> usize {
+    let style = &project.settings().band_style;
+    match current_character_dot(project, line_id) {
+        Some(crate::band_style::CharacterDot::Group(id)) => style
+            .karaoke_dot_groups
+            .iter()
+            .position(|group| group.id == *id)
+            .map_or(0, |index| index + 1),
+        Some(crate::band_style::CharacterDot::Dot(_)) => karaoke_specific_item_index(project),
+        None => 0,
     }
+}
+
+/// "Specific dot" submenu item matching the character's own dot.
+fn current_karaoke_specific_item(project: &Project, line_id: u64) -> Option<usize> {
+    match current_character_dot(project, line_id) {
+        Some(crate::band_style::CharacterDot::Dot(dot)) if dot.is_custom() => {
+            Some(crate::band_style::KaraokeDot::BUILTINS.len())
+        }
+        Some(crate::band_style::CharacterDot::Dot(dot)) => crate::band_style::KaraokeDot::BUILTINS
+            .iter()
+            .position(|builtin| builtin == dot),
+        _ => None,
+    }
+}
+
+fn karaoke_item_label<'a>(project: &'a Project, index: usize) -> Option<&'a str> {
+    let groups = &project.settings().band_style.karaoke_dot_groups;
+    if index == 0 {
+        Some(t("context.karaoke_dot.default"))
+    } else if index == groups.len() + 1 {
+        Some(t("context.karaoke_dot.specific"))
+    } else {
+        groups.get(index - 1).map(|group| group.name.as_str())
+    }
+}
+
+fn karaoke_specific_item_label(index: usize) -> Option<&'static str> {
+    let builtins = &crate::band_style::KaraokeDot::BUILTINS;
+    if let Some(dot) = builtins.get(index) {
+        Some(t(dot.label_key()))
+    } else if index == builtins.len() {
+        Some(t("context.karaoke_dot.image"))
+    } else if index == builtins.len() + 1 {
+        Some(t("context.karaoke_dot.jump_image"))
+    } else {
+        None
+    }
+}
+
+/// Action of a karaoke submenu item; `None` for the "specific" submenu.
+fn karaoke_item_action(project: &Project, line_id: u64, index: usize) -> Option<UiAction> {
+    let groups = &project.settings().band_style.karaoke_dot_groups;
+    let choice = if index == 0 {
+        None
+    } else {
+        Some(crate::band_style::CharacterDot::Group(
+            groups.get(index - 1)?.id,
+        ))
+    };
+    Some(UiAction::SetCharacterKaraokeDot { line_id, choice })
+}
+
+fn karaoke_specific_item_action(line_id: u64, index: usize) -> Option<UiAction> {
+    let builtins = &crate::band_style::KaraokeDot::BUILTINS;
+    if let Some(dot) = builtins.get(index) {
+        Some(UiAction::SetCharacterKaraokeDot {
+            line_id,
+            choice: Some(crate::band_style::CharacterDot::Dot(dot.clone())),
+        })
+    } else if index == builtins.len() || index == builtins.len() + 1 {
+        Some(UiAction::PickCharacterKaraokeDotImage {
+            line_id,
+            jump: index == builtins.len() + 1,
+        })
+    } else {
+        None
+    }
+}
+
+fn karaoke_menu_visible(menu: &LineContextMenu) -> bool {
+    menu.hover_karaoke || menu.hover_karaoke_index.is_some()
+}
+
+fn karaoke_specific_menu_visible(project: &Project, menu: &LineContextMenu) -> bool {
+    menu.hover_karaoke_index == Some(karaoke_specific_item_index(project))
+}
+
+fn text_emotion_panel_visible(menu: &LineContextMenu) -> bool {
+    menu.hover_text_emotion || menu.hover_emotion_index.is_some()
+}
+
+/// Karaoke submenu and "specific dot" submenu rectangles.
+fn karaoke_menu_rects(
+    project: &Project,
+    screen_w: f32,
+    screen_h: f32,
+    menu: &LineContextMenu,
+    root_rect: Rect,
+) -> (Rect, Rect) {
+    let root_index = karaoke_root_index(project, menu.line_id).unwrap_or(0);
+    let height = MENU_ITEM_H * karaoke_item_count(project) as f32;
+    let x_right = root_rect.x + root_rect.width + MENU_GAP;
+    let x = if x_right + MENU_EMOTION_W <= screen_w - MENU_MARGIN {
+        x_right
+    } else {
+        (root_rect.x - MENU_EMOTION_W - MENU_GAP).max(MENU_MARGIN)
+    };
+    let karaoke_rect = Rect {
+        x,
+        y: (root_rect.y + MENU_ITEM_H * root_index as f32).clamp(
+            MENU_MARGIN,
+            (screen_h - height - MENU_MARGIN).max(MENU_MARGIN),
+        ),
+        width: MENU_EMOTION_W,
+        height,
+    };
+    let specific_h = MENU_ITEM_H * karaoke_specific_item_count(project, menu.line_id) as f32;
+    let specific_x_right = karaoke_rect.x + karaoke_rect.width + MENU_GAP;
+    let specific_x = if specific_x_right + MENU_EMOTION_W <= screen_w - MENU_MARGIN {
+        specific_x_right
+    } else {
+        (karaoke_rect.x - MENU_EMOTION_W - MENU_GAP).max(MENU_MARGIN)
+    };
+    let specific_rect = Rect {
+        x: specific_x,
+        y: (karaoke_rect.y + MENU_ITEM_H * karaoke_specific_item_index(project) as f32).clamp(
+            MENU_MARGIN,
+            (screen_h - specific_h - MENU_MARGIN).max(MENU_MARGIN),
+        ),
+        width: MENU_EMOTION_W,
+        height: specific_h,
+    };
+    (karaoke_rect, specific_rect)
 }
 
 fn root_hover_index(project: &Project, menu: &LineContextMenu) -> usize {
@@ -5178,6 +5691,8 @@ fn root_hover_index(project: &Project, menu: &LineContextMenu) -> usize {
         1
     } else if menu.hover_text_emotion {
         2
+    } else if menu.hover_karaoke {
+        karaoke_root_index(project, menu.line_id).unwrap_or(0)
     } else if menu.hover_generate_detection {
         generation_root_index(project, menu.line_id).unwrap_or(0)
     } else {
@@ -5193,15 +5708,25 @@ fn set_root_hover(project: &Project, menu: &mut LineContextMenu, index: usize) {
             .get_line(menu.line_id)
             .is_some_and(|line| line.can_have_text_emotions());
     menu.hover_generate_detection = generation_root_index(project, menu.line_id) == Some(index);
+    menu.hover_karaoke = karaoke_root_index(project, menu.line_id) == Some(index);
     menu.hover_emotion_index = None;
     menu.hover_emotion_variant = None;
+    menu.hover_karaoke_index = None;
+    menu.hover_karaoke_specific = None;
 }
 
 fn selected_context_menu_label<'a>(
     project: &'a Project,
     menu: &LineContextMenu,
 ) -> Option<&'a str> {
-    if let (Some(category), Some(variant)) = (menu.hover_emotion_index, menu.hover_emotion_variant)
+    if let Some(index) = menu.hover_karaoke_specific {
+        karaoke_specific_item_label(index)
+    } else if let Some(index) = menu.hover_karaoke_index {
+        karaoke_item_label(project, index)
+    } else if menu.hover_karaoke {
+        Some(t("context.karaoke_dot.menu"))
+    } else if let (Some(category), Some(variant)) =
+        (menu.hover_emotion_index, menu.hover_emotion_variant)
     {
         emotion_group(category)
             .and_then(|(_, emotions)| emotions.get(variant))
@@ -5241,17 +5766,25 @@ fn selected_context_menu_label<'a>(
 }
 
 fn announce_context_menu_selection(project: &Project, state: &RythmoState) -> EventResponse {
-    state
-        .context_menu
-        .as_ref()
-        .and_then(|menu| selected_context_menu_label(project, menu))
-        .map_or(EventResponse::Consumed, |label| {
-            EventResponse::Action(UiAction::Accessibility(
-                crate::accessibility::AccessibilityEvent::Selection {
-                    label: label.to_string(),
-                },
-            ))
-        })
+    let Some(menu) = state.context_menu.as_ref() else {
+        return EventResponse::Consumed;
+    };
+    // Karaoke choices are radio items: say which one is in use.
+    let current = match (menu.hover_karaoke_specific, menu.hover_karaoke_index) {
+        (Some(index), _) => current_karaoke_specific_item(project, menu.line_id) == Some(index),
+        (None, Some(index)) => current_karaoke_item(project, menu.line_id) == index,
+        _ => false,
+    };
+    selected_context_menu_label(project, menu).map_or(EventResponse::Consumed, |label| {
+        let label = if current {
+            format!("{label}, {}", t("context.karaoke_dot.current"))
+        } else {
+            label.to_string()
+        };
+        EventResponse::Action(UiAction::Accessibility(
+            crate::accessibility::AccessibilityEvent::Selection { label },
+        ))
+    })
 }
 
 pub fn handle_context_menu_event(
@@ -5270,8 +5803,16 @@ pub fn handle_context_menu_event(
         zone.width,
         fps,
     );
+    if let Some(response) = handle_sync_point_menu_event(event, screen_w, screen_h, state) {
+        return response;
+    }
     match event {
         UiEvent::ContextMenu { x, y } => {
+            if let Some(response) =
+                open_sync_point_menu(project, current_frame, zone, fps, state, *x, *y)
+            {
+                return response;
+            }
             let line_id = project
                 .lines()
                 .find(|line| {
@@ -5318,6 +5859,9 @@ pub fn handle_context_menu_event(
                     hover_actor_index: None,
                     hover_action_index: None,
                     actor_scroll: 0.0,
+                    hover_karaoke: false,
+                    hover_karaoke_index: None,
+                    hover_karaoke_specific: None,
                 });
                 if !line_was_selected {
                     state.selected = Some(Selection::Line(line_id));
@@ -5364,6 +5908,36 @@ pub fn handle_context_menu_event(
             let (root_rect, actor_rect, action_rect, actor_scroll, _, emotion_rect) =
                 context_menu_layout(project, screen_w, screen_h, menu);
             let variant_rect = emotion_variant_rect(screen_w, screen_h, menu, emotion_rect);
+            let (karaoke_rect, karaoke_specific_rect) =
+                karaoke_menu_rects(project, screen_w, screen_h, menu, root_rect);
+            let karaoke_visible = karaoke_menu_visible(menu);
+            let karaoke_specific_visible =
+                karaoke_visible && karaoke_specific_menu_visible(project, menu);
+            if karaoke_specific_visible && karaoke_specific_rect.contains(*x, *y) {
+                let index = ((*y - karaoke_specific_rect.y) / MENU_ITEM_H).floor() as usize;
+                if let Some(action) = karaoke_specific_item_action(menu.line_id, index) {
+                    state.context_menu = None;
+                    return EventResponse::Action(action);
+                }
+                return EventResponse::Consumed;
+            }
+            if karaoke_visible && karaoke_rect.contains(*x, *y) {
+                let index = ((*y - karaoke_rect.y) / MENU_ITEM_H).floor() as usize;
+                if index < karaoke_specific_item_index(project) {
+                    if let Some(action) = karaoke_item_action(project, menu.line_id, index) {
+                        state.context_menu = None;
+                        return EventResponse::Action(action);
+                    }
+                }
+                return EventResponse::Consumed;
+            }
+            if karaoke_visible
+                && (bridge_rect(root_rect, karaoke_rect).contains(*x, *y)
+                    || (karaoke_specific_visible
+                        && bridge_rect(karaoke_rect, karaoke_specific_rect).contains(*x, *y)))
+            {
+                return EventResponse::Consumed;
+            }
 
             if root_rect.contains(*x, *y) {
                 let root_item = ((*y - root_rect.y) / MENU_ITEM_H).floor() as usize;
@@ -5378,7 +5952,7 @@ pub fn handle_context_menu_event(
                 }
             }
 
-            if emotion_rect.contains(*x, *y) {
+            if text_emotion_panel_visible(menu) && emotion_rect.contains(*x, *y) {
                 let index = ((*y - emotion_rect.y) / MENU_ITEM_H).floor() as usize;
                 if index == 0 {
                     let line_id = menu.line_id;
@@ -5474,7 +6048,17 @@ pub fn handle_context_menu_event(
             let Some(menu) = state.context_menu.as_mut() else {
                 return EventResponse::Ignored;
             };
-            if menu.hover_main {
+            if menu.hover_karaoke_specific.is_some() {
+                // Already in the deepest submenu.
+            } else if menu.hover_karaoke_index == Some(karaoke_specific_item_index(project)) {
+                menu.hover_karaoke = false;
+                menu.hover_karaoke_specific = Some(0);
+            } else if menu.hover_karaoke_index.is_some() {
+                // Groups have no submenu.
+            } else if menu.hover_karaoke {
+                menu.hover_karaoke = false;
+                menu.hover_karaoke_index = Some(0);
+            } else if menu.hover_main {
                 menu.hover_main = false;
                 menu.hover_actor_index = Some(0);
             } else if menu.hover_text_emotion {
@@ -5493,7 +6077,11 @@ pub fn handle_context_menu_event(
             let Some(menu) = state.context_menu.as_mut() else {
                 return EventResponse::Ignored;
             };
-            if menu.hover_emotion_variant.take().is_some() {
+            if menu.hover_karaoke_specific.take().is_some() {
+                // Back to the karaoke submenu.
+            } else if menu.hover_karaoke_index.take().is_some() {
+                menu.hover_karaoke = true;
+            } else if menu.hover_emotion_variant.take().is_some() {
                 // Stay in the category list.
             } else if menu.hover_emotion_index.take().is_some() {
                 menu.hover_text_emotion = true;
@@ -5503,6 +6091,7 @@ pub fn handle_context_menu_event(
                 menu.hover_change_character = false;
                 menu.hover_text_emotion = false;
                 menu.hover_generate_detection = false;
+                menu.hover_karaoke = false;
             }
             announce_context_menu_selection(project, state)
         }
@@ -5515,7 +6104,13 @@ pub fn handle_context_menu_event(
             } else {
                 -1
             };
-            if let (Some(category), Some(variant)) = (
+            if let Some(index) = menu.hover_karaoke_specific.as_mut() {
+                let len = karaoke_specific_item_count(project, menu.line_id) as i32;
+                *index = (*index as i32 + direction).rem_euclid(len) as usize;
+            } else if let Some(index) = menu.hover_karaoke_index.as_mut() {
+                let len = karaoke_item_count(project) as i32;
+                *index = (*index as i32 + direction).rem_euclid(len) as usize;
+            } else if let (Some(category), Some(variant)) = (
                 menu.hover_emotion_index,
                 menu.hover_emotion_variant.as_mut(),
             ) {
@@ -5554,6 +6149,28 @@ pub fn handle_context_menu_event(
                 let line_id = menu.line_id;
                 state.context_menu = None;
                 return EventResponse::Action(UiAction::GenerateDetectionSigns { line_id });
+            }
+            if let Some(index) = menu.hover_karaoke_specific {
+                let action = karaoke_specific_item_action(menu.line_id, index);
+                state.context_menu = None;
+                return action.map_or(EventResponse::Consumed, EventResponse::Action);
+            }
+            if let Some(index) = menu.hover_karaoke_index {
+                if index == karaoke_specific_item_index(project) {
+                    let menu = state.context_menu.as_mut().unwrap();
+                    menu.hover_karaoke = false;
+                    menu.hover_karaoke_specific = Some(0);
+                    return announce_context_menu_selection(project, state);
+                }
+                let action = karaoke_item_action(project, menu.line_id, index);
+                state.context_menu = None;
+                return action.map_or(EventResponse::Consumed, EventResponse::Action);
+            }
+            if menu.hover_karaoke {
+                let menu = state.context_menu.as_mut().unwrap();
+                menu.hover_karaoke = false;
+                menu.hover_karaoke_index = Some(0);
+                return announce_context_menu_selection(project, state);
             }
             if menu.hover_main {
                 let menu = state.context_menu.as_mut().unwrap();
@@ -5662,6 +6279,7 @@ pub fn render_context_menu<'a>(
     quads: &mut Vec<QuadInstance>,
     labels: &mut Vec<LabelInfo<'a>>,
 ) {
+    render_sync_point_menu(screen_w, screen_h, state, quads, labels);
     let Some(menu) = &state.context_menu else {
         return;
     };
@@ -5715,6 +6333,22 @@ pub fn render_context_menu<'a>(
         );
     }
 
+    if let Some(index) = karaoke_root_index(project, menu.line_id) {
+        render_menu_item(
+            quads,
+            labels,
+            Rect {
+                x: root_rect.x,
+                y: root_rect.y + MENU_ITEM_H * index as f32,
+                width: root_rect.width,
+                height: MENU_ITEM_H,
+            },
+            t("context.karaoke_dot.menu"),
+            menu.hover_karaoke || menu.hover_karaoke_index.is_some(),
+            true,
+        );
+    }
+
     if let Some(index) = generation_root_index(project, menu.line_id) {
         render_menu_item(
             quads,
@@ -5729,6 +6363,10 @@ pub fn render_context_menu<'a>(
             menu.hover_generate_detection,
             false,
         );
+    }
+
+    if karaoke_menu_available(project, menu.line_id) && karaoke_menu_visible(menu) {
+        render_karaoke_submenus(project, screen_w, screen_h, menu, root_rect, quads, labels);
     }
 
     if menu.hover_text_emotion || menu.hover_emotion_index.is_some() {
@@ -5856,6 +6494,103 @@ pub fn render_context_menu<'a>(
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_karaoke_submenus<'a>(
+    project: &'a Project,
+    screen_w: f32,
+    screen_h: f32,
+    menu: &LineContextMenu,
+    root_rect: Rect,
+    quads: &mut Vec<QuadInstance>,
+    labels: &mut Vec<LabelInfo<'a>>,
+) {
+    let (karaoke_rect, specific_rect) =
+        karaoke_menu_rects(project, screen_w, screen_h, menu, root_rect);
+    let specific_index = karaoke_specific_item_index(project);
+    let current = current_karaoke_item(project, menu.line_id);
+    render_menu_panel(quads, karaoke_rect);
+    for index in 0..karaoke_item_count(project) {
+        let Some(label) = karaoke_item_label(project, index) else {
+            continue;
+        };
+        let rect = Rect {
+            x: karaoke_rect.x,
+            y: karaoke_rect.y + index as f32 * MENU_ITEM_H,
+            width: karaoke_rect.width,
+            height: MENU_ITEM_H,
+        };
+        if index == specific_index {
+            render_menu_separator(quads, rect.x, rect.y, rect.width);
+        }
+        render_menu_item(
+            quads,
+            labels,
+            rect,
+            label,
+            menu.hover_karaoke_index == Some(index),
+            index == specific_index,
+        );
+        if index == current {
+            render_menu_radio(quads, rect, index == specific_index);
+        }
+    }
+
+    if !karaoke_specific_menu_visible(project, menu) {
+        return;
+    }
+    let current = current_karaoke_specific_item(project, menu.line_id);
+    render_menu_panel(quads, specific_rect);
+    for index in 0..karaoke_specific_item_count(project, menu.line_id) {
+        let Some(label) = karaoke_specific_item_label(index) else {
+            continue;
+        };
+        let rect = Rect {
+            x: specific_rect.x,
+            y: specific_rect.y + index as f32 * MENU_ITEM_H,
+            width: specific_rect.width,
+            height: MENU_ITEM_H,
+        };
+        if index == crate::band_style::KaraokeDot::BUILTINS.len() {
+            render_menu_separator(quads, rect.x, rect.y, rect.width);
+        }
+        render_menu_item(
+            quads,
+            labels,
+            rect,
+            label,
+            menu.hover_karaoke_specific == Some(index),
+            false,
+        );
+        if current == Some(index) {
+            render_menu_radio(quads, rect, false);
+        }
+    }
+}
+
+/// Small filled disc marking the karaoke choice in use.
+fn render_menu_radio(quads: &mut Vec<QuadInstance>, rect: Rect, beside_arrow: bool) {
+    let size = 7.0;
+    let right = if beside_arrow { 30.0 } else { 14.0 };
+    quads.push(QuadInstance {
+        rect: [
+            rect.x + rect.width - right - size,
+            rect.y + (rect.height - size) / 2.0,
+            size,
+            size,
+        ],
+        color: [0.85, 0.88, 1.0, 1.0],
+        color_bottom: [0.85, 0.88, 1.0, 1.0],
+        border_color: [0.0; 4],
+        border_width: 0.0,
+        border_radius: size / 2.0,
+        shadow_offset: [0.0; 2],
+        shadow_color: [0.0; 4],
+        shadow_blur: 0.0,
+        rotation: 0.0,
+        _padding: [0.0; 2],
+    });
 }
 
 fn context_menu_layout(
@@ -6049,13 +6784,36 @@ fn update_context_menu_hover(
     let emotion_available = project
         .get_line(menu.line_id)
         .is_some_and(|line| line.can_have_text_emotions());
-    if emotion_available && emotion_rect.contains(x, y) {
+    let karaoke_available = karaoke_menu_available(project, menu.line_id);
+    let (karaoke_rect, karaoke_specific_rect) =
+        karaoke_menu_rects(project, screen_w, screen_h, menu, root_rect);
+    let karaoke_visible = karaoke_available && karaoke_menu_visible(menu);
+    let karaoke_specific_visible = karaoke_visible && karaoke_specific_menu_visible(project, menu);
+    let mut karaoke_hover = None;
+    let mut karaoke_specific_hover = None;
+    if karaoke_specific_visible && karaoke_specific_rect.contains(x, y) {
+        let index = ((y - karaoke_specific_rect.y) / MENU_ITEM_H).floor() as usize;
+        if index < karaoke_specific_item_count(project, menu.line_id) {
+            karaoke_specific_hover = Some(index);
+        }
+    } else if karaoke_visible && karaoke_rect.contains(x, y) {
+        let index = ((y - karaoke_rect.y) / MENU_ITEM_H).floor() as usize;
+        if index < karaoke_item_count(project) {
+            karaoke_hover = Some(index);
+        }
+    }
+    let in_karaoke_menus = karaoke_hover.is_some() || karaoke_specific_hover.is_some();
+    if !in_karaoke_menus
+        && text_emotion_panel_visible(menu)
+        && emotion_available
+        && emotion_rect.contains(x, y)
+    {
         let index = ((y - emotion_rect.y) / MENU_ITEM_H).floor() as usize;
         if index <= EMOTION_CATEGORIES.len() {
             emotion_hover = Some(index);
         }
     }
-    if variant_rect.contains(x, y) {
+    if !in_karaoke_menus && variant_rect.contains(x, y) {
         if let Some(category) = menu.hover_emotion_index {
             if let Some((_, emotions)) = emotion_group(category) {
                 let index = ((y - variant_rect.y) / MENU_ITEM_H).floor() as usize;
@@ -6092,6 +6850,29 @@ fn update_context_menu_hover(
     }
     menu.hover_actor_index = actor_hover;
     menu.hover_action_index = action_hover;
+
+    let karaoke_root = karaoke_root_index(project, menu.line_id);
+    menu.hover_karaoke = karaoke_available
+        && ((karaoke_root.is_some() && root_item == karaoke_root)
+            || in_karaoke_menus
+            || (karaoke_visible && bridge_rect(root_rect, karaoke_rect).contains(x, y))
+            || (karaoke_specific_visible
+                && bridge_rect(karaoke_rect, karaoke_specific_rect).contains(x, y)));
+    if karaoke_hover.is_some() {
+        menu.hover_karaoke_index = karaoke_hover;
+        menu.hover_karaoke_specific = None;
+    } else if karaoke_specific_hover.is_some() {
+        menu.hover_karaoke_specific = karaoke_specific_hover;
+    } else if !menu.hover_karaoke {
+        menu.hover_karaoke_index = None;
+        menu.hover_karaoke_specific = None;
+    }
+    if menu.hover_karaoke {
+        // The karaoke submenus open where the emotion ones do.
+        menu.hover_text_emotion = false;
+        menu.hover_emotion_index = None;
+        menu.hover_emotion_variant = None;
+    }
 }
 
 fn context_actor_menu_visible(menu: &LineContextMenu) -> bool {

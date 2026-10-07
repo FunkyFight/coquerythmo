@@ -44,6 +44,9 @@ pub struct Config {
     pub last_whats_new_version: Option<String>,
     #[serde(default)]
     pub recent_projects: Vec<RecentProject>,
+    /// Band style presets saved by the user.
+    #[serde(default)]
+    pub band_style_presets: Vec<crate::band_style::BandStylePreset>,
     #[serde(default)]
     pub license_key: String,
     #[serde(default)]
@@ -149,6 +152,7 @@ impl Default for Config {
             recording_input_device: None,
             last_whats_new_version: None,
             recent_projects: Vec::new(),
+            band_style_presets: Vec::new(),
             license_key: String::new(),
             license_type: String::new(),
         }
@@ -515,6 +519,17 @@ pub fn add_recent_project(video_path: PathBuf, br_path: PathBuf) {
 
 pub fn recent_projects() -> Vec<RecentProject> {
     get().recent_projects.clone()
+}
+
+pub fn band_style_presets() -> Vec<crate::band_style::BandStylePreset> {
+    get().band_style_presets.clone()
+}
+
+pub fn set_band_style_presets(presets: Vec<crate::band_style::BandStylePreset>) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    cfg.band_style_presets = presets;
+    cfg.save();
 }
 
 pub fn set_screen_reader_enabled(enabled: bool) {

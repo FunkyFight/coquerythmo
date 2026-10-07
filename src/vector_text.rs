@@ -38,6 +38,10 @@ pub struct VectorTextPixmap {
     pub char_x_ratios: Vec<f32>,
 }
 
+/// Styled run of a text segment: `(start, end, style)`, a half-open range of
+/// Unicode scalar indices relative to the segment text. Plain text has no run.
+pub type TextStyleRun = (usize, usize, crate::rythmo_line::TextStyle);
+
 /// Follow the room's font selection without saving over local preferences.
 pub fn set_session_font_family(family: Option<String>) -> bool {
     let mut current = SESSION_FONT_FAMILY
@@ -239,7 +243,7 @@ pub fn render_rythmo_text_tile(
     tile_x: u32,
     tile_w: u32,
 ) -> Option<VectorTextPixmap> {
-    render_rythmo_text_tile_impl(text, font_size, full_w, dest_h, tile_x, tile_w, true)
+    render_rythmo_text_tile_impl(text, font_size, full_w, dest_h, tile_x, tile_w, true, &[])
 }
 
 pub fn render_rythmo_text_tile_natural(
@@ -251,7 +255,24 @@ pub fn render_rythmo_text_tile_natural(
     tile_x: u32,
     tile_w: u32,
 ) -> Option<VectorTextPixmap> {
-    render_rythmo_text_tile_impl(text, font_size, full_w, dest_h, tile_x, tile_w, false)
+    render_rythmo_text_tile_impl(text, font_size, full_w, dest_h, tile_x, tile_w, false, &[])
+}
+
+/// Export tile of a text segment carrying per-character styles. Empty `runs`
+/// renders exactly like the plain tile functions.
+pub fn render_rythmo_text_tile_styled(
+    text: &str,
+    font_size: f32,
+    full_w: u32,
+    dest_h: u32,
+    tile_x: u32,
+    tile_w: u32,
+    stretch: bool,
+    runs: &[TextStyleRun],
+) -> Option<VectorTextPixmap> {
+    render_rythmo_text_tile_impl(
+        text, font_size, full_w, dest_h, tile_x, tile_w, stretch, runs,
+    )
 }
 
 fn render_rythmo_text_tile_impl(
@@ -262,6 +283,7 @@ fn render_rythmo_text_tile_impl(
     tile_x: u32,
     tile_w: u32,
     stretch: bool,
+    runs: &[TextStyleRun],
 ) -> Option<VectorTextPixmap> {
     if text.is_empty() || full_w == 0 || dest_h == 0 || tile_w == 0 || tile_x >= full_w {
         return None;
@@ -270,17 +292,37 @@ fn render_rythmo_text_tile_impl(
     let tile_w = tile_w.min(full_w - tile_x).max(1);
     let font_family = rythmo_font_family_name();
     let line_height = (font_size * 1.4).ceil().max(1.0);
-    let svg = build_svg_tile(
-        text,
-        &font_family,
-        font_size,
-        line_height,
-        full_w,
-        dest_h,
-        tile_x,
-        tile_w,
-        stretch,
-    );
+    let stretched_runs = (stretch && has_styled_runs(runs))
+        .then(|| measure_rythmo_text_char_ratios_standalone(text, font_size))
+        .flatten()
+        .map(|ratios| {
+            build_svg_stretched_runs(
+                text,
+                &font_family,
+                font_size,
+                line_height,
+                full_w,
+                dest_h,
+                tile_x,
+                tile_w,
+                &ratios,
+                runs,
+            )
+        });
+    let svg = stretched_runs.unwrap_or_else(|| {
+        build_svg_tile(
+            text,
+            &font_family,
+            font_size,
+            line_height,
+            full_w,
+            dest_h,
+            tile_x,
+            tile_w,
+            stretch,
+            runs,
+        )
+    });
     let mut options = resvg::usvg::Options::default();
     options.font_family = font_family;
     options.font_size = font_size;
@@ -556,6 +598,7 @@ pub fn render_text_natural_with_family_spacing_and_style_standalone(
         bold,
         strikethrough,
         underline,
+        &[],
     );
     let mut options = resvg::usvg::Options::default();
     options.font_family = font_family.to_string();
@@ -635,6 +678,32 @@ pub fn render_bubble_line_standalone(
     })
 }
 
+/// Band text carrying per-character styles. Empty `runs` renders exactly like
+/// the plain `render_rythmo_text*` functions with the same flags.
+pub fn render_rythmo_text_styled(
+    font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+    dest_w: u32,
+    dest_h: u32,
+    include_ratios: bool,
+    stretch: bool,
+    emphasized: bool,
+    runs: &[TextStyleRun],
+) -> Option<VectorTextPixmap> {
+    render_rythmo_text_impl_with_runs(
+        font_system,
+        text,
+        font_size,
+        dest_w,
+        dest_h,
+        include_ratios,
+        stretch,
+        emphasized,
+        runs,
+    )
+}
+
 fn render_rythmo_text_impl(
     font_system: &mut FontSystem,
     text: &str,
@@ -644,6 +713,30 @@ fn render_rythmo_text_impl(
     include_ratios: bool,
     stretch: bool,
     emphasized: bool,
+) -> Option<VectorTextPixmap> {
+    render_rythmo_text_impl_with_runs(
+        font_system,
+        text,
+        font_size,
+        dest_w,
+        dest_h,
+        include_ratios,
+        stretch,
+        emphasized,
+        &[],
+    )
+}
+
+fn render_rythmo_text_impl_with_runs(
+    font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+    dest_w: u32,
+    dest_h: u32,
+    include_ratios: bool,
+    stretch: bool,
+    emphasized: bool,
+    runs: &[TextStyleRun],
 ) -> Option<VectorTextPixmap> {
     if text.is_empty() || dest_w == 0 || dest_h == 0 {
         return None;
@@ -658,20 +751,42 @@ fn render_rythmo_text_impl(
         Vec::new()
     };
 
-    let svg = build_svg_styled(
-        text,
-        &font_family,
-        font_size,
-        line_height,
-        dest_w,
-        dest_h,
-        stretch,
-        emphasized,
-        0.0,
-        false,
-        false,
-        false,
-    );
+    let stretched_runs = (stretch && !emphasized && has_styled_runs(runs)).then(|| {
+        let ratios = if char_x_ratios.is_empty() {
+            measure_text(font_system, text, font_size, line_height, &font_family).1
+        } else {
+            char_x_ratios.clone()
+        };
+        build_svg_stretched_runs(
+            text,
+            &font_family,
+            font_size,
+            line_height,
+            dest_w,
+            dest_h,
+            0,
+            dest_w,
+            &ratios,
+            runs,
+        )
+    });
+    let svg = stretched_runs.unwrap_or_else(|| {
+        build_svg_styled(
+            text,
+            &font_family,
+            font_size,
+            line_height,
+            dest_w,
+            dest_h,
+            stretch,
+            emphasized,
+            0.0,
+            false,
+            false,
+            false,
+            runs,
+        )
+    });
     let mut options = resvg::usvg::Options::default();
     options.font_family = font_family;
     options.font_size = font_size;
@@ -864,8 +979,9 @@ fn build_svg_styled(
     bold: bool,
     strikethrough: bool,
     underline: bool,
+    runs: &[TextStyleRun],
 ) -> String {
-    let escaped_text = escape_xml(text);
+    let escaped_text = styled_text_content(text, runs);
     let escaped_family = escape_xml(font_family);
     let baseline = font_size;
     let stretch_attrs = if stretch {
@@ -915,8 +1031,9 @@ fn build_svg_tile(
     tile_x: u32,
     tile_w: u32,
     stretch: bool,
+    runs: &[TextStyleRun],
 ) -> String {
-    let escaped_text = escape_xml(text);
+    let escaped_text = styled_text_content(text, runs);
     let escaped_family = escape_xml(font_family);
     let baseline = font_size;
     let stretch_attrs = if stretch {
@@ -930,6 +1047,137 @@ fn build_svg_tile(
 <text x="0" y="{baseline:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white"{stretch_attrs} xml:space="preserve">{escaped_text}</text>
 </svg>"#
     )
+}
+
+fn has_styled_runs(runs: &[TextStyleRun]) -> bool {
+    runs.iter()
+        .any(|(start, end, style)| start < end && !style.is_plain())
+}
+
+/// Stretched text with styled runs. resvg drops `textLength` as soon as a
+/// `<text>` holds a `<tspan>`, which left styled segments at their natural
+/// width. Each run is therefore its own `<text>`, placed where the regular
+/// shaping puts it (`ratios`, one per character boundary) and stretched to
+/// its share of `full_w`, so the segment still fills its synchronization
+/// interval and the caret positions stay valid.
+#[allow(clippy::too_many_arguments)]
+fn build_svg_stretched_runs(
+    text: &str,
+    font_family: &str,
+    font_size: f32,
+    line_height: f32,
+    full_w: u32,
+    dest_h: u32,
+    view_x: u32,
+    view_w: u32,
+    ratios: &[f32],
+    runs: &[TextStyleRun],
+) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let style_at = |index: usize| {
+        runs.iter()
+            .rev()
+            .find(|(start, end, _)| *start <= index && index < *end)
+            .map(|(_, _, style)| *style)
+            .unwrap_or_default()
+    };
+    let ratio_at = |index: usize| {
+        ratios
+            .get(index)
+            .copied()
+            .unwrap_or(index as f32 / len.max(1) as f32)
+    };
+    let escaped_family = escape_xml(font_family);
+    let mut elements = String::new();
+    let mut start = 0;
+    while start < len {
+        let style = style_at(start);
+        let mut end = start + 1;
+        while end < len && style_at(end) == style {
+            end += 1;
+        }
+        let x = ratio_at(start) * full_w as f32;
+        let width = (ratio_at(end) - ratio_at(start)) * full_w as f32;
+        if width > 0.01 {
+            let mut attrs = String::new();
+            if style.bold {
+                attrs.push_str(r#" font-weight="700""#);
+            }
+            if style.italic {
+                attrs.push_str(r#" font-style="italic""#);
+            }
+            match (style.underline, style.strikethrough) {
+                (true, true) => attrs.push_str(r#" text-decoration="underline line-through""#),
+                (true, false) => attrs.push_str(r#" text-decoration="underline""#),
+                (false, true) => attrs.push_str(r#" text-decoration="line-through""#),
+                (false, false) => {}
+            }
+            let piece = escape_xml(&chars[start..end].iter().collect::<String>());
+            elements.push_str(&format!(
+                r#"<text x="{x:.3}" y="{font_size:.3}" font-family="{escaped_family}" font-size="{font_size:.3}" fill="white"{attrs} textLength="{width:.3}" lengthAdjust="spacingAndGlyphs" xml:space="preserve">{piece}</text>"#
+            ));
+            elements.push('\n');
+        }
+        start = end;
+    }
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{view_w}" height="{dest_h}" viewBox="{view_x} 0 {view_w} {line_height:.3}" preserveAspectRatio="none">
+{elements}</svg>"#
+    )
+}
+
+/// Escaped `<text>` content where each styled run becomes a `<tspan>`. Only
+/// used when the text is not stretched: resvg ignores `textLength` on a
+/// `<text>` that holds `<tspan>` elements.
+fn styled_text_content(text: &str, runs: &[TextStyleRun]) -> String {
+    if runs
+        .iter()
+        .all(|(start, end, style)| start >= end || style.is_plain())
+    {
+        return escape_xml(text);
+    }
+    let mut runs: Vec<TextStyleRun> = runs
+        .iter()
+        .copied()
+        .filter(|(start, end, style)| start < end && !style.is_plain())
+        .collect();
+    runs.sort_by_key(|(start, end, _)| (*start, *end));
+
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let slice = |start: usize, end: usize| -> String {
+        escape_xml(&chars[start..end].iter().collect::<String>())
+    };
+    let mut content = String::with_capacity(text.len() + runs.len() * 64);
+    let mut cursor = 0;
+    for (start, end, style) in runs {
+        let start = start.max(cursor).min(len);
+        let end = end.min(len);
+        if start >= end {
+            continue;
+        }
+        content.push_str(&slice(cursor, start));
+        content.push_str("<tspan");
+        if style.bold {
+            content.push_str(r#" font-weight="700""#);
+        }
+        if style.italic {
+            content.push_str(r#" font-style="italic""#);
+        }
+        match (style.underline, style.strikethrough) {
+            (true, true) => content.push_str(r#" text-decoration="underline line-through""#),
+            (true, false) => content.push_str(r#" text-decoration="underline""#),
+            (false, true) => content.push_str(r#" text-decoration="line-through""#),
+            (false, false) => {}
+        }
+        content.push('>');
+        content.push_str(&slice(start, end));
+        content.push_str("</tspan>");
+        cursor = end;
+    }
+    content.push_str(&slice(cursor, len));
+    content
 }
 
 fn escape_xml(value: &str) -> String {
@@ -987,9 +1235,164 @@ mod tests {
             true,
             true,
             true,
+            &[],
         );
         assert!(svg.contains(r#"font-weight="700""#));
         assert!(svg.contains(r#"text-decoration="underline line-through""#));
         assert!(svg.contains(r#"letter-spacing="1.500""#));
+    }
+
+    fn style(
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        strikethrough: bool,
+    ) -> crate::rythmo_line::TextStyle {
+        crate::rythmo_line::TextStyle {
+            bold,
+            italic,
+            underline,
+            strikethrough,
+        }
+    }
+
+    fn band_svg(text: &str, runs: &[TextStyleRun]) -> String {
+        build_svg_styled(
+            text,
+            "sans-serif",
+            24.0,
+            34.0,
+            200,
+            40,
+            true,
+            false,
+            0.0,
+            false,
+            false,
+            false,
+            runs,
+        )
+    }
+
+    #[test]
+    fn styled_runs_become_tspans_inside_stretched_text() {
+        let svg = band_svg(
+            "Bonjour <toi> & moi",
+            &[
+                (0, 3, style(true, false, false, false)),
+                (8, 13, style(false, true, true, false)),
+                (16, 19, style(false, false, false, true)),
+            ],
+        );
+        assert!(svg.contains(r#"<tspan font-weight="700">Bon</tspan>jour "#));
+        assert!(svg.contains(
+            r#"<tspan font-style="italic" text-decoration="underline">&lt;toi&gt;</tspan> &amp; "#
+        ));
+        assert!(svg.contains(r#"<tspan text-decoration="line-through">moi</tspan></text>"#));
+        assert!(svg.contains(r#"textLength="200" lengthAdjust="spacingAndGlyphs""#));
+        let tile = build_svg_tile(
+            "abcd",
+            "sans-serif",
+            24.0,
+            34.0,
+            200,
+            40,
+            0,
+            100,
+            true,
+            &[(1, 2, style(true, true, true, true))],
+        );
+        assert!(tile.contains(
+            r#"a<tspan font-weight="700" font-style="italic" text-decoration="underline line-through">b</tspan>cd"#
+        ));
+    }
+
+    #[test]
+    fn plain_runs_keep_the_unstyled_svg() {
+        let plain = band_svg("\u{c9}t\u{e9} <ok>", &[]);
+        assert_eq!(
+            plain,
+            band_svg(
+                "\u{c9}t\u{e9} <ok>",
+                &[(0, 3, style(false, false, false, false))]
+            )
+        );
+        assert!(!plain.contains("tspan"));
+        assert!(plain.contains(">\u{c9}t\u{e9} &lt;ok&gt;</text>"));
+        // Runs are clamped to the text and indexed by char, not by byte.
+        let svg = band_svg("\u{c9}t\u{e9}", &[(1, 9, style(true, false, false, false))]);
+        assert!(svg.contains(">\u{c9}<tspan font-weight=\"700\">t\u{e9}</tspan></text>"));
+    }
+
+    #[test]
+    fn styled_text_rasterizes_differently() {
+        crate::config::init();
+        let mut font_system = FontSystem::new();
+        let plain = render_rythmo_text_styled(
+            &mut font_system,
+            "Texte",
+            24.0,
+            120,
+            34,
+            false,
+            true,
+            false,
+            &[],
+        )
+        .unwrap();
+        let styled = render_rythmo_text_styled(
+            &mut font_system,
+            "Texte",
+            24.0,
+            120,
+            34,
+            false,
+            true,
+            false,
+            &[(0, 5, style(true, true, true, true))],
+        )
+        .unwrap();
+        assert_eq!(plain.width, styled.width);
+        assert_ne!(plain.pixels, styled.pixels);
+    }
+
+    /// Columns holding ink, as `(first, last)`.
+    fn ink_columns(pixmap: &VectorTextPixmap) -> (u32, u32) {
+        let mut first = pixmap.width;
+        let mut last = 0;
+        for y in 0..pixmap.height {
+            for x in 0..pixmap.width {
+                let alpha = pixmap.pixels[((y * pixmap.width + x) * 4 + 3) as usize];
+                if alpha > 40 {
+                    first = first.min(x);
+                    last = last.max(x);
+                }
+            }
+        }
+        (first, last)
+    }
+
+    #[test]
+    fn styled_runs_keep_the_stretch_to_the_segment_width() {
+        crate::config::init();
+        let mut font_system = FontSystem::new();
+        for runs in [
+            vec![(0, 3, style(true, false, false, false))],
+            vec![(2, 5, style(false, true, false, false))],
+            vec![(1, 4, style(true, true, true, true))],
+        ] {
+            let plain = render_rythmo_text_styled(
+                &mut font_system, "Texte", 24.0, 600, 34, false, true, false, &[],
+            )
+            .unwrap();
+            let styled = render_rythmo_text_styled(
+                &mut font_system, "Texte", 24.0, 600, 34, false, true, false, &runs,
+            )
+            .unwrap();
+            let (_, plain_last) = ink_columns(&plain);
+            let (first, last) = ink_columns(&styled);
+            assert!(first < 60, "styled text starts at {first}");
+            assert!(last > 540, "styled text stops at {last}, plain at {plain_last}");
+        }
     }
 }

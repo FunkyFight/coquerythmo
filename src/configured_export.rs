@@ -166,6 +166,7 @@ pub fn run(context: ConfiguredExportContext<'_>) -> Result<Vec<PathBuf>, String>
                     track.with_announcer,
                     false,
                     context.configuration.pre_roll_seconds,
+                    &context.configuration.layout,
                     context.render_backend_status.clone(),
                     context.cancel.clone(),
                     mapped_progress,

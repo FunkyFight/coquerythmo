@@ -815,7 +815,7 @@ fn validate_command_precondition(command: &Command, project: &Project) -> Result
     let missing_line = |id: u64| format!("line {id} does not exist");
     match command {
         Command::SetLinePresence { .. } => {}
-        Command::SetTextEmotions { line_id, .. } => {
+        Command::SetTextEmotions { line_id, .. } | Command::SetTextStyles { line_id, .. } => {
             if project.get_line(*line_id).is_none() {
                 return Err(missing_line(*line_id));
             }
@@ -1359,6 +1359,9 @@ mod tests {
                     new_text: "after".into(),
                     old_emotions: Vec::new(),
                     new_emotions: Vec::new(),
+                    old_styles: Vec::new(),
+                    new_styles: Vec::new(),
+                    edit: None,
                 },
             )
             .unwrap();
@@ -1432,6 +1435,9 @@ mod tests {
                     new_text: "after".into(),
                     old_emotions: Vec::new(),
                     new_emotions: Vec::new(),
+                    old_styles: Vec::new(),
+                    new_styles: Vec::new(),
+                    edit: None,
                 },
             )
             .unwrap();
@@ -1441,6 +1447,9 @@ mod tests {
             new_text: "tampered".into(),
             old_emotions: Vec::new(),
             new_emotions: Vec::new(),
+            old_styles: Vec::new(),
+            new_styles: Vec::new(),
+            edit: None,
         };
 
         assert!(matches!(
@@ -1463,6 +1472,9 @@ mod tests {
                 new_text: "one".into(),
                 old_emotions: Vec::new(),
                 new_emotions: Vec::new(),
+                old_styles: Vec::new(),
+                new_styles: Vec::new(),
+                edit: None,
             },
         )
         .unwrap();
@@ -1475,6 +1487,9 @@ mod tests {
                 new_text: "left".into(),
                 old_emotions: Vec::new(),
                 new_emotions: Vec::new(),
+                old_styles: Vec::new(),
+                new_styles: Vec::new(),
+                edit: None,
             },
         )
         .unwrap();
@@ -1487,6 +1502,9 @@ mod tests {
                     new_text: "right".into(),
                     old_emotions: Vec::new(),
                     new_emotions: Vec::new(),
+                    old_styles: Vec::new(),
+                    new_styles: Vec::new(),
+                    edit: None,
                 },
             )
             .unwrap();
@@ -1501,6 +1519,9 @@ mod tests {
                 new_text: "replacement".into(),
                 old_emotions: Vec::new(),
                 new_emotions: Vec::new(),
+                old_styles: Vec::new(),
+                new_styles: Vec::new(),
+                edit: None,
             },
         )
         .unwrap();
@@ -1522,6 +1543,9 @@ mod tests {
                     new_text: "draft".into(),
                     old_emotions: Vec::new(),
                     new_emotions: Vec::new(),
+                    old_styles: Vec::new(),
+                    new_styles: Vec::new(),
+                    edit: None,
                 },
             )
             .unwrap();
@@ -1533,6 +1557,9 @@ mod tests {
                 new_text: "final".into(),
                 old_emotions: Vec::new(),
                 new_emotions: Vec::new(),
+                old_styles: Vec::new(),
+                new_styles: Vec::new(),
+                edit: None,
             })
             .unwrap();
 
@@ -1588,6 +1615,9 @@ mod tests {
                     new_text: "after".into(),
                     old_emotions: Vec::new(),
                     new_emotions: Vec::new(),
+                    old_styles: Vec::new(),
+                    new_styles: Vec::new(),
+                    edit: None,
                 },
             )
             .unwrap();

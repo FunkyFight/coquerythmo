@@ -315,6 +315,7 @@ mod tests {
             note: note.into(),
             presence: crate::rythmo_line::LinePresence::On,
             text_emotions: vec![],
+            text_styles: Vec::new(),
         }
     }
     #[test]

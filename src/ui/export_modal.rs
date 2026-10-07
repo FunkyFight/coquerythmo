@@ -1,5 +1,9 @@
 use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent, VAlign};
 use crate::i18n::t;
+use super::export_layout_page::{
+    self as layout_page, BandPreviewRequest, LayoutCursor, LayoutDrag, LayoutHistory,
+    LayoutPress, LayoutPreviewContext, LayoutSnapshot, PreviewDraws, PreviewTarget,
+};
 use crate::project::{AudioSelection, ExportConfiguration, VideoExportAspect, VideoExportQuality};
 
 const CARD_W: f32 = 1040.0;
@@ -24,6 +28,14 @@ enum ExportPage {
     Subtitles,
     Audio,
     Reports,
+}
+
+/// The export is configured in two steps: formats first, then, when a video
+/// is exported, the placement of the video and of the band on its frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExportStep {
+    Configure,
+    Layout,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +74,12 @@ pub enum ExportModalResult {
     Consumed,
     Close { configuration: ExportConfiguration },
     Export { configuration: ExportConfiguration },
+    /// The window switched between configuration and layout. Leaving the
+    /// layout step hands back the configuration so it is saved in the
+    /// project right away.
+    StepChanged {
+        save: Option<ExportConfiguration>,
+    },
 }
 
 pub struct ExportModal {
@@ -83,6 +101,19 @@ pub struct ExportModal {
     width_display: String,
     height_display: String,
     resolution_display: String,
+    step: ExportStep,
+    layout_focus: usize,
+    layout_values: [String; layout_page::VALUE_COUNT],
+    layout_drag: Option<LayoutDrag>,
+    /// Layout and scales when the current drag started (one undo step).
+    layout_drag_before: Option<LayoutSnapshot>,
+    /// Layer or handle under the pointer in the preview.
+    layout_hover: Option<PreviewTarget>,
+    layout_history: LayoutHistory,
+    /// Band height at the reference width and 100% scale, for the preview.
+    band_height_reference: f32,
+    band_background: [f32; 4],
+    playhead_color: [f32; 4],
     keyboard_focus: usize,
 }
 
@@ -124,6 +155,16 @@ impl ExportModal {
             width_display: String::new(),
             height_display: String::new(),
             resolution_display: String::new(),
+            step: ExportStep::Configure,
+            layout_focus: 0,
+            layout_values: Default::default(),
+            layout_drag: None,
+            layout_drag_before: None,
+            layout_hover: None,
+            layout_history: LayoutHistory::default(),
+            band_height_reference: 270.0,
+            band_background: crate::band_style::DEFAULT_BACKGROUND,
+            playhead_color: crate::band_style::DEFAULT_PLAYHEAD,
             keyboard_focus: 0,
         };
         modal.refresh_display_strings();
@@ -139,6 +180,365 @@ impl ExportModal {
         modal.video_only = true;
         modal.configuration.video_enabled = true;
         modal
+    }
+
+    /// What the layout preview needs to know about the project's band.
+    pub fn set_layout_preview(
+        &mut self,
+        band_height_reference: f32,
+        band_background: [f32; 4],
+        playhead_color: [f32; 4],
+    ) {
+        self.band_height_reference = band_height_reference.max(1.0);
+        self.band_background = band_background;
+        self.playhead_color = playhead_color;
+    }
+
+    fn layout_preview_context(&self) -> LayoutPreviewContext {
+        let (width, height) =
+            resolve_video_dimensions(&self.configuration, self.source_width, self.source_height);
+        // Same effective band scale as the video export pipeline.
+        let (br_scale, _) = crate::video_export::pipeline::effective_export_scales(
+            self.configuration.br_scale,
+            self.configuration.karaoke_text_scale,
+        );
+        let band_height = (self.band_height_reference * width as f32 / crate::constants::REF_WIDTH
+            * br_scale)
+            .ceil() as u32;
+        LayoutPreviewContext {
+            output_width: width,
+            output_height: height,
+            band_height: (band_height + 1) & !1,
+            source_width: self.source_width,
+            source_height: self.source_height,
+            band_background: self.band_background,
+            playhead: self.playhead_color,
+        }
+    }
+
+    /// Whether the layout screen (second step) is shown.
+    pub fn is_layout_step(&self) -> bool {
+        self.step == ExportStep::Layout
+    }
+
+    /// Title of the current step, for screen readers.
+    pub fn step_title(&self) -> &'static str {
+        match self.step {
+            ExportStep::Configure if self.video_only => t("comic_dubs.export.title"),
+            ExportStep::Configure => t("export_modal.title"),
+            ExportStep::Layout => t("export_layout.title"),
+        }
+    }
+
+    /// A video export goes through the layout step before starting.
+    fn needs_layout_step(&self) -> bool {
+        !self.video_only && self.configuration.video_enabled
+    }
+
+    /// "Export" pressed in the first step.
+    fn request_export(&mut self) -> ExportModalResult {
+        if !self.can_export() {
+            return ExportModalResult::Consumed;
+        }
+        self.finish_numeric();
+        if self.needs_layout_step() {
+            self.step = ExportStep::Layout;
+            self.layout_focus = 0;
+            self.layout_drag = None;
+            self.layout_drag_before = None;
+            self.layout_hover = None;
+            // The first step may have changed the scales: undo starts here.
+            self.layout_history.clear();
+            self.refresh_display_strings();
+            return ExportModalResult::StepChanged { save: None };
+        }
+        ExportModalResult::Export {
+            configuration: self.configuration.clone(),
+        }
+    }
+
+    /// "Back" from the layout step: the configuration is kept, and saved in
+    /// the project so the layout is never set twice.
+    fn back_to_configuration(&mut self) -> ExportModalResult {
+        self.finish_layout_drag();
+        self.step = ExportStep::Configure;
+        self.layout_hover = None;
+        self.set_focus(ExportFocus::Export);
+        ExportModalResult::StepChanged {
+            save: Some(self.configuration.clone()),
+        }
+    }
+
+    /// Ends a drag in the preview, recording it as one undo step.
+    fn finish_layout_drag(&mut self) {
+        self.layout_drag = None;
+        if let Some(before) = self.layout_drag_before.take() {
+            self.layout_history
+                .record(before, LayoutSnapshot::of(&self.configuration));
+        }
+    }
+
+    /// Runs a change of the layout screen as one undo step.
+    fn record_layout_change(&mut self, change: impl FnOnce(&mut Self)) {
+        let before = LayoutSnapshot::of(&self.configuration);
+        change(self);
+        self.layout_history
+            .record(before, LayoutSnapshot::of(&self.configuration));
+    }
+
+    /// Ctrl+Z (or Ctrl+Y / Ctrl+Shift+Z with `redo`) in the layout step.
+    /// Returns what to announce, or `None` when the layout step is not shown
+    /// (the shortcut then belongs to someone else).
+    pub fn layout_history_step(&mut self, redo: bool) -> Option<String> {
+        if !self.is_layout_step() {
+            return None;
+        }
+        self.finish_layout_drag();
+        let current = LayoutSnapshot::of(&self.configuration);
+        let target = if redo {
+            self.layout_history.redo(current)
+        } else {
+            self.layout_history.undo(current)
+        };
+        let Some(target) = target else {
+            return Some(
+                t(if redo {
+                    "export_layout.nothing_to_redo"
+                } else {
+                    "export_layout.nothing_to_undo"
+                })
+                .to_string(),
+            );
+        };
+        let before = self.layout_values.clone();
+        target.apply(&mut self.configuration);
+        self.refresh_display_strings();
+        let changed: Vec<usize> = (0..layout_page::VALUE_COUNT)
+            .filter(|control| before[*control] != self.layout_values[*control])
+            .collect();
+        // Keyboard users continue from what was restored.
+        if let Some(first) = changed.first() {
+            self.layout_focus = *first;
+        }
+        let verb = t(if redo {
+            "accessibility.redo"
+        } else {
+            "accessibility.undo"
+        });
+        let details: Vec<String> = changed
+            .iter()
+            .map(|control| {
+                format!(
+                    "{} {}",
+                    layout_page::control_label(*control),
+                    self.layout_values[*control]
+                )
+            })
+            .collect();
+        Some(if details.is_empty() {
+            verb.to_string()
+        } else {
+            format!("{verb} : {}", details.join(", "))
+        })
+    }
+
+    /// Mouse cursor over the layout preview (dragged or hovered handle).
+    pub fn layout_cursor(&self) -> Option<LayoutCursor> {
+        if !self.is_layout_step() {
+            return None;
+        }
+        if let Some(drag) = self.layout_drag {
+            return Some(PreviewTarget {
+                layer: drag.layer,
+                handle: drag.handle,
+            }
+            .cursor());
+        }
+        self.layout_hover.map(PreviewTarget::cursor)
+    }
+
+    /// Size of the band texture the live preview needs, while it is shown.
+    /// `pixel_scale` is the window's device pixels per UI unit.
+    pub fn band_preview_request(
+        &self,
+        screen_w: f32,
+        screen_h: f32,
+        pixel_scale: f32,
+    ) -> Option<BandPreviewRequest> {
+        self.is_layout_step().then(|| {
+            layout_page::band_preview_request(
+                screen_w,
+                screen_h,
+                pixel_scale,
+                &self.layout_preview_context(),
+                &self.configuration,
+            )
+        })
+    }
+
+    /// Where the video frame and the band texture are drawn in the preview.
+    pub fn layout_preview_draws(&self, screen_w: f32, screen_h: f32) -> Option<PreviewDraws> {
+        self.is_layout_step().then(|| {
+            layout_page::preview_draws(
+                screen_w,
+                screen_h,
+                &self.layout_preview_context(),
+                &self.configuration.layout,
+                self.layout_drag.as_ref(),
+                self.layout_focus,
+                self.layout_hover,
+            )
+        })
+    }
+
+    fn activate_layout_control(&mut self, control: usize) -> ExportModalResult {
+        self.layout_focus = control.min(layout_page::CONTROL_COUNT - 1);
+        match control {
+            layout_page::RESET_CONTROL => {
+                self.record_layout_change(|modal| {
+                    modal.configuration.layout = Default::default();
+                });
+                self.refresh_display_strings();
+                ExportModalResult::Consumed
+            }
+            layout_page::BACK_CONTROL => self.back_to_configuration(),
+            layout_page::LAUNCH_CONTROL => {
+                self.finish_layout_drag();
+                ExportModalResult::Export {
+                    configuration: self.configuration.clone(),
+                }
+            }
+            _ => ExportModalResult::Consumed,
+        }
+    }
+
+    fn move_layout_focus(&mut self, direction: i32) {
+        self.layout_focus = (self.layout_focus as i32 + direction)
+            .rem_euclid(layout_page::CONTROL_COUNT as i32) as usize;
+    }
+
+    /// Arrow keys: adjust the focused value, or move between buttons.
+    fn layout_arrow(&mut self, direction: i32) {
+        if self.layout_focus < layout_page::VALUE_COUNT {
+            let control = self.layout_focus;
+            let before = LayoutSnapshot::of(&self.configuration);
+            if layout_page::adjust(&mut self.configuration, control, direction) {
+                self.layout_history
+                    .record(before, LayoutSnapshot::of(&self.configuration));
+                self.refresh_display_strings();
+            }
+        } else {
+            self.move_layout_focus(direction);
+        }
+    }
+
+    fn handle_layout_event(
+        &mut self,
+        event: &UiEvent,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> ExportModalResult {
+        match event {
+            UiEvent::KeyInput { text } => match text.as_str() {
+                "\x1b" => self.back_to_configuration(),
+                "\t" => {
+                    self.move_layout_focus(1);
+                    ExportModalResult::Consumed
+                }
+                "\u{b}" => {
+                    self.move_layout_focus(-1);
+                    ExportModalResult::Consumed
+                }
+                "\r" | "\n" | " " => self.activate_layout_control(self.layout_focus),
+                _ => ExportModalResult::Consumed,
+            },
+            UiEvent::Activate => self.activate_layout_control(self.layout_focus),
+            UiEvent::FocusNext => {
+                self.move_layout_focus(1);
+                ExportModalResult::Consumed
+            }
+            UiEvent::FocusPrevious => {
+                self.move_layout_focus(-1);
+                ExportModalResult::Consumed
+            }
+            UiEvent::CursorUp | UiEvent::CursorRight => {
+                self.layout_arrow(1);
+                ExportModalResult::Consumed
+            }
+            UiEvent::CursorDown | UiEvent::CursorLeft => {
+                self.layout_arrow(-1);
+                ExportModalResult::Consumed
+            }
+            UiEvent::MouseMove { x, y } => {
+                let context = self.layout_preview_context();
+                if let Some(drag) = self.layout_drag {
+                    if layout_page::drag_to(
+                        screen_w,
+                        screen_h,
+                        &context,
+                        &mut self.configuration.layout,
+                        &drag,
+                        *x,
+                        *y,
+                    ) {
+                        self.refresh_display_strings();
+                    }
+                } else {
+                    self.layout_hover = layout_page::target_at(
+                        screen_w,
+                        screen_h,
+                        &context,
+                        &self.configuration.layout,
+                        layout_page::selected_layer(self.layout_focus),
+                        *x,
+                        *y,
+                    );
+                }
+                ExportModalResult::Consumed
+            }
+            UiEvent::MouseRelease { .. } => {
+                self.finish_layout_drag();
+                ExportModalResult::Consumed
+            }
+            UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y } => {
+                self.finish_layout_drag();
+                let context = self.layout_preview_context();
+                match layout_page::press(
+                    screen_w,
+                    screen_h,
+                    &context,
+                    &self.configuration.layout,
+                    layout_page::selected_layer(self.layout_focus),
+                    *x,
+                    *y,
+                ) {
+                    Some(LayoutPress::Adjust { control, direction }) => {
+                        self.layout_focus = control;
+                        let before = LayoutSnapshot::of(&self.configuration);
+                        if layout_page::adjust(&mut self.configuration, control, direction) {
+                            self.layout_history
+                                .record(before, LayoutSnapshot::of(&self.configuration));
+                            self.refresh_display_strings();
+                        }
+                        ExportModalResult::Consumed
+                    }
+                    Some(LayoutPress::Activate(control)) => self.activate_layout_control(control),
+                    Some(LayoutPress::StartDrag(drag)) => {
+                        // Clicking a layer selects it (its steppers).
+                        self.layout_focus = layout_page::first_control(drag.layer);
+                        self.layout_drag = Some(drag);
+                        self.layout_drag_before = Some(LayoutSnapshot::of(&self.configuration));
+                        self.layout_hover = Some(PreviewTarget {
+                            layer: drag.layer,
+                            handle: drag.handle,
+                        });
+                        ExportModalResult::Consumed
+                    }
+                    None => ExportModalResult::Consumed,
+                }
+            }
+            _ => ExportModalResult::Consumed,
+        }
     }
 
     fn focus_order(&self) -> Vec<ExportFocus> {
@@ -260,6 +660,9 @@ impl ExportModal {
     }
 
     pub fn keyboard_focus_label(&self) -> String {
+        if self.is_layout_step() {
+            return layout_page::control_label(self.layout_focus);
+        }
         match self.current_focus() {
             ExportFocus::Page(index) => match index {
                 0 => t("export_hub.video").to_string(),
@@ -331,11 +734,29 @@ impl ExportModal {
                 })
                 .unwrap_or_else(|| t("export_hub.languages").to_string()),
             ExportFocus::Close => t("export_hub.close").to_string(),
-            ExportFocus::Export => t("export_modal.export").to_string(),
+            ExportFocus::Export => self.export_button_label().to_string(),
+        }
+    }
+
+    /// The first step's button leads to the layout step for a video export.
+    fn export_button_label(&self) -> &'static str {
+        if self.needs_layout_step() {
+            t("export_layout.next")
+        } else {
+            t("export_modal.export")
         }
     }
 
     pub fn keyboard_selection_label(&self) -> Option<String> {
+        if self.is_layout_step() {
+            return self.layout_values.get(self.layout_focus).map(|value| {
+                format!(
+                    "{} {}",
+                    layout_page::control_label(self.layout_focus),
+                    value
+                )
+            });
+        }
         let state = |checked: bool| {
             if checked {
                 t("accessibility.checked")
@@ -515,6 +936,7 @@ impl ExportModal {
         let (width, height) =
             resolve_video_dimensions(&self.configuration, self.source_width, self.source_height);
         self.resolution_display = format!("{width} × {height} px");
+        self.layout_values = layout_page::display_values(&self.configuration);
     }
 
     fn card(screen_w: f32, screen_h: f32) -> Rect {
@@ -856,10 +1278,7 @@ impl ExportModal {
             }
             ExportFocus::Export => {
                 if self.can_export() {
-                    self.finish_numeric();
-                    return Some(ExportModalResult::Export {
-                        configuration: self.configuration.clone(),
-                    });
+                    return Some(self.request_export());
                 }
             }
             ExportFocus::VideoFps
@@ -1036,6 +1455,9 @@ impl ExportModal {
         screen_w: f32,
         screen_h: f32,
     ) -> ExportModalResult {
+        if self.is_layout_step() {
+            return self.handle_layout_event(event, screen_w, screen_h);
+        }
         let card = Self::card(screen_w, screen_h);
         let content = self.content_rect(card);
         let language_viewport = Self::language_list_viewport(card);
@@ -1132,13 +1554,7 @@ impl ExportModal {
                 }
                 if Self::export_button(card).contains(*x, *y) {
                     self.set_focus(ExportFocus::Export);
-                    if self.can_export() {
-                        self.finish_numeric();
-                        return ExportModalResult::Export {
-                            configuration: self.configuration.clone(),
-                        };
-                    }
-                    return ExportModalResult::Consumed;
+                    return self.request_export();
                 }
 
                 if !self.video_only {
@@ -1381,6 +1797,22 @@ impl ExportModal {
         screen_w: f32,
         screen_h: f32,
     ) {
+        if self.is_layout_step() {
+            layout_page::render(
+                quads,
+                labels,
+                screen_w,
+                screen_h,
+                &layout_page::LayoutScreenView {
+                    context: self.layout_preview_context(),
+                    layout: &self.configuration.layout,
+                    values: &self.layout_values,
+                    resolution: &self.resolution_display,
+                    focused: self.layout_focus,
+                },
+            );
+            return;
+        }
         let card = Self::card(screen_w, screen_h);
         let nav = Self::nav_rect(card);
         let content = self.content_rect(card);
@@ -1584,7 +2016,7 @@ impl ExportModal {
             quads,
             labels,
             export,
-            t("export_modal.export"),
+            self.export_button_label(),
             [0.13, 0.42, 0.28, 1.0],
             self.can_export(),
         );
@@ -2599,5 +3031,324 @@ mod tests {
         modal.toggle_comic_pages();
         assert!(modal.configuration.comic_dubs_alpha);
         assert!(modal.configuration.comic_dubs_pages_zip);
+    }
+
+    fn video_modal(video_enabled: bool) -> ExportModal {
+        let configuration = ExportConfiguration {
+            video_enabled,
+            subtitle_formats: crate::project::SubtitleExportFormats {
+                srt: true,
+                ..Default::default()
+            },
+            ..ExportConfiguration::default()
+        };
+        ExportModal::new(
+            1920,
+            1080,
+            vec![ExportLanguageOption {
+                id: 1,
+                name: "Français".into(),
+                has_instrumental: false,
+            }],
+            configuration,
+        )
+    }
+
+    fn key(modal: &mut ExportModal, text: &str) -> ExportModalResult {
+        modal.handle_event(
+            &UiEvent::KeyInput {
+                text: text.to_string(),
+            },
+            1600.0,
+            900.0,
+        )
+    }
+
+    fn press_export(modal: &mut ExportModal) -> ExportModalResult {
+        modal.set_focus(ExportFocus::Export);
+        key(modal, "\r")
+    }
+
+    #[test]
+    fn exporting_a_video_opens_the_layout_step_first() {
+        let mut modal = video_modal(true);
+        assert!(matches!(
+            press_export(&mut modal),
+            ExportModalResult::StepChanged { .. }
+        ));
+        assert!(modal.is_layout_step());
+        assert_eq!(modal.step_title(), t("export_layout.title"));
+        assert!(modal.band_preview_request(1600.0, 900.0, 1.0).is_some());
+        assert!(modal.layout_preview_draws(1600.0, 900.0).is_some());
+    }
+
+    #[test]
+    fn exporting_without_video_starts_immediately() {
+        let mut modal = video_modal(false);
+        let ExportModalResult::Export { configuration } = press_export(&mut modal) else {
+            panic!("expected the export to start");
+        };
+        assert!(!configuration.video_enabled);
+        assert!(!modal.is_layout_step());
+        assert!(modal.band_preview_request(1600.0, 900.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn export_button_click_also_goes_through_the_layout_step() {
+        let mut modal = video_modal(true);
+        let card = ExportModal::card(1600.0, 900.0);
+        let button = ExportModal::export_button(card);
+        let result = modal.handle_event(
+            &UiEvent::MousePress {
+                x: button.x + 4.0,
+                y: button.y + 4.0,
+            },
+            1600.0,
+            900.0,
+        );
+        assert!(matches!(result, ExportModalResult::StepChanged { .. }));
+        assert_eq!(modal.export_button_label(), t("export_layout.next"));
+    }
+
+    #[test]
+    fn back_keeps_the_configuration_and_launch_returns_the_layout() {
+        let mut modal = video_modal(true);
+        press_export(&mut modal);
+        // Video X +1 %, then band height +5 % with the arrows.
+        modal.handle_event(&UiEvent::CursorRight, 1600.0, 900.0);
+        for _ in 0..7 {
+            key(&mut modal, "\t");
+        }
+        assert_eq!(modal.layout_focus, 7);
+        modal.handle_event(&UiEvent::CursorUp, 1600.0, 900.0);
+        assert_eq!(
+            modal.keyboard_selection_label().unwrap(),
+            format!("{}, {} 105 %", t("export_layout.band"), t("export_layout.height"))
+        );
+
+        // Escape goes back to the first step without losing anything, and
+        // hands the layout over to be saved in the project.
+        let ExportModalResult::StepChanged { save: Some(saved) } = key(&mut modal, "\x1b") else {
+            panic!("expected the layout to be saved when leaving the step");
+        };
+        assert!((saved.layout.video.offset_x - 0.01).abs() < 1e-6);
+        assert!((saved.layout.band.scale_y - 1.05).abs() < 1e-6);
+        assert!(!modal.is_layout_step());
+        assert_eq!(modal.current_focus(), ExportFocus::Export);
+        assert!((modal.configuration.layout.video.offset_x - 0.01).abs() < 1e-6);
+
+        // Back in the layout step, "Start export" returns everything.
+        press_export(&mut modal);
+        assert!(modal.is_layout_step());
+        modal.layout_focus = layout_page::LAUNCH_CONTROL;
+        let ExportModalResult::Export { configuration } = key(&mut modal, "\r") else {
+            panic!("expected the export to start");
+        };
+        assert!((configuration.layout.video.offset_x - 0.01).abs() < 1e-6);
+        assert!((configuration.layout.band.scale_y - 1.05).abs() < 1e-6);
+        assert!(configuration.subtitle_formats.srt);
+    }
+
+    #[test]
+    fn layout_step_buttons_work_with_the_mouse() {
+        let mut modal = video_modal(true);
+        press_export(&mut modal);
+        modal.configuration.layout.band.offset_y = -0.2;
+        let sidebar = layout_page::sidebar_rect(1600.0, 900.0);
+        let click = |modal: &mut ExportModal, control: usize| {
+            let rect = layout_page::control_rect(sidebar, control);
+            modal.handle_event(
+                &UiEvent::MousePress {
+                    x: rect.x + rect.width / 2.0,
+                    y: rect.y + rect.height / 2.0,
+                },
+                1600.0,
+                900.0,
+            )
+        };
+        assert!(matches!(
+            click(&mut modal, layout_page::RESET_CONTROL),
+            ExportModalResult::Consumed
+        ));
+        assert!(modal.configuration.layout.is_default());
+        assert!(matches!(
+            click(&mut modal, layout_page::BACK_CONTROL),
+            ExportModalResult::StepChanged { .. }
+        ));
+        assert!(!modal.is_layout_step());
+        press_export(&mut modal);
+        assert!(matches!(
+            click(&mut modal, layout_page::LAUNCH_CONTROL),
+            ExportModalResult::Export { .. }
+        ));
+    }
+
+    #[test]
+    fn dragging_in_the_preview_moves_the_layer() {
+        let mut modal = video_modal(true);
+        press_export(&mut modal);
+        let context = modal.layout_preview_context();
+        let canvas = layout_page::canvas_rect(layout_page::preview_rect(1600.0, 900.0), &context);
+        let x = canvas.x + canvas.width / 2.0;
+        let y = canvas.y + canvas.height * 0.3;
+        modal.handle_event(&UiEvent::MousePress { x, y }, 1600.0, 900.0);
+        modal.handle_event(
+            &UiEvent::MouseMove {
+                x: x + canvas.width * 0.1,
+                y,
+            },
+            1600.0,
+            900.0,
+        );
+        modal.handle_event(&UiEvent::MouseRelease { x, y }, 1600.0, 900.0);
+        assert!((modal.configuration.layout.video.offset_x - 0.1).abs() < 0.002);
+        assert_eq!(modal.layout_values[0], "+10 %");
+        assert!(modal.layout_drag.is_none());
+    }
+
+    #[test]
+    fn back_button_saves_the_layout_and_launch_returns_it() {
+        let mut modal = video_modal(true);
+        assert!(matches!(
+            press_export(&mut modal),
+            ExportModalResult::StepChanged { save: None }
+        ));
+        modal.layout_arrow(1);
+        modal.layout_focus = layout_page::BACK_CONTROL;
+        let ExportModalResult::StepChanged { save: Some(saved) } = key(&mut modal, "\r") else {
+            panic!("Back must save the layout");
+        };
+        assert_eq!(saved.layout, modal.configuration.layout);
+        assert!(!saved.layout.is_default());
+        // Closing the first step afterwards keeps it too.
+        modal.set_focus(ExportFocus::Close);
+        let ExportModalResult::Close { configuration } = key(&mut modal, "\r") else {
+            panic!("expected the window to close");
+        };
+        assert_eq!(configuration.layout, saved.layout);
+    }
+
+    fn layout_modal() -> ExportModal {
+        let mut modal = video_modal(true);
+        press_export(&mut modal);
+        modal
+    }
+
+    #[test]
+    fn undo_and_redo_restore_layout_changes() {
+        let mut modal = layout_modal();
+        assert_eq!(
+            modal.layout_history_step(false).unwrap(),
+            t("export_layout.nothing_to_undo")
+        );
+        // Video X +1 %, then the band scale +10 %.
+        modal.layout_arrow(1);
+        modal.layout_focus = layout_page::BR_SCALE_CONTROL;
+        modal.layout_arrow(1);
+        let scaled = modal.configuration.br_scale;
+        assert!((scaled - 1.1).abs() < 1e-5);
+
+        let announced = modal.layout_history_step(false).unwrap();
+        assert!(announced.starts_with(t("accessibility.undo")), "{announced}");
+        assert!(announced.contains("100 %"), "{announced}");
+        assert!((modal.configuration.br_scale - 1.0).abs() < 1e-5);
+        assert_eq!(modal.layout_values[layout_page::BR_SCALE_CONTROL], "100 %");
+        assert!((modal.configuration.layout.video.offset_x - 0.01).abs() < 1e-6);
+
+        modal.layout_history_step(false).unwrap();
+        assert!(modal.configuration.layout.is_default());
+        assert_eq!(modal.layout_focus, 0);
+
+        let announced = modal.layout_history_step(true).unwrap();
+        assert!(announced.starts_with(t("accessibility.redo")), "{announced}");
+        assert!((modal.configuration.layout.video.offset_x - 0.01).abs() < 1e-6);
+        modal.layout_history_step(true).unwrap();
+        assert!((modal.configuration.br_scale - scaled).abs() < 1e-6);
+        assert_eq!(
+            modal.layout_history_step(true).unwrap(),
+            t("export_layout.nothing_to_redo")
+        );
+
+        // Reset is one step too.
+        let before = modal.configuration.layout;
+        modal.layout_focus = layout_page::RESET_CONTROL;
+        key(&mut modal, "\r");
+        assert!(modal.configuration.layout.is_default());
+        modal.layout_history_step(false).unwrap();
+        assert_eq!(modal.configuration.layout, before);
+
+        // Outside the layout step, the shortcut is not handled here.
+        key(&mut modal, "\x1b");
+        assert!(modal.layout_history_step(false).is_none());
+    }
+
+    #[test]
+    fn a_whole_drag_is_one_undo_step() {
+        let mut modal = layout_modal();
+        let context = modal.layout_preview_context();
+        let canvas = layout_page::canvas_rect(layout_page::preview_rect(1600.0, 900.0), &context);
+        let x = canvas.x + canvas.width / 2.0;
+        let y = canvas.y + canvas.height * 0.3;
+        modal.handle_event(&UiEvent::MousePress { x, y }, 1600.0, 900.0);
+        for step in 1..=5 {
+            let x = x + canvas.width * 0.02 * step as f32;
+            modal.handle_event(&UiEvent::MouseMove { x, y }, 1600.0, 900.0);
+        }
+        modal.handle_event(&UiEvent::MouseRelease { x, y }, 1600.0, 900.0);
+        assert!((modal.configuration.layout.video.offset_x - 0.1).abs() < 0.002);
+        modal.layout_history_step(false).unwrap();
+        assert!(modal.configuration.layout.is_default());
+        assert_eq!(
+            modal.layout_history_step(false).unwrap(),
+            t("export_layout.nothing_to_undo")
+        );
+    }
+
+    #[test]
+    fn handles_resize_the_selected_layer_with_the_mouse() {
+        let mut modal = layout_modal();
+        let context = modal.layout_preview_context();
+        let band = layout_page::layer_screen_rect(
+            1600.0,
+            900.0,
+            &context,
+            &modal.configuration.layout,
+            layout_page::Layer::Band,
+        );
+        // Hovering the band's right edge offers a horizontal resize.
+        let x = band.x + band.width;
+        let y = band.y + band.height / 2.0;
+        modal.handle_event(&UiEvent::MouseMove { x, y }, 1600.0, 900.0);
+        assert_eq!(modal.layout_cursor(), Some(LayoutCursor::ResizeHorizontal));
+        modal.handle_event(&UiEvent::MousePress { x, y }, 1600.0, 900.0);
+        // Clicking a layer selects it.
+        assert_eq!(modal.layout_focus, 4);
+        let canvas = layout_page::canvas_rect(layout_page::preview_rect(1600.0, 900.0), &context);
+        modal.handle_event(
+            &UiEvent::MouseMove {
+                x: x + canvas.width * 0.5,
+                y,
+            },
+            1600.0,
+            900.0,
+        );
+        modal.handle_event(&UiEvent::MouseRelease { x, y }, 1600.0, 900.0);
+        assert!((modal.configuration.layout.band.scale_x - 1.5).abs() < 0.01);
+        assert_eq!(modal.layout_values[6], "150 %");
+        // The preview now asks for a band texture wide enough to stay sharp.
+        let request = modal.band_preview_request(1600.0, 900.0, 1.0).unwrap();
+        assert!(request.width as f32 >= canvas.width * 1.5);
+        modal.layout_history_step(false).unwrap();
+        assert_eq!(modal.configuration.layout.band.scale_x, 1.0);
+    }
+
+    #[test]
+    fn comic_dubs_video_export_has_no_layout_step() {
+        let mut modal = ExportModal::new_video_only(1920, 1080, ExportConfiguration::default());
+        modal.set_focus(ExportFocus::Export);
+        assert!(matches!(
+            key(&mut modal, "\r"),
+            ExportModalResult::Export { .. }
+        ));
     }
 }

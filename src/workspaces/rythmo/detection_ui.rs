@@ -16,8 +16,8 @@ use unicode_segmentation::UnicodeSegmentation;
 mod base;
 
 pub(crate) use base::{
-    decode_sync_syllable_drag_line_id, encode_sync_syllable_drag_line_id,
-    line_has_visible_sync_points, waveform_drag_markers,
+    decode_sync_syllable_drag_line_id, encode_sync_syllable_drag_line_id, hit_sync_point,
+    line_has_visible_sync_points, sync_placeholder_hovered, waveform_drag_markers,
 };
 pub use base::{DetectionDrag, DetectionHover, DetectionMenu};
 
@@ -770,6 +770,7 @@ pub(crate) fn render_sync_text_segments(
                 start,
                 read_highlight_end,
                 tint,
+                drawable_text_styles(line),
             );
         }
     }
