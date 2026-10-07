@@ -329,6 +329,30 @@ pub fn text_emotion_track_body_height(row_height: f32, scale: f32) -> f32 {
     copy_y + copy_height
 }
 
+/// Body height shared by every displayed track: the tallest body any of them
+/// needs (two rows when a track holds karaoke or text effects, one otherwise).
+pub fn uniform_track_body_height(
+    track_indices: &[usize],
+    karaoke_tracks: &[bool],
+    emotion_tracks: &[bool],
+    normal_body_h: f32,
+    scale: f32,
+) -> f32 {
+    let flag = |flags: &[bool], index: usize| flags.get(index).copied().unwrap_or(false);
+    track_indices
+        .iter()
+        .map(|&index| {
+            if flag(karaoke_tracks, index) {
+                karaoke_track_body_height(normal_body_h, scale)
+            } else if flag(emotion_tracks, index) {
+                text_emotion_track_body_height(normal_body_h, scale)
+            } else {
+                normal_body_h
+            }
+        })
+        .fold(normal_body_h, f32::max)
+}
+
 pub fn build_track_layouts(
     project: &Project,
     track_indices: &[usize],
@@ -339,26 +363,25 @@ pub fn build_track_layouts(
 ) -> Vec<TrackLayout> {
     let mut top = 0.0;
     let emotion_tracks = text_emotion_tracks(project);
+    let uniform_body_h = uniform_track_body_height(
+        track_indices,
+        &karaoke_tracks(project),
+        &emotion_tracks,
+        normal_body_h,
+        scale,
+    );
     track_indices
         .iter()
         .map(|&track_index| {
             let has_karaoke = track_has_karaoke(project, track_index);
-            let has_text_emotion = emotion_tracks.get(track_index).copied().unwrap_or(false);
-            let body_h = if has_karaoke {
-                karaoke_track_body_height(normal_body_h, scale)
-            } else if has_text_emotion {
-                text_emotion_track_body_height(normal_body_h, scale)
-            } else {
-                normal_body_h
-            };
-            let total_h = slot_header_h + badge_gap + body_h;
+            let total_h = slot_header_h + badge_gap + uniform_body_h;
             let layout = TrackLayout {
                 track_index,
                 top,
                 total_h,
                 reserved_h: total_h,
-                body_h,
-                reserved_body_h: body_h,
+                body_h: uniform_body_h,
+                reserved_body_h: uniform_body_h,
                 has_karaoke,
             };
             top += total_h;
@@ -381,6 +404,13 @@ pub fn build_track_layouts_at_frame(
     let karaoke_mode_tracks = karaoke_mode_tracks(project, current_frame, count_in_frames);
     let reserved_karaoke_tracks = karaoke_tracks(project);
     let emotion_tracks = text_emotion_tracks(project);
+    let uniform_body_h = uniform_track_body_height(
+        track_indices,
+        &reserved_karaoke_tracks,
+        &emotion_tracks,
+        normal_body_h,
+        scale,
+    );
     track_indices
         .iter()
         .map(|&track_index| {
@@ -389,32 +419,21 @@ pub fn build_track_layouts_at_frame(
                 .copied()
                 .unwrap_or(false);
             let body_h = if has_karaoke {
-                karaoke_track_body_height(normal_body_h, scale)
+                uniform_body_h
             } else if emotion_tracks.get(track_index).copied().unwrap_or(false) {
                 text_emotion_track_body_height(normal_body_h, scale)
             } else {
                 normal_body_h
             };
             let total_h = slot_header_h + badge_gap + body_h;
-            let reserved_body_h = if reserved_karaoke_tracks
-                .get(track_index)
-                .copied()
-                .unwrap_or(false)
-            {
-                karaoke_track_body_height(normal_body_h, scale)
-            } else if emotion_tracks.get(track_index).copied().unwrap_or(false) {
-                text_emotion_track_body_height(normal_body_h, scale)
-            } else {
-                normal_body_h
-            };
-            let reserved_h = slot_header_h + badge_gap + reserved_body_h;
+            let reserved_h = slot_header_h + badge_gap + uniform_body_h;
             let layout = TrackLayout {
                 track_index,
                 top,
                 total_h,
                 reserved_h,
                 body_h,
-                reserved_body_h,
+                reserved_body_h: uniform_body_h,
                 has_karaoke,
             };
             top += reserved_h;
@@ -484,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn only_tracks_with_karaoke_get_double_body_height() {
+    fn all_tracks_share_the_karaoke_body_height() {
         let mut project = Project::new();
         let normal_id = project.add_line(0, 24, 0.0);
         let karaoke_id = project.add_line(24, 24, 0.5);
@@ -502,8 +521,9 @@ mod tests {
         let normal = track_for_index(&layouts, 0).unwrap();
         let karaoke = track_for_index(&layouts, 2).unwrap();
 
-        assert_eq!(normal.body_h, 40.0);
+        assert_eq!(normal.body_h, karaoke_track_body_height(40.0, 1.0));
         assert_eq!(karaoke.body_h, karaoke_track_body_height(40.0, 1.0));
+        assert_eq!(normal.reserved_h, karaoke.reserved_h);
         assert_eq!(
             total_tracks_height(&layouts),
             normal.total_h + karaoke.total_h

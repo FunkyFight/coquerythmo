@@ -353,37 +353,33 @@ pub(crate) fn build_track_layouts_from_karaoke_flags(
     scale: f32,
 ) -> Vec<rythmo_layout::TrackLayout> {
     let mut top = 0.0;
+    let uniform_body_h = rythmo_layout::uniform_track_body_height(
+        track_indices,
+        reserved_karaoke_tracks,
+        emotion_tracks,
+        normal_body_h,
+        scale,
+    );
     track_indices
         .iter()
         .map(|&track_index| {
             let has_karaoke = karaoke_tracks.get(track_index).copied().unwrap_or(false);
             let body_h = if has_karaoke {
-                rythmo_layout::karaoke_track_body_height(normal_body_h, scale)
+                uniform_body_h
             } else if emotion_tracks.get(track_index).copied().unwrap_or(false) {
                 rythmo_layout::text_emotion_track_body_height(normal_body_h, scale)
             } else {
                 normal_body_h
             };
             let total_h = slot_header_h + badge_gap + body_h;
-            let reserved_body_h = if reserved_karaoke_tracks
-                .get(track_index)
-                .copied()
-                .unwrap_or(false)
-            {
-                rythmo_layout::karaoke_track_body_height(normal_body_h, scale)
-            } else if emotion_tracks.get(track_index).copied().unwrap_or(false) {
-                rythmo_layout::text_emotion_track_body_height(normal_body_h, scale)
-            } else {
-                normal_body_h
-            };
-            let reserved_h = slot_header_h + badge_gap + reserved_body_h;
+            let reserved_h = slot_header_h + badge_gap + uniform_body_h;
             let layout = rythmo_layout::TrackLayout {
                 track_index,
                 top,
                 total_h,
                 reserved_h,
                 body_h,
-                reserved_body_h,
+                reserved_body_h: uniform_body_h,
                 has_karaoke,
             };
             top += reserved_h;
@@ -422,12 +418,24 @@ fn editor_normal_body_height_for_track_count(
     let track_count = track_count.max(1);
     let usable_h = (zone.height - constants::RULER_HEIGHT).max(1.0);
     let header_total = track_count as f32 * (slot_header_height() + BADGE_GAP);
-    let weighted_rows = (track_count + karaoke_track_count + emotion_track_count) as f32;
+    // Every track gets the same body: two rows (plus the stack gap) as soon as
+    // one displayed track holds karaoke or text effects, one row otherwise.
+    let rows_per_track = if karaoke_track_count > 0 || emotion_track_count > 0 {
+        2.0
+    } else {
+        1.0
+    };
+    let weighted_rows = track_count as f32 * rows_per_track;
     let mut body_h = ((usable_h - header_total) / weighted_rows).max(8.0);
     for _ in 0..4 {
-        let stack_gaps = karaoke_track_count as f32
-            * rythmo_layout::karaoke_stack_gap(body_h * 2.0, 1.0)
-            + emotion_track_count as f32 * rythmo_layout::karaoke_stack_gap(body_h, 1.0);
+        let stack_gap = if karaoke_track_count > 0 {
+            rythmo_layout::karaoke_stack_gap(body_h * 2.0, 1.0)
+        } else if emotion_track_count > 0 {
+            rythmo_layout::karaoke_stack_gap(body_h, 1.0)
+        } else {
+            0.0
+        };
+        let stack_gaps = track_count as f32 * stack_gap;
         body_h = ((usable_h - header_total - stack_gaps) / weighted_rows).max(8.0);
     }
     body_h

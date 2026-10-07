@@ -2386,7 +2386,7 @@ mod tests {
     }
 
     #[test]
-    fn br_height_doubles_only_tracks_with_karaoke() {
+    fn br_height_doubles_every_track_when_one_has_karaoke() {
         let mut project = Project::new();
         let normal_id = project.add_line(0, 24, 0.0);
         let karaoke_id = project.add_line(24, 24, 0.5);
@@ -2401,11 +2401,10 @@ mod tests {
         let actor_icon_size = constants::VOICE_ACTOR_DISPLAY_ICON_SIZE * s;
         let slot_header_h = badge_h.max(actor_icon_size);
         let badge_gap = constants::BADGE_GAP * s;
-        let normal_total_h = normal_body_h + slot_header_h + badge_gap;
         let karaoke_total_h =
             rythmo_layout::karaoke_track_body_height(normal_body_h, s) + slot_header_h + badge_gap;
         let expected =
-            (constants::RULER_HEIGHT * s + normal_total_h + karaoke_total_h).ceil() as u32;
+            (constants::RULER_HEIGHT * s + karaoke_total_h * 2.0).ceil() as u32;
 
         assert_eq!(br_height(&project, width, br_scale), expected);
     }

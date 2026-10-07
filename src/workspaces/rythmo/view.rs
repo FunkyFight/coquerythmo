@@ -643,8 +643,18 @@ mod tests {
             24.0,
         );
 
-        assert!((normal_rect.height - normal_body_h).abs() < f32::EPSILON);
         let active_normal_body_h = normal_body_h;
+        // Every track shares the karaoke track's body height, so the plain line
+        // of track 0 fills the same two-row body.
+        assert!(
+            (normal_rect.height
+                - rythmo_layout::karaoke_track_body_height(active_normal_body_h, 1.0))
+            .abs()
+                < 0.01
+        );
+        let layouts = editor_track_layouts(&project, &zone);
+        let first_reserved = layouts[0].reserved_h;
+        assert!(layouts.iter().all(|l| (l.reserved_h - first_reserved).abs() < 0.01));
         assert!(
             (karaoke_body.height
                 - rythmo_layout::karaoke_track_body_height(active_normal_body_h, 1.0))
@@ -726,13 +736,49 @@ mod tests {
             assert_eq!(badge.height, rect.height);
         }
         for id in [karaoke, effect] {
-            let (rect, _, body) = rect_of(id);
+            let (rect, _, _) = rect_of(id);
             assert!((rect.height - layout.normal_body_h).abs() < f32::EPSILON);
             assert!(rect.height < layout.track_for_y_slot(project.get_line(id).unwrap().y_slot).reserved_body_h);
         }
-        let (rect, _, body) = rect_of(plain_n);
-        assert!((rect.height - layout.normal_body_h).abs() < f32::EPSILON);
-        assert!((body.height - layout.normal_body_h).abs() < f32::EPSILON);
+        // A plain-only track is as tall as the others and its line fills it.
+        let (rect, _, _) = rect_of(plain_n);
+        let reserved = layout.track_for_y_slot(0.5).reserved_body_h;
+        assert!((rect.height - reserved).abs() < 0.01);
+        assert!(rect.height > layout.normal_body_h);
+    }
+
+    #[test]
+    fn all_tracks_have_the_same_height_when_only_one_has_karaoke() {
+        crate::config::init();
+        let zone = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 400.0,
+        };
+        let mut project = Project::new();
+        let karaoke = project.add_line(0, 24, 0.0);
+        project.get_line_mut(karaoke).unwrap().karaoke = true;
+        let plain_first = project.add_line(100, 24, 0.0);
+        let plain_last = project.add_line(0, 24, 0.75);
+
+        let layout = EditorLayoutCtx::new_at_frame(&project, 0.0, &zone);
+        let layouts = layout.track_layouts();
+        assert_eq!(layouts.len(), 4);
+        for l in layouts {
+            assert!((l.reserved_h - layouts[0].reserved_h).abs() < 0.01);
+            assert!((l.reserved_body_h - layouts[0].reserved_body_h).abs() < 0.01);
+        }
+        let height_of = |id: u64| {
+            let line = project.get_line(id).unwrap();
+            layout
+                .line_rect_with_karaoke_width(line, 0.0, &zone, false, None, 0.0, 24.0)
+                .height
+        };
+        assert!((height_of(plain_first) - height_of(plain_last)).abs() < 0.01);
+        // The band still fits exactly in the zone.
+        let total = rythmo_layout::total_tracks_height(layouts);
+        assert!((total - (zone.height - constants::RULER_HEIGHT)).abs() < 1.0);
     }
 
     #[test]

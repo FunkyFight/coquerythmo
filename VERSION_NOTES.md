@@ -97,10 +97,11 @@ exactement la vidéo exportée.
 
 ## Bande rythmo
 
-- Les répliques simples (sans effet de texte ni karaoké) occupent maintenant
-  toute la hauteur de leur piste, même quand elle contient aussi des lignes
-  karaoké ou des effets de texte : elles ne paraissent plus écrasées. Le
-  changement s’applique aussi à l’export vidéo.
+- Les quatre pistes de la bande ont maintenant toutes la même hauteur, même
+  quand une seule contient des lignes karaoké ou des effets de texte, et les
+  répliques simples (sans effet de texte ni karaoké) occupent toute la hauteur
+  de leur piste : elles ne paraissent plus écrasées. Le changement s’applique
+  aussi à l’export vidéo.
 - La piste survolée n’est plus éclairée en entier : seule la réplique sous le
   pointeur est mise en évidence.
 
