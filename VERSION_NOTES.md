@@ -95,6 +95,12 @@ exactement la vidéo exportée.
   les lecteurs d’écran ; les curseurs se règlent aux flèches et les listes
   s’ouvrent avec `Entrée`.
 
+## Bande rythmo
+
+- Le texte des répliques occupe maintenant toute la hauteur de la ligne : au
+  survol, la zone illuminée ne dépasse plus au-dessus et en dessous du texte.
+  Le changement s’applique aussi à l’export vidéo.
+
 # 5.3.0
 
 ## Points de synchronisation
