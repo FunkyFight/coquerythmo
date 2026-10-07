@@ -900,6 +900,29 @@ pub fn run(startup: Option<super::StartupInput>) {
                                 return;
                             }
                         }
+                        // In the rythmo workspace, plain Space always toggles
+                        // playback unless a text field is really being edited:
+                        // a focused tab, side panel or file tree must not
+                        // swallow it. Modals and menus were handled above.
+                        if is_space_key(&event.logical_key)
+                            && !ctrl_held
+                            && !shift_held
+                            && !keyboard_modifiers.alt
+                            && state.active_workspace() == WorkspaceId::Rythmo
+                            && !state.captures_modal_input()
+                            && !state.is_editing_text_in_rythmo_workspace()
+                        {
+                            dispatch_key_action(
+                                UiAction::TogglePlayPause,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
+                            state.request_redraw();
+                            return;
+                        }
                         // Escape leaves the shell's keyboard-focus mode. Keep
                         // modal and text-editor Escape handling ahead of this
                         // so their own cancel/close behavior remains intact.

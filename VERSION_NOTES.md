@@ -104,6 +104,9 @@ exactement la vidéo exportée.
   aussi à l’export vidéo.
 - La piste survolée n’est plus éclairée en entier : seule la réplique sous le
   pointeur est mise en évidence.
+- `Espace` lance ou met en pause la lecture dans la bande rythmo même quand un
+  onglet, le panneau latéral ou l’arborescence des fichiers a le focus ; seule
+  l’écriture dans un champ de texte la garde pour taper une espace.
 
 # 5.3.0
 

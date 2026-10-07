@@ -4705,6 +4705,10 @@ impl State {
         self.ui_shell.ui.is_editing_text()
     }
 
+    pub fn is_editing_text_in_rythmo_workspace(&self) -> bool {
+        self.ui_shell.ui.is_editing_text_in_rythmo_workspace()
+    }
+
     pub fn has_keyboard_focus(&self) -> bool {
         self.ui_shell.ui.has_keyboard_focus()
     }

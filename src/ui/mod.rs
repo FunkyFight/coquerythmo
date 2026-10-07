@@ -3346,6 +3346,16 @@ impl Ui {
         }
     }
 
+    /// Text editing that may keep Space away from rythmo playback. Editors
+    /// of the other workspaces are not visible in the rythmo workspace, so a
+    /// stale edit there must not swallow Space.
+    pub fn is_editing_text_in_rythmo_workspace(&self) -> bool {
+        self.rythmo_state.is_editing()
+            || self.modal_host.is_editing_text()
+            || self.side_panel.is_editing_text()
+            || self.file_tree.is_editing_text()
+    }
+
     pub fn is_editing_text(&self) -> bool {
         self.rythmo_state.is_editing()
             || self.modal_host.is_editing_text()
