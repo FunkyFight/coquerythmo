@@ -277,6 +277,11 @@ impl RecordingRuntime {
         self.incoming.begin(metadata, &self.temporary_dir)
     }
 
+    /// Drop every take still being received (the session it belonged to is gone).
+    pub fn cancel_audio_receives(&mut self) {
+        self.incoming.clear();
+    }
+
     pub fn push_audio_chunk(
         &mut self,
         transfer_id: &str,

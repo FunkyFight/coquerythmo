@@ -278,6 +278,19 @@ pub struct AudioTransferReceiver {
 }
 
 impl AudioTransferReceiver {
+    /// Abandon every unfinished transfer and delete its partial file.
+    pub fn clear(&mut self) {
+        for (_, transfer) in std::mem::take(&mut self.active) {
+            drop(transfer.file);
+            let _ = fs::remove_file(&transfer.temporary_path);
+        }
+    }
+
+    #[cfg(test)]
+    fn active_count(&self) -> usize {
+        self.active.len()
+    }
+
     pub fn begin(
         &mut self,
         metadata: AudioTransferMetadata,
@@ -532,6 +545,29 @@ mod tests {
             Some("take.flac")
         );
         assert_eq!(fs::read(received.path).unwrap(), fs::read(source).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clear_abandons_partial_transfers_and_removes_their_files() {
+        let root = std::env::temp_dir().join(format!(
+            "coquerythmo-audio-transfer-{}-clear",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("take.flac");
+        fs::write(&source, b"audio").unwrap();
+        let metadata =
+            AudioTransferMetadata::from_file("take_1", &source, target(), recorded()).unwrap();
+        let mut receiver = AudioTransferReceiver::default();
+        let received_dir = root.join("received");
+        receiver.begin(metadata.clone(), &received_dir).unwrap();
+        assert_eq!(receiver.active_count(), 1);
+        receiver.clear();
+        assert_eq!(receiver.active_count(), 0);
+        assert!(fs::read_dir(&received_dir).unwrap().next().is_none());
+        assert!(receiver.push_base64(&metadata.transfer_id, 0, "").is_err());
         let _ = fs::remove_dir_all(root);
     }
 

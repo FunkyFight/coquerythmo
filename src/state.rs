@@ -5884,6 +5884,10 @@ impl State {
             self.render.ui_renderer.clear_text_cache();
         }
         self.collaboration.network.disconnect();
+        self.recording_uploads.clear();
+        self.recording_upload_acks.clear();
+        self.big_receives.clear();
+        self.recording_runtime.cancel_audio_receives();
         self.project_transfer = None;
         self.project_transfer_prepare = None;
         self.project_transfer_send = None;

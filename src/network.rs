@@ -1341,6 +1341,10 @@ impl NetworkClient {
         self.out_tx = None;
         if let Some(client) = self._client.lock().unwrap().take() {
             thread::spawn(move || {
+                // Tell the server this is a deliberate leave so it forgets the
+                // member's project-transfer entry instead of keeping it pending
+                // as if the connection had merely dropped.
+                let _ = client.emit("leave_room", serde_json::json!({}));
                 let _ = client.disconnect();
             });
         }

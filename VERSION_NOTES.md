@@ -108,6 +108,13 @@ exactement la vidéo exportée.
   onglet, le panneau latéral ou l’arborescence des fichiers a le focus ; seule
   l’écriture dans un champ de texte la garde pour taper une espace.
 
+## Sessions en ligne
+
+- Quitter une session la quitte vraiment : le serveur oublie le participant, et
+  un doubleur qui revient (même sous un autre pseudo) n’apparaît plus plusieurs
+  fois dans le téléchargement du projet, avec des réceptions restées en attente
+  pour ses anciennes sessions. Les réceptions de prises en cours sont annulées.
+
 # 5.3.0
 
 ## Points de synchronisation
