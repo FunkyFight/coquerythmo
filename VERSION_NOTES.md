@@ -100,6 +100,8 @@ exactement la vidéo exportée.
 - Le texte des répliques occupe maintenant toute la hauteur de la ligne : au
   survol, la zone illuminée ne dépasse plus au-dessus et en dessous du texte.
   Le changement s’applique aussi à l’export vidéo.
+- La piste survolée n’est plus éclairée en entier : seule la réplique sous le
+  pointeur est mise en évidence.
 
 # 5.3.0
 

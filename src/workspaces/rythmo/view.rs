@@ -3630,26 +3630,6 @@ pub fn render_lines<'a>(
     let layout_ctx =
         state.get_or_create_layout_ctx(project, render_index, current_frame, fps, zone);
 
-    // Rend le highlight de la track survolée (s'il y en a une et qu'elle est valide)
-    if let Some(track_idx) = editable.then_some(()).and(state.hovered_track) {
-        if let Some(track) = layout_ctx.track_for_index(track_idx) {
-            let y_base = zone.y + constants::RULER_HEIGHT + track.top;
-            quads.push(QuadInstance {
-                rect: [zone.x, y_base, zone.width, track.total_h],
-                color: [1.0, 1.0, 1.0, 0.03],
-                color_bottom: [1.0, 1.0, 1.0, 0.03],
-                border_color: [0.0; 4],
-                border_width: 0.0,
-                border_radius: 0.0,
-                shadow_offset: [0.0; 2],
-                shadow_color: [0.0; 4],
-                shadow_blur: 0.0,
-                rotation: 0.0,
-                _padding: [0.0; 2],
-            });
-        }
-    }
-
     let mut cursor_info = None;
     let karaoke_lang = project.syllable_language_code();
     let margin_frames = interactive_render_margin_frames(fps, render_index);
