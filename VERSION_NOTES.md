@@ -115,6 +115,12 @@ exactement la vidéo exportée.
   fois dans le téléchargement du projet, avec des réceptions restées en attente
   pour ses anciennes sessions. Les réceptions de prises en cours sont annulées.
 
+## Installation
+
+- L’installateur Windows (`Coquerythmo-Installer.exe`) joint aux versions
+  installe de nouveau la version publiée : il installait jusqu’ici une
+  ancienne version 4.1.0, qu’il fallait ensuite mettre à jour.
+
 # 5.3.0
 
 ## Points de synchronisation
