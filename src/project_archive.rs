@@ -2880,6 +2880,7 @@ mod tests {
         let language_id = project.active_language_id();
         let mut journal = TransactionJournal::from_project(&project, 24.0).unwrap();
         let command = Command::UpdateLineText {
+            syllable_ratios: None,
             line_id,
             old_text: "Bonjour".into(),
             new_text: "Bonsoir".into(),

@@ -82,6 +82,10 @@ pub enum Command {
         /// surround it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         edit: Option<crate::detection::TextEditSpan>,
+        /// Karaoke syllable timings before and after the edit, when it
+        /// changed them: the syllables the edit did not touch keep theirs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        syllable_ratios: Option<(Vec<f32>, Vec<f32>)>,
     },
     SetTextEmotions {
         line_id: u64,
@@ -239,6 +243,7 @@ impl Command {
                 new_emotions,
                 new_styles,
                 edit,
+                syllable_ratios,
                 ..
             } => {
                 project.set_line_text_rebasing_sync_points(
@@ -250,6 +255,9 @@ impl Command {
                 if let Some(line) = project.get_line_mut(*line_id) {
                     line.text_emotions = new_emotions.clone();
                     line.text_styles = new_styles.clone();
+                    if let Some((_, new_ratios)) = syllable_ratios {
+                        line.syllable_ratios = new_ratios.clone();
+                    }
                 }
             }
             Command::SetTextEmotions {
@@ -460,6 +468,7 @@ impl Command {
                 old_emotions,
                 old_styles,
                 edit,
+                syllable_ratios,
                 ..
             } => {
                 project.set_line_text_rebasing_sync_points(
@@ -471,6 +480,9 @@ impl Command {
                 if let Some(line) = project.get_line_mut(*line_id) {
                     line.text_emotions = old_emotions.clone();
                     line.text_styles = old_styles.clone();
+                    if let Some((old_ratios, _)) = syllable_ratios {
+                        line.syllable_ratios = old_ratios.clone();
+                    }
                 }
             }
             Command::SetTextEmotions {
@@ -768,6 +780,7 @@ mod tests {
         apply_and_push(
             &mut history,
             Command::UpdateLineText {
+                syllable_ratios: None,
                 line_id: id,
                 old_text: "test".into(),
                 new_text: "tXest".into(),
@@ -857,6 +870,35 @@ mod tests {
     }
 
     #[test]
+    fn text_edit_carries_syllable_timings_and_undo_restores_them() {
+        let (mut project, id) = make_project_with_line();
+        let old_text = project.get_line(id).unwrap().text.clone();
+        project.get_line_mut(id).unwrap().syllable_ratios = vec![0.5, 0.5];
+        let command = Command::UpdateLineText {
+            line_id: id,
+            old_text: old_text.clone(),
+            new_text: format!("{old_text} la"),
+            old_emotions: Vec::new(),
+            new_emotions: Vec::new(),
+            old_styles: Vec::new(),
+            new_styles: Vec::new(),
+            edit: None,
+            syllable_ratios: Some((vec![0.5, 0.5], vec![0.4, 0.4, 0.2])),
+        };
+        command.apply(&mut project);
+        assert_eq!(
+            project.get_line(id).unwrap().syllable_ratios,
+            vec![0.4, 0.4, 0.2]
+        );
+        command.unapply(&mut project);
+        assert_eq!(project.get_line(id).unwrap().text, old_text);
+        assert_eq!(
+            project.get_line(id).unwrap().syllable_ratios,
+            vec![0.5, 0.5]
+        );
+    }
+
+    #[test]
     fn moving_a_line_translates_its_sync_points_and_undo_restores_them() {
         let (mut project, id) = make_project_with_line();
         let address = crate::detection::DetectionAddress {
@@ -933,6 +975,7 @@ mod tests {
             [(0, "abcXdef", 4), (1, "abcXdef", 3)]
         {
             let command = Command::UpdateLineText {
+                syllable_ratios: None,
                 line_id: id,
                 old_text: "abcdef".into(),
                 new_text: "abcXdef".into(),
@@ -1042,6 +1085,7 @@ mod tests {
 
         project.get_line_mut(id).unwrap().text = "modified".into();
         history.push(Command::UpdateLineText {
+            syllable_ratios: None,
             line_id: id,
             old_text: "test".into(),
             new_text: "modified".into(),
@@ -1312,6 +1356,7 @@ mod tests {
         let mut history = CommandHistory::new();
 
         history.push(Command::UpdateLineText {
+            syllable_ratios: None,
             line_id: id,
             old_text: "a".into(),
             new_text: "ab".into(),
@@ -1333,6 +1378,7 @@ mod tests {
 
         project.get_line_mut(id).unwrap().text = "v1".into();
         history.push(Command::UpdateLineText {
+            syllable_ratios: None,
             line_id: id,
             old_text: "test".into(),
             new_text: "v1".into(),
@@ -1347,6 +1393,7 @@ mod tests {
         // New command clears redo stack
         project.get_line_mut(id).unwrap().text = "v2".into();
         history.push(Command::UpdateLineText {
+            syllable_ratios: None,
             line_id: id,
             old_text: "test".into(),
             new_text: "v2".into(),

@@ -521,13 +521,8 @@ pub fn timing_ratios(text: &str, saved_ratios: &[f32], lang: &str) -> Vec<f32> {
     }
 
     let breaks = syllable_breaks(text, lang);
-    let count = breaks.len() + 1;
-    if saved_ratios.len() == count
-        && saved_ratios
-            .iter()
-            .all(|ratio| ratio.is_finite() && *ratio > 0.0)
-    {
-        return normalized_ratios(saved_ratios);
+    if let Some(ratios) = adapted_ratios_for_breaks(text, saved_ratios, &breaks) {
+        return ratios;
     }
 
     if breaks.is_empty() {
@@ -535,6 +530,202 @@ pub fn timing_ratios(text: &str, saved_ratios: &[f32], lang: &str) -> Vec<f32> {
     } else {
         default_ratios_from_breaks(text, &breaks)
     }
+}
+
+/// Saved karaoke timings expressed for the syllables of `text` in `lang`.
+///
+/// Changing a band's language (or its text) changes the syllable count, but
+/// the timing work must survive: instead of falling back to the defaults, the
+/// saved timings are carried over to the new syllables. Returns `None` when no
+/// valid timing was saved or the text has a single syllable.
+pub fn adapted_saved_ratios(text: &str, saved_ratios: &[f32], lang: &str) -> Option<Vec<f32>> {
+    adapted_ratios_for_breaks(text, saved_ratios, &syllable_breaks(text, lang))
+}
+
+const SYLLABLE_LANGUAGE_CODES: [&str; 3] = ["fr-fr", "en-us", "es-419"];
+
+fn adapted_ratios_for_breaks(
+    text: &str,
+    saved_ratios: &[f32],
+    breaks: &[usize],
+) -> Option<Vec<f32>> {
+    if saved_ratios.is_empty()
+        || !saved_ratios
+            .iter()
+            .all(|ratio| ratio.is_finite() && *ratio > 0.0)
+    {
+        return None;
+    }
+    let count = breaks.len() + 1;
+    if saved_ratios.len() == count {
+        return Some(normalized_ratios(saved_ratios));
+    }
+    let char_count = text.chars().count();
+    if breaks.is_empty() || saved_ratios.len() < 2 || char_count == 0 {
+        return None;
+    }
+
+    // Where the saved syllables started in the text: the syllabification of
+    // another language when one matches (the band's language was changed),
+    // otherwise evenly spread over the text (the text itself was changed).
+    let source_breaks = SYLLABLE_LANGUAGE_CODES
+        .iter()
+        .map(|code| syllable_breaks(text, code))
+        .find(|candidate| candidate.len() + 1 == saved_ratios.len())
+        .unwrap_or_else(|| {
+            (1..saved_ratios.len())
+                .map(|index| index * char_count / saved_ratios.len())
+                .collect()
+        });
+
+    // Piecewise-linear map from text position to timing position.
+    let saved = normalized_ratios(saved_ratios);
+    let mut controls = Vec::with_capacity(saved.len() + 1);
+    controls.push((0.0_f32, 0.0_f32));
+    let mut time = 0.0_f32;
+    for (index, ratio) in saved.iter().enumerate() {
+        time += ratio;
+        let source = source_breaks
+            .get(index)
+            .map_or(1.0, |boundary| *boundary as f32 / char_count as f32);
+        controls.push((source, time.min(1.0)));
+    }
+    let warp = |position: f32| -> f32 {
+        for pair in controls.windows(2) {
+            let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
+            if position <= x1 {
+                if x1 - x0 <= f32::EPSILON {
+                    return y1;
+                }
+                return y0 + (position - x0) / (x1 - x0) * (y1 - y0);
+            }
+        }
+        1.0
+    };
+
+    let mut ratios = Vec::with_capacity(count);
+    let mut previous = 0.0_f32;
+    for boundary in breaks
+        .iter()
+        .map(|boundary| warp(*boundary as f32 / char_count as f32))
+        .chain(std::iter::once(1.0))
+    {
+        ratios.push((boundary - previous).max(0.001));
+        previous = boundary.max(previous);
+    }
+    Some(normalized_ratios(&ratios))
+}
+
+/// Saved karaoke timings after the text of a line changed from `old_text` to
+/// `new_text`.
+///
+/// Syllables the edit did not touch keep their timing; the syllables it
+/// created or changed share the time of the ones it replaced, and each
+/// additional syllable takes the average syllable time, the rest of the line
+/// making room for it without changing its layout. Returns `None` when no
+/// timing was saved, so untouched lines keep their default timing.
+pub fn ratios_after_text_edit(
+    old_text: &str,
+    new_text: &str,
+    saved_ratios: &[f32],
+    lang: &str,
+) -> Option<Vec<f32>> {
+    let old_breaks = syllable_breaks(old_text, lang);
+    let old_ratios = adapted_ratios_for_breaks(old_text, saved_ratios, &old_breaks)
+        .or_else(|| (old_breaks.is_empty() && !saved_ratios.is_empty()).then(|| vec![1.0]))?;
+    if old_text == new_text {
+        return Some(saved_ratios.to_vec());
+    }
+    let new_breaks = syllable_breaks(new_text, lang);
+    if new_breaks.is_empty() {
+        return Some(vec![1.0]);
+    }
+
+    let old_chars = old_text.chars().collect::<Vec<_>>();
+    let new_chars = new_text.chars().collect::<Vec<_>>();
+    let prefix = old_chars
+        .iter()
+        .zip(&new_chars)
+        .take_while(|(old, new)| old == new)
+        .count();
+    let suffix = old_chars[prefix..]
+        .iter()
+        .rev()
+        .zip(new_chars[prefix..].iter().rev())
+        .take_while(|(old, new)| old == new)
+        .count();
+    let old_edit_end = old_chars.len() - suffix;
+    let shift = new_chars.len() as isize - old_chars.len() as isize;
+
+    let segments = |breaks: &[usize], len: usize| {
+        let mut bounds = Vec::with_capacity(breaks.len() + 2);
+        bounds.push(0);
+        bounds.extend_from_slice(breaks);
+        bounds.push(len);
+        bounds
+            .windows(2)
+            .map(|pair| (pair[0], pair[1]))
+            .collect::<Vec<_>>()
+    };
+    // Untouched old syllables, expressed in the new text.
+    let kept_old = segments(&old_breaks, old_chars.len())
+        .into_iter()
+        .zip(old_ratios.iter().copied())
+        .filter_map(|((start, end), ratio)| {
+            if end <= prefix {
+                Some(((start, end), ratio))
+            } else if start >= old_edit_end {
+                let moved = |index: usize| (index as isize + shift) as usize;
+                Some(((moved(start), moved(end)), ratio))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let new_segments = segments(&new_breaks, new_chars.len());
+    let mut ratios = vec![None; new_segments.len()];
+    let mut used_old = vec![false; kept_old.len()];
+    for (index, segment) in new_segments.iter().enumerate() {
+        if let Some(old_index) = kept_old
+            .iter()
+            .enumerate()
+            .position(|(old_index, (old, _))| !used_old[old_index] && old == segment)
+        {
+            used_old[old_index] = true;
+            ratios[index] = Some(kept_old[old_index].1);
+        }
+    }
+
+    let kept_total: f32 = ratios.iter().flatten().sum();
+    let replaced_total = (1.0 - kept_total).max(0.0);
+    let replaced_count = old_ratios.len() - ratios.iter().flatten().count();
+    let changed = new_segments
+        .iter()
+        .zip(&ratios)
+        .filter(|(_, ratio)| ratio.is_none())
+        .map(|((start, end), _)| (end - start).max(1) as f32)
+        .collect::<Vec<_>>();
+    if !changed.is_empty() {
+        let mean = 1.0 / old_ratios.len() as f32;
+        let added = changed.len().saturating_sub(replaced_count) as f32;
+        let mut share = replaced_total + added * mean;
+        if share <= f32::EPSILON {
+            share = changed.len() as f32 * mean;
+        }
+        let chars: f32 = changed.iter().sum();
+        let mut changed = changed.iter();
+        for ratio in ratios.iter_mut().filter(|ratio| ratio.is_none()) {
+            let weight = changed.next().copied().unwrap_or(1.0);
+            *ratio = Some((share * weight / chars).max(0.001));
+        }
+    }
+    Some(normalized_ratios(
+        &ratios
+            .into_iter()
+            .map(|ratio| ratio.unwrap_or(0.001))
+            .collect::<Vec<_>>(),
+    ))
 }
 
 pub fn active_syllable_local_progress(ratios: &[f32], progress: f32) -> Option<f32> {
@@ -830,6 +1021,76 @@ mod tests {
             breaks.len() >= 2,
             "Spanish words should be split: {breaks:?}"
         );
+    }
+
+    #[test]
+    fn saved_timings_survive_a_language_change_with_another_syllable_count() {
+        let text = "tambourine magnifique";
+        let french = syllable_breaks(text, "fr-fr");
+        let english = syllable_breaks(text, "en-us");
+        assert_ne!(french.len(), english.len());
+
+        // Calibrated in French: the first syllable is very long.
+        let mut saved = vec![1.0; french.len() + 1];
+        saved[0] = 10.0;
+        let adapted = timing_ratios(text, &saved, "en-us");
+        assert_eq!(adapted.len(), english.len() + 1);
+        assert!((adapted.iter().sum::<f32>() - 1.0).abs() < 0.001);
+        assert!(adapted.iter().all(|ratio| *ratio > 0.0));
+        assert_ne!(adapted, default_ratios_from_breaks(text, &english));
+
+        // Any syllable boundary shared by both languages keeps its timing.
+        let saved = normalized_ratios(&saved);
+        for (french_index, boundary) in french.iter().enumerate() {
+            if let Some(english_index) = english.iter().position(|b| b == boundary) {
+                let french_time: f32 = saved[..=french_index].iter().sum();
+                let english_time: f32 = adapted[..=english_index].iter().sum();
+                assert!((french_time - english_time).abs() < 0.001);
+            }
+        }
+
+        // Back in French the exact calibration is used.
+        assert_eq!(timing_ratios(text, &saved, "fr-fr"), saved);
+    }
+
+    #[test]
+    fn saved_timings_survive_a_text_change_with_another_syllable_count() {
+        let saved = [0.7, 0.1, 0.1, 0.1];
+        let adapted = adapted_saved_ratios("la la la la la la", &saved, "fr-fr").unwrap();
+        assert_eq!(adapted.len(), 6);
+        assert!(adapted[0] > adapted[5]);
+        assert!(adapted_saved_ratios("la la", &[], "fr-fr").is_none());
+        assert!(adapted_saved_ratios("la", &saved, "fr-fr").is_none());
+    }
+
+    #[test]
+    fn typing_a_new_word_adds_a_syllable_without_moving_the_others() {
+        let old_text = "bonjour toi";
+        let lang = "fr-fr";
+        assert_eq!(syllable_breaks(old_text, lang).len() + 1, 3);
+        let saved = [0.5, 0.2, 0.3];
+
+        let new_text = "bonjour mon toi";
+        let ratios = ratios_after_text_edit(old_text, new_text, &saved, lang).unwrap();
+        assert_eq!(ratios.len(), syllable_breaks(new_text, lang).len() + 1);
+        assert_eq!(ratios.len(), 4);
+        // The untouched syllables keep their proportions.
+        assert!((ratios[0] / ratios[1] - 0.5 / 0.2).abs() < 0.001);
+        assert!((ratios[0] / ratios[3] - 0.5 / 0.3).abs() < 0.001);
+        // The new syllable takes the average syllable time.
+        assert!((ratios[2] / ratios[0] - (1.0 / 3.0) / 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn extending_a_syllable_keeps_its_time_and_the_others() {
+        let saved = [0.5, 0.2, 0.3];
+        let ratios =
+            ratios_after_text_edit("bonjour toi", "bonjours toi", &saved, "fr-fr").unwrap();
+        assert_eq!(ratios.len(), 3);
+        for (ratio, saved) in ratios.iter().zip(saved) {
+            assert!((ratio - saved).abs() < 0.001, "{ratios:?}");
+        }
+        assert!(ratios_after_text_edit("bonjour toi", "bonjour moi", &[], "fr-fr").is_none());
     }
 
     #[test]

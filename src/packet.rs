@@ -115,6 +115,8 @@ pub enum CommandPayload {
         text_styles: Vec<crate::rythmo_line::TextStyleSpan>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         edit: Option<crate::detection::TextEditSpan>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        syllable_ratios: Option<Vec<f32>>,
     },
     SetTextEmotions {
         line_id: u64,
@@ -298,6 +300,7 @@ impl Packetable for Command {
                 new_emotions,
                 new_styles,
                 edit,
+                syllable_ratios,
                 ..
             } => CommandPayload::UpdateLineText {
                 line_id: *line_id,
@@ -305,6 +308,7 @@ impl Packetable for Command {
                 text_emotions: new_emotions.clone(),
                 text_styles: new_styles.clone(),
                 edit: *edit,
+                syllable_ratios: syllable_ratios.as_ref().map(|(_, new)| new.clone()),
             },
             Command::SetTextEmotions {
                 line_id,

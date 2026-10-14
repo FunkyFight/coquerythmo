@@ -950,13 +950,22 @@ fn validate_command_precondition(command: &Command, project: &Project) -> Result
             }
         }
         Command::UpdateLineText {
-            line_id, old_text, ..
+            line_id,
+            old_text,
+            syllable_ratios,
+            ..
         } => {
             let line = project
                 .get_line(*line_id)
                 .ok_or_else(|| missing_line(*line_id))?;
             if &line.text != old_text {
                 return Err(format!("line {line_id} does not match the previous text"));
+            }
+            if syllable_ratios
+                .as_ref()
+                .is_some_and(|(old_ratios, _)| &line.syllable_ratios != old_ratios)
+            {
+                return Err(format!("line {line_id} does not match the previous ratios"));
             }
         }
         Command::SetLineKaraoke {
@@ -1354,6 +1363,7 @@ mod tests {
             .append(
                 language_id,
                 Command::UpdateLineText {
+                    syllable_ratios: None,
                     line_id,
                     old_text: "before".into(),
                     new_text: "after".into(),
@@ -1430,6 +1440,7 @@ mod tests {
             .append(
                 project.active_language_id(),
                 Command::UpdateLineText {
+                    syllable_ratios: None,
                     line_id,
                     old_text: "before".into(),
                     new_text: "after".into(),
@@ -1442,6 +1453,7 @@ mod tests {
             )
             .unwrap();
         journal.entries[0].payload = Command::UpdateLineText {
+            syllable_ratios: None,
             line_id,
             old_text: "before".into(),
             new_text: "tampered".into(),
@@ -1467,6 +1479,7 @@ mod tests {
         left.append(
             language_id,
             Command::UpdateLineText {
+                syllable_ratios: None,
                 line_id,
                 old_text: "before".into(),
                 new_text: "one".into(),
@@ -1482,6 +1495,7 @@ mod tests {
         left.append(
             language_id,
             Command::UpdateLineText {
+                syllable_ratios: None,
                 line_id,
                 old_text: "one".into(),
                 new_text: "left".into(),
@@ -1497,6 +1511,7 @@ mod tests {
             .append(
                 language_id,
                 Command::UpdateLineText {
+                    syllable_ratios: None,
                     line_id,
                     old_text: "one".into(),
                     new_text: "right".into(),
@@ -1514,6 +1529,7 @@ mod tests {
         left.append(
             language_id,
             Command::UpdateLineText {
+                syllable_ratios: None,
                 line_id,
                 old_text: "one".into(),
                 new_text: "replacement".into(),
@@ -1538,6 +1554,7 @@ mod tests {
             .append(
                 project.active_language_id(),
                 Command::UpdateLineText {
+                    syllable_ratios: None,
                     line_id,
                     old_text: "before".into(),
                     new_text: "draft".into(),
@@ -1552,6 +1569,7 @@ mod tests {
         let draft_hash = journal.entries()[0].hash();
         journal
             .replace_last(Command::UpdateLineText {
+                syllable_ratios: None,
                 line_id,
                 old_text: "before".into(),
                 new_text: "final".into(),
@@ -1610,6 +1628,7 @@ mod tests {
             .append(
                 project.active_language_id(),
                 Command::UpdateLineText {
+                    syllable_ratios: None,
                     line_id,
                     old_text: "before".into(),
                     new_text: "after".into(),

@@ -9882,6 +9882,7 @@ impl State {
             let new_emotions =
                 crate::rythmo_line::rebase_text_emotions(&old_emotions, &old_text, &text);
             let new_styles = crate::rythmo_line::rebase_text_styles(&old_styles, &old_text, &text);
+            let syllable_ratios = self.syllable_ratios_after_text_edit(id, &text);
             let command = Command::UpdateLineText {
                 line_id: id,
                 old_text,
@@ -9891,6 +9892,7 @@ impl State {
                 old_styles,
                 new_styles: new_styles.clone(),
                 edit,
+                syllable_ratios: syllable_ratios.clone(),
             };
             EditExecutor::coalesce(
                 &mut self.project_session,
@@ -9901,12 +9903,19 @@ impl State {
                         new_emotions: emotions,
                         new_styles: styles,
                         edit,
+                        syllable_ratios: ratios,
                         ..
                     } = cmd
                     {
                         *new_text = text;
                         *emotions = new_emotions;
                         *styles = new_styles;
+                        if let Some((old_ratios, new_ratios)) = syllable_ratios {
+                            let old_ratios = ratios
+                                .take()
+                                .map_or(old_ratios, |(first_ratios, _)| first_ratios);
+                            *ratios = Some((old_ratios, new_ratios));
+                        }
                         // The merged command spans several keystrokes: the
                         // place of the last one no longer describes it.
                         *edit = None;
@@ -9930,6 +9939,7 @@ impl State {
             let new_emotions =
                 crate::rythmo_line::rebase_text_emotions(&old_emotions, &old_text, &text);
             let new_styles = crate::rythmo_line::rebase_text_styles(&old_styles, &old_text, &text);
+            let syllable_ratios = self.syllable_ratios_after_text_edit(id, &text);
             self.execute_local_command(Command::UpdateLineText {
                 line_id: id,
                 old_text,
@@ -9939,8 +9949,28 @@ impl State {
                 old_styles,
                 new_styles,
                 edit,
+                syllable_ratios,
             });
         }
+    }
+
+    /// Typing in a line with calibrated syllables keeps the calibration of the
+    /// syllables the edit does not touch (see
+    /// [`crate::syllable::ratios_after_text_edit`]).
+    fn syllable_ratios_after_text_edit(
+        &self,
+        id: u64,
+        new_text: &str,
+    ) -> Option<(Vec<f32>, Vec<f32>)> {
+        let project = &self.project_session.project;
+        let line = project.get_line(id)?;
+        let new_ratios = crate::syllable::ratios_after_text_edit(
+            &line.text,
+            new_text,
+            &line.syllable_ratios,
+            project.syllable_language_code(),
+        )?;
+        (new_ratios != line.syllable_ratios).then(|| (line.syllable_ratios.clone(), new_ratios))
     }
 
     /// Toggles a text style on a line, over `range` or the whole line.

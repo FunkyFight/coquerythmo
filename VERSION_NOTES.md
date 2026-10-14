@@ -107,6 +107,17 @@ exactement la vidéo exportée.
 - `Espace` lance ou met en pause la lecture dans la bande rythmo même quand un
   onglet, le panneau latéral ou l’arborescence des fichiers a le focus ; seule
   l’écriture dans un champ de texte la garde pour taper une espace.
+- Changer la langue d’une bande (par exemple une bande dupliquée depuis une
+  autre) ne remet plus à zéro le calage des syllabes du karaoké ni celui des
+  syllabes entre les points de synchronisation : quand la nouvelle langue
+  découpe le texte en un autre nombre de syllabes, le calage déjà fait est
+  reporté sur les nouvelles syllabes au lieu d’être perdu. Revenir à la langue
+  d’origine retrouve le calage exact.
+- Écrire dans une réplique karaoké déjà calée ne défait plus le calage : les
+  syllabes qu’on ne touche pas gardent leur durée, une syllabe modifiée garde
+  la sienne et une nouvelle syllabe prend une durée moyenne, les autres se
+  resserrant sans changer leur disposition. `Ctrl + Z` rétablit le texte et le
+  calage d’avant.
 
 ## Sessions en ligne
 

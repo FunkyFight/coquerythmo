@@ -313,6 +313,7 @@ impl EditExecutor {
                 text_emotions,
                 text_styles,
                 edit,
+                syllable_ratios,
             } => {
                 let line = project.get_line(line_id)?;
                 Command::UpdateLineText {
@@ -324,6 +325,8 @@ impl EditExecutor {
                     old_styles: line.text_styles.clone(),
                     new_styles: text_styles,
                     edit,
+                    syllable_ratios: syllable_ratios
+                        .map(|ratios| (line.syllable_ratios.clone(), ratios)),
                 }
             }
             CommandPayload::SetTextEmotions {
@@ -609,6 +612,7 @@ mod tests {
                 text_emotions: Vec::new(),
                 text_styles: Vec::new(),
                 edit: None,
+                syllable_ratios: None,
             },
             EditOrigin::Remote,
         );
@@ -680,6 +684,7 @@ mod tests {
                 old_styles: Vec::new(),
                 new_styles: Vec::new(),
                 edit: None,
+                syllable_ratios: None,
             },
             EditOrigin::Local,
         );
@@ -696,6 +701,7 @@ mod tests {
                 old_styles: Vec::new(),
                 new_styles: Vec::new(),
                 edit: None,
+                syllable_ratios: None,
             },
             |last| {
                 if let Command::UpdateLineText { new_text, .. } = last {

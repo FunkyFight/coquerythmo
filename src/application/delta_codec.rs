@@ -77,6 +77,7 @@ pub fn encode_delta(command: &Command, project: &Project) -> Option<serde_json::
             new_emotions,
             new_styles,
             edit,
+            syllable_ratios,
             ..
         } => {
             let mut delta = serde_json::json!({ "action": "update_text", "line_id": line_id, "text": new_text, "text_emotions": new_emotions });
@@ -85,6 +86,9 @@ pub fn encode_delta(command: &Command, project: &Project) -> Option<serde_json::
             }
             if let Some(edit) = edit {
                 delta["edit"] = serde_json::json!(edit);
+            }
+            if let Some((_, ratios)) = syllable_ratios {
+                delta["syllable_ratios"] = serde_json::json!(ratios);
             }
             delta
         }
@@ -250,6 +254,9 @@ pub fn decode_delta(data: &serde_json::Value) -> Option<CommandPayload> {
                 .unwrap_or_default(),
             edit: data
                 .get("edit")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
+            syllable_ratios: data
+                .get("syllable_ratios")
                 .and_then(|value| serde_json::from_value(value.clone()).ok()),
         }),
         "set_text_emotions" => Some(CommandPayload::SetTextEmotions {

@@ -148,6 +148,7 @@ pub(crate) use detection_ui::*;
 mod playhead_drag;
 pub(crate) use playhead_drag::*;
 pub use playhead_drag::PlayheadDrag;
+pub(crate) use playhead_drag::*;
 #[path = "format_toolbar.rs"]
 mod format_toolbar;
 pub(crate) use format_toolbar::*;
@@ -155,6 +156,7 @@ pub(crate) use format_toolbar::*;
 mod sync_point_menu;
 pub(crate) use sync_point_menu::*;
 pub use sync_point_menu::SyncPointMenu;
+pub(crate) use sync_point_menu::*;
 #[path = "state.rs"]
 mod state;
 pub use state::*;
@@ -3335,17 +3337,15 @@ fn visible_syllable_segments(
     valid_saved_syllable_ratios(line, breaks.len() + 1, lang).map(|ratios| (breaks, ratios))
 }
 
+/// Saved timings, carried over to the current syllables when the band's
+/// language or the text changed their count.
 fn valid_saved_syllable_ratios(
     line: &crate::rythmo_line::RythmoLine,
     syllable_count: usize,
     lang: &str,
 ) -> Option<Vec<f32>> {
-    (line.syllable_ratios.len() == syllable_count
-        && line
-            .syllable_ratios
-            .iter()
-            .all(|ratio| ratio.is_finite() && *ratio > 0.0))
-    .then(|| crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang))
+    crate::syllable::adapted_saved_ratios(&line.text, &line.syllable_ratios, lang)
+        .filter(|ratios| ratios.len() == syllable_count)
 }
 
 fn cursor_ratios_from_segments(text: &str, breaks: &[usize], ratios: &[f32]) -> Vec<f32> {
