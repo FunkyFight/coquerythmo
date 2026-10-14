@@ -292,8 +292,8 @@ pub fn cross_reference_csv_document(
         let fields = [
             language_name.to_string(),
             loop_number(line.start_frame, &loop_starts).to_string(),
-            frame_timecode(line.start_frame, fps),
-            frame_timecode(line.end_frame(), fps),
+            display_timecode(project, line.start_frame, fps),
+            display_timecode(project, line.end_frame(), fps),
             frame_timecode(line.duration_frames, fps),
             line.character_name.clone(),
             line.voice_actor_names.join(" | "),
@@ -561,6 +561,15 @@ fn is_voice_off(note: &str) -> bool {
     note.contains("voix off") || note.contains("voice off")
 }
 
+/// Timecode shown to people: the frame shifted by the project's start
+/// timecode (for example 01:00:00:00).
+fn display_timecode(project: &Project, frame: i64, fps: f64) -> String {
+    frame_timecode(
+        frame.max(0) + project.settings().start_timecode_frames(fps),
+        fps,
+    )
+}
+
 fn frame_timecode(frame: i64, fps: f64) -> String {
     let nominal_fps = fps.round().max(1.0) as i64;
     let frame = frame.max(0);
@@ -796,8 +805,8 @@ pub fn cross_reference_pdf_bytes(
         .into_iter()
         .map(|line| CrossReferenceRow {
             loop_number: loop_number(line.start_frame, &starts).to_string(),
-            start: frame_timecode(line.start_frame, fps),
-            end: frame_timecode(line.end_frame(), fps),
+            start: display_timecode(project, line.start_frame, fps),
+            end: display_timecode(project, line.end_frame(), fps),
             duration: frame_timecode(line.duration_frames, fps),
             character: line.character_name.clone(),
             voice_actors: line.voice_actor_names.join(", "),
@@ -919,6 +928,194 @@ fn cross_reference_page(language_name: &str, headers: &[&str; 8], widths: &[f32;
         x += *width;
     }
     page
+}
+
+// -- Screenplay ("scénario") for actors ------------------------------------
+
+const SCRIPT_PDF_WIDTH: f32 = 595.0;
+const SCRIPT_PDF_HEIGHT: f32 = 842.0;
+const SCRIPT_MARGIN: f32 = 56.0;
+const SCRIPT_TEXT_X: f32 = SCRIPT_MARGIN + 74.0;
+const SCRIPT_TEXT_SIZE: f32 = 10.5;
+const SCRIPT_LINE_H: f32 = 14.0;
+const SCRIPT_BOTTOM: f32 = 46.0;
+
+/// Roles that have at least one exportable dialogue line, sorted by name.
+pub fn script_roles(project: &Project) -> Vec<String> {
+    let mut roles: Vec<String> = Vec::new();
+    for line in delivery_lines(project) {
+        let name = line.character_name.trim();
+        if !roles.iter().any(|role| role == name) {
+            roles.push(name.to_string());
+        }
+    }
+    roles.sort_by_key(|role| role.to_lowercase());
+    roles
+}
+
+/// Create a screenplay-style PDF to hand to actors: dialogue in film order,
+/// grouped by loop, with the timecode, the role and the text. When `role` is
+/// set, only that role's lines are kept.
+pub fn script_pdf_bytes(
+    project: &Project,
+    fps: f64,
+    language_name: &str,
+    role: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    validate_fps(fps)?;
+    let starts = loop_starts(project);
+    let lines: Vec<_> = delivery_lines(project)
+        .into_iter()
+        .filter(|line| role.is_none_or(|role| line.character_name.trim() == role))
+        .collect();
+
+    let subtitle = match role {
+        Some(role) => format!(
+            "{} : {}",
+            crate::i18n::t("script.role"),
+            if role.is_empty() { "-" } else { role }
+        ),
+        None => crate::i18n::t("script.all_roles").to_string(),
+    };
+    let new_page = || {
+        let mut page = PdfCanvas::default();
+        page.text(
+            SCRIPT_MARGIN,
+            SCRIPT_PDF_HEIGHT - 52.0,
+            18.0,
+            true,
+            crate::i18n::t("script.title"),
+        );
+        page.text(
+            SCRIPT_MARGIN,
+            SCRIPT_PDF_HEIGHT - 70.0,
+            9.0,
+            false,
+            &format!(
+                "{} : {}   ·   {subtitle}",
+                crate::i18n::t("script.language"),
+                display_language(language_name)
+            ),
+        );
+        page.fill_rect(
+            SCRIPT_MARGIN,
+            SCRIPT_PDF_HEIGHT - 80.0,
+            SCRIPT_PDF_WIDTH - SCRIPT_MARGIN * 2.0,
+            0.8,
+            0.55,
+        );
+        page
+    };
+    let top = SCRIPT_PDF_HEIGHT - 104.0;
+    let text_width = SCRIPT_PDF_WIDTH - SCRIPT_TEXT_X - SCRIPT_MARGIN;
+
+    let mut pages = Vec::<PdfCanvas>::new();
+    let mut page = new_page();
+    let mut y = top;
+    if lines.is_empty() {
+        page.text(
+            SCRIPT_MARGIN,
+            y,
+            10.0,
+            false,
+            crate::i18n::t("script.empty"),
+        );
+    }
+
+    let mut current_loop = None;
+    for line in lines {
+        let loop_number = loop_number(line.start_frame, &starts);
+        let text = wrap_pdf_text(&line.text, text_width, SCRIPT_TEXT_SIZE, 200);
+        let note = (!line.note.trim().is_empty())
+            .then(|| wrap_pdf_text(&format!("({})", line.note.trim()), text_width, 9.0, 20));
+        let loop_header = current_loop != Some(loop_number);
+        let block_height = SCRIPT_LINE_H
+            + text.len() as f32 * SCRIPT_LINE_H
+            + note.as_ref().map_or(0.0, |note| note.len() as f32 * 12.0)
+            + 10.0
+            + if loop_header { 30.0 } else { 0.0 };
+        // Keep a role and its first lines together; very long speeches flow
+        // onto the next page line by line.
+        let needed = block_height.min(SCRIPT_LINE_H * 4.0 + if loop_header { 30.0 } else { 0.0 });
+        if y - needed < SCRIPT_BOTTOM && y < top {
+            pages.push(page);
+            page = new_page();
+            y = top;
+        }
+
+        if loop_header {
+            current_loop = Some(loop_number);
+            page.fill_rect(
+                SCRIPT_MARGIN,
+                y - 6.0,
+                SCRIPT_PDF_WIDTH - SCRIPT_MARGIN * 2.0,
+                18.0,
+                0.92,
+            );
+            page.text(
+                SCRIPT_MARGIN + 6.0,
+                y,
+                9.5,
+                true,
+                &format!(
+                    "{} {loop_number}",
+                    crate::i18n::t("script.loop").to_uppercase()
+                ),
+            );
+            y -= 30.0;
+        }
+
+        page.text(
+            SCRIPT_MARGIN,
+            y,
+            8.5,
+            false,
+            &display_timecode(project, line.start_frame, fps),
+        );
+        let character = if line.character_name.trim().is_empty() {
+            "-".to_string()
+        } else {
+            line.character_name.trim().to_uppercase()
+        };
+        page.text(SCRIPT_TEXT_X, y, 10.0, true, &character);
+        y -= SCRIPT_LINE_H;
+
+        for text_line in &text {
+            if y < SCRIPT_BOTTOM {
+                pages.push(page);
+                page = new_page();
+                y = top;
+            }
+            page.text(SCRIPT_TEXT_X, y, SCRIPT_TEXT_SIZE, false, text_line);
+            y -= SCRIPT_LINE_H;
+        }
+        for note_line in note.iter().flatten() {
+            if y < SCRIPT_BOTTOM {
+                pages.push(page);
+                page = new_page();
+                y = top;
+            }
+            page.text(SCRIPT_TEXT_X + 12.0, y, 9.0, false, note_line);
+            y -= 12.0;
+        }
+        y -= 10.0;
+    }
+    pages.push(page);
+    add_pdf_footers_sized(&mut pages, SCRIPT_PDF_WIDTH);
+    Ok(build_pdf_sized(&pages, SCRIPT_PDF_WIDTH, SCRIPT_PDF_HEIGHT))
+}
+
+pub fn export_script_pdf(
+    project: &Project,
+    fps: f64,
+    output: &Path,
+    language_name: &str,
+    role: Option<&str>,
+) -> Result<(), String> {
+    write_bytes(
+        output,
+        &script_pdf_bytes(project, fps, language_name, role)?,
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1071,8 +1268,8 @@ pub fn presence_grid_pdf_bytes(
                     &format!(
                         "{}  {} - {}",
                         span.number,
-                        frame_timecode(span.start, fps),
-                        frame_timecode(span.end, fps)
+                        display_timecode(project, span.start, fps),
+                        display_timecode(project, span.end, fps)
                     ),
                 );
                 x = PDF_MARGIN + first_width;
@@ -1296,11 +1493,15 @@ fn pdf_text_width(text: &str, font_size: f32) -> f32 {
 }
 
 fn add_pdf_footers(pages: &mut [PdfCanvas]) {
+    add_pdf_footers_sized(pages, PDF_WIDTH);
+}
+
+fn add_pdf_footers_sized(pages: &mut [PdfCanvas], page_width: f32) {
     let total = pages.len();
     for (index, page) in pages.iter_mut().enumerate() {
         page.text(PDF_MARGIN, 18.0, 7.0, false, "Generated by Coquerythmo");
         page.text(
-            PDF_WIDTH - 72.0,
+            page_width - 72.0,
             18.0,
             7.0,
             false,
@@ -1310,6 +1511,10 @@ fn add_pdf_footers(pages: &mut [PdfCanvas]) {
 }
 
 fn build_pdf(pages: &[PdfCanvas]) -> Vec<u8> {
+    build_pdf_sized(pages, PDF_WIDTH, PDF_HEIGHT)
+}
+
+fn build_pdf_sized(pages: &[PdfCanvas], page_width: f32, page_height: f32) -> Vec<u8> {
     struct PageObjects {
         page: usize,
         content: usize,
@@ -1374,7 +1579,7 @@ fn build_pdf(pages: &[PdfCanvas]) -> Vec<u8> {
         };
         objects.push(
             format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PDF_WIDTH:.0} {PDF_HEIGHT:.0}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >>{xobjects} >> /Contents {} 0 R >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.0} {page_height:.0}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >>{xobjects} >> /Contents {} 0 R >>",
                 page_objects.content
             )
             .into_bytes(),
@@ -1873,6 +2078,36 @@ fn replace_output(temporary: &Path, output: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::export::ProjectData;
+
+    #[test]
+    fn script_pdf_lists_roles_and_filters_one_role() {
+        let project = sample_project();
+        let roles = script_roles(&project);
+        assert_eq!(
+            roles,
+            vec!["Alice <Lead>".to_string(), "Bob & Co".to_string()]
+        );
+        let all = script_pdf_bytes(&project, 24.0, "Français", None).unwrap();
+        let bob = script_pdf_bytes(&project, 24.0, "Français", Some("Bob & Co")).unwrap();
+        let all_text = String::from_utf8_lossy(&all);
+        let bob_text = String::from_utf8_lossy(&bob);
+        assert!(all_text.starts_with("%PDF-1.4"));
+        assert!(all_text.contains("/MediaBox [0 0 595 842]"));
+        assert!(all_text.contains("(ALICE <LEAD>)"));
+        assert!(all_text.contains("(BOB & CO)"));
+        assert!(!bob_text.contains("(ALICE <LEAD>)"));
+        assert!(bob_text.contains("(BOB & CO)"));
+    }
+
+    #[test]
+    fn reference_timecodes_start_at_the_project_start_timecode() {
+        let mut project = sample_project();
+        let mut settings = project.settings().clone();
+        settings.start_timecode = "01:00:00:00".into();
+        project.set_settings(settings);
+        let csv = cross_reference_csv_document(&project, 24.0, "fr").unwrap();
+        assert!(csv.contains("01:00:01:00"));
+    }
     use crate::project::ProjectSettings;
     use crate::rythmo_line::RythmoMarker;
 

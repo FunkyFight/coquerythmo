@@ -119,6 +119,9 @@ pub(crate) fn handle_file_picker_selected(
             let highlight_read_word = settings.highlight_read_word;
             let scrolling_text_uses_character_color = settings.scrolling_text_uses_character_color;
             let show_text_emotion_lanes = settings.show_text_emotion_lanes;
+            let show_timecode = settings.show_timecode;
+            let start_timecode = settings.start_timecode.clone();
+            let waveform_height = settings.waveform_height;
             state.save_project_settings(
                 scroll_speed,
                 reading_bar_offset_percent,
@@ -126,6 +129,9 @@ pub(crate) fn handle_file_picker_selected(
                 highlight_read_word,
                 scrolling_text_uses_character_color,
                 show_text_emotion_lanes,
+                show_timecode,
+                start_timecode,
+                waveform_height,
             );
             state.close_project_settings_modal();
         }
@@ -194,6 +200,7 @@ pub(crate) fn handle_file_picker_selected(
                             duration_seconds: clip.duration_frames as f64 / fps,
                             timeline_start_seconds: clip.start_frame as f64 / fps,
                             volume: 1.0,
+                            reverb: false,
                         })
                     })
                     .collect(),
@@ -722,6 +729,9 @@ impl CommandDispatcher {
             }
             UiAction::RecordingToggleTrackSolo(track_id) => {
                 state.recording_toggle_track_solo(track_id)
+            }
+            UiAction::RecordingToggleTrackReverb(track_id) => {
+                state.recording_toggle_track_reverb(track_id)
             }
             UiAction::RecordingArmTrack(track_id) => state.recording_arm_track(track_id),
             UiAction::RecordingSetTrackVolume { track_id, volume } => {
@@ -1964,6 +1974,9 @@ impl CommandDispatcher {
                 highlight_read_word,
                 scrolling_text_uses_character_color,
                 show_text_emotion_lanes,
+                show_timecode,
+                start_timecode,
+                waveform_height,
             } => {
                 let (lang, old_font) = {
                     let config = crate::config::get();
@@ -1982,6 +1995,9 @@ impl CommandDispatcher {
                     highlight_read_word,
                     scrolling_text_uses_character_color,
                     show_text_emotion_lanes,
+                    show_timecode,
+                    start_timecode,
+                    waveform_height,
                 );
                 if font_changed {
                     crate::vector_text::clear_project_font();

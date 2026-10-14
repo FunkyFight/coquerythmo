@@ -116,7 +116,7 @@ pub(crate) fn y_to_slot_at_frame(
     current_frame: f64,
     zone: &Rect,
 ) -> f32 {
-    let relative_y = y - zone.y - constants::RULER_HEIGHT;
+    let relative_y = y - zone.y - crate::config::waveform_height();
     let layouts = editor_track_layouts_at_frame(project, current_frame, zone);
     let layout = layouts
         .iter()
@@ -416,7 +416,7 @@ fn editor_normal_body_height_for_track_count(
     zone: &Rect,
 ) -> f32 {
     let track_count = track_count.max(1);
-    let usable_h = (zone.height - constants::RULER_HEIGHT).max(1.0);
+    let usable_h = (zone.height - crate::config::waveform_height()).max(1.0);
     let header_total = track_count as f32 * (slot_header_height() + BADGE_GAP);
     // Every track gets the same body: two rows (plus the stack gap) as soon as
     // one displayed track holds karaoke or text effects, one row otherwise.
@@ -613,7 +613,11 @@ impl EditorLayoutCtx {
         let layout = self.track_for_y_slot(y_slot);
         Rect {
             x: zone.x,
-            y: zone.y + constants::RULER_HEIGHT + layout.top + slot_header_height() + BADGE_GAP,
+            y: zone.y
+                + crate::config::waveform_height()
+                + layout.top
+                + slot_header_height()
+                + BADGE_GAP,
             width: zone.width,
             height: layout.body_h,
         }

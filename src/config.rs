@@ -20,6 +20,8 @@ pub struct RecentProject {
 static INSTANCE: OnceLock<RwLock<Config>> = OnceLock::new();
 static PROJECT_SCROLL_SPEED: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 static PROJECT_READING_BAR_OFFSET_SECONDS: AtomicU64 = AtomicU64::new(0.0f64.to_bits());
+static PROJECT_WAVEFORM_HEIGHT: AtomicU32 =
+    AtomicU32::new(crate::constants::RULER_HEIGHT.to_bits());
 static DEV_MODE: bool = false;
 
 pub fn dev_mode() -> bool {
@@ -483,6 +485,24 @@ pub(crate) fn set_project_view_settings(
     );
     PROJECT_SCROLL_SPEED.store(scroll_speed.to_bits(), Ordering::Relaxed);
     PROJECT_READING_BAR_OFFSET_SECONDS.store(offset_seconds.to_bits(), Ordering::Relaxed);
+}
+
+/// Height of the waveform strip of the interactive bande rythmo. Exports keep
+/// [`crate::constants::RULER_HEIGHT`].
+pub fn waveform_height() -> f32 {
+    f32::from_bits(PROJECT_WAVEFORM_HEIGHT.load(Ordering::Relaxed))
+}
+
+pub(crate) fn set_waveform_height(height: f32) {
+    let height = if height.is_finite() {
+        height.clamp(
+            crate::project::WAVEFORM_HEIGHT_MIN,
+            crate::project::WAVEFORM_HEIGHT_MAX,
+        )
+    } else {
+        crate::constants::RULER_HEIGHT
+    };
+    PROJECT_WAVEFORM_HEIGHT.store(height.to_bits(), Ordering::Relaxed);
 }
 
 pub fn scroll_speed() -> f32 {

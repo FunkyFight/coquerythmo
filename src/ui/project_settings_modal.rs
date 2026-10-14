@@ -3,8 +3,13 @@ use super::primitives::{HAlign, LabelInfo, Overflow, QuadInstance, Rect, UiEvent
 use crate::i18n::t;
 
 pub const PROJECT_SETTINGS_W: f32 = 520.0;
-pub const PROJECT_SETTINGS_H: f32 = 470.0;
-const CONTROL_COUNT: usize = 10;
+pub const PROJECT_SETTINGS_H: f32 = 580.0;
+const CONTROL_COUNT: usize = 13;
+const FOCUS_SHOW_TIMECODE: usize = 8;
+const FOCUS_START_TIMECODE: usize = 9;
+const FOCUS_WAVEFORM_HEIGHT: usize = 10;
+const FOCUS_SAVE: usize = 11;
+const WAVEFORM_HEIGHT_STEP: f32 = 4.0;
 
 pub struct ProjectSettingsModal {
     font: FontDropdown,
@@ -16,6 +21,10 @@ pub struct ProjectSettingsModal {
     pub highlight_read_word: bool,
     pub scrolling_text_uses_character_color: bool,
     pub show_text_emotion_lanes: bool,
+    pub show_timecode: bool,
+    pub start_timecode: String,
+    pub waveform_height: f32,
+    waveform_height_text: String,
     keyboard_focus: usize,
 }
 
@@ -31,6 +40,9 @@ pub enum ProjectSettingsModalResult {
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
         show_text_emotion_lanes: bool,
+        show_timecode: bool,
+        start_timecode: String,
+        waveform_height: f32,
     },
 }
 
@@ -44,8 +56,12 @@ impl ProjectSettingsModal {
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
         show_text_emotion_lanes: bool,
+        show_timecode: bool,
+        start_timecode: String,
+        waveform_height: f32,
     ) -> Self {
         let scroll_speed = scroll_speed.clamp(0.25, 4.0);
+        let waveform_height = clamp_waveform_height(waveform_height);
         let reading_bar_offset_percent = reading_bar_offset_percent.clamp(-50.0, 50.0);
         Self {
             font: FontDropdown::new(fonts, rythmo_font),
@@ -57,6 +73,10 @@ impl ProjectSettingsModal {
             highlight_read_word,
             scrolling_text_uses_character_color,
             show_text_emotion_lanes,
+            show_timecode,
+            start_timecode,
+            waveform_height,
+            waveform_height_text: format!("{waveform_height:.0} px"),
             keyboard_focus: 0,
         }
     }
@@ -102,9 +122,61 @@ impl ProjectSettingsModal {
                 "project_settings.show_text_emotion_lanes",
                 self.show_text_emotion_lanes,
             ),
-            8 => t("settings.save").to_string(),
+            FOCUS_SHOW_TIMECODE => {
+                toggle_label("project_settings.show_timecode", self.show_timecode)
+            }
+            FOCUS_START_TIMECODE => format!(
+                "{} {}",
+                t("project_settings.start_timecode"),
+                self.start_timecode_display()
+            ),
+            FOCUS_WAVEFORM_HEIGHT => format!(
+                "{} {}",
+                t("project_settings.waveform_height"),
+                self.waveform_height_text
+            ),
+            FOCUS_SAVE => t("settings.save").to_string(),
             _ => t("project_settings.close").to_string(),
         }
+    }
+
+    fn start_timecode_display(&self) -> &str {
+        if self.start_timecode.is_empty() {
+            "00:00:00:00"
+        } else {
+            &self.start_timecode
+        }
+    }
+
+    /// Lenient check used while typing: the exact frame limit depends on the
+    /// video frame rate and is enforced when the settings are saved.
+    fn start_timecode_valid(&self) -> bool {
+        crate::project::parse_timecode(&self.start_timecode, 120.0).is_some()
+    }
+
+    fn edit_start_timecode(&mut self, text: &str) -> bool {
+        if text == "\x08" {
+            self.start_timecode.pop();
+            return true;
+        }
+        if text == "\x7f" {
+            self.start_timecode.clear();
+            return true;
+        }
+        let accepted: String = text
+            .chars()
+            .filter(|c| c.is_ascii_digit() || matches!(c, ':' | ';' | '.'))
+            .collect();
+        if accepted.is_empty() {
+            return false;
+        }
+        for character in accepted.chars() {
+            if self.start_timecode.chars().count() >= 11 {
+                break;
+            }
+            self.start_timecode.push(character);
+        }
+        true
     }
 
     pub fn handle_event(
@@ -138,6 +210,13 @@ impl ProjectSettingsModal {
             self.keyboard_focus = 0;
             return ProjectSettingsModalResult::Consumed;
         }
+        if self.keyboard_focus == FOCUS_START_TIMECODE {
+            if let UiEvent::KeyInput { text } = event {
+                if self.edit_start_timecode(text) {
+                    return ProjectSettingsModalResult::Consumed;
+                }
+            }
+        }
         match event {
             UiEvent::KeyInput { text } if text == "\x1b" => ProjectSettingsModalResult::Close,
             UiEvent::FocusNext => self.move_focus(1),
@@ -146,11 +225,13 @@ impl ProjectSettingsModal {
             UiEvent::KeyInput { text } if text == "\u{b}" => self.move_focus(-1),
             UiEvent::CursorUp => self.move_focus(-1),
             UiEvent::CursorDown => self.move_focus(1),
-            UiEvent::CursorLeft if matches!(self.keyboard_focus, 1 | 2) => {
+            UiEvent::CursorLeft if matches!(self.keyboard_focus, 1 | 2 | FOCUS_WAVEFORM_HEIGHT) => {
                 self.adjust(self.keyboard_focus, -1);
                 ProjectSettingsModalResult::Consumed
             }
-            UiEvent::CursorRight if matches!(self.keyboard_focus, 1 | 2) => {
+            UiEvent::CursorRight
+                if matches!(self.keyboard_focus, 1 | 2 | FOCUS_WAVEFORM_HEIGHT) =>
+            {
                 self.adjust(self.keyboard_focus, 1);
                 ProjectSettingsModalResult::Consumed
             }
@@ -192,6 +273,38 @@ impl ProjectSettingsModal {
                 }
                 if emotion_rect(card, self.extra()).contains(*x, *y) {
                     self.show_text_emotion_lanes = !self.show_text_emotion_lanes;
+                    return ProjectSettingsModalResult::Consumed;
+                }
+                if show_timecode_rect(card, self.extra()).contains(*x, *y) {
+                    self.keyboard_focus = FOCUS_SHOW_TIMECODE;
+                    self.show_timecode = !self.show_timecode;
+                    return ProjectSettingsModalResult::Consumed;
+                }
+                if start_timecode_input_rect(card, self.extra()).contains(*x, *y) {
+                    self.keyboard_focus = FOCUS_START_TIMECODE;
+                    return ProjectSettingsModalResult::Consumed;
+                }
+                let waveform_row = waveform_row_rect(card, self.extra());
+                if (Rect {
+                    x: card.x + 270.0,
+                    width: 32.0,
+                    ..waveform_row
+                })
+                .contains(*x, *y)
+                {
+                    self.keyboard_focus = FOCUS_WAVEFORM_HEIGHT;
+                    self.adjust(FOCUS_WAVEFORM_HEIGHT, -1);
+                    return ProjectSettingsModalResult::Consumed;
+                }
+                if (Rect {
+                    x: card.x + card.width - 54.0,
+                    width: 32.0,
+                    ..waveform_row
+                })
+                .contains(*x, *y)
+                {
+                    self.keyboard_focus = FOCUS_WAVEFORM_HEIGHT;
+                    self.adjust(FOCUS_WAVEFORM_HEIGHT, 1);
                     return ProjectSettingsModalResult::Consumed;
                 }
                 if save_rect(card).contains(*x, *y) {
@@ -366,6 +479,93 @@ impl ProjectSettingsModal {
             t("project_settings.show_text_emotion_lanes"),
             self.show_text_emotion_lanes,
         );
+        push_toggle(
+            quads,
+            labels,
+            show_timecode_rect(card, extra),
+            t("project_settings.show_timecode"),
+            self.show_timecode,
+        );
+        let start_row = start_timecode_row_rect(card, extra);
+        push_label(
+            labels,
+            t("project_settings.start_timecode"),
+            Rect {
+                width: 248.0,
+                ..start_row
+            },
+            HAlign::Left,
+            12.0,
+            None,
+        );
+        let start_input = start_timecode_input_rect(card, extra);
+        push_quad(
+            quads,
+            start_input,
+            [0.08, 0.08, 0.10, 1.0],
+            if self.start_timecode_valid() {
+                [0.30, 0.30, 0.36, 0.5]
+            } else {
+                [0.90, 0.35, 0.30, 1.0]
+            },
+            4.0,
+        );
+        push_label(
+            labels,
+            self.start_timecode_display(),
+            start_input,
+            HAlign::Center,
+            13.0,
+            if self.start_timecode.is_empty() {
+                Some([130, 130, 145])
+            } else {
+                None
+            },
+        );
+        let waveform_row = waveform_row_rect(card, extra);
+        push_label(
+            labels,
+            t("project_settings.waveform_height"),
+            Rect {
+                width: 248.0,
+                ..waveform_row
+            },
+            HAlign::Left,
+            12.0,
+            None,
+        );
+        push_button(
+            quads,
+            labels,
+            Rect {
+                x: card.x + 270.0,
+                width: 32.0,
+                ..waveform_row
+            },
+            "-",
+        );
+        push_label(
+            labels,
+            self.waveform_height_text.as_str(),
+            Rect {
+                x: card.x + 302.0,
+                width: 130.0,
+                ..waveform_row
+            },
+            HAlign::Center,
+            12.0,
+            None,
+        );
+        push_button(
+            quads,
+            labels,
+            Rect {
+                x: card.x + card.width - 54.0,
+                width: 32.0,
+                ..waveform_row
+            },
+            "+",
+        );
         self.font
             .render(quads, labels, font_rect(card), t("settings.default_font"));
         push_button(quads, labels, save_rect(card), t("settings.save"));
@@ -378,7 +578,10 @@ impl ProjectSettingsModal {
             5 => highlight_rect(card, extra),
             6 => color_rect(card, extra),
             7 => emotion_rect(card, extra),
-            8 => save_rect(card),
+            FOCUS_SHOW_TIMECODE => show_timecode_rect(card, extra),
+            FOCUS_START_TIMECODE => start_timecode_input_rect(card, extra),
+            FOCUS_WAVEFORM_HEIGHT => waveform_row_rect(card, extra),
+            FOCUS_SAVE => save_rect(card),
             _ => close_rect(card),
         };
         push_outline(quads, focus);
@@ -412,6 +615,10 @@ impl ProjectSettingsModal {
             self.reading_bar_offset_percent =
                 (self.reading_bar_offset_percent + delta as f32).clamp(-50.0, 50.0);
             self.reading_bar_offset_text = format!("{:+.0} %", self.reading_bar_offset_percent);
+        } else if control == FOCUS_WAVEFORM_HEIGHT {
+            self.waveform_height =
+                clamp_waveform_height(self.waveform_height + delta as f32 * WAVEFORM_HEIGHT_STEP);
+            self.waveform_height_text = format!("{:.0} px", self.waveform_height);
         }
     }
 
@@ -435,8 +642,12 @@ impl ProjectSettingsModal {
                 self.show_text_emotion_lanes = !self.show_text_emotion_lanes;
                 ProjectSettingsModalResult::Consumed
             }
-            8 => self.save(),
-            9 => ProjectSettingsModalResult::Close,
+            FOCUS_SHOW_TIMECODE => {
+                self.show_timecode = !self.show_timecode;
+                ProjectSettingsModalResult::Consumed
+            }
+            FOCUS_SAVE => self.save(),
+            12 => ProjectSettingsModalResult::Close,
             _ => ProjectSettingsModalResult::Consumed,
         }
     }
@@ -451,7 +662,21 @@ impl ProjectSettingsModal {
             highlight_read_word: self.highlight_read_word,
             scrolling_text_uses_character_color: self.scrolling_text_uses_character_color,
             show_text_emotion_lanes: self.show_text_emotion_lanes,
+            show_timecode: self.show_timecode,
+            start_timecode: self.start_timecode.trim().to_string(),
+            waveform_height: self.waveform_height,
         }
+    }
+}
+
+fn clamp_waveform_height(height: f32) -> f32 {
+    if height.is_finite() {
+        height.clamp(
+            crate::project::WAVEFORM_HEIGHT_MIN,
+            crate::project::WAVEFORM_HEIGHT_MAX,
+        )
+    } else {
+        crate::constants::RULER_HEIGHT
     }
 }
 
@@ -536,6 +761,33 @@ fn emotion_rect(card: Rect, extra: f32) -> Rect {
     Rect {
         y: card.y + 374.0 + extra,
         ..highlight_rect(card, extra)
+    }
+}
+fn show_timecode_rect(card: Rect, extra: f32) -> Rect {
+    Rect {
+        y: card.y + 416.0 + extra,
+        ..highlight_rect(card, extra)
+    }
+}
+fn start_timecode_row_rect(card: Rect, extra: f32) -> Rect {
+    Rect {
+        x: card.x + 22.0,
+        y: card.y + 446.0 + extra,
+        width: card.width - 44.0,
+        height: 32.0,
+    }
+}
+fn start_timecode_input_rect(card: Rect, extra: f32) -> Rect {
+    Rect {
+        x: card.x + 270.0,
+        width: card.width - 292.0,
+        ..start_timecode_row_rect(card, extra)
+    }
+}
+fn waveform_row_rect(card: Rect, extra: f32) -> Rect {
+    Rect {
+        y: card.y + 488.0 + extra,
+        ..start_timecode_row_rect(card, extra)
     }
 }
 fn save_rect(card: Rect) -> Rect {
@@ -699,8 +951,43 @@ mod tests {
 
     #[test]
     fn rythmo_values_are_clamped_at_the_modal_boundary() {
-        let modal = ProjectSettingsModal::new(vec![], None, 99.0, -99.0, None, true, false, true);
+        let modal = ProjectSettingsModal::new(
+            vec![],
+            None,
+            99.0,
+            -99.0,
+            None,
+            true,
+            false,
+            true,
+            true,
+            String::new(),
+            999.0,
+        );
         assert_eq!(modal.scroll_speed, 4.0);
         assert_eq!(modal.reading_bar_offset_percent, -50.0);
+        assert_eq!(modal.waveform_height, crate::project::WAVEFORM_HEIGHT_MAX);
+    }
+
+    #[test]
+    fn start_timecode_field_accepts_digits_and_backspace() {
+        let mut modal = ProjectSettingsModal::new(
+            vec![],
+            None,
+            1.0,
+            0.0,
+            None,
+            false,
+            false,
+            true,
+            true,
+            String::new(),
+            28.0,
+        );
+        assert!(modal.edit_start_timecode("10:00:00:00"));
+        assert!(!modal.edit_start_timecode("a"));
+        assert_eq!(modal.start_timecode, "10:00:00:00");
+        assert!(modal.edit_start_timecode("\x08"));
+        assert_eq!(modal.start_timecode, "10:00:00:0");
     }
 }

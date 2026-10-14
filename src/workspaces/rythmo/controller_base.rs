@@ -75,7 +75,7 @@ pub fn handle_rythmo_event(
             if *x >= ctx.zone.x
                 && *x <= ctx.zone.x + ctx.zone.width
                 && *y >= ctx.zone.y
-                && *y <= ctx.zone.y + constants::RULER_HEIGHT =>
+                && *y <= ctx.zone.y + crate::config::waveform_height() =>
         {
             state.audio_offset_mode = !state.audio_offset_mode;
             state.audio_offset_drag = None;
@@ -86,7 +86,7 @@ pub fn handle_rythmo_event(
                 && *x >= ctx.zone.x
                 && *x <= ctx.zone.x + ctx.zone.width
                 && *y >= ctx.zone.y
-                && *y <= ctx.zone.y + constants::RULER_HEIGHT =>
+                && *y <= ctx.zone.y + crate::config::waveform_height() =>
         {
             state.audio_offset_drag = Some(AudioOffsetDrag {
                 last_x: *x,

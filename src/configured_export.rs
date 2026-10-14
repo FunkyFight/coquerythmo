@@ -62,7 +62,7 @@ pub fn run(context: ConfiguredExportContext<'_>) -> Result<Vec<PathBuf>, String>
 
     let task_count: usize = selected
         .iter()
-        .map(|(language, _)| {
+        .map(|(language, project)| {
             let tracks = selected_audio_tracks(
                 context.configuration,
                 language.id,
@@ -82,7 +82,13 @@ pub fn run(context: ConfiguredExportContext<'_>) -> Result<Vec<PathBuf>, String>
                     cfg.cross_reference_formats.csv,
                     cfg.cross_reference_formats.pdf,
                     cfg.presence_grid_pdf,
+                    cfg.script_pdf,
                 ])
+                + if cfg.script_pdf_per_role {
+                    delivery_export::script_roles(project).len()
+                } else {
+                    0
+                }
                 + tracks
                     * bool_count([
                         cfg.audio_formats.mp3,
@@ -335,6 +341,40 @@ pub fn run(context: ConfiguredExportContext<'_>) -> Result<Vec<PathBuf>, String>
             )?;
             outputs.push(output);
             finish_task(&context.progress, &mut completed, task_count);
+        }
+
+        if context.configuration.script_pdf {
+            let output = parent.join(format!("{prefix}_script.pdf"));
+            delivery_export::export_script_pdf(
+                &project,
+                context.source_fps,
+                &output,
+                &language.name,
+                None,
+            )?;
+            outputs.push(output);
+            finish_task(&context.progress, &mut completed, task_count);
+        }
+        if context.configuration.script_pdf_per_role {
+            let mut used_roles = HashSet::new();
+            for role in delivery_export::script_roles(&project) {
+                check_cancel(&context.cancel)?;
+                let mut role_slug = safe_filename(if role.is_empty() { "role" } else { &role });
+                if !used_roles.insert(role_slug.to_ascii_lowercase()) {
+                    role_slug = format!("{role_slug}_{}", used_roles.len());
+                    used_roles.insert(role_slug.to_ascii_lowercase());
+                }
+                let output = parent.join(format!("{prefix}_script_{role_slug}.pdf"));
+                delivery_export::export_script_pdf(
+                    &project,
+                    context.source_fps,
+                    &output,
+                    &language.name,
+                    Some(&role),
+                )?;
+                outputs.push(output);
+                finish_task(&context.progress, &mut completed, task_count);
+            }
         }
 
         let _ = audio_selection;

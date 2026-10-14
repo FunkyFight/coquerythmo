@@ -149,6 +149,12 @@ pub struct ExportConfiguration {
     pub cross_reference_formats: CrossReferenceExportFormats,
     #[serde(default)]
     pub presence_grid_pdf: bool,
+    /// Screenplay-style PDF for actors, with every role.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub script_pdf: bool,
+    /// Screenplay-style PDF for actors, one file per role.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub script_pdf_per_role: bool,
     #[serde(default)]
     pub pre_roll_seconds: f64,
     #[serde(default)]
@@ -184,6 +190,8 @@ impl Default for ExportConfiguration {
             audio_formats: AudioExportFormats::default(),
             cross_reference_formats: CrossReferenceExportFormats::default(),
             presence_grid_pdf: false,
+            script_pdf: false,
+            script_pdf_per_role: false,
             pre_roll_seconds: 0.0,
             countdown_enabled: false,
             countdown_start: default_countdown_start(),
@@ -275,6 +283,19 @@ pub struct ProjectSettings {
     pub automation: crate::automation::AutomationGraph,
     #[serde(default, skip_serializing_if = "crate::band_style::BandStyle::is_default")]
     pub band_style: crate::band_style::BandStyle,
+    /// Show the current timecode in the toolbar.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub show_timecode: bool,
+    /// Timecode of the first frame of the video, `HH:MM:SS:FF`. Empty means
+    /// `00:00:00:00`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub start_timecode: String,
+    /// Height of the waveform strip above the bande rythmo, in pixels.
+    #[serde(
+        default = "default_waveform_height",
+        skip_serializing_if = "is_default_waveform_height"
+    )]
+    pub waveform_height: f32,
 }
 
 impl Default for ProjectSettings {
@@ -293,12 +314,76 @@ impl Default for ProjectSettings {
             detections: crate::detection::DetectionDocument::default(),
             automation: crate::automation::AutomationGraph::default(),
             band_style: crate::band_style::BandStyle::default(),
+            show_timecode: true,
+            start_timecode: String::new(),
+            waveform_height: default_waveform_height(),
         }
     }
 }
 
+pub const WAVEFORM_HEIGHT_MIN: f32 = 16.0;
+pub const WAVEFORM_HEIGHT_MAX: f32 = 160.0;
+
+fn default_waveform_height() -> f32 {
+    crate::constants::RULER_HEIGHT
+}
+
+fn is_default_waveform_height(value: &f32) -> bool {
+    *value == default_waveform_height()
+}
+
+/// Parse `HH:MM:SS:FF` into a frame count at `fps`. `;` and `.` are accepted
+/// as separators, and missing leading fields count as zero (`10:00:00` is
+/// `00:10:00:00`).
+pub fn parse_timecode(text: &str, fps: f64) -> Option<i64> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Some(0);
+    }
+    let parts: Vec<&str> = text.split([':', ';', '.']).map(str::trim).collect();
+    if parts.len() > 4 || parts.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    let mut values = [0_i64; 4];
+    let offset = 4 - parts.len();
+    for (index, part) in parts.iter().enumerate() {
+        if !part.chars().all(|c| c.is_ascii_digit()) || part.len() > 3 {
+            return None;
+        }
+        values[offset + index] = part.parse().ok()?;
+    }
+    let nominal = nominal_timecode_fps(fps);
+    let [hours, minutes, seconds, frames] = values;
+    if hours > 23 || minutes > 59 || seconds > 59 || frames >= nominal {
+        return None;
+    }
+    Some(((hours * 60 + minutes) * 60 + seconds) * nominal + frames)
+}
+
+/// Format a frame count as `HH:MM:SS:FF` (non-drop-frame).
+pub fn format_timecode(frame: i64, fps: f64) -> String {
+    let nominal = nominal_timecode_fps(fps);
+    let frame = frame.max(0);
+    let hours = frame / (nominal * 3600);
+    let minutes = (frame / (nominal * 60)) % 60;
+    let seconds = (frame / nominal) % 60;
+    let frames = frame % nominal;
+    format!("{hours:02}:{minutes:02}:{seconds:02}:{frames:02}")
+}
+
 impl ProjectSettings {
+    /// Frames to add to a project frame to get its displayed timecode.
+    pub fn start_timecode_frames(&self, fps: f64) -> i64 {
+        parse_timecode(&self.start_timecode, fps).unwrap_or(0)
+    }
+
     pub(crate) fn normalize_view_settings(&mut self) {
+        self.waveform_height = if self.waveform_height.is_finite() {
+            self.waveform_height
+                .clamp(WAVEFORM_HEIGHT_MIN, WAVEFORM_HEIGHT_MAX)
+        } else {
+            default_waveform_height()
+        };
         self.scroll_speed = if self.scroll_speed.is_finite() {
             self.scroll_speed.clamp(0.25, 4.0)
         } else {
@@ -1250,6 +1335,9 @@ impl Project {
         let scroll_speed = active.project.settings.scroll_speed;
         let reading_bar_offset_percent = active.project.settings.reading_bar_offset_percent;
         let band_style = active.project.settings.band_style.clone();
+        let show_timecode = active.project.settings.show_timecode;
+        let start_timecode = active.project.settings.start_timecode.clone();
+        let waveform_height = active.project.settings.waveform_height;
 
         self.language_order.clear();
         self.language_snapshots.clear();
@@ -1263,6 +1351,9 @@ impl Project {
         active_band.settings.scroll_speed = scroll_speed;
         active_band.settings.reading_bar_offset_percent = reading_bar_offset_percent;
         active_band.settings.band_style = band_style.clone();
+        active_band.settings.show_timecode = show_timecode;
+        active_band.settings.start_timecode = start_timecode.clone();
+        active_band.settings.waveform_height = waveform_height;
         self.restore_band_snapshot(active_band, previous_revision);
 
         for snapshot in unique {
@@ -1274,6 +1365,9 @@ impl Project {
             band.settings.scroll_speed = scroll_speed;
             band.settings.reading_bar_offset_percent = reading_bar_offset_percent;
             band.settings.band_style = band_style.clone();
+            band.settings.show_timecode = show_timecode;
+            band.settings.start_timecode = start_timecode.clone();
+            band.settings.waveform_height = waveform_height;
             self.language_snapshots.insert(
                 id,
                 StoredLanguageSnapshot {
@@ -1628,6 +1722,18 @@ impl Project {
             .filter_map(move |id| self.line_map.get(id))
     }
 
+    /// Lines in film order: by start timecode, then by track, then by
+    /// insertion order. Used by tables and exports that people read.
+    pub fn lines_chronological(&self) -> Vec<&RythmoLine> {
+        let mut lines: Vec<&RythmoLine> = self.lines().collect();
+        lines.sort_by(|a, b| {
+            a.start_frame
+                .cmp(&b.start_frame)
+                .then(a.y_slot.total_cmp(&b.y_slot))
+        });
+        lines
+    }
+
     /// Collect all lines as a Vec (for serialization or cloning).
     pub fn lines_vec(&self) -> Vec<RythmoLine> {
         self.lines().cloned().collect()
@@ -1950,8 +2056,16 @@ impl Project {
             let scroll_speed = settings.scroll_speed;
             let reading_bar_offset_percent = settings.reading_bar_offset_percent;
             let band_style = settings.band_style.clone();
+            let (show_timecode, start_timecode, waveform_height) = (
+                settings.show_timecode,
+                settings.start_timecode.clone(),
+                settings.waveform_height,
+            );
             self.settings = settings;
             for snapshot in self.language_snapshots.values_mut() {
+                snapshot.band.settings.show_timecode = show_timecode;
+                snapshot.band.settings.start_timecode = start_timecode.clone();
+                snapshot.band.settings.waveform_height = waveform_height;
                 snapshot.band.settings.export_configuration = export_configuration.clone();
                 snapshot.band.settings.highlight_read_word = highlight_read_word;
                 snapshot.band.settings.scrolling_text_uses_character_color =
@@ -2392,6 +2506,31 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lines_chronological_follows_the_film_not_creation_order() {
+        let mut p = Project::new();
+        let late = p.add_line(200, 10, 0.5);
+        let early = p.add_line(10, 10, 0.5);
+        let middle = p.add_line(100, 10, 0.25);
+        let ids: Vec<u64> = p.lines_chronological().iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![early, middle, late]);
+    }
+
+    #[test]
+    fn timecodes_parse_and_format_round_trip() {
+        assert_eq!(parse_timecode("", 25.0), Some(0));
+        assert_eq!(parse_timecode("01:00:00:00", 25.0), Some(90_000));
+        assert_eq!(parse_timecode("10:00:00", 24.0), Some(14_400));
+        assert_eq!(parse_timecode("00:00:01:24", 24.0), None);
+        assert_eq!(parse_timecode("ab", 25.0), None);
+        assert_eq!(format_timecode(90_000 + 25 * 61 + 3, 25.0), "01:01:01:03");
+        let settings = ProjectSettings {
+            start_timecode: "01:00:00:00".into(),
+            ..ProjectSettings::default()
+        };
+        assert_eq!(settings.start_timecode_frames(24.0), 86_400);
+    }
 
     #[test]
     fn test_add_line() {

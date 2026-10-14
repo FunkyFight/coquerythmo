@@ -90,6 +90,7 @@ pub enum RecordingControl {
     TrackArm(AudioTrackId),
     TrackVolume(AudioTrackId),
     TrackExport(AudioTrackId),
+    TrackReverb(AudioTrackId),
     StartCapture,
     Clip(AudioClipId),
     Asset(AudioAssetId),
@@ -114,6 +115,7 @@ impl RecordingControl {
             Self::TrackArm(id) => format!("recording.track.{}.arm", id.get()),
             Self::TrackVolume(id) => format!("recording.track.{}.volume", id.get()),
             Self::TrackExport(id) => format!("recording.track.{}.export", id.get()),
+            Self::TrackReverb(id) => format!("recording.track.{}.reverb", id.get()),
             Self::StartCapture => "recording.capture.start".into(),
             Self::Clip(id) => format!("recording.clip.{}", id.get()),
             Self::Asset(id) => format!("recording.asset.{}", id.get()),
@@ -488,6 +490,7 @@ pub struct RecordingWorkspaceUi {
     pub dragging_clip: Option<RecordingClipDrag>,
     pub dragging_track_volume: Option<AudioTrackId>,
     track_volumes: BTreeMap<AudioTrackId, f32>,
+    track_reverbs: BTreeSet<AudioTrackId>,
     track_scroll: usize,
     track_count: usize,
     dragging_track_scrollbar: bool,
@@ -553,6 +556,7 @@ impl Default for RecordingWorkspaceUi {
             dragging_clip: None,
             dragging_track_volume: None,
             track_volumes: BTreeMap::new(),
+            track_reverbs: BTreeSet::new(),
             track_scroll: 0,
             track_count: 0,
             dragging_track_scrollbar: false,
@@ -588,6 +592,7 @@ impl RecordingWorkspaceUi {
         self.dragging_clip = None;
         self.dragging_track_volume = None;
         self.track_volumes.clear();
+        self.track_reverbs.clear();
         self.expanded_asset_owners.clear();
         self.asset_context_menu = None;
     }
@@ -723,6 +728,16 @@ impl RecordingWorkspaceUi {
             self.track_volumes.remove(&track_id);
         } else {
             self.track_volumes.insert(track_id, volume);
+        }
+    }
+
+    pub fn track_reverb(&self, track_id: AudioTrackId) -> bool {
+        self.track_reverbs.contains(&track_id)
+    }
+
+    pub fn toggle_track_reverb(&mut self, track_id: AudioTrackId) {
+        if !self.track_reverbs.remove(&track_id) {
+            self.track_reverbs.insert(track_id);
         }
     }
 
@@ -1718,6 +1733,7 @@ fn push_tracks(
             selected: false,
             enabled: ui.role.can_adjust_track_volume(),
         });
+        let track_reverb = ui.track_reverb(track.id);
         for (index, (control, text, active, color)) in [
             (
                 RecordingControl::TrackMute(track.id),
@@ -1743,14 +1759,20 @@ fn push_tracks(
                 false,
                 [0.25, 0.65, 0.35, 1.0],
             ),
+            (
+                RecordingControl::TrackReverb(track.id),
+                "Rev",
+                track_reverb,
+                [0.32, 0.45, 0.82, 1.0],
+            ),
         ]
         .into_iter()
         .enumerate()
         {
             let bounds = Rect {
-                x: header.x + 8.0 + index as f32 * 34.0,
+                x: header.x + 8.0 + index as f32 * 28.0,
                 y: header.y + 30.0,
-                width: 28.0,
+                width: if text == "Rev" { 32.0 } else { 24.0 },
                 height: 22.0,
             };
             push_quad(
@@ -1785,6 +1807,11 @@ fn push_tracks(
                         track.name,
                         crate::i18n::t("recording.track.export")
                     ),
+                    "Rev" => format!(
+                        "{} — {}",
+                        track.name,
+                        crate::i18n::t("recording.track.reverb")
+                    ),
                     _ => format!("{} — {}", track.name, crate::i18n::t("recording.track.arm")),
                 },
                 value: Some(
@@ -1796,7 +1823,11 @@ fn push_tracks(
                     .into(),
                 ),
                 selected: active,
-                enabled: ui.role.can_edit_timeline(),
+                enabled: if text == "Rev" {
+                    ui.role.can_adjust_track_volume()
+                } else {
+                    ui.role.can_edit_timeline()
+                },
             });
         }
         let remove_bounds = Rect {

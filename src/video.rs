@@ -1635,6 +1635,7 @@ where
 {
     let sample_rate = config.sample_rate.0;
     let mut reader = AudioSampleReader::new(slot, feed_generation);
+    let mut reverb = crate::recording_mix::VocalReverb::new(sample_rate);
     let err_fn = |err| log::error!("Audio stream error: {err}");
 
     device
@@ -1649,6 +1650,7 @@ where
                     &mut reader,
                     info,
                     &recording_mix,
+                    &mut reverb,
                 )
             },
             err_fn,
@@ -1665,6 +1667,7 @@ fn write_audio_output<T>(
     reader: &mut AudioSampleReader,
     info: &cpal::OutputCallbackInfo,
     recording_mix: &RwLock<Option<Arc<RealtimeRecordingMix>>>,
+    reverb: &mut crate::recording_mix::VocalReverb,
 ) where
     T: Sample + FromSample<f32>,
 {
@@ -1682,6 +1685,7 @@ fn write_audio_output<T>(
     state.update_callback_snapshot(Instant::now(), frames_before, frames_after, latency_frames);
 
     let recording_mix = recording_mix.read().ok().and_then(|mix| mix.clone());
+    let reverb_active = recording_mix.as_ref().is_some_and(|mix| mix.has_reverb());
     let volume = if recording_mix.is_some() {
         1.0
     } else {
@@ -1697,7 +1701,13 @@ fn write_audio_output<T>(
         };
         let stereo = recording_mix.as_ref().map_or(source, |mix| {
             let timeline_seconds = state.timeline_seconds_after(frames_before + index as u64);
-            mix.mix_stereo(timeline_seconds, source)
+            let (mut stereo, send) = mix.mix_stereo_with_send(timeline_seconds, source);
+            if reverb_active {
+                let wet = reverb.process(send);
+                stereo[0] += wet[0];
+                stereo[1] += wet[1];
+            }
+            stereo
         });
         write_output_frame(frame, stereo, volume);
     }

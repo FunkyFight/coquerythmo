@@ -582,7 +582,7 @@ impl ExportModal {
             }
             ExportPage::Subtitles => order.extend((0..4).map(ExportFocus::Format)),
             ExportPage::Audio => order.extend((0..3).map(ExportFocus::Format)),
-            ExportPage::Reports => order.extend((0..3).map(ExportFocus::Format)),
+            ExportPage::Reports => order.extend((0..5).map(ExportFocus::Format)),
         }
         for (index, language) in self.languages.iter().enumerate() {
             order.push(ExportFocus::Language(index));
@@ -1312,6 +1312,8 @@ impl ExportModal {
             || cfg.cross_reference_formats.csv
             || cfg.cross_reference_formats.pdf
             || cfg.presence_grid_pdf
+            || cfg.script_pdf
+            || cfg.script_pdf_per_role
     }
 
     fn can_export(&self) -> bool {
@@ -1336,6 +1338,8 @@ impl ExportModal {
                 0 => "CSV",
                 1 => "PDF",
                 2 => "Grille PDF",
+                3 => t("export_hub.script_pdf"),
+                4 => t("export_hub.script_pdf_per_role"),
                 _ => "Format",
             },
             ExportPage::Video => "Format",
@@ -1358,7 +1362,9 @@ impl ExportModal {
             ExportPage::Reports => match index {
                 0 => self.configuration.cross_reference_formats.csv,
                 1 => self.configuration.cross_reference_formats.pdf,
-                _ => self.configuration.presence_grid_pdf,
+                2 => self.configuration.presence_grid_pdf,
+                3 => self.configuration.script_pdf,
+                _ => self.configuration.script_pdf_per_role,
             },
             ExportPage::Video => false,
         }
@@ -1380,7 +1386,9 @@ impl ExportModal {
             ExportPage::Reports => match index {
                 0 => self.configuration.cross_reference_formats.csv ^= true,
                 1 => self.configuration.cross_reference_formats.pdf ^= true,
-                _ => self.configuration.presence_grid_pdf ^= true,
+                2 => self.configuration.presence_grid_pdf ^= true,
+                3 => self.configuration.script_pdf ^= true,
+                _ => self.configuration.script_pdf_per_role ^= true,
             },
             ExportPage::Video => {}
         }
@@ -1782,7 +1790,7 @@ impl ExportModal {
     }
 
     fn handle_report_click(&mut self, content: Rect, x: f32, y: f32) {
-        for index in 0..3 {
+        for index in 0..5 {
             if format_card(content, index).contains(x, y) {
                 self.set_focus(ExportFocus::Format(index));
                 self.toggle_format(index);
@@ -1994,6 +2002,16 @@ impl ExportModal {
                         t("export_hub.grid_pdf"),
                         t("export_hub.grid_pdf_hint"),
                         self.configuration.presence_grid_pdf,
+                    ),
+                    (
+                        t("export_hub.script_pdf"),
+                        t("export_hub.script_pdf_hint"),
+                        self.configuration.script_pdf,
+                    ),
+                    (
+                        t("export_hub.script_pdf_per_role"),
+                        t("export_hub.script_pdf_per_role_hint"),
+                        self.configuration.script_pdf_per_role,
                     ),
                 ],
             ),

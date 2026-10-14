@@ -3825,6 +3825,7 @@ impl State {
         if self.ui_shell.ui.recording_role().can_adjust_track_volume() {
             for track in self.project_session.recording_project.tracks() {
                 spec.set_track_volume(track.id, self.ui_shell.ui.recording_track_volume(track.id));
+                spec.set_track_reverb(track.id, self.ui_shell.ui.recording_track_reverb(track.id));
             }
         }
         if let Some(job) = self.jobs.pending_recording_mix_job.take() {
@@ -3964,6 +3965,25 @@ impl State {
         self.ui_shell
             .ui
             .recording_set_track_volume(track_id, volume);
+        self.sync_recording_workspace_ui();
+        self.schedule_recording_mix();
+    }
+
+    /// Toggles the vocal reverb heard in the preview; recordings and exports stay dry.
+    pub fn recording_toggle_track_reverb(&mut self, track_id: crate::recording::AudioTrackId) {
+        if !self.ui_shell.ui.recording_role().can_adjust_track_volume() {
+            self.recording_read_only_error();
+            return;
+        }
+        if self
+            .project_session
+            .recording_project
+            .track(track_id)
+            .is_none()
+        {
+            return;
+        }
+        self.ui_shell.ui.recording_toggle_track_reverb(track_id);
         self.sync_recording_workspace_ui();
         self.schedule_recording_mix();
     }
@@ -4979,6 +4999,9 @@ impl State {
             settings.highlight_read_word,
             settings.scrolling_text_uses_character_color,
             settings.show_text_emotion_lanes,
+            settings.show_timecode,
+            settings.start_timecode.clone(),
+            settings.waveform_height,
         );
         if let Some(first_label) = self.project_settings_modal_focus_label() {
             self.announce_open_container(crate::i18n::t("project_settings.title"), first_label);
@@ -5161,6 +5184,9 @@ impl State {
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
         show_text_emotion_lanes: bool,
+        show_timecode: bool,
+        start_timecode: String,
+        waveform_height: f32,
     ) {
         let mut settings = self.project_session.project.settings().clone();
         settings.scroll_speed = scroll_speed.clamp(0.25, 4.0);
@@ -5169,6 +5195,19 @@ impl State {
         settings.highlight_read_word = highlight_read_word;
         settings.scrolling_text_uses_character_color = scrolling_text_uses_character_color;
         settings.show_text_emotion_lanes = show_text_emotion_lanes;
+        settings.show_timecode = show_timecode;
+        settings.waveform_height = waveform_height;
+        // Store the start timecode in its canonical HH:MM:SS:FF form. An
+        // unreadable value keeps the previous one.
+        let fps = self.active_fps();
+        match crate::project::parse_timecode(&start_timecode, fps) {
+            Some(0) => settings.start_timecode.clear(),
+            Some(frames) => settings.start_timecode = crate::project::format_timecode(frames, fps),
+            None => self.show_toast(
+                crate::i18n::t("project_settings.invalid_start_timecode"),
+                3.0,
+            ),
+        }
         EditExecutor::apply_domain_change(
             &mut self.project_session,
             EditOrigin::Local,
@@ -7299,7 +7338,7 @@ impl State {
 
     pub fn seek_to_next_boucle(&mut self, direction: i32) {
         let current = self.current_frame();
-        let boucle_frames: Vec<i64> = self
+        let mut boucle_frames: Vec<i64> = self
             .project_session
             .project
             .markers()
@@ -7307,6 +7346,7 @@ impl State {
             .filter(|m| m.kind == crate::rythmo_line::MarkerKind::Boucle)
             .map(|m| m.frame)
             .collect();
+        boucle_frames.sort_unstable();
         if boucle_frames.is_empty() {
             return;
         }

@@ -252,6 +252,7 @@ pub enum UiAction {
     },
     RecordingToggleTrackMute(crate::recording::AudioTrackId),
     RecordingToggleTrackSolo(crate::recording::AudioTrackId),
+    RecordingToggleTrackReverb(crate::recording::AudioTrackId),
     RecordingArmTrack(crate::recording::AudioTrackId),
     RecordingSetTrackVolume {
         track_id: crate::recording::AudioTrackId,
@@ -777,6 +778,9 @@ pub enum UiAction {
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
         show_text_emotion_lanes: bool,
+        show_timecode: bool,
+        start_timecode: String,
+        waveform_height: f32,
     },
     SaveComicDubsSettings {
         font_family: Option<String>,

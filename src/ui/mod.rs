@@ -152,6 +152,8 @@ pub struct Ui {
     pub network_status: String,
     pub has_video: bool,
     pub current_frame: i64,
+    /// Timecode shown in the rythmo toolbar; empty when hidden.
+    timecode_label: String,
     pub total_frames: i64,
     pub scrubbing: bool,
     pub sync_overlay: Option<String>,
@@ -455,6 +457,7 @@ impl Ui {
             project_transfer_status: None,
             has_video: false,
             current_frame: 0,
+            timecode_label: String::new(),
             total_frames: 0,
             scrubbing: false,
             toasts: toast::ToastManager::new(),
@@ -924,7 +927,7 @@ impl Ui {
                 * (row_height + crate::rythmo_layout::karaoke_stack_gap(row_height * 2.0, 1.0))
             + emotion_tracks as f32
                 * (row_height + crate::rythmo_layout::karaoke_stack_gap(row_height, 1.0));
-        (crate::constants::RULER_HEIGHT
+        (crate::config::waveform_height()
             + used_tracks as f32 * (track_header + crate::constants::BADGE_GAP)
             + track_body)
             .max(100.0)
@@ -1455,6 +1458,14 @@ impl Ui {
         self.recording_ui.set_track_volume(track_id, volume);
     }
 
+    pub fn recording_track_reverb(&self, track_id: crate::recording::AudioTrackId) -> bool {
+        self.recording_ui.track_reverb(track_id)
+    }
+
+    pub fn recording_toggle_track_reverb(&mut self, track_id: crate::recording::AudioTrackId) {
+        self.recording_ui.toggle_track_reverb(track_id);
+    }
+
     pub fn recording_playback_controls_enabled(&self) -> bool {
         !self.network_in_room || self.recording_ui.role.can_control_playback()
     }
@@ -1532,6 +1543,9 @@ impl Ui {
                 delta: 0.1,
             },
             RecordingControl::TrackExport(track_id) => UiAction::RecordingExportTrack(*track_id),
+            RecordingControl::TrackReverb(track_id) => {
+                UiAction::RecordingToggleTrackReverb(*track_id)
+            }
             RecordingControl::StartCapture => UiAction::RecordingStartCapture,
             RecordingControl::Clip(clip_id) => UiAction::RecordingSelectClip {
                 clip_id: *clip_id,
@@ -3650,6 +3664,9 @@ impl Ui {
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
         show_text_emotion_lanes: bool,
+        show_timecode: bool,
+        start_timecode: String,
+        waveform_height: f32,
     ) {
         self.modal_host.open_project_settings(
             fonts,
@@ -3660,6 +3677,9 @@ impl Ui {
             highlight_read_word,
             scrolling_text_uses_character_color,
             show_text_emotion_lanes,
+            show_timecode,
+            start_timecode,
+            waveform_height,
         );
     }
 
@@ -3814,6 +3834,11 @@ impl Ui {
         self.ensure_comic_dubs_texture(device, queue, renderer, comic_dubs_project);
         // Update frame info for progress bar
         self.current_frame = current_frame;
+        self.timecode_label.clear();
+        if project.settings().show_timecode && fps.is_finite() && fps > 0.0 {
+            let start = project.settings().start_timecode_frames(fps);
+            self.timecode_label = crate::project::format_timecode(current_frame + start, fps);
+        }
 
         // Tick toasts (needs &mut self, before labels borrow self)
         self.toasts.tick();
@@ -5531,6 +5556,53 @@ impl Ui {
         linearize_band_quads(&mut quads[first_band_quad..]);
     }
 
+    /// Current timecode, at the right of the toolbar's second row.
+    fn push_toolbar_timecode<'a>(
+        &'a self,
+        quads: &mut Vec<QuadInstance>,
+        labels: &mut Vec<LabelInfo<'a>>,
+        toolbar: Rect,
+    ) {
+        if self.timecode_label.is_empty() {
+            return;
+        }
+        let size = theme::TOOLBAR_BTN_SIZE;
+        let width = 118.0;
+        let rect = Rect {
+            x: toolbar.x + toolbar.width - width - 8.0,
+            y: toolbar.y + size + 6.0,
+            width,
+            height: size - 4.0,
+        };
+        if rect.x < toolbar.x + 8.0 + 6.0 * (size + 4.0) {
+            return;
+        }
+        quads.push(QuadInstance {
+            rect: [rect.x, rect.y, rect.width, rect.height],
+            color: [0.05, 0.05, 0.065, 1.0],
+            color_bottom: [0.05, 0.05, 0.065, 1.0],
+            border_color: [0.25, 0.25, 0.30, 0.6],
+            border_width: 1.0,
+            border_radius: 4.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+        labels.push(LabelInfo {
+            text: &self.timecode_label,
+            bounds: rect,
+            h_align: HAlign::Center,
+            v_align: VAlign::Center,
+            overflow: Overflow::Clip,
+            padding: 0.0,
+            font_size_override: Some(15.0),
+            color_override: Some([235, 236, 242]),
+            font_family_override: None,
+        });
+    }
+
     fn push_toolbar_zone(
         &self,
         quads: &mut Vec<QuadInstance>,
@@ -5880,6 +5952,7 @@ impl Ui {
         });
 
         self.push_toolbar_zone(quads, l.toolbar, true, true);
+        self.push_toolbar_timecode(quads, labels, l.toolbar);
 
         self.push_rythmo_base(
             quads,

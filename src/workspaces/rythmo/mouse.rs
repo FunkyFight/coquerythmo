@@ -42,7 +42,7 @@ pub(crate) fn hit_test_line_and_track(
         })
     });
 
-    let relative_y = y - ctx.zone.y - constants::RULER_HEIGHT;
+    let relative_y = y - ctx.zone.y - crate::config::waveform_height();
     let hovered_track = layout_ctx
         .track_layouts()
         .iter()
@@ -165,7 +165,7 @@ pub(crate) fn handle_mouse_move(
                                             .expect("editor track layout should not be empty")
                                     });
                             let orig_center = ctx.zone.y
-                                + constants::RULER_HEIGHT
+                                + crate::config::waveform_height()
                                 + orig_track.top
                                 + orig_track.total_h / 2.0;
                             if (y - orig_center).abs() > orig_track.total_h * 0.6 {

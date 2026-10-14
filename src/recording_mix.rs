@@ -27,6 +27,8 @@ pub struct MixClip {
     pub duration_seconds: f64,
     pub timeline_start_seconds: f64,
     pub volume: f32,
+    /// Sends the clip to the vocal reverb. Only the realtime preview honours it.
+    pub reverb: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,6 +58,7 @@ struct RealtimeMixClip {
     duration_seconds: f64,
     timeline_start_seconds: f64,
     volume: f32,
+    reverb: bool,
 }
 
 impl RealtimeRecordingMix {
@@ -76,6 +79,7 @@ impl RealtimeRecordingMix {
                     duration_seconds: clip.duration_seconds,
                     timeline_start_seconds: clip.timeline_start_seconds,
                     volume: clip.volume,
+                    reverb: clip.reverb,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -87,6 +91,16 @@ impl RealtimeRecordingMix {
     }
 
     pub fn mix_stereo(&self, timeline_seconds: f64, source: [f32; 2]) -> [f32; 2] {
+        self.mix_stereo_with_send(timeline_seconds, source).0
+    }
+
+    pub fn has_reverb(&self) -> bool {
+        self.clips.iter().any(|clip| clip.reverb)
+    }
+
+    /// Returns the dry stereo mix and the mono signal sent to the vocal reverb.
+    pub fn mix_stereo_with_send(&self, timeline_seconds: f64, source: [f32; 2]) -> ([f32; 2], f32) {
+        let mut send = 0.0;
         let mut mixed = [
             source[0] * self.source_volume,
             source[1] * self.source_volume,
@@ -110,9 +124,133 @@ impl RealtimeRecordingMix {
                 let value = (current * (1.0 - frac) as f32 + next * frac as f32) * clip.volume;
                 mixed[0] += value;
                 mixed[1] += value;
+                if clip.reverb {
+                    send += value;
+                }
             }
         }
-        mixed
+        (mixed, send)
+    }
+}
+
+const REVERB_TUNING_RATE: f32 = 44_100.0;
+const REVERB_COMBS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
+const REVERB_ALLPASSES: [usize; 4] = [556, 441, 341, 225];
+const REVERB_STEREO_SPREAD: usize = 23;
+const REVERB_PREDELAY_SECONDS: f32 = 0.025;
+const REVERB_INPUT_GAIN: f32 = 0.015;
+const REVERB_FEEDBACK: f32 = 0.92;
+const REVERB_DAMPING: f32 = 0.25;
+const REVERB_WET: f32 = 1.1;
+const REVERB_HIGH_PASS_HZ: f32 = 180.0;
+
+/// Freeverb-style vocal reverb used by the recording preview only.
+/// Buffers are allocated up front so `process` is safe in the audio callback.
+#[derive(Debug, Clone)]
+pub struct VocalReverb {
+    predelay: Vec<f32>,
+    predelay_pos: usize,
+    high_pass_coefficient: f32,
+    high_pass_input: f32,
+    high_pass_output: f32,
+    combs: [Vec<ReverbComb>; 2],
+    allpasses: [Vec<ReverbAllpass>; 2],
+}
+
+#[derive(Debug, Clone)]
+struct ReverbComb {
+    buffer: Vec<f32>,
+    pos: usize,
+    store: f32,
+}
+
+#[derive(Debug, Clone)]
+struct ReverbAllpass {
+    buffer: Vec<f32>,
+    pos: usize,
+}
+
+impl VocalReverb {
+    pub fn new(sample_rate: u32) -> Self {
+        let rate = sample_rate.max(1) as f32;
+        let scale = rate / REVERB_TUNING_RATE;
+        let length = |samples: usize, spread: usize| {
+            (((samples + spread) as f32 * scale).round() as usize).max(1)
+        };
+        let channel = |spread: usize| {
+            (
+                REVERB_COMBS
+                    .iter()
+                    .map(|&samples| ReverbComb {
+                        buffer: vec![0.0; length(samples, spread)],
+                        pos: 0,
+                        store: 0.0,
+                    })
+                    .collect::<Vec<_>>(),
+                REVERB_ALLPASSES
+                    .iter()
+                    .map(|&samples| ReverbAllpass {
+                        buffer: vec![0.0; length(samples, spread)],
+                        pos: 0,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let (left_combs, left_allpasses) = channel(0);
+        let (right_combs, right_allpasses) = channel(REVERB_STEREO_SPREAD);
+        let rc = 1.0 / (2.0 * std::f32::consts::PI * REVERB_HIGH_PASS_HZ);
+        Self {
+            predelay: vec![0.0; ((REVERB_PREDELAY_SECONDS * rate).round() as usize).max(1)],
+            predelay_pos: 0,
+            high_pass_coefficient: rc / (rc + 1.0 / rate),
+            high_pass_input: 0.0,
+            high_pass_output: 0.0,
+            combs: [left_combs, right_combs],
+            allpasses: [left_allpasses, right_allpasses],
+        }
+    }
+
+    /// Feeds one mono send sample and returns the wet stereo output.
+    pub fn process(&mut self, input: f32) -> [f32; 2] {
+        let input = if input.is_finite() { input } else { 0.0 };
+        let high_passed =
+            self.high_pass_coefficient * (self.high_pass_output + input - self.high_pass_input);
+        self.high_pass_input = input;
+        self.high_pass_output = flush_denormal(high_passed);
+        let delayed = std::mem::replace(
+            &mut self.predelay[self.predelay_pos],
+            self.high_pass_output,
+        );
+        self.predelay_pos = (self.predelay_pos + 1) % self.predelay.len();
+        let input = delayed * REVERB_INPUT_GAIN;
+        let mut output = [0.0; 2];
+        for channel in 0..2 {
+            let mut sum = 0.0;
+            for comb in &mut self.combs[channel] {
+                let delayed = comb.buffer[comb.pos];
+                comb.store =
+                    flush_denormal(delayed * (1.0 - REVERB_DAMPING) + comb.store * REVERB_DAMPING);
+                comb.buffer[comb.pos] = input + comb.store * REVERB_FEEDBACK;
+                comb.pos = (comb.pos + 1) % comb.buffer.len();
+                sum += delayed;
+            }
+            for allpass in &mut self.allpasses[channel] {
+                let delayed = allpass.buffer[allpass.pos];
+                allpass.buffer[allpass.pos] = flush_denormal(sum + delayed * 0.5);
+                allpass.pos = (allpass.pos + 1) % allpass.buffer.len();
+                sum = delayed - sum;
+            }
+            output[channel] = sum * REVERB_WET;
+        }
+        output
+    }
+}
+
+fn flush_denormal(value: f32) -> f32 {
+    if value.abs() < 1.0e-15 {
+        0.0
+    } else {
+        value
     }
 }
 
@@ -203,6 +341,7 @@ impl RecordingMixSpec {
                 duration_seconds: clip.duration_frames as f64 / fps,
                 timeline_start_seconds: clip.start_frame as f64 / fps,
                 volume: 1.0,
+                reverb: false,
             });
         }
         clips.sort_by(|left, right| {
@@ -236,6 +375,14 @@ impl RecordingMixSpec {
         for clip in &mut self.clips {
             if clip.track_id == track_id {
                 clip.volume = volume;
+            }
+        }
+    }
+
+    pub fn set_track_reverb(&mut self, track_id: AudioTrackId, reverb: bool) {
+        for clip in &mut self.clips {
+            if clip.track_id == track_id {
+                clip.reverb = reverb;
             }
         }
     }
@@ -452,6 +599,7 @@ mod tests {
                 duration_seconds: 2.0,
                 timeline_start_seconds: 1.25,
                 volume: 1.0,
+                reverb: false,
             }],
             sample_rate: 48_000,
             source_volume: 1.0,
@@ -475,6 +623,7 @@ mod tests {
                 duration_seconds: 2.0,
                 timeline_start_seconds: 1.0,
                 volume: 1.0,
+                reverb: false,
             }],
             sample_rate: 48_000,
             source_volume: 1.0,
@@ -505,6 +654,7 @@ mod tests {
                     duration_seconds: 2.0 / f64::from(REALTIME_SAMPLE_RATE),
                     timeline_start_seconds: 1.0,
                     volume: 1.0,
+                    reverb: false,
                 }],
                 sample_rate: REALTIME_SAMPLE_RATE,
                 source_volume: 0.5,
@@ -517,6 +667,54 @@ mod tests {
 
         assert_eq!(mix.mix_stereo(0.5, [1.0, 1.0]), [0.5, 0.5]);
         assert_eq!(mix.mix_stereo(1.0, [1.0, 1.0]), [0.75, 0.75]);
+    }
+
+    #[test]
+    fn vocal_reverb_rings_after_the_send_and_stays_finite() {
+        let mut reverb = VocalReverb::new(48_000);
+        assert_eq!(reverb.process(0.0), [0.0, 0.0]);
+        reverb.process(1.0);
+        let tail: f32 = (0..24_000)
+            .map(|_| {
+                let [left, right] = reverb.process(0.0);
+                assert!(left.is_finite() && right.is_finite());
+                left.abs() + right.abs()
+            })
+            .sum();
+        assert!(tail > 0.0);
+    }
+
+    #[test]
+    fn reverb_is_only_sent_from_tracks_that_enable_it() {
+        let samples = Arc::new(vec![0.5; 48_000]);
+        let clip = |id, track, reverb| MixClip {
+            clip_id: AudioClipId::new(id),
+            track_id: AudioTrackId::new(track),
+            path: PathBuf::from(format!("{id}.flac")),
+            source_start_seconds: 0.0,
+            duration_seconds: 1.0,
+            timeline_start_seconds: 0.0,
+            volume: 1.0,
+            reverb,
+        };
+        let mut spec = RecordingMixSpec {
+            source_duration_seconds: None,
+            clips: vec![clip(1, 1, false), clip(2, 2, false)],
+            sample_rate: 48_000,
+            source_volume: 1.0,
+            total_duration_seconds: None,
+        };
+        spec.set_track_reverb(AudioTrackId::new(2), true);
+        let cache = spec
+            .clips
+            .iter()
+            .map(|clip| (clip.path.clone(), samples.clone()))
+            .collect();
+        let mix = RealtimeRecordingMix::from_spec(&spec, &cache, 48_000).unwrap();
+        assert!(mix.has_reverb());
+        let (dry, send) = mix.mix_stereo_with_send(0.5, [0.0, 0.0]);
+        assert_eq!(dry, [1.0, 1.0]);
+        assert_eq!(send, 0.5);
     }
 
     #[test]
@@ -533,6 +731,7 @@ mod tests {
                 duration_seconds: 1.0 / f64::from(REALTIME_SAMPLE_RATE),
                 timeline_start_seconds: 0.0,
                 volume: 1.0,
+                reverb: false,
             }],
             sample_rate: REALTIME_SAMPLE_RATE,
             source_volume: 1.0,
@@ -564,6 +763,7 @@ mod tests {
                     duration_seconds: 4.0 / f64::from(REALTIME_SAMPLE_RATE),
                     timeline_start_seconds: 0.0,
                     volume: 1.0,
+                    reverb: false,
                 }],
                 sample_rate: REALTIME_SAMPLE_RATE,
                 source_volume: 1.0,

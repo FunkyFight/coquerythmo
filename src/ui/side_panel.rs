@@ -197,7 +197,7 @@ impl SidePanel {
 
     fn line_cell_label(&self, project: &Project, index: usize, column: usize) -> Option<String> {
         let total = project.line_count();
-        let line = project.line_at(index)?;
+        let line = chrono_line(project, index)?;
         let character = if line.character_name.trim().is_empty() {
             t("accessibility.character")
         } else {
@@ -543,7 +543,7 @@ impl SidePanel {
     fn handle_context_menu_keyboard(
         &mut self,
         event: &UiEvent,
-        _panel: Rect,
+        panel: Rect,
         project: &Project,
     ) -> Option<EventResponse> {
         let (mx, my) = self.context_menu?;
@@ -572,7 +572,7 @@ impl SidePanel {
                 );
             }
             self.context_menu = None;
-            self.role_picker = Some((mx, my));
+            self.role_picker = Some(role_picker_origin(mx, my, panel, roles(project).len()));
             self.role_picker_index = 0;
             self.role_picker_scroll = 0;
             let first = roles(project)
@@ -686,7 +686,7 @@ impl SidePanel {
             UiEvent::Activate => self.activate_keyboard_focus(panel, project),
             UiEvent::KeyInput { text } if text == " " => {
                 if kind == SidePanelKind::Lines && !self.keyboard_close {
-                    let Some(line) = project.line_at(self.keyboard_row) else {
+                    let Some(line) = chrono_line(project, self.keyboard_row) else {
                         return EventResponse::Consumed;
                     };
                     if !self.selected.remove(&line.id) {
@@ -704,7 +704,7 @@ impl SidePanel {
                 self.activate_keyboard_focus(panel, project)
             }
             UiEvent::OpenContextMenu if kind == SidePanelKind::Lines && !self.keyboard_close => {
-                let Some(line) = project.line_at(self.keyboard_row) else {
+                let Some(line) = chrono_line(project, self.keyboard_row) else {
                     return EventResponse::Consumed;
                 };
                 if !self.selected.contains(&line.id) {
@@ -735,7 +735,7 @@ impl SidePanel {
             UiEvent::Delete if kind == SidePanelKind::Lines => {
                 let mut line_ids: Vec<u64> = self.selected.iter().copied().collect();
                 if line_ids.is_empty() && !self.keyboard_close {
-                    if let Some(line) = project.line_at(self.keyboard_row) {
+                    if let Some(line) = chrono_line(project, self.keyboard_row) {
                         line_ids.push(line.id);
                     }
                 }
@@ -749,7 +749,7 @@ impl SidePanel {
             UiEvent::Copy | UiEvent::Cut if kind == SidePanelKind::Lines => {
                 let mut line_ids: Vec<u64> = self.selected.iter().copied().collect();
                 if line_ids.is_empty() && !self.keyboard_close {
-                    if let Some(line) = project.line_at(self.keyboard_row) {
+                    if let Some(line) = chrono_line(project, self.keyboard_row) {
                         line_ids.push(line.id);
                     }
                 }
@@ -781,7 +781,7 @@ impl SidePanel {
         }
         match self.kind {
             Some(SidePanelKind::Lines) => {
-                let Some(line) = project.line_at(self.keyboard_row) else {
+                let Some(line) = chrono_line(project, self.keyboard_row) else {
                     return EventResponse::Consumed;
                 };
                 if !self.selected.contains(&line.id) {
@@ -966,7 +966,8 @@ impl SidePanel {
                         }
                         return Some(EventResponse::Consumed);
                     }
-                    self.role_picker = Some((mx, my));
+                    self.role_picker =
+                        Some(role_picker_origin(mx, my, panel, roles(project).len()));
                     self.role_picker_scroll = 0;
                     return Some(EventResponse::Consumed);
                 }
@@ -1054,7 +1055,7 @@ impl SidePanel {
         let index = self.scroll + row;
         match kind {
             SidePanelKind::Lines => {
-                let Some(line) = project.line_at(index) else {
+                let Some(line) = chrono_line(project, index) else {
                     return Some(EventResponse::Consumed);
                 };
                 let id = line.id;
@@ -1087,7 +1088,8 @@ impl SidePanel {
                     let anchor = self.selection_anchor.unwrap_or(index);
                     self.selected.clear();
                     for line in project
-                        .lines()
+                        .lines_chronological()
+                        .into_iter()
                         .skip(anchor.min(index))
                         .take(anchor.abs_diff(index) + 1)
                     {
@@ -1324,8 +1326,9 @@ impl SidePanel {
                     0.0,
                 );
                 let visible = visible_rows(panel);
+                let ordered = project.lines_chronological();
                 for row in 0..visible {
-                    let Some(line) = project.line_at(self.scroll + row) else {
+                    let Some(line) = ordered.get(self.scroll + row).copied() else {
                         break;
                     };
                     let rr = row_rect(panel, row);
@@ -1728,6 +1731,28 @@ fn role_picker_geometry(x: f32, y: f32, item_count: usize) -> (Rect, usize) {
     )
 }
 
+/// Places the role picker at the menu anchor, flipping it upwards when it
+/// would run past the bottom of the panel (lines at the end of the table).
+fn role_picker_origin(x: f32, y: f32, panel: Rect, item_count: usize) -> (f32, f32) {
+    let (picker, _) = role_picker_geometry(x, y, item_count);
+    let bottom = panel.y + panel.height - 4.0;
+    let y = if y + picker.height > bottom {
+        (bottom - picker.height).max(panel.y + 4.0)
+    } else {
+        y
+    };
+    let x = x
+        .min(panel.x + panel.width - picker.width - 4.0)
+        .max(panel.x + 4.0);
+    (x, y)
+}
+
+/// Row `index` of the lines table, which lists lines in film order rather
+/// than in creation order.
+fn chrono_line(project: &Project, index: usize) -> Option<&crate::rythmo_line::RythmoLine> {
+    project.lines_chronological().get(index).copied()
+}
+
 fn pointer_down_position(event: &UiEvent) -> Option<(f32, f32)> {
     match event {
         UiEvent::MousePress { x, y }
@@ -1881,6 +1906,21 @@ fn label<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn role_picker_opens_upwards_at_the_bottom_of_the_panel() {
+        let panel = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 320.0,
+            height: 600.0,
+        };
+        let (x, y) = role_picker_origin(250.0, 560.0, panel, 12);
+        let (picker, _) = role_picker_geometry(x, y, 12);
+        assert!(picker.y + picker.height <= panel.y + panel.height);
+        assert!(picker.x + picker.width <= panel.x + panel.width);
+        assert_eq!(role_picker_origin(20.0, 100.0, panel, 12), (20.0, 100.0));
+    }
 
     #[test]
     fn opening_a_panel_replaces_the_previous_one() {

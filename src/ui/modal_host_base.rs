@@ -705,6 +705,9 @@ impl ModalHost {
                 highlight_read_word,
                 scrolling_text_uses_character_color,
                 show_text_emotion_lanes,
+                show_timecode,
+                start_timecode,
+                waveform_height,
             } => {
                 self.project_settings = None;
                 action_closed_modal(
@@ -716,6 +719,9 @@ impl ModalHost {
                         highlight_read_word,
                         scrolling_text_uses_character_color,
                         show_text_emotion_lanes,
+                        show_timecode,
+                        start_timecode,
+                        waveform_height,
                     },
                     crate::i18n::t("project_settings.title"),
                 )
@@ -1731,6 +1737,9 @@ impl ModalHost {
         highlight_read_word: bool,
         scrolling_text_uses_character_color: bool,
         show_text_emotion_lanes: bool,
+        show_timecode: bool,
+        start_timecode: String,
+        waveform_height: f32,
     ) {
         self.project_settings = Some(super::project_settings_modal::ProjectSettingsModal::new(
             fonts,
@@ -1741,6 +1750,9 @@ impl ModalHost {
             highlight_read_word,
             scrolling_text_uses_character_color,
             show_text_emotion_lanes,
+            show_timecode,
+            start_timecode,
+            waveform_height,
         ));
     }
 

@@ -1183,8 +1183,9 @@ mod tests {
         let next_track = rythmo_layout::track_for_index(&layouts, 2).unwrap();
 
         let karaoke_y =
-            zone.y + constants::RULER_HEIGHT + karaoke_track.top + karaoke_track.total_h - 1.0;
-        let next_y = zone.y + constants::RULER_HEIGHT + next_track.top + 1.0;
+            zone.y + crate::config::waveform_height() + karaoke_track.top + karaoke_track.total_h
+                - 1.0;
+        let next_y = zone.y + crate::config::waveform_height() + next_track.top + 1.0;
 
         assert_eq!(y_to_slot(&project, karaoke_y, &zone), 0.25);
         assert_eq!(y_to_slot(&project, next_y, &zone), 0.5);
@@ -2221,6 +2222,7 @@ pub fn render_rythmo_base(
         zone.width,
         fps,
     );
+    crate::config::set_waveform_height(project.settings().waveform_height);
     let mut quads = Vec::new();
 
     // Waveform (rendered first, behind playhead)
@@ -2232,7 +2234,7 @@ pub fn render_rythmo_base(
     };
     if !waveform.is_empty() {
         let subs = 4usize; // must match WAVEFORM_SUBDIVISIONS in video.rs
-        let ruler_h = constants::RULER_HEIGHT;
+        let ruler_h = crate::config::waveform_height();
         let sub_ppf = ppf() / subs as f32; // pixels per sub-frame
         let bar_w = sub_ppf.max(1.0);
         let visible_frames = (zone.width / ppf()) as i64 + 4;
@@ -2330,7 +2332,7 @@ pub fn render_rythmo_base(
             }
         }
     } else if waveform_is_instrumental {
-        let ruler_h = constants::RULER_HEIGHT;
+        let ruler_h = crate::config::waveform_height();
         let bar_w = 3.0;
         let step = 8.0;
         let mut x = zone.x;
@@ -2358,7 +2360,7 @@ pub fn render_rythmo_base(
 
     if state.audio_offset_mode {
         quads.push(QuadInstance {
-            rect: [zone.x, zone.y, zone.width, constants::RULER_HEIGHT],
+            rect: [zone.x, zone.y, zone.width, crate::config::waveform_height()],
             color: [1.0, 0.55, 0.10, 0.10],
             color_bottom: [1.0, 0.55, 0.10, 0.10],
             border_color: [1.0, 0.62, 0.18, 0.9],
@@ -5055,7 +5057,7 @@ pub fn render_markers<'a>(
                     quads,
                     left,
                     right,
-                    zone.y + constants::RULER_HEIGHT + 3.0,
+                    zone.y + crate::config::waveform_height() + 3.0,
                     diagnostic.severity,
                 );
             }
@@ -5127,9 +5129,16 @@ pub fn render_markers<'a>(
                     rotation: -pi4,
                     _padding: [0.0; 2],
                 });
-                let number = project.markers()[..marker_index]
+                // Loops are numbered in film order, not in creation order.
+                let number = project
+                    .markers()
                     .iter()
-                    .filter(|marker| matches!(marker.kind, MarkerKind::Boucle))
+                    .enumerate()
+                    .filter(|(index, other)| {
+                        matches!(other.kind, MarkerKind::Boucle)
+                            && (other.frame < marker.frame
+                                || (other.frame == marker.frame && *index < marker_index))
+                    })
                     .count()
                     + 1;
                 labels.push(LabelInfo {
@@ -5237,7 +5246,7 @@ pub fn render_markers<'a>(
             MarkerKind::LiaisonLeft => {
                 let uv = liaison_left_uv;
                 liaison_icons.push(IconInstance {
-                    rect: [x - 8.0, zone.y, 16.0, constants::RULER_HEIGHT],
+                    rect: liaison_icon_rect(x, zone),
                     uv_rect: uv,
                     tint: crate::band_visuals::LIAISON_MARKER_TINT,
                     transform: [0.0, 0.0, 0.5, 0.5],
@@ -5246,7 +5255,7 @@ pub fn render_markers<'a>(
             MarkerKind::LiaisonRight => {
                 let uv = liaison_right_uv;
                 liaison_icons.push(IconInstance {
-                    rect: [x - 8.0, zone.y, 16.0, constants::RULER_HEIGHT],
+                    rect: liaison_icon_rect(x, zone),
                     uv_rect: uv,
                     tint: crate::band_visuals::LIAISON_MARKER_TINT,
                     transform: [0.0, 0.0, 0.5, 0.5],
@@ -5254,6 +5263,14 @@ pub fn render_markers<'a>(
             }
         }
     }
+}
+
+/// Liaison icons keep their size and sit at the bottom of the waveform strip,
+/// whatever its height.
+fn liaison_icon_rect(x: f32, zone: &Rect) -> [f32; 4] {
+    let strip = crate::config::waveform_height();
+    let height = constants::RULER_HEIGHT.min(strip);
+    [x - 8.0, zone.y + strip - height, 16.0, height]
 }
 
 fn loop_number_label(number: usize) -> &'static str {
@@ -5362,7 +5379,7 @@ pub fn lint_zone_diagnostics(
     cursor_x: f32,
     cursor_y: f32,
 ) -> Vec<crate::lint::Diagnostic> {
-    let wave_y = zone.y + constants::RULER_HEIGHT + 3.0;
+    let wave_y = zone.y + crate::config::waveform_height() + 3.0;
     if (cursor_y - wave_y).abs() > 7.0 {
         return Vec::new();
     }
