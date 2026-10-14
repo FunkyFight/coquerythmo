@@ -743,10 +743,7 @@ pub fn ratios_after_text_edit(
             } else {
                 (run_end < ratios.len()).then_some(run_end)
             };
-            let group = donor
-                .into_iter()
-                .chain(index..run_end)
-                .collect::<Vec<_>>();
+            let group = donor.into_iter().chain(index..run_end).collect::<Vec<_>>();
             let total = donor.and_then(|donor| ratios[donor]).unwrap_or(1.0);
             let chars: f32 = group.iter().map(|member| segment_chars(*member)).sum();
             for member in group {
@@ -1141,7 +1138,10 @@ mod tests {
             let count = ratios.len();
             assert_eq!(count, syllable_breaks(text, lang).len() + 1);
             assert!((ratios[0] - 0.2).abs() < 0.001, "{text}: {ratios:?}");
-            assert!((ratios[count - 1] - 0.3).abs() < 0.001, "{text}: {ratios:?}");
+            assert!(
+                (ratios[count - 1] - 0.3).abs() < 0.001,
+                "{text}: {ratios:?}"
+            );
         }
         assert_eq!(ratios.len(), 4);
         // Deleting the letters gives the slot back to the word.
