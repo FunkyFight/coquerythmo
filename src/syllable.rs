@@ -566,8 +566,9 @@ fn adapted_ratios_for_breaks(
     }
 
     // Where the saved syllables started in the text: the syllabification of
-    // another language when one matches (the band's language was changed),
-    // otherwise evenly spread over the text (the text itself was changed).
+    // another language when one matches (the band's language was changed
+    // before the timings were converted), otherwise evenly spread over the
+    // text (the text itself was changed).
     let source_breaks = SYLLABLE_LANGUAGE_CODES
         .iter()
         .map(|code| syllable_breaks(text, code))
@@ -577,6 +578,50 @@ fn adapted_ratios_for_breaks(
                 .map(|index| index * char_count / saved_ratios.len())
                 .collect()
         });
+    warp_ratios_to_breaks(text, saved_ratios, &source_breaks, breaks)
+}
+
+/// Saved timings of `text` syllabified in `from`, expressed for its syllables
+/// in `to`: every letter keeps its place in time, only the boundaries move.
+/// `None` when nothing valid was saved for the `from` syllables.
+pub fn ratios_for_other_language(
+    text: &str,
+    saved_ratios: &[f32],
+    from: &str,
+    to: &str,
+) -> Option<Vec<f32>> {
+    if from == to || text.is_empty() {
+        return None;
+    }
+    let source_breaks = syllable_breaks(text, from);
+    let target_breaks = syllable_breaks(text, to);
+    if source_breaks == target_breaks {
+        return None;
+    }
+    if saved_ratios.len() != source_breaks.len() + 1
+        || !saved_ratios
+            .iter()
+            .all(|ratio| ratio.is_finite() && *ratio > 0.0)
+    {
+        return None;
+    }
+    if target_breaks.is_empty() {
+        return Some(vec![1.0]);
+    }
+    warp_ratios_to_breaks(text, saved_ratios, &source_breaks, &target_breaks)
+}
+
+fn warp_ratios_to_breaks(
+    text: &str,
+    saved_ratios: &[f32],
+    source_breaks: &[usize],
+    breaks: &[usize],
+) -> Option<Vec<f32>> {
+    let char_count = text.chars().count();
+    if char_count == 0 || saved_ratios.is_empty() {
+        return None;
+    }
+    let count = breaks.len() + 1;
 
     // Piecewise-linear map from text position to timing position.
     let saved = normalized_ratios(saved_ratios);
@@ -616,31 +661,80 @@ fn adapted_ratios_for_breaks(
     Some(normalized_ratios(&ratios))
 }
 
+/// A syllable slot kept empty after its text was erased, so that typing there
+/// again takes the slot back as it was instead of carving a new one out of a
+/// neighbour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReservedSlot {
+    /// Index, in the current text, of the syllable the slot sits after.
+    pub after_segment: usize,
+    /// Share of the line the slot keeps.
+    pub ratio: f32,
+}
+
+/// Saved karaoke timings after a text edit, and the slot the edit left empty.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextEditTimings {
+    pub ratios: Vec<f32>,
+    /// Slot of the syllables the edit erased (none typed in their place), or
+    /// an earlier reservation the edit did not use, moved to its new place.
+    pub reserved: Option<ReservedSlot>,
+}
+
+/// Char index of the end of syllable `index` of `text`.
+pub fn syllable_end(text: &str, lang: &str, index: usize) -> usize {
+    syllable_breaks(text, lang)
+        .get(index)
+        .copied()
+        .unwrap_or_else(|| text.chars().count())
+}
+
 /// Saved karaoke timings after the text of a line changed from `old_text` to
-/// `new_text`.
-///
-/// Syllables the edit did not touch keep their exact timing; the syllables it
-/// created or changed share the slot of the ones it replaced (a word going
-/// from one syllable to two is split inside its own slot), and brand-new
-/// syllables are cut out of the slot of the syllable next to them. Returns
-/// `None` when no timing was saved, so untouched lines keep their default
-/// timing.
+/// `new_text`: see [`timings_after_text_edit`].
 pub fn ratios_after_text_edit(
     old_text: &str,
     new_text: &str,
     saved_ratios: &[f32],
     lang: &str,
 ) -> Option<Vec<f32>> {
+    timings_after_text_edit(old_text, new_text, saved_ratios, lang, None).map(|t| t.ratios)
+}
+
+/// Saved karaoke timings after the text of a line changed from `old_text` to
+/// `new_text`.
+///
+/// Syllables the edit did not touch keep their exact timing; the syllables it
+/// created or changed share the slot of the ones they replace (a word going
+/// from one syllable to two is split inside its own slot), and brand-new
+/// syllables are cut out of the slot of the syllable next to them. Erasing
+/// whole syllables gives their slot to the syllable before, and reports it as
+/// `reserved`: passed back on the next edit, typing there again takes the
+/// whole slot back. Returns `None` when no timing was saved, so untouched
+/// lines keep their default timing.
+pub fn timings_after_text_edit(
+    old_text: &str,
+    new_text: &str,
+    saved_ratios: &[f32],
+    lang: &str,
+    reserved: Option<ReservedSlot>,
+) -> Option<TextEditTimings> {
     let old_breaks = syllable_breaks(old_text, lang);
     let old_ratios = adapted_ratios_for_breaks(old_text, saved_ratios, &old_breaks)
         .or_else(|| (old_breaks.is_empty() && !saved_ratios.is_empty()).then(|| vec![1.0]))?;
     if old_text == new_text {
-        return Some(saved_ratios.to_vec());
+        return Some(TextEditTimings {
+            ratios: saved_ratios.to_vec(),
+            reserved,
+        });
     }
     let new_breaks = syllable_breaks(new_text, lang);
     if new_breaks.is_empty() {
-        return Some(vec![1.0]);
+        return Some(TextEditTimings {
+            ratios: vec![1.0],
+            reserved: None,
+        });
     }
+    let reserved = reserved.filter(|slot| slot.after_segment < old_ratios.len());
 
     let old_chars = old_text.chars().collect::<Vec<_>>();
     let new_chars = new_text.chars().collect::<Vec<_>>();
@@ -669,15 +763,17 @@ pub fn ratios_after_text_edit(
             .collect::<Vec<_>>()
     };
     // Untouched old syllables, expressed in the new text.
-    let kept_old = segments(&old_breaks, old_chars.len())
-        .into_iter()
-        .zip(old_ratios.iter().copied())
-        .filter_map(|((start, end), ratio)| {
+    let old_segments = segments(&old_breaks, old_chars.len());
+    let kept_old = old_segments
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(old_index, (start, end))| {
             if end <= prefix {
-                Some(((start, end), ratio))
+                Some((old_index, (start, end)))
             } else if start >= old_edit_end {
                 let moved = |index: usize| (index as isize + shift) as usize;
-                Some(((moved(start), moved(end)), ratio))
+                Some((old_index, (moved(start), moved(end))))
             } else {
                 None
             }
@@ -685,18 +781,23 @@ pub fn ratios_after_text_edit(
         .collect::<Vec<_>>();
 
     let new_segments = segments(&new_breaks, new_chars.len());
-    let mut ratios = vec![None; new_segments.len()];
+    let mut ratios: Vec<Option<f32>> = vec![None; new_segments.len()];
+    // Old syllable each new syllable is the untouched copy of.
+    let mut origin: Vec<Option<usize>> = vec![None; new_segments.len()];
     let mut used_old = vec![false; kept_old.len()];
     for (index, segment) in new_segments.iter().enumerate() {
-        if let Some(old_index) = kept_old
+        if let Some(kept_index) = kept_old
             .iter()
             .enumerate()
-            .position(|(old_index, (old, _))| !used_old[old_index] && old == segment)
+            .position(|(kept_index, (_, span))| !used_old[kept_index] && span == segment)
         {
-            used_old[old_index] = true;
-            ratios[index] = Some(kept_old[old_index].1);
+            used_old[kept_index] = true;
+            let old_index = kept_old[kept_index].0;
+            origin[index] = Some(old_index);
+            ratios[index] = Some(old_ratios[old_index]);
         }
     }
+    let new_index_of = |old_index: usize| origin.iter().position(|o| *o == Some(old_index));
 
     // The edited syllables only share the time of the ones they replace, so
     // the rest of the line never moves: a syllable cut in two is split inside
@@ -707,11 +808,19 @@ pub fn ratios_after_text_edit(
         let (start, end) = new_segments[index];
         (end - start).max(1) as f32
     };
+    let share_by_chars = |ratios: &mut Vec<Option<f32>>, members: &[usize], total: f32| {
+        let chars: f32 = members.iter().map(|index| segment_chars(*index)).sum();
+        for member in members {
+            ratios[*member] = Some((total * segment_chars(*member) / chars).max(0.001));
+        }
+    };
     let changed = (0..ratios.len())
         .filter(|index| ratios[*index].is_none())
         .collect::<Vec<_>>();
+    let mut next_reserved = None;
     if changed.is_empty() {
-        // Deleted syllables give their time to the syllable before the edit.
+        // Erased syllables give their time to the syllable before the edit,
+        // which keeps it in reserve for whatever is typed there next.
         if replaced_total > f32::EPSILON {
             let receiver = new_segments
                 .iter()
@@ -720,15 +829,106 @@ pub fn ratios_after_text_edit(
             if let Some(ratio) = ratios[receiver].as_mut() {
                 *ratio += replaced_total;
             }
+            let carried = reserved
+                .filter(|slot| new_index_of(slot.after_segment) == Some(receiver))
+                .map_or(0.0, |slot| slot.ratio);
+            next_reserved = Some(ReservedSlot {
+                after_segment: receiver,
+                ratio: replaced_total + carried,
+            });
+        } else if let Some(slot) = reserved {
+            next_reserved = new_index_of(slot.after_segment).map(|after_segment| ReservedSlot {
+                after_segment,
+                ..slot
+            });
         }
     } else if replaced_total > 0.000_1 {
-        let chars: f32 = changed.iter().map(|index| segment_chars(*index)).sum();
-        for index in &changed {
-            ratios[*index] = Some((replaced_total * segment_chars(*index) / chars).max(0.001));
+        // Syllables the edit touched share the slot of the ones they replace.
+        // When the syllable holding a reserved slot is among them, what is
+        // typed after it takes the reserved slot and the rest keeps its own.
+        let donor_touched = reserved.filter(|slot| new_index_of(slot.after_segment).is_none());
+        let (continuation, fresh): (Vec<usize>, Vec<usize>) = changed
+            .iter()
+            .copied()
+            .partition(|index| new_segments[*index].0 < prefix);
+        // Erasing whole syllables (nothing but spaces typed in their place)
+        // keeps their slot in reserve after the syllable before them, even
+        // when that one absorbed the space they left.
+        let new_edit_end = new_chars.len() - suffix;
+        let inserted_blank = new_chars[prefix..new_edit_end]
+            .iter()
+            .all(|character| character.is_whitespace());
+        let erased_total: f32 = if inserted_blank {
+            old_segments
+                .iter()
+                .enumerate()
+                .filter(|(old_index, _)| !origin.contains(&Some(*old_index)))
+                .filter(|(_, (start, end))| {
+                    old_chars[*start..*end]
+                        .iter()
+                        .enumerate()
+                        .all(|(offset, character)| {
+                            character.is_whitespace()
+                                || (prefix..old_edit_end).contains(&(start + offset))
+                        })
+                })
+                .map(|(old_index, _)| old_ratios[old_index])
+                .sum()
+        } else {
+            0.0
+        };
+        if erased_total > f32::EPSILON && fresh.is_empty() {
+            share_by_chars(&mut ratios, &changed, replaced_total - erased_total);
+            let receiver = continuation.last().copied().unwrap_or_else(|| {
+                new_segments
+                    .iter()
+                    .rposition(|(start, _)| *start < prefix.max(1))
+                    .unwrap_or(0)
+            });
+            if let Some(ratio) = ratios[receiver].as_mut() {
+                *ratio += erased_total;
+            }
+            let carried = reserved
+                .filter(|slot| {
+                    donor_touched.is_some() || new_index_of(slot.after_segment) == Some(receiver)
+                })
+                .map_or(0.0, |slot| slot.ratio);
+            next_reserved = Some(ReservedSlot {
+                after_segment: receiver,
+                ratio: erased_total + carried,
+            });
+        } else {
+            match donor_touched {
+                Some(slot) if !fresh.is_empty() && !continuation.is_empty() => {
+                    let fresh_total = slot
+                        .ratio
+                        .min(replaced_total - 0.001 * continuation.len() as f32);
+                    share_by_chars(&mut ratios, &continuation, replaced_total - fresh_total);
+                    share_by_chars(&mut ratios, &fresh, fresh_total);
+                }
+                Some(slot) if !continuation.is_empty() => {
+                    share_by_chars(&mut ratios, &changed, replaced_total);
+                    next_reserved = Some(ReservedSlot {
+                        after_segment: *continuation.last().unwrap_or(&0),
+                        ratio: slot.ratio.min(replaced_total),
+                    });
+                }
+                _ => {
+                    share_by_chars(&mut ratios, &changed, replaced_total);
+                    next_reserved = reserved.and_then(|slot| {
+                        new_index_of(slot.after_segment).map(|after_segment| ReservedSlot {
+                            after_segment,
+                            ..slot
+                        })
+                    });
+                }
+            }
         }
     } else {
-        // Brand-new syllables only: they are cut out of the slot of the
-        // neighbouring syllable (the one before, or after at the start).
+        // Brand-new syllables only: they take the slot reserved after their
+        // neighbour when there is one, else they are cut out of the slot of
+        // the neighbouring syllable (the one before, or after at the start).
+        let mut reserved_left = reserved;
         let mut index = 0;
         while index < ratios.len() {
             if ratios[index].is_some() {
@@ -743,21 +943,42 @@ pub fn ratios_after_text_edit(
             } else {
                 (run_end < ratios.len()).then_some(run_end)
             };
-            let group = donor.into_iter().chain(index..run_end).collect::<Vec<_>>();
-            let total = donor.and_then(|donor| ratios[donor]).unwrap_or(1.0);
-            let chars: f32 = group.iter().map(|member| segment_chars(*member)).sum();
-            for member in group {
-                ratios[member] = Some((total * segment_chars(member) / chars).max(0.001));
+            let fresh = (index..run_end).collect::<Vec<_>>();
+            let reserved_here = reserved_left
+                .filter(|slot| donor.and_then(|donor| origin[donor]) == Some(slot.after_segment));
+            if let (Some(slot), Some(donor)) = (reserved_here, donor) {
+                let donor_ratio = ratios[donor].unwrap_or(1.0);
+                let taken = slot.ratio.min(donor_ratio - 0.001).max(0.0);
+                ratios[donor] = Some(donor_ratio - taken);
+                share_by_chars(&mut ratios, &fresh, taken);
+                reserved_left = None;
+            } else {
+                let group = donor.into_iter().chain(fresh).collect::<Vec<_>>();
+                let total = donor.and_then(|donor| ratios[donor]).unwrap_or(1.0);
+                share_by_chars(&mut ratios, &group, total);
             }
             index = run_end;
         }
+        next_reserved = reserved_left.and_then(|slot| {
+            new_index_of(slot.after_segment).map(|after_segment| ReservedSlot {
+                after_segment,
+                ..slot
+            })
+        });
     }
-    Some(normalized_ratios(
+    let ratios = normalized_ratios(
         &ratios
             .into_iter()
             .map(|ratio| ratio.unwrap_or(0.001))
             .collect::<Vec<_>>(),
-    ))
+    );
+    let reserved = next_reserved.filter(|slot| {
+        slot.ratio > 0.001
+            && ratios
+                .get(slot.after_segment)
+                .is_some_and(|ratio| *ratio > slot.ratio)
+    });
+    Some(TextEditTimings { ratios, reserved })
 }
 
 pub fn active_syllable_local_progress(ratios: &[f32], progress: f32) -> Option<f32> {
@@ -1151,6 +1372,133 @@ mod tests {
     }
 
     #[test]
+    fn erasing_a_word_reserves_its_slot_and_retyping_takes_it_back() {
+        let lang = "en-us";
+        let text = "Well I lost my phone";
+        assert_eq!(syllable_breaks(text, lang).len() + 1, 5);
+        let saved = [0.3, 0.05, 0.25, 0.1, 0.3];
+
+        // Erase "lost" (one selection, one keystroke).
+        let erased = timings_after_text_edit(text, "Well I  my phone", &saved, lang, None).unwrap();
+        assert_eq!(erased.ratios.len(), 4);
+        let slot = erased
+            .reserved
+            .expect("the erased word leaves a reserved slot");
+        assert_eq!(slot.after_segment, 1);
+        assert!((slot.ratio - 0.25).abs() < 0.001, "{slot:?}");
+        assert!(
+            (erased.ratios[1] - 0.30).abs() < 0.001,
+            "{:?}",
+            erased.ratios
+        );
+        assert!(
+            (erased.ratios[2] - 0.10).abs() < 0.001,
+            "{:?}",
+            erased.ratios
+        );
+
+        // Type "perdu" letter by letter in the gap: it takes the slot back and
+        // nothing else moves.
+        let mut current = "Well I  my phone".to_string();
+        let mut ratios = erased.ratios.clone();
+        let mut reserved = erased.reserved;
+        for word in ["p", "pe", "per", "perd", "perdu"] {
+            let next = format!("Well I {word} my phone");
+            let timings =
+                timings_after_text_edit(&current, &next, &ratios, lang, reserved).unwrap();
+            ratios = timings.ratios;
+            reserved = timings.reserved;
+            current = next;
+            let count = ratios.len();
+            assert!((ratios[0] - 0.3).abs() < 0.001, "{current}: {ratios:?}");
+            assert!((ratios[1] - 0.05).abs() < 0.001, "{current}: {ratios:?}");
+            assert!(
+                (ratios[count - 2] - 0.1).abs() < 0.001,
+                "{current}: {ratios:?}"
+            );
+            assert!(
+                (ratios[count - 1] - 0.3).abs() < 0.001,
+                "{current}: {ratios:?}"
+            );
+            assert!(reserved.is_none(), "{current}: {reserved:?}");
+        }
+        assert_eq!(ratios.len(), 6);
+        assert!((ratios[2] + ratios[3] - 0.25).abs() < 0.001, "{ratios:?}");
+
+        // Without the reservation the new word is cut out of its neighbour.
+        let unreserved = timings_after_text_edit(
+            "Well I  my phone",
+            "Well I p my phone",
+            &erased.ratios,
+            lang,
+            None,
+        )
+        .unwrap();
+        assert!((unreserved.ratios[1] + unreserved.ratios[2] - 0.30).abs() < 0.001);
+        assert!(unreserved.ratios[2] < 0.25);
+    }
+
+    #[test]
+    fn typing_a_space_on_a_reserved_slot_keeps_it() {
+        let lang = "fr-fr";
+        let erased =
+            timings_after_text_edit("le chat dort", "le  dort", &[0.2, 0.5, 0.3], lang, None)
+                .unwrap();
+        let slot = erased.reserved.unwrap();
+        let spaced = timings_after_text_edit(
+            "le  dort",
+            "le   dort",
+            &erased.ratios,
+            lang,
+            erased.reserved,
+        )
+        .unwrap();
+        let kept = spaced.reserved.expect("a space does not spend the slot");
+        assert_eq!(kept.after_segment, slot.after_segment);
+        assert!((kept.ratio - slot.ratio).abs() < 0.001);
+    }
+
+    #[test]
+    fn changing_the_syllable_language_keeps_every_letter_in_place() {
+        let text = "tambourine magnifique";
+        let french = syllable_breaks(text, "fr-fr");
+        let english = syllable_breaks(text, "en-us");
+        assert_ne!(french, english);
+        let mut saved = vec![1.0; french.len() + 1];
+        saved[0] = 10.0;
+        let saved = normalized_ratios(&saved);
+
+        let converted = ratios_for_other_language(text, &saved, "fr-fr", "en-us").unwrap();
+        assert_eq!(converted.len(), english.len() + 1);
+        // A boundary both languages share keeps its time; one the new language
+        // adds falls where the letter was inside the old syllable.
+        let char_count = text.chars().count() as f32;
+        let time_at = |breaks: &[usize], ratios: &[f32], boundary: usize| -> f32 {
+            let mut time = 0.0;
+            let mut start = 0usize;
+            for (index, ratio) in ratios.iter().enumerate() {
+                let end = breaks.get(index).copied().unwrap_or(char_count as usize);
+                if boundary <= end {
+                    return time + ratio * (boundary - start) as f32 / (end - start).max(1) as f32;
+                }
+                time += ratio;
+                start = end;
+            }
+            1.0
+        };
+        for boundary in &english {
+            let before = time_at(&french, &saved, *boundary);
+            let after = time_at(&english, &converted, *boundary);
+            assert!(
+                (before - after).abs() < 0.001,
+                "{boundary}: {before} vs {after}"
+            );
+        }
+        assert!(ratios_for_other_language(text, &saved, "fr-fr", "fr-fr").is_none());
+        assert!(ratios_for_other_language(text, &[0.5, 0.5], "fr-fr", "en-us").is_none());
+    }
+
+    #[test]
     fn extending_a_syllable_keeps_its_time_and_the_others() {
         let saved = [0.5, 0.2, 0.3];
         let ratios =
@@ -1233,4 +1581,3 @@ mod tests {
         assert!(!split.second_text.starts_with('-'));
     }
 }
-

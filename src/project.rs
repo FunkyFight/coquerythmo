@@ -1008,6 +1008,11 @@ impl Project {
 
         let mut band = self.current_band_snapshot();
         band.settings.syllable_language = SyllableLanguage::from_code(&language.code);
+        Self::convert_syllable_timings(
+            &mut band.line_map,
+            self.settings.syllable_language,
+            band.settings.syllable_language,
+        );
         band.settings.instrumental_audio_path = None;
         band.settings.instrumental_audio_offset_frames = 0;
         band.settings.export_configuration = global_export_configuration;
@@ -1104,7 +1109,9 @@ impl Project {
             if self.settings.syllable_language == language {
                 return false;
             }
+            let previous = self.settings.syllable_language;
             self.settings.syllable_language = language;
+            Self::convert_syllable_timings(&mut self.line_map, previous, language);
             self.bump_revision();
             return true;
         }
@@ -1115,10 +1122,32 @@ impl Project {
         if snapshot.band.settings.syllable_language == language {
             return false;
         }
+        let previous = snapshot.band.settings.syllable_language;
         snapshot.band.settings.syllable_language = language;
+        Self::convert_syllable_timings(&mut snapshot.band.line_map, previous, language);
         snapshot.band.revision = snapshot.band.revision.wrapping_add(1);
         self.bump_revision();
         true
+    }
+
+    /// Keeps the syllable timings of every line when the band's syllable
+    /// language changes: each letter stays where it was in time, only the
+    /// syllable boundaries move to the new language's.
+    fn convert_syllable_timings(
+        lines: &mut HashMap<u64, RythmoLine>,
+        from: SyllableLanguage,
+        to: SyllableLanguage,
+    ) {
+        for line in lines.values_mut() {
+            if let Some(ratios) = crate::syllable::ratios_for_other_language(
+                &line.text,
+                &line.syllable_ratios,
+                from.code(),
+                to.code(),
+            ) {
+                line.syllable_ratios = ratios;
+            }
+        }
     }
 
     pub fn set_language_instrumental_audio_path(
@@ -2986,6 +3015,40 @@ mod tests {
             project.get_line(line_id).unwrap().syllable_ratios,
             vec![0.4, 0.6]
         );
+    }
+
+    #[test]
+    fn changing_the_syllable_language_converts_calibrated_timings() {
+        let mut project = Project::new_with_language("Français", "fr-fr");
+        let text = "tambourine magnifique";
+        let line_id = project.add_line_full(0, 48, 0.5, text.into(), "A".into(), [1.0; 4]);
+        let french_count = crate::syllable::syllable_count(text, "fr-fr");
+        let english_count = crate::syllable::syllable_count(text, "en-us");
+        assert_ne!(french_count, english_count);
+        let mut saved = vec![1.0; french_count];
+        saved[0] = 10.0;
+        project.get_line_mut(line_id).unwrap().syllable_ratios = saved.clone();
+        let french_id = project.active_language_id();
+
+        assert!(project.set_language_syllable_language(french_id, SyllableLanguage::English));
+        let converted = project.get_line(line_id).unwrap().syllable_ratios.clone();
+        assert_eq!(converted.len(), english_count);
+        assert_eq!(
+            converted,
+            crate::syllable::ratios_for_other_language(text, &saved, "fr-fr", "en-us").unwrap()
+        );
+
+        // A band duplicated into another language converts its copy too, and
+        // leaves the source band alone.
+        assert!(project.set_language_syllable_language(french_id, SyllableLanguage::French));
+        project.get_line_mut(line_id).unwrap().syllable_ratios = saved.clone();
+        project.create_language("English", "en");
+        assert_eq!(
+            project.get_line(line_id).unwrap().syllable_ratios.len(),
+            english_count
+        );
+        assert!(project.select_language(french_id));
+        assert_eq!(project.get_line(line_id).unwrap().syllable_ratios, saved);
     }
 
     #[test]

@@ -147,6 +147,9 @@ pub struct RythmoState {
     pub keyboard_pan_accum_px: f32,
     pub compact_empty_tracks: bool,
     pub syllable_drag: Option<SyllableDrag>,
+    /// Karaoke syllable slot left empty by the last erasure, waiting for the
+    /// text typed in its place (or a second erasure, which confirms).
+    pub slot_reservation: Option<SyllableSlotReservation>,
     pub context_menu: Option<LineContextMenu>,
     pub sync_point_menu: Option<SyncPointMenu>,
     /// Button of the formatting bar under the pointer.
@@ -189,6 +192,17 @@ pub struct SyllableDrag {
     pub line_rect: Rect,
     /// Ctrl+click keeps every boundary before the selected handle fixed.
     pub preserve_prefix: bool,
+}
+
+/// See [`RythmoState::slot_reservation`].
+#[derive(Clone, Debug)]
+pub struct SyllableSlotReservation {
+    pub line_id: u64,
+    /// Text of the line when the slot was reserved: any other text drops it.
+    pub text: String,
+    pub slot: crate::syllable::ReservedSlot,
+    /// Char index of the slot in the text (end of the syllable it follows).
+    pub gap_char: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -309,6 +323,7 @@ impl RythmoState {
             keyboard_pan_accum_px: 0.0,
             compact_empty_tracks: false,
             syllable_drag: None,
+            slot_reservation: None,
             context_menu: None,
             sync_point_menu: None,
             format_toolbar_hover: None,
@@ -782,8 +797,20 @@ impl RythmoState {
         .min()
     }
 
+    /// The slot reserved on `line`, while its text is still the one it was
+    /// reserved on.
+    pub fn slot_reservation_for(
+        &self,
+        line: &crate::rythmo_line::RythmoLine,
+    ) -> Option<&SyllableSlotReservation> {
+        self.slot_reservation.as_ref().filter(|reservation| {
+            reservation.line_id == line.id && line.karaoke && reservation.text == line.text
+        })
+    }
+
     pub fn stop_line_editing(&mut self) {
         self.editing_line = None;
+        self.slot_reservation = None;
         self.sync_caret_segment = None;
         self.line_lowercase_override = false;
         self.line_input.deactivate();
