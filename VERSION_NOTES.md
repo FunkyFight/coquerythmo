@@ -117,8 +117,9 @@ exactement la vidéo exportée.
   syllabes qu’on ne touche pas restent exactement à leur place. Un mot qui
   passe d’une à deux syllabes est coupé en deux dans l’espace qu’il occupait,
   un mot ajouté prend sa place dans celui de la syllabe voisine, et un mot
-  effacé rend son espace à la syllabe d’avant. `Ctrl + Z` rétablit le texte et
-  le calage d’avant.
+  effacé rend son espace à la syllabe d’avant. Une réplique karaoké jamais
+  calée à la main part de la disposition affichée à l’écran. `Ctrl + Z`
+  rétablit le texte et le calage d’avant.
 
 ## Sessions en ligne
 

@@ -57,6 +57,49 @@ enum DialogueSplitTarget {
     Playhead { line_id: u64, progress: f32 },
 }
 
+/// Syllable timings of `line` once its text becomes `new_text`, as
+/// `(before, after)`, or `None` when nothing has to change.
+///
+/// A karaoke line that was never calibrated (karaoke enabled on an empty line,
+/// a split piece, an old project) is laid out as it is displayed, from the
+/// measured glyph widths, so that typing in it moves nothing but the edited
+/// syllables either.
+fn syllable_ratios_after_line_text_edit(
+    line: &crate::rythmo_line::RythmoLine,
+    new_text: &str,
+    lang: &str,
+) -> Option<(Vec<f32>, Vec<f32>)> {
+    if line.text == new_text {
+        return None;
+    }
+    let saved = &line.syllable_ratios;
+    let displayed;
+    let starting_ratios = if line.karaoke
+        && !line.text.is_empty()
+        && crate::syllable::adapted_saved_ratios(&line.text, saved, lang).is_none()
+    {
+        let breaks = crate::syllable::syllable_breaks(&line.text, lang);
+        displayed = if breaks.is_empty() {
+            vec![1.0]
+        } else {
+            let font_size = crate::config::get().ui.font_size * 2.0;
+            crate::vector_text::measure_rythmo_text_char_ratios_standalone(&line.text, font_size)
+                .and_then(|positions| {
+                    crate::syllable::visual_ratios_from_char_positions(
+                        &line.text, &breaks, &positions,
+                    )
+                })
+                .unwrap_or_else(|| crate::syllable::default_ratios_from_breaks(&line.text, &breaks))
+        };
+        &displayed
+    } else {
+        saved
+    };
+    let new_ratios =
+        crate::syllable::ratios_after_text_edit(&line.text, new_text, starting_ratios, lang)?;
+    (&new_ratios != saved).then(|| (saved.clone(), new_ratios))
+}
+
 fn rebase_pasted_start_frame(source_start: i64, source_anchor: i64, target_anchor: i64) -> i64 {
     target_anchor.saturating_add(source_start.saturating_sub(source_anchor))
 }
@@ -305,6 +348,51 @@ mod clipboard_tests {
         assert_eq!(
             rebase_pasted_start_frame(165, source_anchor, playhead),
             playhead + 45
+        );
+    }
+
+    #[test]
+    fn typing_in_an_uncalibrated_karaoke_line_starts_from_its_displayed_layout() {
+        crate::config::init();
+        let mut project = crate::project::Project::new();
+        let line_id =
+            project.add_line_full(0, 48, 0.25, "le chat dort".into(), "A".into(), [1.0; 4]);
+        project.get_line_mut(line_id).unwrap().karaoke = true;
+        let line = project.get_line(line_id).unwrap();
+        assert!(line.syllable_ratios.is_empty());
+
+        let (before, after) =
+            super::syllable_ratios_after_line_text_edit(line, "le chateau dort", "fr-fr").unwrap();
+        assert!(before.is_empty());
+        assert_eq!(after.len(), 4);
+        // "le " and "dort" keep the width they had on screen.
+        let breaks = crate::syllable::syllable_breaks(&line.text, "fr-fr");
+        let displayed = crate::vector_text::measure_rythmo_text_char_ratios_standalone(
+            &line.text,
+            crate::config::get().ui.font_size * 2.0,
+        )
+        .and_then(|positions| {
+            crate::syllable::visual_ratios_from_char_positions(&line.text, &breaks, &positions)
+        })
+        .unwrap_or_else(|| crate::syllable::default_ratios_from_breaks(&line.text, &breaks));
+        assert!(
+            (after[0] - displayed[0]).abs() < 0.001,
+            "{after:?} vs {displayed:?}"
+        );
+        assert!(
+            (after[3] - displayed[2]).abs() < 0.001,
+            "{after:?} vs {displayed:?}"
+        );
+        assert!((after[1] + after[2] - displayed[1]).abs() < 0.001);
+
+        // A plain line without saved timings is left alone.
+        project.get_line_mut(line_id).unwrap().karaoke = false;
+        let line = project.get_line(line_id).unwrap();
+        assert!(
+            super::syllable_ratios_after_line_text_edit(line, "le chateau dort", "fr-fr").is_none()
+        );
+        assert!(
+            super::syllable_ratios_after_line_text_edit(line, "le chat dort", "fr-fr").is_none()
         );
     }
 
@@ -9964,13 +10052,7 @@ impl State {
     ) -> Option<(Vec<f32>, Vec<f32>)> {
         let project = &self.project_session.project;
         let line = project.get_line(id)?;
-        let new_ratios = crate::syllable::ratios_after_text_edit(
-            &line.text,
-            new_text,
-            &line.syllable_ratios,
-            project.syllable_language_code(),
-        )?;
-        (new_ratios != line.syllable_ratios).then(|| (line.syllable_ratios.clone(), new_ratios))
+        syllable_ratios_after_line_text_edit(line, new_text, project.syllable_language_code())
     }
 
     /// Toggles a text style on a line, over `range` or the whole line.
