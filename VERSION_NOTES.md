@@ -1,11 +1,13 @@
-# Comic Dubs Studio
+# 5.4.0
+
+## Comic Dubs Studio
 
 Le mode Comic Dubs devient un vrai petit studio de doublage de BD : on y
 dessine les bulles, on place les plans de caméra case par case, on anime, on
 enregistre et on mixe voix, bruitages et musique, et l’aperçu montre
 exactement la vidéo exportée.
 
-## Plans caméra
+### Plans caméra
 
 - Les cadrages sont désormais des **plans** posés sur la page, autant qu’on
   veut : outil « Plan caméra » dans la barre d’outils (ou « Tracer un plan »
@@ -27,7 +29,7 @@ exactement la vidéo exportée.
   cette bulle ».
 - La timeline a une piste « Plans » ; cliquer un plan le sélectionne.
 
-## Espace de travail
+### Espace de travail
 
 - Barre d’outils au-dessus de la planche avec de vraies icônes et des
   infobulles : Sélection, Bulle ronde, Bulle rectangulaire, Bulle de cri,
@@ -53,7 +55,7 @@ exactement la vidéo exportée.
 - Une ligne d’aide contextuelle au-dessus de la timeline explique l’outil en
   cours.
 
-## Effets
+### Effets
 
 - Apparition des bulles (fondu, pop, zoom, glissements, chute avec rebond),
   bulle entière cachée avant son tour, machine à écrire ou mot par mot,
@@ -65,7 +67,7 @@ exactement la vidéo exportée.
 - Musique de fond en boucle, baissée automatiquement sous les voix, avec fondu
   de fin ; volume et délai de chaque voix, bruitage à l’apparition.
 
-## Timeline et aperçu
+### Timeline et aperçu
 
 - Pistes Pages, Plans, Bulles, Sons et Musique. Glisser sur la règle affiche
   l’image exacte du rendu ; cliquer un bloc sélectionne la bulle ou le plan
@@ -73,7 +75,7 @@ exactement la vidéo exportée.
 - La lecture suit cette timeline : musique, voix et bruitages sont joués
   ensemble, et la bulle suivante n’arrive jamais avant la fin de la voix.
 
-## Export
+### Export
 
 - Le rendu vidéo est recalculé image par image : plans caméra, transitions,
   animations, contours anti-crénelés, ombres, texte en italique et contour du
@@ -86,7 +88,7 @@ exactement la vidéo exportée.
   (TXT) », et import d’un script : une ligne par bulle dans l’ordre de
   lecture, `# Page N` pour se recaler, `-` pour une bulle sans texte.
 
-## Clavier et accessibilité
+### Clavier et accessibilité
 
 - Copier, couper, coller, dupliquer et déplacer les bulles au clavier, bulle
   précédente/suivante avec lecture de son texte, `Suppr` retire la bulle ou le
@@ -97,6 +99,13 @@ exactement la vidéo exportée.
 
 ## Bande rythmo
 
+- **Timecode** : le timecode courant s’affiche dans la barre d’outils de la
+  bande rythmo. Les paramètres de la bande rythmo permettent de le masquer et
+  de régler le timecode de départ du projet (par exemple `01:00:00:00`), qui
+  s’applique aussi aux exports Référence et Grille. Un timecode de départ mal
+  saisi est refusé et l’ancien est conservé.
+- La hauteur de la waveform au-dessus de la bande se règle dans les paramètres
+  de la bande rythmo.
 - Les quatre pistes de la bande ont maintenant toutes la même hauteur, même
   quand une seule contient des lignes karaoké ou des effets de texte, et les
   répliques simples (sans effet de texte ni karaoké) occupent toute la hauteur
@@ -107,37 +116,9 @@ exactement la vidéo exportée.
 - `Espace` lance ou met en pause la lecture dans la bande rythmo même quand un
   onglet, le panneau latéral ou l’arborescence des fichiers a le focus ; seule
   l’écriture dans un champ de texte la garde pour taper une espace.
-- Changer la langue de syllabes d’une bande (ou dupliquer une bande dans une
-  autre langue avec `Ctrl + L`) ne défait plus le calage des syllabes du
-  karaoké ni celui des syllabes entre les points de synchronisation : le
-  calage est converti sur-le-champ vers le découpage de la nouvelle langue,
-  chaque lettre gardant sa place dans le temps ; seules les frontières de
-  syllabes bougent. Les anciens projets dont le calage n’avait pas été
-  converti sont rattrapés à l’affichage.
-- Écrire dans une réplique karaoké déjà calée ne défait plus le calage : les
-  syllabes qu’on ne touche pas restent exactement à leur place. Un mot qui
-  passe d’une à deux syllabes est coupé en deux dans l’espace qu’il occupait,
-  et un mot ajouté prend sa place dans celui de la syllabe voisine. Une
-  réplique karaoké jamais calée à la main part de la disposition affichée à
-  l’écran. `Ctrl + Z` rétablit le texte et le calage d’avant.
-- Effacer un mot (ou une syllabe) d’une réplique karaoké laisse sa case vide
-  et réservée, encadrée par ses poignées : ce qu’on tape à sa place la reprend
-  telle quelle, sans rien déplacer d’autre. Un second `Retour arrière` (ou
-  `Suppr`) sur la case vide confirme la suppression : la case revient à la
-  syllabe d’avant. Les poignées de la ligne ne se déplacent pas tant qu’une
-  case est réservée ; quitter l’édition de la ligne confirme aussi.
-- `Ctrl + T` modifie la ligne sélectionnée **section par section**, sans
-  toucher aux points de synchronisation ni au calage des syllabes du karaoké.
-  Un petit champ de texte apparaît au-dessus de la première section (la
-  section est surlignée sur la bande, un compteur « 1/4 » indique où l’on en
-  est) ; on y tape le nouveau texte, `Entrée` remplace la section et passe à
-  la suivante, `Échap` arrête. Les sections sont les parties comprises entre
-  les points de synchronisation quand la ligne en a, sinon ses mots. Un mot
-  remplacé par un mot du même nombre de syllabes garde exactement le calage
-  de chaque syllabe ; avec un autre nombre, les nouvelles syllabes se
-  partagent le temps de la section. Les limites avant et après la section et
-  les syllabes des autres sections ne bougent pas. Chaque section validée est
-  une étape de `Ctrl + Z`.
+
+## Édition des répliques
+
 - **Dialogues liés** : sélectionnez plusieurs répliques, clic droit sur l’une
   d’elles, « Dialogues liés » puis « Lier les lignes sélectionnées ». Les
   répliques liées partagent ensuite tout sauf leur place sur la bande : texte,
@@ -151,11 +132,66 @@ exactement la vidéo exportée.
   réplique liée ; « Délier » défait le groupe sans toucher aux textes. Les
   liens sont propres à chaque langue de la bande, et une réplique copiée-collée
   n’est jamais liée d’office.
-- En mode karaoké, une réplique collée (`Ctrl + V`) après des répliques créées
-  plus tard dans la chanson pouvait être sautée sur sa rangée : la réplique
+- `Ctrl + T` modifie la ligne sélectionnée **section par section**, sans
+  toucher aux points de synchronisation ni au calage des syllabes du karaoké.
+  Un petit champ de texte apparaît au-dessus de la première section (la
+  section est surlignée sur la bande, un compteur « 1/4 » indique où l’on en
+  est) ; on y tape le nouveau texte, `Entrée` remplace la section et passe à
+  la suivante, `Échap` arrête. Les sections sont les parties comprises entre
+  les points de synchronisation quand la ligne en a, sinon ses mots. Un mot
+  remplacé par un mot du même nombre de syllabes garde exactement le calage
+  de chaque syllabe ; avec un autre nombre, les nouvelles syllabes se
+  partagent le temps de la section. Les limites avant et après la section et
+  les syllabes des autres sections ne bougent pas. Chaque section validée est
+  une étape de `Ctrl + Z`.
+
+## Karaoké
+
+- Écrire dans une réplique karaoké déjà calée ne défait plus le calage : les
+  syllabes qu’on ne touche pas restent exactement à leur place. Un mot qui
+  passe d’une à deux syllabes est coupé en deux dans l’espace qu’il occupait,
+  et un mot ajouté prend sa place dans celui de la syllabe voisine. Une
+  réplique karaoké jamais calée à la main part de la disposition affichée à
+  l’écran. `Ctrl + Z` rétablit le texte et le calage d’avant.
+- Effacer un mot (ou une syllabe) d’une réplique karaoké laisse sa case vide
+  et réservée, encadrée par ses poignées : ce qu’on tape à sa place la reprend
+  telle quelle, sans rien déplacer d’autre. Un second `Retour arrière` (ou
+  `Suppr`) sur la case vide confirme la suppression : la case revient à la
+  syllabe d’avant. Les poignées de la ligne ne se déplacent pas tant qu’une
+  case est réservée ; quitter l’édition de la ligne confirme aussi.
+- Changer la langue de syllabes d’une bande (ou dupliquer une bande dans une
+  autre langue avec `Ctrl + L`) ne défait plus le calage des syllabes du
+  karaoké ni celui des syllabes entre les points de synchronisation : le
+  calage est converti sur-le-champ vers le découpage de la nouvelle langue,
+  chaque lettre gardant sa place dans le temps ; seules les frontières de
+  syllabes bougent. Les anciens projets dont le calage n’avait pas été
+  converti sont rattrapés à l’affichage.
+- Une réplique karaoké collée (`Ctrl + V`) après des répliques créées plus
+  tard dans la chanson pouvait être sautée sur sa rangée : la réplique
   suivante s’y affichait à sa place, et les courtes répliques répétées
   (« Dis, dis, dis… ») n’étaient pas toutes visibles. Chaque rangée affiche
   de nouveau la réplique la plus proche, quel que soit l’ordre de création.
+
+## Tableau des lignes et boucles
+
+- Le tableau des lignes est maintenant trié dans l’ordre du film (par
+  timecode), et non plus dans l’ordre de création.
+- Les boucles sont numérotées dans l’ordre du film, et `Ctrl + Maj` + molette
+  passe bien à la boucle suivante ou précédente dans le temps.
+- Changer le rôle d’une phrase en bas du tableau des lignes ouvre le menu
+  « Choisir un rôle » vers le haut, au lieu de le couper en bas de la fenêtre.
+
+## Export
+
+- Nouvel export « Scénario PDF » à donner aux comédiens (onglet Références de
+  l’export) : le texte dans l’ordre du film, regroupé par boucle, avec tous
+  les rôles ou un fichier par rôle qui ne contient que ses répliques.
+
+## Enregistrement
+
+- Chaque piste de l’espace Enregistrement a un bouton « Rev » qui ajoute une
+  réverbération de chant à ses prises pendant l’écoute. Elle ne sert qu’à
+  l’aperçu : le mixage exporté reste sans réverbération.
 
 ## Sessions en ligne
 
@@ -218,11 +254,3 @@ exactement la vidéo exportée.
 ## Détection
 
 - Dans la palette `Alt + D` et les fiches de détection, une seconde description précise le cas d’usage et le placement de chaque indication, sans titre supplémentaire. Les panneaux adaptent leur taille au texte et à la largeur disponible, avec un retour automatique à la ligne. Le terme « dentale » est expliqué dans les indications concernées. Les explications s’appuient sur la charte de détection de l’UPAD et signalent les conventions variables ou propres à l’application. Elles sont également lues par le lecteur d’écran.
-# 5.4.0
-
-- Le tableau des lignes est maintenant trié dans l’ordre du film (par timecode), et non plus dans l’ordre de création.
-- Les boucles sont numérotées dans l’ordre du film, et Ctrl+Maj+molette passe bien à la boucle suivante ou précédente dans le temps.
-- Changer le rôle d’une phrase en bas du tableau des lignes ouvre le menu « Choisir un rôle » vers le haut, au lieu de le couper en bas de la fenêtre.
-- Nouveau : le timecode courant s’affiche dans la barre d’outils de la bande rythmo. Le timecode de départ du projet (par exemple 01:00:00:00) se règle dans les paramètres de la bande rythmo et s’applique aussi aux exports Référence et Grille.
-- Nouveau : export « Scénario PDF » à donner aux comédiens, dans l’ordre du film et regroupé par boucle, avec tous les rôles ou un fichier par rôle (onglet Références de l’export).
-- Nouveau : la hauteur de la waveform se règle dans les paramètres de la bande rythmo.
