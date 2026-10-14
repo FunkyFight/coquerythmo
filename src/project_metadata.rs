@@ -1267,6 +1267,26 @@ fn validate_command_precondition(command: &Command, project: &Project) -> Result
                 return Err(format!("drawing stroke {} already exists", stroke.id));
             }
         }
+        Command::SetLineLinks {
+            changes, old_lines, ..
+        } => {
+            for change in changes {
+                if project.get_line(change.line_id).is_none() {
+                    return Err(missing_line(change.line_id));
+                }
+                if project.line_links().link(change.line_id) != change.old {
+                    return Err(format!(
+                        "line {} does not match the previous link",
+                        change.line_id
+                    ));
+                }
+            }
+            for line in old_lines {
+                if project.get_line(line.id) != Some(line) {
+                    return Err(format!("line {} does not match the link snapshot", line.id));
+                }
+            }
+        }
         Command::EraseDrawingStrokes { strokes } => {
             for stroke in strokes {
                 if project.drawing().get(stroke.id) != Some(stroke) {

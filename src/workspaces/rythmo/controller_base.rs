@@ -70,6 +70,11 @@ pub fn handle_rythmo_event(
         }
     }
 
+    // The step-by-step edit of a line owns the keyboard while it runs.
+    if let Some(response) = handle_section_edit_event(&ctx, event, state) {
+        return response;
+    }
+
     match event {
         UiEvent::DoubleClick { x, y }
             if *x >= ctx.zone.x

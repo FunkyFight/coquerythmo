@@ -215,6 +215,9 @@ pub fn event_for_action(
         }
         UiAction::ToggleFileTree => "file_tree.title",
         UiAction::OpenLinesPanel => "menu.panels.lines",
+        UiAction::LinkLines { .. } => "context.link.link",
+        UiAction::UnlinkLines { .. } => "context.link.unlink",
+        UiAction::SetLinkedCharacter { .. } => "context.link.include_character_off",
         UiAction::OpenRolesPanel => "menu.panels.roles",
         UiAction::PickProjectInstrumentalAudio => "project_settings.browse",
         UiAction::SaveProjectSettings { .. } => "settings.save",
@@ -244,6 +247,7 @@ pub fn event_for_action(
         UiAction::SetSelectedLineEndAtPlayhead => "accessibility.line_end_set",
         UiAction::CreateLineAtTrack { .. } => "accessibility.line_created",
         UiAction::StartEditingSelectedLine => "accessibility.edit_line",
+        UiAction::StartEditingSelectedLineSections => "accessibility.edit_line_sections",
         UiAction::StartEditingSelectedCharacter => "accessibility.edit_character",
         UiAction::OpenTextEmotionMenu => "text_emotion.menu",
         UiAction::ClearLineSelection => "accessibility.selection_cleared",

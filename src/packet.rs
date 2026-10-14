@@ -209,6 +209,11 @@ pub struct ProjectData {
     pub drawing: Option<RythmoDrawing>,
     #[serde(default, skip_serializing_if = "is_default_automation")]
     pub automation: crate::automation::AutomationGraph,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::line_links::LineLinks::is_empty"
+    )]
+    pub line_links: crate::line_links::LineLinks,
 }
 
 fn is_default_automation(graph: &crate::automation::AutomationGraph) -> bool {
@@ -235,6 +240,7 @@ impl Packetable for Command {
                 | Command::DeleteLines { .. }
                 | Command::Detection { .. }
                 | Command::SetLinePresence { .. }
+                | Command::SetLineLinks { .. }
         ) {
             return Packet::Sync {
                 project: ProjectData::from_project(project),
@@ -254,6 +260,7 @@ impl Packetable for Command {
             },
             Command::DeleteLines { .. } => unreachable!("handled as a full sync above"),
             Command::Detection { .. } => unreachable!("handled as a full sync above"),
+            Command::SetLineLinks { .. } => unreachable!("handled as a full sync above"),
             Command::SplitLine {
                 first_line,
                 second_line,
@@ -447,6 +454,7 @@ impl ProjectData {
             voice_actors: project.voice_actors().to_vec(),
             drawing: Some(project.drawing().clone()),
             automation: project.settings().automation.clone(),
+            line_links: project.line_links().clone(),
         }
     }
 }

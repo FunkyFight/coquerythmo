@@ -84,6 +84,53 @@ impl SyncSegments {
         (self.edge(segment), self.edge(segment + 1))
     }
 
+    /// Character range of every segment, in order.
+    pub(crate) fn ranges(&self) -> Vec<(usize, usize)> {
+        (0..self.segment_count())
+            .map(|segment| self.range(segment))
+            .collect()
+    }
+
+    /// Share of the line's time a segment covers: from the limit before it
+    /// (or the start of the line) to the limit after it (or its end).
+    pub(crate) fn time_span(&self, segment: usize) -> (f32, f32) {
+        let at = |index: usize| {
+            if index == 0 {
+                0.0
+            } else {
+                self.ratios
+                    .get(index - 1)
+                    .copied()
+                    .unwrap_or(1.0)
+                    .clamp(0.0, 1.0)
+            }
+        };
+        let start = at(segment);
+        let end = if segment >= self.limits.len() {
+            1.0
+        } else {
+            at(segment + 1).max(start)
+        };
+        (start, end)
+    }
+
+    /// Of the limits lying exactly at the start of a segment, how many belong
+    /// before it: those that open it or an earlier, empty segment.
+    pub(crate) fn limits_before_segment(&self, segment: usize) -> u32 {
+        let Some(start) = segment
+            .checked_sub(1)
+            .and_then(|index| self.limits.get(index))
+            .map(|(grapheme, _)| *grapheme)
+        else {
+            return 0;
+        };
+        self.limits
+            .iter()
+            .take(segment)
+            .filter(|(grapheme, _)| *grapheme == start)
+            .count() as u32
+    }
+
     fn contains(&self, segment: usize, caret: usize) -> bool {
         let (start, end) = self.range(segment);
         start <= caret && caret <= end

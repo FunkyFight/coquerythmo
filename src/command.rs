@@ -171,10 +171,65 @@ pub enum Command {
         old_points: Vec<Vec<(f64, f32)>>,
         new_points: Vec<Vec<(f64, f32)>>,
     },
+    /// Link or unlink dialogues. Linking also harmonises the content of the
+    /// group at that moment: the snapshots make it reversible.
+    SetLineLinks {
+        changes: Vec<crate::line_links::LineLinkChange>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        old_lines: Vec<RythmoLine>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        new_lines: Vec<RythmoLine>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        old_detections: Vec<(u64, crate::detection::LineDetectionData)>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        new_detections: Vec<(u64, crate::detection::LineDetectionData)>,
+    },
 }
 
 impl Command {
+    /// Lines whose linked dialogues must follow this command.
+    pub(crate) fn linked_sync_sources(&self) -> Vec<u64> {
+        match self {
+            Command::ResizeLine { line_id, .. }
+            | Command::UpdateLineText { line_id, .. }
+            | Command::SetTextEmotions { line_id, .. }
+            | Command::SetTextStyles { line_id, .. }
+            | Command::SetLineKaraoke { line_id, .. }
+            | Command::SetLinePresence { line_id, .. }
+            | Command::SetSyllableRatios { line_id, .. }
+            | Command::SetCharacter { line_id, .. }
+            | Command::SetCharacterColor { line_id, .. }
+            | Command::UpdateLineNote { line_id, .. } => vec![*line_id],
+            Command::SplitLine { first_line, .. } => vec![first_line.id],
+            Command::Detection { change } => {
+                if matches!(change, crate::detection::DetectionChange::RemoveLine { .. }) {
+                    Vec::new()
+                } else {
+                    vec![change.line_id()]
+                }
+            }
+            Command::SetVoiceActors { changes } => {
+                changes.iter().map(|change| change.line_id).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     pub(crate) fn apply(&self, project: &mut Project) {
+        self.apply_inner(project);
+        for line_id in self.linked_sync_sources() {
+            project.sync_linked_lines(line_id);
+        }
+    }
+
+    pub(crate) fn unapply(&self, project: &mut Project) {
+        self.unapply_inner(project);
+        for line_id in self.linked_sync_sources() {
+            project.sync_linked_lines(line_id);
+        }
+    }
+
+    fn apply_inner(&self, project: &mut Project) {
         match self {
             Command::CreateLine { snapshot, index } => {
                 project.upsert_line_at(*index, snapshot.clone());
@@ -383,10 +438,19 @@ impl Command {
             } => {
                 project.set_drawing_strokes_points(stroke_ids, new_points);
             }
+            Command::SetLineLinks {
+                changes,
+                new_lines,
+                new_detections,
+                ..
+            } => {
+                project.apply_line_link_changes(changes, true);
+                project.replace_linked_snapshots(new_lines, new_detections);
+            }
         }
     }
 
-    pub(crate) fn unapply(&self, project: &mut Project) {
+    fn unapply_inner(&self, project: &mut Project) {
         match self {
             Command::CreateLine { snapshot, .. } => {
                 project.remove_line(snapshot.id);
@@ -432,6 +496,15 @@ impl Command {
                 ..
             } => {
                 project.set_drawing_strokes_points(stroke_ids, old_points);
+            }
+            Command::SetLineLinks {
+                changes,
+                old_lines,
+                old_detections,
+                ..
+            } => {
+                project.apply_line_link_changes(changes, false);
+                project.replace_linked_snapshots(old_lines, old_detections);
             }
             Command::MoveLine {
                 line_id,
@@ -796,7 +869,10 @@ mod tests {
         assert!(!project.get_line(id).unwrap().style_at_char(3).bold);
 
         history.undo(&mut project);
-        assert_eq!(project.get_line(id).unwrap().text_styles, styled.text_styles);
+        assert_eq!(
+            project.get_line(id).unwrap().text_styles,
+            styled.text_styles
+        );
         history.undo(&mut project);
         assert!(project.get_line(id).unwrap().text_styles.is_empty());
     }
@@ -839,6 +915,205 @@ mod tests {
         assert_eq!(history.take_language_redelete(), Some(english));
         history.clear();
         assert!(history.take_language_redelete().is_none());
+    }
+
+    #[test]
+    fn linked_lines_follow_each_other_except_for_their_position() {
+        use crate::line_links::{apply_linked_content, LineLink, LineLinkChange};
+        let mut project = Project::new();
+        let a = project.add_line_full(
+            0,
+            24,
+            0.0,
+            "Bonjour".into(),
+            "Alice".into(),
+            [1.0, 0.0, 0.0, 1.0],
+        );
+        let b = project.add_line_full(
+            200,
+            30,
+            0.25,
+            "Salut".into(),
+            "Bob".into(),
+            [0.0, 1.0, 0.0, 1.0],
+        );
+        let mut history = CommandHistory::new();
+        let membership = |line_id, old, include_character| LineLinkChange {
+            line_id,
+            old,
+            new: Some(LineLink {
+                group: 1,
+                include_character,
+            }),
+        };
+        let old_b = project.get_line(b).unwrap().clone();
+        let mut new_b = old_b.clone();
+        assert!(apply_linked_content(
+            &mut new_b,
+            project.get_line(a).unwrap(),
+            false
+        ));
+        apply_and_push(
+            &mut history,
+            Command::SetLineLinks {
+                changes: vec![membership(a, None, false), membership(b, None, false)],
+                old_lines: vec![old_b],
+                new_lines: vec![new_b],
+                old_detections: Vec::new(),
+                new_detections: Vec::new(),
+            },
+            &mut project,
+        );
+        let linked_b = project.get_line(b).unwrap();
+        assert_eq!(linked_b.text, "Bonjour");
+        assert_eq!(linked_b.duration_frames, 24);
+        assert_eq!(linked_b.start_frame, 200);
+        assert_eq!(linked_b.y_slot, 0.25);
+        assert_eq!(linked_b.character_name, "Bob");
+        assert_eq!(project.line_links().partners(a), vec![b]);
+
+        // Editing either line updates the other, its position excepted.
+        apply_and_push(
+            &mut history,
+            Command::UpdateLineText {
+                line_id: a,
+                old_text: "Bonjour".into(),
+                new_text: "Bonsoir".into(),
+                old_emotions: Vec::new(),
+                new_emotions: Vec::new(),
+                old_styles: Vec::new(),
+                new_styles: Vec::new(),
+                edit: None,
+                syllable_ratios: None,
+            },
+            &mut project,
+        );
+        assert_eq!(project.get_line(b).unwrap().text, "Bonsoir");
+        apply_and_push(
+            &mut history,
+            Command::ResizeLine {
+                line_id: b,
+                old_start: 200,
+                old_dur: 24,
+                new_start: 190,
+                new_dur: 40,
+            },
+            &mut project,
+        );
+        assert_eq!(project.get_line(a).unwrap().duration_frames, 40);
+        assert_eq!(project.get_line(a).unwrap().start_frame, 0);
+        apply_and_push(
+            &mut history,
+            Command::MoveLine {
+                line_id: a,
+                old_start: 0,
+                old_y_slot: 0.0,
+                new_start: 50,
+                new_y_slot: 0.5,
+            },
+            &mut project,
+        );
+        assert_eq!(project.get_line(b).unwrap().start_frame, 190);
+        assert_eq!(project.get_line(b).unwrap().y_slot, 0.25);
+
+        // The character stays personal until the group shares it.
+        apply_and_push(
+            &mut history,
+            Command::SetCharacter {
+                line_id: a,
+                old_name: "Alice".into(),
+                old_color: [1.0, 0.0, 0.0, 1.0],
+                old_voice_actor_names: Vec::new(),
+                new_name: "Chloé".into(),
+                new_color: [0.0, 0.0, 1.0, 1.0],
+                new_voice_actor_names: Vec::new(),
+            },
+            &mut project,
+        );
+        assert_eq!(project.get_line(b).unwrap().character_name, "Bob");
+        let old_b = project.get_line(b).unwrap().clone();
+        let mut new_b = old_b.clone();
+        assert!(apply_linked_content(
+            &mut new_b,
+            project.get_line(a).unwrap(),
+            true
+        ));
+        let shared = Some(LineLink {
+            group: 1,
+            include_character: false,
+        });
+        apply_and_push(
+            &mut history,
+            Command::SetLineLinks {
+                changes: vec![membership(a, shared, true), membership(b, shared, true)],
+                old_lines: vec![old_b],
+                new_lines: vec![new_b],
+                old_detections: Vec::new(),
+                new_detections: Vec::new(),
+            },
+            &mut project,
+        );
+        assert_eq!(project.get_line(b).unwrap().character_name, "Chloé");
+        assert_eq!(
+            project.get_line(b).unwrap().character_color,
+            [0.0, 0.0, 1.0, 1.0]
+        );
+
+        // Undo walks everything back, the other line included.
+        history.undo(&mut project);
+        assert_eq!(project.get_line(b).unwrap().character_name, "Bob");
+        history.undo(&mut project);
+        assert_eq!(project.get_line(a).unwrap().character_name, "Alice");
+        history.undo(&mut project);
+        assert_eq!(project.get_line(a).unwrap().start_frame, 0);
+        history.undo(&mut project);
+        assert_eq!(project.get_line(a).unwrap().duration_frames, 24);
+        assert_eq!(project.get_line(b).unwrap().duration_frames, 24);
+        history.undo(&mut project);
+        assert_eq!(project.get_line(b).unwrap().text, "Bonjour");
+        history.undo(&mut project);
+        assert_eq!(project.get_line(b).unwrap().text, "Salut");
+        assert_eq!(project.get_line(b).unwrap().duration_frames, 30);
+        assert!(!project.line_links().is_linked(a));
+        history.redo(&mut project);
+        assert!(project.line_links().is_linked(b));
+        assert_eq!(project.get_line(b).unwrap().text, "Bonjour");
+
+        // Unlinking keeps the content as it is.
+        apply_and_push(
+            &mut history,
+            Command::SetLineLinks {
+                changes: vec![
+                    LineLinkChange {
+                        line_id: a,
+                        old: shared,
+                        new: None,
+                    },
+                    LineLinkChange {
+                        line_id: b,
+                        old: shared,
+                        new: None,
+                    },
+                ],
+                old_lines: Vec::new(),
+                new_lines: Vec::new(),
+                old_detections: Vec::new(),
+                new_detections: Vec::new(),
+            },
+            &mut project,
+        );
+        assert!(project.line_links().is_empty());
+        assert_eq!(project.get_line(b).unwrap().text, "Bonjour");
+        apply_and_push(
+            &mut history,
+            Command::UpdateLineNote {
+                line_id: a,
+                old_note: String::new(),
+                new_note: "seule".into(),
+            },
+            &mut project,
+        );
+        assert!(project.get_line(b).unwrap().note.is_empty());
     }
 
     #[test]
@@ -971,8 +1246,7 @@ mod tests {
 
         // "abc|def": typing "X" with the caret after "c", in the segment before
         // the limit, then with the caret before "d", in the segment after it.
-        for (limits_before, expected_text, expected_limit) in
-            [(0, "abcXdef", 4), (1, "abcXdef", 3)]
+        for (limits_before, expected_text, expected_limit) in [(0, "abcXdef", 4), (1, "abcXdef", 3)]
         {
             let command = Command::UpdateLineText {
                 syllable_ratios: None,

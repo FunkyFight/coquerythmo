@@ -85,6 +85,7 @@ fn is_applicable(action: &UiAction, s: &PanelSituation) -> bool {
         | UiAction::StartEditingSelectedCharacter
         | UiAction::MoveSelectedLineTrack { .. }
         | UiAction::NudgeSelectedLines { .. } => s.line_selected,
+        UiAction::StartEditingSelectedLineSections => s.line_selected || s.editing_line,
         UiAction::ClearLineSelection => s.any_selection,
         UiAction::CopySelectedLine | UiAction::CutSelectedLine => s.line_selected,
         UiAction::PasteLine => s.line_clipboard_available,

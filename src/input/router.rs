@@ -155,6 +155,18 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         );
     }
 
+    // Section-by-section edit of the selected line, also reachable while its
+    // text is being edited the usual way.
+    for context in [InputContext::TextEditing, InputContext::Workspace] {
+        router.bind(
+            context,
+            KeyCode::Character('t'),
+            ctrl,
+            RepeatPolicy::PressOnly,
+            UiAction::StartEditingSelectedLineSections,
+        );
+    }
+
     router.bind(
         InputContext::Accessibility,
         KeyCode::Character('n'),
@@ -1051,6 +1063,12 @@ mod tests {
                 Modifiers::NONE,
                 &workspace,
                 UiAction::StartEditingSelectedLine,
+            ),
+            (
+                KeyCode::Character('t'),
+                ctrl,
+                &workspace,
+                UiAction::StartEditingSelectedLineSections,
             ),
             (
                 KeyCode::Character('p'),

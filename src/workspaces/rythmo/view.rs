@@ -31,7 +31,6 @@ use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use unicode_segmentation::UnicodeSegmentation;
 
-
 const HANDLE_COLOR: [f32; 4] = [0.9, 0.9, 0.95, 0.8];
 const LINE_BORDER: [f32; 4] = [0.5, 0.5, 0.55, 0.3];
 const LINE_BORDER_HOVER: [f32; 4] = [0.6, 0.6, 0.65, 0.5];
@@ -146,16 +145,19 @@ mod detection_ui;
 pub(crate) use detection_ui::*;
 #[path = "playhead_drag.rs"]
 mod playhead_drag;
-pub(crate) use playhead_drag::*;
 pub use playhead_drag::PlayheadDrag;
+pub(crate) use playhead_drag::*;
 pub(crate) use playhead_drag::*;
 #[path = "format_toolbar.rs"]
 mod format_toolbar;
 pub(crate) use format_toolbar::*;
+#[path = "section_edit.rs"]
+mod section_edit;
+pub(crate) use section_edit::*;
 #[path = "sync_point_menu.rs"]
 mod sync_point_menu;
-pub(crate) use sync_point_menu::*;
 pub use sync_point_menu::SyncPointMenu;
+pub(crate) use sync_point_menu::*;
 pub(crate) use sync_point_menu::*;
 #[path = "state.rs"]
 mod state;
@@ -656,7 +658,9 @@ mod tests {
         );
         let layouts = editor_track_layouts(&project, &zone);
         let first_reserved = layouts[0].reserved_h;
-        assert!(layouts.iter().all(|l| (l.reserved_h - first_reserved).abs() < 0.01));
+        assert!(layouts
+            .iter()
+            .all(|l| (l.reserved_h - first_reserved).abs() < 0.01));
         assert!(
             (karaoke_body.height
                 - rythmo_layout::karaoke_track_body_height(active_normal_body_h, 1.0))
@@ -730,7 +734,9 @@ mod tests {
 
         for id in [plain_k, plain_e] {
             let (rect, badge, body) = rect_of(id);
-            let reserved = layout.track_for_y_slot(project.get_line(id).unwrap().y_slot).reserved_body_h;
+            let reserved = layout
+                .track_for_y_slot(project.get_line(id).unwrap().y_slot)
+                .reserved_body_h;
             assert!((rect.height - reserved).abs() < 0.01);
             assert!(body.height <= reserved + 0.01);
             assert!((rect.y - body.y).abs() < f32::EPSILON);
@@ -740,7 +746,12 @@ mod tests {
         for id in [karaoke, effect] {
             let (rect, _, _) = rect_of(id);
             assert!((rect.height - layout.normal_body_h).abs() < f32::EPSILON);
-            assert!(rect.height < layout.track_for_y_slot(project.get_line(id).unwrap().y_slot).reserved_body_h);
+            assert!(
+                rect.height
+                    < layout
+                        .track_for_y_slot(project.get_line(id).unwrap().y_slot)
+                        .reserved_body_h
+            );
         }
         // A plain-only track is as tall as the others and its line fills it.
         let (rect, _, _) = rect_of(plain_n);
@@ -1792,6 +1803,10 @@ mod tests {
             hover_karaoke: false,
             hover_karaoke_index: None,
             hover_karaoke_specific: None,
+            hover_link: false,
+            hover_link_index: None,
+            link_line_ids: Vec::new(),
+            link_include_character: false,
         });
         let (_, actor_rect, _, _, _, _) = context_menu_layout(
             &project,
@@ -1845,6 +1860,10 @@ mod tests {
             hover_karaoke: false,
             hover_karaoke_index: None,
             hover_karaoke_specific: None,
+            hover_link: false,
+            hover_link_index: None,
+            link_line_ids: Vec::new(),
+            link_include_character: false,
         });
         let zone = Rect {
             x: 0.0,
@@ -1912,6 +1931,10 @@ mod tests {
             hover_karaoke: false,
             hover_karaoke_index: None,
             hover_karaoke_specific: None,
+            hover_link: false,
+            hover_link_index: None,
+            link_line_ids: Vec::new(),
+            link_include_character: false,
         });
         state
     }
@@ -1924,6 +1947,108 @@ mod tests {
             height: 800.0,
         };
         handle_context_menu_event(&event, project, 0.0, &zone, 1200.0, 800.0, 24.0, state)
+    }
+
+    fn test_menu(line_id: u64) -> LineContextMenu {
+        LineContextMenu {
+            line_id,
+            x: 100.0,
+            y: 100.0,
+            hover_main: true,
+            hover_change_character: false,
+            hover_text_emotion: false,
+            hover_generate_detection: false,
+            hover_emotion_index: None,
+            hover_emotion_variant: None,
+            text_range: None,
+            hover_actor_index: None,
+            hover_action_index: None,
+            actor_scroll: 0.0,
+            hover_karaoke: false,
+            hover_karaoke_index: None,
+            hover_karaoke_specific: None,
+            hover_link: false,
+            hover_link_index: None,
+            link_line_ids: Vec::new(),
+            link_include_character: false,
+        }
+    }
+
+    #[test]
+    fn link_item_offers_to_link_a_selection_and_to_unlink_a_linked_line() {
+        let mut project = Project::new();
+        let a = project.add_line(0, 24, 0.0);
+        let b = project.add_line(100, 24, 0.25);
+        let mut state = RythmoState::new();
+        let mut menu = test_menu(a);
+        assert!(!link_menu_available(&project, &menu));
+        assert_eq!(link_root_index(&project, &menu), None);
+        menu.link_line_ids = vec![a, b];
+        assert!(link_menu_available(&project, &menu));
+        assert_eq!(
+            link_root_index(&project, &menu),
+            Some(root_item_count(&project, &menu) - 1)
+        );
+        assert_eq!(link_item_label(&project, &menu, 0), t("context.link.link"));
+        state.context_menu = Some(menu);
+        assert_eq!(
+            activate_link_item(&project, &mut state, 0),
+            EventResponse::Action(UiAction::LinkLines {
+                line_ids: vec![a, b],
+                source_line_id: a,
+                include_character: false,
+            })
+        );
+        assert!(state.context_menu.is_none());
+
+        // The character option of a future group is a remembered preference
+        // and toggling it keeps the menu open.
+        let mut menu = test_menu(a);
+        menu.link_line_ids = vec![a, b];
+        state.context_menu = Some(menu);
+        let _ = activate_link_item(&project, &mut state, 1);
+        assert!(state.link_includes_character);
+        let menu = state.context_menu.as_ref().unwrap();
+        assert!(menu.link_include_character);
+        assert_eq!(
+            link_item_label(&project, menu, 1),
+            t("context.link.include_character_on")
+        );
+        assert!(link_include_character_for(&project, a, &state));
+
+        // A linked line offers to unlink and to share the character.
+        let mut settings = project.settings().clone();
+        for id in [a, b] {
+            settings.line_links.set(
+                id,
+                Some(crate::line_links::LineLink {
+                    group: 1,
+                    include_character: false,
+                }),
+            );
+        }
+        project.set_settings(settings);
+        let menu = test_menu(a);
+        assert!(link_menu_available(&project, &menu));
+        assert_eq!(
+            link_item_label(&project, &menu, 0),
+            t("context.link.unlink")
+        );
+        assert!(!link_include_character_for(&project, a, &state));
+        state.context_menu = Some(menu);
+        assert_eq!(
+            activate_link_item(&project, &mut state, 0),
+            EventResponse::Action(UiAction::UnlinkLines { line_id: a })
+        );
+        state.context_menu = Some(test_menu(a));
+        assert_eq!(
+            activate_link_item(&project, &mut state, 1),
+            EventResponse::Action(UiAction::SetLinkedCharacter {
+                line_id: a,
+                include_character: true,
+            })
+        );
+        assert!(state.context_menu.is_none());
     }
 
     fn apply_choice(project: &mut Project, response: EventResponse) {
@@ -1941,8 +2066,11 @@ mod tests {
     fn karaoke_item_only_shows_on_karaoke_lines_of_a_character() {
         let (mut project, line_id, _) = karaoke_menu_project();
         let karaoke_index = karaoke_root_index(&project, line_id).unwrap();
-        assert_eq!(root_item_count(&project, line_id), karaoke_index + 1);
-        assert!(context_menu_accessibility_label(&project, line_id)
+        assert_eq!(
+            root_item_count(&project, &test_menu(line_id)),
+            karaoke_index + 1
+        );
+        assert!(context_menu_accessibility_label(&project, line_id, false)
             .contains(t("context.karaoke_dot.menu")));
         project.get_line_mut(line_id).unwrap().karaoke = false;
         assert_eq!(karaoke_root_index(&project, line_id), None);
@@ -2025,7 +2153,10 @@ mod tests {
             menu.hover_karaoke_specific = Some(0);
         }
         menu_event(&project, &mut state, UiEvent::CursorLeft);
-        assert_eq!(state.context_menu.as_ref().unwrap().hover_karaoke_specific, None);
+        assert_eq!(
+            state.context_menu.as_ref().unwrap().hover_karaoke_specific,
+            None
+        );
         menu_event(&project, &mut state, UiEvent::CursorLeft);
         let menu = state.context_menu.as_ref().unwrap();
         assert!(menu.hover_karaoke && menu.hover_karaoke_index.is_none());
@@ -4314,7 +4445,12 @@ pub fn render_lines<'a>(
             let color = scrolling_text_tint;
             if line.presence == crate::rythmo_line::LinePresence::Off {
                 quads.push(QuadInstance {
-                    rect: [data.rect.x, y, data.rect.width, PRESENCE_UNDERLINE_THICKNESS],
+                    rect: [
+                        data.rect.x,
+                        y,
+                        data.rect.width,
+                        PRESENCE_UNDERLINE_THICKNESS,
+                    ],
                     color,
                     color_bottom: color,
                     border_color: [0.0; 4],
@@ -4520,6 +4656,15 @@ pub fn render_lines<'a>(
                 is_editing_char,
                 badge_scale,
             );
+
+            // Linked dialogue: two chain links at the end of the badge.
+            if project.line_links().is_linked(line.id) {
+                let icon_size = 10.0 * badge_scale;
+                let note_shift = if line.note.is_empty() { 0.0 } else { 12.0 };
+                let x = br.x + br.width - icon_size - 2.0 - note_shift;
+                let y = br.y + (br.height - icon_size) / 2.0;
+                render_link_icon(quads, x, y, icon_size);
+            }
 
             // Note indicator: small icon at the end of the badge if line has a note
             if !line.note.is_empty() {
@@ -5550,6 +5695,7 @@ const MENU_ROOT_W: f32 = 230.0;
 const MENU_ACTOR_W: f32 = 240.0;
 const MENU_ACTION_W: f32 = 285.0;
 const MENU_EMOTION_W: f32 = 190.0;
+const MENU_LINK_W: f32 = 260.0;
 const MENU_GAP: f32 = 0.0;
 const MENU_MARGIN: f32 = 8.0;
 const MENU_MAX_ACTOR_H: f32 = 260.0;
@@ -5641,7 +5787,11 @@ fn emotion_group(
     menu_index.checked_sub(1).and_then(emotion_category)
 }
 
-pub fn context_menu_accessibility_label(project: &Project, line_id: u64) -> String {
+pub fn context_menu_accessibility_label(
+    project: &Project,
+    line_id: u64,
+    link_available: bool,
+) -> String {
     let mut items = vec![
         t("context.voice_actor.assign_to_actor"),
         t("context.change_character"),
@@ -5657,6 +5807,9 @@ pub fn context_menu_accessibility_label(project: &Project, line_id: u64) -> Stri
     }
     if can_generate_detection_signs(project, line_id) {
         items.push(t("context.generate_detection_signs"));
+    }
+    if link_available {
+        items.push(t("context.link.menu"));
     }
     format!(
         "{} : {}",
@@ -5698,10 +5851,149 @@ fn generation_root_index(project: &Project, line_id: u64) -> Option<usize> {
     })
 }
 
-fn root_item_count(project: &Project, line_id: u64) -> usize {
-    2 + usize::from(text_emotion_menu_available(project, line_id))
-        + usize::from(karaoke_menu_available(project, line_id))
-        + usize::from(can_generate_detection_signs(project, line_id))
+fn root_item_count(project: &Project, menu: &LineContextMenu) -> usize {
+    2 + usize::from(text_emotion_menu_available(project, menu.line_id))
+        + usize::from(karaoke_menu_available(project, menu.line_id))
+        + usize::from(can_generate_detection_signs(project, menu.line_id))
+        + usize::from(link_menu_available(project, menu))
+}
+
+/// The dialogue lines of the selection, candidates for a group of linked
+/// dialogues.
+pub fn selected_dialogue_line_ids(project: &Project, selection: Option<&Selection>) -> Vec<u64> {
+    let keep = |line: &crate::rythmo_line::RythmoLine| line.kind.is_dialogue();
+    match selection {
+        Some(Selection::Line(id)) => project
+            .get_line(*id)
+            .filter(|line| keep(line))
+            .map(|line| vec![line.id])
+            .unwrap_or_default(),
+        Some(Selection::Lines(ids)) => project
+            .lines()
+            .filter(|line| keep(line) && ids.contains(&line.id))
+            .map(|line| line.id)
+            .collect(),
+        Some(Selection::AllLines) => project
+            .lines()
+            .filter(|line| keep(line))
+            .map(|line| line.id)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The character option shown when the menu opens: the group's setting on
+/// a linked line, the remembered preference otherwise.
+pub fn link_include_character_for(project: &Project, line_id: u64, state: &RythmoState) -> bool {
+    project
+        .line_links()
+        .link(line_id)
+        .map_or(state.link_includes_character, |link| link.include_character)
+}
+
+/// The "Linked dialogues" item is offered on a dialogue line that is already
+/// linked, or that was right-clicked within a selection of several dialogues.
+pub fn link_menu_available(project: &Project, menu: &LineContextMenu) -> bool {
+    project
+        .get_line(menu.line_id)
+        .is_some_and(|line| line.kind.is_dialogue())
+        && (project.line_links().is_linked(menu.line_id) || menu.link_line_ids.len() >= 2)
+}
+
+/// The link item is always the last root item.
+fn link_root_index(project: &Project, menu: &LineContextMenu) -> Option<usize> {
+    link_menu_available(project, menu).then(|| root_item_count(project, menu) - 1)
+}
+
+const LINK_ITEM_COUNT: usize = 2;
+
+fn link_menu_visible(menu: &LineContextMenu) -> bool {
+    menu.hover_link || menu.hover_link_index.is_some()
+}
+
+fn link_item_label(project: &Project, menu: &LineContextMenu, index: usize) -> &'static str {
+    match index {
+        0 if project.line_links().is_linked(menu.line_id) => t("context.link.unlink"),
+        0 => t("context.link.link"),
+        _ if menu.link_include_character => t("context.link.include_character_on"),
+        _ => t("context.link.include_character_off"),
+    }
+}
+
+/// Rectangle of the linked dialogues submenu, beside its root item.
+fn link_menu_rect(
+    project: &Project,
+    screen_w: f32,
+    screen_h: f32,
+    menu: &LineContextMenu,
+    root_rect: Rect,
+) -> Rect {
+    let root_index = link_root_index(project, menu).unwrap_or(0);
+    let height = MENU_ITEM_H * LINK_ITEM_COUNT as f32;
+    let x_right = root_rect.x + root_rect.width + MENU_GAP;
+    let x = if x_right + MENU_LINK_W <= screen_w - MENU_MARGIN {
+        x_right
+    } else {
+        (root_rect.x - MENU_LINK_W - MENU_GAP).max(MENU_MARGIN)
+    };
+    Rect {
+        x,
+        y: (root_rect.y + MENU_ITEM_H * root_index as f32).clamp(
+            MENU_MARGIN,
+            (screen_h - height - MENU_MARGIN).max(MENU_MARGIN),
+        ),
+        width: MENU_LINK_W,
+        height,
+    }
+}
+
+/// Activate an item of the linked dialogues submenu. The character option
+/// of a future group is a remembered preference: toggling it keeps the menu
+/// open.
+fn activate_link_item(project: &Project, state: &mut RythmoState, index: usize) -> EventResponse {
+    let Some(menu) = state.context_menu.as_mut() else {
+        return EventResponse::Ignored;
+    };
+    let line_id = menu.line_id;
+    let linked = project.line_links().is_linked(line_id);
+    match index {
+        0 if linked => {
+            state.context_menu = None;
+            EventResponse::Action(UiAction::UnlinkLines { line_id })
+        }
+        0 => {
+            let action = UiAction::LinkLines {
+                line_ids: menu.link_line_ids.clone(),
+                source_line_id: line_id,
+                include_character: menu.link_include_character,
+            };
+            state.context_menu = None;
+            EventResponse::Action(action)
+        }
+        _ if linked => {
+            let include_character = !menu.link_include_character;
+            state.context_menu = None;
+            EventResponse::Action(UiAction::SetLinkedCharacter {
+                line_id,
+                include_character,
+            })
+        }
+        _ => {
+            menu.link_include_character = !menu.link_include_character;
+            let include_character = menu.link_include_character;
+            state.link_includes_character = include_character;
+            EventResponse::Action(UiAction::Accessibility(
+                crate::accessibility::AccessibilityEvent::Selection {
+                    label: t(if include_character {
+                        "context.link.include_character_on"
+                    } else {
+                        "context.link.include_character_off"
+                    })
+                    .to_string(),
+                },
+            ))
+        }
+    }
 }
 
 /// Entries of the karaoke submenu: default dot, each group, then the
@@ -5882,12 +6174,17 @@ fn root_hover_index(project: &Project, menu: &LineContextMenu) -> usize {
         karaoke_root_index(project, menu.line_id).unwrap_or(0)
     } else if menu.hover_generate_detection {
         generation_root_index(project, menu.line_id).unwrap_or(0)
+    } else if menu.hover_link {
+        link_root_index(project, menu).unwrap_or(0)
     } else {
         0
     }
 }
 
 fn set_root_hover(project: &Project, menu: &mut LineContextMenu, index: usize) {
+    let link_root = link_root_index(project, menu);
+    menu.hover_link = link_root == Some(index);
+    menu.hover_link_index = None;
     menu.hover_main = index == 0;
     menu.hover_change_character = index == 1;
     menu.hover_text_emotion = index == 2
@@ -5906,7 +6203,11 @@ fn selected_context_menu_label<'a>(
     project: &'a Project,
     menu: &LineContextMenu,
 ) -> Option<&'a str> {
-    if let Some(index) = menu.hover_karaoke_specific {
+    if let Some(index) = menu.hover_link_index {
+        Some(link_item_label(project, menu, index))
+    } else if menu.hover_link {
+        Some(t("context.link.menu"))
+    } else if let Some(index) = menu.hover_karaoke_specific {
         karaoke_specific_item_label(index)
     } else if let Some(index) = menu.hover_karaoke_index {
         karaoke_item_label(project, index)
@@ -6030,6 +6331,11 @@ pub fn handle_context_menu_event(
                     Some(Selection::AllLines) => true,
                     _ => false,
                 };
+                let link_line_ids = if line_was_selected {
+                    selected_dialogue_line_ids(project, state.selected.as_ref())
+                } else {
+                    vec![line_id]
+                };
                 state.context_menu = Some(LineContextMenu {
                     line_id,
                     x: *x,
@@ -6049,14 +6355,22 @@ pub fn handle_context_menu_event(
                     hover_karaoke: false,
                     hover_karaoke_index: None,
                     hover_karaoke_specific: None,
+                    hover_link: false,
+                    hover_link_index: None,
+                    link_line_ids,
+                    link_include_character: link_include_character_for(project, line_id, state),
                 });
                 if !line_was_selected {
                     state.selected = Some(Selection::Line(line_id));
                 }
                 state.dragging = None;
+                let link_available = state
+                    .context_menu
+                    .as_ref()
+                    .is_some_and(|menu| link_menu_available(project, menu));
                 return EventResponse::Action(UiAction::Accessibility(
                     crate::accessibility::AccessibilityEvent::Focus {
-                        label: context_menu_accessibility_label(project, line_id),
+                        label: context_menu_accessibility_label(project, line_id, link_available),
                         role: "menu".to_string(),
                     },
                 ));
@@ -6124,6 +6438,20 @@ pub fn handle_context_menu_event(
                         && bridge_rect(karaoke_rect, karaoke_specific_rect).contains(*x, *y)))
             {
                 return EventResponse::Consumed;
+            }
+            let link_visible = link_menu_available(project, menu) && link_menu_visible(menu);
+            if link_visible {
+                let link_rect = link_menu_rect(project, screen_w, screen_h, menu, root_rect);
+                if link_rect.contains(*x, *y) {
+                    let index = ((*y - link_rect.y) / MENU_ITEM_H).floor() as usize;
+                    if index < LINK_ITEM_COUNT {
+                        return activate_link_item(project, state, index);
+                    }
+                    return EventResponse::Consumed;
+                }
+                if bridge_rect(root_rect, link_rect).contains(*x, *y) {
+                    return EventResponse::Consumed;
+                }
             }
 
             if root_rect.contains(*x, *y) {
@@ -6245,6 +6573,11 @@ pub fn handle_context_menu_event(
             } else if menu.hover_karaoke {
                 menu.hover_karaoke = false;
                 menu.hover_karaoke_index = Some(0);
+            } else if menu.hover_link_index.is_some() {
+                // No deeper submenu.
+            } else if menu.hover_link {
+                menu.hover_link = false;
+                menu.hover_link_index = Some(0);
             } else if menu.hover_main {
                 menu.hover_main = false;
                 menu.hover_actor_index = Some(0);
@@ -6264,7 +6597,9 @@ pub fn handle_context_menu_event(
             let Some(menu) = state.context_menu.as_mut() else {
                 return EventResponse::Ignored;
             };
-            if menu.hover_karaoke_specific.take().is_some() {
+            if menu.hover_link_index.take().is_some() {
+                menu.hover_link = true;
+            } else if menu.hover_karaoke_specific.take().is_some() {
                 // Back to the karaoke submenu.
             } else if menu.hover_karaoke_index.take().is_some() {
                 menu.hover_karaoke = true;
@@ -6279,6 +6614,7 @@ pub fn handle_context_menu_event(
                 menu.hover_text_emotion = false;
                 menu.hover_generate_detection = false;
                 menu.hover_karaoke = false;
+                menu.hover_link = false;
             }
             announce_context_menu_selection(project, state)
         }
@@ -6291,7 +6627,9 @@ pub fn handle_context_menu_event(
             } else {
                 -1
             };
-            if let Some(index) = menu.hover_karaoke_specific.as_mut() {
+            if let Some(index) = menu.hover_link_index.as_mut() {
+                *index = (*index as i32 + direction).rem_euclid(LINK_ITEM_COUNT as i32) as usize;
+            } else if let Some(index) = menu.hover_karaoke_specific.as_mut() {
                 let len = karaoke_specific_item_count(project, menu.line_id) as i32;
                 *index = (*index as i32 + direction).rem_euclid(len) as usize;
             } else if let Some(index) = menu.hover_karaoke_index.as_mut() {
@@ -6321,7 +6659,7 @@ pub fn handle_context_menu_event(
                 menu.hover_actor_index =
                     Some((current as i32 + direction).rem_euclid(len as i32) as usize);
             } else {
-                let root_len = root_item_count(project, menu.line_id) as i32;
+                let root_len = root_item_count(project, menu) as i32;
                 let current = root_hover_index(project, menu) as i32;
                 let next = (current + direction).rem_euclid(root_len) as usize;
                 set_root_hover(project, menu, next);
@@ -6336,6 +6674,19 @@ pub fn handle_context_menu_event(
                 let line_id = menu.line_id;
                 state.context_menu = None;
                 return EventResponse::Action(UiAction::GenerateDetectionSigns { line_id });
+            }
+            if let Some(index) = menu.hover_link_index {
+                let response = activate_link_item(project, state, index);
+                if state.context_menu.is_some() {
+                    return announce_context_menu_selection(project, state);
+                }
+                return response;
+            }
+            if menu.hover_link {
+                let menu = state.context_menu.as_mut().unwrap();
+                menu.hover_link = false;
+                menu.hover_link_index = Some(0);
+                return announce_context_menu_selection(project, state);
             }
             if let Some(index) = menu.hover_karaoke_specific {
                 let action = karaoke_specific_item_action(menu.line_id, index);
@@ -6554,6 +6905,41 @@ pub fn render_context_menu<'a>(
 
     if karaoke_menu_available(project, menu.line_id) && karaoke_menu_visible(menu) {
         render_karaoke_submenus(project, screen_w, screen_h, menu, root_rect, quads, labels);
+    }
+
+    if let Some(index) = link_root_index(project, menu) {
+        render_menu_item(
+            quads,
+            labels,
+            Rect {
+                x: root_rect.x,
+                y: root_rect.y + MENU_ITEM_H * index as f32,
+                width: root_rect.width,
+                height: MENU_ITEM_H,
+            },
+            t("context.link.menu"),
+            link_menu_visible(menu),
+            true,
+        );
+        if link_menu_visible(menu) {
+            let link_rect = link_menu_rect(project, screen_w, screen_h, menu, root_rect);
+            render_menu_panel(quads, link_rect);
+            for item in 0..LINK_ITEM_COUNT {
+                render_menu_item(
+                    quads,
+                    labels,
+                    Rect {
+                        x: link_rect.x,
+                        y: link_rect.y + MENU_ITEM_H * item as f32,
+                        width: link_rect.width,
+                        height: MENU_ITEM_H,
+                    },
+                    link_item_label(project, menu, item),
+                    menu.hover_link_index == Some(item),
+                    false,
+                );
+            }
+        }
     }
 
     if menu.hover_text_emotion || menu.hover_emotion_index.is_some() {
@@ -6786,7 +7172,7 @@ fn context_menu_layout(
     screen_h: f32,
     menu: &LineContextMenu,
 ) -> (Rect, Rect, Rect, f32, f32, Rect) {
-    let root_h = MENU_ITEM_H * root_item_count(project, menu.line_id) as f32;
+    let root_h = MENU_ITEM_H * root_item_count(project, menu) as f32;
     let (root_x, root_y) =
         clamped_menu_origin(menu.x, menu.y, MENU_ROOT_W, root_h, screen_w, screen_h);
     let root_rect = Rect {
@@ -6989,7 +7375,18 @@ fn update_context_menu_hover(
             karaoke_hover = Some(index);
         }
     }
-    let in_karaoke_menus = karaoke_hover.is_some() || karaoke_specific_hover.is_some();
+    let link_available = link_menu_available(project, menu);
+    let link_rect = link_menu_rect(project, screen_w, screen_h, menu, root_rect);
+    let link_visible = link_available && link_menu_visible(menu);
+    let mut link_hover = None;
+    if link_visible && link_rect.contains(x, y) {
+        let index = ((y - link_rect.y) / MENU_ITEM_H).floor() as usize;
+        if index < LINK_ITEM_COUNT {
+            link_hover = Some(index);
+        }
+    }
+    let in_karaoke_menus =
+        karaoke_hover.is_some() || karaoke_specific_hover.is_some() || link_hover.is_some();
     if !in_karaoke_menus
         && text_emotion_panel_visible(menu)
         && emotion_available
@@ -7060,6 +7457,25 @@ fn update_context_menu_hover(
         menu.hover_emotion_index = None;
         menu.hover_emotion_variant = None;
     }
+
+    let link_root = link_root_index(project, menu);
+    menu.hover_link = link_available
+        && ((link_root.is_some() && root_item == link_root)
+            || link_hover.is_some()
+            || (link_visible && bridge_rect(root_rect, link_rect).contains(x, y)));
+    if link_hover.is_some() {
+        menu.hover_link_index = link_hover;
+    } else if !menu.hover_link {
+        menu.hover_link_index = None;
+    }
+    if menu.hover_link {
+        menu.hover_text_emotion = false;
+        menu.hover_emotion_index = None;
+        menu.hover_emotion_variant = None;
+        menu.hover_karaoke = false;
+        menu.hover_karaoke_index = None;
+        menu.hover_karaoke_specific = None;
+    }
 }
 
 fn context_actor_menu_visible(menu: &LineContextMenu) -> bool {
@@ -7090,6 +7506,28 @@ fn render_menu_item<'a>(
     arrow: bool,
 ) {
     context_menu::render_item(quads, labels, rect, text, hovered, arrow, 12.0);
+}
+
+/// Two outlined rounded links, the mark of a linked dialogue.
+fn render_link_icon(quads: &mut Vec<QuadInstance>, x: f32, y: f32, size: f32) {
+    let link_w = size * 0.62;
+    let link_h = size * 0.48;
+    let link_y = y + (size - link_h) / 2.0;
+    for offset in [0.0, size * 0.38] {
+        quads.push(QuadInstance {
+            rect: [x + offset, link_y, link_w, link_h],
+            color: [0.0; 4],
+            color_bottom: [0.0; 4],
+            border_color: [0.86, 0.88, 0.96, 0.95],
+            border_width: 1.3,
+            border_radius: link_h / 2.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0; 4],
+            shadow_blur: 0.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+    }
 }
 
 fn render_menu_separator(quads: &mut Vec<QuadInstance>, x: f32, y: f32, width: f32) {

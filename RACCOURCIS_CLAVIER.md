@@ -100,6 +100,7 @@ sync au curseur de lecture.
 | `I` / `O` | Fixer le début/la fin de la ligne sélectionnée |
 | `Q` / `D` (maintenir) | Déplacer continuellement la timeline à gauche/droite |
 | `T` | Modifier le texte de la ligne sélectionnée |
+| `Ctrl + T` | Modifier la ligne sélectionnée section par section (voir ci-dessous) |
 | `P` | Modifier le personnage de la ligne sélectionnée |
 | `Suppr` | Supprimer la ou les lignes sélectionnées |
 | `Ctrl + C` | Copier la ou les lignes sélectionnées |
@@ -121,6 +122,14 @@ le texte tapé ou effacé ne change que la partie comprise entre deux limites :
 limite, le caret appartient à la partie d’où il vient (`→` : celle de gauche,
 `←` : celle de droite) ; un clic près d’une limite choisit la partie sous le
 pointeur.
+
+`Ctrl + T` modifie la ligne section par section, sans toucher aux points de
+synchronisation ni au calage des syllabes du karaoké : un champ de texte
+apparaît au-dessus de la section courante (la partie entre deux points de
+synchronisation, ou un mot quand la ligne n’en a pas), `Entrée` remplace la
+section par le texte tapé et passe à la suivante, `Échap` arrête. Un clic
+ailleurs sur la bande arrête aussi. Un mot remplacé par un mot du même nombre
+de syllabes garde le calage de chacune.
 
 ## Comic Dubs (studio)
 

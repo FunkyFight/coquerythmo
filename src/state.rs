@@ -5261,7 +5261,10 @@ impl State {
             label: format!(
                 "{} {:+.0} %",
                 crate::i18n::t("settings.reading_bar_offset"),
-                self.project_session.project.settings().reading_bar_offset_percent
+                self.project_session
+                    .project
+                    .settings()
+                    .reading_bar_offset_percent
             ),
         });
     }
@@ -5356,7 +5359,10 @@ impl State {
         match crate::band_style::load_custom_dot_image(&path) {
             Ok(png_base64) => Some(png_base64),
             Err(error) => {
-                log::warn!("Failed to load karaoke dot image {}: {error}", path.display());
+                log::warn!(
+                    "Failed to load karaoke dot image {}: {error}",
+                    path.display()
+                );
                 self.show_toast(crate::i18n::t("toast.karaoke_dot_image_failed"), 5.0);
                 None
             }
@@ -5722,11 +5728,9 @@ impl State {
             .ui
             .open_export_modal(video_width, video_height, languages, configuration);
         let project = &self.project_session.project;
-        let band_height_reference = crate::rythmo_cpu_renderer::br_height(
-            project,
-            crate::constants::REF_WIDTH as u32,
-            1.0,
-        ) as f32;
+        let band_height_reference =
+            crate::rythmo_cpu_renderer::br_height(project, crate::constants::REF_WIDTH as u32, 1.0)
+                as f32;
         let band_style = &project.settings().band_style;
         if let Some(modal) = self.ui_shell.ui.modal_host.export.as_mut() {
             modal.set_layout_preview(
@@ -5806,7 +5810,11 @@ impl State {
             .collect();
         let name = (existing.len() + 1..)
             .map(|n| crate::i18n::t("file_tree.new_band").replace("{n}", &n.to_string()))
-            .find(|name| !existing.iter().any(|other| other.eq_ignore_ascii_case(name)))
+            .find(|name| {
+                !existing
+                    .iter()
+                    .any(|other| other.eq_ignore_ascii_case(name))
+            })
             .expect("an unused band name exists");
         self.create_language(name);
         let id = self.project_session.project.active_language_id();
@@ -5858,7 +5866,9 @@ impl State {
             return;
         };
         let name = deleted.name().to_string();
-        self.project_session.history.record_language_deletion(deleted);
+        self.project_session
+            .history
+            .record_language_deletion(deleted);
         self.refresh_after_language_change();
         self.show_toast(
             format!("{} {}", crate::i18n::t("toast.language_deleted"), name),
@@ -8547,10 +8557,7 @@ impl State {
         });
         // The renamed character keeps its karaoke dot.
         let mut settings = self.project_session.project.settings().clone();
-        if settings
-            .band_style
-            .copy_character_dot(&old_name, &new_name)
-        {
+        if settings.band_style.copy_character_dot(&old_name, &new_name) {
             EditExecutor::apply_domain_change(
                 &mut self.project_session,
                 EditOrigin::Local,
@@ -9149,6 +9156,7 @@ impl State {
         }
         if self.ui_shell.ui.rythmo_state.editing_character.is_some()
             || self.ui_shell.ui.rythmo_state.editing_note.is_some()
+            || self.ui_shell.ui.rythmo_state.section_edit.is_some()
         {
             return None;
         }
@@ -9721,6 +9729,123 @@ impl State {
         true
     }
 
+    /// `Ctrl + T`: edits the selected line (or the one being edited) section
+    /// by section, keeping its synchronization limits and karaoke timings in
+    /// place. A line without text is edited as usual.
+    pub fn start_editing_selected_line_sections(&mut self) -> bool {
+        let Some(id) = self
+            .ui_shell
+            .ui
+            .rythmo_state
+            .editing_line
+            .or_else(|| self.selected_line_id())
+        else {
+            return false;
+        };
+        let Some(line) = self.project_session.project.get_line(id) else {
+            return false;
+        };
+        let sections =
+            crate::workspaces::rythmo::view::line_sections(&self.project_session.project, line);
+        if sections.is_empty() {
+            self.start_editing_line(id);
+            return true;
+        }
+        let text = line.text.clone();
+        let Some(section) = self
+            .ui_shell
+            .ui
+            .rythmo_state
+            .start_section_edit(id, &text, sections)
+        else {
+            return false;
+        };
+        self.announce_accessibility(AccessibilityEvent::Selection { label: section });
+        true
+    }
+
+    /// One step of the section-by-section edit: replaces the characters
+    /// `range` of the line by `text`, then moves the edit to the next section.
+    /// Synchronization limits keep their place around the section and the
+    /// karaoke syllables outside it keep their timing.
+    pub fn replace_line_section(
+        &mut self,
+        id: u64,
+        range: (usize, usize),
+        text: String,
+        limits_before: u32,
+    ) {
+        let Some(line) = self.project_session.project.get_line(id) else {
+            return;
+        };
+        let old_text = line.text.clone();
+        let count = old_text.chars().count();
+        let start = range.0.min(count);
+        let end = range.1.clamp(start, count);
+        let byte_at = |position: usize| {
+            old_text
+                .char_indices()
+                .nth(position)
+                .map_or(old_text.len(), |(byte, _)| byte)
+        };
+        let mut new_text = old_text.clone();
+        new_text.replace_range(byte_at(start)..byte_at(end), &text);
+        let inserted = text.chars().count();
+        if new_text != old_text {
+            let edit = crate::detection::TextEditSpan::from_char_edit(
+                &old_text,
+                &new_text,
+                start,
+                end - start,
+            )
+            .map(|span| crate::detection::TextEditSpan {
+                limits_before,
+                ..span
+            });
+            let lang = self.project_session.project.syllable_language_code();
+            let syllable_ratios = crate::syllable::ratios_after_section_replace(
+                &old_text,
+                &new_text,
+                (start, end),
+                inserted,
+                &line.syllable_ratios,
+                lang,
+            )
+            .filter(|ratios| *ratios != line.syllable_ratios)
+            .map(|ratios| (line.syllable_ratios.clone(), ratios));
+            let old_emotions = line.text_emotions.clone();
+            let old_styles = line.text_styles.clone();
+            let new_emotions =
+                crate::rythmo_line::rebase_text_emotions(&old_emotions, &old_text, &new_text);
+            let new_styles =
+                crate::rythmo_line::rebase_text_styles(&old_styles, &old_text, &new_text);
+            self.execute_local_command(Command::UpdateLineText {
+                line_id: id,
+                old_text,
+                new_text,
+                old_emotions,
+                new_emotions,
+                old_styles,
+                new_styles,
+                edit,
+                syllable_ratios,
+            });
+        }
+        let project = &self.project_session.project;
+        let next = project.get_line(id).and_then(|line| {
+            let sections = crate::workspaces::rythmo::view::line_sections(project, line);
+            let text = line.text.clone();
+            self.ui_shell
+                .ui
+                .rythmo_state
+                .section_edit_replaced(inserted, &text, sections)
+        });
+        match next {
+            Some(label) => self.announce_accessibility(AccessibilityEvent::Selection { label }),
+            None => self.announce_selected_line(),
+        }
+    }
+
     pub fn start_editing_selected_character(&mut self) -> bool {
         let Some(id) = self.selected_line_id() else {
             return false;
@@ -10159,19 +10284,20 @@ impl State {
                 "text_style.off"
             })
         );
-        self.announce_accessibility(crate::accessibility::AccessibilityEvent::Activation {
-            label,
-        });
+        self.announce_accessibility(crate::accessibility::AccessibilityEvent::Activation { label });
     }
 
     /// Line and character range the formatting bar applies to: the selection
     /// of the line being edited, or the whole selected line.
     pub fn text_style_target(&self) -> Option<(u64, Option<(usize, usize)>)> {
         let rythmo = &self.ui_shell.ui.rythmo_state;
-        let line_id = rythmo.editing_line.or_else(|| match self.selected_line_ids().as_slice() {
-            [line_id] => Some(*line_id),
-            _ => None,
-        })?;
+        let line_id =
+            rythmo
+                .editing_line
+                .or_else(|| match self.selected_line_ids().as_slice() {
+                    [line_id] => Some(*line_id),
+                    _ => None,
+                })?;
         let line = self.project_session.project.get_line(line_id)?;
         if !line.can_have_text_styles() || line.text.is_empty() {
             return None;
@@ -10252,7 +10378,169 @@ impl State {
                 hover_karaoke: false,
                 hover_karaoke_index: None,
                 hover_karaoke_specific: None,
+                hover_link: false,
+                hover_link_index: None,
+                link_line_ids: Vec::new(),
+                link_include_character: false,
             });
+    }
+
+    // -- Linked dialogues --
+
+    /// The link command for `changes`, with the content of the group
+    /// harmonised on `source_line_id`.
+    fn line_link_command(
+        &self,
+        changes: Vec<crate::line_links::LineLinkChange>,
+        source_line_id: u64,
+        include_character: bool,
+    ) -> Option<Command> {
+        let project = &self.project_session.project;
+        let source = project.get_line(source_line_id)?.clone();
+        let source_detections = project.detections().line(source_line_id).cloned();
+        let mut old_lines = Vec::new();
+        let mut new_lines = Vec::new();
+        let mut old_detections = Vec::new();
+        let mut new_detections = Vec::new();
+        for change in &changes {
+            if change.line_id == source_line_id || change.new.is_none() {
+                continue;
+            }
+            let Some(line) = project.get_line(change.line_id) else {
+                continue;
+            };
+            let mut linked = line.clone();
+            if crate::line_links::apply_linked_content(&mut linked, &source, include_character) {
+                old_lines.push(line.clone());
+                new_lines.push(linked);
+            }
+            let old = project
+                .detections()
+                .line(change.line_id)
+                .cloned()
+                .unwrap_or_default();
+            let mut new = source_detections.clone().unwrap_or_default();
+            new.shift_sync_points(crate::detection::MediaTick::from_frame(
+                line.start_frame.saturating_sub(source.start_frame),
+            ));
+            if old != new {
+                old_detections.push((change.line_id, old));
+                new_detections.push((change.line_id, new));
+            }
+        }
+        Some(Command::SetLineLinks {
+            changes,
+            old_lines,
+            new_lines,
+            old_detections,
+            new_detections,
+        })
+    }
+
+    /// Link the dialogue lines of `line_ids` (plus the lines already linked
+    /// to them); `source_line_id` gives its content to the group.
+    pub fn link_lines(&mut self, line_ids: Vec<u64>, source_line_id: u64, include_character: bool) {
+        use crate::line_links::{LineLink, LineLinkChange};
+        let project = &self.project_session.project;
+        let mut ids: Vec<u64> = project
+            .lines()
+            .filter(|line| line.kind.is_dialogue() && line_ids.contains(&line.id))
+            .map(|line| line.id)
+            .collect();
+        if !ids.contains(&source_line_id) {
+            return;
+        }
+        for id in ids.clone() {
+            for member in project.line_links().members(id) {
+                if !ids.contains(&member) && project.get_line(member).is_some() {
+                    ids.push(member);
+                }
+            }
+        }
+        if ids.len() < 2 {
+            self.announce_accessibility(AccessibilityEvent::Error {
+                message: crate::i18n::t("accessibility.link_needs_two_lines").to_string(),
+            });
+            return;
+        }
+        let group = project.line_links().next_group_id();
+        let changes = ids
+            .iter()
+            .map(|&line_id| LineLinkChange {
+                line_id,
+                old: project.line_links().link(line_id),
+                new: Some(LineLink {
+                    group,
+                    include_character,
+                }),
+            })
+            .collect();
+        if let Some(command) = self.line_link_command(changes, source_line_id, include_character) {
+            self.execute_local_command(command);
+            self.announce_accessibility(AccessibilityEvent::Success {
+                message: crate::i18n::t("accessibility.lines_linked").to_string(),
+            });
+        }
+    }
+
+    /// Dissolve the group of linked dialogues containing `line_id`.
+    pub fn unlink_lines(&mut self, line_id: u64) {
+        use crate::line_links::LineLinkChange;
+        let project = &self.project_session.project;
+        let changes: Vec<LineLinkChange> = project
+            .line_links()
+            .members(line_id)
+            .into_iter()
+            .filter(|id| project.get_line(*id).is_some())
+            .map(|line_id| LineLinkChange {
+                line_id,
+                old: project.line_links().link(line_id),
+                new: None,
+            })
+            .collect();
+        if changes.is_empty() {
+            return;
+        }
+        self.execute_local_command(Command::SetLineLinks {
+            changes,
+            old_lines: Vec::new(),
+            new_lines: Vec::new(),
+            old_detections: Vec::new(),
+            new_detections: Vec::new(),
+        });
+        self.announce_accessibility(AccessibilityEvent::Success {
+            message: crate::i18n::t("accessibility.lines_unlinked").to_string(),
+        });
+    }
+
+    /// Share (or stop sharing) the character within the group of `line_id`;
+    /// that line gives its character to the others.
+    pub fn set_linked_character(&mut self, line_id: u64, include_character: bool) {
+        use crate::line_links::{LineLink, LineLinkChange};
+        let project = &self.project_session.project;
+        let changes: Vec<LineLinkChange> = project
+            .line_links()
+            .members(line_id)
+            .into_iter()
+            .filter(|id| project.get_line(*id).is_some())
+            .filter_map(|line_id| {
+                let old = project.line_links().link(line_id)?;
+                Some(LineLinkChange {
+                    line_id,
+                    old: Some(old),
+                    new: Some(LineLink {
+                        include_character,
+                        ..old
+                    }),
+                })
+            })
+            .collect();
+        if changes.is_empty() {
+            return;
+        }
+        if let Some(command) = self.line_link_command(changes, line_id, include_character) {
+            self.execute_local_command(command);
+        }
     }
 
     pub fn set_syllable_ratios(&mut self, line_id: u64, ratios: Vec<f32>) {
@@ -12283,9 +12571,7 @@ impl State {
             .ui
             .rythmo_state
             .sync_tooltip_deadline()
-            .is_some_and(|deadline| {
-                deadline <= now && deadline > self.render.last_redraw()
-            })
+            .is_some_and(|deadline| deadline <= now && deadline > self.render.last_redraw())
         {
             return true;
         }

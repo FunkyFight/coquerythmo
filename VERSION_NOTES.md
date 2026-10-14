@@ -126,6 +126,36 @@ exactement la vidéo exportée.
   `Suppr`) sur la case vide confirme la suppression : la case revient à la
   syllabe d’avant. Les poignées de la ligne ne se déplacent pas tant qu’une
   case est réservée ; quitter l’édition de la ligne confirme aussi.
+- `Ctrl + T` modifie la ligne sélectionnée **section par section**, sans
+  toucher aux points de synchronisation ni au calage des syllabes du karaoké.
+  Un petit champ de texte apparaît au-dessus de la première section (la
+  section est surlignée sur la bande, un compteur « 1/4 » indique où l’on en
+  est) ; on y tape le nouveau texte, `Entrée` remplace la section et passe à
+  la suivante, `Échap` arrête. Les sections sont les parties comprises entre
+  les points de synchronisation quand la ligne en a, sinon ses mots. Un mot
+  remplacé par un mot du même nombre de syllabes garde exactement le calage
+  de chaque syllabe ; avec un autre nombre, les nouvelles syllabes se
+  partagent le temps de la section. Les limites avant et après la section et
+  les syllabes des autres sections ne bougent pas. Chaque section validée est
+  une étape de `Ctrl + Z`.
+- **Dialogues liés** : sélectionnez plusieurs répliques, clic droit sur l’une
+  d’elles, « Dialogues liés » puis « Lier les lignes sélectionnées ». Les
+  répliques liées partagent ensuite tout sauf leur place sur la bande : texte,
+  durée et poignées, calage des syllabes, points de synchronisation, note,
+  karaoké, mise en forme et effets de texte. Modifier l’une modifie les autres,
+  et `Ctrl + Z` défait le tout. La réplique cliquée donne son contenu aux
+  autres au moment de la liaison. Le personnage (nom, couleur, comédiens)
+  reste propre à chaque réplique, sauf si « Inclure le personnage » est coché
+  dans le même sous-menu : l’option vaut pour le groupe et se change à tout
+  moment. Une petite chaîne au bout de l’étiquette du personnage signale une
+  réplique liée ; « Délier » défait le groupe sans toucher aux textes. Les
+  liens sont propres à chaque langue de la bande, et une réplique copiée-collée
+  n’est jamais liée d’office.
+- En mode karaoké, une réplique collée (`Ctrl + V`) après des répliques créées
+  plus tard dans la chanson pouvait être sautée sur sa rangée : la réplique
+  suivante s’y affichait à sa place, et les courtes répliques répétées
+  (« Dis, dis, dis… ») n’étaient pas toutes visibles. Chaque rangée affiche
+  de nouveau la réplique la plus proche, quel que soit l’ordre de création.
 
 ## Sessions en ligne
 

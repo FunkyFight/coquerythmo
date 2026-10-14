@@ -60,6 +60,17 @@ pub struct LineContextMenu {
     pub hover_karaoke_index: Option<usize>,
     /// Item of the "dot specific to this character" submenu.
     pub hover_karaoke_specific: Option<usize>,
+    /// "Linked dialogues" root item (or its submenu, with the mouse).
+    pub hover_link: bool,
+    /// Item of the linked dialogues submenu: link or unlink, then the
+    /// character option.
+    pub hover_link_index: Option<usize>,
+    /// Dialogue lines selected when the menu opened: the candidates for a
+    /// new group.
+    pub link_line_ids: Vec<u64>,
+    /// Whether the character is shared: the group's setting on a linked
+    /// line, the remembered preference otherwise.
+    pub link_include_character: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -106,6 +117,21 @@ struct LeadingVisualSpanCache {
 /// Rest time on a creation spot before its tooltip appears.
 pub const SYNC_TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// Step-by-step edit of the text of a line (`Ctrl + T`), one section at a
+/// time in a text field floating above the section: see `section_edit.rs`.
+pub struct SectionEdit {
+    pub line_id: u64,
+    /// Character ranges of the sections in the current text of the line.
+    pub sections: Vec<(usize, usize)>,
+    /// Section being typed.
+    pub index: usize,
+    /// Text typed for that section.
+    pub text: String,
+    pub input: crate::ui::text_input::TextInputState,
+    /// Place of the section among the others, such as "2/5".
+    pub step_label: String,
+}
+
 pub struct RythmoState {
     pub hovered_line: Option<u64>,
     pub hovered_track: Option<usize>,
@@ -122,6 +148,8 @@ pub struct RythmoState {
     /// caret's segment follows from its position.
     pub(crate) sync_caret_segment: Option<(u64, usize)>,
     pub(crate) line_lowercase_override: bool,
+    /// Step-by-step edit of a line, section by section (`Ctrl + T`).
+    pub section_edit: Option<SectionEdit>,
     pub editing_character: Option<u64>,
     pub char_input: crate::ui::text_input::TextInputState,
     pub editing_note: Option<u64>,
@@ -151,6 +179,8 @@ pub struct RythmoState {
     /// text typed in its place (or a second erasure, which confirms).
     pub slot_reservation: Option<SyllableSlotReservation>,
     pub context_menu: Option<LineContextMenu>,
+    /// Last choice of the "include the character" option when linking.
+    pub link_includes_character: bool,
     pub sync_point_menu: Option<SyncPointMenu>,
     /// Button of the formatting bar under the pointer.
     pub format_toolbar_hover: Option<usize>,
@@ -298,6 +328,7 @@ impl RythmoState {
             editing_line: None,
             line_input: crate::ui::text_input::TextInputState::new(),
             sync_caret_segment: None,
+            section_edit: None,
             line_lowercase_override: false,
             editing_character: None,
             char_input: crate::ui::text_input::TextInputState::new(),
@@ -325,6 +356,7 @@ impl RythmoState {
             syllable_drag: None,
             slot_reservation: None,
             context_menu: None,
+            link_includes_character: false,
             sync_point_menu: None,
             format_toolbar_hover: None,
             sync_create_hover: None,
@@ -697,6 +729,7 @@ impl RythmoState {
 
     pub fn is_editing(&self) -> bool {
         self.editing_line.is_some()
+            || self.section_edit.is_some()
             || self.editing_character.is_some()
             || self.editing_note.is_some()
     }
@@ -791,6 +824,9 @@ impl RythmoState {
             self.line_input.next_cursor_blink_deadline(),
             self.char_input.next_cursor_blink_deadline(),
             self.note_input.next_cursor_blink_deadline(),
+            self.section_edit
+                .as_ref()
+                .and_then(|edit| edit.input.next_cursor_blink_deadline()),
         ]
         .into_iter()
         .flatten()
@@ -810,10 +846,89 @@ impl RythmoState {
 
     pub fn stop_line_editing(&mut self) {
         self.editing_line = None;
+        self.section_edit = None;
         self.slot_reservation = None;
         self.sync_caret_segment = None;
         self.line_lowercase_override = false;
         self.line_input.deactivate();
+    }
+
+    /// Begins the step-by-step edit of `line_id`, whose text is `text`, over
+    /// `sections` (character ranges). Returns the text of the first section,
+    /// or `None` when there is no section to edit.
+    pub fn start_section_edit(
+        &mut self,
+        line_id: u64,
+        text: &str,
+        sections: Vec<(usize, usize)>,
+    ) -> Option<String> {
+        let range = *sections.first()?;
+        self.stop_line_editing();
+        self.stop_char_editing();
+        self.stop_note_editing();
+        let section = section_text(text, range);
+        let mut input = crate::ui::text_input::TextInputState::new();
+        input.activate(&section);
+        input.select_all(&section);
+        self.section_edit = Some(SectionEdit {
+            line_id,
+            step_label: format!("1/{}", sections.len()),
+            sections,
+            index: 0,
+            text: section.clone(),
+            input,
+        });
+        self.selected = Some(Selection::Line(line_id));
+        Some(section)
+    }
+
+    pub fn stop_section_editing(&mut self) {
+        self.section_edit = None;
+    }
+
+    /// Moves the step-by-step edit to the next section of the line, whose
+    /// text is now `text`. Returns the text of that section, or `None` once
+    /// the last section is done and the edit is over.
+    pub fn advance_section_edit(&mut self, text: &str) -> Option<String> {
+        let edit = self.section_edit.as_mut()?;
+        edit.index += 1;
+        let Some(range) = edit.sections.get(edit.index).copied() else {
+            self.section_edit = None;
+            return None;
+        };
+        let section = section_text(text, range);
+        edit.step_label = format!("{}/{}", edit.index + 1, edit.sections.len());
+        edit.text = section.clone();
+        edit.input.activate(&section);
+        edit.input.select_all(&section);
+        Some(section)
+    }
+
+    /// The current section was replaced by `inserted` characters and the
+    /// line's text is now `text`, cut into `sections` again; moves on to the
+    /// next section (see [`Self::advance_section_edit`]).
+    pub fn section_edit_replaced(
+        &mut self,
+        inserted: usize,
+        text: &str,
+        sections: Vec<(usize, usize)>,
+    ) -> Option<String> {
+        if let Some(edit) = self.section_edit.as_mut() {
+            if sections.len() == edit.sections.len() {
+                // The limits were rebased by the edit: trust their new places.
+                edit.sections = sections;
+            } else if let Some(range) = edit.sections.get_mut(edit.index) {
+                // Words: the typed text may hold several; the next step is
+                // the next original word.
+                let delta = inserted as isize - (range.1 - range.0) as isize;
+                range.1 = range.0 + inserted;
+                for later in &mut edit.sections[edit.index + 1..] {
+                    later.0 = (later.0 as isize + delta).max(0) as usize;
+                    later.1 = (later.1 as isize + delta).max(0) as usize;
+                }
+            }
+        }
+        self.advance_section_edit(text)
     }
 
     pub fn start_editing_note(&mut self, line_id: u64, text: &str) {
@@ -829,6 +944,7 @@ impl RythmoState {
 
     pub fn start_editing_line(&mut self, line_id: u64, text: &str) {
         self.editing_line = Some(line_id);
+        self.section_edit = None;
         self.sync_caret_segment = None;
         self.line_lowercase_override = false;
         self.line_input.activate(text);

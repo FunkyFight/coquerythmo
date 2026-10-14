@@ -124,6 +124,7 @@ fn local_edit_undo_redo_preserves_revision_and_values() {
             old_styles: Vec::new(),
             new_styles: Vec::new(),
             edit: None,
+            syllable_ratios: None,
         },
         EditOrigin::Local,
     );

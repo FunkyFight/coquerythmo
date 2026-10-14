@@ -7,6 +7,7 @@
 pub use crate::application::command::ToolMode;
 pub mod actor_icon_cache;
 pub mod automation;
+pub mod band_style_modal;
 pub mod color_picker;
 pub mod comic_dubs_settings_modal;
 pub mod comic_dubs_workspace;
@@ -15,12 +16,13 @@ pub mod context_menu;
 pub mod discord_notice_modal;
 pub mod dropdown;
 pub mod export_done_modal;
-pub mod export_modal;
 pub mod export_layout_page;
+pub mod export_modal;
 pub mod export_preview_cache;
 pub mod file_explorer;
 pub mod focus;
 pub mod font_dropdown;
+pub mod hsv_picker;
 pub mod icon_button;
 pub mod icons;
 pub mod interactive;
@@ -35,8 +37,6 @@ pub mod pricing_page;
 pub mod pricing_plan_modal;
 pub mod primitives;
 pub mod project_settings_modal;
-pub mod band_style_modal;
-pub mod hsv_picker;
 pub mod project_transfer_modal;
 pub mod proxy_error_modal;
 pub mod proxy_modal;
@@ -680,7 +680,10 @@ impl Ui {
     fn focus_widget_at(&mut self, x: f32, y: f32) {
         if self.active_workspace == WorkspaceId::Rythmo
             && self.file_tree.is_open()
-            && self.layout.properties.is_some_and(|panel| panel.contains(x, y))
+            && self
+                .layout
+                .properties
+                .is_some_and(|panel| panel.contains(x, y))
         {
             self.focus.focus(&FocusId::new("file-tree"));
             return;
@@ -1986,10 +1989,30 @@ impl Ui {
                     hover_karaoke: false,
                     hover_karaoke_index: None,
                     hover_karaoke_specific: None,
+                    hover_link: false,
+                    hover_link_index: None,
+                    link_line_ids: rythmo::selected_dialogue_line_ids(
+                        project,
+                        self.rythmo_state.selected.as_ref(),
+                    ),
+                    link_include_character: rythmo::link_include_character_for(
+                        project,
+                        line_id,
+                        &self.rythmo_state,
+                    ),
                 });
+                let link_available = self
+                    .rythmo_state
+                    .context_menu
+                    .as_ref()
+                    .is_some_and(|menu| rythmo::link_menu_available(project, menu));
                 return EventResponse::Action(UiAction::Accessibility(
                     crate::accessibility::AccessibilityEvent::Focus {
-                        label: rythmo::context_menu_accessibility_label(project, line_id),
+                        label: rythmo::context_menu_accessibility_label(
+                            project,
+                            line_id,
+                            link_available,
+                        ),
                         role: "menu".to_string(),
                     },
                 ));
@@ -3865,7 +3888,8 @@ impl Ui {
                 any_selection,
                 detection_selected,
                 hovered_line: self.rythmo_state.hovered_line.is_some(),
-                editing_line: self.rythmo_state.editing_line.is_some(),
+                editing_line: self.rythmo_state.editing_line.is_some()
+                    || self.rythmo_state.section_edit.is_some(),
                 editing_any: self.rythmo_state.is_editing(),
                 has_lines: project.line_count() > 0,
                 line_at_playhead: project.lines().any(|line| {
@@ -3925,11 +3949,10 @@ impl Ui {
             renderer.texture_sampler(),
         );
         // Band of the export layout preview, rendered like at export.
-        let export_band_request = self
-            .modal_host
-            .export
-            .as_ref()
-            .and_then(|modal| modal.band_preview_request(self.screen_w, self.screen_h, ui_scale));
+        let export_band_request =
+            self.modal_host.export.as_ref().and_then(|modal| {
+                modal.band_preview_request(self.screen_w, self.screen_h, ui_scale)
+            });
         self.export_band_preview.sync(
             export_band_request,
             project,
@@ -4571,6 +4594,15 @@ impl Ui {
                 &mut popup_quads,
                 &mut popup_labels,
             );
+            rythmo::render_section_edit(
+                project,
+                render_frame,
+                &rythmo_zone,
+                fps,
+                &self.rythmo_state,
+                &mut popup_quads,
+                &mut popup_labels,
+            );
         }
         if self.active_workspace == WorkspaceId::Rythmo {
             rythmo::render_autocomplete(
@@ -4698,7 +4730,9 @@ impl Ui {
             && self.rythmo_state.detection_drag.is_none()
             && self.rythmo_state.dragging.is_none()
             && self.rythmo_state.detection_hover.is_some()
-            && self.rythmo_state.sync_tooltip_due(std::time::Instant::now())
+            && self
+                .rythmo_state
+                .sync_tooltip_due(std::time::Instant::now())
             && rythmo_zone.contains(self.cursor_pos.0, self.cursor_pos.1)
             && rythmo::sync_placeholder_hovered(
                 project,

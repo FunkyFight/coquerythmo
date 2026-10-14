@@ -981,6 +981,101 @@ pub fn timings_after_text_edit(
     Some(TextEditTimings { ratios, reserved })
 }
 
+/// Saved karaoke timings after the text of one section of a line was
+/// replaced, without disturbing the rest of the line: the section ran from
+/// character `section.0` to `section.1` of `old_text` and holds `inserted`
+/// characters in `new_text`.
+///
+/// Syllables outside the section keep their exact timing. Inside it, the new
+/// syllables take the slots of the old ones one for one when they are as many
+/// (the usual case: a word replaced by a word of the same length in
+/// syllables); otherwise they share the time of the section in proportion to
+/// their length. Returns `None` when no timing was saved, so untouched lines
+/// keep their default timing, and falls back on [`timings_after_text_edit`]
+/// when the syllables around the section cannot be matched.
+pub fn ratios_after_section_replace(
+    old_text: &str,
+    new_text: &str,
+    section: (usize, usize),
+    inserted: usize,
+    saved_ratios: &[f32],
+    lang: &str,
+) -> Option<Vec<f32>> {
+    let old_breaks = syllable_breaks(old_text, lang);
+    let old_ratios = adapted_ratios_for_breaks(old_text, saved_ratios, &old_breaks)
+        .or_else(|| (old_breaks.is_empty() && !saved_ratios.is_empty()).then(|| vec![1.0]))?;
+    if old_text == new_text {
+        return Some(saved_ratios.to_vec());
+    }
+    let fallback = || ratios_after_text_edit(old_text, new_text, saved_ratios, lang);
+    let old_len = old_text.chars().count();
+    let new_len = new_text.chars().count();
+    let start = section.0.min(old_len);
+    let end = section.1.clamp(start, old_len);
+    let new_end = (start + inserted).min(new_len);
+    if new_len + (end - start) != old_len + inserted {
+        return fallback();
+    }
+    let new_breaks = syllable_breaks(new_text, lang);
+    if new_breaks.is_empty() {
+        return Some(vec![1.0]);
+    }
+    let segments = |breaks: &[usize], len: usize| {
+        let mut bounds = Vec::with_capacity(breaks.len() + 2);
+        bounds.push(0);
+        bounds.extend_from_slice(breaks);
+        bounds.push(len);
+        bounds
+            .windows(2)
+            .map(|pair| (pair[0], pair[1]))
+            .collect::<Vec<_>>()
+    };
+    let old_segments = segments(&old_breaks, old_len);
+    let new_segments = segments(&new_breaks, new_len);
+    let overlaps = |(seg_start, seg_end): (usize, usize), (from, to): (usize, usize)| {
+        seg_start < to && seg_end > from
+    };
+    let old_group = (0..old_segments.len())
+        .filter(|index| overlaps(old_segments[*index], (start, end)))
+        .collect::<Vec<_>>();
+    let new_group = (0..new_segments.len())
+        .filter(|index| overlaps(new_segments[*index], (start, new_end)))
+        .collect::<Vec<_>>();
+    let (Some(&first_old), Some(&last_old)) = (old_group.first(), old_group.last()) else {
+        // Nothing replaced: the typed text is new, cut out of its neighbours.
+        return fallback();
+    };
+    let before = first_old;
+    let after = old_segments.len() - last_old - 1;
+    let new_first = new_group.first().copied().unwrap_or(before);
+    let new_after = new_group
+        .last()
+        .map_or(new_segments.len() - before, |last| {
+            new_segments.len() - last - 1
+        });
+    if new_first != before || new_after != after {
+        return fallback();
+    }
+    let total: f32 = old_group.iter().map(|index| old_ratios[*index]).sum();
+    let mut ratios = Vec::with_capacity(new_segments.len());
+    ratios.extend_from_slice(&old_ratios[..before]);
+    if new_group.len() == old_group.len() {
+        ratios.extend(old_group.iter().map(|index| old_ratios[*index]));
+    } else if !new_group.is_empty() {
+        let chars = new_group
+            .iter()
+            .map(|index| (new_segments[*index].1 - new_segments[*index].0).max(1) as f32)
+            .collect::<Vec<_>>();
+        let sum: f32 = chars.iter().sum();
+        ratios.extend(chars.iter().map(|count| (total * count / sum).max(0.001)));
+    }
+    ratios.extend_from_slice(&old_ratios[old_segments.len() - after..]);
+    if ratios.len() != new_segments.len() {
+        return fallback();
+    }
+    Some(normalized_ratios(&ratios))
+}
+
 pub fn active_syllable_local_progress(ratios: &[f32], progress: f32) -> Option<f32> {
     if ratios.is_empty() {
         return None;
@@ -1196,6 +1291,64 @@ mod tests {
     #[test]
     fn test_empty() {
         assert!(syllable_breaks("", "fr-fr").is_empty());
+    }
+
+    fn close(left: &[f32], right: &[f32]) -> bool {
+        left.len() == right.len() && left.iter().zip(right).all(|(a, b)| (a - b).abs() < 1e-4)
+    }
+
+    #[test]
+    fn replacing_a_section_by_as_many_syllables_keeps_every_slot() {
+        // "bonjour" (bon|jour) "le" "monde" (mon|de): five syllables, custom
+        // timings.
+        let old = "bonjour le monde";
+        assert_eq!(syllable_count(old, "fr-fr"), 5);
+        let saved = [0.1, 0.3, 0.2, 0.25, 0.15];
+        // The word "bonjour" (characters 0..7) becomes "salut" (sa|lut).
+        let new = "salut le monde";
+        assert_eq!(syllable_count(new, "fr-fr"), 5);
+        let ratios = ratios_after_section_replace(old, new, (0, 7), 5, &saved, "fr-fr").unwrap();
+        assert!(close(&ratios, &saved), "{ratios:?}");
+        // "monde" (mon|de) becomes "la mer" (la|mer): the two slots stay.
+        let new = "bonjour le la mer";
+        assert_eq!(syllable_count(new, "fr-fr"), 5);
+        let ratios = ratios_after_section_replace(old, new, (11, 16), 6, &saved, "fr-fr").unwrap();
+        assert!(close(&ratios, &saved), "{ratios:?}");
+    }
+
+    #[test]
+    fn replacing_a_section_by_another_syllable_count_shares_its_time() {
+        let old = "bonjour le monde";
+        let saved = [0.1, 0.3, 0.2, 0.25, 0.15];
+        // "bonjour" (two slots, 0.4 in all) becomes "chat" (one syllable).
+        let new = "chat le monde";
+        assert_eq!(syllable_count(new, "fr-fr"), 4);
+        let ratios = ratios_after_section_replace(old, new, (0, 7), 4, &saved, "fr-fr").unwrap();
+        assert!(close(&ratios, &[0.4, 0.2, 0.25, 0.15]), "{ratios:?}");
+        // "le" (one slot, 0.2) becomes "petit" (pe|tit): the slot is shared,
+        // the other words keep their timing.
+        let new = "bonjour petit monde";
+        assert_eq!(syllable_count(new, "fr-fr"), 6);
+        let ratios = ratios_after_section_replace(old, new, (8, 10), 5, &saved, "fr-fr").unwrap();
+        assert_eq!(ratios.len(), 6);
+        assert!((ratios[0] - 0.1).abs() < 1e-4 && (ratios[1] - 0.3).abs() < 1e-4);
+        assert!((ratios[2] + ratios[3] - 0.2).abs() < 1e-4, "{ratios:?}");
+        assert!((ratios[4] - 0.25).abs() < 1e-4 && (ratios[5] - 0.15).abs() < 1e-4);
+    }
+
+    #[test]
+    fn replacing_a_section_without_saved_timings_changes_nothing() {
+        assert_eq!(
+            ratios_after_section_replace(
+                "bonjour le monde",
+                "salut le monde",
+                (0, 7),
+                5,
+                &[],
+                "fr-fr"
+            ),
+            None
+        );
     }
 
     #[test]

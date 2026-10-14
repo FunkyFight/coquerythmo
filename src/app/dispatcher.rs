@@ -1061,6 +1061,17 @@ impl CommandDispatcher {
             UiAction::StartEditingSelectedLine => {
                 state.start_editing_selected_line();
             }
+            UiAction::StartEditingSelectedLineSections => {
+                state.start_editing_selected_line_sections();
+            }
+            UiAction::ReplaceLineSection {
+                id,
+                range,
+                text,
+                limits_before,
+            } => {
+                state.replace_line_section(id, range, text, limits_before);
+            }
             UiAction::StartEditingSelectedCharacter => {
                 state.start_editing_selected_character();
             }
@@ -1157,6 +1168,20 @@ impl CommandDispatcher {
                 );
             }
             UiAction::ToggleTextStyle { kind } => state.toggle_text_style_on_target(kind),
+            UiAction::LinkLines {
+                line_ids,
+                source_line_id,
+                include_character,
+            } => {
+                state.link_lines(line_ids, source_line_id, include_character);
+            }
+            UiAction::UnlinkLines { line_id } => state.unlink_lines(line_id),
+            UiAction::SetLinkedCharacter {
+                line_id,
+                include_character,
+            } => {
+                state.set_linked_character(line_id, include_character);
+            }
             UiAction::SetTextEmotion {
                 line_id,
                 range,

@@ -25,6 +25,7 @@ pub fn encode_delta(command: &Command, project: &Project) -> Option<serde_json::
         }
         Command::DeleteLines { .. } => return None,
         Command::Detection { .. } => return None,
+        Command::SetLineLinks { .. } => return None,
         Command::SplitLine {
             first_line,
             second_line,

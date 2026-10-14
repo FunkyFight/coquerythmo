@@ -281,7 +281,16 @@ pub struct ProjectSettings {
     pub detections: crate::detection::DetectionDocument,
     #[serde(default, skip_serializing_if = "is_default_automation_graph")]
     pub automation: crate::automation::AutomationGraph,
-    #[serde(default, skip_serializing_if = "crate::band_style::BandStyle::is_default")]
+    /// Groups of linked dialogues of this band.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::line_links::LineLinks::is_empty"
+    )]
+    pub line_links: crate::line_links::LineLinks,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::band_style::BandStyle::is_default"
+    )]
     pub band_style: crate::band_style::BandStyle,
     /// Show the current timecode in the toolbar.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
@@ -313,6 +322,7 @@ impl Default for ProjectSettings {
             export_configuration: ExportConfiguration::default(),
             detections: crate::detection::DetectionDocument::default(),
             automation: crate::automation::AutomationGraph::default(),
+            line_links: crate::line_links::LineLinks::default(),
             band_style: crate::band_style::BandStyle::default(),
             show_timecode: true,
             start_timecode: String::new(),
@@ -847,6 +857,98 @@ impl Project {
     ) {
         self.settings.detections.restore_line(line_id, data);
         self.bump_revision();
+    }
+
+    // -- Linked dialogues --
+
+    pub fn line_links(&self) -> &crate::line_links::LineLinks {
+        &self.settings.line_links
+    }
+
+    /// Apply membership changes, forward or backward.
+    pub(crate) fn apply_line_link_changes(
+        &mut self,
+        changes: &[crate::line_links::LineLinkChange],
+        forward: bool,
+    ) {
+        let mut changed = false;
+        for change in changes {
+            let link = if forward { change.new } else { change.old };
+            changed |= self.settings.line_links.set(change.line_id, link);
+        }
+        if changed {
+            self.bump_revision();
+        }
+    }
+
+    /// Restore line snapshots and their synchronization points, as recorded
+    /// by a link command.
+    pub(crate) fn replace_linked_snapshots(
+        &mut self,
+        lines: &[RythmoLine],
+        detections: &[(u64, crate::detection::LineDetectionData)],
+    ) {
+        let mut changed = false;
+        for snapshot in lines {
+            if let Some(line) = self.line_map.get_mut(&snapshot.id) {
+                if line != snapshot {
+                    *line = snapshot.clone();
+                    changed = true;
+                }
+            }
+        }
+        for (line_id, data) in detections {
+            if self.line_map.contains_key(line_id) {
+                self.settings
+                    .detections
+                    .restore_line(*line_id, data.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            self.reconcile_known_characters();
+            self.bump_revision();
+        }
+    }
+
+    /// Copy the shared content of `source_id` onto the lines linked to it:
+    /// text, duration, timings, synchronization points, note and options,
+    /// plus the character when the group includes it. Positions are kept.
+    pub fn sync_linked_lines(&mut self, source_id: u64) -> bool {
+        let partners = self.settings.line_links.partners(source_id);
+        if partners.is_empty() {
+            return false;
+        }
+        let Some(source) = self.line_map.get(&source_id).cloned() else {
+            return false;
+        };
+        let include_character = self.settings.line_links.includes_character(source_id);
+        let source_detections = self.settings.detections.line(source_id).cloned();
+        let mut changed = false;
+        for partner_id in partners {
+            let Some(partner) = self.line_map.get_mut(&partner_id) else {
+                continue;
+            };
+            let delta = crate::detection::MediaTick::from_frame(
+                partner.start_frame.saturating_sub(source.start_frame),
+            );
+            changed |= crate::line_links::apply_linked_content(partner, &source, include_character);
+            let mut detections = source_detections.clone().unwrap_or_default();
+            detections.shift_sync_points(delta);
+            if self.settings.detections.line(partner_id) != Some(&detections)
+                && !(detections.is_empty() && self.settings.detections.line(partner_id).is_none())
+            {
+                self.settings
+                    .detections
+                    .restore_line(partner_id, detections);
+                changed = true;
+            }
+        }
+        if changed {
+            self.reconcile_known_characters();
+            self.bump_revision();
+        }
+        changed
     }
 
     pub(crate) fn move_line_with_sync_points(
@@ -2908,7 +3010,11 @@ mod tests {
         assert!(project.select_language(english_id));
         project.get_line_mut(line_id).unwrap().text = "Hello".into();
         let order = vec![french_id, english_id, spanish_id];
-        let export_ids = project.settings().export_configuration.selected_language_ids.clone();
+        let export_ids = project
+            .settings()
+            .export_configuration
+            .selected_language_ids
+            .clone();
 
         let deleted = project.take_language(english_id).unwrap();
         assert_eq!(project.active_language_id(), spanish_id);
@@ -2920,7 +3026,10 @@ mod tests {
         let restored_order: Vec<_> = project.languages().iter().map(|l| l.id).collect();
         assert_eq!(restored_order, order);
         assert_eq!(
-            project.settings().export_configuration.selected_language_ids,
+            project
+                .settings()
+                .export_configuration
+                .selected_language_ids,
             export_ids
         );
     }

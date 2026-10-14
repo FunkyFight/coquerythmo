@@ -33,6 +33,7 @@ pub mod i18n;
 pub mod input;
 mod integrity;
 pub mod karaoke_dot;
+pub mod line_links;
 pub mod lint;
 pub mod media_binary;
 pub mod media_recording;

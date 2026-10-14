@@ -103,6 +103,9 @@ impl EditExecutor {
         command: Command,
         origin: EditOrigin,
     ) -> EditEffects {
+        for line_id in command.linked_sync_sources() {
+            session.project.sync_linked_lines(line_id);
+        }
         let should_record = matches!(origin, EditOrigin::Local | EditOrigin::Import);
         let should_mark_dirty = matches!(origin, EditOrigin::Local | EditOrigin::Import);
 
@@ -508,6 +511,7 @@ impl EditExecutor {
         let mut settings = session.project.settings().clone();
         settings.automation = automation;
         settings.detections = data.detections;
+        settings.line_links = data.line_links;
         session.project.set_settings(settings);
         session.project.bump_revision();
     }

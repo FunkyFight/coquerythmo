@@ -551,6 +551,19 @@ pub enum UiAction {
     SetSelectedLineStartAtPlayhead,
     SetSelectedLineEndAtPlayhead,
     StartEditingSelectedLine,
+    /// `Ctrl + T`: edits the selected line section by section (between its
+    /// synchronization limits, or word by word), keeping the limits and the
+    /// karaoke syllable timings in place.
+    StartEditingSelectedLineSections,
+    /// One step of that edit: the characters `range` of the line are
+    /// replaced by `text`. `limits_before` tells how many of the limits lying
+    /// at the start of the range stay before the new text.
+    ReplaceLineSection {
+        id: u64,
+        range: (usize, usize),
+        text: String,
+        limits_before: u32,
+    },
     StartEditingSelectedCharacter,
     OpenTextEmotionMenu,
     /// Toggles a text style from the formatting bar or its shortcuts.
@@ -561,6 +574,22 @@ pub enum UiAction {
         line_id: u64,
         range: Option<(usize, usize)>,
         emotion: Option<crate::rythmo_line::TextEmotion>,
+    },
+    /// Link the selected dialogues; the line under the menu gives its
+    /// content to the others.
+    LinkLines {
+        line_ids: Vec<u64>,
+        source_line_id: u64,
+        include_character: bool,
+    },
+    /// Dissolve the group of linked dialogues containing this line.
+    UnlinkLines {
+        line_id: u64,
+    },
+    /// Share (or stop sharing) the character within the group of this line.
+    SetLinkedCharacter {
+        line_id: u64,
+        include_character: bool,
     },
     BeginKeyboardPan {
         direction: i32,
@@ -917,7 +946,11 @@ impl UiAction {
                 | Self::MoveSyncAnchor { .. }
                 | Self::AddSyncPointAtPlayhead
                 | Self::UpdateLineText { .. }
+                | Self::ReplaceLineSection { .. }
                 | Self::SetTextEmotion { .. }
+                | Self::LinkLines { .. }
+                | Self::UnlinkLines { .. }
+                | Self::SetLinkedCharacter { .. }
                 | Self::ToggleTextStyle { .. }
                 | Self::PreviewBandStyle(_)
                 | Self::PreviewReadingBarOffset(_)
