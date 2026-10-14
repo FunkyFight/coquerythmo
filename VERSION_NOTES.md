@@ -114,10 +114,11 @@ exactement la vidéo exportée.
   reporté sur les nouvelles syllabes au lieu d’être perdu. Revenir à la langue
   d’origine retrouve le calage exact.
 - Écrire dans une réplique karaoké déjà calée ne défait plus le calage : les
-  syllabes qu’on ne touche pas gardent leur durée, une syllabe modifiée garde
-  la sienne et une nouvelle syllabe prend une durée moyenne, les autres se
-  resserrant sans changer leur disposition. `Ctrl + Z` rétablit le texte et le
-  calage d’avant.
+  syllabes qu’on ne touche pas restent exactement à leur place. Un mot qui
+  passe d’une à deux syllabes est coupé en deux dans l’espace qu’il occupait,
+  un mot ajouté prend sa place dans celui de la syllabe voisine, et un mot
+  effacé rend son espace à la syllabe d’avant. `Ctrl + Z` rétablit le texte et
+  le calage d’avant.
 
 ## Sessions en ligne
 

@@ -619,11 +619,12 @@ fn adapted_ratios_for_breaks(
 /// Saved karaoke timings after the text of a line changed from `old_text` to
 /// `new_text`.
 ///
-/// Syllables the edit did not touch keep their timing; the syllables it
-/// created or changed share the time of the ones it replaced, and each
-/// additional syllable takes the average syllable time, the rest of the line
-/// making room for it without changing its layout. Returns `None` when no
-/// timing was saved, so untouched lines keep their default timing.
+/// Syllables the edit did not touch keep their exact timing; the syllables it
+/// created or changed share the slot of the ones it replaced (a word going
+/// from one syllable to two is split inside its own slot), and brand-new
+/// syllables are cut out of the slot of the syllable next to them. Returns
+/// `None` when no timing was saved, so untouched lines keep their default
+/// timing.
 pub fn ratios_after_text_edit(
     old_text: &str,
     new_text: &str,
@@ -697,27 +698,61 @@ pub fn ratios_after_text_edit(
         }
     }
 
+    // The edited syllables only share the time of the ones they replace, so
+    // the rest of the line never moves: a syllable cut in two is split inside
+    // its own slot.
     let kept_total: f32 = ratios.iter().flatten().sum();
     let replaced_total = (1.0 - kept_total).max(0.0);
-    let replaced_count = old_ratios.len() - ratios.iter().flatten().count();
-    let changed = new_segments
-        .iter()
-        .zip(&ratios)
-        .filter(|(_, ratio)| ratio.is_none())
-        .map(|((start, end), _)| (end - start).max(1) as f32)
+    let segment_chars = |index: usize| {
+        let (start, end) = new_segments[index];
+        (end - start).max(1) as f32
+    };
+    let changed = (0..ratios.len())
+        .filter(|index| ratios[*index].is_none())
         .collect::<Vec<_>>();
-    if !changed.is_empty() {
-        let mean = 1.0 / old_ratios.len() as f32;
-        let added = changed.len().saturating_sub(replaced_count) as f32;
-        let mut share = replaced_total + added * mean;
-        if share <= f32::EPSILON {
-            share = changed.len() as f32 * mean;
+    if changed.is_empty() {
+        // Deleted syllables give their time to the syllable before the edit.
+        if replaced_total > f32::EPSILON {
+            let receiver = new_segments
+                .iter()
+                .rposition(|(start, _)| *start < prefix.max(1))
+                .unwrap_or(0);
+            if let Some(ratio) = ratios[receiver].as_mut() {
+                *ratio += replaced_total;
+            }
         }
-        let chars: f32 = changed.iter().sum();
-        let mut changed = changed.iter();
-        for ratio in ratios.iter_mut().filter(|ratio| ratio.is_none()) {
-            let weight = changed.next().copied().unwrap_or(1.0);
-            *ratio = Some((share * weight / chars).max(0.001));
+    } else if replaced_total > 0.000_1 {
+        let chars: f32 = changed.iter().map(|index| segment_chars(*index)).sum();
+        for index in &changed {
+            ratios[*index] = Some((replaced_total * segment_chars(*index) / chars).max(0.001));
+        }
+    } else {
+        // Brand-new syllables only: they are cut out of the slot of the
+        // neighbouring syllable (the one before, or after at the start).
+        let mut index = 0;
+        while index < ratios.len() {
+            if ratios[index].is_some() {
+                index += 1;
+                continue;
+            }
+            let run_end = (index..ratios.len())
+                .find(|candidate| ratios[*candidate].is_some())
+                .unwrap_or(ratios.len());
+            let donor = if index > 0 {
+                Some(index - 1)
+            } else {
+                (run_end < ratios.len()).then_some(run_end)
+            };
+            let group = donor
+                .into_iter()
+                .chain(index..run_end)
+                .collect::<Vec<_>>();
+            let total = donor.and_then(|donor| ratios[donor]).unwrap_or(1.0);
+            let chars: f32 = group.iter().map(|member| segment_chars(*member)).sum();
+            for member in group {
+                ratios[member] = Some((total * segment_chars(member) / chars).max(0.001));
+            }
+            index = run_end;
         }
     }
     Some(normalized_ratios(
@@ -1074,11 +1109,45 @@ mod tests {
         let ratios = ratios_after_text_edit(old_text, new_text, &saved, lang).unwrap();
         assert_eq!(ratios.len(), syllable_breaks(new_text, lang).len() + 1);
         assert_eq!(ratios.len(), 4);
-        // The untouched syllables keep their proportions.
-        assert!((ratios[0] / ratios[1] - 0.5 / 0.2).abs() < 0.001);
-        assert!((ratios[0] / ratios[3] - 0.5 / 0.3).abs() < 0.001);
-        // The new syllable takes the average syllable time.
-        assert!((ratios[2] / ratios[0] - (1.0 / 3.0) / 0.5).abs() < 0.001);
+        // The other syllables do not move: the new one is cut out of the
+        // slot of the syllable before it.
+        assert!((ratios[0] - 0.5).abs() < 0.001, "{ratios:?}");
+        assert!((ratios[1] + ratios[2] - 0.2).abs() < 0.001, "{ratios:?}");
+        assert!((ratios[3] - 0.3).abs() < 0.001, "{ratios:?}");
+    }
+
+    #[test]
+    fn a_word_going_from_one_syllable_to_two_is_split_inside_its_slot() {
+        let lang = "fr-fr";
+        let old_text = "le chat dort";
+        let new_text = "le chateau dort";
+        assert_eq!(syllable_breaks(old_text, lang).len() + 1, 3);
+        assert_eq!(syllable_breaks(new_text, lang).len() + 1, 4);
+        let saved = [0.2, 0.5, 0.3];
+
+        let ratios = ratios_after_text_edit(old_text, new_text, &saved, lang).unwrap();
+        assert_eq!(ratios.len(), 4);
+        assert!((ratios[0] - 0.2).abs() < 0.001, "{ratios:?}");
+        assert!((ratios[1] + ratios[2] - 0.5).abs() < 0.001, "{ratios:?}");
+        assert!((ratios[3] - 0.3).abs() < 0.001, "{ratios:?}");
+
+        // Typed letter by letter, the result is the same: nothing outside the
+        // word ever moves.
+        let mut text = old_text;
+        let mut ratios = saved.to_vec();
+        for next in ["le chate dort", "le chatea dort", new_text] {
+            ratios = ratios_after_text_edit(text, next, &ratios, lang).unwrap();
+            text = next;
+            let count = ratios.len();
+            assert_eq!(count, syllable_breaks(text, lang).len() + 1);
+            assert!((ratios[0] - 0.2).abs() < 0.001, "{text}: {ratios:?}");
+            assert!((ratios[count - 1] - 0.3).abs() < 0.001, "{text}: {ratios:?}");
+        }
+        assert_eq!(ratios.len(), 4);
+        // Deleting the letters gives the slot back to the word.
+        let ratios = ratios_after_text_edit(new_text, old_text, &ratios, lang).unwrap();
+        assert_eq!(ratios.len(), 3);
+        assert!((ratios[1] - 0.5).abs() < 0.001, "{ratios:?}");
     }
 
     #[test]
