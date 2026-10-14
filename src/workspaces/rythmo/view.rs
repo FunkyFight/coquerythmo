@@ -1363,6 +1363,34 @@ mod tests {
     }
 
     #[test]
+    fn a_reserved_slot_is_an_empty_segment_after_its_syllable() {
+        let slot = crate::syllable::ReservedSlot {
+            after_segment: 1,
+            ratio: 0.2,
+        };
+        let mut breaks = vec![3, 8];
+        let mut ratios = vec![0.3, 0.5, 0.2];
+        insert_reserved_slot(&slot, 12, &mut breaks, &mut ratios);
+        assert_eq!(breaks, vec![3, 8, 8]);
+        assert!((ratios[1] - 0.3).abs() < 0.001 && (ratios[2] - 0.2).abs() < 0.001);
+        assert_eq!(ratios.len(), 4);
+
+        // After the last syllable the gap ends the line.
+        let slot = crate::syllable::ReservedSlot {
+            after_segment: 2,
+            ratio: 0.1,
+        };
+        let mut breaks = vec![3, 8];
+        let mut ratios = vec![0.3, 0.5, 0.2];
+        insert_reserved_slot(&slot, 12, &mut breaks, &mut ratios);
+        assert_eq!(breaks, vec![3, 8, 12]);
+        assert!((ratios[3] - 0.1).abs() < 0.001);
+        let cursor = cursor_ratios_from_segments("abcdefghijkl", &breaks, &ratios);
+        assert!((cursor[12] - 1.0).abs() < 0.001);
+        assert!((cursor[8] - 0.8).abs() < 0.001);
+    }
+
+    #[test]
     fn new_karaoke_line_render_width_uses_measured_width() {
         crate::config::init();
         let mut project = Project::new();
@@ -3334,7 +3362,40 @@ fn visible_syllable_segments(
     // every syllable into the default timing slots scales each run separately,
     // which makes some syllables look condensed and others widely spaced.
     // Segment the text only after the user has explicitly saved valid timings.
-    valid_saved_syllable_ratios(line, breaks.len() + 1, lang).map(|ratios| (breaks, ratios))
+    let mut ratios = valid_saved_syllable_ratios(line, breaks.len() + 1, lang)?;
+    let mut breaks = breaks;
+    if let Some(reservation) = state.slot_reservation_for(line) {
+        insert_reserved_slot(
+            &reservation.slot,
+            line.text.chars().count(),
+            &mut breaks,
+            &mut ratios,
+        );
+    }
+    Some((breaks, ratios))
+}
+
+/// Shows a reserved slot as an empty segment after the syllable it follows:
+/// the text keeps its place around the gap left by the erased syllables.
+fn insert_reserved_slot(
+    slot: &crate::syllable::ReservedSlot,
+    char_count: usize,
+    breaks: &mut Vec<usize>,
+    ratios: &mut Vec<f32>,
+) {
+    let after = slot.after_segment;
+    if after >= ratios.len() {
+        return;
+    }
+    let taken = slot.ratio.min(ratios[after] - 0.001).max(0.0);
+    if taken <= 0.0 {
+        return;
+    }
+    let end = breaks.get(after).copied().unwrap_or(char_count);
+    ratios[after] -= taken;
+    ratios.insert(after + 1, taken);
+    let at = (after + 1).min(breaks.len());
+    breaks.insert(at, end);
 }
 
 /// Saved timings, carried over to the current syllables when the band's
@@ -3588,11 +3649,18 @@ fn syllable_ratios_for_line(
         return Some(drag.ratios.clone());
     }
 
-    if let Some(ratios) = valid_saved_syllable_ratios(line, breaks.len() + 1, lang) {
-        return Some(ratios);
+    let mut ratios = valid_saved_syllable_ratios(line, breaks.len() + 1, lang)
+        .unwrap_or_else(|| state.default_syllable_visual_ratios(line, lang, &breaks));
+    if let Some(reservation) = state.slot_reservation_for(line) {
+        let mut breaks = breaks;
+        insert_reserved_slot(
+            &reservation.slot,
+            line.text.chars().count(),
+            &mut breaks,
+            &mut ratios,
+        );
     }
-
-    Some(state.default_syllable_visual_ratios(line, lang, &breaks))
+    Some(ratios)
 }
 
 fn render_syllable_handles(
@@ -4159,6 +4227,22 @@ pub fn render_lines<'a>(
                             chars.len()
                         };
                         let segment: String = chars[prev_break..end_break].iter().collect();
+                        if segment.is_empty() && seg_w > 1.0 {
+                            // Reserved slot: an empty case waiting for its text.
+                            quads.push(QuadInstance {
+                                rect: [seg_x, data.rect.y + 2.0, seg_w, data.rect.height - 4.0],
+                                color: [1.0, 1.0, 1.0, 0.06],
+                                color_bottom: [1.0, 1.0, 1.0, 0.06],
+                                border_color: [0.95, 0.08, 0.03, 0.5],
+                                border_width: 1.0,
+                                border_radius: 2.0,
+                                shadow_offset: [0.0; 2],
+                                shadow_color: [0.0; 4],
+                                shadow_blur: 0.0,
+                                rotation: 0.0,
+                                _padding: [0.0; 2],
+                            });
+                        }
                         if !segment.is_empty() && seg_w > 1.0 {
                             let cache_id = syllable_segment_cache_id(line.id, i);
                             if let Some(segments) = &mut editing_segments {

@@ -43,6 +43,7 @@ use crate::video::{AudioTrack, VideoPlayer};
 use crate::voice_actor::{LineVoiceActorsChange, VoiceActor};
 use crate::workspaces::comic_dubs::ComicDubsWorkspace;
 use crate::workspaces::recording::RecordingWorkspace;
+use crate::workspaces::rythmo::view::SyllableSlotReservation;
 use crate::workspaces::rythmo::RythmoWorkspace;
 use crate::workspaces::voicelines::VoicelinesWorkspace;
 
@@ -68,7 +69,8 @@ fn syllable_ratios_after_line_text_edit(
     line: &crate::rythmo_line::RythmoLine,
     new_text: &str,
     lang: &str,
-) -> Option<(Vec<f32>, Vec<f32>)> {
+    reserved: Option<crate::syllable::ReservedSlot>,
+) -> Option<(Vec<f32>, Vec<f32>, Option<crate::syllable::ReservedSlot>)> {
     if line.text == new_text {
         return None;
     }
@@ -95,9 +97,14 @@ fn syllable_ratios_after_line_text_edit(
     } else {
         saved
     };
-    let new_ratios =
-        crate::syllable::ratios_after_text_edit(&line.text, new_text, starting_ratios, lang)?;
-    (&new_ratios != saved).then(|| (saved.clone(), new_ratios))
+    let timings = crate::syllable::timings_after_text_edit(
+        &line.text,
+        new_text,
+        starting_ratios,
+        lang,
+        reserved,
+    )?;
+    Some((saved.clone(), timings.ratios, timings.reserved))
 }
 
 fn rebase_pasted_start_frame(source_start: i64, source_anchor: i64, target_anchor: i64) -> i64 {
@@ -361,8 +368,10 @@ mod clipboard_tests {
         let line = project.get_line(line_id).unwrap();
         assert!(line.syllable_ratios.is_empty());
 
-        let (before, after) =
-            super::syllable_ratios_after_line_text_edit(line, "le chateau dort", "fr-fr").unwrap();
+        let (before, after, reserved) =
+            super::syllable_ratios_after_line_text_edit(line, "le chateau dort", "fr-fr", None)
+                .unwrap();
+        assert!(reserved.is_none());
         assert!(before.is_empty());
         assert_eq!(after.len(), 4);
         // "le " and "dort" keep the width they had on screen.
@@ -388,11 +397,16 @@ mod clipboard_tests {
         // A plain line without saved timings is left alone.
         project.get_line_mut(line_id).unwrap().karaoke = false;
         let line = project.get_line(line_id).unwrap();
+        assert!(super::syllable_ratios_after_line_text_edit(
+            line,
+            "le chateau dort",
+            "fr-fr",
+            None
+        )
+        .is_none());
         assert!(
-            super::syllable_ratios_after_line_text_edit(line, "le chateau dort", "fr-fr").is_none()
-        );
-        assert!(
-            super::syllable_ratios_after_line_text_edit(line, "le chat dort", "fr-fr").is_none()
+            super::syllable_ratios_after_line_text_edit(line, "le chat dort", "fr-fr", None)
+                .is_none()
         );
     }
 
@@ -10046,13 +10060,28 @@ impl State {
     /// syllables the edit does not touch (see
     /// [`crate::syllable::ratios_after_text_edit`]).
     fn syllable_ratios_after_text_edit(
-        &self,
+        &mut self,
         id: u64,
         new_text: &str,
     ) -> Option<(Vec<f32>, Vec<f32>)> {
         let project = &self.project_session.project;
+        let lang = project.syllable_language_code();
         let line = project.get_line(id)?;
-        syllable_ratios_after_line_text_edit(line, new_text, project.syllable_language_code())
+        let rythmo = &self.ui_shell.ui.rythmo_state;
+        let reserved = rythmo
+            .slot_reservation_for(line)
+            .map(|reservation| reservation.slot);
+        let outcome = syllable_ratios_after_line_text_edit(line, new_text, lang, reserved);
+        let reservation = outcome.as_ref().and_then(|(_, _, reserved)| {
+            reserved.map(|slot| SyllableSlotReservation {
+                line_id: id,
+                text: new_text.to_string(),
+                gap_char: crate::syllable::syllable_end(new_text, lang, slot.after_segment),
+                slot,
+            })
+        });
+        self.ui_shell.ui.rythmo_state.slot_reservation = reservation;
+        outcome.and_then(|(before, after, _)| (after != before).then_some((before, after)))
     }
 
     /// Toggles a text style on a line, over `range` or the whole line.

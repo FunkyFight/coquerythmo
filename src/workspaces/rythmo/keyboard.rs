@@ -122,6 +122,15 @@ pub(crate) fn handle_key_input(
                     ));
                 }
             }
+            // Erasing again on a reserved karaoke slot confirms its removal
+            // without touching the text.
+            if (input == "\x08" || input == "\x7f")
+                && !state.line_input.has_selection()
+                && reserved_slot_under_caret(state, line, state.line_input.cursor_pos)
+            {
+                state.slot_reservation = None;
+                return EventResponse::Consumed;
+            }
             let planned = planned_edit(
                 &input,
                 state.line_input.cursor_pos,
@@ -155,6 +164,25 @@ pub(crate) fn handle_key_input(
         return EventResponse::Consumed;
     }
     EventResponse::Ignored
+}
+
+/// Whether the caret sits on the reserved slot of `line`: at the slot, or
+/// only separated from it by spaces.
+fn reserved_slot_under_caret(
+    state: &RythmoState,
+    line: &crate::rythmo_line::RythmoLine,
+    cursor_pos: usize,
+) -> bool {
+    let Some(reservation) = state.slot_reservation_for(line) else {
+        return false;
+    };
+    let gap = reservation.gap_char;
+    let (from, to) = (cursor_pos.min(gap), cursor_pos.max(gap));
+    line.text
+        .chars()
+        .skip(from)
+        .take(to - from)
+        .all(char::is_whitespace)
 }
 
 fn normalize_first_line_input(text: &str, lowercase_override: &mut bool) -> String {

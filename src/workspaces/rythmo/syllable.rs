@@ -62,6 +62,11 @@ pub(crate) fn syllable_mouse_press(
             continue;
         }
 
+        if state.slot_reservation_for(line).is_some() {
+            // The handles around a reserved slot are not draggable: the slot
+            // is settled by what gets typed (or erased) there.
+            continue;
+        }
         let Some(ratios) =
             syllable_ratios_for_line(line, state.syllable_drag.as_ref(), lang, state)
         else {

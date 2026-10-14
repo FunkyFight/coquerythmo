@@ -107,19 +107,25 @@ exactement la vidéo exportée.
 - `Espace` lance ou met en pause la lecture dans la bande rythmo même quand un
   onglet, le panneau latéral ou l’arborescence des fichiers a le focus ; seule
   l’écriture dans un champ de texte la garde pour taper une espace.
-- Changer la langue d’une bande (par exemple une bande dupliquée depuis une
-  autre) ne remet plus à zéro le calage des syllabes du karaoké ni celui des
-  syllabes entre les points de synchronisation : quand la nouvelle langue
-  découpe le texte en un autre nombre de syllabes, le calage déjà fait est
-  reporté sur les nouvelles syllabes au lieu d’être perdu. Revenir à la langue
-  d’origine retrouve le calage exact.
+- Changer la langue de syllabes d’une bande (ou dupliquer une bande dans une
+  autre langue avec `Ctrl + L`) ne défait plus le calage des syllabes du
+  karaoké ni celui des syllabes entre les points de synchronisation : le
+  calage est converti sur-le-champ vers le découpage de la nouvelle langue,
+  chaque lettre gardant sa place dans le temps ; seules les frontières de
+  syllabes bougent. Les anciens projets dont le calage n’avait pas été
+  converti sont rattrapés à l’affichage.
 - Écrire dans une réplique karaoké déjà calée ne défait plus le calage : les
   syllabes qu’on ne touche pas restent exactement à leur place. Un mot qui
   passe d’une à deux syllabes est coupé en deux dans l’espace qu’il occupait,
-  un mot ajouté prend sa place dans celui de la syllabe voisine, et un mot
-  effacé rend son espace à la syllabe d’avant. Une réplique karaoké jamais
-  calée à la main part de la disposition affichée à l’écran. `Ctrl + Z`
-  rétablit le texte et le calage d’avant.
+  et un mot ajouté prend sa place dans celui de la syllabe voisine. Une
+  réplique karaoké jamais calée à la main part de la disposition affichée à
+  l’écran. `Ctrl + Z` rétablit le texte et le calage d’avant.
+- Effacer un mot (ou une syllabe) d’une réplique karaoké laisse sa case vide
+  et réservée, encadrée par ses poignées : ce qu’on tape à sa place la reprend
+  telle quelle, sans rien déplacer d’autre. Un second `Retour arrière` (ou
+  `Suppr`) sur la case vide confirme la suppression : la case revient à la
+  syllabe d’avant. Les poignées de la ligne ne se déplacent pas tant qu’une
+  case est réservée ; quitter l’édition de la ligne confirme aussi.
 
 ## Sessions en ligne
 
