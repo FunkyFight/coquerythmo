@@ -336,6 +336,15 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
             command,
         );
     }
+    // Needle 3's prompt. The event loop opens it before the router runs; the
+    // binding lists it in the shortcut panel.
+    router.bind(
+        InputContext::Workspace,
+        KeyCode::Enter,
+        ctrl,
+        RepeatPolicy::PressOnly,
+        UiAction::OpenAssistant,
+    );
     router.bind(
         InputContext::Workspace,
         KeyCode::Character('d'),
@@ -476,6 +485,26 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         RepeatPolicy::PressOnly,
         UiAction::RecordingCycleLanguage,
     );
+    // Like Enter on a rythmo line: the take under the playhead, only while
+    // no control owns the keyboard (Enter then activates that control).
+    router.bind(
+        InputContext::RecordingTimeline,
+        KeyCode::Enter,
+        Modifiers::NONE,
+        RepeatPolicy::PressOnly,
+        UiAction::RecordingSelectClipAtPlayhead,
+    );
+    // Ctrl+Shift+Left/Right (one image), Ctrl+K and Ctrl+V reach the takes
+    // through the shared editing chords (see `recording_shortcut`).
+    for (key, direction) in [(KeyCode::ArrowUp, -1), (KeyCode::ArrowDown, 1)] {
+        router.bind(
+            InputContext::Recording,
+            key,
+            ctrl_shift,
+            RepeatPolicy::PressOnly,
+            UiAction::RecordingMoveSelectedClipsToTrack { direction },
+        );
+    }
     router.bind(
         InputContext::Global,
         KeyCode::Character('s'),

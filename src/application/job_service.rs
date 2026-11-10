@@ -17,6 +17,16 @@ pub(crate) struct PendingExportJob {
     pub receiver: Receiver<Result<(), String>>,
 }
 
+/// « Ajouter et conformer »: the two cuts are being compared in a thread.
+pub(crate) struct PendingConformJob {
+    pub video_id: crate::project::MediaId,
+    pub band_id: u64,
+    pub new_path: PathBuf,
+    pub move_takes: bool,
+    pub cancel: Arc<AtomicBool>,
+    pub receiver: Receiver<Result<crate::conform::ConformAnalysis, String>>,
+}
+
 pub(crate) struct PendingRecordingMixJob {
     pub cancel: Arc<AtomicBool>,
     pub receiver: Receiver<Result<Vec<(PathBuf, Arc<Vec<f32>>)>, String>>,
@@ -59,6 +69,7 @@ pub(crate) struct PendingSaveJob {
 pub struct JobManager {
     pub(crate) pending_proxy_job: Option<PendingProxyJob>,
     pub(crate) pending_export_job: Option<PendingExportJob>,
+    pub(crate) pending_conform_job: Option<PendingConformJob>,
     pub(crate) pending_recording_mix_job: Option<PendingRecordingMixJob>,
     pub(crate) pending_import_job: Option<PendingImportJob>,
     pub(crate) pending_save_job: Option<PendingSaveJob>,
@@ -73,6 +84,7 @@ impl JobManager {
         Self {
             pending_proxy_job: None,
             pending_export_job: None,
+            pending_conform_job: None,
             pending_recording_mix_job: None,
             pending_import_job: None,
             pending_save_job: None,

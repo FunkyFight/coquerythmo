@@ -815,6 +815,16 @@ fn validate_command_precondition(command: &Command, project: &Project) -> Result
     let missing_line = |id: u64| format!("line {id} does not exist");
     match command {
         Command::SetLinePresence { .. } => {}
+        Command::Batch { commands } => {
+            // Each step must hold on the project as the previous steps leave
+            // it; linked dialogues are synchronised once the batch is done,
+            // exactly as `Command::apply` does.
+            let mut probe = project.snapshot();
+            for nested in commands {
+                validate_command_precondition(nested, &probe)?;
+                nested.apply_inner(&mut probe);
+            }
+        }
         Command::SetTextEmotions { line_id, .. } | Command::SetTextStyles { line_id, .. } => {
             if project.get_line(*line_id).is_none() {
                 return Err(missing_line(*line_id));

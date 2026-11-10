@@ -22,6 +22,7 @@ use super::proxy_modal::ProxyModal;
 use super::rename_character_modal::RenameCharacterModal;
 use super::save_prompt_modal::SavePromptModal;
 use super::server_browser::{AddServerModal, ServerBrowserModal};
+use crate::ui::assistant_bubble::{AssistantBubble, AssistantBubbleResult};
 use super::settings_modal::SettingsModal;
 use super::voice_actor_modal::VoiceActorModal;
 use super::whats_new_modal::WhatsNewModal;
@@ -94,6 +95,8 @@ pub struct ModalHost {
     pub microphone: Option<MicrophoneModal>,
     pub recording_actor_menu: Option<RecordingActorMenuModal>,
     pub proxy: Option<ProxyModal>,
+    /// « Ajouter et conformer » (fichiers du projet > vidéos).
+    pub conform: Option<super::conform_modal::ConformModal>,
     pub rename_character: Option<RenameCharacterModal>,
     pub proxy_error: Option<ProxyErrorModal>,
     pub server_browser: Option<ServerBrowserModal>,
@@ -106,11 +109,14 @@ pub struct ModalHost {
     pub pricing_license: Option<PricingLicenseModal>,
     pub discord_notice: Option<DiscordNoticeModal>,
     pub export_done: Option<ExportDoneModal>,
+    /// Needle 3's floating prompt (`Ctrl + Entrée`).
+    pub assistant: Option<AssistantBubble>,
 }
 
 impl ModalHost {
     pub fn new() -> Self {
         Self {
+            assistant: None,
             connect: None,
             settings: None,
             project_settings: None,
@@ -121,6 +127,7 @@ impl ModalHost {
             microphone: None,
             recording_actor_menu: None,
             proxy: None,
+            conform: None,
             rename_character: None,
             proxy_error: None,
             server_browser: None,
@@ -137,7 +144,8 @@ impl ModalHost {
     }
 
     pub fn captures_input(&self) -> bool {
-        self.connect.is_some()
+        self.assistant.is_some()
+            || self.connect.is_some()
             || self.settings.is_some()
             || self.project_settings.is_some()
             || self.band_style.is_some()
@@ -147,6 +155,7 @@ impl ModalHost {
             || self.microphone.is_some()
             || self.recording_actor_menu.is_some()
             || self.proxy.is_some()
+            || self.conform.is_some()
             || self.rename_character.is_some()
             || self.proxy_error.is_some()
             || self.server_browser.is_some()
@@ -162,13 +171,15 @@ impl ModalHost {
     }
 
     pub fn is_editing_text(&self) -> bool {
-        self.settings.is_some()
+        self.assistant.is_some()
+            || self.settings.is_some()
             || self.project_settings.is_some()
             || self.band_style.is_some()
             || self.comic_dubs_settings.is_some()
             || self.connect.is_some()
             || self.export.is_some()
             || self.proxy.is_some()
+            || self.conform.is_some()
             || self.proxy_error.is_some()
             || self.voice_actor.is_some()
             || self.rename_character.is_some()
@@ -205,6 +216,9 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> Option<ModalOutcome> {
+        if self.assistant.is_some() {
+            return Some(self.handle_assistant_event(event, screen_w, screen_h));
+        }
         if self.microphone.is_some() {
             return Some(self.handle_microphone_event(event, screen_w, screen_h));
         }
@@ -294,6 +308,9 @@ impl ModalHost {
         }
         if self.proxy.is_some() {
             return Some(self.handle_proxy_event(event, screen_w, screen_h));
+        }
+        if self.conform.is_some() {
+            return Some(self.handle_conform_event(event, screen_w, screen_h));
         }
         if self.add_server.is_some() {
             return Some(self.handle_add_server_event(event, screen_w, screen_h));
@@ -1133,6 +1150,86 @@ impl ModalHost {
         }
     }
 
+    fn handle_conform_event(
+        &mut self,
+        event: &UiEvent,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> ModalOutcome {
+        use super::conform_modal::ConformModalResult;
+        let focus_navigation = matches!(
+            event,
+            UiEvent::FocusNext
+                | UiEvent::FocusPrevious
+                | UiEvent::CursorUp
+                | UiEvent::CursorDown
+                | UiEvent::CursorLeft
+                | UiEvent::CursorRight
+        ) || matches!(event, UiEvent::KeyInput { text } if text == "\t" || text == "\u{b}");
+        let activation = matches!(event, UiEvent::Activate)
+            || matches!(event, UiEvent::KeyInput { text } if text == "\r" || text == "\n" || text == " ");
+        let move_takes_before = self.conform.as_ref().map(|modal| modal.move_takes());
+        let result = self
+            .conform
+            .as_mut()
+            .unwrap()
+            .handle_event(event, screen_w, screen_h);
+        let title = crate::i18n::t("conform.title");
+        match result {
+            ConformModalResult::Consumed => {
+                if let Some(modal) = self.conform.as_ref() {
+                    if move_takes_before != Some(modal.move_takes()) {
+                        return ModalOutcome::Action(UiAction::Accessibility(
+                            crate::accessibility::AccessibilityEvent::ValueChanged {
+                                label: crate::i18n::t("conform.move_takes").to_string(),
+                                value: crate::i18n::t(if modal.move_takes() {
+                                    "accessibility.on"
+                                } else {
+                                    "accessibility.off"
+                                })
+                                .to_string(),
+                            },
+                        ));
+                    }
+                    if focus_navigation {
+                        return ModalOutcome::Action(UiAction::Accessibility(
+                            crate::accessibility::AccessibilityEvent::Focus {
+                                label: modal.keyboard_focus_label(),
+                                role: "control".to_string(),
+                            },
+                        ));
+                    }
+                    if activation {
+                        return ModalOutcome::Action(UiAction::Accessibility(
+                            crate::accessibility::AccessibilityEvent::Activation {
+                                label: modal.keyboard_focus_label(),
+                            },
+                        ));
+                    }
+                }
+                ModalOutcome::Consumed
+            }
+            ConformModalResult::Close => {
+                self.conform = None;
+                action_closed_modal(UiAction::CloseConformModal, title)
+            }
+            ConformModalResult::Cancel => ModalOutcome::Action(UiAction::ConformCancel),
+            ConformModalResult::PickNewVideo {
+                video_id,
+                band_id,
+                move_takes,
+            } => ModalOutcome::Action(UiAction::ConformPickNewVideo {
+                video_id,
+                band_id,
+                move_takes,
+            }),
+        }
+    }
+
+    pub fn open_conform(&mut self, modal: super::conform_modal::ConformModal) {
+        self.conform = Some(modal);
+    }
+
     fn handle_proxy_error_event(
         &mut self,
         event: &UiEvent,
@@ -1621,6 +1718,32 @@ impl ModalHost {
         self.voice_actor = Some(super::voice_actor_modal::VoiceActorModal::new());
     }
 
+    pub fn open_assistant(&mut self) {
+        self.assistant = Some(AssistantBubble::new());
+    }
+
+    fn handle_assistant_event(
+        &mut self,
+        event: &UiEvent,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> ModalOutcome {
+        let Some(bubble) = &mut self.assistant else {
+            return ModalOutcome::Consumed;
+        };
+        match bubble.handle_event(event, screen_w, screen_h) {
+            AssistantBubbleResult::Consumed => ModalOutcome::Consumed,
+            AssistantBubbleResult::Close => {
+                self.assistant = None;
+                closed_modal(crate::i18n::t("assistant.title"))
+            }
+            AssistantBubbleResult::Submit(query) => {
+                ModalOutcome::Action(UiAction::AssistantSubmit { query })
+            }
+            AssistantBubbleResult::Clipboard(text) => ModalOutcome::Action(UiAction::SetClipboard(text)),
+        }
+    }
+
     pub fn open_rename_character(&mut self, characters: Vec<String>) {
         self.rename_character = Some(super::rename_character_modal::RenameCharacterModal::new(
             characters,
@@ -1866,6 +1989,9 @@ impl ModalHost {
         if let Some(modal) = &self.proxy {
             modal.render(modal_quads, modal_labels, screen_w, screen_h);
         }
+        if let Some(modal) = &self.conform {
+            modal.render(modal_quads, modal_labels, screen_w, screen_h);
+        }
     }
 
     /// Render the modal layers that must remain above transient overlays.
@@ -1917,6 +2043,9 @@ impl ModalHost {
                 screen_w,
                 screen_h,
             );
+        }
+        if let Some(bubble) = &self.assistant {
+            bubble.render(modal_overlay_quads, modal_overlay_labels, screen_w, screen_h);
         }
     }
 }
@@ -2034,6 +2163,58 @@ mod tests {
 
         assert!(matches!(result, Some(ModalOutcome::Action(_))));
         assert!(host.microphone.is_none());
+    }
+
+    #[test]
+    fn conform_window_walks_video_band_then_file_and_closes_on_escape() {
+        use super::super::conform_modal::{ConformChoice, ConformModal};
+        let choice = |id: u64, name: &str| ConformChoice {
+            id,
+            name: name.into(),
+        };
+        let mut host = ModalHost::new();
+        host.open_conform(ConformModal::new(
+            vec![choice(1, "v1"), choice(2, "trailer")],
+            vec![choice(10, "Français"), choice(11, "English")],
+            Some(1),
+            Some(10),
+            true,
+        ));
+        assert!(host.captures_input());
+
+        // Step 2: the band list, arrow down picks English.
+        let _ = host.handle_event(&UiEvent::FocusNext, 1280.0, 720.0);
+        let _ = host.handle_event(&UiEvent::CursorDown, 1280.0, 720.0);
+        assert_eq!(host.conform.as_ref().unwrap().selected_band(), Some(11));
+
+        // Step 3: the file button asks for the new cut, with both choices.
+        let _ = host.handle_event(&UiEvent::FocusNext, 1280.0, 720.0);
+        let _ = host.handle_event(&UiEvent::FocusNext, 1280.0, 720.0);
+        let outcome = host.handle_event(&UiEvent::Activate, 1280.0, 720.0);
+        assert!(matches!(
+            outcome,
+            Some(ModalOutcome::Action(UiAction::ConformPickNewVideo {
+                video_id: 1,
+                band_id: 11,
+                move_takes: true,
+            }))
+        ));
+        assert!(host.conform.is_some(), "the window waits for the file");
+
+        // The report shows and Escape closes the window.
+        host.conform
+            .as_mut()
+            .unwrap()
+            .show_report(crate::conform::ConformReport::default());
+        let outcome = host.handle_event(
+            &UiEvent::KeyInput {
+                text: "\x1b".into(),
+            },
+            1280.0,
+            720.0,
+        );
+        assert!(matches!(outcome, Some(ModalOutcome::Actions(actions)) if matches!(actions[0], UiAction::CloseConformModal)));
+        assert!(host.conform.is_none());
     }
 
     #[test]

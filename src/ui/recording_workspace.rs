@@ -8,10 +8,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use crate::accessibility::AccessibilityEvent;
+use crate::i18n::t;
 use crate::network::NetworkMember;
 use crate::recording::{
-    AudioAssetId, AudioClipId, AudioTrackId, CaptureState, RecordingEditor, RecordingError,
-    RecordingProject, RecordingTool, WaveformData,
+    AudioAsset, AudioAssetId, AudioClip, AudioClipId, AudioTrack, AudioTrackId, CaptureState,
+    RecordingEditor, RecordingError, RecordingProject, RecordingTool, WaveformData,
 };
 
 use super::focus::AccessibleRole;
@@ -28,11 +30,25 @@ const ACCENT: [f32; 4] = [0.34, 0.28, 0.78, 1.0];
 const RECORD: [f32; 4] = [0.82, 0.18, 0.24, 1.0];
 const USED_AUDIO: [f32; 4] = [0.10, 0.40, 0.21, 1.0];
 const USED_AUDIO_SELECTED: [f32; 4] = [0.14, 0.55, 0.27, 1.0];
+/// Shape cue of an audio already on the timeline, so the state does not
+/// rest on the green fill alone.
+const USED_AUDIO_MARK: [f32; 4] = [0.45, 0.92, 0.58, 1.0];
+/// Border of an active toggle or a selected take: thick and light, readable
+/// without telling the colours apart.
+const ACTIVE_BORDER: [f32; 4] = [0.96, 0.96, 1.0, 1.0];
 pub const TRACK_ROW_H: f32 = 58.0;
 const ASSET_ROW_H: f32 = 42.0;
 const ASSET_GROUP_H: f32 = 24.0;
-const ASSET_MENU_W: f32 = 154.0;
+const ASSET_MENU_W: f32 = 190.0;
 const ASSET_MENU_ITEM_H: f32 = 30.0;
+/// Bounds of a control scrolled out of view. It keeps its place in the
+/// keyboard focus order, but no pointer position ever falls inside it.
+const HIDDEN_BOUNDS: Rect = Rect {
+    x: -1.0e6,
+    y: -1.0e6,
+    width: 0.0,
+    height: 0.0,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingPage {
@@ -126,6 +142,19 @@ impl RecordingControl {
     }
 }
 
+/// Where a control sits in the lists of the workspace, so the arrow keys can
+/// move between rows and the view can scroll to a control given the focus.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct RecordingControlPlace {
+    /// Track row of the track header controls and of the takes.
+    pub track_row: Option<usize>,
+    /// Start and end frames of a take.
+    pub start_frame: Option<i64>,
+    pub end_frame: Option<i64>,
+    /// Top of an audio-library row in the scrolled library content.
+    pub library_offset: Option<f32>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RecordingControlInfo {
     pub control: RecordingControl,
@@ -135,6 +164,316 @@ pub struct RecordingControlInfo {
     pub value: Option<String>,
     pub selected: bool,
     pub enabled: bool,
+    /// False when the control is scrolled out of view: it stays reachable
+    /// from the keyboard and the screen reader, but is neither drawn nor hit
+    /// by the pointer (see [`HIDDEN_BOUNDS`]).
+    pub visible: bool,
+    pub place: RecordingControlPlace,
+}
+
+/// Arrow-key moves of the keyboard focus inside the workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordingFocusMove {
+    /// `↑` / `↓`: previous / next item of the same kind (same button on the
+    /// track above or below, take of the neighbouring track, library row…).
+    Previous,
+    Next,
+    /// `←` / `→`: previous / next control of the same track (its buttons,
+    /// its takes in time order), or of the same toolbar.
+    PreviousInRow,
+    NextInRow,
+    /// `Début` / `Fin`: first / last item of the same kind.
+    First,
+    Last,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlKind {
+    Choice,
+    Tool,
+    Track(u8),
+    Take,
+    Library,
+    Participant,
+    Prompt,
+}
+
+fn control_kind(control: &RecordingControl) -> ControlKind {
+    match control {
+        RecordingControl::ChooseSolo | RecordingControl::ChooseOnline => ControlKind::Choice,
+        RecordingControl::Tool(_)
+        | RecordingControl::AddTrack
+        | RecordingControl::DeleteSelectedClips
+        | RecordingControl::StartCapture => ControlKind::Tool,
+        RecordingControl::RenameTrack(_) => ControlKind::Track(0),
+        RecordingControl::TrackVolume(_) => ControlKind::Track(1),
+        RecordingControl::TrackMute(_) => ControlKind::Track(2),
+        RecordingControl::TrackSolo(_) => ControlKind::Track(3),
+        RecordingControl::TrackArm(_) => ControlKind::Track(4),
+        RecordingControl::TrackExport(_) => ControlKind::Track(5),
+        RecordingControl::TrackReverb(_) => ControlKind::Track(6),
+        RecordingControl::RemoveTrack(_) => ControlKind::Track(7),
+        RecordingControl::Clip(_) => ControlKind::Take,
+        RecordingControl::Asset(_) | RecordingControl::AssetGroup(_) => ControlKind::Library,
+        RecordingControl::Participant(_) => ControlKind::Participant,
+        RecordingControl::ImportUsername => ControlKind::Prompt,
+    }
+}
+
+/// Control the arrow keys move the focus to from `current`, if any. Only
+/// enabled controls are candidates, hidden (scrolled out) ones included.
+pub fn neighbor_control<'a>(
+    controls: &'a [RecordingControlInfo],
+    current: &RecordingControl,
+    movement: RecordingFocusMove,
+) -> Option<&'a RecordingControlInfo> {
+    let here = controls
+        .iter()
+        .find(|control| &control.control == current)?;
+    let kind = control_kind(&here.control);
+    let same_kind =
+        |control: &&RecordingControlInfo| control.enabled && control_kind(&control.control) == kind;
+    let step = |list: Vec<&'a RecordingControlInfo>, forward: bool| {
+        let index = list
+            .iter()
+            .position(|control| &control.control == current)?;
+        if forward {
+            list.get(index + 1).copied()
+        } else {
+            index
+                .checked_sub(1)
+                .and_then(|index| list.get(index).copied())
+        }
+    };
+    match (kind, movement) {
+        (ControlKind::Track(column), RecordingFocusMove::Previous | RecordingFocusMove::Next) => {
+            let row = here.place.track_row?;
+            let forward = movement == RecordingFocusMove::Next;
+            let rows = controls
+                .iter()
+                .filter(|control| control.enabled)
+                .filter(|control| matches!(control_kind(&control.control), ControlKind::Track(_)))
+                .filter_map(|control| control.place.track_row);
+            let target_row = if forward {
+                rows.filter(|candidate| *candidate > row).min()
+            } else {
+                rows.filter(|candidate| *candidate < row).max()
+            }?;
+            let in_row = |wanted: u8| {
+                controls.iter().find(|control| {
+                    control.enabled
+                        && control.place.track_row == Some(target_row)
+                        && control_kind(&control.control) == ControlKind::Track(wanted)
+                })
+            };
+            in_row(column).or_else(|| in_row(0))
+        }
+        (ControlKind::Track(_), RecordingFocusMove::First | RecordingFocusMove::Last) => {
+            let same_column = controls.iter().filter(same_kind);
+            if movement == RecordingFocusMove::First {
+                same_column.min_by_key(|control| control.place.track_row)
+            } else {
+                same_column.max_by_key(|control| control.place.track_row)
+            }
+        }
+        (
+            ControlKind::Track(_),
+            RecordingFocusMove::PreviousInRow | RecordingFocusMove::NextInRow,
+        ) => step(
+            controls
+                .iter()
+                .filter(|control| {
+                    control.enabled
+                        && matches!(control_kind(&control.control), ControlKind::Track(_))
+                        && control.place.track_row == here.place.track_row
+                })
+                .collect(),
+            movement == RecordingFocusMove::NextInRow,
+        ),
+        (ControlKind::Take, RecordingFocusMove::Previous | RecordingFocusMove::Next) => {
+            let row = here.place.track_row?;
+            let start = here.place.start_frame.unwrap_or_default();
+            let forward = movement == RecordingFocusMove::Next;
+            let takes = || controls.iter().filter(same_kind);
+            let rows = takes().filter_map(|control| control.place.track_row);
+            let target_row = if forward {
+                rows.filter(|candidate| *candidate > row).min()
+            } else {
+                rows.filter(|candidate| *candidate < row).max()
+            }?;
+            takes()
+                .filter(|control| control.place.track_row == Some(target_row))
+                .min_by_key(|control| (control.place.start_frame.unwrap_or_default() - start).abs())
+        }
+        (ControlKind::Take, RecordingFocusMove::PreviousInRow | RecordingFocusMove::NextInRow) => {
+            step(
+                controls
+                    .iter()
+                    .filter(same_kind)
+                    .filter(|control| control.place.track_row == here.place.track_row)
+                    .collect(),
+                movement == RecordingFocusMove::NextInRow,
+            )
+        }
+        (
+            ControlKind::Library | ControlKind::Participant | ControlKind::Prompt,
+            RecordingFocusMove::PreviousInRow | RecordingFocusMove::NextInRow,
+        ) => None,
+        (_, RecordingFocusMove::First) => controls.iter().find(same_kind),
+        (_, RecordingFocusMove::Last) => controls.iter().rev().find(same_kind),
+        (_, movement) => step(
+            controls.iter().filter(same_kind).collect(),
+            matches!(
+                movement,
+                RecordingFocusMove::Next | RecordingFocusMove::NextInRow
+            ),
+        ),
+    }
+}
+
+/// "1 minute 12 secondes 40 centièmes": a position or a length on the
+/// recording timeline as a screen reader says it. Empty units are left out.
+pub fn spoken_duration(seconds: f64) -> String {
+    let total = (seconds.max(0.0) * 100.0).round() as i64;
+    let hours = total / 360_000;
+    let minutes = (total / 6_000) % 60;
+    let whole_seconds = (total / 100) % 60;
+    let hundredths = total % 100;
+    let unit = |value: i64, one: &str, many: &str| {
+        format!("{value} {}", t(if value == 1 { one } else { many }))
+    };
+    let mut parts = Vec::new();
+    if hours > 0 {
+        parts.push(unit(hours, "accessibility.hour", "accessibility.hours"));
+    }
+    if minutes > 0 {
+        parts.push(unit(
+            minutes,
+            "accessibility.minute",
+            "accessibility.minutes",
+        ));
+    }
+    if whole_seconds > 0 || (parts.is_empty() && hundredths == 0) {
+        parts.push(unit(
+            whole_seconds,
+            "accessibility.second",
+            "accessibility.seconds",
+        ));
+    }
+    if hundredths > 0 {
+        parts.push(unit(
+            hundredths,
+            "accessibility.hundredth",
+            "accessibility.hundredths",
+        ));
+    }
+    parts.join(" ")
+}
+
+fn count_label(count: usize, one: &str, many: &str) -> String {
+    if count == 1 {
+        t(one).to_string()
+    } else {
+        t(many).replace("{count}", &count.to_string())
+    }
+}
+
+/// Name of an audio without its extension, as listed in the library.
+pub fn audio_display_name(file_name: &str) -> String {
+    file_name
+        .strip_suffix(".flac")
+        .unwrap_or(file_name)
+        .to_owned()
+}
+
+/// Who recorded a take: the username its file starts with, or the file
+/// name when it does not follow the take naming.
+fn audio_speaker(file_name: &str) -> String {
+    let owner = asset_owner(file_name);
+    if owner == t("recording.assets.other") {
+        audio_display_name(file_name)
+    } else {
+        owner
+    }
+}
+
+/// Spoken name and details of a take: who recorded it, its track, where it
+/// starts and how long it lasts.
+pub fn clip_accessible_text(project: &RecordingProject, clip: &AudioClip) -> (String, String) {
+    let fps = project.timeline_fps().max(1.0);
+    let speaker = project
+        .asset(clip.asset_id)
+        .map(|asset| audio_speaker(&asset.file_name))
+        .unwrap_or_default();
+    let track = project
+        .track(clip.track_id)
+        .map(|track| track.name.clone())
+        .unwrap_or_default();
+    (
+        t("recording.a11y.clip").replace("{speaker}", &speaker),
+        t("recording.a11y.clip_value")
+            .replace("{track}", &track)
+            .replace("{start}", &spoken_duration(clip.start_frame as f64 / fps))
+            .replace(
+                "{duration}",
+                &spoken_duration(clip.duration_frames as f64 / fps),
+            ),
+    )
+}
+
+/// Spoken details of an audio of the library: length and whether it is
+/// already placed on the timeline.
+pub fn asset_accessible_value(asset: &AudioAsset, used: bool) -> String {
+    format!(
+        "{}, {}",
+        spoken_duration(asset.duration_seconds()),
+        t(if used {
+            "recording.a11y.asset_used"
+        } else {
+            "recording.a11y.asset_unused"
+        })
+    )
+}
+
+/// Spoken state of a track: armed, muted, solo, volume and number of takes.
+pub fn track_accessible_summary(track: &AudioTrack, volume: f32, takes: usize) -> String {
+    let mut parts = Vec::new();
+    if track.armed {
+        parts.push(t("recording.a11y.track_armed").to_string());
+    }
+    if track.muted {
+        parts.push(t("recording.a11y.track_muted").to_string());
+    }
+    if track.solo {
+        parts.push(t("recording.a11y.track_solo").to_string());
+    }
+    parts.push(
+        t("recording.a11y.track_volume").replace("{percent}", &format!("{:.0}", volume * 100.0)),
+    );
+    parts.push(if takes == 0 {
+        t("recording.a11y.takes_none").to_string()
+    } else {
+        count_label(
+            takes,
+            "recording.a11y.takes_one",
+            "recording.a11y.takes_many",
+        )
+    });
+    parts.join(", ")
+}
+
+/// Track label of a track control: "Piste 1 — Muet".
+fn track_control_label(track: &AudioTrack, key: &str) -> String {
+    format!("{} — {}", track.name, t(key))
+}
+
+fn on_off(active: bool) -> String {
+    t(if active {
+        "accessibility.on"
+    } else {
+        "accessibility.off"
+    })
+    .to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -501,6 +840,9 @@ pub struct RecordingWorkspaceUi {
     asset_scrollbar_drag_offset: f32,
     expanded_asset_owners: BTreeSet<String>,
     asset_context_menu: Option<AssetContextMenu>,
+    /// Frame of the last `Entrée` on the takes under the playhead: pressing
+    /// it again there moves on to the next track.
+    take_cycle_frame: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -508,9 +850,62 @@ struct AssetContextMenu {
     asset_id: AudioAssetId,
     x: f32,
     y: f32,
+    /// Highlighted entry of [`ASSET_MENU_ITEMS`], driven by the pointer and
+    /// by `↑` / `↓`.
+    highlighted: usize,
     submenu_open: bool,
-    hover_parent: bool,
     hover_voicelines: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssetMenuItem {
+    PlaceAtPlayhead,
+    SendTo,
+    Delete,
+}
+
+const ASSET_MENU_ITEMS: [AssetMenuItem; 3] = [
+    AssetMenuItem::PlaceAtPlayhead,
+    AssetMenuItem::SendTo,
+    AssetMenuItem::Delete,
+];
+
+impl AssetMenuItem {
+    fn label(self) -> String {
+        t(match self {
+            Self::PlaceAtPlayhead => "recording.asset_menu.place",
+            Self::SendTo => "recording.asset_menu.send_to",
+            Self::Delete => "recording.asset_menu.delete",
+        })
+        .to_string()
+    }
+}
+
+impl AssetContextMenu {
+    fn item_rect(&self, index: usize) -> Rect {
+        Rect {
+            x: self.x,
+            y: self.y + index as f32 * ASSET_MENU_ITEM_H,
+            width: ASSET_MENU_W,
+            height: ASSET_MENU_ITEM_H,
+        }
+    }
+
+    fn submenu_rect(&self) -> Rect {
+        let send_to = self.item_rect(1);
+        Rect {
+            x: send_to.x + send_to.width - 2.0,
+            width: ASSET_MENU_W * 0.7,
+            ..send_to
+        }
+    }
+}
+
+fn menu_focus(label: String) -> EventResponse {
+    EventResponse::Action(UiAction::Accessibility(AccessibilityEvent::Focus {
+        label,
+        role: "menu item".into(),
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -522,6 +917,9 @@ struct PendingAudioImport {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RecordingTextEditResult {
     Consumed,
+    /// `Échap` closed the field without changing anything; the label names
+    /// what was cancelled.
+    Cancelled(String),
     RenameTrack {
         track_id: AudioTrackId,
         name: String,
@@ -567,6 +965,7 @@ impl Default for RecordingWorkspaceUi {
             asset_scrollbar_drag_offset: 0.0,
             expanded_asset_owners: BTreeSet::new(),
             asset_context_menu: None,
+            take_cycle_frame: None,
         }
     }
 }
@@ -619,6 +1018,49 @@ impl RecordingWorkspaceUi {
         self.editor.clear_selection();
     }
 
+    /// `Entrée`, as for a rythmo line: select the take under the playhead,
+    /// top track first; pressing again at the same frame moves on to the take
+    /// of the next track. With no take there, the selection is cleared.
+    pub fn select_clip_at_playhead(
+        &mut self,
+        project: &RecordingProject,
+        frame: i64,
+    ) -> Option<AudioClipId> {
+        let rows = project
+            .tracks()
+            .enumerate()
+            .map(|(row, track)| (track.id, row))
+            .collect::<BTreeMap<_, _>>();
+        let mut candidates = project
+            .clips()
+            .filter(|clip| clip.start_frame <= frame && frame < clip.end_frame())
+            .filter_map(|clip| rows.get(&clip.track_id).map(|row| (*row, clip)))
+            .map(|(row, clip)| (row, clip.start_frame, clip.id.get(), clip.id))
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|(row, start, raw, _)| (*row, *start, *raw));
+        let cycling = self.take_cycle_frame == Some(frame);
+        self.take_cycle_frame = Some(frame);
+        if candidates.is_empty() {
+            self.editor.clear_selection();
+            return None;
+        }
+        let selected = self.editor.selected_clips().collect::<Vec<_>>();
+        let current = match selected.as_slice() {
+            [only] => candidates
+                .iter()
+                .position(|(_, _, _, clip_id)| clip_id == only),
+            _ => None,
+        };
+        let next = if cycling {
+            current.map_or(0, |index| (index + 1) % candidates.len())
+        } else {
+            0
+        };
+        let clip_id = candidates[next].3;
+        self.select_clip(project, clip_id, false).ok()?;
+        Some(clip_id)
+    }
+
     pub fn begin_rename_track(&mut self, project: &RecordingProject, track_id: AudioTrackId) {
         self.renaming_track = project.track(track_id).map(|track| track.id);
         self.rename_buffer = project
@@ -662,7 +1104,12 @@ impl RecordingWorkspaceUi {
 
         if self.pending_audio_import.is_some() {
             match text.as_str() {
-                "\x1b" => self.cancel_audio_import(),
+                "\x1b" => {
+                    self.cancel_audio_import();
+                    return Some(RecordingTextEditResult::Cancelled(
+                        t("recording.audio.username_prompt").to_string(),
+                    ));
+                }
                 "\r" | "\n" => {
                     let username = self.import_username.trim().to_owned();
                     if !username.is_empty() {
@@ -689,7 +1136,12 @@ impl RecordingWorkspaceUi {
 
         let track_id = self.renaming_track?;
         match text.as_str() {
-            "\x1b" => self.cancel_rename_track(),
+            "\x1b" => {
+                self.cancel_rename_track();
+                return Some(RecordingTextEditResult::Cancelled(
+                    t("recording.a11y.rename_title").to_string(),
+                ));
+            }
             "\r" | "\n" => {
                 let name = self.rename_buffer.trim().to_owned();
                 self.cancel_rename_track();
@@ -786,6 +1238,37 @@ impl RecordingWorkspaceUi {
         }
     }
 
+    pub fn is_asset_group_expanded(&self, owner: &str) -> bool {
+        self.expanded_asset_owners.contains(owner)
+    }
+
+    pub fn has_asset_context_menu(&self) -> bool {
+        self.asset_context_menu.is_some()
+    }
+
+    /// Scroll the track list and the audio library so a control that just
+    /// received the keyboard focus is on screen (the time axis follows the
+    /// playhead and is left alone).
+    pub fn reveal(&mut self, place: RecordingControlPlace, layout: RecordingLayout) {
+        if let (Some(row), Some(body)) = (place.track_row, layout.track_body) {
+            let visible = visible_track_rows(body);
+            let scroll = effective_track_scroll(body, self.track_count, self.track_scroll);
+            if row < scroll {
+                self.track_scroll = row;
+            } else if row >= scroll + visible {
+                self.track_scroll = row + 1 - visible;
+            }
+        }
+        if let (Some(offset), Some(rect)) = (place.library_offset, layout.assets) {
+            let viewport = (rect.height - 40.0).max(1.0);
+            if offset < self.asset_scroll {
+                self.asset_scroll = offset;
+            } else if offset + ASSET_ROW_H > self.asset_scroll + viewport {
+                self.asset_scroll = offset + ASSET_ROW_H - viewport;
+            }
+        }
+    }
+
     pub fn handle_asset_scroll(&mut self, event: &UiEvent, layout: RecordingLayout) -> bool {
         let Some(rect) = layout.assets else {
             return false;
@@ -851,101 +1334,120 @@ impl RecordingWorkspaceUi {
                 self.asset_context_menu = None;
                 return Some(EventResponse::Consumed);
             };
-            let (x, y) = super::context_menu::clamped_origin(
-                *x,
-                *y,
-                ASSET_MENU_W * 2.0 - 2.0,
-                ASSET_MENU_ITEM_H,
-                screen.x + screen.width,
-                screen.y + screen.height,
-            );
-            self.selected_asset = Some(asset_id);
-            self.dragging_asset = None;
-            self.asset_context_menu = Some(AssetContextMenu {
-                asset_id,
-                x,
-                y,
-                submenu_open: false,
-                hover_parent: false,
-                hover_voicelines: false,
-            });
-            return Some(EventResponse::Consumed);
+            self.open_asset_context_menu(asset_id, *x, *y, screen);
+            return Some(self.asset_menu_announcement(true));
         }
 
         if matches!(event, UiEvent::OpenContextMenu) && self.asset_context_menu.is_none() {
             let asset_id = self.selected_asset?;
-            let bounds = scene
+            let control = scene
                 .controls
                 .iter()
-                .find_map(|control| match control.control {
-                    RecordingControl::Asset(id) if id == asset_id => Some(control.bounds),
-                    _ => None,
-                })?;
-            let (x, y) = super::context_menu::clamped_origin(
-                bounds.x + 16.0,
-                bounds.y + bounds.height,
-                ASSET_MENU_W * 2.0 - 2.0,
-                ASSET_MENU_ITEM_H,
-                screen.x + screen.width,
-                screen.y + screen.height,
-            );
-            self.asset_context_menu = Some(AssetContextMenu {
-                asset_id,
-                x,
-                y,
-                submenu_open: true,
-                hover_parent: true,
-                hover_voicelines: false,
-            });
-            return Some(EventResponse::Consumed);
+                .find(|control| control.control == RecordingControl::Asset(asset_id))?;
+            let (x, y) = if control.visible {
+                (
+                    control.bounds.x + 16.0,
+                    control.bounds.y + control.bounds.height,
+                )
+            } else {
+                (
+                    screen.x + screen.width * 0.5,
+                    screen.y + screen.height * 0.5,
+                )
+            };
+            self.open_asset_context_menu(asset_id, x, y, screen);
+            return Some(self.asset_menu_announcement(true));
         }
 
         let menu = self.asset_context_menu.as_mut()?;
-        let parent = Rect {
-            x: menu.x,
-            y: menu.y,
-            width: ASSET_MENU_W,
-            height: ASSET_MENU_ITEM_H,
+        let item_at = |menu: &AssetContextMenu, x: f32, y: f32| {
+            (0..ASSET_MENU_ITEMS.len()).find(|index| menu.item_rect(*index).contains(x, y))
         };
-        let submenu = Rect {
-            x: menu.x + ASSET_MENU_W - 2.0,
-            ..parent
+        let activate = |menu: &mut AssetContextMenu| -> Option<UiAction> {
+            if menu.submenu_open && menu.hover_voicelines {
+                return Some(UiAction::RecordingSendAssetToVoicelines(menu.asset_id));
+            }
+            match ASSET_MENU_ITEMS[menu.highlighted] {
+                AssetMenuItem::PlaceAtPlayhead => {
+                    Some(UiAction::RecordingPlaceAssetAtPlayhead(Some(menu.asset_id)))
+                }
+                AssetMenuItem::SendTo => {
+                    menu.submenu_open = true;
+                    menu.hover_voicelines = true;
+                    None
+                }
+                AssetMenuItem::Delete => Some(UiAction::RecordingDeleteSelectedAsset),
+            }
         };
         match event {
             UiEvent::MouseMove { x, y } => {
-                menu.hover_parent = parent.contains(*x, *y);
-                menu.hover_voicelines = menu.submenu_open && submenu.contains(*x, *y);
-                if menu.hover_parent {
-                    menu.submenu_open = true;
+                if let Some(index) = item_at(menu, *x, *y) {
+                    menu.highlighted = index;
+                    menu.submenu_open = ASSET_MENU_ITEMS[index] == AssetMenuItem::SendTo;
                 }
+                menu.hover_voicelines = menu.submenu_open && menu.submenu_rect().contains(*x, *y);
                 Some(EventResponse::Consumed)
             }
-            UiEvent::MousePress { x, y } if menu.submenu_open && submenu.contains(*x, *y) => {
-                let asset_id = menu.asset_id;
-                self.asset_context_menu = None;
-                Some(EventResponse::Action(
-                    UiAction::RecordingSendAssetToVoicelines(asset_id),
-                ))
+            UiEvent::MousePress { x, y } | UiEvent::DoubleClick { x, y }
+                if (menu.submenu_open && menu.submenu_rect().contains(*x, *y))
+                    || item_at(menu, *x, *y).is_some() =>
+            {
+                if let Some(index) = item_at(menu, *x, *y) {
+                    menu.highlighted = index;
+                    menu.hover_voicelines = false;
+                } else {
+                    menu.hover_voicelines = true;
+                }
+                match activate(menu) {
+                    Some(action) => {
+                        self.asset_context_menu = None;
+                        Some(EventResponse::Action(action))
+                    }
+                    None => Some(EventResponse::Consumed),
+                }
             }
-            UiEvent::MousePress { x, y } if parent.contains(*x, *y) => {
-                menu.submenu_open = true;
-                Some(EventResponse::Consumed)
+            UiEvent::CursorUp | UiEvent::CursorDown => {
+                let count = ASSET_MENU_ITEMS.len();
+                menu.highlighted = if matches!(event, UiEvent::CursorDown) {
+                    (menu.highlighted + 1) % count
+                } else {
+                    (menu.highlighted + count - 1) % count
+                };
+                menu.submenu_open = false;
+                menu.hover_voicelines = false;
+                Some(self.asset_menu_announcement(false))
             }
-            UiEvent::CursorRight => {
+            UiEvent::CursorRight if ASSET_MENU_ITEMS[menu.highlighted] == AssetMenuItem::SendTo => {
                 menu.submenu_open = true;
                 menu.hover_voicelines = true;
-                Some(EventResponse::Consumed)
+                Some(self.asset_menu_announcement(false))
             }
-            UiEvent::Activate if menu.submenu_open => {
-                let asset_id = menu.asset_id;
-                self.asset_context_menu = None;
-                Some(EventResponse::Action(
-                    UiAction::RecordingSendAssetToVoicelines(asset_id),
-                ))
+            UiEvent::CursorLeft if menu.submenu_open => {
+                menu.submenu_open = false;
+                menu.hover_voicelines = false;
+                Some(self.asset_menu_announcement(false))
             }
+            UiEvent::Activate => match activate(menu) {
+                Some(action) => {
+                    self.asset_context_menu = None;
+                    Some(EventResponse::Action(action))
+                }
+                None => Some(self.asset_menu_announcement(false)),
+            },
+            UiEvent::KeyInput { text } if text == "\r" || text == "\n" => match activate(menu) {
+                Some(action) => {
+                    self.asset_context_menu = None;
+                    Some(EventResponse::Action(action))
+                }
+                None => Some(self.asset_menu_announcement(false)),
+            },
             UiEvent::KeyInput { text } if text == "\x1b" => {
                 self.asset_context_menu = None;
-                Some(EventResponse::Consumed)
+                Some(EventResponse::Action(UiAction::Accessibility(
+                    AccessibilityEvent::Closed {
+                        label: t("recording.asset_menu.title").to_string(),
+                    },
+                )))
             }
             UiEvent::MousePress { .. } | UiEvent::OpenContextMenu => {
                 self.asset_context_menu = None;
@@ -953,6 +1455,45 @@ impl RecordingWorkspaceUi {
             }
             _ => Some(EventResponse::Consumed),
         }
+    }
+
+    fn open_asset_context_menu(&mut self, asset_id: AudioAssetId, x: f32, y: f32, screen: Rect) {
+        let (x, y) = super::context_menu::clamped_origin(
+            x,
+            y,
+            ASSET_MENU_W * 1.7 - 2.0,
+            ASSET_MENU_ITEM_H * ASSET_MENU_ITEMS.len() as f32,
+            screen.x + screen.width,
+            screen.y + screen.height,
+        );
+        self.selected_asset = Some(asset_id);
+        self.dragging_asset = None;
+        self.asset_context_menu = Some(AssetContextMenu {
+            asset_id,
+            x,
+            y,
+            highlighted: 0,
+            submenu_open: false,
+            hover_voicelines: false,
+        });
+    }
+
+    /// Spoken highlighted entry of the audio menu; `opened` prefixes the
+    /// menu title, as for any menu that just opened.
+    fn asset_menu_announcement(&self, opened: bool) -> EventResponse {
+        let Some(menu) = self.asset_context_menu else {
+            return EventResponse::Consumed;
+        };
+        let item = if menu.submenu_open && menu.hover_voicelines {
+            t("workspace_tabs.voicelines").to_string()
+        } else {
+            ASSET_MENU_ITEMS[menu.highlighted].label()
+        };
+        menu_focus(if opened {
+            format!("{} : {item}", t("recording.asset_menu.title"))
+        } else {
+            item
+        })
     }
 
     pub fn handle_track_scroll(&mut self, event: &UiEvent, layout: RecordingLayout) -> bool {
@@ -1114,6 +1655,8 @@ fn choice_scene(layout: RecordingLayout) -> RecordingScene {
             value: Some(hint.into()),
             selected: false,
             enabled: true,
+            visible: true,
+            place: RecordingControlPlace::default(),
         });
     }
     scene
@@ -1170,7 +1713,9 @@ fn timeline_scene(
             ui.editor.tool,
             ui.role.can_edit_timeline(),
             ui.selected_clips().next().is_some(),
-            project.armed_track_id().is_some(),
+            project
+                .armed_track_id()
+                .and_then(|track_id| project.track(track_id)),
         );
         push_tracks(&mut scene, ui, project, headers, body, current_frame);
         push_track_scrollbar(&mut scene, ui, project.tracks().count(), body);
@@ -1214,20 +1759,35 @@ fn timeline_scene(
                 }
             }
             CaptureState::Capturing { .. } => {
-                scene.labels.push(RecordingLabel {
-                    text: crate::i18n::t("recording.capture.active").into(),
-                    bounds: Rect {
-                        x: layout.video.x + 14.0,
-                        y: layout.video.y + 12.0,
-                        width: 220.0,
-                        height: 28.0,
-                    },
-                    h_align: HAlign::Left,
-                    v_align: VAlign::Center,
-                    overflow: Overflow::Ellipsis,
-                    font_size: 13.0,
-                    color: [250, 100, 110],
-                });
+                let bounds = Rect {
+                    x: layout.video.x + 14.0,
+                    y: layout.video.y + 12.0,
+                    width: 380.0_f32.min(layout.video.width - 28.0).max(0.0),
+                    height: 30.0,
+                };
+                // Labels are drawn above the video, quads below it: a dark
+                // outline keeps the red text readable over any picture.
+                for (dx, dy, color) in [
+                    (-1.0, 0.0, [0, 0, 0]),
+                    (1.0, 0.0, [0, 0, 0]),
+                    (0.0, -1.0, [0, 0, 0]),
+                    (0.0, 1.0, [0, 0, 0]),
+                    (0.0, 0.0, [255, 120, 128]),
+                ] {
+                    scene.labels.push(RecordingLabel {
+                        text: t("recording.capture.active").into(),
+                        bounds: Rect {
+                            x: bounds.x + dx,
+                            y: bounds.y + dy,
+                            ..bounds
+                        },
+                        h_align: HAlign::Left,
+                        v_align: VAlign::Center,
+                        overflow: Overflow::Ellipsis,
+                        font_size: 15.0,
+                        color,
+                    });
+                }
             }
             _ => {}
         }
@@ -1242,57 +1802,53 @@ fn timeline_scene(
 }
 
 fn push_asset_context_menu(scene: &mut RecordingScene, menu: AssetContextMenu) {
-    let parent = Rect {
-        x: menu.x,
-        y: menu.y,
-        width: ASSET_MENU_W,
-        height: ASSET_MENU_ITEM_H,
-    };
-    push_quad(
-        &mut scene.system_quads,
-        parent,
-        [0.13, 0.13, 0.16, 0.99],
-        BORDER,
-        0.0,
-    );
-    if menu.hover_parent {
+    for (index, item) in ASSET_MENU_ITEMS.into_iter().enumerate() {
+        let row = menu.item_rect(index);
         push_quad(
             &mut scene.system_quads,
-            inset_rect(parent, 3.0),
-            [0.31, 0.40, 0.72, 0.85],
-            [0.0; 4],
+            row,
+            [0.13, 0.13, 0.16, 0.99],
+            BORDER,
             0.0,
         );
+        if menu.highlighted == index && !(menu.submenu_open && menu.hover_voicelines) {
+            push_quad(
+                &mut scene.system_quads,
+                inset_rect(row, 3.0),
+                [0.31, 0.40, 0.72, 0.85],
+                [0.0; 4],
+                0.0,
+            );
+        }
+        scene.system_labels.push(RecordingLabel {
+            text: item.label(),
+            bounds: Rect {
+                x: row.x + 10.0,
+                width: row.width - 34.0,
+                ..row
+            },
+            h_align: HAlign::Left,
+            v_align: VAlign::Center,
+            overflow: Overflow::Ellipsis,
+            font_size: 13.0,
+            color: TEXT,
+        });
+        if item == AssetMenuItem::SendTo {
+            scene.system_labels.push(label(
+                ">",
+                Rect {
+                    x: row.x + row.width - 24.0,
+                    width: 18.0,
+                    ..row
+                },
+                13.0,
+                MUTED_TEXT,
+            ));
+        }
     }
-    scene.system_labels.push(RecordingLabel {
-        text: "Envoyer vers".into(),
-        bounds: Rect {
-            x: parent.x + 10.0,
-            width: parent.width - 34.0,
-            ..parent
-        },
-        h_align: HAlign::Left,
-        v_align: VAlign::Center,
-        overflow: Overflow::Ellipsis,
-        font_size: 12.0,
-        color: TEXT,
-    });
-    scene.system_labels.push(label(
-        ">",
-        Rect {
-            x: parent.x + parent.width - 24.0,
-            width: 18.0,
-            ..parent
-        },
-        12.0,
-        MUTED_TEXT,
-    ));
 
     if menu.submenu_open {
-        let submenu = Rect {
-            x: parent.x + parent.width - 2.0,
-            ..parent
-        };
+        let submenu = menu.submenu_rect();
         push_quad(
             &mut scene.system_quads,
             submenu,
@@ -1310,7 +1866,7 @@ fn push_asset_context_menu(scene: &mut RecordingScene, menu: AssetContextMenu) {
             );
         }
         scene.system_labels.push(RecordingLabel {
-            text: "Voicelines".into(),
+            text: t("workspace_tabs.voicelines").into(),
             bounds: Rect {
                 x: submenu.x + 10.0,
                 width: submenu.width - 20.0,
@@ -1319,7 +1875,7 @@ fn push_asset_context_menu(scene: &mut RecordingScene, menu: AssetContextMenu) {
             h_align: HAlign::Left,
             v_align: VAlign::Center,
             overflow: Overflow::Ellipsis,
-            font_size: 12.0,
+            font_size: 13.0,
             color: TEXT,
         });
     }
@@ -1391,8 +1947,10 @@ fn push_audio_import_prompt(scene: &mut RecordingScene, ui: &RecordingWorkspaceU
         role: AccessibleRole::TextField,
         label: crate::i18n::t("recording.audio.username_label").into(),
         value: Some(ui.import_username.clone()),
-        selected: true,
+        selected: false,
         enabled: true,
+        visible: true,
+        place: RecordingControlPlace::default(),
     });
 }
 
@@ -1402,11 +1960,25 @@ fn push_tool_controls(
     active: RecordingTool,
     enabled: bool,
     has_selection: bool,
-    has_armed_track: bool,
+    armed_track: Option<&AudioTrack>,
 ) {
-    for (index, (tool, text, key)) in [
-        (RecordingTool::Select, "Sélection", "recording.tool.select"),
-        (RecordingTool::Cut, "Couper", "recording.tool.cut"),
+    let push_control =
+        |scene: &mut RecordingScene, control, bounds, label: String, value, enabled| {
+            scene.controls.push(RecordingControlInfo {
+                control,
+                bounds,
+                role: AccessibleRole::Button,
+                label,
+                value,
+                selected: false,
+                enabled,
+                visible: true,
+                place: RecordingControlPlace::default(),
+            });
+        };
+    for (index, (tool, key)) in [
+        (RecordingTool::Select, "recording.tool.select"),
+        (RecordingTool::Cut, "recording.tool.cut"),
     ]
     .into_iter()
     .enumerate()
@@ -1418,28 +1990,28 @@ fn push_tool_controls(
             height: 34.0,
         };
         let selected = tool == active;
-        push_quad(
+        push_quad_with_border(
             &mut scene.quads,
             bounds,
             if selected { ACCENT } else { PANEL_BG },
-            BORDER,
+            if selected { ACTIVE_BORDER } else { BORDER },
+            if selected { 2.0 } else { 1.0 },
             5.0,
         );
         scene.labels.push(label(
-            text,
+            t(key),
             bounds,
             15.0,
             if enabled { TEXT } else { MUTED_TEXT },
         ));
-        scene.controls.push(RecordingControlInfo {
-            control: RecordingControl::Tool(tool),
+        push_control(
+            scene,
+            RecordingControl::Tool(tool),
             bounds,
-            role: AccessibleRole::Button,
-            label: crate::i18n::t(key).into(),
-            value: None,
-            selected,
+            t(key).into(),
+            selected.then(|| t("recording.a11y.tool_active").to_string()),
             enabled,
-        });
+        );
     }
     let add_bounds = Rect {
         x: tools.x + 7.0,
@@ -1454,15 +2026,14 @@ fn push_tool_controls(
         18.0,
         if enabled { TEXT } else { MUTED_TEXT },
     ));
-    scene.controls.push(RecordingControlInfo {
-        control: RecordingControl::AddTrack,
-        bounds: add_bounds,
-        role: AccessibleRole::Button,
-        label: crate::i18n::t("recording.track.add").into(),
-        value: None,
-        selected: false,
+    push_control(
+        scene,
+        RecordingControl::AddTrack,
+        add_bounds,
+        t("recording.track.add").into(),
+        None,
         enabled,
-    });
+    );
     let delete_bounds = Rect {
         x: add_bounds.x + add_bounds.width + 4.0,
         y: add_bounds.y,
@@ -1480,15 +2051,16 @@ fn push_tool_controls(
             MUTED_TEXT
         },
     ));
-    scene.controls.push(RecordingControlInfo {
-        control: RecordingControl::DeleteSelectedClips,
-        bounds: delete_bounds,
-        role: AccessibleRole::Button,
-        label: crate::i18n::t("shortcut.delete").into(),
-        value: None,
-        selected: false,
-        enabled: enabled && has_selection,
-    });
+    // Like the record button below, it stays reachable and says why it
+    // cannot act yet.
+    push_control(
+        scene,
+        RecordingControl::DeleteSelectedClips,
+        delete_bounds,
+        t("recording.clip.delete_selected").into(),
+        (!has_selection).then(|| t("recording.a11y.no_take_selected").to_string()),
+        enabled,
+    );
     let record_bounds = Rect {
         x: tools.x + 7.0,
         y: tools.y + 124.0,
@@ -1498,7 +2070,7 @@ fn push_tool_controls(
     push_quad(
         &mut scene.quads,
         record_bounds,
-        if has_armed_track {
+        if armed_track.is_some() {
             RECORD
         } else {
             [0.13, 0.13, 0.16, 1.0]
@@ -1509,22 +2081,26 @@ fn push_tool_controls(
     scene.labels.push(label(
         "● REC",
         record_bounds,
-        12.0,
-        if enabled && has_armed_track {
+        13.0,
+        if enabled && armed_track.is_some() {
             TEXT
         } else {
             MUTED_TEXT
         },
     ));
-    scene.controls.push(RecordingControlInfo {
-        control: RecordingControl::StartCapture,
-        bounds: record_bounds,
-        role: AccessibleRole::Button,
-        label: crate::i18n::t("recording.capture.start").into(),
-        value: None,
-        selected: false,
-        enabled: enabled && has_armed_track,
-    });
+    // Reachable without an armed track: activating it then says what is
+    // missing instead of the button silently doing nothing.
+    push_control(
+        scene,
+        RecordingControl::StartCapture,
+        record_bounds,
+        t("recording.capture.start").into(),
+        Some(match armed_track {
+            Some(track) => t("recording.a11y.record_on").replace("{track}", &track.name),
+            None => t("recording.a11y.no_armed_track").to_string(),
+        }),
+        enabled,
+    );
 }
 
 fn visible_track_rows(body: Rect) -> usize {
@@ -1599,15 +2175,36 @@ fn push_tracks(
     current_frame: f64,
 ) {
     let track_count = project.tracks().count();
+    let visible_rows = visible_track_rows(body);
     let scroll = effective_track_scroll(body, track_count, ui.track_scroll);
-    for (visible_row, track) in project
-        .tracks()
-        .skip(scroll)
-        .take(visible_track_rows(body))
-        .enumerate()
-    {
-        let row = scroll + visible_row;
-        let y = headers.y + visible_row as f32 * TRACK_ROW_H;
+    let can_edit = ui.role.can_edit_timeline();
+    let mut takes_per_track = BTreeMap::<AudioTrackId, usize>::new();
+    for clip in project.clips() {
+        *takes_per_track.entry(clip.track_id).or_default() += 1;
+    }
+    for (row, track) in project.tracks().enumerate() {
+        // Every track keeps its controls in the focus order; only the rows
+        // in view are drawn and reachable by the pointer.
+        let visible = (scroll..scroll + visible_rows).contains(&row);
+        let place = RecordingControlPlace {
+            track_row: Some(row),
+            ..RecordingControlPlace::default()
+        };
+        let push_control =
+            |scene: &mut RecordingScene, control, bounds, role, label, value, enabled| {
+                scene.controls.push(RecordingControlInfo {
+                    control,
+                    bounds: if visible { bounds } else { HIDDEN_BOUNDS },
+                    role,
+                    label,
+                    value,
+                    selected: false,
+                    enabled,
+                    visible,
+                    place,
+                });
+            };
+        let y = headers.y + row.saturating_sub(scroll) as f32 * TRACK_ROW_H;
         let header = Rect {
             x: headers.x,
             y,
@@ -1620,24 +2217,26 @@ fn push_tracks(
             width: body.width,
             height: TRACK_ROW_H,
         };
-        push_quad(
-            &mut scene.quads,
-            header,
-            if row % 2 == 0 { PANEL_BG } else { PANEL_ALT },
-            BORDER,
-            0.0,
-        );
-        push_quad(
-            &mut scene.quads,
-            lane,
-            if row % 2 == 0 {
-                [0.065, 0.068, 0.084, 1.0]
-            } else {
-                [0.075, 0.078, 0.096, 1.0]
-            },
-            BORDER,
-            0.0,
-        );
+        if visible {
+            push_quad(
+                &mut scene.quads,
+                header,
+                if row % 2 == 0 { PANEL_BG } else { PANEL_ALT },
+                BORDER,
+                0.0,
+            );
+            push_quad(
+                &mut scene.quads,
+                lane,
+                if row % 2 == 0 {
+                    [0.065, 0.068, 0.084, 1.0]
+                } else {
+                    [0.075, 0.078, 0.096, 1.0]
+                },
+                BORDER,
+                0.0,
+            );
+        }
         let volume_bounds = Rect {
             x: header.x + header.width - 70.0,
             y: header.y + 2.0,
@@ -1650,119 +2249,138 @@ fn push_tracks(
             width: (volume_bounds.x - header.x - 12.0).max(24.0),
             height: 22.0,
         };
-        scene.labels.push(RecordingLabel {
-            text: if ui.renaming_track == Some(track.id) {
-                ui.rename_buffer.clone()
+        let track_volume = ui.track_volume(track.id);
+        if visible {
+            scene.labels.push(RecordingLabel {
+                text: if ui.renaming_track == Some(track.id) {
+                    ui.rename_buffer.clone()
+                } else {
+                    track.name.clone()
+                },
+                bounds: name_bounds,
+                h_align: HAlign::Left,
+                v_align: VAlign::Center,
+                overflow: Overflow::Ellipsis,
+                font_size: 13.0,
+                color: TEXT,
+            });
+        }
+        // The name control stands for the whole track: everyone can reach it
+        // and hear the track state, editors also rename it from there.
+        push_control(
+            scene,
+            RecordingControl::RenameTrack(track.id),
+            name_bounds,
+            if can_edit {
+                AccessibleRole::Button
+            } else {
+                AccessibleRole::ListItem
+            },
+            if can_edit {
+                track_control_label(track, "recording.track.rename")
             } else {
                 track.name.clone()
             },
-            bounds: name_bounds,
-            h_align: HAlign::Left,
-            v_align: VAlign::Center,
-            overflow: Overflow::Ellipsis,
-            font_size: 12.0,
-            color: TEXT,
-        });
-        scene.controls.push(RecordingControlInfo {
-            control: RecordingControl::RenameTrack(track.id),
-            bounds: name_bounds,
-            role: AccessibleRole::Button,
-            label: format!(
-                "{} — {}",
-                track.name,
-                crate::i18n::t("recording.track.rename")
-            ),
-            value: None,
-            selected: ui.renaming_track == Some(track.id),
-            enabled: ui.role.can_edit_timeline(),
-        });
-        let track_volume = ui.track_volume(track.id);
-        let volume_track = Rect {
-            x: volume_bounds.x + 3.0,
-            y: volume_bounds.y + 18.0,
-            width: volume_bounds.width - 6.0,
-            height: 3.0,
-        };
-        push_quad(
-            &mut scene.quads,
-            volume_track,
-            [0.18, 0.19, 0.23, 1.0],
-            [0.0; 4],
-            1.5,
+            Some(track_accessible_summary(
+                track,
+                track_volume,
+                takes_per_track.get(&track.id).copied().unwrap_or_default(),
+            )),
+            true,
         );
-        push_quad(
-            &mut scene.quads,
-            Rect {
-                width: volume_track.width * (track_volume / crate::recording_mix::TRACK_VOLUME_MAX),
-                ..volume_track
-            },
-            ACCENT,
-            [0.0; 4],
-            1.5,
-        );
-        let knob_x = volume_track.x
-            + volume_track.width * (track_volume / crate::recording_mix::TRACK_VOLUME_MAX);
-        push_quad(
-            &mut scene.quads,
-            Rect {
-                x: knob_x - 2.0,
-                y: volume_bounds.y + 14.0,
-                width: 4.0,
-                height: 11.0,
-            },
-            [0.9, 0.9, 0.95, 1.0],
-            [0.0; 4],
-            1.5,
-        );
-        scene.labels.push(label(
-            format!("{:.0}%", track_volume * 100.0),
+        if visible {
+            let volume_track = Rect {
+                x: volume_bounds.x + 3.0,
+                y: volume_bounds.y + 18.0,
+                width: volume_bounds.width - 6.0,
+                height: 3.0,
+            };
+            push_quad(
+                &mut scene.quads,
+                volume_track,
+                [0.18, 0.19, 0.23, 1.0],
+                [0.0; 4],
+                1.5,
+            );
+            push_quad(
+                &mut scene.quads,
+                Rect {
+                    width: volume_track.width
+                        * (track_volume / crate::recording_mix::TRACK_VOLUME_MAX),
+                    ..volume_track
+                },
+                ACCENT,
+                [0.0; 4],
+                1.5,
+            );
+            let knob_x = volume_track.x
+                + volume_track.width * (track_volume / crate::recording_mix::TRACK_VOLUME_MAX);
+            push_quad(
+                &mut scene.quads,
+                Rect {
+                    x: knob_x - 2.0,
+                    y: volume_bounds.y + 14.0,
+                    width: 4.0,
+                    height: 11.0,
+                },
+                [0.9, 0.9, 0.95, 1.0],
+                [0.0; 4],
+                1.5,
+            );
+            scene.labels.push(label(
+                format!("{:.0}%", track_volume * 100.0),
+                Rect {
+                    height: 15.0,
+                    ..volume_bounds
+                },
+                10.0,
+                TEXT,
+            ));
+        }
+        push_control(
+            scene,
+            RecordingControl::TrackVolume(track.id),
             volume_bounds,
-            9.0,
-            TEXT,
-        ));
-        scene.controls.push(RecordingControlInfo {
-            control: RecordingControl::TrackVolume(track.id),
-            bounds: volume_bounds,
-            role: AccessibleRole::Slider,
-            label: format!(
-                "{} â€” {}",
-                track.name,
-                crate::i18n::t("recording.track.volume")
-            ),
-            value: Some(format!("{:.0} %", track_volume * 100.0)),
-            selected: false,
-            enabled: ui.role.can_adjust_track_volume(),
-        });
+            AccessibleRole::Slider,
+            track_control_label(track, "recording.track.volume"),
+            Some(format!("{:.0} %", track_volume * 100.0)),
+            ui.role.can_adjust_track_volume(),
+        );
         let track_reverb = ui.track_reverb(track.id);
-        for (index, (control, text, active, color)) in [
+        for (index, (control, text, key, active, color)) in [
             (
                 RecordingControl::TrackMute(track.id),
                 "M",
-                track.muted,
+                "recording.track.mute",
+                Some(track.muted),
                 [0.76, 0.55, 0.18, 1.0],
             ),
             (
                 RecordingControl::TrackSolo(track.id),
                 "S",
-                track.solo,
+                "recording.track.solo",
+                Some(track.solo),
                 [0.78, 0.66, 0.18, 1.0],
             ),
             (
                 RecordingControl::TrackArm(track.id),
                 "R",
-                track.armed,
+                "recording.track.arm",
+                Some(track.armed),
                 RECORD,
             ),
             (
                 RecordingControl::TrackExport(track.id),
                 "E",
-                false,
+                "recording.track.export",
+                None,
                 [0.25, 0.65, 0.35, 1.0],
             ),
             (
                 RecordingControl::TrackReverb(track.id),
                 "Rev",
-                track_reverb,
+                "recording.track.reverb",
+                Some(track_reverb),
                 [0.32, 0.45, 0.82, 1.0],
             ),
         ]
@@ -1775,60 +2393,33 @@ fn push_tracks(
                 width: if text == "Rev" { 32.0 } else { 24.0 },
                 height: 22.0,
             };
-            push_quad(
-                &mut scene.quads,
-                bounds,
-                if active {
-                    color
-                } else {
-                    [0.13, 0.13, 0.16, 1.0]
-                },
-                BORDER,
-                4.0,
-            );
-            scene.labels.push(label(text, bounds, 11.0, TEXT));
-            scene.controls.push(RecordingControlInfo {
+            let on = active == Some(true);
+            if visible {
+                // An active toggle also gets a thick light border, so its
+                // state does not depend on telling the fill colours apart.
+                push_quad_with_border(
+                    &mut scene.quads,
+                    bounds,
+                    if on { color } else { [0.13, 0.13, 0.16, 1.0] },
+                    if on { ACTIVE_BORDER } else { BORDER },
+                    if on { 2.0 } else { 1.0 },
+                    4.0,
+                );
+                scene.labels.push(label(text, bounds, 12.0, TEXT));
+            }
+            push_control(
+                scene,
                 control,
                 bounds,
-                role: AccessibleRole::Button,
-                label: match text {
-                    "M" => format!(
-                        "{} — {}",
-                        track.name,
-                        crate::i18n::t("recording.track.mute")
-                    ),
-                    "S" => format!(
-                        "{} — {}",
-                        track.name,
-                        crate::i18n::t("recording.track.solo")
-                    ),
-                    "E" => format!(
-                        "{} — {}",
-                        track.name,
-                        crate::i18n::t("recording.track.export")
-                    ),
-                    "Rev" => format!(
-                        "{} — {}",
-                        track.name,
-                        crate::i18n::t("recording.track.reverb")
-                    ),
-                    _ => format!("{} — {}", track.name, crate::i18n::t("recording.track.arm")),
-                },
-                value: Some(
-                    if active {
-                        crate::i18n::t("accessibility.on")
-                    } else {
-                        crate::i18n::t("accessibility.off")
-                    }
-                    .into(),
-                ),
-                selected: active,
-                enabled: if text == "Rev" {
+                AccessibleRole::Button,
+                track_control_label(track, key),
+                active.map(on_off),
+                if text == "Rev" {
                     ui.role.can_adjust_track_volume()
                 } else {
-                    ui.role.can_edit_timeline()
+                    can_edit
                 },
-            });
+            );
         }
         let remove_bounds = Rect {
             x: header.x + header.width - 28.0,
@@ -1837,119 +2428,134 @@ fn push_tracks(
             height: 22.0,
         };
         let removable = track_count > 1;
-        scene.labels.push(label(
-            "×",
+        if visible {
+            scene.labels.push(label(
+                "×",
+                remove_bounds,
+                20.0,
+                if removable { TEXT } else { MUTED_TEXT },
+            ));
+        }
+        push_control(
+            scene,
+            RecordingControl::RemoveTrack(track.id),
             remove_bounds,
-            20.0,
-            if removable { TEXT } else { MUTED_TEXT },
-        ));
-        scene.controls.push(RecordingControlInfo {
-            control: RecordingControl::RemoveTrack(track.id),
-            bounds: remove_bounds,
-            role: AccessibleRole::Button,
-            label: format!(
-                "{} — {}",
-                track.name,
-                crate::i18n::t("recording.track.remove")
-            ),
-            value: None,
-            selected: false,
-            enabled: ui.role.can_edit_timeline() && removable,
-        });
+            AccessibleRole::Button,
+            track_control_label(track, "recording.track.remove"),
+            (!removable).then(|| t("recording.a11y.last_track").to_string()),
+            can_edit,
+        );
     }
 
-    for clip in project.clips() {
-        let Some(track_row) = project.tracks().position(|track| track.id == clip.track_id) else {
-            continue;
-        };
-        let Some(visible_row) = track_row.checked_sub(scroll) else {
-            continue;
-        };
-        if visible_row >= visible_track_rows(body) {
-            continue;
-        }
-        let x =
-            body.x + (clip.start_frame as f64 - ui.view_start_frame) as f32 * ui.pixels_per_frame;
-        let width = (clip.duration_frames as f32 * ui.pixels_per_frame).max(3.0);
-        let clip_bounds = Rect {
-            x,
-            y: body.y + visible_row as f32 * TRACK_ROW_H + 6.0,
-            width,
-            height: TRACK_ROW_H - 12.0,
-        };
-        let left = clip_bounds.x.max(body.x);
-        let right = (clip_bounds.x + clip_bounds.width).min(body.x + body.width);
-        if right <= left {
-            continue;
-        }
-        let bounds = Rect {
-            x: left,
-            width: right - left,
-            ..clip_bounds
-        };
+    // Takes are listed track by track, in time order, whether or not they
+    // are on screen: the keyboard reaches every one of them.
+    let rows = project
+        .tracks()
+        .enumerate()
+        .map(|(row, track)| (track.id, row))
+        .collect::<BTreeMap<_, _>>();
+    let mut clips = project
+        .clips()
+        .filter_map(|clip| rows.get(&clip.track_id).map(|row| (*row, clip)))
+        .collect::<Vec<_>>();
+    clips.sort_by_key(|(row, clip)| (*row, clip.start_frame, clip.id.get()));
+    for (track_row, clip) in clips {
         let selected = ui.is_clip_selected(clip.id);
-        push_quad(
-            &mut scene.quads,
-            bounds,
-            if selected {
-                [0.20, 0.27, 0.62, 1.0]
-            } else {
-                [0.13, 0.20, 0.46, 1.0]
+        let (label, value) = clip_accessible_text(project, clip);
+        let mut control = RecordingControlInfo {
+            control: RecordingControl::Clip(clip.id),
+            bounds: HIDDEN_BOUNDS,
+            role: AccessibleRole::ListItem,
+            label,
+            value: Some(value),
+            selected,
+            enabled: true,
+            visible: false,
+            place: RecordingControlPlace {
+                track_row: Some(track_row),
+                start_frame: Some(clip.start_frame),
+                end_frame: Some(clip.end_frame()),
+                library_offset: None,
             },
-            if selected {
-                [0.62, 0.70, 1.0, 1.0]
-            } else {
-                BORDER
-            },
-            5.0,
-        );
-        if let Some(asset) = project.asset(clip.asset_id) {
-            push_clip_waveform(
-                &mut scene.quads,
-                bounds,
-                clip_bounds,
-                &asset.waveform,
-                asset.sample_rate,
-                project.timeline_fps(),
-                clip.source_start_frame,
-                ui.pixels_per_frame,
-            );
-            // Keep the selection border above the waveform without repainting it.
-            push_quad(
-                &mut scene.quads,
-                bounds,
-                [0.0; 4],
-                if selected {
-                    [0.62, 0.70, 1.0, 1.0]
+        };
+        if let Some(visible_row) = track_row
+            .checked_sub(scroll)
+            .filter(|visible_row| *visible_row < visible_rows)
+        {
+            let x = body.x
+                + (clip.start_frame as f64 - ui.view_start_frame) as f32 * ui.pixels_per_frame;
+            let width = (clip.duration_frames as f32 * ui.pixels_per_frame).max(3.0);
+            let clip_bounds = Rect {
+                x,
+                y: body.y + visible_row as f32 * TRACK_ROW_H + 6.0,
+                width,
+                height: TRACK_ROW_H - 12.0,
+            };
+            let left = clip_bounds.x.max(body.x);
+            let right = (clip_bounds.x + clip_bounds.width).min(body.x + body.width);
+            if right > left {
+                let bounds = Rect {
+                    x: left,
+                    width: right - left,
+                    ..clip_bounds
+                };
+                let (border, border_width) = if selected {
+                    (ACTIVE_BORDER, 2.0)
                 } else {
-                    BORDER
-                },
-                5.0,
-            );
-            scene.labels.push(RecordingLabel {
-                text: asset.file_name.clone(),
-                bounds: Rect {
-                    x: bounds.x + 6.0,
-                    y: bounds.y + 2.0,
-                    width: bounds.width - 12.0,
-                    height: 18.0,
-                },
-                h_align: HAlign::Left,
-                v_align: VAlign::Center,
-                overflow: Overflow::Ellipsis,
-                font_size: 10.0,
-                color: TEXT,
-            });
-            scene.controls.push(RecordingControlInfo {
-                control: RecordingControl::Clip(clip.id),
-                bounds,
-                role: AccessibleRole::ListItem,
-                label: asset.file_name.clone(),
-                value: Some(format!("{} – {}", clip.start_frame, clip.end_frame())),
-                selected,
-                enabled: true,
-            });
+                    (BORDER, 1.0)
+                };
+                push_quad_with_border(
+                    &mut scene.quads,
+                    bounds,
+                    if selected {
+                        [0.20, 0.27, 0.62, 1.0]
+                    } else {
+                        [0.13, 0.20, 0.46, 1.0]
+                    },
+                    border,
+                    border_width,
+                    5.0,
+                );
+                if let Some(asset) = project.asset(clip.asset_id) {
+                    push_clip_waveform(
+                        &mut scene.quads,
+                        bounds,
+                        clip_bounds,
+                        &asset.waveform,
+                        asset.sample_rate,
+                        project.timeline_fps(),
+                        clip.source_start_frame,
+                        ui.pixels_per_frame,
+                    );
+                    // Keep the selection border above the waveform without repainting it.
+                    push_quad_with_border(
+                        &mut scene.quads,
+                        bounds,
+                        [0.0; 4],
+                        border,
+                        border_width,
+                        5.0,
+                    );
+                    scene.labels.push(RecordingLabel {
+                        text: asset.file_name.clone(),
+                        bounds: Rect {
+                            x: bounds.x + 6.0,
+                            y: bounds.y + 2.0,
+                            width: bounds.width - 12.0,
+                            height: 18.0,
+                        },
+                        h_align: HAlign::Left,
+                        v_align: VAlign::Center,
+                        overflow: Overflow::Ellipsis,
+                        font_size: 12.0,
+                        color: TEXT,
+                    });
+                }
+                control.bounds = bounds;
+                control.visible = true;
+            }
         }
+        scene.controls.push(control);
     }
 
     let playhead_x = body.x + (current_frame - ui.view_start_frame) as f32 * ui.pixels_per_frame;
@@ -1976,7 +2582,7 @@ fn push_assets(
     rect: Rect,
 ) {
     scene.labels.push(RecordingLabel {
-        text: crate::i18n::t("recording.assets.title").into(),
+        text: t("recording.assets.title").into(),
         bounds: Rect {
             x: rect.x + 12.0,
             y: rect.y + 8.0,
@@ -1992,16 +2598,24 @@ fn push_assets(
     let viewport_top = rect.y + 40.0;
     let viewport_bottom = rect.y + rect.height;
     let max_scroll = (ui.asset_content_height - (rect.height - 40.0).max(1.0)).max(0.0);
-    let mut y = viewport_top - ui.asset_scroll.min(max_scroll);
+    let scroll = ui.asset_scroll.min(max_scroll);
+    let used_assets = project
+        .clips()
+        .map(|clip| clip.asset_id)
+        .collect::<BTreeSet<_>>();
+    // Offset of the current row in the unscrolled library content.
+    let mut offset = 0.0;
     for (owner, assets) in grouped_assets(project) {
         let expanded = ui.expanded_asset_owners.contains(&owner);
+        let y = viewport_top + offset - scroll;
         let group_bounds = Rect {
             x: rect.x + 10.0,
             y,
             width: rect.width - 24.0,
             height: ASSET_GROUP_H,
         };
-        if y >= viewport_top && y + ASSET_GROUP_H <= viewport_bottom {
+        let visible = y >= viewport_top && y + ASSET_GROUP_H <= viewport_bottom;
+        if visible {
             push_asset_chevron(scene, group_bounds, expanded);
             scene.labels.push(RecordingLabel {
                 text: owner.clone(),
@@ -2013,60 +2627,108 @@ fn push_assets(
                 h_align: HAlign::Left,
                 v_align: VAlign::Center,
                 overflow: Overflow::Ellipsis,
-                font_size: 12.0,
+                font_size: 13.0,
                 color: MUTED_TEXT,
             });
-            scene.controls.push(RecordingControlInfo {
-                control: RecordingControl::AssetGroup(owner.clone()),
-                bounds: group_bounds,
-                role: AccessibleRole::Button,
-                label: owner.clone(),
-                value: None,
-                selected: expanded,
-                enabled: true,
-            });
         }
-        y += ASSET_GROUP_H;
+        scene.controls.push(RecordingControlInfo {
+            control: RecordingControl::AssetGroup(owner.clone()),
+            bounds: if visible { group_bounds } else { HIDDEN_BOUNDS },
+            role: AccessibleRole::Button,
+            label: owner.clone(),
+            value: Some(format!(
+                "{}, {}",
+                count_label(
+                    assets.len(),
+                    "recording.a11y.audios_one",
+                    "recording.a11y.audios_many"
+                ),
+                t(if expanded {
+                    "recording.a11y.group_expanded"
+                } else {
+                    "recording.a11y.group_collapsed"
+                })
+            )),
+            selected: false,
+            enabled: true,
+            visible,
+            place: RecordingControlPlace {
+                library_offset: Some(offset),
+                ..RecordingControlPlace::default()
+            },
+        });
+        offset += ASSET_GROUP_H;
         if !expanded {
             continue;
         }
         for asset in assets {
+            let row_offset = offset;
+            offset += ASSET_ROW_H;
             let bounds = Rect {
                 x: rect.x + 10.0,
-                y: y + 3.0,
+                y: viewport_top + row_offset - scroll + 3.0,
                 width: rect.width - 24.0,
                 height: 36.0,
             };
-            y += ASSET_ROW_H;
-            if bounds.y < viewport_top || bounds.y + bounds.height > viewport_bottom {
-                continue;
-            }
+            let visible = bounds.y >= viewport_top && bounds.y + bounds.height <= viewport_bottom;
             let selected = ui.selected_asset == Some(asset.id);
-            let used = project.clips().any(|clip| clip.asset_id == asset.id);
-            let fill = match (used, selected) {
-                (true, true) => USED_AUDIO_SELECTED,
-                (true, false) => USED_AUDIO,
-                (false, true) => ACCENT,
-                (false, false) => PANEL_BG,
-            };
-            push_quad(&mut scene.quads, bounds, fill, BORDER, 5.0);
-            scene.labels.push(RecordingLabel {
-                text: asset.file_name.clone(),
-                bounds,
-                h_align: HAlign::Left,
-                v_align: VAlign::Center,
-                overflow: Overflow::Ellipsis,
-                font_size: 11.0,
-                color: TEXT,
-            });
+            let used = used_assets.contains(&asset.id);
+            if visible {
+                let fill = match (used, selected) {
+                    (true, true) => USED_AUDIO_SELECTED,
+                    (true, false) => USED_AUDIO,
+                    (false, true) => ACCENT,
+                    (false, false) => PANEL_BG,
+                };
+                push_quad_with_border(
+                    &mut scene.quads,
+                    bounds,
+                    fill,
+                    if selected { ACTIVE_BORDER } else { BORDER },
+                    if selected { 2.0 } else { 1.0 },
+                    5.0,
+                );
+                if used {
+                    push_quad(
+                        &mut scene.quads,
+                        Rect {
+                            x: bounds.x + 4.0,
+                            y: bounds.y + 6.0,
+                            width: 4.0,
+                            height: bounds.height - 12.0,
+                        },
+                        USED_AUDIO_MARK,
+                        [0.0; 4],
+                        2.0,
+                    );
+                }
+                scene.labels.push(RecordingLabel {
+                    text: asset.file_name.clone(),
+                    bounds: Rect {
+                        x: bounds.x + 12.0,
+                        width: bounds.width - 12.0,
+                        ..bounds
+                    },
+                    h_align: HAlign::Left,
+                    v_align: VAlign::Center,
+                    overflow: Overflow::Ellipsis,
+                    font_size: 12.0,
+                    color: TEXT,
+                });
+            }
             scene.controls.push(RecordingControlInfo {
                 control: RecordingControl::Asset(asset.id),
-                bounds,
+                bounds: if visible { bounds } else { HIDDEN_BOUNDS },
                 role: AccessibleRole::ListItem,
-                label: asset.file_name.clone(),
-                value: Some(format!("{:.1} s", asset.duration_seconds())),
+                label: audio_display_name(&asset.file_name),
+                value: Some(asset_accessible_value(asset, used)),
                 selected,
                 enabled: true,
+                visible,
+                place: RecordingControlPlace {
+                    library_offset: Some(row_offset),
+                    ..RecordingControlPlace::default()
+                },
             });
         }
     }
@@ -2205,7 +2867,7 @@ fn push_participants(
         7.0,
     );
     scene.labels.push(RecordingLabel {
-        text: crate::i18n::t("recording.participants.title").into(),
+        text: t("recording.participants.title").into(),
         bounds: Rect {
             x: rect.x + 10.0,
             y: rect.y + 4.0,
@@ -2215,7 +2877,7 @@ fn push_participants(
         h_align: HAlign::Left,
         v_align: VAlign::Center,
         overflow: Overflow::Ellipsis,
-        font_size: 12.0,
+        font_size: 13.0,
         color: TEXT,
     });
     for (index, member) in members.iter().enumerate() {
@@ -2225,50 +2887,51 @@ fn push_participants(
             width: rect.width - 16.0,
             height: 24.0,
         };
-        if bounds.y + bounds.height > rect.y + rect.height {
-            break;
-        }
+        // Members that do not fit stay listed for the screen reader.
+        let visible = bounds.y + bounds.height <= rect.y + rect.height;
         let controls = control_owner_id == Some(member.id.as_str());
-        let role_label = match member.role.as_str() {
-            "admin" => crate::i18n::t("recording.role.director"),
-            "co_da" => crate::i18n::t("recording.role.co_director"),
-            _ => crate::i18n::t("recording.role.actor"),
-        };
-        let microphone = if member.role == "actor" && !member.muted {
-            format!(
-                " · {}",
-                crate::i18n::t(if member.recording_ready {
+        let mut details = vec![t(match member.role.as_str() {
+            "admin" => "recording.role.director",
+            "co_da" => "recording.role.co_director",
+            _ => "recording.role.actor",
+        })
+        .to_string()];
+        if member.muted {
+            details.push(t("recording.participants.muted").to_string());
+        } else if member.role == "actor" {
+            details.push(
+                t(if member.recording_ready {
                     "recording.microphone.ready_short"
                 } else {
                     "recording.microphone.not_ready_short"
                 })
-            )
-        } else {
-            String::new()
-        };
-        scene.labels.push(RecordingLabel {
-            text: format!(
-                "{} · {}{}{}",
-                member.username,
-                role_label,
-                if member.muted { " · muet" } else { "" },
-                microphone
-            ),
-            bounds,
-            h_align: HAlign::Left,
-            v_align: VAlign::Center,
-            overflow: Overflow::Ellipsis,
-            font_size: 10.0,
-            color: if controls { [180, 210, 255] } else { TEXT },
-        });
+                .to_string(),
+            );
+        }
+        if controls {
+            details.push(t("recording.a11y.has_control").to_string());
+        }
+        if visible {
+            scene.labels.push(RecordingLabel {
+                text: format!("{} · {}", member.username, details.join(" · ")),
+                bounds,
+                h_align: HAlign::Left,
+                v_align: VAlign::Center,
+                overflow: Overflow::Ellipsis,
+                font_size: 12.0,
+                color: if controls { [180, 210, 255] } else { TEXT },
+            });
+        }
         scene.controls.push(RecordingControlInfo {
             control: RecordingControl::Participant(member.id.clone()),
-            bounds,
+            bounds: if visible { bounds } else { HIDDEN_BOUNDS },
             role: AccessibleRole::ListItem,
             label: member.username.clone(),
-            value: Some(role_label.to_string()),
-            selected: controls,
+            value: Some(details.join(", ")),
+            selected: false,
             enabled: true,
+            visible,
+            place: RecordingControlPlace::default(),
         });
     }
 }
@@ -2388,12 +3051,23 @@ fn push_quad(
     border: [f32; 4],
     radius: f32,
 ) {
+    push_quad_with_border(quads, rect, color, border, 1.0, radius);
+}
+
+fn push_quad_with_border(
+    quads: &mut Vec<QuadInstance>,
+    rect: Rect,
+    color: [f32; 4],
+    border: [f32; 4],
+    border_width: f32,
+    radius: f32,
+) {
     quads.push(QuadInstance {
         rect: [rect.x, rect.y, rect.width, rect.height],
         color,
         color_bottom: color,
         border_color: border,
-        border_width: if border[3] > 0.0 { 1.0 } else { 0.0 },
+        border_width: if border[3] > 0.0 { border_width } else { 0.0 },
         border_radius: radius,
         shadow_offset: [0.0; 2],
         shadow_color: [0.0; 4],
@@ -2866,11 +3540,344 @@ mod tests {
         let first_visible = scene
             .controls
             .iter()
+            .filter(|control| control.visible)
             .find_map(|control| match control.control {
                 RecordingControl::TrackMute(id) => Some(id),
                 _ => None,
             });
         assert_eq!(first_visible, Some(track_ids[1]));
+        // The track scrolled out of view stays reachable from the keyboard,
+        // without any pointer target.
+        let hidden = scene
+            .controls
+            .iter()
+            .find(|control| control.control == RecordingControl::TrackMute(track_ids[0]))
+            .unwrap();
+        assert!(!hidden.visible);
+        assert!(!hidden.bounds.contains(0.0, 0.0));
+        assert_eq!(hidden.place.track_row, Some(0));
+    }
+
+    #[test]
+    fn focusing_a_scrolled_out_track_scrolls_it_back_into_view() {
+        let mut project = RecordingProject::new(24.0).unwrap();
+        for index in 0..5 {
+            let id = project.allocate_track_id();
+            project
+                .apply(&RecordingOperation::AddTrack {
+                    track: AudioTrack::new(id, format!("Piste {}", index + 1)),
+                })
+                .unwrap();
+        }
+        let layout = RecordingLayout::daw(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1200.0,
+                height: 200.0,
+            },
+            0.23,
+        );
+        let mut ui = RecordingWorkspaceUi {
+            page: RecordingPage::Timeline,
+            ..RecordingWorkspaceUi::default()
+        };
+        ui.sync_track_count(5);
+        let scene = ui.scene(layout, &project, None, &[], None, 0.0, None);
+        let last = scene
+            .controls
+            .iter()
+            .filter(|control| matches!(control.control, RecordingControl::RenameTrack(_)))
+            .last()
+            .unwrap()
+            .clone();
+        assert!(!last.visible);
+        ui.reveal(last.place, layout);
+        let scene = ui.scene(layout, &project, None, &[], None, 0.0, None);
+        assert!(
+            scene
+                .controls
+                .iter()
+                .find(|control| control.control == last.control)
+                .unwrap()
+                .visible
+        );
+    }
+
+    fn take_project() -> (RecordingProject, Vec<AudioTrackId>, Vec<AudioClipId>) {
+        let mut project = RecordingProject::new(25.0).unwrap();
+        let tracks = (0..2)
+            .map(|_| project.allocate_track_id())
+            .collect::<Vec<_>>();
+        let asset_id = project.allocate_asset_id();
+        let clips = (0..3)
+            .map(|_| project.allocate_clip_id())
+            .collect::<Vec<_>>();
+        let mut operations = tracks
+            .iter()
+            .enumerate()
+            .map(|(index, id)| RecordingOperation::AddTrack {
+                track: AudioTrack::new(*id, format!("Piste {}", index + 1)),
+            })
+            .collect::<Vec<_>>();
+        operations.push(RecordingOperation::AddAsset {
+            asset: AudioAsset {
+                id: asset_id,
+                file_name: "alice_2026-08-12_14-30-00.flac".into(),
+                sample_rate: 48_000,
+                channels: 1,
+                sample_count: 48_000 * 4,
+                checksum: "a".repeat(40),
+                waveform: WaveformData::new(480, vec![0.5]).unwrap(),
+            },
+        });
+        // Piste 1: takes at 10 s and 0 s (inserted out of order);
+        // Piste 2: a take at 9 s.
+        for (clip_id, track_id, start_frame) in [
+            (clips[0], tracks[0], 250),
+            (clips[1], tracks[0], 0),
+            (clips[2], tracks[1], 225),
+        ] {
+            operations.push(RecordingOperation::AddClip {
+                clip: AudioClip {
+                    id: clip_id,
+                    asset_id,
+                    track_id,
+                    start_frame,
+                    source_start_frame: 0,
+                    duration_frames: 50,
+                },
+            });
+        }
+        project
+            .apply(&RecordingOperation::Batch { operations })
+            .unwrap();
+        (project, tracks, clips)
+    }
+
+    fn take_scene(project: &RecordingProject, role: RecordingRole) -> RecordingScene {
+        let ui = RecordingWorkspaceUi {
+            page: RecordingPage::Timeline,
+            role,
+            ..RecordingWorkspaceUi::default()
+        };
+        ui.scene(
+            RecordingLayout::timeline(
+                Rect {
+                    x: 0.0,
+                    y: 68.0,
+                    width: 1200.0,
+                    height: 732.0,
+                },
+                false,
+            ),
+            project,
+            None,
+            &[],
+            None,
+            0.0,
+            None,
+        )
+    }
+
+    #[test]
+    fn takes_are_spoken_with_their_speaker_track_start_and_length() {
+        crate::i18n::init("fr-fr");
+        let (project, _, clips) = take_project();
+        let scene = take_scene(&project, RecordingRole::Solo);
+        let take = scene
+            .controls
+            .iter()
+            .find(|control| control.control == RecordingControl::Clip(clips[0]))
+            .unwrap();
+        assert_eq!(take.label, "Prise de alice");
+        assert_eq!(
+            take.value.as_deref(),
+            Some("Piste 1, début 10 secondes, durée 2 secondes")
+        );
+        // Every take is listed, track by track and in time order, even the
+        // ones out of the visible time window.
+        let order = scene
+            .controls
+            .iter()
+            .filter_map(|control| match control.control {
+                RecordingControl::Clip(id) => Some(id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(order, vec![clips[1], clips[0], clips[2]]);
+    }
+
+    #[test]
+    fn enter_selects_the_take_under_the_playhead_like_a_rythmo_line() {
+        let (project, _, clips) = take_project();
+        let mut ui = RecordingWorkspaceUi {
+            page: RecordingPage::Timeline,
+            ..RecordingWorkspaceUi::default()
+        };
+        let selected = |ui: &RecordingWorkspaceUi| ui.selected_clips().collect::<Vec<_>>();
+        // At 10.4 s, Piste 1 and Piste 2 both have a take: top track first,
+        // then Enter again moves on to the next track, and wraps.
+        assert_eq!(ui.select_clip_at_playhead(&project, 260), Some(clips[0]));
+        assert_eq!(selected(&ui), vec![clips[0]]);
+        assert_eq!(ui.select_clip_at_playhead(&project, 260), Some(clips[2]));
+        assert_eq!(selected(&ui), vec![clips[2]]);
+        assert_eq!(ui.select_clip_at_playhead(&project, 260), Some(clips[0]));
+        // Nothing under the playhead clears the selection.
+        assert_eq!(ui.select_clip_at_playhead(&project, 100), None);
+        assert!(selected(&ui).is_empty());
+        // Elsewhere, the first press starts again from the top track.
+        assert_eq!(ui.select_clip_at_playhead(&project, 10), Some(clips[1]));
+    }
+
+    #[test]
+    fn spoken_durations_skip_empty_units() {
+        crate::i18n::init("fr-fr");
+        assert_eq!(spoken_duration(0.0), "0 secondes");
+        assert_eq!(spoken_duration(0.5), "50 centièmes");
+        assert_eq!(spoken_duration(60.0), "1 minute");
+        assert_eq!(spoken_duration(72.4), "1 minute 12 secondes 40 centièmes");
+        assert_eq!(spoken_duration(3_601.0), "1 heure 1 seconde");
+    }
+
+    #[test]
+    fn arrows_move_between_tracks_takes_and_the_library() {
+        let (project, tracks, clips) = take_project();
+        let scene = take_scene(&project, RecordingRole::Solo);
+        let controls = &scene.controls;
+        let moved = |from: RecordingControl, movement| {
+            neighbor_control(controls, &from, movement).map(|control| control.control.clone())
+        };
+        // Same button on the next track, other buttons of the same track.
+        assert_eq!(
+            moved(
+                RecordingControl::TrackMute(tracks[0]),
+                RecordingFocusMove::Next
+            ),
+            Some(RecordingControl::TrackMute(tracks[1]))
+        );
+        assert_eq!(
+            moved(
+                RecordingControl::TrackMute(tracks[1]),
+                RecordingFocusMove::Next
+            ),
+            None
+        );
+        assert_eq!(
+            moved(
+                RecordingControl::TrackMute(tracks[0]),
+                RecordingFocusMove::NextInRow
+            ),
+            Some(RecordingControl::TrackSolo(tracks[0]))
+        );
+        assert_eq!(
+            moved(
+                RecordingControl::TrackMute(tracks[0]),
+                RecordingFocusMove::Last
+            ),
+            Some(RecordingControl::TrackMute(tracks[1]))
+        );
+        // Takes: next one on the same track, nearest one on the next track.
+        assert_eq!(
+            moved(
+                RecordingControl::Clip(clips[1]),
+                RecordingFocusMove::NextInRow
+            ),
+            Some(RecordingControl::Clip(clips[0]))
+        );
+        assert_eq!(
+            moved(RecordingControl::Clip(clips[0]), RecordingFocusMove::Next),
+            Some(RecordingControl::Clip(clips[2]))
+        );
+        assert_eq!(
+            moved(
+                RecordingControl::Clip(clips[2]),
+                RecordingFocusMove::Previous
+            ),
+            Some(RecordingControl::Clip(clips[0]))
+        );
+    }
+
+    #[test]
+    fn actors_reach_every_track_and_hear_its_state() {
+        crate::i18n::init("fr-fr");
+        let (project, tracks, _) = take_project();
+        let scene = take_scene(&project, RecordingRole::Actor);
+        let name = scene
+            .controls
+            .iter()
+            .find(|control| control.control == RecordingControl::RenameTrack(tracks[0]))
+            .unwrap();
+        assert!(name.enabled);
+        assert_eq!(name.role, AccessibleRole::ListItem);
+        assert_eq!(name.label, "Piste 1");
+        assert_eq!(name.value.as_deref(), Some("volume 100 %, 2 prises"));
+        // Up / Down still move from track to track on the only enabled
+        // control of each row.
+        assert_eq!(
+            neighbor_control(
+                &scene.controls,
+                &RecordingControl::RenameTrack(tracks[0]),
+                RecordingFocusMove::Next
+            )
+            .map(|control| control.control.clone()),
+            Some(RecordingControl::RenameTrack(tracks[1]))
+        );
+    }
+
+    #[test]
+    fn record_button_stays_reachable_and_says_which_track_is_armed() {
+        crate::i18n::init("fr-fr");
+        let (mut project, tracks, _) = take_project();
+        let record = |project: &RecordingProject| {
+            take_scene(project, RecordingRole::Solo)
+                .controls
+                .into_iter()
+                .find(|control| control.control == RecordingControl::StartCapture)
+                .unwrap()
+        };
+        let unarmed = record(&project);
+        assert!(unarmed.enabled);
+        assert_eq!(unarmed.value.as_deref(), Some("aucune piste armée"));
+        project
+            .apply(&RecordingOperation::ArmTrack {
+                track_id: Some(tracks[1]),
+            })
+            .unwrap();
+        assert_eq!(record(&project).value.as_deref(), Some("sur Piste 2"));
+    }
+
+    #[test]
+    fn toggles_speak_their_state_and_the_volume_is_a_slider() {
+        crate::i18n::init("fr-fr");
+        let (mut project, tracks, _) = take_project();
+        project
+            .apply(&RecordingOperation::SetTrackMuted {
+                track_id: tracks[0],
+                muted: true,
+            })
+            .unwrap();
+        let scene = take_scene(&project, RecordingRole::Solo);
+        let find = |control: RecordingControl| {
+            scene
+                .controls
+                .iter()
+                .find(|candidate| candidate.control == control)
+                .unwrap()
+        };
+        let mute = find(RecordingControl::TrackMute(tracks[0]));
+        assert_eq!(mute.label, "Piste 1 — Muet");
+        assert_eq!(mute.value.as_deref(), Some("activé"));
+        assert!(!mute.selected);
+        let volume = find(RecordingControl::TrackVolume(tracks[0]));
+        assert_eq!(volume.role, AccessibleRole::Slider);
+        assert_eq!(volume.label, "Piste 1 — Volume de la piste");
+        assert_eq!(volume.value.as_deref(), Some("100 %"));
+        assert!(find(RecordingControl::RenameTrack(tracks[0]))
+            .value
+            .as_deref()
+            .unwrap()
+            .starts_with("son coupé"));
     }
 
     #[test]
@@ -2917,6 +3924,8 @@ mod tests {
                 value: None,
                 selected: false,
                 enabled: true,
+                visible: true,
+                place: RecordingControlPlace::default(),
             }],
             ..RecordingScene::default()
         };
@@ -2928,25 +3937,36 @@ mod tests {
         };
         let mut ui = RecordingWorkspaceUi::default();
 
-        assert_eq!(
+        // The menu opens at the pointer and announces its first entry.
+        assert!(matches!(
             ui.handle_asset_context_menu(
                 &UiEvent::ContextMenu { x: 60.0, y: 60.0 },
                 &scene,
                 screen,
             ),
-            Some(EventResponse::Consumed)
-        );
+            Some(EventResponse::Action(UiAction::Accessibility(
+                AccessibilityEvent::Focus { .. }
+            )))
+        ));
+        // "Envoyer vers" (second row) opens the submenu…
         assert_eq!(
             ui.handle_asset_context_menu(
-                &UiEvent::MousePress { x: 70.0, y: 70.0 },
+                &UiEvent::MousePress {
+                    x: 70.0,
+                    y: 60.0 + ASSET_MENU_ITEM_H * 1.5,
+                },
                 &scene,
                 screen,
             ),
             Some(EventResponse::Consumed)
         );
+        // …whose only entry sends the audio to Voicelines.
         assert_eq!(
             ui.handle_asset_context_menu(
-                &UiEvent::MousePress { x: 220.0, y: 70.0 },
+                &UiEvent::MousePress {
+                    x: 60.0 + ASSET_MENU_W + 20.0,
+                    y: 60.0 + ASSET_MENU_ITEM_H * 1.5,
+                },
                 &scene,
                 screen,
             ),
@@ -2954,6 +3974,95 @@ mod tests {
                 UiAction::RecordingSendAssetToVoicelines(asset_id)
             ))
         );
+    }
+
+    #[test]
+    fn recording_asset_menu_works_from_the_keyboard() {
+        crate::i18n::init("fr-fr");
+        let asset_id = AudioAssetId::new(7);
+        let screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        let scene = RecordingScene {
+            controls: vec![RecordingControlInfo {
+                control: RecordingControl::Asset(asset_id),
+                bounds: Rect {
+                    x: 40.0,
+                    y: 40.0,
+                    width: 160.0,
+                    height: 36.0,
+                },
+                role: AccessibleRole::ListItem,
+                label: "audio".into(),
+                value: None,
+                selected: true,
+                enabled: true,
+                visible: true,
+                place: RecordingControlPlace::default(),
+            }],
+            ..RecordingScene::default()
+        };
+        let focus_label = |response: Option<EventResponse>| match response {
+            Some(EventResponse::Action(UiAction::Accessibility(AccessibilityEvent::Focus {
+                label,
+                ..
+            }))) => label,
+            other => panic!("expected a focus announcement, got {other:?}"),
+        };
+        let mut ui = RecordingWorkspaceUi {
+            selected_asset: Some(asset_id),
+            ..RecordingWorkspaceUi::default()
+        };
+        assert_eq!(
+            focus_label(ui.handle_asset_context_menu(&UiEvent::OpenContextMenu, &scene, screen)),
+            "Menu de l'audio : Placer au curseur de lecture"
+        );
+        // Enter on the first entry places the audio at the playhead.
+        assert_eq!(
+            ui.handle_asset_context_menu(&UiEvent::Activate, &scene, screen),
+            Some(EventResponse::Action(
+                UiAction::RecordingPlaceAssetAtPlayhead(Some(asset_id))
+            ))
+        );
+        assert!(!ui.has_asset_context_menu());
+
+        ui.handle_asset_context_menu(&UiEvent::OpenContextMenu, &scene, screen);
+        assert_eq!(
+            focus_label(ui.handle_asset_context_menu(&UiEvent::CursorDown, &scene, screen)),
+            "Envoyer vers"
+        );
+        assert_eq!(
+            focus_label(ui.handle_asset_context_menu(&UiEvent::CursorRight, &scene, screen)),
+            "Voicelines"
+        );
+        assert_eq!(
+            ui.handle_asset_context_menu(&UiEvent::Activate, &scene, screen),
+            Some(EventResponse::Action(
+                UiAction::RecordingSendAssetToVoicelines(asset_id)
+            ))
+        );
+
+        ui.handle_asset_context_menu(&UiEvent::OpenContextMenu, &scene, screen);
+        assert_eq!(
+            focus_label(ui.handle_asset_context_menu(&UiEvent::CursorUp, &scene, screen)),
+            "Supprimer l'audio"
+        );
+        assert!(matches!(
+            ui.handle_asset_context_menu(
+                &UiEvent::KeyInput {
+                    text: "\x1b".into()
+                },
+                &scene,
+                screen
+            ),
+            Some(EventResponse::Action(UiAction::Accessibility(
+                AccessibilityEvent::Closed { .. }
+            )))
+        ));
+        assert!(!ui.has_asset_context_menu());
     }
 
     #[test]
@@ -2965,8 +4074,8 @@ mod tests {
                 asset_id: AudioAssetId::new(7),
                 x: 20.0,
                 y: 30.0,
+                highlighted: 1,
                 submenu_open: true,
-                hover_parent: false,
                 hover_voicelines: false,
             },
         );

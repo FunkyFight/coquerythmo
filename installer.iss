@@ -43,6 +43,9 @@ Source: "{#SourceDir}\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\ffplay.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\ffprobe.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\updater.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Needle 3, the local assistant (engine + model), copied there by package.bat
+Source: "{#SourceDir}\needle3\needle.exe"; DestDir: "{app}\needle3"; Flags: ignoreversion
+Source: "{#SourceDir}\needle3\needle3.cact"; DestDir: "{app}\needle3"; Flags: ignoreversion
 
 [Registry]
 Root: HKA; Subkey: "Software\Classes\{#MyAppAssocExt}\OpenWithProgids"; ValueType: string; ValueName: "{#MyAppAssocKey}"; ValueData: ""; Flags: uninsdeletevalue

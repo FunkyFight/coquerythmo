@@ -283,6 +283,29 @@ pub enum UiAction {
         track_id: crate::recording::AudioTrackId,
         delta_frames: i64,
     },
+    /// Keyboard moves of the selected takes: in time on their own track, or
+    /// to the track above (`-1`) / below (`1`).
+    RecordingNudgeSelectedClips {
+        delta_frames: i64,
+    },
+    RecordingMoveSelectedClipsToTrack {
+        direction: i32,
+    },
+    /// Cut the selected take at the playhead (`Ctrl + K`, like a dialogue).
+    RecordingCutSelectedClipAtPlayhead,
+    /// Select the take under the playhead (`Entrée`, like a rythmo line);
+    /// pressing again at the same frame moves on to the next track.
+    RecordingSelectClipAtPlayhead,
+    /// Place an audio of the library (`None`: the selected one) at the
+    /// playhead, on the armed track or else the first one: the keyboard
+    /// counterpart of dropping it on a track.
+    RecordingPlaceAssetAtPlayhead(Option<crate::recording::AudioAssetId>),
+    /// Move the playhead to the start (`false`) or end (`true`) of a take.
+    RecordingSeekToClip {
+        clip_id: crate::recording::AudioClipId,
+        end: bool,
+    },
+    RecordingToggleAssetGroup(String),
     RecordingDeleteSelectedClips,
     RecordingStartCapture,
     RecordingStopCapture,
@@ -348,6 +371,35 @@ pub enum UiAction {
     MediaVideoCreateProxy {
         id: crate::project::MediaId,
     },
+    /// « Ajouter et conformer » : open the window that updates the project to
+    /// a new cut of `video_id` (or of the default video).
+    OpenConformModal {
+        video_id: Option<crate::project::MediaId>,
+    },
+    ConformSelectVideo {
+        id: crate::project::MediaId,
+    },
+    ConformSelectBand {
+        id: u64,
+    },
+    ConformSetMoveTakes {
+        move_takes: bool,
+    },
+    /// Ask for the new cut on the disk, then analyse and conform.
+    ConformPickNewVideo {
+        video_id: crate::project::MediaId,
+        band_id: u64,
+        move_takes: bool,
+    },
+    /// Analyse and conform to a known file (assistant, scripts).
+    ConformStart {
+        video_id: crate::project::MediaId,
+        band_id: u64,
+        path: String,
+        move_takes: bool,
+    },
+    ConformCancel,
+    CloseConformModal,
     MediaVideoAssociateProxy {
         proxy_id: crate::project::MediaId,
         source_id: crate::project::MediaId,
@@ -888,6 +940,26 @@ pub enum UiAction {
     ActivateLicense {
         key: String,
     },
+    // Needle 3 assistant
+    /// `Ctrl + Entrée`: opens the floating prompt of the assistant.
+    OpenAssistant,
+    /// The prompt was validated: ask the engine.
+    AssistantSubmit {
+        query: String,
+    },
+    /// Select these lines (a tool answer, or a search hit).
+    SelectLines {
+        line_ids: Vec<u64>,
+    },
+    /// Create a line with its text and character in one go, as the
+    /// assistant does, without opening the inline editor.
+    AssistantCreateLine {
+        frame: i64,
+        y_slot: f32,
+        duration_frames: Option<i64>,
+        text: String,
+        character: Option<(String, [f32; 4])>,
+    },
     Text(TextCommand),
 }
 
@@ -905,6 +977,8 @@ impl UiAction {
             self,
             Self::Undo
                 | Self::Redo
+                | Self::ConformPickNewVideo { .. }
+                | Self::ConformStart { .. }
                 | Self::CreateLanguage { .. }
                 | Self::AddLanguage
                 | Self::RenameLanguage { .. }
@@ -975,6 +1049,7 @@ impl UiAction {
                 | Self::SetSyllableRatios { .. }
                 | Self::SplitDialogue
                 | Self::CreateLineAtTrack { .. }
+                | Self::AssistantCreateLine { .. }
                 | Self::AddNote
                 | Self::UpdateLineNote { .. }
                 | Self::SetClipboardAndUpdateLineText { .. }
@@ -1013,6 +1088,9 @@ impl UiAction {
                 | Self::StartConfiguredExportToPath { .. }
                 | Self::OpenProxyModal
                 | Self::CreateProxy { .. }
+                | Self::OpenConformModal { .. }
+                | Self::ConformPickNewVideo { .. }
+                | Self::ConformStart { .. }
                 | Self::ExitApplication
                 | Self::CloseApp
         )
@@ -1079,6 +1157,12 @@ pub enum FilePickerIntent {
     AddMediaAudio,
     RelinkVideo {
         id: crate::project::MediaId,
+    },
+    /// The new cut chosen by « Ajouter et conformer ».
+    ConformNewVideo {
+        video_id: crate::project::MediaId,
+        band_id: u64,
+        move_takes: bool,
     },
     ComicDubsImage,
     ComicDubsAudio,

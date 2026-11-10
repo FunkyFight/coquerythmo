@@ -172,14 +172,15 @@ impl ProjectTransferModal {
                 self.focused = (self.focused + 1) % buttons.len();
                 None
             }
-            UiEvent::CursorRight | UiEvent::CursorDown => {
+            UiEvent::CursorRight | UiEvent::CursorDown | UiEvent::FocusNext => {
                 self.focused = (self.focused + 1) % buttons.len();
                 None
             }
-            UiEvent::CursorLeft | UiEvent::CursorUp => {
+            UiEvent::CursorLeft | UiEvent::CursorUp | UiEvent::FocusPrevious => {
                 self.focused = (self.focused + buttons.len() - 1) % buttons.len();
                 None
             }
+            UiEvent::Activate => Some(self.action_for(self.focused)),
             UiEvent::KeyInput { text } if text == "\r" || text == "\n" => {
                 Some(self.action_for(self.focused))
             }
@@ -188,6 +189,39 @@ impl ProjectTransferModal {
                 .position(|button| button.contains(*x, *y))
                 .map(|index| self.action_for(index)),
             _ => None,
+        }
+    }
+
+    /// The participant still has to answer: the prompt then owns the
+    /// keyboard like any modal.
+    pub fn awaits_response(&self) -> bool {
+        !self.is_director && !self.response_submitted
+    }
+
+    pub fn focused_index(&self) -> usize {
+        self.focused
+    }
+
+    /// Name of the button holding the keyboard focus.
+    pub fn keyboard_focus_label(&self) -> String {
+        self.button_labels()
+            .get(self.focused)
+            .map(|label| label.to_string())
+            .unwrap_or_default()
+    }
+
+    fn button_labels(&self) -> Vec<&'static str> {
+        if self.dirty {
+            vec![
+                t("recording.project_transfer.save_replace"),
+                t("recording.project_transfer.replace"),
+                t("recording.project_transfer.refuse"),
+            ]
+        } else {
+            vec![
+                t("recording.project_transfer.accept"),
+                t("recording.project_transfer.refuse"),
+            ]
         }
     }
 
@@ -412,18 +446,7 @@ impl ProjectTransferModal {
             return;
         }
         for (index, button) in self.buttons(card).iter().enumerate() {
-            let text = if self.dirty {
-                [
-                    t("recording.project_transfer.save_replace"),
-                    t("recording.project_transfer.replace"),
-                    t("recording.project_transfer.refuse"),
-                ][index]
-            } else {
-                [
-                    t("recording.project_transfer.accept"),
-                    t("recording.project_transfer.refuse"),
-                ][index]
-            };
+            let text = self.button_labels()[index];
             quads.push(QuadInstance {
                 rect: [button.x, button.y, button.width, button.height],
                 color: if self.focused == index {
@@ -477,5 +500,45 @@ pub(crate) fn phase_label(phase: &str) -> String {
         "completed" => t("recording.project_transfer.complete").to_string(),
         "cancelled" => t("recording.project_transfer.failed").to_string(),
         _ => t("recording.project_transfer.pending").to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metadata() -> ProjectTransferMetadata {
+        ProjectTransferMetadata {
+            request_id: "project_1".into(),
+            project_huuid: "project".into(),
+            file_name: "projet.coquerythmo".into(),
+            total_bytes: 10,
+            total_chunks: 1,
+            chunk_size: 10,
+            sha1: "a".repeat(40),
+        }
+    }
+
+    #[test]
+    fn participant_prompt_owns_the_keyboard_and_names_its_focused_button() {
+        crate::i18n::init("fr-fr");
+        let mut modal = ProjectTransferModal::new(metadata(), false, true);
+        assert!(modal.awaits_response());
+        assert_eq!(
+            modal.keyboard_focus_label(),
+            t("recording.project_transfer.save_replace")
+        );
+        assert_eq!(modal.handle_event(&UiEvent::FocusNext, 1280.0, 720.0), None);
+        assert_eq!(
+            modal.keyboard_focus_label(),
+            t("recording.project_transfer.replace")
+        );
+        assert_eq!(
+            modal.handle_event(&UiEvent::Activate, 1280.0, 720.0),
+            Some(ProjectTransferAction::Replace)
+        );
+        modal.mark_response_submitted();
+        assert!(!modal.awaits_response());
+        assert!(!ProjectTransferModal::new(metadata(), true, false).awaits_response());
     }
 }

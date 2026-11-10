@@ -942,6 +942,28 @@ pub fn run(startup: Option<super::StartupInput>) {
                             );
                             return;
                         }
+                        // Needle 3's prompt opens over the rythmo workspace only; while a
+                        // modal or a text field is active, Ctrl+Enter keeps its meaning there.
+                        if ctrl_held
+                            && !shift_held
+                            && !keyboard_modifiers.alt
+                            && !event.repeat
+                            && !state.captures_modal_input()
+                            && !state.is_editing_text()
+                            && state.active_workspace() == WorkspaceId::Rythmo
+                            && matches!(event.logical_key, Key::Named(NamedKey::Enter))
+                        {
+                            dispatch_key_action(
+                                UiAction::OpenAssistant,
+                                &event,
+                                keyboard_modifiers,
+                                InputWindow::Main,
+                                &mut state,
+                                elwt,
+                            );
+                            state.request_redraw();
+                            return;
+                        }
                         // The file tree belongs to the editable rythmo workspace and never
                         // stacks over a modal whose routing would remain underneath it.
                         if ctrl_held
@@ -1778,7 +1800,20 @@ pub fn run(startup: Option<super::StartupInput>) {
                         crate::application::job_service::SaveContinuation::None => {}
                     }
                 }
-                if changed || state.needs_redraw_now() {
+                // Tool calls of the assistant run like shortcuts, once their
+                // answer has been received by `tick_background`.
+                let assistant_actions = state.take_assistant_actions();
+                let assistant_acted = !assistant_actions.is_empty();
+                for action in assistant_actions {
+                    if CommandDispatcher::dispatch(action, &mut state, elwt) {
+                        elwt.exit();
+                        break;
+                    }
+                }
+                // The next sentence of the request sees the state these
+                // actions left (the created line is the selection...).
+                state.assistant_continue();
+                if changed || assistant_acted || state.needs_redraw_now() {
                     state.request_redraw();
                     if state.has_secondary_display() {
                         state.request_secondary_redraw();

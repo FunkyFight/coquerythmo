@@ -17,7 +17,7 @@ use crate::application::command::UiAction;
 use crate::application::workspace_service::WorkspaceId;
 use crate::input::binding::{Binding, KeyPattern};
 use crate::input::context::InputContext;
-use crate::input::key::{InputWindow, KeyCode, KeyStroke};
+use crate::input::key::{InputWindow, KeyCode, KeyStroke, Modifiers};
 use crate::input::router::ShortcutRouter;
 
 const PANEL_MARGIN: f32 = 8.0;
@@ -72,6 +72,27 @@ pub struct PanelSituation {
     pub line_at_playhead: bool,
     /// The internal line clipboard holds at least one entry: paste is usable.
     pub line_clipboard_available: bool,
+    /// Recording workspace: a take is selected (move, cut).
+    pub recording_take_selected: bool,
+    /// Recording workspace: a take covers the playhead (Enter selects it).
+    pub recording_take_at_playhead: bool,
+    /// Recording workspace: an audio of the library is selected or focused
+    /// (place at the playhead).
+    pub recording_audio_selected: bool,
+}
+
+/// In the recording workspace, the shared editing chords act on the takes
+/// and the audio library (see `recording_shortcut` in the dispatcher): the
+/// panel lists them under that meaning.
+fn workspace_action(action: &UiAction, s: &PanelSituation) -> UiAction {
+    if s.workspace != WorkspaceId::Recording {
+        return action.clone();
+    }
+    match action {
+        UiAction::SplitDialogue => UiAction::RecordingCutSelectedClipAtPlayhead,
+        UiAction::PasteLine => UiAction::RecordingPlaceAssetAtPlayhead(None),
+        other => other.clone(),
+    }
 }
 
 /// Whether a binding can actually fire in this situation. Bindings that
@@ -106,6 +127,12 @@ fn is_applicable(action: &UiAction, s: &PanelSituation) -> bool {
         | UiAction::AdjustVolume(_)
         | UiAction::ToggleMute => s.has_video,
         UiAction::ToggleActiveAudio => s.has_instrumental,
+        UiAction::OpenAssistant => s.workspace == WorkspaceId::Rythmo,
+        UiAction::RecordingCutSelectedClipAtPlayhead
+        | UiAction::RecordingMoveSelectedClipsToTrack { .. }
+        | UiAction::RecordingNudgeSelectedClips { .. } => s.recording_take_selected,
+        UiAction::RecordingPlaceAssetAtPlayhead(_) => s.recording_audio_selected,
+        UiAction::RecordingSelectClipAtPlayhead => s.recording_take_at_playhead,
         _ => true,
     }
 }
@@ -136,13 +163,38 @@ pub fn build_lines(
             .iter()
             .filter(|binding| binding.context == *context && binding.pattern.pressed)
         {
-            if !is_applicable(&binding.command, situation) {
+            let command = workspace_action(&binding.command, situation);
+            if !is_applicable(&command, situation) {
                 continue;
             }
-            let Some(label) = action_label(&binding.command) else {
+            let Some(label) = action_label(&command) else {
                 continue;
             };
             push(compact_keystroke(&binding.pattern), label);
+        }
+    }
+
+    // Handled outside the router: Ctrl+Shift+Left/Right moves the selected
+    // takes by one frame (event_loop.rs → NudgeSelectedLines, remapped).
+    if situation.workspace == WorkspaceId::Recording && situation.recording_take_selected {
+        if let Some(label) =
+            action_label(&UiAction::RecordingNudgeSelectedClips { delta_frames: 1 })
+        {
+            for key in [KeyCode::ArrowLeft, KeyCode::ArrowRight] {
+                push(
+                    compact_keystroke(&KeyPattern {
+                        key,
+                        modifiers: Modifiers {
+                            ctrl: true,
+                            shift: true,
+                            ..Modifiers::NONE
+                        },
+                        repeat: crate::input::binding::RepeatPolicy::PressAndRepeat,
+                        pressed: true,
+                    }),
+                    label.clone(),
+                );
+            }
         }
     }
 
@@ -490,6 +542,9 @@ mod tests {
             has_lines: true,
             line_at_playhead: true,
             line_clipboard_available: false,
+            recording_take_selected: false,
+            recording_take_at_playhead: false,
+            recording_audio_selected: false,
         }
     }
 
@@ -524,6 +579,39 @@ mod tests {
         s.line_clipboard_available = true;
         assert!(labels_of(&build_lines(&s, router.bindings()))
             .contains(&crate::i18n::t("accessibility.paste")));
+    }
+
+    #[test]
+    fn recording_lists_the_take_and_audio_chords_under_their_own_names() {
+        let router = shortcut_router();
+        let mut s = situation(&[
+            InputContext::Recording,
+            InputContext::RecordingTimeline,
+            InputContext::Global,
+        ]);
+        s.workspace = WorkspaceId::Recording;
+        let cut = crate::i18n::t("panel.recording_cut_take");
+        let nudge = crate::i18n::t("panel.recording_nudge_take");
+        let place = crate::i18n::t("panel.recording_place_audio");
+        let lines = build_lines(&s, router.bindings());
+        assert!(!labels_of(&lines).contains(&cut));
+        assert!(!labels_of(&lines).contains(&place));
+        s.recording_take_selected = true;
+        s.recording_take_at_playhead = true;
+        s.recording_audio_selected = true;
+        let lines = build_lines(&s, router.bindings());
+        let labels = labels_of(&lines);
+        for label in [
+            cut,
+            nudge,
+            place,
+            crate::i18n::t("panel.recording_move_take_track"),
+            crate::i18n::t("panel.recording_select_take_at_playhead"),
+        ] {
+            assert!(labels.contains(&label), "missing {label}");
+        }
+        // The rythmo meaning of the same chords is not listed here.
+        assert!(!labels.contains(&crate::i18n::t("accessibility.split_dialogue")));
     }
 
     #[test]

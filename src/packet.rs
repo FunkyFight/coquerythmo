@@ -241,6 +241,7 @@ impl Packetable for Command {
                 | Command::Detection { .. }
                 | Command::SetLinePresence { .. }
                 | Command::SetLineLinks { .. }
+                | Command::Batch { .. }
         ) {
             return Packet::Sync {
                 project: ProjectData::from_project(project),
@@ -261,6 +262,7 @@ impl Packetable for Command {
             Command::DeleteLines { .. } => unreachable!("handled as a full sync above"),
             Command::Detection { .. } => unreachable!("handled as a full sync above"),
             Command::SetLineLinks { .. } => unreachable!("handled as a full sync above"),
+            Command::Batch { .. } => unreachable!("handled as a full sync above"),
             Command::SplitLine {
                 first_line,
                 second_line,

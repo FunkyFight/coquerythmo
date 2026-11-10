@@ -770,6 +770,11 @@ impl DetectionDocument {
         self.lines.get(&line_id)
     }
 
+    /// Ids of every line and track bucket holding detection data.
+    pub fn line_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.lines.keys().copied()
+    }
+
     pub fn track(&self, track: u8) -> Option<&LineDetectionData> {
         self.line(track_storage_line_id(track))
     }

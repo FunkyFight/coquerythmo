@@ -793,7 +793,7 @@ dependencies = [
 
 [[package]]
 name = "coquerythmo"
-version = "5.4.0"
+version = "6.0.0"
 dependencies = [
  "accesskit",
  "accesskit_winit",

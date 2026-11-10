@@ -171,6 +171,11 @@ pub enum Command {
         old_points: Vec<Vec<(f64, f32)>>,
         new_points: Vec<Vec<(f64, f32)>>,
     },
+    /// Several commands applied in order and undone together, as one history
+    /// entry: conforming a band to a new cut moves everything at once.
+    Batch {
+        commands: Vec<Command>,
+    },
     /// Link or unlink dialogues. Linking also harmonises the content of the
     /// group at that moment: the snapshots make it reversible.
     SetLineLinks {
@@ -211,6 +216,15 @@ impl Command {
             Command::SetVoiceActors { changes } => {
                 changes.iter().map(|change| change.line_id).collect()
             }
+            Command::Batch { commands } => {
+                let mut ids: Vec<u64> = commands
+                    .iter()
+                    .flat_map(Command::linked_sync_sources)
+                    .collect();
+                ids.sort_unstable();
+                ids.dedup();
+                ids
+            }
             _ => Vec::new(),
         }
     }
@@ -229,7 +243,9 @@ impl Command {
         }
     }
 
-    fn apply_inner(&self, project: &mut Project) {
+    /// Applies without synchronising linked dialogues: a batch does that
+    /// once, at the end.
+    pub(crate) fn apply_inner(&self, project: &mut Project) {
         match self {
             Command::CreateLine { snapshot, index } => {
                 project.upsert_line_at(*index, snapshot.clone());
@@ -447,6 +463,11 @@ impl Command {
                 project.apply_line_link_changes(changes, true);
                 project.replace_linked_snapshots(new_lines, new_detections);
             }
+            Command::Batch { commands } => {
+                for command in commands {
+                    command.apply_inner(project);
+                }
+            }
         }
     }
 
@@ -663,6 +684,11 @@ impl Command {
             }
             Command::Detection { change } => {
                 project.apply_detection_change(change, false);
+            }
+            Command::Batch { commands } => {
+                for command in commands.iter().rev() {
+                    command.unapply_inner(project);
+                }
             }
         }
     }

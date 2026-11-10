@@ -2266,12 +2266,22 @@ pub struct MenuItem {
 
 fn context_menu_items(row: RowId, data: &FileTreeData) -> Vec<MenuItem> {
     match row {
-        RowId::Group(GroupKind::Videos) => vec![MenuItem {
-            label: t("file_tree.menu.add_video").to_string(),
-            enabled: true,
-            submenu: None,
-            action: Box::new(|| EventResponse::Action(UiAction::AddVideo)),
-        }],
+        RowId::Group(GroupKind::Videos) => vec![
+            MenuItem {
+                label: t("file_tree.menu.add_video").to_string(),
+                enabled: true,
+                submenu: None,
+                action: Box::new(|| EventResponse::Action(UiAction::AddVideo)),
+            },
+            MenuItem {
+                label: t("file_tree.menu.add_and_conform").to_string(),
+                enabled: data.videos.iter().any(|video| video.proxy_of.is_none()),
+                submenu: None,
+                action: Box::new(|| {
+                    EventResponse::Action(UiAction::OpenConformModal { video_id: None })
+                }),
+            },
+        ],
         RowId::Group(GroupKind::Audios) => vec![MenuItem {
             label: t("file_tree.menu.add_audio").to_string(),
             enabled: true,
@@ -2339,6 +2349,14 @@ fn context_menu_items(row: RowId, data: &FileTreeData) -> Vec<MenuItem> {
                         action: Box::new(|| EventResponse::Consumed),
                     });
                 }
+                items.push(MenuItem {
+                    label: t("file_tree.menu.add_and_conform").to_string(),
+                    enabled: !video.missing,
+                    submenu: None,
+                    action: Box::new(move || {
+                        EventResponse::Action(UiAction::OpenConformModal { video_id: Some(id) })
+                    }),
+                });
             }
             items.push(MenuItem {
                 label: t("file_tree.menu.rename").to_string(),
@@ -3051,6 +3069,44 @@ mod tests {
                 &data,
             ),
             Some(EventResponse::Action(UiAction::AddLanguage))
+        ));
+    }
+
+    #[test]
+    fn videos_group_context_menu_offers_add_and_conform() {
+        let (data, source, ..) = sample();
+        let mut tree = FileTree::new();
+        tree.open();
+        let (x, y) = center(&tree, &data, RowId::Group(GroupKind::Videos));
+        tree.handle_event(&UiEvent::ContextMenu { x, y }, panel(), &data);
+        let menu = tree.context_menu.as_ref().unwrap();
+        let anchor = menu.anchor;
+        assert_eq!(menu.labels[1], t("file_tree.menu.add_and_conform"));
+
+        // Second row of the menu: « Ajouter et conformer… ».
+        assert!(matches!(
+            tree.handle_event(
+                &UiEvent::MousePress {
+                    x: anchor.0 + 8.0,
+                    y: anchor.1 + MENU_ROW_H * 1.5,
+                },
+                panel(),
+                &data,
+            ),
+            Some(EventResponse::Action(UiAction::OpenConformModal { video_id: None }))
+        ));
+
+        // On a video row the same entry preselects that video.
+        let (x, y) = center(&tree, &data, RowId::Video(source));
+        tree.handle_event(&UiEvent::ContextMenu { x, y }, panel(), &data);
+        let items = context_menu_items(RowId::Video(source), &data);
+        let conform = items
+            .iter()
+            .position(|item| item.label == t("file_tree.menu.add_and_conform"))
+            .expect("a video row offers the conformation");
+        assert!(matches!(
+            (items[conform].action)(),
+            EventResponse::Action(UiAction::OpenConformModal { video_id: Some(id) }) if id == source
         ));
     }
 

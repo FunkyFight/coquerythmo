@@ -54,6 +54,7 @@ l’annulation est annoncée en priorité.
 | `Ctrl + I` | Pendant l’édition du texte : mettre en italique ou non la sélection |
 | `Ctrl + U` | Souligner ou non la sélection, ou la ligne sélectionnée (hors karaoké) |
 | `Ctrl + K` | Scinder le dialogue à la position du caret |
+| `Ctrl + Entrée` | Ouvrir la bulle de Needle 3, l'assistant (espace Rythmo, hors modale et hors saisie) ; `Entrée` envoie la demande, `Échap` ferme |
 
 Dans la liste des projets récents, `↑`/`↓` parcourent les projets, `Entrée`
 ouvre le projet, `Suppr` le retire de la liste et `Échap` ferme la liste.
@@ -130,6 +131,45 @@ synchronisation, ou un mot quand la ligne n’en a pas), `Entrée` remplace la
 section par le texte tapé et passe à la suivante, `Échap` arrête. Un clic
 ailleurs sur la bande arrête aussi. Un mot remplacé par un mot du même nombre
 de syllabes garde le calage de chacune.
+
+## Enregistrement
+
+| Raccourci | Action |
+|---|---|
+| `Tab` / `Maj + Tab` | Parcourir les outils, les pistes et leurs boutons, les prises, les audios du projet et les participants, y compris ceux qui sont hors de l’écran (la liste défile pour les montrer) |
+| `↑` / `↓` | Même bouton sur la piste précédente/suivante ; prise la plus proche dans le temps sur la piste voisine ; audio ou groupe précédent/suivant ; participant précédent/suivant |
+| `←` / `→` | Bouton précédent/suivant de la même piste ; prise précédente/suivante de la même piste ; outil précédent/suivant |
+| `←` / `→` sur le volume d’une piste | Baisser/monter le volume de 5 % (`Début` : 0 %, `Fin` : maximum) |
+| `→` / `←` sur un groupe d’audios | Déplier / replier le groupe ; `←` sur un audio revient à son groupe |
+| `Début` / `Fin` sur une prise | Placer le curseur de lecture au début / à la fin de la prise |
+| `Entrée` sans focus | Sélectionner la prise au curseur de lecture, comme une ligne de la bande rythmo : piste du haut d’abord, un nouvel appui au même endroit passe à la prise de la piste suivante |
+| `Entrée` | Activer le contrôle : sélectionner la prise ou l’audio, basculer Muet, Solo, Armer ou Réverbe, renommer la piste, lancer l’enregistrement |
+| `Entrée` / `Échap` pendant le renommage | Valider / annuler le nouveau nom |
+| `Suppr` | Supprimer la prise ou l’audio qui a le focus, sinon la sélection |
+| `Maj + F10` sur un audio | Menu de l’audio : Placer au curseur de lecture, Envoyer vers › Voicelines, Supprimer l’audio (`↑` / `↓`, `→` ouvre le sous-menu, `Entrée` choisit, `Échap` ferme) |
+| `Ctrl + V` | Placer l’audio sélectionné (ou qui a le focus) au curseur de lecture, sur la piste armée ou à défaut la première |
+| `Ctrl + Maj + ←` / `Ctrl + Maj + →` | Décaler les prises sélectionnées d’une image |
+| `Ctrl + Maj + ↑` / `Ctrl + Maj + ↓` | Passer les prises sélectionnées sur la piste au-dessus / en dessous |
+| `Ctrl + K` | Couper la prise sélectionnée au curseur de lecture |
+| `Ctrl + Tab` | Activer/désactiver l’audio partagé |
+| `Ctrl + L` | Changer de langue |
+| `Espace` | Lecture/pause |
+| `Échap` | Pendant une prise : la terminer ; comédien en ligne : ouvrir le menu principal |
+
+Chaque contrôle est lu avec son état : le nom d’une piste donne aussi son état
+(armée, son coupé, solo, volume, nombre de prises), une prise dit qui l’a
+enregistrée, sa piste, son début et sa durée, un audio sa durée et s’il est
+déjà placé, un participant son rôle, son micro et s’il a le contrôle. Les
+boutons Muet, Solo, Armer et Réverbe disent s’ils sont activés. Chaque action
+annonce son résultat (piste ajoutée, prise supprimée, audio placé…), et
+l’enregistrement annonce son compte à rebours, son début et la prise ajoutée,
+y compris chez les comédiens d’une session en ligne. Le bouton
+d’enregistrement reste atteignable sans piste armée et dit alors ce qui
+manque.
+
+Dans la fenêtre de transfert de projet d’un comédien, `Tab`, `←` / `→`
+parcourent les boutons (chacun est annoncé), `Entrée` choisit et `Échap`
+refuse.
 
 ## Comic Dubs (studio)
 

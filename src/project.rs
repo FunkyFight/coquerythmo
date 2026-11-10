@@ -1132,6 +1132,48 @@ impl Project {
         self.create_language(name.clone(), name)
     }
 
+    /// Copies band `source` (lines, markers, detections, drawing, settings,
+    /// instrumental) into a new band named `name`, selects it and returns its
+    /// id. The source band is left untouched.
+    pub fn duplicate_language(
+        &mut self,
+        source: LanguageId,
+        name: impl Into<String>,
+    ) -> Option<LanguageId> {
+        let language = self.language(source)?;
+        if !self.select_language(source) {
+            return None;
+        }
+        let syllable_language = self.language_syllable_language(source);
+        let instrumental = self.language_instrumental_audio_path(source);
+        let instrumental_offset = self.settings.instrumental_audio_offset_frames;
+        let id = self.create_language(name, language.code);
+        if let Some(syllable_language) = syllable_language {
+            let _ = self.set_language_syllable_language(id, syllable_language);
+        }
+        if instrumental.is_some() {
+            self.set_language_instrumental_audio_path(id, instrumental);
+            self.settings.instrumental_audio_offset_frames = instrumental_offset;
+        }
+        Some(id)
+    }
+
+    /// A band name nobody uses yet: `base`, then `base (2)`, `base (3)`…
+    pub fn unique_language_name(&self, base: &str) -> String {
+        let taken = |candidate: &str| {
+            self.languages()
+                .iter()
+                .any(|language| language.name.eq_ignore_ascii_case(candidate))
+        };
+        if !taken(base) {
+            return base.to_string();
+        }
+        (2..)
+            .map(|n| format!("{base} ({n})"))
+            .find(|candidate| !taken(candidate))
+            .expect("an unused band name exists")
+    }
+
     pub fn update_language(
         &mut self,
         id: LanguageId,
@@ -2646,6 +2688,40 @@ mod tests {
         let middle = p.add_line(100, 10, 0.25);
         let ids: Vec<u64> = p.lines_chronological().iter().map(|l| l.id).collect();
         assert_eq!(ids, vec![early, middle, late]);
+    }
+
+    #[test]
+    fn duplicating_a_band_copies_it_and_leaves_the_source_untouched() {
+        let mut p = Project::new();
+        let source = p.active_language_id();
+        p.add_line(10, 20, 0.5);
+        p.add_marker(RythmoMarker {
+            kind: crate::rythmo_line::MarkerKind::Boucle,
+            frame: 50,
+        });
+        p.set_language_instrumental_audio_path(source, Some("C:/a/inst.wav".into()));
+        let other = p.create_language_named("English");
+        p.select_language(source);
+
+        let name = p.unique_language_name("Français – film_V2");
+        let copy = p.duplicate_language(source, name).unwrap();
+        assert_eq!(p.active_language_id(), copy);
+        assert_ne!(copy, source);
+        assert_ne!(copy, other);
+        assert_eq!(p.language(copy).unwrap().name, "Français – film_V2");
+        assert_eq!(p.line_count(), 1);
+        assert_eq!(p.markers().len(), 1);
+        assert_eq!(
+            p.language_instrumental_audio_path(copy).as_deref(),
+            Some("C:/a/inst.wav")
+        );
+
+        // Editing the copy leaves the source as it was.
+        let line_id = p.lines().next().unwrap().id;
+        p.get_line_mut(line_id).unwrap().start_frame = 99;
+        p.select_language(source);
+        assert_eq!(p.lines().next().unwrap().start_frame, 10);
+        assert_eq!(p.unique_language_name("Français – film_V2"), "Français – film_V2 (2)");
     }
 
     #[test]

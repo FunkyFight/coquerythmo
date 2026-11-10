@@ -1,3 +1,136 @@
+# 6.0.0
+
+## Ajouter et conformer : suivre une V2 / V3 du montage
+
+- Quand la production livre une nouvelle version du montage, plus besoin de
+  tout recaler à la main : dans les fichiers du projet (`Ctrl + L`), clic droit
+  sur **Vidéos** (ou sur une vidéo) > **Ajouter et conformer…**. La fenêtre
+  demande dans l'ordre la vidéo du projet, la bande rythmo, puis la nouvelle
+  vidéo sur le disque.
+- Coquerythmo compare alors les deux versions plan par plan (images et son,
+  ce qui résiste au réencodage, à l'étalonnage et au changement de
+  résolution), retrouve les plans communs et déplace automatiquement tout ce
+  qui est calé sur le temps : répliques avec leurs commentaires (notes) et
+  leurs points de synchro, détections, boucles, changements de plan et autres
+  marqueurs, dessins, et les prises de l'onglet Enregistrement (case à décocher pour une deuxième
+  bande conformée sur la même vidéo). Une vidéo dont la cadence a changé est
+  recalée à la nouvelle cadence.
+- À la fin, un rapport liste ce qui a été **déplacé**, **modifié** (des images
+  ont été insérées ou recoupées sous la réplique), **tronqué** (une partie des
+  images a disparu), **supprimé** (plus aucune image : la réplique ou le
+  marqueur est retiré de la bande) et ce qui est **à réenregistrer** (en rose :
+  les répliques recoupées et les prises dont les images ont changé). La
+  nouvelle vidéo est ajoutée au projet, devient la vidéo par défaut et
+  s'affiche aussitôt.
+- La bande choisie n'est jamais modifiée : le résultat va dans une nouvelle
+  bande nommée « bande – vidéo » (par exemple « Français – film_V2 »), copie
+  conforme de l'originale avec son instrumental et sa langue de découpe, que
+  l'on peut renommer ou supprimer comme toute bande. Dans cette nouvelle
+  bande, la conformation est une seule commande : `Ctrl + Z` remet tout en
+  place. `Échap` pendant l'analyse l'annule sans rien toucher.
+- Needle 3 : « ajoute et conforme », « conforme la bande anglaise avec
+  D:\prod\film_V2.mp4 », « qu'est-ce qui a bougé ? », « qu'est-ce qu'il faut
+  réenregistrer ? » (tools `open_conform`, `conform_video`,
+  `get_conform_report`).
+- Accessible au clavier et au lecteur d'écran : `Tab` passe de la liste des
+  vidéos à celle des bandes, à la case des prises puis aux boutons, les
+  flèches choisissent, `Entrée` valide, `Échap` annule ; chaque étape, la
+  progression, le résumé du rapport et les lignes affichées sont annoncés.
+
+## Needle 3 : l'assistant de la Bande rythmo
+
+- `Ctrl + Entrée` dans la Bande rythmo ouvre une bulle flottante « Que
+  puis-je faire pour vous ? ». On y écrit ce qu'on veut, en français, en
+  anglais ou en espagnol (« va à 1 minute 30 », « crée une réplique de Marie
+  sur la piste 2 », « baisse le son à 30 », « supprime les lignes de Jean »,
+  « mets en gras », « ajoute une boucle », « renomme Jean en Pierre »,
+  « ouvre le style de la bande », « sauvegarde »), `Entrée` envoie, et
+  l'action est faite. `Échap` ou un clic ailleurs ferme la bulle.
+- Needle 3 tourne **en local**, sans connexion : le moteur et son modèle
+  (`needle3`, 35 Mo) sont livrés avec l'application. Une demande prend une à
+  deux secondes.
+- Tout ce que Needle 3 fait passe par les mêmes commandes que la souris et le
+  clavier : chaque modification s'annule avec `Ctrl + Z`, se synchronise en
+  collaboration et est annoncée au lecteur d'écran. Les actions qui perdent
+  des données (fermer, nouveau projet, supprimer une bande) demandent la même
+  confirmation qu'à la main.
+- Il répond aussi aux questions : « où suis-je ? », « combien de répliques a
+  Jean ? », « quels personnages ? », « liste les boucles », « quel est le
+  raccourci pour exporter ? », « cherche la réplique qui dit bonjour » (la
+  sélectionne et y va), « aide ».
+- Une centaine d'actions sont disponibles dès cette version : lecture et
+  volume, sélection, création et édition des répliques (texte, personnage,
+  piste, début, fin, durée, scission, karaoké, styles, émotions, notes,
+  liaisons, champ / hors champ), marqueurs, respirations et réactions,
+  personnages et comédiens, outils de dessin, export, proxy, paramètres du
+  projet, style de la bande, panneaux, projet et bandes, collaboration. La
+  liste complète est dans `TOOLS_NEEDLE3.md`.
+- Périmètre de cette version : l'onglet Bande rythmo (et ce qu'on y ouvre).
+  Les autres onglets viendront ensuite, puis Whistle (dictée vocale).
+- On peut désigner une réplique existante dans la demande : « mets la toute
+  première ligne en gras », « supprime la dernière réplique de Marie »,
+  « mets en italique celle qui dit "Bonjour" ». Plusieurs phrases à la suite
+  sont faites dans l'ordre (« Crée une réplique piste 2 qui dit "Hello".
+  Positionne-la au niveau de la première ligne de Chanson »).
+- Le raccourci `Ctrl + Entrée` apparaît dans le panneau des raccourcis.
+
+## Enregistrement accessible aux personnes malvoyantes
+
+L’onglet Enregistrement se pilote entièrement au clavier et au lecteur
+d’écran, en solo comme en session en ligne. Détails dans
+[`RACCOURCIS_CLAVIER.md`](RACCOURCIS_CLAVIER.md).
+
+- **Tout est lu avec son état.** Le nom d’une piste annonce aussi si elle est
+  armée, si son son est coupé, si elle est en solo, son volume et son nombre
+  de prises. Une prise dit qui l’a enregistrée, sur quelle piste, où elle
+  commence et combien elle dure (« Prise de Alice, Piste 1, début 1 minute
+  12 secondes, durée 3 secondes »). Un audio du projet dit sa durée et s’il
+  est déjà placé ; un participant son rôle, son micro et s’il a le contrôle.
+  Les boutons Muet, Solo, Armer et Réverbe disent « activé » ou « désactivé »,
+  le volume est un vrai curseur.
+- **Rien n’est hors d’atteinte.** Toutes les pistes, prises et audios sont
+  dans l’ordre de `Tab`, même ceux qui ne tiennent pas à l’écran : la liste
+  défile pour montrer celui qui a le focus.
+- **Navigation aux flèches.** `↑` / `↓` passent au même bouton de la piste
+  voisine, à la prise la plus proche de la piste voisine, à l’audio suivant ;
+  `←` / `→` parcourent les boutons et les prises d’une même piste, règlent le
+  volume par pas de 5 % et déplient ou replient les groupes d’audios.
+  `Début` / `Fin` sur une prise amènent le curseur de lecture à son début ou
+  à sa fin.
+- **`Entrée` sélectionne la prise au curseur de lecture**, comme une ligne de
+  la bande rythmo : celle de la piste du haut d’abord, puis, en appuyant de
+  nouveau au même endroit, celle de la piste suivante. La prise est annoncée,
+  ou « Aucune prise au curseur de lecture ».
+- **Ce qui demandait la souris se fait au clavier.** `Ctrl + V` place l’audio
+  sélectionné au curseur de lecture, sur la piste armée (avant, il fallait le
+  glisser sur une piste). `Ctrl + Maj + ←` / `→` décalent les prises
+  sélectionnées d’une image, `Ctrl + Maj + ↑` / `↓` les passent sur la piste
+  voisine, `Ctrl + K` coupe la prise sélectionnée au curseur de lecture,
+  `Suppr` supprime la prise ou l’audio qui a le focus.
+- **Menu des audios.** Le clic droit sur un audio (ou `Maj + F10`) propose
+  « Placer au curseur de lecture », « Envoyer vers › Voicelines » et
+  « Supprimer l’audio », et se parcourt aux flèches.
+- **Chaque action est annoncée** : outil choisi, piste ajoutée, supprimée ou
+  renommée, son coupé ou rétabli, piste armée, volume, prise sélectionnée,
+  déplacée, coupée ou supprimée, audio placé. Le renommage d’une piste
+  annonce le nom à modifier et ses touches, et son annulation est annoncée.
+  Quand une action est impossible, la raison est dite (« Aucune prise
+  sélectionnée », « Armez d’abord une piste pour enregistrer »…) : le bouton
+  d’enregistrement reste atteignable même sans piste armée.
+- **Session en ligne.** Les comédiens entendent le compte à rebours lancé par
+  le DA, pas seulement les bips. La fenêtre de transfert de projet se
+  parcourt au clavier et annonce chacun de ses boutons.
+- **Pour la basse vision.** Le contour du focus est plus épais et doublé
+  (bleu et blanc) sur les contrôles de l’enregistrement ; les boutons actifs
+  (Muet, Solo, Armer, Réverbe, outil), la prise et l’audio sélectionnés ont
+  une bordure claire épaisse, et un audio déjà placé porte un repère vert à
+  gauche : l’état ne dépend plus des couleurs seules. Les textes des pistes,
+  des prises, des audios et des participants sont plus grands, et
+  « Enregistrement en cours » est cerné de noir pour rester lisible sur
+  l’image.
+- Le panneau des raccourcis affiche ceux de l’enregistrement quand une prise
+  ou un audio est sélectionné.
+
 # 5.4.0
 
 ## Comic Dubs Studio

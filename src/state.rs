@@ -723,6 +723,8 @@ pub struct State {
     pub workspace_host: WorkspaceHost,
     pub narration: NarrationService,
     last_autosave: Instant,
+    /// Needle 3: the request in flight and the actions it planned.
+    pub assistant: crate::ai::session::AssistantSession,
     line_clipboard: Option<Vec<LineClipboardEntry>>,
     automation_last_run: Option<(u64, u64)>,
     last_progress_percent: Option<u32>,
@@ -733,6 +735,11 @@ pub struct State {
     pending_protocol: Option<PendingProtocolFlow>,
     pending_join_after_load: Option<PendingJoinAfterLoad>,
     required_room_project: Option<(String, Option<String>)>,
+    /// What the last « Ajouter et conformer » moved, for the assistant.
+    pub(crate) last_conform_report: Option<crate::conform::ConformReport>,
+    /// New cut already conformed in this session: a second band conformed to
+    /// it must not move the takes again.
+    pub(crate) last_conform_target: Option<PathBuf>,
 }
 
 /// Internal state machine for protocol quick-setup links. At most one flow
@@ -916,6 +923,7 @@ impl State {
                 accessibility_sender,
             ),
             last_autosave: Instant::now(),
+            assistant: crate::ai::session::AssistantSession::default(),
             line_clipboard: None,
             automation_last_run: None,
             last_progress_percent: None,
@@ -924,6 +932,8 @@ impl State {
             pending_protocol: None,
             pending_join_after_load: None,
             required_room_project: None,
+            last_conform_report: None,
+            last_conform_target: None,
         }
     }
 
@@ -3339,9 +3349,40 @@ impl State {
         if self.ui_shell.ui.recording_can_edit_timeline() {
             self.ui_shell.ui.recording_set_tool(tool);
             self.sync_recording_workspace_ui();
+            let name = crate::i18n::t(match tool {
+                crate::recording::RecordingTool::Select => "recording.tool.select",
+                crate::recording::RecordingTool::Cut => "recording.tool.cut",
+            });
+            self.announce_accessibility(AccessibilityEvent::Selection {
+                label: format!("{name}, {}", crate::i18n::t("recording.a11y.tool_active")),
+            });
         } else {
             self.recording_read_only_error();
         }
+    }
+
+    /// Spoken result of a recording timeline action.
+    fn announce_recording_result(&self, message: String) {
+        self.announce_accessibility(AccessibilityEvent::Success { message });
+    }
+
+    fn recording_track_name(&self, track_id: crate::recording::AudioTrackId) -> String {
+        self.project_session
+            .recording_project
+            .track(track_id)
+            .map(|track| track.name.clone())
+            .unwrap_or_default()
+    }
+
+    /// "Prise de Alice, Piste 1, début 12 secondes, durée 3 secondes".
+    fn recording_clip_announcement(
+        &self,
+        clip_id: crate::recording::AudioClipId,
+    ) -> Option<String> {
+        let project = &self.project_session.recording_project;
+        let clip = project.clip(clip_id)?;
+        let (label, value) = crate::ui::recording_workspace::clip_accessible_text(project, clip);
+        Some(format!("{label}, {value}"))
     }
 
     pub fn recording_add_track(&mut self) {
@@ -3351,16 +3392,15 @@ impl State {
         }
         let next_number = self.project_session.recording_project.tracks().count() + 1;
         let id = self.project_session.recording_project.allocate_track_id();
-        if let Err(error) =
-            self.apply_recording_operation(crate::recording::RecordingOperation::AddTrack {
-                track: crate::recording::AudioTrack::new(
-                    id,
-                    crate::i18n::t("recording.track.new")
-                        .replace("{number}", &next_number.to_string()),
-                ),
-            })
-        {
-            self.recording_error(error.to_string());
+        let name =
+            crate::i18n::t("recording.track.new").replace("{number}", &next_number.to_string());
+        match self.apply_recording_operation(crate::recording::RecordingOperation::AddTrack {
+            track: crate::recording::AudioTrack::new(id, name.clone()),
+        }) {
+            Ok(()) => self.announce_recording_result(
+                crate::i18n::t("recording.a11y.track_added").replace("{track}", &name),
+            ),
+            Err(error) => self.recording_error(error.to_string()),
         }
     }
 
@@ -3414,11 +3454,17 @@ impl State {
         let username = self.recording_username();
         self.ui_shell
             .ui
-            .recording_begin_audio_import(path, placement, username);
+            .recording_begin_audio_import(path, placement, username.clone());
         self.sync_recording_workspace_ui();
+        // The prefilled name and the keys are spoken: the field is typed
+        // into directly, without moving the focus.
         self.announce_open_container(
             crate::i18n::t("recording.audio.username_prompt"),
-            crate::i18n::t("recording.audio.username_label").to_string(),
+            format!(
+                "{}, {username}. {}",
+                crate::i18n::t("recording.audio.username_label"),
+                crate::i18n::t("recording.audio.username_hint")
+            ),
         );
     }
 
@@ -3461,18 +3507,31 @@ impl State {
                 .ui
                 .recording_begin_rename_track(&self.project_session.recording_project, track_id);
             self.sync_recording_workspace_ui();
+            self.announce_open_container(
+                crate::i18n::t("recording.a11y.rename_title"),
+                crate::i18n::t("recording.a11y.rename_hint")
+                    .replace("{track}", &self.recording_track_name(track_id)),
+            );
         } else {
             self.recording_read_only_error();
         }
     }
 
     pub fn recording_remove_track(&mut self, track_id: crate::recording::AudioTrackId) {
-        if let Err(error) =
-            self.apply_recording_operation(crate::recording::RecordingOperation::RemoveTrack {
-                track_id,
-            })
-        {
-            self.recording_error(error.to_string());
+        if self.project_session.recording_project.tracks().count() <= 1 {
+            self.recording_unavailable(crate::i18n::t("recording.a11y.last_track"));
+            return;
+        }
+        let name = self.recording_track_name(track_id);
+        match self.apply_recording_operation(crate::recording::RecordingOperation::RemoveTrack {
+            track_id,
+        }) {
+            Ok(()) if self.ui_shell.ui.recording_can_edit_timeline() => self
+                .announce_recording_result(
+                    crate::i18n::t("recording.a11y.track_removed").replace("{track}", &name),
+                ),
+            Ok(()) => {}
+            Err(error) => self.recording_error(error.to_string()),
         }
     }
 
@@ -3485,13 +3544,16 @@ impl State {
         if name.is_empty() {
             return;
         }
-        if let Err(error) =
-            self.apply_recording_operation(crate::recording::RecordingOperation::RenameTrack {
-                track_id,
-                name,
-            })
-        {
-            self.recording_error(error.to_string());
+        match self.apply_recording_operation(crate::recording::RecordingOperation::RenameTrack {
+            track_id,
+            name: name.clone(),
+        }) {
+            Ok(()) if self.ui_shell.ui.recording_can_edit_timeline() => self
+                .announce_recording_result(
+                    crate::i18n::t("recording.a11y.track_renamed").replace("{track}", &name),
+                ),
+            Ok(()) => {}
+            Err(error) => self.recording_error(error.to_string()),
         }
     }
 
@@ -3501,9 +3563,23 @@ impl State {
         track_id: crate::recording::AudioTrackId,
         start_frame: i64,
     ) {
-        let Some(asset) = self.project_session.recording_project.asset(asset_id) else {
-            return;
-        };
+        if let Some(clip_id) = self.place_recording_asset(asset_id, track_id, start_frame) {
+            self.announce_placed_recording_asset(asset_id, clip_id);
+        }
+    }
+
+    /// Add a take of `asset_id` on a track; returns the new take.
+    fn place_recording_asset(
+        &mut self,
+        asset_id: crate::recording::AudioAssetId,
+        track_id: crate::recording::AudioTrackId,
+        start_frame: i64,
+    ) -> Option<crate::recording::AudioClipId> {
+        if !self.ui_shell.ui.recording_can_edit_timeline() {
+            self.recording_read_only_error();
+            return None;
+        }
+        let asset = self.project_session.recording_project.asset(asset_id)?;
         let duration_frames =
             asset.duration_frames(self.project_session.recording_project.timeline_fps());
         let clip_id = self.project_session.recording_project.allocate_clip_id();
@@ -3517,9 +3593,264 @@ impl State {
                 duration_frames,
             },
         };
-        if let Err(error) = self.apply_recording_operation(operation) {
-            self.recording_error(error.to_string());
+        match self.apply_recording_operation(operation) {
+            Ok(()) => Some(clip_id),
+            Err(error) => {
+                self.recording_error(error.to_string());
+                None
+            }
         }
+    }
+
+    fn announce_placed_recording_asset(
+        &self,
+        asset_id: crate::recording::AudioAssetId,
+        clip_id: crate::recording::AudioClipId,
+    ) {
+        let project = &self.project_session.recording_project;
+        let (Some(asset), Some(clip)) = (project.asset(asset_id), project.clip(clip_id)) else {
+            return;
+        };
+        self.announce_recording_result(
+            crate::i18n::t("recording.a11y.asset_placed")
+                .replace(
+                    "{audio}",
+                    &crate::ui::recording_workspace::audio_display_name(&asset.file_name),
+                )
+                .replace("{track}", &self.recording_track_name(clip.track_id))
+                .replace(
+                    "{start}",
+                    &crate::ui::recording_workspace::spoken_duration(
+                        clip.start_frame as f64 / project.timeline_fps().max(1.0),
+                    ),
+                ),
+        );
+    }
+
+    /// Keyboard counterpart of dropping an audio on a track: the focused or
+    /// selected audio goes at the playhead, on the armed track or else the
+    /// first one, and the new take is selected.
+    pub fn recording_place_asset_at_playhead(
+        &mut self,
+        asset_id: Option<crate::recording::AudioAssetId>,
+    ) {
+        let Some(asset_id) =
+            asset_id.or_else(|| self.ui_shell.ui.recording_focused_or_selected_asset())
+        else {
+            self.recording_unavailable(crate::i18n::t("recording.a11y.no_audio_selected"));
+            return;
+        };
+        let project = &self.project_session.recording_project;
+        let Some(track_id) = project
+            .armed_track_id()
+            .or_else(|| project.tracks().next().map(|track| track.id))
+        else {
+            self.recording_unavailable(crate::i18n::t("recording.a11y.no_track"));
+            return;
+        };
+        let start_frame = self.current_frame();
+        if let Some(clip_id) = self.place_recording_asset(asset_id, track_id, start_frame) {
+            let _ = self.ui_shell.ui.recording_select_clip(
+                &self.project_session.recording_project,
+                clip_id,
+                false,
+            );
+            self.sync_recording_workspace_ui();
+            self.announce_placed_recording_asset(asset_id, clip_id);
+        }
+    }
+
+    /// Tell why a recording command cannot run (nothing selected…), without
+    /// the "cannot record" prefix of real recording errors.
+    fn recording_unavailable(&mut self, message: &str) {
+        self.show_toast(message, 3.0);
+        self.announce_accessibility(AccessibilityEvent::Error {
+            message: message.to_string(),
+        });
+    }
+
+    /// `Ctrl + Maj + ←/→`: move the selected takes on their own tracks.
+    pub fn recording_nudge_selected_clips(&mut self, delta_frames: i64) {
+        if !self.ui_shell.ui.recording_can_edit_timeline() {
+            self.recording_read_only_error();
+            return;
+        }
+        let project = &self.project_session.recording_project;
+        let clips = self
+            .ui_shell
+            .ui
+            .recording_editor_mut()
+            .selected_clips()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|clip_id| project.clip(clip_id))
+            .collect::<Vec<_>>();
+        let Some(minimum_start) = clips.iter().map(|clip| clip.start_frame).min() else {
+            self.recording_unavailable(crate::i18n::t("recording.a11y.no_take_selected"));
+            return;
+        };
+        let delta_frames = delta_frames.max(-minimum_start);
+        if delta_frames == 0 {
+            return;
+        }
+        let first = clips
+            .iter()
+            .min_by_key(|clip| clip.start_frame)
+            .map(|clip| clip.id);
+        let placements = clips
+            .iter()
+            .map(|clip| crate::recording::ClipPlacement {
+                clip_id: clip.id,
+                track_id: clip.track_id,
+                start_frame: clip.start_frame + delta_frames,
+            })
+            .collect();
+        match self.apply_recording_operation(crate::recording::RecordingOperation::MoveClips {
+            placements,
+        }) {
+            Ok(()) => {
+                let project = &self.project_session.recording_project;
+                if let Some(clip) = first.and_then(|clip_id| project.clip(clip_id)) {
+                    self.announce_accessibility(AccessibilityEvent::ValueChanged {
+                        label: crate::i18n::t("recording.a11y.take_start").to_string(),
+                        value: crate::ui::recording_workspace::spoken_duration(
+                            clip.start_frame as f64 / project.timeline_fps().max(1.0),
+                        ),
+                    });
+                }
+            }
+            Err(error) => self.recording_error(error.to_string()),
+        }
+    }
+
+    /// `Ctrl + Maj + ↑/↓`: move the selected takes to the track above or
+    /// below the first one, keeping their position in time.
+    pub fn recording_move_selected_clips_to_track(&mut self, direction: i32) {
+        if !self.ui_shell.ui.recording_can_edit_timeline() {
+            self.recording_read_only_error();
+            return;
+        }
+        let project = &self.project_session.recording_project;
+        let first_track = self
+            .ui_shell
+            .ui
+            .recording_editor_mut()
+            .selected_clips()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|clip_id| project.clip(clip_id))
+            .min_by_key(|clip| clip.start_frame)
+            .map(|clip| clip.track_id);
+        let Some(first_track) = first_track else {
+            self.recording_unavailable(crate::i18n::t("recording.a11y.no_take_selected"));
+            return;
+        };
+        let tracks = project.tracks().map(|track| track.id).collect::<Vec<_>>();
+        let target = tracks
+            .iter()
+            .position(|track_id| *track_id == first_track)
+            .and_then(|row| row.checked_add_signed(direction as isize))
+            .and_then(|row| tracks.get(row).copied());
+        let Some(target) = target else {
+            self.recording_unavailable(crate::i18n::t(if direction < 0 {
+                "recording.a11y.no_track_above"
+            } else {
+                "recording.a11y.no_track_below"
+            }));
+            return;
+        };
+        self.recording_move_selected_clips(target, 0);
+        self.announce_recording_result(
+            crate::i18n::t("recording.a11y.take_moved_to_track")
+                .replace("{track}", &self.recording_track_name(target)),
+        );
+    }
+
+    /// `Ctrl + K`: cut the selected take under the playhead in two.
+    pub fn recording_cut_selected_clip_at_playhead(&mut self) {
+        if !self.ui_shell.ui.recording_can_edit_timeline() {
+            self.recording_read_only_error();
+            return;
+        }
+        let frame = self.current_frame();
+        let project = &self.project_session.recording_project;
+        let selected = self
+            .ui_shell
+            .ui
+            .recording_editor_mut()
+            .selected_clips()
+            .collect::<Vec<_>>();
+        if selected.is_empty() {
+            self.recording_unavailable(crate::i18n::t("recording.a11y.no_take_selected"));
+            return;
+        }
+        let Some(clip_id) = selected.into_iter().find(|clip_id| {
+            project
+                .clip(*clip_id)
+                .is_some_and(|clip| clip.start_frame < frame && frame < clip.end_frame())
+        }) else {
+            self.recording_unavailable(crate::i18n::t("recording.a11y.playhead_outside_take"));
+            return;
+        };
+        self.recording_cut_clip(clip_id, frame);
+        self.announce_recording_result(crate::i18n::t("recording.a11y.take_cut").to_string());
+    }
+
+    /// `Entrée` without focus, as for a rythmo line: select the take under
+    /// the playhead (again: the one of the next track) and announce it.
+    pub fn recording_select_clip_at_playhead(&mut self) {
+        let frame = self.current_frame();
+        let selected = self
+            .ui_shell
+            .ui
+            .recording_select_clip_at_playhead(&self.project_session.recording_project, frame);
+        self.sync_recording_workspace_ui();
+        match selected.and_then(|clip_id| self.recording_clip_announcement(clip_id)) {
+            Some(description) => self.announce_accessibility(AccessibilityEvent::Selection {
+                label: format!(
+                    "{description}, {}",
+                    crate::i18n::t("accessibility.selected")
+                ),
+            }),
+            None => self.announce_accessibility(AccessibilityEvent::Error {
+                message: crate::i18n::t("recording.a11y.no_take_at_playhead").to_string(),
+            }),
+        }
+    }
+
+    /// `Début` / `Fin` on a take: the playhead goes to its start or end.
+    pub fn recording_seek_to_clip(&mut self, clip_id: crate::recording::AudioClipId, end: bool) {
+        if self.recording_playback_is_read_only() {
+            self.recording_unavailable(crate::i18n::t("recording.a11y.playback_locked"));
+            return;
+        }
+        let Some(clip) = self.project_session.recording_project.clip(clip_id) else {
+            return;
+        };
+        let frame = if end {
+            clip.end_frame()
+        } else {
+            clip.start_frame
+        };
+        self.seek_absolute(frame);
+        self.finish_seek();
+        self.sync_recording_workspace_ui();
+        self.announce_current_timecode();
+    }
+
+    pub fn recording_toggle_asset_group(&mut self, owner: &str) {
+        let expanded = self.ui_shell.ui.recording_toggle_asset_group(owner);
+        self.sync_recording_workspace_ui();
+        self.announce_accessibility(AccessibilityEvent::Selection {
+            label: format!(
+                "{owner}, {}",
+                crate::i18n::t(if expanded {
+                    "recording.a11y.group_expanded"
+                } else {
+                    "recording.a11y.group_collapsed"
+                })
+            ),
+        });
     }
 
     pub fn recording_move_selected_clips(
@@ -3634,14 +3965,24 @@ impl State {
             .selected_clips()
             .collect::<Vec<_>>();
         if clip_ids.is_empty() {
+            self.recording_unavailable(crate::i18n::t("recording.a11y.no_take_selected"));
             return;
         }
+        let count = clip_ids.len();
         match self.apply_recording_operation(crate::recording::RecordingOperation::DeleteClips {
             clip_ids,
         }) {
             Ok(()) => {
                 self.ui_shell.ui.recording_editor_mut().clear_selection();
                 self.sync_recording_workspace_ui();
+                if self.ui_shell.ui.recording_can_edit_timeline() {
+                    self.announce_recording_result(if count == 1 {
+                        crate::i18n::t("recording.a11y.takes_deleted_one").to_string()
+                    } else {
+                        crate::i18n::t("recording.a11y.takes_deleted_many")
+                            .replace("{count}", &count.to_string())
+                    });
+                }
             }
             Err(error) => self.recording_error(error.to_string()),
         }
@@ -3667,6 +4008,16 @@ impl State {
             )
             .collect::<Vec<_>>();
         operations.push(crate::recording::RecordingOperation::RemoveAsset { asset_id });
+        if !self.ui_shell.ui.recording_can_edit_timeline() {
+            self.recording_read_only_error();
+            return;
+        }
+        let name = self
+            .project_session
+            .recording_project
+            .asset(asset_id)
+            .map(|asset| crate::ui::recording_workspace::audio_display_name(&asset.file_name))
+            .unwrap_or_default();
         match self
             .apply_recording_operation(crate::recording::RecordingOperation::Batch { operations })
         {
@@ -3676,6 +4027,9 @@ impl State {
                 }
                 self.ui_shell.ui.recording_clear_asset_selection();
                 self.sync_recording_workspace_ui();
+                self.announce_recording_result(
+                    crate::i18n::t("recording.a11y.asset_deleted").replace("{audio}", &name),
+                );
             }
             Err(error) => self.recording_error(error.to_string()),
         }
@@ -3927,6 +4281,13 @@ impl State {
             })
         {
             self.recording_error(error.to_string());
+        } else {
+            self.announce_recording_track_toggle(
+                track_id,
+                !muted,
+                "recording.a11y.muted_on",
+                "recording.a11y.muted_off",
+            );
         }
     }
 
@@ -3946,6 +4307,13 @@ impl State {
             })
         {
             self.recording_error(error.to_string());
+        } else {
+            self.announce_recording_track_toggle(
+                track_id,
+                !solo,
+                "recording.a11y.solo_on",
+                "recording.a11y.solo_off",
+            );
         }
     }
 
@@ -3956,7 +4324,32 @@ impl State {
         };
         if let Err(error) = self.apply_recording_operation(operation) {
             self.recording_error(error.to_string());
+        } else {
+            self.announce_recording_track_toggle(
+                track_id,
+                armed != Some(track_id),
+                "recording.a11y.armed",
+                "recording.a11y.disarmed",
+            );
         }
+    }
+
+    /// "Piste 1 : son coupé": the new state of a track button, once the
+    /// change went through (a read-only role already heard why it did not).
+    fn announce_recording_track_toggle(
+        &self,
+        track_id: crate::recording::AudioTrackId,
+        on: bool,
+        on_key: &str,
+        off_key: &str,
+    ) {
+        if !self.ui_shell.ui.recording_can_edit_timeline() {
+            return;
+        }
+        self.announce_recording_result(
+            crate::i18n::t(if on { on_key } else { off_key })
+                .replace("{track}", &self.recording_track_name(track_id)),
+        );
     }
 
     pub fn recording_set_track_volume(
@@ -4000,8 +4393,18 @@ impl State {
         self.ui_shell.ui.recording_toggle_track_reverb(track_id);
         self.sync_recording_workspace_ui();
         self.schedule_recording_mix();
+        self.announce_recording_result(
+            crate::i18n::t(if self.ui_shell.ui.recording_track_reverb(track_id) {
+                "recording.a11y.reverb_on"
+            } else {
+                "recording.a11y.reverb_off"
+            })
+            .replace("{track}", &self.recording_track_name(track_id)),
+        );
     }
 
+    /// Keyboard volume step of a track (`←` / `→`, `Entrée`, `Début`,
+    /// `Fin` on its slider); the new value is spoken.
     pub fn recording_adjust_track_volume(
         &mut self,
         track_id: crate::recording::AudioTrackId,
@@ -4009,6 +4412,19 @@ impl State {
     ) {
         let current = self.ui_shell.ui.recording_track_volume(track_id);
         self.recording_set_track_volume(track_id, current + delta);
+        if self.ui_shell.ui.recording_role().can_adjust_track_volume() {
+            self.announce_accessibility(AccessibilityEvent::ValueChanged {
+                label: format!(
+                    "{} — {}",
+                    self.recording_track_name(track_id),
+                    crate::i18n::t("recording.track.volume")
+                ),
+                value: format!(
+                    "{:.0} %",
+                    self.ui_shell.ui.recording_track_volume(track_id) * 100.0
+                ),
+            });
+        }
     }
 
     pub fn recording_export_track(
@@ -4061,19 +4477,36 @@ impl State {
             self.recording_error(error.to_string());
         } else {
             self.sync_recording_workspace_ui();
+            if let Some(description) = self.recording_clip_announcement(clip_id) {
+                self.announce_accessibility(AccessibilityEvent::Selection {
+                    label: format!(
+                        "{description}, {}",
+                        crate::i18n::t(if additive {
+                            "recording.a11y.added_to_selection"
+                        } else {
+                            "accessibility.selected"
+                        })
+                    ),
+                });
+            }
         }
     }
 
     pub fn recording_select_asset(&mut self, asset_id: crate::recording::AudioAssetId) {
-        if self
-            .project_session
-            .recording_project
-            .asset(asset_id)
-            .is_some()
-        {
-            self.ui_shell.ui.recording_select_asset(asset_id);
-            self.sync_recording_workspace_ui();
-        }
+        let project = &self.project_session.recording_project;
+        let Some(asset) = project.asset(asset_id) else {
+            return;
+        };
+        let used = project.clips().any(|clip| clip.asset_id == asset_id);
+        let label = format!(
+            "{}, {}, {}",
+            crate::ui::recording_workspace::audio_display_name(&asset.file_name),
+            crate::ui::recording_workspace::asset_accessible_value(asset, used),
+            crate::i18n::t("accessibility.selected")
+        );
+        self.ui_shell.ui.recording_select_asset(asset_id);
+        self.sync_recording_workspace_ui();
+        self.announce_accessibility(AccessibilityEvent::Selection { label });
     }
 
     pub fn recording_send_asset_to_voicelines(&mut self, asset_id: crate::recording::AudioAssetId) {
@@ -4083,7 +4516,7 @@ impl State {
             .get(&asset_id)
             .cloned()
         else {
-            self.show_toast("Audio d'enregistrement introuvable", 4.0);
+            self.show_toast(crate::i18n::t("recording.audio.missing"), 4.0);
             return;
         };
         self.voicelines_begin_audio_import(path);
@@ -4092,6 +4525,15 @@ impl State {
     pub fn recording_start_capture(&mut self) {
         if !self.ui_shell.ui.recording_can_edit_timeline() {
             self.recording_read_only_error();
+            return;
+        }
+        if self
+            .project_session
+            .recording_project
+            .armed_track_id()
+            .is_none()
+        {
+            self.recording_unavailable(crate::i18n::t("recording.capture.no_armed_track"));
             return;
         }
         let role = self.ui_shell.ui.recording_role();
@@ -4569,7 +5011,7 @@ impl State {
     }
 
     pub fn captures_modal_input(&self) -> bool {
-        self.ui_shell.ui.modal_host.captures_input()
+        self.ui_shell.ui.captures_modal_input()
     }
 
     pub fn is_proxy_modal_open(&self) -> bool {
@@ -4694,6 +5136,296 @@ impl State {
 
     pub(crate) fn take_transition_after_save_ready(&mut self) -> Option<SaveContinuation> {
         self.jobs.transition_after_save_ready.take()
+    }
+
+    // ---- Needle 3 assistant ----------------------------------------------
+
+    /// Actions planned from the last answer of the assistant, to dispatch.
+    pub(crate) fn take_assistant_actions(&mut self) -> Vec<crate::ui::primitives::UiAction> {
+        std::mem::take(&mut self.assistant.queued_actions)
+    }
+
+    /// `Ctrl + Entrée` in the rythmo workspace.
+    pub fn open_assistant_bubble(&mut self) {
+        if self.active_workspace() != WorkspaceId::Rythmo || self.captures_modal_input() {
+            return;
+        }
+        self.ui_shell.ui.modal_host.open_assistant();
+        self.announce_open_container(
+            crate::i18n::t("assistant.title"),
+            crate::i18n::t("assistant.placeholder").to_string(),
+        );
+    }
+
+    /// A request typed in the bubble: its sentences are sent one at a time,
+    /// each after the actions of the previous one have run.
+    pub fn assistant_submit(&mut self, query: String) {
+        if self.assistant.pending.is_some() {
+            return;
+        }
+        let mut clauses = crate::ai::retrieval::split_clauses(&query);
+        if clauses.is_empty() {
+            return;
+        }
+        let first = clauses.remove(0);
+        self.assistant.request = query;
+        self.assistant.pending_clauses = clauses;
+        self.assistant.results.clear();
+        self.assistant_submit_clause(first);
+    }
+
+    /// Sends the next sentence of the request, if any, once the engine is
+    /// free. Called by the event loop after the planned actions ran.
+    pub(crate) fn assistant_continue(&mut self) {
+        if self.assistant.pending.is_some() || self.assistant.pending_clauses.is_empty() {
+            return;
+        }
+        if self.ui_shell.ui.modal_host.assistant.is_none() {
+            self.assistant.pending_clauses.clear();
+            return;
+        }
+        let next = self.assistant.pending_clauses.remove(0);
+        self.assistant_submit_clause(next);
+    }
+
+    /// Sends one sentence to the engine on a worker thread; the answer comes
+    /// back through `poll_assistant_job`.
+    fn assistant_submit_clause(&mut self, query: String) {
+        let Some(dir) = crate::ai::needle::needle_dir() else {
+            log::warn!("Needle 3: engine not found (needle.exe + needle3.cact)");
+            self.assistant_show_result(crate::i18n::t("assistant.engine_missing").to_string(), false);
+            return;
+        };
+        let tools = crate::ai::retrieval::select_for_query(&query);
+        let tool_names: Vec<&'static str> = tools.iter().map(|tool| tool.name).collect();
+        let tools_json = crate::ai::tools::schema_json(&tools);
+        let system = self.assistant_system_prompt();
+        log::info!("Needle 3: {query:?} with tools {tool_names:?}");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker_query = query.clone();
+        std::thread::spawn(move || {
+            let result = crate::ai::needle::ask(&dir, &system, &tools_json, &worker_query);
+            let _ = sender.send(result);
+        });
+        let request = self.assistant.request.clone();
+        if let Some(bubble) = self.ui_shell.ui.modal_host.assistant.as_mut() {
+            bubble.set_thinking(request);
+        }
+        self.assistant.pending = Some(crate::ai::session::AssistantJob {
+            query,
+            tool_names,
+            receiver,
+            started: Instant::now(),
+        });
+    }
+
+    /// Session facts the engine reads before the query: date, language,
+    /// playhead, selection, characters and bands. Kept short: it shares the
+    /// context window with the tool schemas.
+    fn assistant_system_prompt(&self) -> String {
+        let project = &self.project_session.project;
+        let fps = self.fps();
+        let selected = self.selected_line_ids();
+        crate::ai::session::SessionFacts {
+            date: crate::ai::session::today(),
+            language: crate::config::get().lang.clone(),
+            playhead: crate::ai::timecode::format_timecode(self.current_frame(), fps),
+            fps,
+            duration: (self.total_frames() > 0)
+                .then(|| crate::ai::timecode::format_timecode(self.total_frames(), fps)),
+            selected: selected.first().and_then(|id| project.get_line(*id)).map(|line| {
+                (line.text.clone(), line.character_name.clone(), selected.len() - 1)
+            }),
+            characters: project.character_names_from_lines(),
+            bands: project.languages().iter().map(|band| band.name.clone()).collect(),
+            shown_band: project.active_language().name.clone(),
+        }
+        .to_system_prompt()
+    }
+
+    fn poll_assistant_job(&mut self) -> bool {
+        let Some(job) = self.assistant.pending.as_ref() else {
+            return false;
+        };
+        let result = match job.receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("the engine worker stopped".to_string())
+            }
+        };
+        let query = match self.assistant.pending.take() {
+            Some(job) => {
+                log::info!(
+                    "Needle 3 answered {:?} in {} ms",
+                    job.query,
+                    job.started.elapsed().as_millis()
+                );
+                job.query
+            }
+            None => String::new(),
+        };
+        self.apply_assistant_response(query, result);
+        true
+    }
+
+    /// Plans the tool calls of an answer against the current state. A bubble
+    /// closed meanwhile drops the answer: the user moved on.
+    fn apply_assistant_response(
+        &mut self,
+        query: String,
+        result: Result<crate::ai::needle::NeedleResponse, String>,
+    ) {
+        if self.ui_shell.ui.modal_host.assistant.is_none() {
+            log::info!("Needle 3: prompt closed before the answer, dropped");
+            self.assistant.pending_clauses.clear();
+            return;
+        }
+        let response = match result {
+            Ok(response) => response,
+            Err(error) => {
+                log::warn!("Needle 3: {error}");
+                self.assistant_show_result(
+                    crate::i18n::t("assistant.engine_error").replace("{error}", &error),
+                    false,
+                );
+                return;
+            }
+        };
+        if let Some(reasoning) = &response.reasoning {
+            log::info!("Needle 3 reasoning: {reasoning}");
+        }
+        let ungrounded = &response.validation.ungrounded;
+        // Arguments the engine flagged as invented are dropped; a call the
+        // engine held back for that reason is still run when the words of
+        // the query pointed at its tool clearly (the engine is poor at
+        // choosing, the app is not).
+        let mut calls: Vec<crate::ai::needle::ToolCall> = response
+            .function_calls
+            .iter()
+            .filter_map(|call| crate::ai::dispatch::without_ungrounded(call, ungrounded))
+            .collect();
+        if calls.is_empty() && !response.validation.negation {
+            match response.suppressed_calls.first() {
+                Some(call) => {
+                    if crate::ai::retrieval::is_strong_match(&query, &call.name) {
+                        if let Some(call) = crate::ai::dispatch::without_ungrounded(call, ungrounded) {
+                            log::info!("Needle 3: running the held-back call to {}", call.name);
+                            calls.push(call);
+                        }
+                    }
+                }
+                // The engine made no call at all: when the words leave no
+                // doubt, the call is made here and its arguments read from
+                // the query.
+                None => {
+                    if let Some(tool) = crate::ai::retrieval::strong_top_tool(&query) {
+                        log::info!("Needle 3: calling {} from the words alone", tool.name);
+                        calls.push(crate::ai::needle::ToolCall {
+                            name: tool.name.to_string(),
+                            arguments: serde_json::json!({}),
+                        });
+                    }
+                }
+            }
+        }
+        if calls.is_empty() {
+            let message = match response
+                .suppressed_calls
+                .first()
+                .or_else(|| response.function_calls.first())
+            {
+                Some(call) => crate::i18n::t("assistant.suggestion")
+                    .replace("{tool}", &crate::ai::dispatch::label(&call.name)),
+                None => crate::i18n::t("assistant.not_understood").to_string(),
+            };
+            self.assistant_show_result(message, false);
+            return;
+        }
+        let mut actions = Vec::new();
+        let mut messages = Vec::new();
+        let mut ok = true;
+        for call in &calls {
+            match crate::ai::dispatch::plan(self, call, &query) {
+                Ok(plan) => {
+                    messages.push(plan.message.unwrap_or_else(|| {
+                        crate::i18n::t("assistant.done")
+                            .replace("{tool}", &crate::ai::dispatch::label(&call.name))
+                    }));
+                    actions.extend(plan.actions);
+                }
+                Err(error) => {
+                    ok = false;
+                    messages.push(error);
+                }
+            }
+        }
+        self.assistant.queued_actions.extend(actions);
+        self.assistant_show_result(messages.join("\n"), ok);
+    }
+
+    /// Shows the messages of the sentences answered so far; a failure stops
+    /// the remaining sentences.
+    fn assistant_show_result(&mut self, message: String, ok: bool) {
+        if !ok {
+            self.assistant.pending_clauses.clear();
+        }
+        self.assistant.results.push(message.clone());
+        let shown = self.assistant.results.join("\n");
+        if let Some(bubble) = self.ui_shell.ui.modal_host.assistant.as_mut() {
+            bubble.set_result(shown, ok);
+        } else {
+            self.show_toast(message.clone(), 5.0);
+        }
+        self.announce_accessibility(if ok {
+            AccessibilityEvent::Success { message }
+        } else {
+            AccessibilityEvent::Error { message }
+        });
+    }
+
+    /// Selects these lines (existing ones only) and announces the selection.
+    pub fn select_lines(&mut self, line_ids: Vec<u64>) {
+        use crate::workspaces::rythmo::view::Selection;
+        let line_ids: Vec<u64> = line_ids
+            .into_iter()
+            .filter(|id| self.project_session.project.get_line(*id).is_some())
+            .collect();
+        self.ui_shell.ui.rythmo_state.selected = match line_ids.len() {
+            0 => None,
+            1 => Some(Selection::Line(line_ids[0])),
+            _ => Some(Selection::Lines(line_ids)),
+        };
+        if let Some(label) = self.selected_line_accessibility_label() {
+            self.announce_accessibility(AccessibilityEvent::Selection { label });
+        }
+    }
+
+    /// Creates a line with its text and character without opening the inline
+    /// editor, then selects it. Each step is its own undo entry.
+    pub fn assistant_create_line(
+        &mut self,
+        frame: i64,
+        y_slot: f32,
+        duration_frames: Option<i64>,
+        text: String,
+        character: Option<(String, [f32; 4])>,
+    ) {
+        let frame = frame.max(0);
+        let id = self.create_line(frame, y_slot);
+        if let Some(duration) = duration_frames {
+            self.resize_line(id, frame, duration.max(1));
+        }
+        if !text.trim().is_empty() {
+            self.update_line_text(id, text, None);
+        }
+        if let Some((name, color)) = character {
+            self.set_character(id, name, color);
+        }
+        self.select_lines(vec![id]);
+        self.narration.announce_event(AccessibilityEvent::Success {
+            message: crate::i18n::t("accessibility.line_created").to_string(),
+        });
     }
 
     pub(crate) fn start_project_save(
@@ -5186,8 +5918,12 @@ impl State {
         });
     }
 
+    /// A context menu is open and owns the arrows, Enter and Escape: the menu
+    /// of a rythmo line, or the audio menu of the recording library.
     pub fn has_line_context_menu(&self) -> bool {
         self.ui_shell.ui.rythmo_state().has_context_menu()
+            || (self.active_workspace() == WorkspaceId::Recording
+                && self.ui_shell.ui.has_recording_asset_menu())
     }
 
     pub fn save_project_settings(
@@ -5876,7 +6612,7 @@ impl State {
         );
     }
 
-    fn refresh_after_language_change(&mut self) {
+    pub(crate) fn refresh_after_language_change(&mut self) {
         self.project_session.dirty = true;
         self.project_session.render_index = crate::render_index::ProjectRenderIndex::new();
         self.ui_shell.ui.clear_selection();
@@ -6661,7 +7397,7 @@ impl State {
         self.request_redraw();
     }
 
-    fn load_video_for_playback(
+    pub(crate) fn load_video_for_playback(
         &mut self,
         source_path: &Path,
         proxy_path: Option<&Path>,
@@ -7542,8 +8278,13 @@ impl State {
                 } else {
                     self.recording_runtime.begin_observed_capture(target)
                 };
-                if let Err(error) = result {
-                    self.recording_error(error.to_string());
+                match result {
+                    // The director started the take: participants hear the
+                    // countdown announced, not only its beeps.
+                    Ok(_) => self.announce_accessibility(AccessibilityEvent::Activation {
+                        label: crate::i18n::t("recording.capture.countdown").to_string(),
+                    }),
+                    Err(error) => self.recording_error(error.to_string()),
                 }
             }
             None if self.recording_runtime.is_active() => {
@@ -7977,10 +8718,19 @@ impl State {
                             false,
                             dirty,
                         );
+                        let first_button = self
+                            .ui_shell
+                            .ui
+                            .project_transfer_modal
+                            .as_ref()
+                            .map(|modal| modal.keyboard_focus_label())
+                            .unwrap_or_default();
                         self.announce_open_container(
                             crate::i18n::t("recording.project_transfer.title"),
-                            crate::i18n::t("recording.project_transfer_request_received")
-                                .to_string(),
+                            format!(
+                                "{}, {first_button}",
+                                crate::i18n::t("recording.project_transfer_request_received")
+                            ),
                         );
                     }
                     self.ui_shell.ui.sync_overlay = None;
@@ -8378,7 +9128,7 @@ impl State {
     }
     /// Replication observes the resulting domain revision, including all
     /// coalesced gestures, undo/redo and changes without a Command payload.
-    fn execute_local_command(&mut self, cmd: Command) {
+    pub(crate) fn execute_local_command(&mut self, cmd: Command) {
         EditExecutor::execute(&mut self.project_session, cmd, EditOrigin::Local);
     }
 
@@ -9645,7 +10395,7 @@ impl State {
         !self.selected_line_ids().is_empty()
     }
 
-    fn selected_line_ids(&self) -> Vec<u64> {
+    pub fn selected_line_ids(&self) -> Vec<u64> {
         use crate::workspaces::rythmo::view::Selection;
 
         match self.ui_shell.ui.rythmo_state.selected.as_ref() {
@@ -11961,8 +12711,10 @@ impl State {
         changed |= self.poll_export_job();
         changed |= self.poll_recording_mix_job();
         changed |= self.poll_proxy_job();
+        changed |= self.poll_conform_job();
         changed |= self.poll_import_job();
         changed |= self.poll_save_job();
+        changed |= self.poll_assistant_job();
         changed |= self.poll_pending_protocol();
         changed |= self.poll_waveform_change();
         changed |= self.tick_rythmo_replication();
@@ -12664,6 +13416,7 @@ impl State {
 
         if self.collaboration.network.state != ConnectionState::Disconnected
             || self.ui_shell.ui.needs_background_poll()
+            || self.assistant.is_busy()
         {
             push_deadline(now + Duration::from_millis(100));
         }

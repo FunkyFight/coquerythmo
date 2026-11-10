@@ -11,6 +11,7 @@ pub mod band_style_modal;
 pub mod color_picker;
 pub mod comic_dubs_settings_modal;
 pub mod comic_dubs_workspace;
+pub mod conform_modal;
 pub mod connect_modal;
 pub mod context_menu;
 pub mod discord_notice_modal;
@@ -32,6 +33,7 @@ pub mod layout;
 pub mod license_badge;
 pub mod microphone_modal;
 pub mod modal_host;
+pub mod assistant_bubble;
 pub mod pricing_license_modal;
 pub mod pricing_page;
 pub mod pricing_plan_modal;
@@ -318,17 +320,39 @@ fn recording_drop_target(
         return None;
     }
     let row = ((y - body.y) / TRACK_ROW_H).floor() as usize;
-    let track_id = scene
+    let track_id = *visible_recording_tracks(scene).get(row)?;
+    let start_frame =
+        (ui.view_start_frame + ((x - body.x) / ui.pixels_per_frame) as f64).round() as i64;
+    Some((track_id, start_frame.max(0)))
+}
+
+/// Tracks drawn in the track body, top to bottom (tracks scrolled out of
+/// view keep their controls for the keyboard but take no row).
+fn visible_recording_tracks(scene: &RecordingScene) -> Vec<crate::recording::AudioTrackId> {
+    scene
         .controls
         .iter()
+        .filter(|control| control.visible)
         .filter_map(|control| match control.control {
             RecordingControl::TrackMute(track_id) => Some(track_id),
             _ => None,
         })
-        .nth(row)?;
-    let start_frame =
-        (ui.view_start_frame + ((x - body.x) / ui.pixels_per_frame) as f64).round() as i64;
-    Some((track_id, start_frame.max(0)))
+        .collect()
+}
+
+/// Spoken text of a focused control: its name, then its value or state,
+/// then whether it is selected.
+fn focus_announcement_label(label: &str, value: Option<&str>, selected: bool) -> String {
+    let mut text = label.to_owned();
+    if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+        text.push_str(", ");
+        text.push_str(value);
+    }
+    if selected {
+        text.push_str(", ");
+        text.push_str(t("accessibility.selected"));
+    }
+    text
 }
 
 impl Ui {
@@ -639,10 +663,20 @@ impl Ui {
     /// Ordered shortcut contexts for the current UI state. This is the single
     /// source of truth shared by the event loop (to resolve a keystroke) and
     /// the bottom-left shortcut panel (to list what is available).
+    /// A modal owns the keyboard: one of the modal host, or the project
+    /// transfer prompt while the participant has not answered it.
+    pub fn captures_modal_input(&self) -> bool {
+        self.modal_host.captures_input()
+            || self
+                .project_transfer_modal
+                .as_ref()
+                .is_some_and(ProjectTransferModal::awaits_response)
+    }
+
     pub fn shortcut_contexts(&self) -> Vec<crate::input::context::InputContext> {
         use crate::input::context::InputContext;
         let mut contexts = Vec::new();
-        if self.modal_host.captures_input() {
+        if self.captures_modal_input() {
             contexts.push(InputContext::Modal);
         } else if self.rythmo_state.is_editing() {
             contexts.push(InputContext::TextEditing);
@@ -822,6 +856,7 @@ impl Ui {
     pub fn set_active_workspace(&mut self, workspace: WorkspaceId) {
         if workspace != WorkspaceId::Rythmo {
             self.close_file_tree();
+            self.modal_host.assistant = None;
         }
         self.active_workspace = workspace;
         if workspace != WorkspaceId::Rythmo {
@@ -1264,15 +1299,7 @@ impl Ui {
                     if !body.contains(*x, *y) {
                         return EventResponse::Consumed;
                     }
-                    let track_ids: Vec<_> = self
-                        .recording_daw_scene
-                        .controls
-                        .iter()
-                        .filter_map(|control| match control.control {
-                            RecordingControl::TrackMute(track_id) => Some(track_id),
-                            _ => None,
-                        })
-                        .collect();
+                    let track_ids = visible_recording_tracks(&self.recording_daw_scene);
                     let row = ((*y - body.y) / TRACK_ROW_H).floor() as usize;
                     let Some(track_id) = track_ids.get(row).copied() else {
                         return EventResponse::Consumed;
@@ -1314,8 +1341,7 @@ impl Ui {
             return EventResponse::Consumed;
         }
         if let RecordingControl::AssetGroup(owner) = &control.control {
-            self.recording_ui.toggle_asset_group(owner);
-            return EventResponse::Consumed;
+            return EventResponse::Action(UiAction::RecordingToggleAssetGroup(owner.clone()));
         }
         if matches!(event, UiEvent::DoubleClick { .. })
             && matches!(control.control, RecordingControl::TrackExport(_))
@@ -1434,6 +1460,11 @@ impl Ui {
             .handle_text_edit(event)
             .map(|result| match result {
                 RecordingTextEditResult::Consumed => EventResponse::Consumed,
+                RecordingTextEditResult::Cancelled(label) => {
+                    EventResponse::Action(UiAction::Accessibility(
+                        crate::accessibility::AccessibilityEvent::Closed { label },
+                    ))
+                }
                 RecordingTextEditResult::RenameTrack { track_id, name } => {
                     EventResponse::Action(UiAction::RecordingRenameTrack { track_id, name })
                 }
@@ -1527,6 +1558,220 @@ impl Ui {
         &mut self.recording_ui.editor
     }
 
+    pub fn recording_has_selected_clips(&self) -> bool {
+        self.recording_ui.selected_clips().next().is_some()
+    }
+
+    pub fn recording_select_clip_at_playhead(
+        &mut self,
+        project: &RecordingProject,
+        frame: i64,
+    ) -> Option<crate::recording::AudioClipId> {
+        self.recording_ui.select_clip_at_playhead(project, frame)
+    }
+
+    /// A take of the recording timeline covers `frame`.
+    fn recording_take_at(&self, frame: i64) -> bool {
+        self.recording_scene.controls.iter().any(|control| {
+            matches!(control.control, RecordingControl::Clip(_))
+                && control
+                    .place
+                    .start_frame
+                    .is_some_and(|start| start <= frame)
+                && control.place.end_frame.is_some_and(|end| frame < end)
+        })
+    }
+
+    /// Audio of the library the keyboard acts on: the focused row, else the
+    /// selected one.
+    pub fn recording_focused_or_selected_asset(&self) -> Option<crate::recording::AudioAssetId> {
+        match self
+            .focused_recording_control()
+            .map(|control| &control.control)
+        {
+            Some(RecordingControl::Asset(asset_id)) => Some(*asset_id),
+            _ => self.recording_ui.selected_asset,
+        }
+    }
+
+    /// Expand or collapse a group of the audio library; returns whether it
+    /// is now expanded.
+    pub fn recording_toggle_asset_group(&mut self, owner: &str) -> bool {
+        self.recording_ui.toggle_asset_group(owner);
+        self.recording_ui.is_asset_group_expanded(owner)
+    }
+
+    pub fn has_recording_asset_menu(&self) -> bool {
+        self.recording_ui.has_asset_context_menu()
+    }
+
+    /// Give the keyboard focus to a recording control, scroll it into view
+    /// and announce it.
+    fn focus_recording_control(
+        &mut self,
+        target: recording_workspace::RecordingControlInfo,
+    ) -> EventResponse {
+        self.focus.focus(&FocusId::new(target.control.stable_id()));
+        if !target.visible {
+            self.recording_ui
+                .reveal(target.place, self.recording_layout);
+        }
+        EventResponse::Action(UiAction::Accessibility(
+            crate::accessibility::AccessibilityEvent::Focus {
+                label: focus_announcement_label(
+                    &target.label,
+                    target.value.as_deref(),
+                    target.selected,
+                ),
+                role: format!("{:?}", target.role),
+            },
+        ))
+    }
+
+    /// Arrow keys, `Début` and `Fin` on a focused control of the recording
+    /// workspace: they adjust a volume, fold the audio library, seek to a
+    /// take or move the focus (see [`recording_workspace::neighbor_control`]).
+    fn handle_recording_focused_key(&mut self, event: &UiEvent) -> Option<EventResponse> {
+        use recording_workspace::RecordingFocusMove as Move;
+        if !matches!(
+            event,
+            UiEvent::CursorUp
+                | UiEvent::CursorDown
+                | UiEvent::CursorLeft
+                | UiEvent::CursorRight
+                | UiEvent::Home
+                | UiEvent::End
+        ) {
+            return None;
+        }
+        let control = self.focused_recording_control()?.clone();
+        let mut movement = match event {
+            UiEvent::CursorUp => Move::Previous,
+            UiEvent::CursorDown => Move::Next,
+            UiEvent::CursorLeft => Move::PreviousInRow,
+            UiEvent::CursorRight => Move::NextInRow,
+            UiEvent::Home => Move::First,
+            _ => Move::Last,
+        };
+        match &control.control {
+            RecordingControl::TrackVolume(track_id)
+                if matches!(
+                    movement,
+                    Move::PreviousInRow | Move::NextInRow | Move::First | Move::Last
+                ) =>
+            {
+                let max = crate::recording_mix::TRACK_VOLUME_MAX;
+                let delta = match movement {
+                    Move::PreviousInRow => -0.05,
+                    Move::NextInRow => 0.05,
+                    Move::First => -max,
+                    _ => max,
+                };
+                return Some(EventResponse::Action(
+                    UiAction::RecordingAdjustTrackVolume {
+                        track_id: *track_id,
+                        delta,
+                    },
+                ));
+            }
+            RecordingControl::Clip(clip_id) if matches!(movement, Move::First | Move::Last) => {
+                return Some(EventResponse::Action(UiAction::RecordingSeekToClip {
+                    clip_id: *clip_id,
+                    end: movement == Move::Last,
+                }));
+            }
+            RecordingControl::AssetGroup(owner) => {
+                let expanded = self.recording_ui.is_asset_group_expanded(owner);
+                match movement {
+                    Move::NextInRow if !expanded => {
+                        return Some(EventResponse::Action(UiAction::RecordingToggleAssetGroup(
+                            owner.clone(),
+                        )))
+                    }
+                    Move::PreviousInRow if expanded => {
+                        return Some(EventResponse::Action(UiAction::RecordingToggleAssetGroup(
+                            owner.clone(),
+                        )))
+                    }
+                    Move::NextInRow => movement = Move::Next,
+                    _ => {}
+                }
+            }
+            RecordingControl::Asset(_) if movement == Move::PreviousInRow => {
+                let group = self
+                    .recording_scene
+                    .controls
+                    .iter()
+                    .take_while(|candidate| candidate.control != control.control)
+                    .filter(|candidate| {
+                        matches!(candidate.control, RecordingControl::AssetGroup(_))
+                    })
+                    .last()
+                    .cloned();
+                return Some(match group {
+                    Some(group) => self.focus_recording_control(group),
+                    None => EventResponse::Consumed,
+                });
+            }
+            _ => {}
+        }
+        let target = recording_workspace::neighbor_control(
+            &self.recording_scene.controls,
+            &control.control,
+            movement,
+        )
+        .cloned();
+        Some(match target {
+            Some(target) => self.focus_recording_control(target),
+            None => EventResponse::Consumed,
+        })
+    }
+
+    /// `Suppr` in the recording workspace: the focused take or audio first
+    /// (the keyboard user deletes what they hear), else the selection.
+    fn recording_delete_response(&self) -> Option<EventResponse> {
+        match self
+            .focused_recording_control()
+            .map(|control| &control.control)
+        {
+            Some(RecordingControl::Clip(clip_id))
+                if !self
+                    .recording_ui
+                    .selected_clips()
+                    .any(|selected| selected == *clip_id) =>
+            {
+                return Some(EventResponse::Actions(vec![
+                    UiAction::RecordingSelectClip {
+                        clip_id: *clip_id,
+                        additive: false,
+                    },
+                    UiAction::RecordingDeleteSelectedClips,
+                ]));
+            }
+            Some(RecordingControl::Asset(asset_id))
+                if self.recording_ui.selected_asset != Some(*asset_id)
+                    || self.recording_ui.selected_clips().next().is_some() =>
+            {
+                return Some(EventResponse::Actions(vec![
+                    UiAction::RecordingSelectAsset(*asset_id),
+                    UiAction::RecordingDeleteSelectedAsset,
+                ]));
+            }
+            _ => {}
+        }
+        if self.recording_ui.selected_clips().next().is_some() {
+            Some(EventResponse::Action(
+                UiAction::RecordingDeleteSelectedClips,
+            ))
+        } else if self.recording_ui.selected_asset.is_some() {
+            Some(EventResponse::Action(
+                UiAction::RecordingDeleteSelectedAsset,
+            ))
+        } else {
+            None
+        }
+    }
+
     fn recording_control_action(control: &RecordingControl, additive: bool) -> Option<UiAction> {
         Some(match control {
             RecordingControl::ChooseSolo => UiAction::RecordingChooseSolo,
@@ -1555,8 +1800,10 @@ impl Ui {
                 additive,
             },
             RecordingControl::Asset(asset_id) => UiAction::RecordingSelectAsset(*asset_id),
-            RecordingControl::AssetGroup(_) | RecordingControl::ImportUsername => return None,
-            RecordingControl::Participant(_) => return None,
+            RecordingControl::AssetGroup(owner) => {
+                UiAction::RecordingToggleAssetGroup(owner.clone())
+            }
+            RecordingControl::ImportUsername | RecordingControl::Participant(_) => return None,
         })
     }
 
@@ -1619,7 +1866,17 @@ impl Ui {
         // interactive while the BR archive is parsed.
 
         if let Some(modal) = self.project_transfer_modal.as_mut() {
-            if let Some(action) = modal.handle_event(event, self.screen_w, self.screen_h) {
+            let focused = modal.focused_index();
+            let action = modal.handle_event(event, self.screen_w, self.screen_h);
+            if action.is_none() && modal.focused_index() != focused {
+                return EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: modal.keyboard_focus_label(),
+                        role: "button".into(),
+                    },
+                ));
+            }
+            if let Some(action) = action {
                 return EventResponse::Action(match action {
                     ProjectTransferAction::Accept => UiAction::ProjectTransferAccept,
                     ProjectTransferAction::SaveAndReplace => UiAction::ProjectTransferSaveAndAccept,
@@ -1709,19 +1966,29 @@ impl Ui {
             return response;
         }
 
+        // The audio menu of the recording library owns every event while it
+        // is open, the keyboard included (arrows, Enter, Escape).
+        if self.active_workspace == WorkspaceId::Recording
+            && self.recording_ui.has_asset_context_menu()
+        {
+            if let Some(response) = self.recording_ui.handle_asset_context_menu(
+                event,
+                &self.recording_scene,
+                self.recording_layout.content,
+            ) {
+                return response;
+            }
+        }
+
         // Handle recording deletion before the properties panel gets a chance
         // to consume the global Delete key.
         if self.active_workspace == WorkspaceId::Recording
             && (matches!(event, UiEvent::Delete)
                 || matches!(event, UiEvent::KeyInput { text } if text == "\x7f"))
-            && (self.recording_ui.selected_clips().next().is_some()
-                || self.recording_ui.selected_asset.is_some())
         {
-            return EventResponse::Action(if self.recording_ui.selected_clips().next().is_some() {
-                UiAction::RecordingDeleteSelectedClips
-            } else {
-                UiAction::RecordingDeleteSelectedAsset
-            });
+            if let Some(response) = self.recording_delete_response() {
+                return response;
+            }
         }
 
         if self.rythmo_state.has_context_menu()
@@ -1826,38 +2093,44 @@ impl Ui {
             }
         }
 
-        match event {
-            UiEvent::FocusNext => {
-                if let Some(node) = self.focus.focus_next() {
-                    let label = if node.selected == Some(true) {
-                        format!("{}, {}", node.label, t("accessibility.selected"))
-                    } else {
-                        node.label.clone()
-                    };
-                    return EventResponse::Action(UiAction::Accessibility(
-                        crate::accessibility::AccessibilityEvent::Focus {
-                            label,
-                            role: format!("{:?}", node.role),
-                        },
-                    ));
-                }
-                return EventResponse::Consumed;
+        if self.active_workspace == WorkspaceId::Recording && !self.recording_ui.is_editing_text() {
+            if let Some(response) = self.handle_recording_focused_key(event) {
+                return response;
             }
-            UiEvent::FocusPrevious => {
-                if let Some(node) = self.focus.focus_previous() {
-                    let label = if node.selected == Some(true) {
-                        format!("{}, {}", node.label, t("accessibility.selected"))
-                    } else {
-                        node.label.clone()
-                    };
-                    return EventResponse::Action(UiAction::Accessibility(
-                        crate::accessibility::AccessibilityEvent::Focus {
-                            label,
-                            role: format!("{:?}", node.role),
-                        },
-                    ));
+        }
+
+        match event {
+            UiEvent::FocusNext | UiEvent::FocusPrevious => {
+                let node = if matches!(event, UiEvent::FocusNext) {
+                    self.focus.focus_next()
+                } else {
+                    self.focus.focus_previous()
                 }
-                return EventResponse::Consumed;
+                .cloned();
+                let Some(node) = node else {
+                    return EventResponse::Consumed;
+                };
+                // A track, take or audio scrolled out of view comes back on
+                // screen when it gets the focus.
+                if let Some(place) = self
+                    .recording_scene
+                    .controls
+                    .iter()
+                    .find(|control| !control.visible && control.control.stable_id() == node.id.0)
+                    .map(|control| control.place)
+                {
+                    self.recording_ui.reveal(place, self.recording_layout);
+                }
+                return EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: focus_announcement_label(
+                            &node.label,
+                            node.value.as_deref(),
+                            node.selected == Some(true),
+                        ),
+                        role: format!("{:?}", node.role),
+                    },
+                ));
             }
             UiEvent::Activate => {
                 if let Some(widget) = self.focused_widget_mut() {
@@ -1870,10 +2143,6 @@ impl Ui {
                 }
                 if let Some(control) = self.focused_recording_control().cloned() {
                     if !control.enabled {
-                        return EventResponse::Consumed;
-                    }
-                    if let RecordingControl::AssetGroup(owner) = &control.control {
-                        self.recording_ui.toggle_asset_group(owner);
                         return EventResponse::Consumed;
                     }
                     if let Some(action) = Self::recording_control_action(&control.control, false) {
@@ -1951,6 +2220,17 @@ impl Ui {
                 UiEvent::OpenContextMenu | UiEvent::ContextMenu { .. }
             )
         {
+            // `Maj + F10` opens the menu of the focused audio, not only of
+            // the one selected with Enter or the mouse.
+            if matches!(event, UiEvent::OpenContextMenu) {
+                if let Some(RecordingControl::Asset(asset_id)) = self
+                    .focused_recording_control()
+                    .map(|control| control.control.clone())
+                {
+                    self.recording_ui.editor.clear_selection();
+                    self.recording_ui.selected_asset = Some(asset_id);
+                }
+            }
             return self
                 .recording_ui
                 .handle_asset_context_menu(
@@ -2290,15 +2570,7 @@ impl Ui {
                         if !body.contains(*x, *y) {
                             return EventResponse::Consumed;
                         }
-                        let track_ids: Vec<_> = self
-                            .recording_scene
-                            .controls
-                            .iter()
-                            .filter_map(|control| match &control.control {
-                                RecordingControl::TrackMute(track_id) => Some(*track_id),
-                                _ => None,
-                            })
-                            .collect();
+                        let track_ids = visible_recording_tracks(&self.recording_scene);
                         let row = ((*y - body.y) / TRACK_ROW_H).floor() as usize;
                         let Some(track_id) = track_ids.get(row).copied() else {
                             return EventResponse::Consumed;
@@ -2332,8 +2604,7 @@ impl Ui {
                         _ => None,
                     }
                 }) {
-                    self.recording_ui.toggle_asset_group(&owner);
-                    return EventResponse::Consumed;
+                    return EventResponse::Action(UiAction::RecordingToggleAssetGroup(owner));
                 }
                 if matches!(
                     event,
@@ -3204,6 +3475,14 @@ impl Ui {
         {
             deadline = Some(deadline.map_or(modal_deadline, |current| current.min(modal_deadline)));
         }
+        if let Some(bubble_deadline) = self
+            .modal_host
+            .assistant
+            .as_ref()
+            .map(|bubble| bubble.next_cursor_blink_deadline())
+        {
+            deadline = Some(deadline.map_or(bubble_deadline, |current| current.min(bubble_deadline)));
+        }
         deadline
     }
 
@@ -3569,6 +3848,22 @@ impl Ui {
         self.modal_host.open_proxy(video_width, video_height);
     }
 
+    pub fn open_conform_modal(&mut self, modal: conform_modal::ConformModal) {
+        self.modal_host.conform = Some(modal);
+    }
+
+    pub fn conform_modal_mut(&mut self) -> Option<&mut conform_modal::ConformModal> {
+        self.modal_host.conform.as_mut()
+    }
+
+    pub fn conform_modal(&self) -> Option<&conform_modal::ConformModal> {
+        self.modal_host.conform.as_ref()
+    }
+
+    pub fn close_conform_modal(&mut self) -> bool {
+        self.modal_host.conform.take().is_some()
+    }
+
     pub fn open_proxy_error_modal(&mut self, detail: impl Into<String>) {
         self.modal_host.open_proxy_error(detail);
     }
@@ -3896,6 +4191,9 @@ impl Ui {
                     current_frame >= line.start_frame && current_frame < line.end_frame()
                 }),
                 line_clipboard_available: self.line_clipboard_available,
+                recording_take_selected: self.recording_has_selected_clips(),
+                recording_take_at_playhead: self.recording_take_at(current_frame),
+                recording_audio_selected: self.recording_focused_or_selected_asset().is_some(),
             };
             self.shortcut_panel
                 .sync(&situation, shortcut_panel::shortcut_router().bindings());
@@ -4539,13 +4837,14 @@ impl Ui {
             }
         }
 
+        let focused_recording = self
+            .focused_recording_control()
+            .filter(|control| control.visible)
+            .map(|control| control.bounds);
         let focused_bounds = self
             .focused_widget()
             .map(Widget::bounds)
-            .or_else(|| {
-                self.focused_recording_control()
-                    .map(|control| control.bounds)
-            })
+            .or(focused_recording)
             .or_else(|| {
                 let id = self.focus.current_id()?.0.as_str();
                 self.voicelines_scene
@@ -4562,25 +4861,38 @@ impl Ui {
                     .find(|control| control.id == id)
                     .map(|control| control.bounds)
             });
+        // Recording controls are small and packed on coloured fills: their
+        // ring is thicker and doubled (blue outside, white inside) so it
+        // stays visible with low vision.
+        let high_visibility_ring = self.focused_widget().is_none() && focused_recording.is_some();
         if let Some(bounds) = focused_bounds {
-            overlay_quads.push(QuadInstance {
+            let (gap, width) = if high_visibility_ring {
+                (3.0, 3.0)
+            } else {
+                (2.0, 2.0)
+            };
+            let ring = |inset: f32, color: [f32; 4], width: f32| QuadInstance {
                 rect: [
-                    bounds.x - 2.0,
-                    bounds.y - 2.0,
-                    bounds.width + 4.0,
-                    bounds.height + 4.0,
+                    bounds.x - inset,
+                    bounds.y - inset,
+                    bounds.width + inset * 2.0,
+                    bounds.height + inset * 2.0,
                 ],
                 color: [0.0; 4],
                 color_bottom: [0.0; 4],
-                border_color: [0.25, 0.52, 1.0, 1.0],
-                border_width: 2.0,
+                border_color: color,
+                border_width: width,
                 border_radius: 6.0,
                 shadow_offset: [0.0; 2],
                 shadow_color: [0.0; 4],
                 shadow_blur: 0.0,
                 rotation: 0.0,
                 _padding: [0.0; 2],
-            });
+            };
+            overlay_quads.push(ring(gap, [0.25, 0.52, 1.0, 1.0], width));
+            if high_visibility_ring {
+                overlay_quads.push(ring(0.5, [1.0, 1.0, 1.0, 1.0], 1.5));
+            }
         }
 
         // Transient workspace surfaces use the popup layer.
@@ -6277,6 +6589,25 @@ mod recording_capture_view_tests {
     }
 
     #[test]
+    fn focused_controls_are_spoken_with_their_value_and_selection() {
+        assert_eq!(
+            super::focus_announcement_label("Piste 1 — Muet", Some("activé"), false),
+            "Piste 1 — Muet, activé"
+        );
+        assert_eq!(
+            super::focus_announcement_label("Prise de Alice", None, true),
+            format!(
+                "Prise de Alice, {}",
+                crate::i18n::t("accessibility.selected")
+            )
+        );
+        assert_eq!(
+            super::focus_announcement_label("Ajouter une piste", Some("  "), false),
+            "Ajouter une piste"
+        );
+    }
+
+    #[test]
     fn audio_drop_uses_the_track_row_and_timeline_position() {
         let layout = RecordingLayout::daw(
             Rect {
@@ -6300,6 +6631,8 @@ mod recording_capture_view_tests {
                 value: None,
                 selected: false,
                 enabled: true,
+                visible: true,
+                place: Default::default(),
             });
         }
         let mut ui = RecordingWorkspaceUi::default();

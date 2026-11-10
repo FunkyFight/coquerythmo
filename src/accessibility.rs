@@ -200,6 +200,9 @@ pub fn event_for_action(
         UiAction::ExportProject | UiAction::OpenExportModal => "menu.export.mp4",
         UiAction::OpenRenameCharacterModal => "menu.tools.rename_character",
         UiAction::OpenProxyModal => "menu.tools.create_proxy",
+        UiAction::OpenConformModal { .. } => "conform.title",
+        UiAction::ConformPickNewVideo { .. } => "conform.pick_new_video",
+        UiAction::ConformCancel => "conform.cancel",
         UiAction::OpenProjectSettings => "project_settings.title",
         UiAction::OpenBandStyleModal => "band_style.title",
         UiAction::OpenSettings => "settings.title",
@@ -261,6 +264,7 @@ pub fn event_for_action(
         UiAction::AddNote => "toolbar.note",
         UiAction::SetToolMode(ToolMode::Select) => "toolbar.select_mode",
         UiAction::SetToolMode(ToolMode::Draw) => "toolbar.draw_mode",
+        UiAction::OpenAssistant => "assistant.title",
         _ => return None,
     };
     Some(AccessibilityEvent::Activation {
@@ -312,6 +316,11 @@ pub fn panel_label_key_for_action(
         UiAction::ToggleActiveAudio => "panel.toggle_active_audio",
         UiAction::RecordingToggleSharedAudio => "panel.toggle_shared_audio",
         UiAction::RecordingCycleLanguage => "panel.cycle_language",
+        UiAction::RecordingMoveSelectedClipsToTrack { .. } => "panel.recording_move_take_track",
+        UiAction::RecordingNudgeSelectedClips { .. } => "panel.recording_nudge_take",
+        UiAction::RecordingCutSelectedClipAtPlayhead => "panel.recording_cut_take",
+        UiAction::RecordingPlaceAssetAtPlayhead(_) => "panel.recording_place_audio",
+        UiAction::RecordingSelectClipAtPlayhead => "panel.recording_select_take_at_playhead",
         UiAction::CloseSecondaryDisplay => "panel.close_secondary_display",
         UiAction::NudgeSelectedDetection { .. } => "panel.audition_detection",
         UiAction::AddSyncPointAtPlayhead => "panel.add_sync_point",
@@ -926,10 +935,18 @@ impl AccessKitTreeState {
 
 #[cfg(target_os = "windows")]
 fn accesskit_role(role: &str) -> accesskit::Role {
-    let role = role.to_ascii_lowercase();
+    // Roles arrive as `AccessibleRole` debug names ("ListItem", "Slider") or
+    // as words ("list item", "menu item"): compare without spaces.
+    let role = role.to_ascii_lowercase().replace(' ', "");
     if role.contains("checkbox") {
         accesskit::Role::CheckBox
-    } else if role.contains("tree item") {
+    } else if role.contains("slider") {
+        accesskit::Role::Slider
+    } else if role.contains("listitem") {
+        accesskit::Role::ListItem
+    } else if role.contains("menuitem") {
+        accesskit::Role::MenuItem
+    } else if role.contains("treeitem") {
         accesskit::Role::TreeItem
     } else if role.contains("tree") {
         accesskit::Role::Tree

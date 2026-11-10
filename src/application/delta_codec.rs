@@ -13,6 +13,7 @@ use crate::project::Project;
 pub fn encode_delta(command: &Command, project: &Project) -> Option<serde_json::Value> {
     Some(match command {
         Command::SetLinePresence { .. } => return None,
+        Command::Batch { .. } => return None,
         Command::CreateLine { snapshot, .. } => {
             serde_json::json!({ "action": "create_line", "line": serde_json::to_value(snapshot).ok()? })
         }

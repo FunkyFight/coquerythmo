@@ -57,6 +57,26 @@ fn comic_dubs_shortcut(action: UiAction, state: &State) -> UiAction {
     }
 }
 
+/// In the recording workspace, the shared editing chords act on the takes
+/// and the audio library: `Ctrl + Maj + ←/→` moves the selected takes by one
+/// image, `Ctrl + K` cuts the selected take at the playhead and `Ctrl + V`
+/// places the selected audio at the playhead.
+fn recording_shortcut(action: UiAction, state: &State) -> UiAction {
+    if state.active_workspace() != crate::application::workspace_service::WorkspaceId::Recording
+        || state.ui_shell.ui.is_editing_text()
+    {
+        return action;
+    }
+    match action {
+        UiAction::NudgeSelectedLines { delta_frames } => {
+            UiAction::RecordingNudgeSelectedClips { delta_frames }
+        }
+        UiAction::SplitDialogue => UiAction::RecordingCutSelectedClipAtPlayhead,
+        UiAction::PasteLine => UiAction::RecordingPlaceAssetAtPlayhead(None),
+        other => other,
+    }
+}
+
 pub(crate) fn handle_file_picker_selected(
     intent: FilePickerIntent,
     path: PathBuf,
@@ -73,6 +93,11 @@ pub(crate) fn handle_file_picker_selected(
         FilePickerIntent::RelinkVideo { id } => {
             state.relink_media_video(id, path.to_string_lossy().into_owned());
         }
+        FilePickerIntent::ConformNewVideo {
+            video_id,
+            band_id,
+            move_takes,
+        } => state.start_conform(video_id, band_id, path, move_takes),
         FilePickerIntent::ComicDubsImage => state.comic_dubs_begin_image_import(path),
         FilePickerIntent::ComicDubsAudio => state.comic_dubs_begin_audio_import(path),
         FilePickerIntent::ComicDubsExport { configuration } => {
@@ -234,7 +259,7 @@ impl CommandDispatcher {
         state: &mut State,
         elwt: &EventLoopWindowTarget<AppEvent>,
     ) -> bool {
-        let action = comic_dubs_shortcut(action, state);
+        let action = recording_shortcut(comic_dubs_shortcut(action, state), state);
         // Pan is driven by holding Q/D. The key itself stays silent so
         // continuous panning does not flood the speech output.
         if matches!(&action, UiAction::BeginKeyboardPan { .. }) {
@@ -251,6 +276,7 @@ impl CommandDispatcher {
                 Some(crate::i18n::t("toolbar.reactions"))
             }
             UiAction::OpenProxyModal => Some(crate::i18n::t("menu.tools.create_proxy")),
+            UiAction::OpenConformModal { .. } => Some(crate::i18n::t("conform.title")),
             UiAction::OpenSettings => Some(crate::i18n::t("settings.title")),
             UiAction::OpenProjectSettings => Some(crate::i18n::t(
                 if state.active_workspace()
@@ -268,6 +294,7 @@ impl CommandDispatcher {
             }
             UiAction::OpenLinesPanel => Some(crate::i18n::t("panel.lines.title")),
             UiAction::OpenRolesPanel => Some(crate::i18n::t("panel.roles.title")),
+            UiAction::OpenAssistant => Some(crate::i18n::t("assistant.title")),
             _ => None,
         };
         let toggles_toolbar_list = matches!(&action, UiAction::OpenDropdown(_));
@@ -280,6 +307,7 @@ impl CommandDispatcher {
                 state.toolbar_dropdown_first_accessibility_label(dropdown)
             }
             UiAction::OpenProxyModal => state.proxy_modal_focus_label(),
+            UiAction::OpenConformModal { .. } => state.conform_modal_focus_label(),
             UiAction::OpenSettings => state.settings_modal_focus_label(),
             UiAction::OpenProjectSettings => state.project_settings_modal_focus_label(),
             UiAction::OpenExportModal => state.export_modal_focus_label(),
@@ -291,6 +319,7 @@ impl CommandDispatcher {
                     .ui
                     .side_panel_first_accessibility_label(&state.project_session.project),
             ),
+            UiAction::OpenAssistant => Some(crate::i18n::t("assistant.placeholder").to_string()),
             _ => None,
         };
         if navigates_lines {
@@ -336,7 +365,7 @@ impl CommandDispatcher {
         elwt: &EventLoopWindowTarget<AppEvent>,
         announce_action: bool,
     ) -> bool {
-        let action = comic_dubs_shortcut(action, state);
+        let action = recording_shortcut(comic_dubs_shortcut(action, state), state);
         let workspace_history = matches!(
             state.active_workspace(),
             crate::application::workspace_service::WorkspaceId::Voicelines
@@ -765,6 +794,25 @@ impl CommandDispatcher {
                 track_id,
                 delta_frames,
             } => state.recording_move_selected_clips(track_id, delta_frames),
+            UiAction::RecordingNudgeSelectedClips { delta_frames } => {
+                state.recording_nudge_selected_clips(delta_frames)
+            }
+            UiAction::RecordingMoveSelectedClipsToTrack { direction } => {
+                state.recording_move_selected_clips_to_track(direction)
+            }
+            UiAction::RecordingCutSelectedClipAtPlayhead => {
+                state.recording_cut_selected_clip_at_playhead()
+            }
+            UiAction::RecordingSelectClipAtPlayhead => state.recording_select_clip_at_playhead(),
+            UiAction::RecordingPlaceAssetAtPlayhead(asset_id) => {
+                state.recording_place_asset_at_playhead(asset_id)
+            }
+            UiAction::RecordingSeekToClip { clip_id, end } => {
+                state.recording_seek_to_clip(clip_id, end)
+            }
+            UiAction::RecordingToggleAssetGroup(owner) => {
+                state.recording_toggle_asset_group(&owner)
+            }
             UiAction::RecordingDeleteSelectedClips => state.recording_delete_selected_clips(),
             UiAction::RecordingStartCapture => state.recording_start_capture(),
             UiAction::RecordingStopCapture => state.recording_stop_capture(),
@@ -1375,6 +1423,44 @@ impl CommandDispatcher {
                 );
             }
             UiAction::MediaVideoCreateProxy { id } => state.create_proxy_for_media(id),
+            UiAction::OpenConformModal { video_id } => state.open_conform_modal(video_id),
+            UiAction::ConformSelectVideo { id } => state.conform_select_video(id),
+            UiAction::ConformSelectBand { id } => state.conform_select_band(id),
+            UiAction::ConformSetMoveTakes { move_takes } => {
+                state.conform_set_move_takes(move_takes)
+            }
+            UiAction::ConformPickNewVideo {
+                video_id,
+                band_id,
+                move_takes,
+            } => {
+                let filters = open_dialog_filters(
+                    "Video",
+                    &["mp4", "mov", "avi", "mkv", "webm", "mxf", "m4v", "mpg"],
+                );
+                open_file_picker(
+                    state,
+                    elwt,
+                    i18n::t("conform.picker_title"),
+                    FilePickerMode::Open,
+                    FilePickerIntent::ConformNewVideo {
+                        video_id,
+                        band_id,
+                        move_takes,
+                    },
+                    filters,
+                    project_or_video_dir(state),
+                    None,
+                );
+            }
+            UiAction::ConformStart {
+                video_id,
+                band_id,
+                path,
+                move_takes,
+            } => state.start_conform(video_id, band_id, PathBuf::from(path), move_takes),
+            UiAction::ConformCancel => state.cancel_conform(),
+            UiAction::CloseConformModal => state.close_conform_modal(),
             UiAction::MediaVideoAssociateProxy {
                 proxy_id,
                 source_id,
@@ -2243,6 +2329,18 @@ impl CommandDispatcher {
                 new_points,
             } => {
                 state.transform_drawing_strokes(stroke_ids, old_points, new_points);
+            }
+            UiAction::OpenAssistant => state.open_assistant_bubble(),
+            UiAction::AssistantSubmit { query } => state.assistant_submit(query),
+            UiAction::SelectLines { line_ids } => state.select_lines(line_ids),
+            UiAction::AssistantCreateLine {
+                frame,
+                y_slot,
+                duration_frames,
+                text,
+                character,
+            } => {
+                state.assistant_create_line(frame, y_slot, duration_frames, text, character);
             }
         }
         false
