@@ -33,7 +33,6 @@ pub mod layout;
 pub mod license_badge;
 pub mod microphone_modal;
 pub mod modal_host;
-pub mod assistant_bubble;
 pub mod pricing_license_modal;
 pub mod pricing_page;
 pub mod pricing_plan_modal;
@@ -60,6 +59,7 @@ pub mod theme;
 pub mod toast;
 pub mod tooltip;
 pub mod voice_actor_modal;
+pub mod processing_workspace;
 pub mod voicelines_workspace;
 pub mod whats_new_modal;
 
@@ -194,6 +194,10 @@ pub struct Ui {
     recording_daw_scene: RecordingScene,
     recording_daw_cursor: (f32, f32),
     recording_daw_toolbar_widgets: Vec<Box<dyn Widget>>,
+    processing_ui: processing_workspace::ProcessingWorkspaceUi,
+    processing_layout: processing_workspace::ProcessingLayout,
+    processing_scene: processing_workspace::ProcessingScene,
+    processing_modal_scene: Option<processing_workspace::ProcessingScene>,
     voicelines_ui: voicelines_workspace::VoicelinesWorkspaceUi,
     voicelines_layout: voicelines_workspace::VoicelinesLayout,
     voicelines_scene: voicelines_workspace::VoicelinesScene,
@@ -381,6 +385,8 @@ impl Ui {
             "br-edit",
             "note",
             "karaoke",
+            "syllable_ltr",
+            "syllable_rtl",
             "sound",
             "mute",
             "file-tree/folder",
@@ -509,6 +515,15 @@ impl Ui {
             recording_daw_scene: RecordingScene::default(),
             recording_daw_cursor: (0.0, 0.0),
             recording_daw_toolbar_widgets: Vec::new(),
+            processing_ui: processing_workspace::ProcessingWorkspaceUi::default(),
+            processing_layout: processing_workspace::ProcessingLayout::compute(Rect {
+                x: 0.0,
+                y: TOPBAR_H + TABBAR_H,
+                width: sw,
+                height: (sh - TOPBAR_H - TABBAR_H).max(0.0),
+            }),
+            processing_scene: processing_workspace::ProcessingScene::default(),
+            processing_modal_scene: None,
             voicelines_ui: voicelines_workspace::VoicelinesWorkspaceUi::default(),
             voicelines_layout: voicelines_workspace::VoicelinesLayout::compute(Rect {
                 x: 0.0,
@@ -548,6 +563,7 @@ impl Ui {
             ],
             brush_color_preset_index: 0,
         };
+        ui.rythmo_state.syllable_drag_right_to_left = crate::config::syllable_drag_right_to_left();
         ui.tab_widgets = shell::build_workspace_tabs(&ui.layout, ui.active_workspace);
         ui.toolbar_widgets = shell::build_toolbar(ui.toolbar_build_context());
         ui.refresh_root_focus_nodes();
@@ -625,6 +641,19 @@ impl Ui {
                 AccessibleNode::focusable(control.id.clone(), control.role, control.label.clone())
                     .with_selected(Some(control.selected))
             }));
+        } else if self.active_workspace == WorkspaceId::Processing {
+            // Controls scrolled out of view are part of the order too.
+            nodes.extend(self.processing_scene.controls.iter().map(|control| {
+                let mut node = AccessibleNode::focusable(
+                    control.id.clone(),
+                    control.role,
+                    control.label.clone(),
+                )
+                .with_selected(Some(control.selected));
+                // Its state, then its keyboard shortcut.
+                node.value = processing_workspace::spoken_state(control);
+                node
+            }));
         }
         self.focus.replace_root(nodes);
     }
@@ -667,6 +696,7 @@ impl Ui {
     /// transfer prompt while the participant has not answered it.
     pub fn captures_modal_input(&self) -> bool {
         self.modal_host.captures_input()
+            || self.processing_modal_open()
             || self
                 .project_transfer_modal
                 .as_ref()
@@ -684,10 +714,17 @@ impl Ui {
             if self.active_workspace == WorkspaceId::Recording {
                 contexts.push(InputContext::Recording);
             }
+            if self.active_workspace == WorkspaceId::Processing {
+                contexts.push(InputContext::Processing);
+            }
             contexts.push(InputContext::MainWindow);
             contexts.push(InputContext::Global);
         } else if !self.is_editing_text() {
             match self.active_workspace {
+                WorkspaceId::Processing => {
+                    contexts.push(InputContext::Processing);
+                    contexts.push(InputContext::Workspace);
+                }
                 WorkspaceId::Rythmo | WorkspaceId::Voicelines | WorkspaceId::ComicDubs => {
                     contexts.push(InputContext::Workspace)
                 }
@@ -781,6 +818,8 @@ impl Ui {
             self.props_width,
             self.video_split,
         );
+        self.processing_layout =
+            processing_workspace::ProcessingLayout::compute(self.workspace_content_rect());
         self.voicelines_layout =
             voicelines_workspace::VoicelinesLayout::compute(self.workspace_content_rect());
         self.comic_dubs_layout =
@@ -856,7 +895,10 @@ impl Ui {
     pub fn set_active_workspace(&mut self, workspace: WorkspaceId) {
         if workspace != WorkspaceId::Rythmo {
             self.close_file_tree();
-            self.modal_host.assistant = None;
+        }
+        if workspace != WorkspaceId::Processing {
+            self.processing_ui.close_modal();
+            self.processing_modal_scene = None;
         }
         self.active_workspace = workspace;
         if workspace != WorkspaceId::Rythmo {
@@ -900,6 +942,7 @@ impl Ui {
             brush_color_presets: &self.brush_color_presets,
             ctrl_held: self.rythmo_state.ctrl_held,
             editable: self.active_workspace == WorkspaceId::Rythmo,
+            syllable_drag_right_to_left: self.rythmo_state.syllable_drag_right_to_left,
             playback_enabled: self.active_workspace != WorkspaceId::Recording
                 || self.recording_playback_controls_enabled(),
         }
@@ -918,6 +961,7 @@ impl Ui {
     fn active_toolbar_rect(&self) -> Rect {
         match self.active_workspace {
             WorkspaceId::Recording => self.recording_layout.toolbar.unwrap_or(self.layout.toolbar),
+            WorkspaceId::Processing => self.processing_layout.toolbar,
             WorkspaceId::Voicelines => self.voicelines_layout.toolbar,
             WorkspaceId::ComicDubs => self.comic_dubs_layout.toolbar,
             WorkspaceId::Rythmo => self.layout.toolbar,
@@ -1116,6 +1160,7 @@ impl Ui {
             brush_color_presets: &self.brush_color_presets,
             ctrl_held: false,
             editable: false,
+            syllable_drag_right_to_left: false,
             playback_enabled: self.recording_playback_controls_enabled(),
         });
     }
@@ -1628,6 +1673,45 @@ impl Ui {
         ))
     }
 
+    /// `↑` / `↓` on a focused control of the processing tab move to the same
+    /// control of the neighbouring track, model or audio; `Suppr` removes the
+    /// focused audio, model or produced track.
+    fn handle_processing_focused_key(&mut self, event: &UiEvent) -> Option<EventResponse> {
+        let id = self.focus.current_id()?.0.clone();
+        if !id.starts_with("processing.") {
+            return None;
+        }
+        match event {
+            UiEvent::CursorUp | UiEvent::CursorDown => {
+                let target = self
+                    .processing_ui
+                    .neighbour(&id, matches!(event, UiEvent::CursorDown))?;
+                self.focus.focus(&FocusId::new(target.clone()));
+                self.processing_ui.reveal(&target, self.processing_layout);
+                let control = self
+                    .processing_scene
+                    .controls
+                    .iter()
+                    .find(|control| control.id == target)?;
+                Some(EventResponse::Action(UiAction::Accessibility(
+                    crate::accessibility::AccessibilityEvent::Focus {
+                        label: processing_workspace::spoken(control),
+                        role: format!("{:?}", control.role),
+                    },
+                )))
+            }
+            UiEvent::Delete => self
+                .processing_ui
+                .delete_action(&id)
+                .map(EventResponse::Action),
+            UiEvent::KeyInput { text } if text == "\x7f" => self
+                .processing_ui
+                .delete_action(&id)
+                .map(EventResponse::Action),
+            _ => None,
+        }
+    }
+
     /// Arrow keys, `Début` and `Fin` on a focused control of the recording
     /// workspace: they adjust a volume, fold the audio library, seek to a
     /// take or move the focus (see [`recording_workspace::neighbor_control`]).
@@ -1852,6 +1936,12 @@ impl Ui {
                 .handle_topmost_event(event, self.screen_w, self.screen_h)
         {
             return outcome.into_event_response();
+        }
+
+        // A window of the processing tab (engine, catalog) takes every
+        // event, like the modals above.
+        if self.processing_modal_open() {
+            return self.processing_ui.handle_modal_event(event);
         }
 
         if let UiEvent::MousePress { x, y }
@@ -2098,6 +2188,11 @@ impl Ui {
                 return response;
             }
         }
+        if self.active_workspace == WorkspaceId::Processing {
+            if let Some(response) = self.handle_processing_focused_key(event) {
+                return response;
+            }
+        }
 
         match event {
             UiEvent::FocusNext | UiEvent::FocusPrevious => {
@@ -2120,6 +2215,10 @@ impl Ui {
                     .map(|control| control.place)
                 {
                     self.recording_ui.reveal(place, self.recording_layout);
+                }
+                if self.active_workspace == WorkspaceId::Processing {
+                    self.processing_ui
+                        .reveal(&node.id.0, self.processing_layout);
                 }
                 return EventResponse::Action(UiAction::Accessibility(
                     crate::accessibility::AccessibilityEvent::Focus {
@@ -2166,6 +2265,15 @@ impl Ui {
                             return EventResponse::Action(action);
                         }
                     }
+                } else if self.active_workspace == WorkspaceId::Processing {
+                    if let Some(id) = self.focus.current_id().map(|id| id.0.clone()) {
+                        if id.starts_with("processing.") {
+                            return match self.processing_ui.control_action(&id) {
+                                Some(action) => EventResponse::Action(action),
+                                None => EventResponse::Consumed,
+                            };
+                        }
+                    }
                 }
             }
             UiEvent::CursorLeft | UiEvent::CursorRight if self.focused_workspace_tab() => {
@@ -2176,15 +2284,16 @@ impl Ui {
                     .and_then(|index| index.parse::<usize>().ok())
                     .unwrap_or(0);
                 let index = if matches!(event, UiEvent::CursorRight) {
-                    (current + 1) % 4
+                    (current + 1) % 5
                 } else {
-                    (current + 3) % 4
+                    (current + 4) % 5
                 };
                 self.focus.focus(&FocusId::new(format!("tabs.{index}")));
                 let workspace = match index {
                     0 => WorkspaceId::Rythmo,
-                    1 => WorkspaceId::Recording,
-                    2 => WorkspaceId::Voicelines,
+                    1 => WorkspaceId::Processing,
+                    2 => WorkspaceId::Recording,
+                    3 => WorkspaceId::Voicelines,
                     _ => WorkspaceId::ComicDubs,
                 };
                 return EventResponse::Action(UiAction::ActivateWorkspace(workspace));
@@ -2351,6 +2460,15 @@ impl Ui {
             }
         }
 
+        if self.active_workspace == WorkspaceId::Processing {
+            let response = self
+                .processing_ui
+                .handle_event(event, self.processing_layout);
+            if response != EventResponse::Ignored {
+                return response;
+            }
+        }
+
         if self.active_workspace == WorkspaceId::Voicelines {
             let selection_before = self.voicelines_ui.selected_regions().to_vec();
             let response =
@@ -2453,7 +2571,7 @@ impl Ui {
 
         if matches!(
             self.active_workspace,
-            WorkspaceId::Voicelines | WorkspaceId::ComicDubs
+            WorkspaceId::Processing | WorkspaceId::Voicelines | WorkspaceId::ComicDubs
         ) && self.total_frames > 0
         {
             let hit = shell::progress_bar_hit_rect(&self.active_toolbar_rect(), false);
@@ -2479,7 +2597,10 @@ impl Ui {
             }
         }
 
-        if self.active_workspace == WorkspaceId::Voicelines {
+        if matches!(
+            self.active_workspace,
+            WorkspaceId::Voicelines | WorkspaceId::Processing
+        ) {
             return EventResponse::Ignored;
         }
 
@@ -3475,14 +3596,6 @@ impl Ui {
         {
             deadline = Some(deadline.map_or(modal_deadline, |current| current.min(modal_deadline)));
         }
-        if let Some(bubble_deadline) = self
-            .modal_host
-            .assistant
-            .as_ref()
-            .map(|bubble| bubble.next_cursor_blink_deadline())
-        {
-            deadline = Some(deadline.map_or(bubble_deadline, |current| current.min(bubble_deadline)));
-        }
         deadline
     }
 
@@ -3680,6 +3793,29 @@ impl Ui {
             || self.recording_ui.is_editing_text()
             || self.voicelines_ui.is_editing_text()
             || self.comic_dubs_ui.is_editing_text()
+    }
+
+    pub fn set_processing_view(&mut self, view: processing_workspace::ProcessingView) {
+        self.processing_ui.set_view(view);
+    }
+
+    /// Opens the engine window or the model catalog of the processing tab.
+    pub fn open_processing_modal(&mut self, modal: processing_workspace::ProcessingModal) {
+        self.processing_ui.open_modal(modal);
+    }
+
+    /// What a screen reader says of the open window of the processing tab.
+    pub fn processing_modal_announcement(&self) -> Option<String> {
+        self.processing_ui.modal_announcement()
+    }
+
+    pub fn processing_modal_open(&self) -> bool {
+        self.active_workspace == WorkspaceId::Processing && self.processing_ui.modal().is_some()
+    }
+
+    /// The processing scene shows something that changes with time alone.
+    pub fn processing_needs_redraw(&self) -> bool {
+        self.processing_ui.is_waiting_confirmation()
     }
 
     pub fn voicelines_audio_selected(&mut self, duration_ms: u64, audio_index: usize) {
@@ -4122,6 +4258,25 @@ impl Ui {
                 self.voicelines_layout,
             );
             self.refresh_root_focus_nodes();
+        } else if self.active_workspace == WorkspaceId::Processing {
+            let panel_shown =
+                crate::config::get().ui.show_controls_hint && !self.shortcut_panel.is_empty();
+            let content = self.workspace_content_rect();
+            let panel_height = if panel_shown {
+                let panel = self.shortcut_panel.rect(self.screen_h);
+                (content.y + content.height - panel.y).max(0.0)
+            } else {
+                0.0
+            };
+            self.processing_layout =
+                processing_workspace::ProcessingLayout::compute(content).above_panel(panel_height);
+            self.processing_scene = self.processing_ui.scene(
+                (render_frame.max(0.0) * 10.0).round() as u64,
+                self.processing_layout,
+            );
+            self.processing_modal_scene =
+                self.processing_ui.modal_scene(self.screen_w, self.screen_h);
+            self.refresh_root_focus_nodes();
         } else if self.active_workspace == WorkspaceId::ComicDubs {
             self.comic_dubs_ui
                 .sync(comic_dubs_project, self.comic_dubs_layout);
@@ -4174,8 +4329,23 @@ impl Ui {
                     Some(_) => (false, true, false),
                     None => (false, false, false),
                 };
+            // The syllable cursor goes with the selection of its line.
+            if self.rythmo_state.syllable_cursor.is_some()
+                && self.rythmo_state.active_syllable_cursor().is_none()
+            {
+                self.rythmo_state.syllable_cursor = None;
+            }
+            let karaoke_line_selected = match self.rythmo_state.selected.as_ref() {
+                Some(Selection::Line(id)) => project.get_line(*id).is_some_and(|line| {
+                    line.karaoke && !line.kind.is_ambiance() && !line.text.trim().is_empty()
+                }),
+                _ => false,
+            } && !self.rythmo_state.is_editing();
             let situation = shortcut_panel::PanelSituation {
                 contexts: self.shortcut_contexts(),
+                karaoke_line_selected,
+                syllable_cursor: karaoke_line_selected
+                    && self.rythmo_state.active_syllable_cursor().is_some(),
                 workspace: self.active_workspace,
                 has_video: self.has_video,
                 has_instrumental: project.settings().instrumental_audio_path.is_some(),
@@ -4195,6 +4365,10 @@ impl Ui {
                 recording_take_at_playhead: self.recording_take_at(current_frame),
                 recording_audio_selected: self.recording_focused_or_selected_asset().is_some(),
             };
+            self.shortcut_panel.set_max_width(
+                (self.active_workspace == WorkspaceId::Processing)
+                    .then(|| self.processing_layout.sidebar.width - 16.0),
+            );
             self.shortcut_panel
                 .sync(&situation, shortcut_panel::shortcut_router().bindings());
         }
@@ -4860,11 +5034,25 @@ impl Ui {
                     .iter()
                     .find(|control| control.id == id)
                     .map(|control| control.bounds)
+            })
+            .or_else(|| {
+                let id = self.focus.current_id()?.0.as_str();
+                self.processing_scene
+                    .controls
+                    .iter()
+                    .find(|control| control.id == id)
+                    .map(|control| control.bounds)
             });
         // Recording controls are small and packed on coloured fills: their
         // ring is thicker and doubled (blue outside, white inside) so it
         // stays visible with low vision.
-        let high_visibility_ring = self.focused_widget().is_none() && focused_recording.is_some();
+        let high_visibility_ring = self.focused_widget().is_none()
+            && (focused_recording.is_some()
+                || (self.active_workspace == WorkspaceId::Processing
+                    && self
+                        .focus
+                        .current_id()
+                        .is_some_and(|id| id.0.starts_with("processing."))));
         if let Some(bounds) = focused_bounds {
             let (gap, width) = if high_visibility_ring {
                 (3.0, 3.0)
@@ -5282,6 +5470,10 @@ impl Ui {
                 &mut system_labels,
                 &self.voicelines_scene,
             );
+        }
+
+        if let Some(scene) = self.processing_modal_scene.as_ref() {
+            processing_workspace::append_scene(&mut modal_quads, &mut modal_labels, scene);
         }
 
         self.modal_host.render_top(
@@ -6262,6 +6454,12 @@ impl Ui {
                     self.cursor_pos,
                 );
             }
+            return;
+        }
+
+        if self.active_workspace == WorkspaceId::Processing {
+            processing_workspace::append_scene(quads, labels, &self.processing_scene);
+            self.push_toolbar_zone(quads, self.processing_layout.toolbar, false, true);
             return;
         }
 

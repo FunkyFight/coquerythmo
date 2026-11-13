@@ -635,6 +635,52 @@ pub fn run(startup: Option<super::StartupInput>) {
                             state.request_redraw();
                             return;
                         }
+                        // On a selected karaoke line, Alt works its syllable
+                        // handles, points and liaisons: the arrows walk them,
+                        // with Ctrl they move the handle. Like the line
+                        // nudging below, this does not depend on the focus.
+                        if keyboard_modifiers.alt
+                            && !shift_held
+                            && !state.is_editing_text()
+                            && !state.captures_modal_input()
+                            && state.syllable_keys_available()
+                        {
+                            use crate::application::command::SyllableKey;
+                            let key = match &event.logical_key {
+                                Key::Named(NamedKey::ArrowLeft) => Some(if ctrl_held {
+                                    SyllableKey::Nudge(-1)
+                                } else {
+                                    SyllableKey::Step(-1)
+                                }),
+                                Key::Named(NamedKey::ArrowRight) => Some(if ctrl_held {
+                                    SyllableKey::Nudge(1)
+                                } else {
+                                    SyllableKey::Step(1)
+                                }),
+                                Key::Named(NamedKey::ArrowUp) if !ctrl_held => {
+                                    Some(SyllableKey::Row(-1))
+                                }
+                                Key::Named(NamedKey::ArrowDown) if !ctrl_held => {
+                                    Some(SyllableKey::Row(1))
+                                }
+                                key if ctrl_held && is_space_key(key) => {
+                                    Some(SyllableKey::PlaceAtPlayhead)
+                                }
+                                _ => None,
+                            };
+                            if let Some(key) = key {
+                                dispatch_key_action(
+                                    UiAction::Syllable(key),
+                                    &event,
+                                    keyboard_modifiers,
+                                    InputWindow::Main,
+                                    &mut state,
+                                    elwt,
+                                );
+                                state.request_redraw();
+                                return;
+                            }
+                        }
                         // Keep frame-by-frame line nudging independent from
                         // focus routing. In particular, Ctrl is also used to
                         // control narration, so these chords must reach the
@@ -940,28 +986,6 @@ pub fn run(startup: Option<super::StartupInput>) {
                                 &mut state,
                                 elwt,
                             );
-                            return;
-                        }
-                        // Needle 3's prompt opens over the rythmo workspace only; while a
-                        // modal or a text field is active, Ctrl+Enter keeps its meaning there.
-                        if ctrl_held
-                            && !shift_held
-                            && !keyboard_modifiers.alt
-                            && !event.repeat
-                            && !state.captures_modal_input()
-                            && !state.is_editing_text()
-                            && state.active_workspace() == WorkspaceId::Rythmo
-                            && matches!(event.logical_key, Key::Named(NamedKey::Enter))
-                        {
-                            dispatch_key_action(
-                                UiAction::OpenAssistant,
-                                &event,
-                                keyboard_modifiers,
-                                InputWindow::Main,
-                                &mut state,
-                                elwt,
-                            );
-                            state.request_redraw();
                             return;
                         }
                         // The file tree belongs to the editable rythmo workspace and never
@@ -1706,6 +1730,11 @@ pub fn run(startup: Option<super::StartupInput>) {
                         }
                         state.request_redraw();
                     } else if state.active_workspace()
+                        == crate::application::workspace_service::WorkspaceId::Processing
+                    {
+                        state.processing_begin_import(path);
+                        state.request_redraw();
+                    } else if state.active_workspace()
                         == crate::application::workspace_service::WorkspaceId::Voicelines
                     {
                         if is_audio {
@@ -1800,20 +1829,7 @@ pub fn run(startup: Option<super::StartupInput>) {
                         crate::application::job_service::SaveContinuation::None => {}
                     }
                 }
-                // Tool calls of the assistant run like shortcuts, once their
-                // answer has been received by `tick_background`.
-                let assistant_actions = state.take_assistant_actions();
-                let assistant_acted = !assistant_actions.is_empty();
-                for action in assistant_actions {
-                    if CommandDispatcher::dispatch(action, &mut state, elwt) {
-                        elwt.exit();
-                        break;
-                    }
-                }
-                // The next sentence of the request sees the state these
-                // actions left (the created line is the selection...).
-                state.assistant_continue();
-                if changed || assistant_acted || state.needs_redraw_now() {
+                if changed || state.needs_redraw_now() {
                     state.request_redraw();
                     if state.has_secondary_display() {
                         state.request_secondary_redraw();

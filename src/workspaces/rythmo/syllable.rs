@@ -16,7 +16,6 @@ pub(crate) fn syllable_mouse_press(
     }
 
     let lang = ctx.project.syllable_language_code();
-    let hit_w = 7.0;
     let pointer_frame = x_to_frame(x, ctx.current_frame, ctx.zone, ctx.fps);
     let mut candidate_ids =
         ctx.render_index
@@ -57,10 +56,42 @@ pub(crate) fn syllable_mouse_press(
             continue;
         };
 
-        let top_y = r.y + 1.0;
-        if y < top_y - 6.0 || y > top_y + 14.0 {
-            continue;
+        // The pin under a word switches it between its spoken syllables and
+        // all its written ones. Like the handles, it shows on the hovered line.
+        if state.hovered_line == Some(line.id) && state.syllable_drag.is_none() {
+            let pin_top = syllable_pin_top(&r);
+            if y >= pin_top - 3.0 && y <= pin_top + SYLLABLE_PIN_SIZE + 3.0 {
+                let pins = syllable_pin_positions(ctx.project, line, None, lang, state);
+                let hit = pins.into_iter().find(|(_, pin_x)| {
+                    (x - (r.x + pin_x * r.width)).abs() <= SYLLABLE_PIN_SIZE / 2.0 + 3.0
+                });
+                if let Some((pin, _)) = hit {
+                    return Some(EventResponse::Action(UiAction::ToggleSyllableSplitWord {
+                        line_id: line.id,
+                        word: pin.word,
+                    }));
+                }
+                // The arrow between two words that can be linked: nothing,
+                // liaison made, liaison not made.
+                let arrows = liaison_arrow_positions(ctx.project, line, None, lang, state);
+                let hit = arrows.into_iter().find(|(_, from, to)| {
+                    x >= r.x + from * r.width - 4.0 && x <= r.x + to * r.width + 4.0
+                });
+                if let Some((site, _, _)) = hit {
+                    return Some(EventResponse::Action(UiAction::CycleLiaisonMark {
+                        line_id: line.id,
+                        pair: site.pair,
+                    }));
+                }
+            }
         }
+
+        // A handle runs down the whole line: grabbed wide along the top,
+        // and on the bar itself further down.
+        let Some(hit_w) = syllable_handle_reach(&r, y, state.editing_line == Some(line.id))
+        else {
+            continue;
+        };
 
         if state.slot_reservation_for(line).is_some() {
             // The handles around a reserved slot are not draggable: the slot
@@ -139,7 +170,56 @@ pub(crate) fn syllable_mouse_press(
     None
 }
 
+/// The karaoke line already hovered, while the pointer is over the pins
+/// drawn just under it: leaving the line by its bottom edge to reach a pin
+/// must not hide the pins.
+pub(crate) fn hovered_line_under_pointer_pins(
+    ctx: &RythmoCtx,
+    state: &mut RythmoState,
+    x: f32,
+    y: f32,
+) -> Option<u64> {
+    let line_id = state.hovered_line?;
+    let line = ctx.project.get_line(line_id)?;
+    if !line.karaoke || ctx.karaoke_preview {
+        return None;
+    }
+    let rect = state
+        .get_or_create_layout_ctx(
+            ctx.project,
+            ctx.render_index,
+            ctx.current_frame,
+            ctx.fps,
+            ctx.zone,
+        )
+        .line_rect_with_karaoke_width(
+            line,
+            ctx.current_frame,
+            ctx.zone,
+            false,
+            None,
+            crate::config::reading_bar_offset_seconds(),
+            ctx.fps,
+        );
+    if !syllable_pin_strip_contains(&rect, x, y) {
+        return None;
+    }
+    let lang = ctx.project.syllable_language_code();
+    let has_pins =
+        !crate::syllable::syllable_split_pins(&line.text, line.syllable_rules(lang)).is_empty();
+    let has_liaisons = || !crate::syllable::liaison_sites(&line.text, lang).is_empty();
+    (has_pins || has_liaisons()).then_some(line_id)
+}
+
 pub(crate) fn syllable_mouse_move(state: &mut RythmoState, x: f32) -> Option<EventResponse> {
+    // Handles already placed on this line bound the proportional drag.
+    let free_range = state.syllable_drag.as_ref().map(|drag| {
+        state.syllable_drag_free_range(
+            decode_sync_syllable_drag_line_id(drag.line_id).unwrap_or(drag.line_id),
+            drag.separator_index,
+            drag.ratios.len(),
+        )
+    })?;
     let drag = state.syllable_drag.as_mut()?;
 
     let dx = x - drag.drag_start_x;
@@ -185,9 +265,13 @@ pub(crate) fn syllable_mouse_move(state: &mut RythmoState, x: f32) -> Option<Eve
     }
 
     // With synchronization points, redistribution is local to the interval
-    // bounded by the previous and next point. Without synchronization, the
-    // original whole-line behavior remains unchanged.
+    // bounded by the previous and next point. Handles already placed narrow
+    // it further: a line is timed by halves, each drag only sharing out what
+    // is still free around its handle.
     let (range_start, range_end) = local_range.unwrap_or((0, segment_count));
+    let range_start = range_start.max(free_range.0);
+    let range_end = range_end.min(free_range.1);
+    let whole_line = range_start == 0 && range_end == segment_count;
     let left_end = i + 1;
     let right_start = i + 1;
     if range_start >= left_end || right_start >= range_end {
@@ -234,7 +318,7 @@ pub(crate) fn syllable_mouse_move(state: &mut RythmoState, x: f32) -> Option<Eve
     // The local transfer preserves the total exactly. Avoid a whole-vector
     // normalization here: even tiny renormalization would move text outside the
     // active synchronization interval.
-    if local_range.is_none() {
+    if local_range.is_none() && whole_line {
         normalize_ratios_in_place(&mut drag.ratios);
     }
 
@@ -303,6 +387,12 @@ pub(crate) fn normalize_ratios_in_place(ratios: &mut [f32]) {
 pub(crate) fn syllable_mouse_release(state: &mut RythmoState) -> Option<EventResponse> {
     let drag = state.syllable_drag.take()?;
     let line_id = decode_sync_syllable_drag_line_id(drag.line_id).unwrap_or(drag.line_id);
+    // A handle that was moved is placed: the next proportional drags stop
+    // at it. Ctrl + click places it even without moving it, to set the limit
+    // where the handle already stands.
+    if drag.preserve_prefix || drag.ratios != drag.original_ratios {
+        state.place_syllable_handle(line_id, drag.separator_index, drag.ratios.len());
+    }
     let fitted = crate::workspaces::rythmo::detection_ui::finish_sync_syllable_drag(
         drag.line_id,
         &drag.ratios,

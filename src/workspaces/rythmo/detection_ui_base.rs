@@ -1574,7 +1574,7 @@ fn render_shifted_syllable_handles(
     );
     let color = [0.95, 0.08, 0.03, 1.0];
     let stroke = 3.0;
-    let tick_h = 9.0;
+    let tick_h = crate::workspaces::rythmo::view::syllable_handle_height(&rect);
     let top_y = rect.y + 1.0;
     let cap_gap = 2.0;
     let boundaries = boundary_ratios
@@ -1599,14 +1599,21 @@ fn render_shifted_syllable_handles(
             );
         }
     }
-    for boundary in boundaries {
+    let last = boundaries.len() - 1;
+    for (index, boundary) in boundaries.into_iter().enumerate() {
+        // The two ends of the line are not handles.
+        let height = if index == 0 || index == last {
+            crate::workspaces::rythmo::view::SYLLABLE_END_TICK
+        } else {
+            tick_h
+        };
         push_quad(
             quads,
             Rect {
                 x: boundary - stroke / 2.0,
                 y: top_y,
                 width: stroke,
-                height: tick_h,
+                height,
             },
             color,
             stroke / 2.0,
@@ -2012,6 +2019,17 @@ pub(crate) fn render_detection_overlay<'a>(
     let mut handle_lines = BTreeSet::new();
     handle_lines.extend(hovered_sync_line);
     handle_lines.extend(dragged_sync_line);
+    // The line whose syllables are worked from the keyboard shows them too.
+    handle_lines.extend(
+        state
+            .active_syllable_cursor()
+            .map(|cursor| cursor.line_id)
+            .filter(|line_id| {
+                project
+                    .get_line(*line_id)
+                    .is_some_and(|line| has_sync_cues(project, line))
+            }),
+    );
     for line_id in handle_lines {
         if let Some(line) = project.get_line(line_id) {
             render_shifted_syllable_handles(project, line, current_frame, zone, fps, state, quads);

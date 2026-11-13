@@ -643,6 +643,14 @@ pub struct RythmoLine {
     pub voice_actor_names: Vec<String>,
     #[serde(default)]
     pub syllable_ratios: Vec<f32>,
+    /// Words of the line (see [`crate::syllable::split_word_key`]) whose pin
+    /// is on: they are cut into all their written syllables ("mons|tres").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub syllable_split_words: Vec<String>,
+    /// Liaisons marked on the line: made, or expressly not made. A place
+    /// where a liaison is possible and that is not listed shows nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub liaison_marks: Vec<LiaisonMark>,
     #[serde(default)]
     pub karaoke: bool,
     #[serde(default)]
@@ -661,7 +669,181 @@ impl LinePresence {
     }
 }
 
+/// A liaison marked between two words of a line ("les amis", "rien à").
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LiaisonMark {
+    /// Key of the two words (see [`crate::syllable::liaison_pair_key`]):
+    /// every place of the line where they follow each other shares it.
+    pub pair: String,
+    /// The liaison is made (an arrow from the consonant to the vowel), or
+    /// expressly not made (the same arrow, struck through).
+    pub made: bool,
+}
+
+/// Where the karaoke dot is on a line, and on which syllable.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KaraokeDotState {
+    /// How far the dot is into the syllable being sung (0 to 1): it lands
+    /// at 0 and at 1.
+    pub local: f32,
+    /// Place of the dot along the drawn text (0 to 1).
+    pub position: f32,
+    /// Start and end of the syllable being sung, along the drawn text.
+    pub span: (f32, f32),
+    /// Share of the duration of the line this syllable lasts.
+    pub share: f32,
+}
+
 impl RythmoLine {
+    /// How the text of this line is cut into syllables in `lang`: the
+    /// language of the band and the words whose pin is on.
+    pub fn syllable_rules<'a>(&'a self, lang: &'a str) -> crate::syllable::SyllableRules<'a> {
+        crate::syllable::SyllableRules::new(lang, &self.syllable_split_words)
+    }
+
+    /// How long each syllable lasts and how wide it is drawn, as shares of
+    /// the line: what the editor shows as handles. A line whose handles were
+    /// never moved is timed by the width of its syllables as drawn, since
+    /// that is where its handles stand. `None` for a one-syllable line.
+    pub fn karaoke_syllable_layout(&self, lang: &str) -> Option<(Vec<f32>, Vec<f32>)> {
+        let rules = self.syllable_rules(lang);
+        let breaks = crate::syllable::syllable_breaks(&self.text, rules);
+        if breaks.is_empty() {
+            return None;
+        }
+        let drawn = if crate::config::is_initialized() {
+            let font_size = crate::config::get().ui.font_size * 2.0;
+            text_emotion_char_ratios(&self.text, font_size).and_then(|positions| {
+                crate::syllable::visual_ratios_from_char_positions(&self.text, &breaks, &positions)
+            })
+        } else {
+            None
+        };
+        let visual = drawn
+            .unwrap_or_else(|| crate::syllable::default_ratios_from_breaks(&self.text, &breaks));
+        let timing =
+            crate::syllable::adapted_saved_ratios(&self.text, &self.syllable_ratios, rules)
+                .filter(|ratios| ratios.len() == visual.len())
+                .unwrap_or_else(|| visual.clone());
+        Some((timing, visual))
+    }
+
+    /// What is marked for the liaison of `pair`: made, not made, or nothing.
+    pub fn liaison_state(&self, pair: &str) -> Option<bool> {
+        self.liaison_marks
+            .iter()
+            .find(|mark| mark.pair == pair)
+            .map(|mark| mark.made)
+    }
+
+    /// Liaisons marked on the line, for the band: the middle of the
+    /// consonant and of the vowel as shares of the width of the drawn text,
+    /// and whether the liaison is made.
+    pub fn liaison_marks_layout(&self, lang: &str) -> Vec<(f32, f32, bool)> {
+        if self.liaison_marks.is_empty() {
+            return Vec::new();
+        }
+        let sites = crate::syllable::liaison_sites(&self.text, lang);
+        if sites.is_empty() {
+            return Vec::new();
+        }
+        let char_count = self.text.chars().count().max(1);
+        let drawn = if crate::config::is_initialized() {
+            let font_size = crate::config::get().ui.font_size * 2.0;
+            text_emotion_char_ratios(&self.text, font_size)
+                .filter(|positions| positions.len() == char_count + 1)
+        } else {
+            None
+        };
+        let position = |character: usize| -> f32 {
+            match &drawn {
+                Some(positions) => positions[character.min(char_count)],
+                None => character.min(char_count) as f32 / char_count as f32,
+            }
+        };
+        let middle = |character: usize| (position(character) + position(character + 1)) / 2.0;
+        sites
+            .into_iter()
+            .filter_map(|site| {
+                let made = self.liaison_state(&site.pair)?;
+                Some((middle(site.from), middle(site.to), made))
+            })
+            .collect()
+    }
+
+    /// Mute syllables to pronounce: for every word whose pin is on, the
+    /// centre of the syllable the pin adds ("tres" in "monstres"), as a share
+    /// of the width of the drawn text. Marked under the line during playback.
+    pub fn pronounced_syllable_marks(&self, lang: &str) -> Vec<f32> {
+        if self.syllable_split_words.is_empty() {
+            return Vec::new();
+        }
+        let pins = crate::syllable::syllable_split_pins(&self.text, self.syllable_rules(lang));
+        if !pins.iter().any(|pin| pin.active) {
+            return Vec::new();
+        }
+        let char_count = self.text.chars().count().max(1);
+        let drawn = if crate::config::is_initialized() {
+            let font_size = crate::config::get().ui.font_size * 2.0;
+            text_emotion_char_ratios(&self.text, font_size)
+                .filter(|positions| positions.len() == char_count + 1)
+        } else {
+            None
+        };
+        let position = |character: usize| -> f32 {
+            match &drawn {
+                Some(positions) => positions[character.min(char_count)],
+                None => character.min(char_count) as f32 / char_count as f32,
+            }
+        };
+        pins.into_iter()
+            .filter(|pin| pin.active)
+            .map(|pin| ((position(pin.split_at) + position(pin.end)) / 2.0).clamp(0.0, 1.0))
+            .collect()
+    }
+
+    /// The karaoke dot at `progress` (0 to 1) of the line: how far it is
+    /// into the syllable being sung (it lands on every syllable boundary,
+    /// where the handles are), and its place along the drawn text.
+    pub fn karaoke_dot_progress(&self, lang: &str, progress: f32) -> (f32, f32) {
+        let state = self.karaoke_dot_state(lang, progress);
+        (state.local, state.position)
+    }
+
+    /// The karaoke dot at `progress` (0 to 1) of the line, with the syllable
+    /// it is on.
+    pub fn karaoke_dot_state(&self, lang: &str, progress: f32) -> KaraokeDotState {
+        let progress = progress.clamp(0.0, 1.0);
+        let Some((timing, visual)) = self.karaoke_syllable_layout(lang) else {
+            return KaraokeDotState {
+                local: progress,
+                position: progress,
+                span: (0.0, 1.0),
+                share: 1.0,
+            };
+        };
+        // Syllable being sung: the first one whose end is not passed yet.
+        let mut index = timing.len() - 1;
+        let mut time_start = 0.0_f32;
+        for (candidate, ratio) in timing.iter().enumerate() {
+            if progress <= (time_start + ratio).min(1.0) || candidate == timing.len() - 1 {
+                index = candidate;
+                break;
+            }
+            time_start += ratio;
+        }
+        let share = timing[index].max(f32::EPSILON);
+        let local = ((progress - time_start) / share).clamp(0.0, 1.0);
+        let span_start: f32 = visual[..index].iter().sum();
+        let span_end = (span_start + visual[index]).min(1.0);
+        KaraokeDotState {
+            local,
+            position: (span_start + local * visual[index]).clamp(0.0, 1.0),
+            span: (span_start.clamp(0.0, 1.0), span_end),
+            share,
+        }
+    }
+
     pub fn can_have_text_emotions(&self) -> bool {
         self.kind.is_dialogue() && !self.karaoke
     }
@@ -899,11 +1081,88 @@ mod tests {
             kind: RythmoLineKind::Dialogue,
             voice_actor_names: Vec::new(),
             syllable_ratios: Vec::new(),
+            syllable_split_words: Vec::new(),
+            liaison_marks: Vec::new(),
             karaoke: false,
             note: String::new(),
             presence: LinePresence::On,
             text_emotions: Vec::new(),
             text_styles: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn marked_liaisons_are_laid_out_from_the_consonant_to_the_vowel() {
+        let mut line = styled_line("les amis");
+        assert!(line.liaison_marks_layout("fr-fr").is_empty());
+        line.liaison_marks = vec![LiaisonMark {
+            pair: "les amis".to_string(),
+            made: true,
+        }];
+        let layout = line.liaison_marks_layout("fr-fr");
+        assert_eq!(layout.len(), 1);
+        let (from, to, made) = layout[0];
+        // From the "s" (third letter of eight) to the "a" (fifth).
+        assert!(made && from > 0.2 && from < 0.45 && to > from && to < 0.7);
+        assert_eq!(line.liaison_state("les amis"), Some(true));
+        assert_eq!(line.liaison_state("mes amis"), None);
+        // No liaison outside French, nor for a pair that left the text.
+        assert!(line.liaison_marks_layout("en-us").is_empty());
+        line.text = "les chats".to_string();
+        assert!(line.liaison_marks_layout("fr-fr").is_empty());
+    }
+
+    #[test]
+    fn a_pin_that_is_on_marks_its_syllable_during_playback() {
+        let mut line = styled_line("les monstres rient");
+        line.karaoke = true;
+        assert!(line.pronounced_syllable_marks("fr-fr").is_empty());
+        line.syllable_split_words = vec!["monstres".to_string()];
+        let marks = line.pronounced_syllable_marks("fr-fr");
+        // One mark, under "tres" (characters 8 to 12 of 18): its exact place
+        // follows the width of the letters as drawn.
+        assert_eq!(marks.len(), 1);
+        assert!(marks[0] > 0.45 && marks[0] < 0.67, "{marks:?}");
+        // A word that left the text marks nothing.
+        line.syllable_split_words = vec!["tables".to_string()];
+        assert!(line.pronounced_syllable_marks("fr-fr").is_empty());
+    }
+
+    #[test]
+    fn the_karaoke_dot_lands_on_every_syllable_handle() {
+        let mut line = styled_line("la la la la");
+        line.karaoke = true;
+        // Handles dragged to 50 %, 60 % and 90 % of the line.
+        line.syllable_ratios = vec![0.5, 0.1, 0.3, 0.1];
+        for boundary in [0.0, 0.5, 0.6, 0.9, 1.0] {
+            let (local, _) = line.karaoke_dot_progress("fr-fr", boundary);
+            let bounce = (local * std::f32::consts::PI).sin();
+            assert!(bounce.abs() < 1e-3, "{boundary}: {local}");
+        }
+        // The syllable it is on, and how long that syllable lasts.
+        let state = line.karaoke_dot_state("fr-fr", 0.55);
+        let (_, visual) = line.karaoke_syllable_layout("fr-fr").unwrap();
+        assert!((state.span.0 - visual[0]).abs() < 1e-4);
+        assert!((state.span.1 - visual[0] - visual[1]).abs() < 1e-4);
+        assert!((state.share - 0.1).abs() < 1e-4 && (state.local - 0.5).abs() < 1e-3);
+        // Halfway through a syllable it is at the top of its jump, above the
+        // middle of that syllable in the text.
+        let (local, position) = line.karaoke_dot_progress("fr-fr", 0.25);
+        assert!((local - 0.5).abs() < 1e-4);
+        let (_, visual) = line.karaoke_syllable_layout("fr-fr").unwrap();
+        assert!((position - visual[0] / 2.0).abs() < 1e-4);
+
+        // A line whose handles were never moved: they stand where the
+        // syllables are drawn, and the dot lands there too.
+        line.syllable_ratios.clear();
+        let (timing, visual) = line.karaoke_syllable_layout("fr-fr").unwrap();
+        assert_eq!(timing, visual);
+        let mut boundary = 0.0;
+        for ratio in &timing[..timing.len() - 1] {
+            boundary += ratio;
+            let (local, position) = line.karaoke_dot_progress("fr-fr", boundary);
+            assert!((local * std::f32::consts::PI).sin().abs() < 1e-3);
+            assert!((position - boundary).abs() < 1e-4);
         }
     }
 
@@ -1018,6 +1277,8 @@ mod tests {
             kind: RythmoLineKind::Dialogue,
             voice_actor_names: vec![],
             syllable_ratios: vec![],
+            syllable_split_words: Vec::new(),
+            liaison_marks: Vec::new(),
             karaoke: false,
             note: String::new(),
             presence: LinePresence::On,

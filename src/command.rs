@@ -114,6 +114,21 @@ pub enum Command {
         old_ratios: Vec<f32>,
         new_ratios: Vec<f32>,
     },
+    /// A pin switched words of the line between their spoken and written
+    /// syllables; the saved timings follow the new syllables.
+    SetSyllableSplitWords {
+        line_id: u64,
+        old_words: Vec<String>,
+        new_words: Vec<String>,
+        old_ratios: Vec<f32>,
+        new_ratios: Vec<f32>,
+    },
+    /// A liaison of the line was marked as made, as not made, or unmarked.
+    SetLiaisonMarks {
+        line_id: u64,
+        old_marks: Vec<crate::rythmo_line::LiaisonMark>,
+        new_marks: Vec<crate::rythmo_line::LiaisonMark>,
+    },
     SetCharacter {
         line_id: u64,
         old_name: String,
@@ -202,6 +217,8 @@ impl Command {
             | Command::SetLineKaraoke { line_id, .. }
             | Command::SetLinePresence { line_id, .. }
             | Command::SetSyllableRatios { line_id, .. }
+            | Command::SetSyllableSplitWords { line_id, .. }
+            | Command::SetLiaisonMarks { line_id, .. }
             | Command::SetCharacter { line_id, .. }
             | Command::SetCharacterColor { line_id, .. }
             | Command::UpdateLineNote { line_id, .. } => vec![*line_id],
@@ -376,6 +393,24 @@ impl Command {
             } => {
                 if let Some(l) = project.get_line_mut(*line_id) {
                     l.syllable_ratios = new_ratios.clone();
+                }
+            }
+            Command::SetSyllableSplitWords {
+                line_id,
+                new_words,
+                new_ratios,
+                ..
+            } => {
+                if let Some(l) = project.get_line_mut(*line_id) {
+                    l.syllable_split_words = new_words.clone();
+                    l.syllable_ratios = new_ratios.clone();
+                }
+            }
+            Command::SetLiaisonMarks {
+                line_id, new_marks, ..
+            } => {
+                if let Some(l) = project.get_line_mut(*line_id) {
+                    l.liaison_marks = new_marks.clone();
                 }
             }
             Command::SetCharacter {
@@ -624,6 +659,24 @@ impl Command {
             } => {
                 if let Some(l) = project.get_line_mut(*line_id) {
                     l.syllable_ratios = old_ratios.clone();
+                }
+            }
+            Command::SetSyllableSplitWords {
+                line_id,
+                old_words,
+                old_ratios,
+                ..
+            } => {
+                if let Some(l) = project.get_line_mut(*line_id) {
+                    l.syllable_split_words = old_words.clone();
+                    l.syllable_ratios = old_ratios.clone();
+                }
+            }
+            Command::SetLiaisonMarks {
+                line_id, old_marks, ..
+            } => {
+                if let Some(l) = project.get_line_mut(*line_id) {
+                    l.liaison_marks = old_marks.clone();
                 }
             }
             Command::SetCharacter {

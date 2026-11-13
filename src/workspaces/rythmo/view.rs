@@ -202,6 +202,10 @@ pub(crate) use keyboard_nav::*;
 #[path = "sync_edit.rs"]
 mod sync_edit;
 pub(crate) use sync_edit::*;
+#[path = "syllable_keys.rs"]
+mod syllable_keys;
+pub use syllable_keys::{SyllableCursor, SyllableMark, SyllableTarget};
+pub(crate) use syllable_keys::*;
 
 #[cfg(test)]
 mod tests {
@@ -350,6 +354,232 @@ mod tests {
         assert!(!separator_is_inside_edit_range(3, Some((1, 4))));
         assert!(!separator_is_inside_edit_range(2, Some((3, 3))));
         assert!(separator_is_inside_edit_range(3, None));
+    }
+
+    #[test]
+    fn the_syllable_the_dot_lands_on_rises_and_shines_briefly() {
+        // A single small bounce, then the syllable stays in place.
+        assert_eq!(karaoke_syllable_lift(0.0), 0.0);
+        let top = karaoke_syllable_lift(KARAOKE_SYLLABLE_LIFT_SECONDS / 2.0);
+        assert!((top - KARAOKE_SYLLABLE_LIFT).abs() < 1e-4);
+        assert!(karaoke_syllable_lift(KARAOKE_SYLLABLE_LIFT_SECONDS) < 1e-4);
+        assert_eq!(karaoke_syllable_lift(5.0), 0.0);
+        // The light is full when the dot lands and fades out.
+        assert_eq!(karaoke_syllable_shine(0.0), 1.0);
+        assert!(karaoke_syllable_shine(0.1) < 1.0);
+        assert_eq!(karaoke_syllable_shine(KARAOKE_SYLLABLE_SHINE_SECONDS), 0.0);
+
+        // The line is drawn in slices that cover it exactly, the sung
+        // syllable lifted, the rest in place.
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 24, 0.25);
+        let rect = Rect {
+            x: 100.0,
+            y: 50.0,
+            width: 200.0,
+            height: 40.0,
+        };
+        let info = KaraokeProgressRenderInfo {
+            visual_progress: 0.5,
+            local_progress: 0.5,
+            syllable_span: (0.4, 0.6),
+            syllable_elapsed: KARAOKE_SYLLABLE_LIFT_SECONDS / 2.0,
+        };
+        let mut stretched = Vec::new();
+        push_karaoke_rythmo_text(
+            &mut stretched,
+            project.get_line(line_id).unwrap(),
+            rect,
+            Some(info),
+        );
+        let white: Vec<_> = stretched
+            .iter()
+            .filter(|text| text.tint == [1.0, 1.0, 1.0, 1.0])
+            .collect();
+        assert_eq!(white.len(), 3);
+        assert!((white[0].draw_rect.x - 100.0).abs() < 1e-3);
+        assert!((white[0].draw_rect.width - 80.0).abs() < 1e-3);
+        assert!((white[1].draw_rect.x - 180.0).abs() < 1e-3);
+        assert!((white[1].draw_rect.width - 40.0).abs() < 1e-3);
+        assert!((white[1].draw_rect.y - (50.0 - KARAOKE_SYLLABLE_LIFT)).abs() < 1e-3);
+        assert!((white[2].draw_rect.x - 220.0).abs() < 1e-3);
+        assert_eq!(white[0].draw_rect.y, 50.0);
+        assert_eq!(white[2].draw_rect.y, 50.0);
+        assert_eq!(white[1].uv_rect, [0.4, 0.0, 0.6, 1.0]);
+        // The shine is made of the letters of the syllable drawn around
+        // their place, under the text: nothing else is drawn.
+        let halo: Vec<_> = stretched
+            .iter()
+            .take_while(|text| text.tint[3] < 1.0)
+            .collect();
+        assert_eq!(halo.len(), 8);
+        assert!(halo.iter().all(|text| text.uv_rect == [0.4, 0.0, 0.6, 1.0]));
+        assert!(halo
+            .iter()
+            .all(|text| (text.draw_rect.x - 180.0).abs() <= 1.3
+                && (text.draw_rect.y - (50.0 - KARAOKE_SYLLABLE_LIFT)).abs() <= 1.3));
+    }
+
+    #[test]
+    fn syllable_handles_run_down_the_whole_line() {
+        let line_rect = Rect {
+            x: 100.0,
+            y: 50.0,
+            width: 200.0,
+            height: 40.0,
+        };
+        assert_eq!(syllable_handle_height(&line_rect), 38.0);
+        let mut quads = Vec::new();
+        render_syllable_handles(&line_rect, &[0.5, 0.5], true, &[], &mut quads);
+        // The handle between the two syllables alone runs down the line: the
+        // two ends of the line keep a short tick.
+        let bars: Vec<_> = quads.iter().filter(|quad| quad.rect[3] > 10.0).collect();
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].rect, [198.5, 51.0, 3.0, 38.0]);
+        let ticks = quads
+            .iter()
+            .filter(|quad| quad.rect[3] == SYLLABLE_END_TICK)
+            .count();
+        assert_eq!(ticks, 2);
+
+        // Grabbed wide along the top, on the bar itself further down, and not
+        // under the line.
+        assert_eq!(syllable_handle_reach(&line_rect, 55.0, false), Some(7.0));
+        assert_eq!(syllable_handle_reach(&line_rect, 80.0, false), Some(4.0));
+        assert_eq!(syllable_handle_reach(&line_rect, 95.0, false), None);
+        assert_eq!(syllable_handle_reach(&line_rect, 40.0, false), None);
+        // While the text is typed, a click in it places the cursor.
+        assert_eq!(syllable_handle_reach(&line_rect, 55.0, true), Some(7.0));
+        assert_eq!(syllable_handle_reach(&line_rect, 80.0, true), None);
+    }
+
+    #[test]
+    fn syllable_pins_sit_under_their_line_and_stay_reachable() {
+        let line_rect = Rect {
+            x: 100.0,
+            y: 50.0,
+            width: 200.0,
+            height: 40.0,
+        };
+        let top = syllable_pin_top(&line_rect);
+        // Under the line, clear of its text and of the handles along its top.
+        assert!(top >= line_rect.y + line_rect.height);
+        // The strip runs from the bottom edge of the line to under the pins.
+        assert!(syllable_pin_strip_contains(&line_rect, 200.0, 90.5));
+        assert!(syllable_pin_strip_contains(
+            &line_rect,
+            200.0,
+            top + SYLLABLE_PIN_SIZE
+        ));
+        assert!(!syllable_pin_strip_contains(&line_rect, 200.0, 70.0));
+        assert!(!syllable_pin_strip_contains(&line_rect, 200.0, 120.0));
+        assert!(!syllable_pin_strip_contains(&line_rect, 400.0, 95.0));
+    }
+
+    #[test]
+    fn proportional_syllable_drag_goes_left_to_right_by_default() {
+        assert!(!RythmoState::new().syllable_drag_right_to_left);
+        assert!(!crate::config::UiConfig::default().syllable_drag_right_to_left);
+    }
+
+    #[test]
+    fn proportional_drag_only_shares_out_what_is_left_of_the_placed_handles() {
+        let drag = |separator_index: usize, ratios: &[f32]| SyllableDrag {
+            line_id: 1,
+            separator_index,
+            ratios: ratios.to_vec(),
+            original_ratios: ratios.to_vec(),
+            drag_start_x: 100.0,
+            line_rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 20.0,
+            },
+            preserve_prefix: false,
+        };
+        let close = |a: f32, b: f32| (a - b).abs() < 0.0001;
+        let mut state = RythmoState::new();
+
+        // Left to right. The first handle moves the whole line, as before.
+        state.syllable_drag = Some(drag(1, &[0.2; 5]));
+        let _ = syllable_mouse_move(&mut state, 110.0);
+        let first = state.syllable_drag.as_ref().unwrap().ratios.clone();
+        assert!(close(first[..2].iter().sum(), 0.5));
+        assert!(first[4] < 0.2);
+        let _ = syllable_mouse_release(&mut state);
+        assert_eq!(state.placed_syllable_handles(1, 5), &[1]);
+
+        // A handle after it: what is on the left of the placed one stays.
+        state.syllable_drag = Some(drag(3, &first));
+        let _ = syllable_mouse_move(&mut state, 90.0);
+        let second = state.syllable_drag.as_ref().unwrap().ratios.clone();
+        assert!(close(second[0], first[0]) && close(second[1], first[1]));
+        assert!(close(second[2] + second[3], first[2] + first[3] - 0.1));
+        assert!(close(second[4], first[4] + 0.1));
+        let _ = syllable_mouse_release(&mut state);
+        assert_eq!(state.placed_syllable_handles(1, 5), &[1, 3]);
+
+        // The handle between two placed ones only moves between them.
+        state.syllable_drag = Some(drag(2, &second));
+        let _ = syllable_mouse_move(&mut state, 95.0);
+        let third = state.syllable_drag.as_ref().unwrap().ratios.clone();
+        assert!(close(third[0], second[0]) && close(third[1], second[1]));
+        assert!(close(third[2], second[2] - 0.05) && close(third[3], second[3] + 0.05));
+        assert!(close(third[4], second[4]));
+        let _ = syllable_mouse_release(&mut state);
+        // Left to right, the handles after the one just placed are free again.
+        assert_eq!(state.placed_syllable_handles(1, 5), &[1, 2]);
+
+        // Another syllable count (text edited, pin switched): nothing placed.
+        assert!(state.placed_syllable_handles(1, 6).is_empty());
+
+        // Right to left: the handles after the placed one stay.
+        state.set_syllable_drag_right_to_left(true);
+        assert!(state.placed_syllable_handles(1, 5).is_empty());
+        state.syllable_drag = Some(drag(2, &[0.2; 5]));
+        let _ = syllable_mouse_move(&mut state, 105.0);
+        let first = state.syllable_drag.as_ref().unwrap().ratios.clone();
+        let _ = syllable_mouse_release(&mut state);
+        state.syllable_drag = Some(drag(0, &first));
+        let _ = syllable_mouse_move(&mut state, 105.0);
+        let second = state.syllable_drag.as_ref().unwrap().ratios.clone();
+        assert!(close(second[0], first[0] + 0.05));
+        assert!(close(second[1] + second[2], first[1] + first[2] - 0.05));
+        assert!(close(second[3], first[3]) && close(second[4], first[4]));
+        let _ = syllable_mouse_release(&mut state);
+        assert_eq!(state.placed_syllable_handles(1, 5), &[0, 2]);
+
+        // Ctrl + drag still moves its handle alone, and the handle becomes
+        // the new limit of the proportional drags.
+        state.set_syllable_drag_right_to_left(false);
+        let mut ctrl = drag(1, &[0.2; 5]);
+        ctrl.preserve_prefix = true;
+        state.syllable_drag = Some(ctrl);
+        let _ = syllable_mouse_move(&mut state, 105.0);
+        let moved = state.syllable_drag.as_ref().unwrap().ratios.clone();
+        assert!(close(moved[1], 0.25) && close(moved[2], 0.15));
+        assert!(close(moved[0], 0.2) && close(moved[3], 0.2) && close(moved[4], 0.2));
+        let _ = syllable_mouse_release(&mut state);
+        assert_eq!(state.placed_syllable_handles(1, 5), &[1]);
+        state.syllable_drag = Some(drag(3, &moved));
+        let _ = syllable_mouse_move(&mut state, 110.0);
+        let after = state.syllable_drag.as_ref().unwrap().ratios.clone();
+        assert!(close(after[0], moved[0]) && close(after[1], moved[1]));
+        let _ = syllable_mouse_release(&mut state);
+
+        // Ctrl + click without moving the handle sets the limit where it is.
+        state.set_syllable_drag_right_to_left(false);
+        let mut ctrl = drag(2, &[0.2; 5]);
+        ctrl.preserve_prefix = true;
+        state.syllable_drag = Some(ctrl);
+        let _ = syllable_mouse_release(&mut state);
+        assert_eq!(state.placed_syllable_handles(1, 5), &[2]);
+        // A plain click that moves nothing places nothing.
+        state.set_syllable_drag_right_to_left(false);
+        state.syllable_drag = Some(drag(2, &[0.2; 5]));
+        let _ = syllable_mouse_release(&mut state);
+        assert!(state.placed_syllable_handles(1, 5).is_empty());
     }
 
     #[test]
@@ -1434,7 +1664,29 @@ mod tests {
         assert!(start.x + start.width <= line_rect.x);
         assert!(mid.x > start.x);
         assert!(mid.x < line_rect.x);
-        assert!((end.x - line_rect.x).abs() < 0.01);
+        // It ends centred on the start of the text, where the dot of the
+        // sung line takes over without a jump.
+        assert!((end.x + end.width / 2.0 - line_rect.x).abs() < 0.01);
+        let sung = KaraokeProgressRenderInfo {
+            visual_progress: 0.0,
+            local_progress: 0.0,
+            syllable_span: (0.0, 1.0),
+            syllable_elapsed: 0.0,
+        };
+        let mut project = Project::new();
+        let line_id = project.add_line(0, 24, 0.25);
+        let mut quads = Vec::new();
+        render_karaoke_dot_scaled(
+            project.get_line(line_id).unwrap(),
+            &line_rect,
+            Some(sung),
+            1.0,
+            &crate::band_style::KaraokeDot::default(),
+            &mut quads,
+            &mut Vec::new(),
+        );
+        let dot = quads.last().unwrap().rect;
+        assert!((dot[0] - end.x).abs() < 0.01);
     }
 
     #[test]
@@ -2594,28 +2846,33 @@ fn line_color_tint(line: &crate::rythmo_line::RythmoLine) -> [f32; 4] {
 struct KaraokeProgressRenderInfo {
     visual_progress: f32,
     local_progress: f32,
+    /// Start and end of the syllable being sung, along the drawn text.
+    syllable_span: (f32, f32),
+    /// Seconds since the dot landed on that syllable.
+    syllable_elapsed: f32,
 }
+
+use crate::band_visuals::{karaoke_syllable_lift, karaoke_syllable_shine};
+#[cfg(test)]
+use crate::band_visuals::{
+    KARAOKE_SYLLABLE_LIFT, KARAOKE_SYLLABLE_LIFT_SECONDS, KARAOKE_SYLLABLE_SHINE_SECONDS,
+};
 
 fn karaoke_progress_render_info(
     line: &crate::rythmo_line::RythmoLine,
     current_frame: f64,
     lang: &str,
+    fps: f64,
 ) -> Option<KaraokeProgressRenderInfo> {
     let progress = line.karaoke_progress(current_frame)?;
-    let ratios = crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
-    let local_progress = crate::syllable::active_syllable_local_progress(&ratios, progress)
-        .unwrap_or(progress)
-        .clamp(0.0, 1.0);
-    let visual_progress = crate::syllable::visual_progress_from_timing(
-        &line.text,
-        &line.syllable_ratios,
-        lang,
-        progress,
-    );
+    let effect = crate::band_visuals::karaoke_syllable_effect(line, lang, progress, fps);
+    let (local_progress, visual_progress) = (effect.local, effect.filled);
 
     Some(KaraokeProgressRenderInfo {
         visual_progress,
         local_progress,
+        syllable_span: effect.span,
+        syllable_elapsed: effect.elapsed,
     })
 }
 
@@ -3538,7 +3795,11 @@ fn valid_saved_syllable_ratios(
     syllable_count: usize,
     lang: &str,
 ) -> Option<Vec<f32>> {
-    crate::syllable::adapted_saved_ratios(&line.text, &line.syllable_ratios, lang)
+    crate::syllable::adapted_saved_ratios(
+        &line.text,
+        &line.syllable_ratios,
+        line.syllable_rules(lang),
+    )
         .filter(|ratios| ratios.len() == syllable_count)
 }
 
@@ -3688,26 +3949,47 @@ fn push_karaoke_rythmo_text(
     progress_info: Option<KaraokeProgressRenderInfo>,
 ) {
     let cache_id = karaoke_text_cache_id(line.id);
-    push_natural_karaoke_text(
-        stretched,
-        cache_id,
-        line.text.clone(),
-        dest_rect,
-        [1.0, 1.0, 1.0, 1.0],
-    );
-
-    let Some(progress_info) = progress_info else {
+    let Some(info) = progress_info else {
+        push_natural_karaoke_text(
+            stretched,
+            cache_id,
+            line.text.clone(),
+            dest_rect,
+            [1.0, 1.0, 1.0, 1.0],
+        );
         return;
     };
-    if let Some(colored) = StretchedText::natural_clipped(
-        cache_id,
-        line.text.clone(),
-        dest_rect,
-        progress_info.visual_progress,
-        constants::KARAOKE_TEXT_FONT_SCALE,
-        line_color_tint(line),
-    ) {
-        stretched.push(colored);
+
+    // The syllable the dot is on is drawn apart from the rest of the line:
+    // it rises a little when the dot lands on it, and its letters shine.
+    let effect = crate::band_visuals::KaraokeSyllableEffect {
+        span: info.syllable_span,
+        filled: info.visual_progress,
+        local: info.local_progress,
+        elapsed: info.syllable_elapsed,
+        lift: karaoke_syllable_lift(info.syllable_elapsed),
+        shine: karaoke_syllable_shine(info.syllable_elapsed),
+    };
+    let character_tint = line_color_tint(line);
+    for slice in crate::band_visuals::karaoke_syllable_slices(&effect) {
+        let tint = if slice.coloured {
+            character_tint
+        } else {
+            [1.0, 1.0, 1.0, slice.alpha]
+        };
+        if let Some(text) = StretchedText::natural_slice(
+            cache_id,
+            line.text.clone(),
+            dest_rect,
+            slice.from,
+            slice.to,
+            slice.shift_x,
+            slice.lift,
+            constants::KARAOKE_TEXT_FONT_SCALE,
+            tint,
+        ) {
+            stretched.push(text);
+        }
     }
 }
 
@@ -3796,10 +4078,310 @@ fn syllable_ratios_for_line(
     Some(ratios)
 }
 
+/// Height of the tick at each end of a karaoke line: these are not handles.
+pub(crate) const SYLLABLE_END_TICK: f32 = 9.0;
+
+/// Height of the syllable handles of a line: they run down the whole line.
+pub(crate) fn syllable_handle_height(line_rect: &Rect) -> f32 {
+    (line_rect.height - 2.0).max(9.0)
+}
+
+/// How far from a syllable handle a press at `y` still grabs it, if it can
+/// at all. Wide along the top of the line, where nothing else is clicked, and
+/// the bar itself further down so that the line can still be moved by its
+/// body. While the text of the line is typed only the top grabs: a click in
+/// the text places the cursor.
+pub(crate) fn syllable_handle_reach(line_rect: &Rect, y: f32, typing: bool) -> Option<f32> {
+    let top = line_rect.y + 1.0;
+    if y < top - 6.0 {
+        return None;
+    }
+    if y <= top + 14.0 {
+        return Some(7.0);
+    }
+    (!typing && y <= top + syllable_handle_height(line_rect)).then_some(4.0)
+}
+
+/// Size of the pin drawn under a word that can be cut into more syllables,
+/// and how far under the line it sits.
+pub(crate) const SYLLABLE_PIN_SIZE: f32 = 10.0;
+pub(crate) const SYLLABLE_PIN_GAP: f32 = 3.0;
+
+/// Top of the pins of a line: just under it, clear of its text and of the
+/// syllable handles along its top.
+pub(crate) fn syllable_pin_top(line_rect: &Rect) -> f32 {
+    line_rect.y + line_rect.height + SYLLABLE_PIN_GAP
+}
+
+/// Whether the pointer is over the strip of pins under `line_rect`.
+pub(crate) fn syllable_pin_strip_contains(line_rect: &Rect, x: f32, y: f32) -> bool {
+    let top = syllable_pin_top(line_rect);
+    x >= line_rect.x - SYLLABLE_PIN_SIZE
+        && x <= line_rect.x + line_rect.width + SYLLABLE_PIN_SIZE
+        && y >= line_rect.y + line_rect.height
+        && y <= top + SYLLABLE_PIN_SIZE + 3.0
+}
+
+/// Position of every character boundary of `line` in the editor, as shares
+/// of the width of the line (one more value than it has characters): the
+/// text follows its syllable handles, and its synchronization points when
+/// it has some.
+pub(crate) fn editor_char_positions(
+    project: &Project,
+    line: &crate::rythmo_line::RythmoLine,
+    drag: Option<&SyllableDrag>,
+    lang: &str,
+    state: &RythmoState,
+) -> Vec<f32> {
+    let breaks = state.get_syllable_breaks(line, lang);
+    let char_count = line.text.chars().count();
+    // Position of every syllable boundary, from the start to the end of the
+    // line: moved by the synchronization points when there are some.
+    let boundaries = sync_syllable_boundary_ratios(project, line, drag, lang, state)
+        .or_else(|| {
+            let ratios = syllable_ratios_for_line(line, drag, lang, state)?;
+            let mut boundaries = Vec::with_capacity(ratios.len() + 1);
+            let mut x = 0.0;
+            boundaries.push(x);
+            for ratio in &ratios {
+                x += ratio;
+                boundaries.push(x.min(1.0));
+            }
+            Some(boundaries)
+        })
+        .filter(|boundaries| boundaries.len() == breaks.len() + 2);
+    let Some(boundaries) = boundaries else {
+        return (0..=char_count)
+            .map(|character| character as f32 / char_count.max(1) as f32)
+            .collect();
+    };
+    let mut positions = Vec::with_capacity(char_count + 1);
+    let mut start = 0usize;
+    for (index, end) in breaks
+        .iter()
+        .copied()
+        .chain(std::iter::once(char_count))
+        .enumerate()
+    {
+        let from = if index == 0 { start } else { start + 1 };
+        for character in from..=end {
+            let local = if end > start {
+                (character - start) as f32 / (end - start) as f32
+            } else {
+                0.0
+            };
+            positions
+                .push(boundaries[index] + local * (boundaries[index + 1] - boundaries[index]));
+        }
+        start = end;
+    }
+    positions.resize(char_count + 1, 1.0);
+    positions
+}
+
+/// Pins of `line` with the horizontal position of their centre, as a share
+/// of the width of the line: above the syllable each pin adds.
+pub(crate) fn syllable_pin_positions(
+    project: &Project,
+    line: &crate::rythmo_line::RythmoLine,
+    drag: Option<&SyllableDrag>,
+    lang: &str,
+    state: &RythmoState,
+) -> Vec<(crate::syllable::SyllableSplitPin, f32)> {
+    if line.kind.is_ambiance() || line.text.is_empty() {
+        return Vec::new();
+    }
+    let pins = crate::syllable::syllable_split_pins(&line.text, line.syllable_rules(lang));
+    if pins.is_empty() {
+        return Vec::new();
+    }
+    let positions = editor_char_positions(project, line, drag, lang, state);
+    let position = |character: usize| positions[character.min(positions.len() - 1)];
+    pins.into_iter()
+        .map(|pin| {
+            let x = (position(pin.split_at) + position(pin.end)) / 2.0;
+            (pin, x.clamp(0.0, 1.0))
+        })
+        .collect()
+}
+
+/// Places of `line` where a liaison can be made, with the middle of the
+/// consonant and of the vowel as shares of the width of the line.
+pub(crate) fn liaison_arrow_positions(
+    project: &Project,
+    line: &crate::rythmo_line::RythmoLine,
+    drag: Option<&SyllableDrag>,
+    lang: &str,
+    state: &RythmoState,
+) -> Vec<(crate::syllable::LiaisonSite, f32, f32)> {
+    if line.kind.is_ambiance() || line.text.is_empty() {
+        return Vec::new();
+    }
+    let sites = crate::syllable::liaison_sites(&line.text, lang);
+    if sites.is_empty() {
+        return Vec::new();
+    }
+    let positions = editor_char_positions(project, line, drag, lang, state);
+    let position = |character: usize| positions[character.min(positions.len() - 1)];
+    let middle = |character: usize| (position(character) + position(character + 1)) / 2.0;
+    sites
+        .into_iter()
+        .map(|site| {
+            let (from, to) = (middle(site.from), middle(site.to));
+            (site, from, to)
+        })
+        .collect()
+}
+
+/// Top of the liaison arrows of a line in the editor: in the strip of the
+/// pins, under the line and clear of it.
+pub(crate) fn liaison_arrow_top(line_rect: &Rect) -> f32 {
+    syllable_pin_top(line_rect) + 4.0
+}
+
+/// One stroke of a liaison arrow.
+fn push_liaison_stroke(quads: &mut Vec<QuadInstance>, stroke: [f32; 4], scale: f32, color: [f32; 4]) {
+    let [x0, y0, x1, y1] = stroke;
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    let length = (dx * dx + dy * dy).sqrt().max(0.1);
+    let thickness = crate::band_visuals::LIAISON_ARROW_THICKNESS * scale.max(0.5);
+    quads.push(QuadInstance {
+        rect: [
+            (x0 + x1) / 2.0 - length / 2.0,
+            (y0 + y1) / 2.0 - thickness / 2.0,
+            length,
+            thickness,
+        ],
+        color,
+        color_bottom: color,
+        border_color: [0.0; 4],
+        border_width: 0.0,
+        border_radius: thickness / 2.0,
+        shadow_offset: [0.0; 2],
+        shadow_color: [0.0, 0.0, 0.0, 0.3],
+        shadow_blur: 1.5,
+        rotation: dy.atan2(dx),
+        _padding: [0.0; 2],
+    });
+}
+
+/// The liaison arrows under a hovered line: faint where nothing is marked
+/// (a click marks the liaison), plain where the liaison is made, struck
+/// through where it is expressly not made.
+fn render_liaison_arrows(
+    rect: &Rect,
+    line: &crate::rythmo_line::RythmoLine,
+    arrows: &[(crate::syllable::LiaisonSite, f32, f32)],
+    selected: Option<&SyllableMark>,
+    quads: &mut Vec<QuadInstance>,
+) {
+    let top = liaison_arrow_top(rect);
+    for (site, from, to) in arrows {
+        let state = line.liaison_state(&site.pair);
+        // The liaison under the keyboard cursor sits in a light frame.
+        let is_selected = matches!(
+            selected,
+            Some(SyllableMark::Liaison(other)) if other.from == site.from
+        );
+        if is_selected {
+            let x = rect.x + from * rect.width - 7.0;
+            let width = (to - from) * rect.width + 14.0;
+            quads.push(QuadInstance {
+                rect: [x, top - 7.0, width, 20.0],
+                color: [1.0, 1.0, 1.0, 0.12],
+                color_bottom: [1.0, 1.0, 1.0, 0.12],
+                border_color: [1.0, 1.0, 1.0, 1.0],
+                border_width: 2.0,
+                border_radius: 6.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0, 0.0, 0.0, 0.5],
+                shadow_blur: 3.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
+        }
+        let color = if state.is_some() {
+            crate::band_visuals::LIAISON_ARROW_COLOR
+        } else if is_selected {
+            [1.0, 1.0, 1.0, 0.9]
+        } else {
+            [1.0, 1.0, 1.0, 0.38]
+        };
+        for stroke in crate::band_visuals::liaison_arrow_strokes(
+            rect.x + from * rect.width,
+            rect.x + to * rect.width,
+            top,
+            1.0,
+            state == Some(false),
+        ) {
+            push_liaison_stroke(quads, stroke, 1.0, color);
+        }
+    }
+}
+
+/// A pin under each word that can be cut into more syllables: hollow while the word
+/// keeps its spoken syllables, filled once it is cut into all of them.
+fn render_syllable_pins(
+    rect: &Rect,
+    pins: &[(crate::syllable::SyllableSplitPin, f32)],
+    selected: Option<&SyllableMark>,
+    quads: &mut Vec<QuadInstance>,
+) {
+    for (pin, x) in pins {
+        let size = SYLLABLE_PIN_SIZE;
+        // The point under the keyboard cursor sits in a light ring.
+        if matches!(selected, Some(SyllableMark::Pin(other)) if other.start == pin.start) {
+            let ring = size + 10.0;
+            quads.push(QuadInstance {
+                rect: [
+                    rect.x + x * rect.width - ring / 2.0,
+                    syllable_pin_top(rect) - 5.0,
+                    ring,
+                    ring,
+                ],
+                color: [1.0, 1.0, 1.0, 0.12],
+                color_bottom: [1.0, 1.0, 1.0, 0.12],
+                border_color: [1.0, 1.0, 1.0, 1.0],
+                border_width: 2.0,
+                border_radius: ring / 2.0,
+                shadow_offset: [0.0; 2],
+                shadow_color: [0.0, 0.0, 0.0, 0.5],
+                shadow_blur: 3.0,
+                rotation: 0.0,
+                _padding: [0.0; 2],
+            });
+        }
+        let (color, border_color) = if pin.active {
+            ([1.0, 0.80, 0.16, 1.0], [0.10, 0.08, 0.02, 1.0])
+        } else {
+            ([0.08, 0.08, 0.10, 0.85], [1.0, 1.0, 1.0, 0.95])
+        };
+        quads.push(QuadInstance {
+            rect: [
+                rect.x + x * rect.width - size / 2.0,
+                syllable_pin_top(rect),
+                size,
+                size,
+            ],
+            color,
+            color_bottom: color,
+            border_color,
+            border_width: 1.5,
+            border_radius: size / 2.0,
+            shadow_offset: [0.0; 2],
+            shadow_color: [0.0, 0.0, 0.0, 0.35],
+            shadow_blur: 3.0,
+            rotation: 0.0,
+            _padding: [0.0; 2],
+        });
+    }
+}
+
 fn render_syllable_handles(
     rect: &Rect,
     ratios: &[f32],
     active: bool,
+    placed: &[usize],
     quads: &mut Vec<QuadInstance>,
 ) {
     if ratios.len() <= 1 || rect.width <= 2.0 {
@@ -3809,7 +4391,7 @@ fn render_syllable_handles(
     let alpha = if active { 1.0 } else { 0.78 };
     let color = [0.95, 0.08, 0.03, alpha];
     let stroke = if active { 3.0 } else { 2.5 };
-    let tick_h = if active { 9.0 } else { 7.0 };
+    let tick_h = syllable_handle_height(rect);
     let top_y = rect.y + 1.0;
     let cap_gap = 2.0;
 
@@ -3841,9 +4423,24 @@ fn render_syllable_handles(
         }
     }
 
-    for boundary in boundaries {
+    let last = boundaries.len() - 1;
+    for (index, boundary) in boundaries.into_iter().enumerate() {
+        // A handle placed by a proportional drag no longer moves with the
+        // others: it is drawn like a pin that is on.
+        let color = if index > 0 && placed.contains(&(index - 1)) {
+            [1.0, 0.80, 0.16, alpha]
+        } else {
+            color
+        };
+        // The two ends of the line are not handles: a short tick closes the
+        // bar along the top, the handles alone run down the line.
+        let height = if index == 0 || index == last {
+            SYLLABLE_END_TICK
+        } else {
+            tick_h
+        };
         quads.push(QuadInstance {
-            rect: [boundary - stroke / 2.0, top_y, stroke, tick_h],
+            rect: [boundary - stroke / 2.0, top_y, stroke, height],
             color,
             color_bottom: color,
             border_color: [0.0; 4],
@@ -4067,7 +4664,7 @@ pub fn render_lines<'a>(
         }
 
         let karaoke_progress_info = if karaoke_playback {
-            karaoke_progress_render_info(line, current_frame, karaoke_lang)
+            karaoke_progress_render_info(line, current_frame, karaoke_lang, fps)
         } else {
             None
         };
@@ -4158,6 +4755,23 @@ pub fn render_lines<'a>(
             &collision_grid,
             &mut collision_scratch,
         );
+        // In karaoke playback the line is centred: a long name is shrunk to
+        // stay on the band instead of running off its left edge.
+        let (fitted_rect, scale) = if data.karaoke_playback && !hidden {
+            let fit = crate::band_visuals::keep_badge_on_band(
+                crate::band_visuals::BadgeFit {
+                    hidden,
+                    rect: fitted_rect,
+                    scale,
+                },
+                data.rect.x,
+                BADGE_GAP,
+                zone.x + 4.0,
+            );
+            (fit.rect, fit.scale)
+        } else {
+            (fitted_rect, scale)
+        };
         badge_hidden.insert(*line_id, hidden);
         fitted_badges.insert(*line_id, (fitted_rect, scale));
     }
@@ -4184,7 +4798,7 @@ pub fn render_lines<'a>(
             crate::syllable::read_highlight_end_from_timing(
                 &line.text,
                 &line.syllable_ratios,
-                karaoke_lang,
+                line.syllable_rules(karaoke_lang),
                 progress as f32,
             )
         } else {
@@ -4530,14 +5144,121 @@ pub fn render_lines<'a>(
             );
         }
 
+        // During playback, a pin that is on marks its syllable: it is to be
+        // pronounced.
+        if karaoke_playback_line && !line.syllable_split_words.is_empty() {
+            for share in line.pronounced_syllable_marks(karaoke_lang) {
+                let (x, y, size) = crate::band_visuals::pronounce_mark_rect(
+                    data.rect.x,
+                    data.rect.y,
+                    data.rect.width,
+                    data.rect.height,
+                    share,
+                    1.0,
+                );
+                syllable_quads.push(QuadInstance {
+                    rect: [x, y, size, size],
+                    color: crate::band_visuals::PRONOUNCE_MARK_COLOR,
+                    color_bottom: crate::band_visuals::PRONOUNCE_MARK_COLOR,
+                    border_color: crate::band_visuals::PRONOUNCE_MARK_RIM,
+                    border_width: 1.0,
+                    border_radius: size / 2.0,
+                    shadow_offset: [0.0; 2],
+                    shadow_color: [0.0, 0.0, 0.0, 0.35],
+                    shadow_blur: 2.0,
+                    rotation: 0.0,
+                    _padding: [0.0; 2],
+                });
+            }
+        }
+
+        // During playback, the liaisons that are marked: made, or struck
+        // through when they are not to be made.
+        if karaoke_playback_line && !line.liaison_marks.is_empty() {
+            let top =
+                data.rect.y + data.rect.height - crate::band_visuals::LIAISON_ARROW_HEIGHT;
+            for (from, to, made) in line.liaison_marks_layout(karaoke_lang) {
+                for stroke in crate::band_visuals::liaison_arrow_strokes(
+                    data.rect.x + from * data.rect.width,
+                    data.rect.x + to * data.rect.width,
+                    top,
+                    1.0,
+                    !made,
+                ) {
+                    push_liaison_stroke(
+                        syllable_quads,
+                        stroke,
+                        1.0,
+                        crate::band_visuals::LIAISON_ARROW_COLOR,
+                    );
+                }
+            }
+        }
+
         let is_syllable_drag_line =
             editable && state.syllable_drag.as_ref().map(|d| d.line_id) == Some(line.id);
+        // The handle under the keyboard cursor stands out, during playback
+        // too: it is set at the playhead while the line is heard.
+        let cursor_target = state
+            .active_syllable_cursor()
+            .filter(|cursor| editable && line.karaoke && cursor.line_id == line.id)
+            .map(|cursor| cursor.target);
+        let selected_mark = match cursor_target {
+            Some(SyllableTarget::Mark(index)) => {
+                syllable_marks(line, karaoke_lang).into_iter().nth(index)
+            }
+            _ => None,
+        };
+        if let Some(SyllableTarget::Handle(syllable)) = cursor_target {
+            let boundaries = syllable_boundary_shares(project, line, karaoke_lang, state);
+            let count = boundaries.len().saturating_sub(1);
+            render_syllable_cursor(
+                &data.rect,
+                &boundaries,
+                syllable,
+                syllable_handle_is_placed(state, line.id, syllable, count),
+                syllable_quads,
+            );
+        }
+        let is_hovered = is_hovered || cursor_target.is_some();
         if line.karaoke && !karaoke_playback_line && (is_hovered || is_syllable_drag_line) {
             if let Some(ratios) =
                 syllable_ratios_for_line(line, state.syllable_drag.as_ref(), karaoke_lang, state)
             {
-                render_syllable_handles(&data.rect, &ratios, true, syllable_quads);
+                let placed = state.placed_syllable_handles(line.id, ratios.len());
+                render_syllable_handles(&data.rect, &ratios, true, placed, syllable_quads);
             }
+            if editable {
+                let pins = syllable_pin_positions(
+                    project,
+                    line,
+                    state.syllable_drag.as_ref(),
+                    karaoke_lang,
+                    state,
+                );
+                render_syllable_pins(&data.rect, &pins, selected_mark.as_ref(), syllable_quads);
+            }
+        }
+        // The liaisons of the hovered karaoke line, in the strip of its pins.
+        if editable
+            && line.karaoke
+            && !karaoke_playback_line
+            && (is_hovered || is_syllable_drag_line)
+        {
+            let arrows = liaison_arrow_positions(
+                project,
+                line,
+                state.syllable_drag.as_ref(),
+                karaoke_lang,
+                state,
+            );
+            render_liaison_arrows(
+                &data.rect,
+                line,
+                &arrows,
+                selected_mark.as_ref(),
+                syllable_quads,
+            );
         }
 
         // Handles (only on hover/editing)
@@ -4974,8 +5695,9 @@ fn karaoke_count_in_dot_rect(line_rect: &Rect, count_in_progress: f32, scale: f3
     let bounce_progress = (progress * constants::KARAOKE_COUNT_IN_BOUNCES).fract();
     let bounce = (bounce_progress * std::f32::consts::PI).sin().max(0.0);
     let travel = constants::KARAOKE_NEXT_PREVIEW_GAP * 4.0 * scale + size * 2.0;
-    let start_x = line_rect.x - travel;
-    let end_x = line_rect.x;
+    // Ends centred on the start of the text, where the sung dot takes over.
+    let end_x = line_rect.x - size / 2.0;
+    let start_x = end_x - travel;
     Rect {
         x: start_x + (end_x - start_x) * progress,
         y: line_rect.y + 3.0 * scale.max(0.5)
@@ -5051,11 +5773,10 @@ fn render_karaoke_dot_scaled(
         .sin()
         .max(0.0);
     let size = constants::KARAOKE_DOT_SIZE * scale.max(0.5);
-    let x = if line_rect.width > size {
-        line_rect.x + progress_info.visual_progress.clamp(0.0, 1.0) * (line_rect.width - size)
-    } else {
-        line_rect.x + (line_rect.width - size) * 0.5
-    };
+    // Centred on its place in the text: it lands exactly between two
+    // syllables, not half a dot before or after.
+    let x = line_rect.x + progress_info.visual_progress.clamp(0.0, 1.0) * line_rect.width
+        - size / 2.0;
     let y = line_rect.y + 3.0 * scale.max(0.5)
         - bounce * size * constants::KARAOKE_DOT_BOUNCE_AMPLITUDE;
     let tint = line_color_tint(line);

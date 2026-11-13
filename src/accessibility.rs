@@ -194,6 +194,18 @@ pub fn event_for_action(
     use crate::rythmo_line::MarkerKind;
     let key = match action {
         UiAction::ImportSubtitles => "menu.project.import",
+        // The other processing chords are spoken by their result (track
+        // listened to, model chosen, treatment started…); these three open a
+        // file dialog and are named before it appears.
+        UiAction::Processing(crate::processing::ProcessingAction::ImportAudio) => {
+            "panel.processing_import"
+        }
+        UiAction::Processing(crate::processing::ProcessingAction::ExportListened) => {
+            "panel.processing_export"
+        }
+        UiAction::Processing(crate::processing::ProcessingAction::ExportAll) => {
+            "panel.processing_export_all"
+        }
         UiAction::RestoreBackup => "menu.project.restore_backup",
         UiAction::OpenRecentProjects => "menu.project.recent",
         UiAction::CloseProject => "menu.project.close",
@@ -264,7 +276,6 @@ pub fn event_for_action(
         UiAction::AddNote => "toolbar.note",
         UiAction::SetToolMode(ToolMode::Select) => "toolbar.select_mode",
         UiAction::SetToolMode(ToolMode::Draw) => "toolbar.draw_mode",
-        UiAction::OpenAssistant => "assistant.title",
         _ => return None,
     };
     Some(AccessibilityEvent::Activation {
@@ -291,6 +302,36 @@ pub fn panel_label_key_for_action(
     use crate::application::command::{TextCommand, UiAction};
     let key = match action {
         UiAction::ToggleScreenReader => "panel.toggle_screen_reader",
+        UiAction::Syllable(key) => {
+            use crate::application::command::SyllableKey;
+            match key {
+                SyllableKey::Step(_) => "panel.syllable_step",
+                SyllableKey::Row(_) => "panel.syllable_row",
+                SyllableKey::Nudge(_) => "panel.syllable_nudge",
+                SyllableKey::PlaceAtPlayhead => "panel.syllable_place",
+                SyllableKey::Activate => "panel.syllable_activate",
+                SyllableKey::Leave => "panel.syllable_leave",
+            }
+        }
+        UiAction::Processing(action) => {
+            use crate::processing::ProcessingAction as Processing;
+            match action {
+                Processing::Run => "panel.processing_run",
+                Processing::Cancel => "panel.processing_cancel",
+                Processing::UseProjectVideo => "panel.processing_project_video",
+                Processing::ListenRelative(step) if *step < 0 => "panel.processing_listen_prev",
+                Processing::ListenRelative(_) => "panel.processing_listen_next",
+                Processing::SelectModelRelative(step) if *step < 0 => {
+                    "panel.processing_model_prev"
+                }
+                Processing::SelectModelRelative(_) => "panel.processing_model_next",
+                Processing::AddListenedToProject => "panel.processing_add_to_project",
+                Processing::OpenCatalog => "processing.catalog.title",
+                Processing::OpenEngine => "processing.engine.title",
+                Processing::ToggleQuality => "panel.processing_quality",
+                _ => return None,
+            }
+        }
         UiAction::Text(
             TextCommand::CursorLeft
             | TextCommand::CursorRight
@@ -321,6 +362,7 @@ pub fn panel_label_key_for_action(
         UiAction::RecordingCutSelectedClipAtPlayhead => "panel.recording_cut_take",
         UiAction::RecordingPlaceAssetAtPlayhead(_) => "panel.recording_place_audio",
         UiAction::RecordingSelectClipAtPlayhead => "panel.recording_select_take_at_playhead",
+        UiAction::RecordingSeekToSelectedClipStart => "panel.recording_seek_take_start",
         UiAction::CloseSecondaryDisplay => "panel.close_secondary_display",
         UiAction::NudgeSelectedDetection { .. } => "panel.audition_detection",
         UiAction::AddSyncPointAtPlayhead => "panel.add_sync_point",

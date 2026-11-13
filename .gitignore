@@ -10,6 +10,3 @@ skills/**
 plans/**
 VERSION_NOTES.md
 AGENTS.md
-# Needle 3: the model is downloaded, not versioned (needle.exe is kept)
-src/ai/needle3/*.cact
-src/ai/needle3/*.idx

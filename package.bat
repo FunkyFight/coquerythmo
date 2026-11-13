@@ -37,24 +37,8 @@ echo === Copying updater.exe to release folder ===
 copy /Y updater\target\release\updater.exe target\release\updater.exe
 
 echo.
-echo === Copying Needle 3 (assistant engine and model) to release folder ===
-if not exist src\ai\needle3\needle.exe (
-    echo src\ai\needle3\needle.exe missing!
-    pause
-    exit /b 1
-)
-if not exist src\ai\needle3\needle3.cact (
-    echo src\ai\needle3\needle3.cact missing!
-    pause
-    exit /b 1
-)
-if not exist target\release\needle3 mkdir target\release\needle3
-copy /Y src\ai\needle3\needle.exe target\release\needle3\needle.exe
-copy /Y src\ai\needle3\needle3.cact target\release\needle3\needle3.cact
-
-echo.
 echo === Creating zip: coquerythmo-v%VERSION%-windows-portable.zip ===
-powershell -Command "Compress-Archive -Force -CompressionLevel Fastest -Path 'target\release\coquerythmo.exe','target\release\updater.exe','target\release\ffmpeg.exe','target\release\ffplay.exe','target\release\ffprobe.exe','target\release\needle3' -DestinationPath 'target\release\coquerythmo-v%VERSION%-windows-portable.zip'"
+powershell -Command "Compress-Archive -Force -CompressionLevel Fastest -Path 'target\release\coquerythmo.exe','target\release\updater.exe','target\release\ffmpeg.exe','target\release\ffplay.exe','target\release\ffprobe.exe' -DestinationPath 'target\release\coquerythmo-v%VERSION%-windows-portable.zip'"
 if errorlevel 1 (
     echo Zip creation failed!
     pause

@@ -60,6 +60,10 @@ pub struct PanelSituation {
     pub any_selection: bool,
     /// A detection is selected: detection chords are usable.
     pub detection_selected: bool,
+    /// The only selected line is a karaoke line: its syllables can be walked.
+    pub karaoke_line_selected: bool,
+    /// The keyboard cursor is on a handle, a point or a liaison of that line.
+    pub syllable_cursor: bool,
     /// The pointer hovers a line (karaoke toggle accepts hover fallback).
     pub hovered_line: bool,
     /// A line text editor is open.
@@ -85,6 +89,15 @@ pub struct PanelSituation {
 /// and the audio library (see `recording_shortcut` in the dispatcher): the
 /// panel lists them under that meaning.
 fn workspace_action(action: &UiAction, s: &PanelSituation) -> UiAction {
+    use crate::application::command::SyllableKey;
+    if s.workspace == WorkspaceId::Rythmo && s.syllable_cursor {
+        // See `syllable_shortcut` in the dispatcher.
+        return match action {
+            UiAction::SelectLineAtPlayhead => UiAction::Syllable(SyllableKey::Activate),
+            UiAction::ClearLineSelection => UiAction::Syllable(SyllableKey::Leave),
+            other => other.clone(),
+        };
+    }
     if s.workspace != WorkspaceId::Recording {
         return action.clone();
     }
@@ -127,12 +140,13 @@ fn is_applicable(action: &UiAction, s: &PanelSituation) -> bool {
         | UiAction::AdjustVolume(_)
         | UiAction::ToggleMute => s.has_video,
         UiAction::ToggleActiveAudio => s.has_instrumental,
-        UiAction::OpenAssistant => s.workspace == WorkspaceId::Rythmo,
         UiAction::RecordingCutSelectedClipAtPlayhead
         | UiAction::RecordingMoveSelectedClipsToTrack { .. }
         | UiAction::RecordingNudgeSelectedClips { .. } => s.recording_take_selected,
         UiAction::RecordingPlaceAssetAtPlayhead(_) => s.recording_audio_selected,
         UiAction::RecordingSelectClipAtPlayhead => s.recording_take_at_playhead,
+        UiAction::RecordingSeekToSelectedClipStart => s.recording_take_selected,
+        UiAction::Syllable(_) => s.syllable_cursor,
         _ => true,
     }
 }
@@ -193,6 +207,54 @@ pub fn build_lines(
                         pressed: true,
                     }),
                     label.clone(),
+                );
+            }
+        }
+    }
+
+    // Handled outside the router (event_loop.rs): on the selected karaoke
+    // line, Alt + arrows walk the syllable handles, the points and the
+    // liaisons; with Ctrl they move the handle.
+    if situation.workspace == WorkspaceId::Rythmo
+        && situation.karaoke_line_selected
+        && situation
+            .contexts
+            .iter()
+            .any(|context| *context == InputContext::Workspace)
+    {
+        use crate::application::command::SyllableKey;
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::NONE
+        };
+        let ctrl_alt = Modifiers {
+            ctrl: true,
+            alt: true,
+            ..Modifiers::NONE
+        };
+        let mut chords = vec![
+            (KeyCode::ArrowLeft, alt, SyllableKey::Step(-1)),
+            (KeyCode::ArrowRight, alt, SyllableKey::Step(1)),
+            (KeyCode::ArrowDown, alt, SyllableKey::Row(1)),
+            (KeyCode::ArrowUp, alt, SyllableKey::Row(-1)),
+        ];
+        if situation.syllable_cursor {
+            chords.extend([
+                (KeyCode::ArrowLeft, ctrl_alt, SyllableKey::Nudge(-1)),
+                (KeyCode::ArrowRight, ctrl_alt, SyllableKey::Nudge(1)),
+                (KeyCode::Space, ctrl_alt, SyllableKey::PlaceAtPlayhead),
+            ]);
+        }
+        for (key, modifiers, command) in chords {
+            if let Some(label) = action_label(&UiAction::Syllable(command)) {
+                push(
+                    compact_keystroke(&KeyPattern {
+                        key,
+                        modifiers,
+                        repeat: crate::input::binding::RepeatPolicy::PressAndRepeat,
+                        pressed: true,
+                    }),
+                    label,
                 );
             }
         }
@@ -296,6 +358,8 @@ pub struct ShortcutPanelState {
     lines: Vec<(String, String)>,
     /// Pixel offset of the first visible line, clamped to the overflow.
     scroll_offset: f32,
+    /// Narrower limit asked by a workspace that keeps the panel in a column.
+    max_width: Option<f32>,
 }
 
 impl ShortcutPanelState {
@@ -304,6 +368,7 @@ impl ShortcutPanelState {
             situation_key: None,
             lines: Vec::new(),
             scroll_offset: 0.0,
+            max_width: None,
         }
     }
 
@@ -319,6 +384,11 @@ impl ShortcutPanelState {
 
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty()
+    }
+
+    /// Keeps the panel within `width` (`None`: its usual limit).
+    pub fn set_max_width(&mut self, width: Option<f32>) {
+        self.max_width = width;
     }
 
     fn font_size() -> f32 {
@@ -356,7 +426,7 @@ impl ShortcutPanelState {
         };
         let width =
             (longest * font_size * GLYPH_WIDTH_RATIO + PANEL_PADDING_H * 2.0 + scrollbar_allowance)
-                .clamp(0.0, PANEL_MAX_WIDTH);
+                .clamp(0.0, self.max_width.unwrap_or(PANEL_MAX_WIDTH).min(PANEL_MAX_WIDTH));
         let height = self.viewport_height() + PANEL_PADDING_V * 2.0;
         Rect {
             x: PANEL_MARGIN,
@@ -536,6 +606,8 @@ mod tests {
             line_selected: false,
             any_selection: false,
             detection_selected: false,
+            karaoke_line_selected: false,
+            syllable_cursor: false,
             hovered_line: false,
             editing_line: false,
             editing_any: false,
@@ -579,6 +651,90 @@ mod tests {
         s.line_clipboard_available = true;
         assert!(labels_of(&build_lines(&s, router.bindings()))
             .contains(&crate::i18n::t("accessibility.paste")));
+    }
+
+    #[test]
+    fn karaoke_syllable_chords_follow_the_cursor() {
+        let router = shortcut_router();
+        let contexts = [InputContext::Workspace, InputContext::Global];
+        let walking = ["panel.syllable_step", "panel.syllable_row"];
+        let cursor_only = [
+            "panel.syllable_nudge",
+            "panel.syllable_place",
+            "panel.syllable_activate",
+            "panel.syllable_leave",
+        ];
+
+        // Without a karaoke line nothing is listed.
+        let mut s = situation(&contexts);
+        s.line_selected = true;
+        s.any_selection = true;
+        let lines = build_lines(&s, router.bindings());
+        let labels = labels_of(&lines);
+        for key in walking.iter().chain(&cursor_only) {
+            assert!(!labels.contains(&crate::i18n::t(key)), "unexpected {key}");
+        }
+
+        // On a karaoke line the handles, points and liaisons can be walked;
+        // Enter and Escape keep their meaning until one of them is taken.
+        s.karaoke_line_selected = true;
+        let lines = build_lines(&s, router.bindings());
+        let labels = labels_of(&lines);
+        for key in walking {
+            assert!(labels.contains(&crate::i18n::t(key)), "missing {key}");
+        }
+        for key in cursor_only {
+            assert!(!labels.contains(&crate::i18n::t(key)), "unexpected {key}");
+        }
+
+        s.syllable_cursor = true;
+        let lines = build_lines(&s, router.bindings());
+        let labels = labels_of(&lines);
+        for key in walking.iter().chain(&cursor_only) {
+            assert!(labels.contains(&crate::i18n::t(key)), "missing {key}");
+        }
+        // Moving the line by one frame stays on its own chord.
+        let nudge = lines
+            .iter()
+            .find(|(_, label)| *label == crate::i18n::t("panel.syllable_nudge"))
+            .unwrap();
+        assert!(nudge.0.contains("Alt"), "{}", nudge.0);
+    }
+
+    #[test]
+    fn processing_lists_its_own_chords_first() {
+        let router = shortcut_router();
+        let mut s = situation(&[
+            InputContext::Processing,
+            InputContext::Workspace,
+            InputContext::Global,
+        ]);
+        s.workspace = WorkspaceId::Processing;
+        let lines = build_lines(&s, router.bindings());
+        let labels = labels_of(&lines);
+        for key in [
+            "panel.processing_run",
+            "panel.processing_cancel",
+            "panel.processing_import",
+            "panel.processing_listen_next",
+            "panel.processing_model_next",
+            "panel.processing_export",
+            "panel.processing_add_to_project",
+            "processing.catalog.title",
+            "processing.engine.title",
+            "panel.processing_quality",
+        ] {
+            let label = crate::i18n::t(key);
+            assert!(labels.contains(&label), "missing {label}");
+        }
+        // The most specific context comes first.
+        assert_eq!(labels[0], crate::i18n::t("panel.processing_run"));
+        // Outside the tab none of them is listed.
+        let elsewhere = build_lines(
+            &situation(&[InputContext::Workspace, InputContext::Global]),
+            router.bindings(),
+        );
+        assert!(!labels_of(&elsewhere).contains(&crate::i18n::t("panel.processing_run")));
     }
 
     #[test]

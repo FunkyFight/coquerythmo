@@ -17,7 +17,7 @@
 use crate::comic_dubs::{ComicAudioId, ComicDubsProject, PageId};
 use crate::export::ProjectData;
 use crate::integrity::Sha1;
-use crate::project::Project;
+use crate::project::{MediaId, MediaLibrary, Project};
 use crate::project_metadata::{Huuid, TransactionJournal};
 use crate::recording::{AudioAssetId, RecordingProject, TransactionLog};
 use crate::voicelines::{AudioId, VoicelinesProject};
@@ -308,12 +308,22 @@ struct BundleAssets {
     font: Option<String>,
     #[serde(default)]
     instrumentals: Vec<InstrumentalAssetManifest>,
+    /// Library video stored as `source_video`, so its entry can follow the
+    /// extracted copy when the bundle is opened again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_video_media: Option<MediaId>,
+    /// Library video stored as `proxy_video`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proxy_video_media: Option<MediaId>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct InstrumentalAssetManifest {
     language_id: String,
     entry: String,
+    /// Library audio this instrumental was read from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    media: Option<MediaId>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -722,6 +732,14 @@ fn save_bundle_with_instrumentals_recording_voicelines_and_comic_dubs_data(
         instrumental_manifest.push(InstrumentalAssetManifest {
             language_id: language_id.to_string(),
             entry: entry_name,
+            media: project
+                .media_library()
+                .audios
+                .iter()
+                .find(|audio| {
+                    crate::video_proxy::paths_match(Path::new(&audio.path), instrumental.path)
+                })
+                .map(|audio| audio.id),
         });
     }
 
@@ -773,6 +791,8 @@ fn save_bundle_with_instrumentals_recording_voicelines_and_comic_dubs_data(
             default_uses_proxy: Some(default_uses_proxy && proxy.is_some()),
             font: font.as_ref().map(|entry| entry.name.clone()),
             instrumentals: instrumental_manifest,
+            source_video_media: source_video.and_then(|path| library_video_at(project, path)),
+            proxy_video_media: proxy_video.and_then(|path| library_video_at(project, path)),
         },
         recording: recording_manifest,
         voicelines: voicelines_manifest,
@@ -1345,6 +1365,13 @@ fn load_bundle(
         instrumental_audio_paths.insert(instrumental.language_id.clone(), path);
     }
     reinject_project_instrumental_paths(&mut manifest.project, &instrumental_audio_paths);
+    rebind_bundled_media(
+        &mut manifest.project.media_library,
+        &manifest.assets,
+        source_video_path.as_deref(),
+        proxy_video_path.as_deref(),
+        &extracted_paths,
+    );
 
     let recording = manifest
         .recording
@@ -1476,6 +1503,104 @@ fn reinject_project_instrumental_paths(
         language.project.settings.instrumental_audio_path = instrumentals
             .get(&language.id.to_string())
             .map(|path| path.to_string_lossy().into_owned());
+    }
+}
+
+fn library_video_at(project: &Project, path: &Path) -> Option<MediaId> {
+    project
+        .media_library()
+        .videos
+        .iter()
+        .find(|video| crate::video_proxy::paths_match(Path::new(&video.path), path))
+        .map(|video| video.id)
+}
+
+/// A bundle extracts its media to a new folder at every opening, while the
+/// library remembers where each file was when the project was saved. The
+/// entries of the embedded files follow the extracted copies whenever that
+/// remembered place no longer exists.
+fn rebind_bundled_media(
+    library: &mut MediaLibrary,
+    assets: &BundleAssets,
+    source: Option<&Path>,
+    proxy: Option<&Path>,
+    extracted_paths: &HashMap<String, PathBuf>,
+) {
+    let missing = |path: &str| !Path::new(path).exists();
+    // Bundles written before the entry was recorded: the embedded video is
+    // the default one, or the only one whose file is gone.
+    let guess = |lost: &[MediaId], preferred: Option<MediaId>| {
+        preferred
+            .filter(|id| lost.contains(id))
+            .or_else(|| (lost.len() == 1).then(|| lost[0]))
+    };
+
+    let source_id = source.and_then(|_| {
+        let lost: Vec<MediaId> = library
+            .videos
+            .iter()
+            .filter(|video| video.proxy_of.is_none() && missing(&video.path))
+            .map(|video| video.id)
+            .collect();
+        match assets.source_video_media {
+            Some(id) => lost.contains(&id).then_some(id),
+            None => {
+                let default_source = library
+                    .default_video
+                    .and_then(|id| library.videos.iter().find(|video| video.id == id))
+                    .map(|video| video.proxy_of.unwrap_or(video.id));
+                guess(&lost, default_source)
+            }
+        }
+    });
+    let proxy_id = proxy.and_then(|_| {
+        let lost: Vec<MediaId> = library
+            .videos
+            .iter()
+            .filter(|video| video.proxy_of.is_some() && missing(&video.path))
+            .filter(|video| source_id.is_none() || video.proxy_of == source_id)
+            .map(|video| video.id)
+            .collect();
+        match assets.proxy_video_media {
+            Some(id) => lost.contains(&id).then_some(id),
+            None => guess(&lost, library.default_video),
+        }
+    });
+    for (id, path) in [(source_id, source), (proxy_id, proxy)] {
+        let (Some(id), Some(path)) = (id, path) else {
+            continue;
+        };
+        if let Some(video) = library.videos.iter_mut().find(|video| video.id == id) {
+            video.path = path.to_string_lossy().into_owned();
+        }
+    }
+
+    let recorded = assets
+        .instrumentals
+        .iter()
+        .any(|instrumental| instrumental.media.is_some());
+    let lost: Vec<MediaId> = library
+        .audios
+        .iter()
+        .filter(|audio| missing(&audio.path))
+        .map(|audio| audio.id)
+        .collect();
+    let mut rebound = HashSet::new();
+    for instrumental in &assets.instrumentals {
+        let id = match instrumental.media {
+            Some(id) => Some(id),
+            None if !recorded && assets.instrumentals.len() == 1 => guess(&lost, None),
+            None => None,
+        };
+        let (Some(id), Some(path)) = (id, extracted_paths.get(&instrumental.entry)) else {
+            continue;
+        };
+        if !lost.contains(&id) || !rebound.insert(id) {
+            continue;
+        }
+        if let Some(audio) = library.audios.iter_mut().find(|audio| audio.id == id) {
+            audio.path = path.to_string_lossy().into_owned();
+        }
     }
 }
 
@@ -2553,6 +2678,84 @@ mod tests {
     }
 
     #[test]
+    fn library_entries_follow_the_extracted_media_when_their_file_is_gone() {
+        let dir = TestDir::new();
+        let source = dir.path("source.mp4");
+        let proxy = dir.path("proxy.mp4");
+        let instrumental = dir.path("instrumental.wav");
+        let kept = dir.path("other.mp4");
+        let bundle = dir.path("project.coquerythmo");
+        for path in [&source, &proxy, &instrumental, &kept] {
+            fs::write(path, b"media").unwrap();
+        }
+
+        let mut project = sample_project(Some(&instrumental));
+        let other_id = project
+            .add_media_video("Autre", kept.to_string_lossy(), None, false)
+            .unwrap();
+        let source_id = project
+            .add_media_video("Film", source.to_string_lossy(), None, false)
+            .unwrap();
+        let proxy_id = project
+            .add_media_video("Proxy", proxy.to_string_lossy(), Some(source_id), true)
+            .unwrap();
+        let audio_id = project
+            .add_media_audio("Inst", instrumental.to_string_lossy())
+            .unwrap();
+        project.set_default_video(Some(other_id)).unwrap();
+        save_bundle(&project, 24.0, &bundle, &source, Some(&proxy), None).unwrap();
+        for path in [&source, &proxy, &instrumental] {
+            fs::remove_file(path).unwrap();
+        }
+
+        let loaded = load_project_file(&bundle).unwrap();
+        let library = &loaded.project_data.media_library;
+        let video_path = |id| {
+            let video = library.videos.iter().find(|video| video.id == id).unwrap();
+            PathBuf::from(&video.path)
+        };
+        assert_eq!(Some(video_path(source_id)), loaded.source_video_path);
+        assert_eq!(Some(video_path(proxy_id)), loaded.proxy_video_path);
+        assert_eq!(video_path(other_id), kept);
+        let audio = library.audios.iter().find(|a| a.id == audio_id).unwrap();
+        assert!(Path::new(&audio.path).is_file());
+        library.validate().unwrap();
+    }
+
+    #[test]
+    fn stale_library_paths_of_older_bundles_are_repaired() {
+        let dir = TestDir::new();
+        let source = dir.path("source.mp4");
+        let proxy = dir.path("proxy.mp4");
+        let bundle = dir.path("project.coquerythmo");
+        fs::write(&source, b"source").unwrap();
+        fs::write(&proxy, b"proxy").unwrap();
+
+        // The library still remembers the extraction folder of a past session.
+        let mut project = sample_project(None);
+        let gone = dir.path("process-1");
+        let source_id = project
+            .add_media_video("Film", gone.join("source.mp4").to_string_lossy(), None, false)
+            .unwrap();
+        let proxy_id = project
+            .add_media_video(
+                "Proxy",
+                gone.join("proxy.mp4").to_string_lossy(),
+                Some(source_id),
+                true,
+            )
+            .unwrap();
+        project.set_default_video(Some(proxy_id)).unwrap();
+        save_bundle(&project, 24.0, &bundle, &source, Some(&proxy), None).unwrap();
+
+        let loaded = load_project_file(&bundle).unwrap();
+        let videos = &loaded.project_data.media_library.videos;
+        let path = |id| videos.iter().find(|v| v.id == id).map(|v| PathBuf::from(&v.path));
+        assert_eq!(path(source_id), loaded.source_video_path);
+        assert_eq!(path(proxy_id), loaded.proxy_video_path);
+    }
+
+    #[test]
     fn bundle_round_trip_embeds_and_extracts_every_current_asset() {
         let dir = TestDir::new();
         let source = dir.path("source.mp4");
@@ -3116,6 +3319,8 @@ mod tests {
                 default_uses_proxy: None,
                 font: None,
                 instrumentals: Vec::new(),
+                source_video_media: None,
+                proxy_video_media: None,
             },
             recording: Some(BundleRecordingManifest {
                 project: recording_project,
@@ -3339,6 +3544,8 @@ mod tests {
                 default_uses_proxy: None,
                 font: None,
                 instrumentals: Vec::new(),
+                source_video_media: None,
+                proxy_video_media: None,
             },
             recording: None,
             voicelines: None,

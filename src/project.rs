@@ -1286,8 +1286,8 @@ impl Project {
             if let Some(ratios) = crate::syllable::ratios_for_other_language(
                 &line.text,
                 &line.syllable_ratios,
-                from.code(),
-                to.code(),
+                line.syllable_rules(from.code()),
+                line.syllable_rules(to.code()),
             ) {
                 line.syllable_ratios = ratios;
             }
@@ -1979,6 +1979,8 @@ impl Project {
             kind: crate::rythmo_line::RythmoLineKind::Dialogue,
             voice_actor_names,
             syllable_ratios: Vec::new(),
+            syllable_split_words: Vec::new(),
+            liaison_marks: Vec::new(),
             karaoke: false,
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
@@ -2034,6 +2036,8 @@ impl Project {
             kind: crate::rythmo_line::RythmoLineKind::Dialogue,
             voice_actor_names: Self::normalized_voice_actor_names(voice_actor_names),
             syllable_ratios: Vec::new(),
+            syllable_split_words: Vec::new(),
+            liaison_marks: Vec::new(),
             karaoke: false,
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,
@@ -2827,6 +2831,8 @@ mod tests {
             kind: crate::rythmo_line::RythmoLineKind::Dialogue,
             voice_actor_names: Vec::new(),
             syllable_ratios: Vec::new(),
+            syllable_split_words: Vec::new(),
+            liaison_marks: Vec::new(),
             karaoke: false,
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,

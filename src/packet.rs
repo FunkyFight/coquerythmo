@@ -139,6 +139,15 @@ pub enum CommandPayload {
         line_id: u64,
         ratios: Vec<f32>,
     },
+    SetSyllableSplitWords {
+        line_id: u64,
+        words: Vec<String>,
+        ratios: Vec<f32>,
+    },
+    SetLiaisonMarks {
+        line_id: u64,
+        marks: Vec<crate::rythmo_line::LiaisonMark>,
+    },
     SetCharacter {
         line_id: u64,
         name: String,
@@ -351,6 +360,22 @@ impl Packetable for Command {
                 karaoke: *new_karaoke,
                 syllable_ratios: new_ratios.clone(),
             },
+            Command::SetLiaisonMarks {
+                line_id, new_marks, ..
+            } => CommandPayload::SetLiaisonMarks {
+                line_id: *line_id,
+                marks: new_marks.clone(),
+            },
+            Command::SetSyllableSplitWords {
+                line_id,
+                new_words,
+                new_ratios,
+                ..
+            } => CommandPayload::SetSyllableSplitWords {
+                line_id: *line_id,
+                words: new_words.clone(),
+                ratios: new_ratios.clone(),
+            },
             Command::SetSyllableRatios {
                 line_id,
                 new_ratios,
@@ -479,6 +504,8 @@ mod tests {
                 kind: crate::rythmo_line::RythmoLineKind::Dialogue,
                 voice_actor_names: Vec::new(),
                 syllable_ratios: Vec::new(),
+                syllable_split_words: Vec::new(),
+                liaison_marks: Vec::new(),
                 karaoke: false,
                 note: String::new(),
                 presence: crate::rythmo_line::LinePresence::On,

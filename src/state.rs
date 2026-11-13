@@ -45,6 +45,7 @@ use crate::workspaces::comic_dubs::ComicDubsWorkspace;
 use crate::workspaces::recording::RecordingWorkspace;
 use crate::workspaces::rythmo::view::SyllableSlotReservation;
 use crate::workspaces::rythmo::RythmoWorkspace;
+use crate::workspaces::processing::ProcessingWorkspace;
 use crate::workspaces::voicelines::VoicelinesWorkspace;
 
 use crate::constants;
@@ -78,9 +79,11 @@ fn syllable_ratios_after_line_text_edit(
     let displayed;
     let starting_ratios = if line.karaoke
         && !line.text.is_empty()
-        && crate::syllable::adapted_saved_ratios(&line.text, saved, lang).is_none()
+        && crate::syllable::adapted_saved_ratios(&line.text, saved, line.syllable_rules(lang))
+            .is_none()
     {
-        let breaks = crate::syllable::syllable_breaks(&line.text, lang);
+        let breaks =
+            crate::syllable::syllable_breaks(&line.text, line.syllable_rules(lang));
         displayed = if breaks.is_empty() {
             vec![1.0]
         } else {
@@ -101,7 +104,7 @@ fn syllable_ratios_after_line_text_edit(
         &line.text,
         new_text,
         starting_ratios,
-        lang,
+        line.syllable_rules(lang),
         reserved,
     )?;
     Some((saved.clone(), timings.ratios, timings.reserved))
@@ -649,6 +652,54 @@ mod recording_import_tests {
 }
 
 #[cfg(test)]
+mod recording_cut_tests {
+    use super::{merged_take, RecordingCut};
+    use crate::recording::{AudioAssetId, AudioClip, AudioClipId, AudioTrackId};
+
+    fn clip(id: u64, track: u64, start: i64, source_start: i64, duration: i64) -> AudioClip {
+        AudioClip {
+            id: AudioClipId::new(id),
+            asset_id: AudioAssetId::new(1),
+            track_id: AudioTrackId::new(track),
+            start_frame: start,
+            source_start_frame: source_start,
+            duration_frames: duration,
+        }
+    }
+
+    fn cut() -> RecordingCut {
+        RecordingCut {
+            original: clip(5, 1, 100, 0, 60),
+            right_id: AudioClipId::new(6),
+            sequence: 12,
+        }
+    }
+
+    #[test]
+    fn undoing_a_cut_puts_the_two_halves_back_as_one_take() {
+        let merged = merged_take(&cut(), &clip(5, 1, 100, 0, 25), &clip(6, 1, 125, 25, 35)).unwrap();
+        assert_eq!(merged, clip(5, 1, 100, 0, 60));
+    }
+
+    #[test]
+    fn halves_moved_together_are_merged_where_they_now_are() {
+        // Both halves were nudged and sent to another track, still side by side.
+        let merged = merged_take(&cut(), &clip(5, 2, 300, 0, 25), &clip(6, 2, 325, 25, 35)).unwrap();
+        assert_eq!(merged, clip(5, 2, 300, 0, 60));
+    }
+
+    #[test]
+    fn halves_that_no_longer_fit_together_are_left_alone() {
+        // Moved apart.
+        assert!(merged_take(&cut(), &clip(5, 1, 100, 0, 25), &clip(6, 1, 140, 25, 35)).is_none());
+        // On two tracks.
+        assert!(merged_take(&cut(), &clip(5, 1, 100, 0, 25), &clip(6, 2, 125, 25, 35)).is_none());
+        // The right half was cut again: part of the take is elsewhere.
+        assert!(merged_take(&cut(), &clip(5, 1, 100, 0, 25), &clip(6, 1, 125, 25, 20)).is_none());
+    }
+}
+
+#[cfg(test)]
 mod comic_dubs_import_tests {
     use super::convert_comic_image;
 
@@ -685,6 +736,8 @@ pub struct State {
     pub jobs: JobManager,
     pub project_session: ProjectSession,
     pub recording_runtime: crate::recording_runtime::RecordingRuntime,
+    pub(crate) processing: crate::state_processing::ProcessingRuntime,
+    pub(crate) processing_player: Option<VideoPlayer>,
     pub voicelines_project: crate::voicelines::VoicelinesProject,
     voicelines_revision: u64,
     voicelines_player: Option<VideoPlayer>,
@@ -717,14 +770,14 @@ pub struct State {
     project_transfer_waiting_dismissed: Option<String>,
     recording_input_preflight: Option<(Option<String>, bool)>,
     recording_uploads: Vec<(String, Receiver<Result<(), String>>)>,
+    /// Cuts of takes that `Ctrl + Z` can still undo, oldest first.
+    recording_cut_history: Vec<RecordingCut>,
     recording_upload_acks: Vec<String>,
     /// In-flight chunked `big_*` events being reassembled (sync, recording_prepare).
     big_receives: crate::big_event::BigEventReceiver,
     pub workspace_host: WorkspaceHost,
     pub narration: NarrationService,
     last_autosave: Instant,
-    /// Needle 3: the request in flight and the actions it planned.
-    pub assistant: crate::ai::session::AssistantSession,
     line_clipboard: Option<Vec<LineClipboardEntry>>,
     automation_last_run: Option<(u64, u64)>,
     last_progress_percent: Option<u32>,
@@ -735,8 +788,6 @@ pub struct State {
     pending_protocol: Option<PendingProtocolFlow>,
     pending_join_after_load: Option<PendingJoinAfterLoad>,
     required_room_project: Option<(String, Option<String>)>,
-    /// What the last « Ajouter et conformer » moved, for the assistant.
-    pub(crate) last_conform_report: Option<crate::conform::ConformReport>,
     /// New cut already conformed in this session: a second band conformed to
     /// it must not move the takes again.
     pub(crate) last_conform_target: Option<PathBuf>,
@@ -776,6 +827,37 @@ struct ProjectTransferRuntime {
     status: Option<ProjectTransferStatus>,
     receiving: bool,
     failed: bool,
+}
+
+/// A take cut in two: enough to put it back together.
+#[derive(Clone, Debug, PartialEq)]
+struct RecordingCut {
+    /// The take as it was before the cut. Its left half kept its identifier.
+    original: crate::recording::AudioClip,
+    right_id: crate::recording::AudioClipId,
+    /// Place of the cut in the journal: a journal that no longer holds it
+    /// (another project, a session rebuilt from the network) cannot undo it.
+    sequence: u64,
+}
+
+/// The take that undoing `cut` puts back, when its two halves are still
+/// side by side as the cut left them (they may have been moved together).
+fn merged_take(
+    cut: &RecordingCut,
+    left: &crate::recording::AudioClip,
+    right: &crate::recording::AudioClip,
+) -> Option<crate::recording::AudioClip> {
+    let untouched = left.asset_id == cut.original.asset_id
+        && right.asset_id == cut.original.asset_id
+        && left.track_id == right.track_id
+        && left.end_frame() == right.start_frame
+        && left.source_end_frame() == right.source_start_frame
+        && left.source_start_frame == cut.original.source_start_frame
+        && left.duration_frames + right.duration_frames == cut.original.duration_frames;
+    untouched.then(|| crate::recording::AudioClip {
+        duration_frames: cut.original.duration_frames,
+        ..left.clone()
+    })
 }
 
 struct PendingVoicelinesImport {
@@ -875,6 +957,8 @@ impl State {
             jobs: JobManager::new(),
             project_session: ProjectSession::new(),
             recording_runtime: crate::recording_runtime::RecordingRuntime::new(),
+            processing: crate::state_processing::ProcessingRuntime::new(),
+            processing_player: None,
             voicelines_project: crate::voicelines::VoicelinesProject::default(),
             voicelines_revision: 0,
             voicelines_player: None,
@@ -907,11 +991,13 @@ impl State {
             project_transfer_waiting_dismissed: None,
             recording_input_preflight: None,
             recording_uploads: Vec::new(),
+            recording_cut_history: Vec::new(),
             recording_upload_acks: Vec::new(),
             big_receives: crate::big_event::BigEventReceiver::default(),
             workspace_host: WorkspaceHost::new(
                 vec![
                     Box::new(RythmoWorkspace::new()),
+                    Box::new(ProcessingWorkspace::new()),
                     Box::new(RecordingWorkspace::new()),
                     Box::new(VoicelinesWorkspace::new()),
                     Box::new(ComicDubsWorkspace::new()),
@@ -923,7 +1009,6 @@ impl State {
                 accessibility_sender,
             ),
             last_autosave: Instant::now(),
-            assistant: crate::ai::session::AssistantSession::default(),
             line_clipboard: None,
             automation_last_run: None,
             last_progress_percent: None,
@@ -932,7 +1017,6 @@ impl State {
             pending_protocol: None,
             pending_join_after_load: None,
             required_room_project: None,
-            last_conform_report: None,
             last_conform_target: None,
         }
     }
@@ -3104,7 +3188,14 @@ impl State {
                 if let Some(player) = &mut self.voicelines_player {
                     player.pause_for_seek();
                 }
-            } else if matches!(workspace, WorkspaceId::Voicelines | WorkspaceId::ComicDubs) {
+            } else if previous == WorkspaceId::Processing {
+                if let Some(player) = &mut self.processing_player {
+                    player.pause_for_seek();
+                }
+            } else if matches!(
+                workspace,
+                WorkspaceId::Processing | WorkspaceId::Voicelines | WorkspaceId::ComicDubs
+            ) {
                 if let Some(player) = &mut self.playback.video_player {
                     player.pause_for_seek();
                 }
@@ -3123,7 +3214,11 @@ impl State {
                 self.show_toast(error, 5.0);
             }
         }
+        if workspace == WorkspaceId::Processing {
+            self.processing_on_activate();
+        }
         self.ui_shell.ui.total_frames = match workspace {
+            WorkspaceId::Processing => self.processing_total_frames(),
             WorkspaceId::Voicelines => self
                 .voicelines_player
                 .as_ref()
@@ -3140,6 +3235,7 @@ impl State {
         };
         let label = match workspace {
             WorkspaceId::Rythmo => crate::i18n::t("workspace_tabs.rythmo"),
+            WorkspaceId::Processing => crate::i18n::t("workspace_tabs.processing"),
             WorkspaceId::Recording => crate::i18n::t("workspace_tabs.recording"),
             WorkspaceId::Voicelines => crate::i18n::t("workspace_tabs.voicelines"),
             WorkspaceId::ComicDubs => crate::i18n::t("workspace_tabs.comic_dubs"),
@@ -3151,7 +3247,10 @@ impl State {
             ),
         });
         match workspace {
-            WorkspaceId::Rythmo | WorkspaceId::Voicelines | WorkspaceId::ComicDubs => {
+            WorkspaceId::Rythmo
+            | WorkspaceId::Processing
+            | WorkspaceId::Voicelines
+            | WorkspaceId::ComicDubs => {
                 self.jobs.play_recording_mix_when_ready = false;
                 self.clear_recording_mix_preview();
             }
@@ -3796,6 +3895,90 @@ impl State {
         self.announce_recording_result(crate::i18n::t("recording.a11y.take_cut").to_string());
     }
 
+    /// `Ctrl + Z` in the recording tab: the last cut still standing is
+    /// undone, its two halves become one take again. The journal only ever
+    /// grows, so the undo is itself an operation: both halves are removed
+    /// and the whole take is put back.
+    pub fn recording_undo_cut(&mut self) {
+        if !self.ui_shell.ui.recording_can_edit_timeline() {
+            self.recording_read_only_error();
+            return;
+        }
+        while let Some(cut) = self.recording_cut_history.pop() {
+            let project = &self.project_session.recording_project;
+            let still_recorded = self
+                .project_session
+                .recording_transactions
+                .entry_by_sequence(cut.sequence)
+                .is_some_and(|transaction| {
+                    matches!(
+                        &transaction.operation,
+                        crate::recording::RecordingOperation::SplitClip {
+                            clip_id,
+                            right_clip_id,
+                            ..
+                        } if *clip_id == cut.original.id && *right_clip_id == cut.right_id
+                    )
+                });
+            let merged = still_recorded
+                .then(|| {
+                    merged_take(
+                        &cut,
+                        project.clip(cut.original.id)?,
+                        project.clip(cut.right_id)?,
+                    )
+                })
+                .flatten();
+            // Halves that were moved apart, trimmed or deleted since: this
+            // cut can no longer be undone, the one before it may be.
+            let Some(merged) = merged else {
+                continue;
+            };
+            let clip_id = merged.id;
+            let operation = crate::recording::RecordingOperation::Batch {
+                operations: vec![
+                    crate::recording::RecordingOperation::DeleteClips {
+                        clip_ids: vec![cut.original.id, cut.right_id],
+                    },
+                    crate::recording::RecordingOperation::AddClip { clip: merged },
+                ],
+            };
+            if let Err(error) = self.apply_recording_operation(operation) {
+                self.recording_error(error.to_string());
+                return;
+            }
+            let project = &self.project_session.recording_project;
+            let _ = self
+                .ui_shell
+                .ui
+                .recording_select_clip(project, clip_id, false);
+            self.sync_recording_workspace_ui();
+            self.announce_recording_result(
+                crate::i18n::t("recording.a11y.cut_undone").to_string(),
+            );
+            return;
+        }
+        self.recording_unavailable(crate::i18n::t("recording.a11y.no_cut_to_undo"));
+    }
+
+    /// `Ctrl + Entrée`: back to the start of the selected take, the earliest
+    /// one when several are selected.
+    pub fn recording_seek_to_selected_clip_start(&mut self) {
+        let project = &self.project_session.recording_project;
+        let first = self
+            .ui_shell
+            .ui
+            .recording_editor_mut()
+            .selected_clips()
+            .filter_map(|clip_id| project.clip(clip_id))
+            .min_by_key(|clip| clip.start_frame)
+            .map(|clip| clip.id);
+        match first {
+            Some(clip_id) => self.recording_seek_to_clip(clip_id, false),
+            None => self.recording_unavailable(crate::i18n::t("recording.a11y.no_take_selected")),
+        }
+    }
+
     /// `Entrée` without focus, as for a rythmo line: select the take under
     /// the playhead (again: the one of the next track) and announce it.
     pub fn recording_select_clip_at_playhead(&mut self) {
@@ -3934,6 +4117,7 @@ impl State {
             );
             return;
         }
+        let original = clip.clone();
         let right_clip_id = self.project_session.recording_project.allocate_clip_id();
         if let Err(error) =
             self.apply_recording_operation(crate::recording::RecordingOperation::SplitClip {
@@ -3944,6 +4128,27 @@ impl State {
         {
             self.recording_error(error.to_string());
             return;
+        }
+        // Remember the cut for Ctrl + Z, as the journal recorded it.
+        let recorded = self
+            .project_session
+            .recording_transactions
+            .entries()
+            .last()
+            .filter(|transaction| {
+                matches!(
+                    &transaction.operation,
+                    crate::recording::RecordingOperation::SplitClip { clip_id: cut, .. }
+                        if *cut == clip_id
+                )
+            })
+            .map(|transaction| transaction.sequence);
+        if let Some(sequence) = recorded {
+            self.recording_cut_history.push(RecordingCut {
+                original,
+                right_id: right_clip_id,
+                sequence,
+            });
         }
         let project = &self.project_session.recording_project;
         let _ = self
@@ -5138,296 +5343,6 @@ impl State {
         self.jobs.transition_after_save_ready.take()
     }
 
-    // ---- Needle 3 assistant ----------------------------------------------
-
-    /// Actions planned from the last answer of the assistant, to dispatch.
-    pub(crate) fn take_assistant_actions(&mut self) -> Vec<crate::ui::primitives::UiAction> {
-        std::mem::take(&mut self.assistant.queued_actions)
-    }
-
-    /// `Ctrl + Entrée` in the rythmo workspace.
-    pub fn open_assistant_bubble(&mut self) {
-        if self.active_workspace() != WorkspaceId::Rythmo || self.captures_modal_input() {
-            return;
-        }
-        self.ui_shell.ui.modal_host.open_assistant();
-        self.announce_open_container(
-            crate::i18n::t("assistant.title"),
-            crate::i18n::t("assistant.placeholder").to_string(),
-        );
-    }
-
-    /// A request typed in the bubble: its sentences are sent one at a time,
-    /// each after the actions of the previous one have run.
-    pub fn assistant_submit(&mut self, query: String) {
-        if self.assistant.pending.is_some() {
-            return;
-        }
-        let mut clauses = crate::ai::retrieval::split_clauses(&query);
-        if clauses.is_empty() {
-            return;
-        }
-        let first = clauses.remove(0);
-        self.assistant.request = query;
-        self.assistant.pending_clauses = clauses;
-        self.assistant.results.clear();
-        self.assistant_submit_clause(first);
-    }
-
-    /// Sends the next sentence of the request, if any, once the engine is
-    /// free. Called by the event loop after the planned actions ran.
-    pub(crate) fn assistant_continue(&mut self) {
-        if self.assistant.pending.is_some() || self.assistant.pending_clauses.is_empty() {
-            return;
-        }
-        if self.ui_shell.ui.modal_host.assistant.is_none() {
-            self.assistant.pending_clauses.clear();
-            return;
-        }
-        let next = self.assistant.pending_clauses.remove(0);
-        self.assistant_submit_clause(next);
-    }
-
-    /// Sends one sentence to the engine on a worker thread; the answer comes
-    /// back through `poll_assistant_job`.
-    fn assistant_submit_clause(&mut self, query: String) {
-        let Some(dir) = crate::ai::needle::needle_dir() else {
-            log::warn!("Needle 3: engine not found (needle.exe + needle3.cact)");
-            self.assistant_show_result(crate::i18n::t("assistant.engine_missing").to_string(), false);
-            return;
-        };
-        let tools = crate::ai::retrieval::select_for_query(&query);
-        let tool_names: Vec<&'static str> = tools.iter().map(|tool| tool.name).collect();
-        let tools_json = crate::ai::tools::schema_json(&tools);
-        let system = self.assistant_system_prompt();
-        log::info!("Needle 3: {query:?} with tools {tool_names:?}");
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let worker_query = query.clone();
-        std::thread::spawn(move || {
-            let result = crate::ai::needle::ask(&dir, &system, &tools_json, &worker_query);
-            let _ = sender.send(result);
-        });
-        let request = self.assistant.request.clone();
-        if let Some(bubble) = self.ui_shell.ui.modal_host.assistant.as_mut() {
-            bubble.set_thinking(request);
-        }
-        self.assistant.pending = Some(crate::ai::session::AssistantJob {
-            query,
-            tool_names,
-            receiver,
-            started: Instant::now(),
-        });
-    }
-
-    /// Session facts the engine reads before the query: date, language,
-    /// playhead, selection, characters and bands. Kept short: it shares the
-    /// context window with the tool schemas.
-    fn assistant_system_prompt(&self) -> String {
-        let project = &self.project_session.project;
-        let fps = self.fps();
-        let selected = self.selected_line_ids();
-        crate::ai::session::SessionFacts {
-            date: crate::ai::session::today(),
-            language: crate::config::get().lang.clone(),
-            playhead: crate::ai::timecode::format_timecode(self.current_frame(), fps),
-            fps,
-            duration: (self.total_frames() > 0)
-                .then(|| crate::ai::timecode::format_timecode(self.total_frames(), fps)),
-            selected: selected.first().and_then(|id| project.get_line(*id)).map(|line| {
-                (line.text.clone(), line.character_name.clone(), selected.len() - 1)
-            }),
-            characters: project.character_names_from_lines(),
-            bands: project.languages().iter().map(|band| band.name.clone()).collect(),
-            shown_band: project.active_language().name.clone(),
-        }
-        .to_system_prompt()
-    }
-
-    fn poll_assistant_job(&mut self) -> bool {
-        let Some(job) = self.assistant.pending.as_ref() else {
-            return false;
-        };
-        let result = match job.receiver.try_recv() {
-            Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err("the engine worker stopped".to_string())
-            }
-        };
-        let query = match self.assistant.pending.take() {
-            Some(job) => {
-                log::info!(
-                    "Needle 3 answered {:?} in {} ms",
-                    job.query,
-                    job.started.elapsed().as_millis()
-                );
-                job.query
-            }
-            None => String::new(),
-        };
-        self.apply_assistant_response(query, result);
-        true
-    }
-
-    /// Plans the tool calls of an answer against the current state. A bubble
-    /// closed meanwhile drops the answer: the user moved on.
-    fn apply_assistant_response(
-        &mut self,
-        query: String,
-        result: Result<crate::ai::needle::NeedleResponse, String>,
-    ) {
-        if self.ui_shell.ui.modal_host.assistant.is_none() {
-            log::info!("Needle 3: prompt closed before the answer, dropped");
-            self.assistant.pending_clauses.clear();
-            return;
-        }
-        let response = match result {
-            Ok(response) => response,
-            Err(error) => {
-                log::warn!("Needle 3: {error}");
-                self.assistant_show_result(
-                    crate::i18n::t("assistant.engine_error").replace("{error}", &error),
-                    false,
-                );
-                return;
-            }
-        };
-        if let Some(reasoning) = &response.reasoning {
-            log::info!("Needle 3 reasoning: {reasoning}");
-        }
-        let ungrounded = &response.validation.ungrounded;
-        // Arguments the engine flagged as invented are dropped; a call the
-        // engine held back for that reason is still run when the words of
-        // the query pointed at its tool clearly (the engine is poor at
-        // choosing, the app is not).
-        let mut calls: Vec<crate::ai::needle::ToolCall> = response
-            .function_calls
-            .iter()
-            .filter_map(|call| crate::ai::dispatch::without_ungrounded(call, ungrounded))
-            .collect();
-        if calls.is_empty() && !response.validation.negation {
-            match response.suppressed_calls.first() {
-                Some(call) => {
-                    if crate::ai::retrieval::is_strong_match(&query, &call.name) {
-                        if let Some(call) = crate::ai::dispatch::without_ungrounded(call, ungrounded) {
-                            log::info!("Needle 3: running the held-back call to {}", call.name);
-                            calls.push(call);
-                        }
-                    }
-                }
-                // The engine made no call at all: when the words leave no
-                // doubt, the call is made here and its arguments read from
-                // the query.
-                None => {
-                    if let Some(tool) = crate::ai::retrieval::strong_top_tool(&query) {
-                        log::info!("Needle 3: calling {} from the words alone", tool.name);
-                        calls.push(crate::ai::needle::ToolCall {
-                            name: tool.name.to_string(),
-                            arguments: serde_json::json!({}),
-                        });
-                    }
-                }
-            }
-        }
-        if calls.is_empty() {
-            let message = match response
-                .suppressed_calls
-                .first()
-                .or_else(|| response.function_calls.first())
-            {
-                Some(call) => crate::i18n::t("assistant.suggestion")
-                    .replace("{tool}", &crate::ai::dispatch::label(&call.name)),
-                None => crate::i18n::t("assistant.not_understood").to_string(),
-            };
-            self.assistant_show_result(message, false);
-            return;
-        }
-        let mut actions = Vec::new();
-        let mut messages = Vec::new();
-        let mut ok = true;
-        for call in &calls {
-            match crate::ai::dispatch::plan(self, call, &query) {
-                Ok(plan) => {
-                    messages.push(plan.message.unwrap_or_else(|| {
-                        crate::i18n::t("assistant.done")
-                            .replace("{tool}", &crate::ai::dispatch::label(&call.name))
-                    }));
-                    actions.extend(plan.actions);
-                }
-                Err(error) => {
-                    ok = false;
-                    messages.push(error);
-                }
-            }
-        }
-        self.assistant.queued_actions.extend(actions);
-        self.assistant_show_result(messages.join("\n"), ok);
-    }
-
-    /// Shows the messages of the sentences answered so far; a failure stops
-    /// the remaining sentences.
-    fn assistant_show_result(&mut self, message: String, ok: bool) {
-        if !ok {
-            self.assistant.pending_clauses.clear();
-        }
-        self.assistant.results.push(message.clone());
-        let shown = self.assistant.results.join("\n");
-        if let Some(bubble) = self.ui_shell.ui.modal_host.assistant.as_mut() {
-            bubble.set_result(shown, ok);
-        } else {
-            self.show_toast(message.clone(), 5.0);
-        }
-        self.announce_accessibility(if ok {
-            AccessibilityEvent::Success { message }
-        } else {
-            AccessibilityEvent::Error { message }
-        });
-    }
-
-    /// Selects these lines (existing ones only) and announces the selection.
-    pub fn select_lines(&mut self, line_ids: Vec<u64>) {
-        use crate::workspaces::rythmo::view::Selection;
-        let line_ids: Vec<u64> = line_ids
-            .into_iter()
-            .filter(|id| self.project_session.project.get_line(*id).is_some())
-            .collect();
-        self.ui_shell.ui.rythmo_state.selected = match line_ids.len() {
-            0 => None,
-            1 => Some(Selection::Line(line_ids[0])),
-            _ => Some(Selection::Lines(line_ids)),
-        };
-        if let Some(label) = self.selected_line_accessibility_label() {
-            self.announce_accessibility(AccessibilityEvent::Selection { label });
-        }
-    }
-
-    /// Creates a line with its text and character without opening the inline
-    /// editor, then selects it. Each step is its own undo entry.
-    pub fn assistant_create_line(
-        &mut self,
-        frame: i64,
-        y_slot: f32,
-        duration_frames: Option<i64>,
-        text: String,
-        character: Option<(String, [f32; 4])>,
-    ) {
-        let frame = frame.max(0);
-        let id = self.create_line(frame, y_slot);
-        if let Some(duration) = duration_frames {
-            self.resize_line(id, frame, duration.max(1));
-        }
-        if !text.trim().is_empty() {
-            self.update_line_text(id, text, None);
-        }
-        if let Some((name, color)) = character {
-            self.set_character(id, name, color);
-        }
-        self.select_lines(vec![id]);
-        self.narration.announce_event(AccessibilityEvent::Success {
-            message: crate::i18n::t("accessibility.line_created").to_string(),
-        });
-    }
-
     pub(crate) fn start_project_save(
         &mut self,
         path: PathBuf,
@@ -6346,7 +6261,11 @@ impl State {
                     let old_ratios = line.syllable_ratios.clone();
                     let new_karaoke = !old_karaoke;
                     let new_ratios = if new_karaoke {
-                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang)
+                        crate::syllable::timing_ratios(
+                            &line.text,
+                            &line.syllable_ratios,
+                            line.syllable_rules(lang),
+                        )
                     } else {
                         old_ratios.clone()
                     };
@@ -6936,7 +6855,7 @@ impl State {
             .map_or(0, |p| p.current_frame())
     }
 
-    fn timecode_for_frame(&self, frame: i64) -> String {
+    pub(crate) fn timecode_for_frame(&self, frame: i64) -> String {
         let fps = self.active_fps().max(1.0);
         let total_centiseconds = ((frame.max(0) as f64 / fps) * 100.0).round() as i64;
         let hours = total_centiseconds / 360_000;
@@ -7011,6 +6930,8 @@ impl State {
     fn active_player(&self) -> Option<&VideoPlayer> {
         if self.active_workspace() == WorkspaceId::Voicelines {
             self.voicelines_player.as_ref()
+        } else if self.active_workspace() == WorkspaceId::Processing {
+            self.processing_player.as_ref()
         } else if self.active_workspace() == WorkspaceId::ComicDubs {
             self.comic_dubs_player.as_ref()
         } else {
@@ -7629,6 +7550,8 @@ impl State {
         let playing = {
             let player = if self.active_workspace() == WorkspaceId::Voicelines {
                 &mut self.voicelines_player
+            } else if self.active_workspace() == WorkspaceId::Processing {
+                &mut self.processing_player
             } else {
                 &mut self.playback.video_player
             };
@@ -7856,6 +7779,9 @@ impl State {
         if let Some(player) = &mut self.voicelines_player {
             player.set_volume(vol);
         }
+        if let Some(player) = &mut self.processing_player {
+            player.set_volume(vol);
+        }
         if let Some(player) = &mut self.comic_dubs_player {
             player.set_volume(vol);
         }
@@ -7935,7 +7861,7 @@ impl State {
     fn prev_frame_internal(&mut self, broadcast: bool) {
         if matches!(
             self.active_workspace(),
-            WorkspaceId::Voicelines | WorkspaceId::ComicDubs
+            WorkspaceId::Processing | WorkspaceId::Voicelines | WorkspaceId::ComicDubs
         ) {
             if self.active_workspace() == WorkspaceId::ComicDubs {
                 self.comic_dubs_step_cue(-1);
@@ -7983,7 +7909,7 @@ impl State {
     fn next_frame_internal(&mut self, broadcast: bool) {
         if matches!(
             self.active_workspace(),
-            WorkspaceId::Voicelines | WorkspaceId::ComicDubs
+            WorkspaceId::Processing | WorkspaceId::Voicelines | WorkspaceId::ComicDubs
         ) {
             if self.active_workspace() == WorkspaceId::ComicDubs {
                 self.comic_dubs_step_cue(1);
@@ -8027,6 +7953,7 @@ impl State {
         }
         let player = match self.active_workspace() {
             WorkspaceId::Voicelines => &mut self.voicelines_player,
+            WorkspaceId::Processing => &mut self.processing_player,
             WorkspaceId::ComicDubs => &mut self.comic_dubs_player,
             _ => &mut self.playback.video_player,
         };
@@ -8058,6 +7985,7 @@ impl State {
 
         let player = match self.active_workspace() {
             WorkspaceId::Voicelines => &mut self.voicelines_player,
+            WorkspaceId::Processing => &mut self.processing_player,
             WorkspaceId::ComicDubs => &mut self.comic_dubs_player,
             _ => &mut self.playback.video_player,
         };
@@ -8077,6 +8005,7 @@ impl State {
         let mut playback = None;
         let player = match self.active_workspace() {
             WorkspaceId::Voicelines => &mut self.voicelines_player,
+            WorkspaceId::Processing => &mut self.processing_player,
             WorkspaceId::ComicDubs => &mut self.comic_dubs_player,
             _ => &mut self.playback.video_player,
         };
@@ -9833,7 +9762,7 @@ impl State {
                 crate::syllable::split_dialogue_at_syllable_cursor(
                     &old_line.text,
                     &old_line.syllable_ratios,
-                    lang,
+                    old_line.syllable_rules(lang),
                     cursor_pos,
                 )
             }
@@ -9841,7 +9770,7 @@ impl State {
                 crate::syllable::split_dialogue_at_syllable_progress(
                     &old_line.text,
                     &old_line.syllable_ratios,
-                    lang,
+                    old_line.syllable_rules(lang),
                     progress,
                 )
             }
@@ -10559,7 +10488,7 @@ impl State {
                 (start, end),
                 inserted,
                 &line.syllable_ratios,
-                lang,
+                line.syllable_rules(lang),
             )
             .filter(|ratios| *ratios != line.syllable_ratios)
             .map(|ratios| (line.syllable_ratios.clone(), ratios));
@@ -10991,7 +10920,11 @@ impl State {
             reserved.map(|slot| SyllableSlotReservation {
                 line_id: id,
                 text: new_text.to_string(),
-                gap_char: crate::syllable::syllable_end(new_text, lang, slot.after_segment),
+                gap_char: crate::syllable::syllable_end(
+                    new_text,
+                    line.syllable_rules(lang),
+                    slot.after_segment,
+                ),
                 slot,
             })
         });
@@ -11306,6 +11239,132 @@ impl State {
             line_id,
             old_ratios,
             new_ratios: ratios,
+        });
+    }
+
+    /// The arrow under two words that can be linked: nothing, then the
+    /// liaison is made, then it is expressly not made, then nothing again.
+    /// Every place of the line where the two words follow each other shares
+    /// the mark.
+    pub fn cycle_liaison_mark(&mut self, line_id: u64, pair: &str) {
+        use crate::rythmo_line::LiaisonMark;
+        let lang = self.project_session.project.syllable_language_code();
+        let Some(line) = self.project_session.project.get_line(line_id) else {
+            return;
+        };
+        let sites = crate::syllable::liaison_sites(&line.text, lang);
+        if !sites.iter().any(|site| site.pair == pair) {
+            return;
+        }
+        let old_marks = line.liaison_marks.clone();
+        let next = match line.liaison_state(pair) {
+            None => Some(true),
+            Some(true) => Some(false),
+            Some(false) => None,
+        };
+        // Marks of words that left the text are dropped on the way.
+        let mut new_marks: Vec<LiaisonMark> = old_marks
+            .iter()
+            .filter(|mark| mark.pair != pair && sites.iter().any(|site| site.pair == mark.pair))
+            .cloned()
+            .collect();
+        if let Some(made) = next {
+            new_marks.push(LiaisonMark {
+                pair: pair.to_string(),
+                made,
+            });
+        }
+        new_marks.sort_by(|a, b| a.pair.cmp(&b.pair));
+        if old_marks == new_marks {
+            return;
+        }
+        self.execute_local_command(Command::SetLiaisonMarks {
+            line_id,
+            old_marks,
+            new_marks,
+        });
+        self.announce_accessibility(AccessibilityEvent::Success {
+            message: crate::i18n::t(match next {
+                Some(true) => "accessibility.liaison_made",
+                Some(false) => "accessibility.liaison_not_made",
+                None => "accessibility.liaison_unmarked",
+            })
+            .replace("{pair}", pair),
+        });
+    }
+
+    /// Toolbar button: the proportional syllable drag goes left to right or
+    /// right to left. The choice is kept for the next sessions.
+    pub fn toggle_syllable_drag_direction(&mut self) {
+        let right_to_left = !self.ui_shell.ui.rythmo_state.syllable_drag_right_to_left;
+        self.ui_shell
+            .ui
+            .rythmo_state
+            .set_syllable_drag_right_to_left(right_to_left);
+        crate::config::set_syllable_drag_right_to_left(right_to_left);
+        self.ui_shell.ui.rebuild_toolbar();
+        let message = crate::i18n::t(if right_to_left {
+            "toast.syllable_drag_rtl"
+        } else {
+            "toast.syllable_drag_ltr"
+        });
+        self.show_toast(message, 3.0);
+    }
+
+    /// The pin above `word`: switches every occurrence of the word in the
+    /// line between its spoken syllables and all its written ones. Saved
+    /// karaoke timings follow: each letter keeps its place in time.
+    pub fn toggle_syllable_split_word(&mut self, line_id: u64, word: &str) {
+        let lang = self.project_session.project.syllable_language_code();
+        let Some(line) = self.project_session.project.get_line(line_id) else {
+            return;
+        };
+        let key = crate::syllable::split_word_key(word);
+        if key.is_empty() {
+            return;
+        }
+        let old_words = line.syllable_split_words.clone();
+        // Words that left the text are dropped on the way.
+        let present = crate::syllable::syllable_split_pins(&line.text, lang);
+        let mut new_words: Vec<String> = old_words
+            .iter()
+            .filter(|word| **word != key && present.iter().any(|pin| pin.word == **word))
+            .cloned()
+            .collect();
+        let turned_on = !old_words.contains(&key);
+        if turned_on {
+            if !present.iter().any(|pin| pin.word == key) {
+                return;
+            }
+            new_words.push(key);
+        }
+        new_words.sort();
+        new_words.dedup();
+        let old_ratios = line.syllable_ratios.clone();
+        let new_ratios = crate::syllable::ratios_after_rules_change(
+            &line.text,
+            &old_ratios,
+            line.syllable_rules(lang),
+            crate::syllable::SyllableRules::new(lang, &new_words),
+        )
+        .unwrap_or_else(|| old_ratios.clone());
+        if old_words == new_words {
+            return;
+        }
+        self.execute_local_command(Command::SetSyllableSplitWords {
+            line_id,
+            old_words,
+            new_words,
+            old_ratios,
+            new_ratios,
+        });
+        self.announce_accessibility(AccessibilityEvent::Success {
+            message: crate::i18n::t(if turned_on {
+                "accessibility.syllable_split_on"
+            } else {
+                "accessibility.syllable_split_off"
+            })
+            .replace("{word}", word),
         });
     }
 
@@ -11762,6 +11821,8 @@ impl State {
         let comic_sequence = self.comic_dubs_playback.is_some();
         let player = if voicelines {
             &mut self.voicelines_player
+        } else if self.active_workspace() == WorkspaceId::Processing {
+            &mut self.processing_player
         } else if comic_dubs {
             &mut self.comic_dubs_player
         } else {
@@ -12640,6 +12701,7 @@ impl State {
         changed |= self.poll_recording_runtime();
         changed |= self.poll_recording_uploads();
         changed |= self.poll_voicelines_jobs();
+        changed |= self.poll_processing();
         changed |= self.poll_comic_dubs_jobs();
 
         if let Ok(mut results) = self.collaboration.ping_results.try_lock() {
@@ -12714,7 +12776,6 @@ impl State {
         changed |= self.poll_conform_job();
         changed |= self.poll_import_job();
         changed |= self.poll_save_job();
-        changed |= self.poll_assistant_job();
         changed |= self.poll_pending_protocol();
         changed |= self.poll_waveform_change();
         changed |= self.tick_rythmo_replication();
@@ -13416,7 +13477,6 @@ impl State {
 
         if self.collaboration.network.state != ConnectionState::Disconnected
             || self.ui_shell.ui.needs_background_poll()
-            || self.assistant.is_busy()
         {
             push_deadline(now + Duration::from_millis(100));
         }
@@ -14025,6 +14085,18 @@ impl State {
             let Some((source_path, proxy_path)) = self.media_video_playback_paths(id) else {
                 continue;
             };
+            // The embedded video of a bundle is already loaded at this point.
+            let same_source = self
+                .video_path()
+                .is_some_and(|loaded| crate::video_proxy::paths_match(&loaded, &source_path));
+            let same_proxy = match (&self.playback.proxy_video_path, &proxy_path) {
+                (None, None) => true,
+                (Some(loaded), Some(proxy)) => crate::video_proxy::paths_match(loaded, proxy),
+                _ => false,
+            };
+            if same_source && same_proxy {
+                return true;
+            }
             if self.load_video_for_playback(&source_path, proxy_path.as_deref(), None, false) {
                 return true;
             }

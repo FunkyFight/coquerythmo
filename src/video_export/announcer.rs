@@ -241,6 +241,8 @@ mod tests {
             kind: crate::rythmo_line::RythmoLineKind::Dialogue,
             voice_actor_names: Vec::new(),
             syllable_ratios: Vec::new(),
+            syllable_split_words: Vec::new(),
+            liaison_marks: Vec::new(),
             karaoke,
             note: String::new(),
             presence: crate::rythmo_line::LinePresence::On,

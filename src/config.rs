@@ -42,6 +42,9 @@ pub struct Config {
     /// Base directory for runtime temporary files. `None` means the OS temp
     /// directory (for example `%TEMP%` on Windows).
     pub temporary_directory: Option<PathBuf>,
+    /// Folder the user chose for the processing engine and its models.
+    #[serde(default)]
+    pub processing_directory: Option<PathBuf>,
     pub recording_input_device: Option<String>,
     pub last_whats_new_version: Option<String>,
     #[serde(default)]
@@ -91,6 +94,9 @@ pub struct UiConfig {
     /// Fraction of the free area (screen height minus topbar and toolbar)
     /// allocated to the video preview. The bande rythmo gets the remainder.
     pub video_split: f32,
+    /// Proportional syllable drag worked from the end of the line to its
+    /// start (right to left) instead of from its start to its end.
+    pub syllable_drag_right_to_left: bool,
     /// Show the contextual shortcut panel in the bottom-left corner.
     pub show_controls_hint: bool,
     /// Hide the rythmo formatting diagnostics (warnings and errors).
@@ -151,6 +157,7 @@ impl Default for Config {
             network: NetworkConfig::default(),
             accessibility: AccessibilityConfig::default(),
             temporary_directory: None,
+            processing_directory: None,
             recording_input_device: None,
             last_whats_new_version: None,
             recent_projects: Vec::new(),
@@ -179,6 +186,7 @@ impl Default for UiConfig {
             border_radius: 8.0,
             rythmo_font: None,
             video_split: 0.48,
+            syllable_drag_right_to_left: false,
             show_controls_hint: true,
             hide_formatting_hints: false,
         }
@@ -552,6 +560,27 @@ pub fn set_band_style_presets(presets: Vec<crate::band_style::BandStylePreset>) 
     cfg.save();
 }
 
+/// Folder chosen for the processing engine, if any. Usable before the
+/// configuration is initialized (domain-only tests).
+pub fn processing_directory() -> Option<PathBuf> {
+    INSTANCE
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .and_then(|config| config.processing_directory.clone())
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
+pub fn set_processing_directory(directory: Option<PathBuf>) {
+    let Some(lock) = INSTANCE.get() else {
+        return;
+    };
+    let mut cfg = lock.write().unwrap();
+    if cfg.processing_directory != directory {
+        cfg.processing_directory = directory;
+        cfg.save();
+    }
+}
+
 pub fn set_screen_reader_enabled(enabled: bool) {
     let lock = INSTANCE.get().expect("config not initialized");
     let mut cfg = lock.write().unwrap();
@@ -626,6 +655,17 @@ pub fn set_video_split(split: f32) {
     cfg.save();
 }
 
+pub fn syllable_drag_right_to_left() -> bool {
+    get().ui.syllable_drag_right_to_left
+}
+
+pub fn set_syllable_drag_right_to_left(right_to_left: bool) {
+    let lock = INSTANCE.get().expect("config not initialized");
+    let mut cfg = lock.write().unwrap();
+    cfg.ui.syllable_drag_right_to_left = right_to_left;
+    cfg.save();
+}
+
 pub fn set_show_controls_hint(enabled: bool) {
     let lock = INSTANCE.get().expect("config not initialized");
     let mut cfg = lock.write().unwrap();
@@ -645,6 +685,11 @@ pub fn set_hide_formatting_hints(hidden: bool) {
     let mut cfg = lock.write().unwrap();
     cfg.ui.hide_formatting_hints = hidden;
     cfg.save();
+}
+
+/// Whether `init()` ran: headless tools and unit tests may run without it.
+pub fn is_initialized() -> bool {
+    INSTANCE.get().is_some()
 }
 
 pub fn get() -> std::sync::RwLockReadGuard<'static, Config> {

@@ -11,6 +11,8 @@ pub enum InputContext {
     /// Timeline navigation in the recording workspace, active like
     /// `Workspace` only while no control owns the keyboard.
     RecordingTimeline,
+    /// Chords of the processing workspace, with or without a focused control.
+    Processing,
     Workspace,
     Global,
 }

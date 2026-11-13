@@ -131,6 +131,24 @@ pub fn encode_delta(command: &Command, project: &Project) -> Option<serde_json::
             "line_id": line_id,
             "ratios": new_ratios,
         }),
+        Command::SetLiaisonMarks {
+            line_id, new_marks, ..
+        } => serde_json::json!({
+            "action": "set_liaison_marks",
+            "line_id": line_id,
+            "marks": new_marks,
+        }),
+        Command::SetSyllableSplitWords {
+            line_id,
+            new_words,
+            new_ratios,
+            ..
+        } => serde_json::json!({
+            "action": "set_syllable_split_words",
+            "line_id": line_id,
+            "words": new_words,
+            "ratios": new_ratios,
+        }),
         Command::SetCharacter {
             line_id,
             new_name,
@@ -280,6 +298,15 @@ pub fn decode_delta(data: &serde_json::Value) -> Option<CommandPayload> {
         }),
         "set_syllable_ratios" => Some(CommandPayload::SetSyllableRatios {
             line_id: data.get("line_id")?.as_u64()?,
+            ratios: serde_json::from_value(data.get("ratios")?.clone()).ok()?,
+        }),
+        "set_liaison_marks" => Some(CommandPayload::SetLiaisonMarks {
+            line_id: data.get("line_id")?.as_u64()?,
+            marks: serde_json::from_value(data.get("marks")?.clone()).ok()?,
+        }),
+        "set_syllable_split_words" => Some(CommandPayload::SetSyllableSplitWords {
+            line_id: data.get("line_id")?.as_u64()?,
+            words: serde_json::from_value(data.get("words")?.clone()).ok()?,
             ratios: serde_json::from_value(data.get("ratios")?.clone()).ok()?,
         }),
         "set_character" => Some(CommandPayload::SetCharacter {

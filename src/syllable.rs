@@ -2,20 +2,207 @@
 
 use hypher::{hyphenate, Lang};
 
-/// Return syllable break positions as character indices within the full text.
-/// Handles French contractions (l', d', j', etc.) as single syllable units.
-/// Breaks at intra-word syllable boundaries and at word starts.
-/// Spaces are absorbed into the preceding segment (attached to the word before).
-pub fn syllable_breaks(text: &str, lang: &str) -> Vec<usize> {
-    if text.is_empty() {
+/// How the text of a line is cut into syllables: the language of its band,
+/// and the words of the line whose pin asks for every written syllable.
+#[derive(Clone, Copy, Debug)]
+pub struct SyllableRules<'a> {
+    pub lang: &'a str,
+    /// Keys ([`split_word_key`]) of the words cut into all their written
+    /// syllables ("mons|tres") instead of the spoken ones ("monstres").
+    pub split_words: &'a [String],
+}
+
+impl<'a> SyllableRules<'a> {
+    pub fn new(lang: &'a str, split_words: &'a [String]) -> Self {
+        Self { lang, split_words }
+    }
+}
+
+impl<'a> From<&'a str> for SyllableRules<'a> {
+    fn from(lang: &'a str) -> Self {
+        Self {
+            lang,
+            split_words: &[],
+        }
+    }
+}
+
+/// A word that can be cut into more syllables than it is by default (in
+/// French, a word ending with a mute syllable: "monstres", "table"): the pin
+/// shown above it switches between the two.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SyllableSplitPin {
+    /// Characters of the word in the text (`start..end`).
+    pub start: usize,
+    pub end: usize,
+    /// Key of the word, as stored in the line.
+    pub word: String,
+    /// Whether the word is currently cut into all its written syllables.
+    pub active: bool,
+    /// Character where the last syllable the pin adds starts ("tres" in
+    /// "monstres"): the pin is drawn above `split_at..end`.
+    pub split_at: usize,
+}
+
+/// Key of a word in the list of fully split words of a line: its letters, in
+/// lowercase. Every occurrence of the word in the line shares it.
+pub fn split_word_key(word: &str) -> String {
+    word.chars()
+        .filter(|ch| ch.is_alphabetic())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect()
+}
+
+/// A place where a French liaison can be made: a word ending with a
+/// consonant that is usually silent, right before a word starting with a
+/// vowel or an "h" ("les amis", "rien à", "petit homme", "vas-y").
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiaisonSite {
+    /// Character of the consonant that ends the first word.
+    pub from: usize,
+    /// Character of the vowel (or "h") that starts the second word.
+    pub to: usize,
+    /// Key of the two words, as stored in the line.
+    pub pair: String,
+}
+
+/// Key of the liaison between two words: their letters in lowercase.
+pub fn liaison_pair_key(first: &str, second: &str) -> String {
+    format!("{} {}", split_word_key(first), split_word_key(second))
+}
+
+/// Whether a word ends with a consonant that can be linked to the next
+/// vowel: s, x, z ("les", "deux", "chez"), t ("petit", "c'est", not "et"),
+/// d ("grand", "quand"), n ("un", "rien", "bon"), the r of "-er"
+/// ("premier", "aimer"), the p of "trop" and "beaucoup", the g of "long" and
+/// the f of "neuf".
+fn ends_with_liaison_consonant(word: &str) -> bool {
+    let letters: Vec<char> = word.chars().collect();
+    let Some(&last) = letters.last() else {
+        return false;
+    };
+    if letters.len() < 2 {
+        return false;
+    }
+    match last {
+        's' | 'x' | 'z' | 'd' | 'n' => true,
+        't' => word != "et",
+        'r' => letters.len() >= 3 && letters[letters.len() - 2] == 'e',
+        'p' => matches!(word, "trop" | "beaucoup"),
+        'g' => word == "long",
+        'f' => word == "neuf",
+        _ => false,
+    }
+}
+
+/// Places of `text` where a liaison can be made. French only: the other
+/// languages of the band have none.
+pub fn liaison_sites(text: &str, lang: &str) -> Vec<LiaisonSite> {
+    if !matches!(lang, "fr-fr" | "fr") {
         return Vec::new();
     }
+    let chars: Vec<char> = text.chars().collect();
+    let mut words: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if is_word_char(chars[i]) {
+            let start = i;
+            while i < chars.len() && is_word_char(chars[i]) {
+                i += 1;
+            }
+            words.push((start, i));
+        } else {
+            i += 1;
+        }
+    }
 
-    let hypher_lang = match lang {
+    let mut sites = Vec::new();
+    for pair in words.windows(2) {
+        let ((first_start, first_end), (second_start, second_end)) = (pair[0], pair[1]);
+        // A liaison is said in one breath: only a space, or the hyphen of
+        // "vas-y", may stand between the two words.
+        let between = &chars[first_end..second_start];
+        let hyphens = between
+            .iter()
+            .filter(|ch| matches!(ch, '-' | '\u{2011}'))
+            .count();
+        let spaced = between
+            .iter()
+            .all(|ch| matches!(ch, ' ' | '\u{a0}' | '\u{202f}' | '-' | '\u{2011}'));
+        if !spaced || hyphens > 1 {
+            continue;
+        }
+        let first: String = chars[first_start..first_end].iter().collect();
+        let second: String = chars[second_start..second_end].iter().collect();
+        if !chars[first_end - 1].is_alphabetic()
+            || !ends_with_liaison_consonant(&split_word_key(&first))
+        {
+            continue;
+        }
+        let opening = chars[second_start]
+            .to_lowercase()
+            .next()
+            .unwrap_or(chars[second_start]);
+        if !(opening == 'h' || (is_romance_vowel_letter(opening) && opening != 'y')
+            || (opening == 'y' && second_end - second_start == 1))
+        {
+            continue;
+        }
+        sites.push(LiaisonSite {
+            from: first_end - 1,
+            to: second_start,
+            pair: liaison_pair_key(&first, &second),
+        });
+    }
+    sites
+}
+
+/// Return syllable break positions as character indices within the full text.
+/// French follows the spoken syllables: "a|per|çois", a final mute syllable
+/// stays with the one before ("monstres", "ta|ble" only when its pin is on),
+/// and an elision (l', d', j', qu'...) stays with the syllable it starts
+/// ("d'ac|cord").
+/// Breaks at intra-word syllable boundaries and at word starts.
+/// Spaces are absorbed into the preceding segment (attached to the word before).
+pub fn syllable_breaks<'a>(text: &str, rules: impl Into<SyllableRules<'a>>) -> Vec<usize> {
+    analyse(text, rules.into(), false).0
+}
+
+/// Words of `text` that have a pin: the ones whose written syllables are more
+/// than the ones they are cut into by default.
+pub fn syllable_split_pins<'a>(
+    text: &str,
+    rules: impl Into<SyllableRules<'a>>,
+) -> Vec<SyllableSplitPin> {
+    analyse(text, rules.into(), false).1
+}
+
+/// The syllable breaks of versions up to 5.4, which cut French words like a
+/// typesetter ("aper|çois", "mon|de" but "monstres") and an elision from its
+/// word ("d'|ac|cord"): timings saved then are read against them.
+fn legacy_syllable_breaks(text: &str, rules: SyllableRules<'_>) -> Vec<usize> {
+    analyse(text, rules, true).0
+}
+
+fn hypher_lang_for(lang: &str) -> Lang {
+    match lang {
         "en-us" | "en" => Lang::English,
         "es-419" | "es-es" | "es" => Lang::Spanish,
         _ => Lang::French,
-    };
+    }
+}
+
+fn analyse(
+    text: &str,
+    rules: SyllableRules<'_>,
+    legacy: bool,
+) -> (Vec<usize>, Vec<SyllableSplitPin>) {
+    if text.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let lang = rules.lang;
+    let hypher_lang = hypher_lang_for(lang);
     let is_french = matches!(lang, "fr-fr" | "fr");
 
     let chars: Vec<char> = text.chars().collect();
@@ -38,32 +225,64 @@ pub fn syllable_breaks(text: &str, lang: &str) -> Vec<usize> {
 
     // Step 2: For each word, split into syllables.
     let mut raw_breaks = Vec::new();
+    let mut pins = Vec::new();
     for &(word_start, word_end) in &words {
         let word: String = chars[word_start..word_end].iter().collect();
 
-        // Check for French contraction
+        // A French elision is not a syllable of its own: only what follows
+        // the apostrophe is cut.
+        let mut unit_start = word_start;
         if is_french {
             if let Some(apos_pos) = find_french_contraction(&word) {
-                let contraction_end = word_start + apos_pos + 1;
-                raw_breaks.push(contraction_end);
-
-                // Hyphenate the remainder
-                let remainder: String = chars[contraction_end..word_end].iter().collect();
-                if remainder.len() > 1 {
-                    hyphenate_word(
-                        &remainder,
-                        contraction_end,
-                        hypher_lang,
-                        is_french,
-                        &mut raw_breaks,
-                    );
+                unit_start = word_start + apos_pos + 1;
+                if legacy {
+                    raw_breaks.push(unit_start);
                 }
-                continue;
             }
         }
+        let unit: String = chars[unit_start..word_end].iter().collect();
+        if unit.chars().count() <= 1 {
+            continue;
+        }
 
-        // Regular word
-        hyphenate_word(&word, word_start, hypher_lang, is_french, &mut raw_breaks);
+        let mut spoken = Vec::new();
+        if legacy {
+            hyphenate_word(&unit, unit_start, hypher_lang, is_french, &mut spoken);
+            raw_breaks.extend(spoken);
+            continue;
+        }
+        let mut written = Vec::new();
+        let mute_final = written_word_breaks(&unit, unit_start, hypher_lang, &mut written);
+        if is_french {
+            // The written syllables, less the mute one that ends the word.
+            spoken = written.clone();
+            if mute_final {
+                spoken.pop();
+            }
+        } else {
+            hyphenate_word(&unit, unit_start, hypher_lang, is_french, &mut spoken);
+        }
+
+        if written.len() > spoken.len() {
+            let key = split_word_key(&unit);
+            let active = rules.split_words.iter().any(|word| *word == key);
+            let split_at = written
+                .iter()
+                .rev()
+                .find(|position| !spoken.contains(position))
+                .copied()
+                .unwrap_or(unit_start);
+            pins.push(SyllableSplitPin {
+                start: unit_start,
+                end: word_end,
+                word: key,
+                active,
+                split_at,
+            });
+            raw_breaks.extend(if active { written } else { spoken });
+        } else {
+            raw_breaks.extend(spoken);
+        }
     }
 
     // Step 3: Add breaks at word starts (except the first word)
@@ -76,7 +295,247 @@ pub fn syllable_breaks(text: &str, lang: &str) -> Vec<usize> {
     raw_breaks.sort();
     raw_breaks.dedup();
     raw_breaks.retain(|&b| b > 0 && b < total_chars);
-    raw_breaks
+    (raw_breaks, pins)
+}
+
+/// Every written syllable of a word, mute ones included ("mons|tres",
+/// "ma|gni|fi|que", "cli|ent"), added to `raw_breaks` like `hyphenate_word`.
+/// Returns whether the last one is a French mute syllable ("-tres", "-que").
+fn written_word_breaks(
+    word: &str,
+    offset: usize,
+    lang: Lang,
+    raw_breaks: &mut Vec<usize>,
+) -> bool {
+    let clean: Vec<char> = word
+        .chars()
+        .filter(|c| c.is_alphabetic())
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect();
+    let clean_len = clean.len();
+    if clean_len < 3 {
+        return false;
+    }
+    let (clean_breaks, mute_final) = if lang == Lang::English {
+        (english_written_breaks(&clean), false)
+    } else {
+        romance_written_breaks(&clean, lang == Lang::Spanish)
+    };
+    let before = raw_breaks.len();
+    push_clean_breaks(word, offset, clean_len, clean_breaks, raw_breaks);
+    mute_final && raw_breaks.len() > before
+}
+
+fn is_romance_vowel_letter(ch: char) -> bool {
+    "aeiouyàâäáéèêëïîíôöóùûüúœæ".contains(ch)
+}
+
+/// Whether the letter at `i` is the vowel of a syllable. The `u` of "qu" and
+/// of "gue" / "gui", and a `y` used as a consonant ("yeux", "voyage"), are not.
+fn is_romance_vowel_at(chars: &[char], i: usize, spanish: bool) -> bool {
+    let ch = chars[i];
+    if !is_romance_vowel_letter(ch) {
+        return false;
+    }
+    let prev = i.checked_sub(1).map(|p| chars[p]);
+    let next = chars.get(i + 1).copied();
+    let next_is_vowel = next.is_some_and(is_romance_vowel_letter);
+    match ch {
+        'u' => match prev {
+            Some('q') => false,
+            Some('g') => !matches!(next, Some('e' | 'i' | 'y' | 'é' | 'è' | 'ê' | 'í')),
+            _ => true,
+        },
+        'y' if spanish => !next_is_vowel,
+        'y' => {
+            let prev_is_vowel = prev.is_some_and(is_romance_vowel_letter);
+            !(next_is_vowel && (i == 0 || prev_is_vowel))
+        }
+        _ => true,
+    }
+}
+
+/// Whether the vowel at `i`, which follows another vowel, starts a syllable
+/// of its own instead of being pronounced with it.
+fn is_romance_hiatus(chars: &[char], i: usize, spanish: bool) -> bool {
+    let prev = chars[i - 1];
+    let cur = chars[i];
+    let rest = &chars[i + 1..];
+    if spanish {
+        let strong = |ch: char| matches!(ch, 'a' | 'e' | 'o' | 'á' | 'é' | 'ó');
+        return (strong(prev) && strong(cur))
+            || matches!(cur, 'í' | 'ú')
+            || matches!(prev, 'í' | 'ú');
+    }
+    match cur {
+        // "na|ïf", "No|ël", "Sa|ül"; a final "ë" is mute ("aiguë").
+        'ï' | 'ü' => return true,
+        'ë' => return !rest.is_empty(),
+        // "po|ète", "a|érien", "cré|é".
+        'é' | 'è' | 'ê' if matches!(prev, 'a' | 'o' | 'é' | 'e') => return true,
+        _ => {}
+    }
+    match (prev, cur) {
+        // "ré|el" but "fée", "idées", "créent".
+        ('é', 'e') => !(rest.is_empty() || rest == ['s'] || rest == ['n', 't']),
+        // "thé|âtre", "gé|ant", "ré|union".
+        ('é', _) => true,
+        // "ca|ca|o", "cha|os" but "août", "saoul".
+        ('a', 'o') => !matches!(rest.first(), Some('u' | 'û')),
+        // "o|asis", "bo|a".
+        ('o', 'a') => true,
+        // "pa|ys", "pa|y|sage".
+        ('a', 'y') => rest.first().is_some_and(|next| !is_romance_vowel_letter(*next)),
+        // After a consonant joined to l or r: "cli|ent", "cri|er",
+        // "ou|bli|er" (but "mil|lion"), and not before a mute ending
+        // ("oublie", "crient").
+        ('i', _) => {
+            // "-ent" is a mute verb ending after "i" ("crient", "oublient"),
+            // except in "client".
+            let client = i >= 3 && chars[i - 3] == 'c' && chars[i - 2] == 'l';
+            let mute_ending = cur == 'e'
+                && (rest.is_empty()
+                    || rest == ['s']
+                    || (rest == ['n', 't'] && !client)
+                    || (rest == ['n', 't', 's'] && !client));
+            i >= 3
+                && matches!(chars[i - 2], 'l' | 'r')
+                && matches!(
+                    chars[i - 3],
+                    'b' | 'c' | 'd' | 'f' | 'g' | 'k' | 'p' | 't' | 'v'
+                )
+                && cur != 'i'
+                && !mute_ending
+        }
+        _ => false,
+    }
+}
+
+/// How many of the consonants between two vowels start the second syllable.
+fn romance_onset_len(cluster: &[char], spanish: bool) -> usize {
+    let n = cluster.len();
+    if n <= 1 {
+        return n;
+    }
+    let digraph = |a: char, b: char| {
+        matches!(
+            (a, b),
+            ('c', 'h') | ('p', 'h') | ('t', 'h') | ('g', 'h') | ('q', 'u') | ('g', 'u')
+        ) || (!spanish && (a, b) == ('g', 'n'))
+            || (spanish && matches!((a, b), ('l', 'l') | ('r', 'r')))
+    };
+    let liquid = |a: char, b: char| {
+        matches!(a, 'b' | 'c' | 'd' | 'f' | 'g' | 'k' | 'p' | 't' | 'v') && matches!(b, 'l' | 'r')
+    };
+    let (a, b) = (cluster[n - 2], cluster[n - 1]);
+    // A silent "h" follows the consonant before it: "au|jour|d'hui",
+    // "bo|nheur".
+    if b == 'h' && !digraph(a, b) {
+        return romance_onset_len(&cluster[..n - 1], spanish) + 1;
+    }
+    // "syn|chro", "am|phre".
+    if n >= 3 && matches!(b, 'l' | 'r') && digraph(cluster[n - 3], a) {
+        return 3;
+    }
+    if digraph(a, b) || liquid(a, b) {
+        return 2;
+    }
+    1
+}
+
+/// Breaks between the written syllables of a French or Spanish word, and
+/// whether the last syllable is a French mute one (an unaccented "e", alone
+/// or before a final "s", after a consonant).
+fn romance_written_breaks(chars: &[char], spanish: bool) -> (Vec<usize>, bool) {
+    let n = chars.len();
+    let mut nuclei: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        if !is_romance_vowel_at(chars, i, spanish) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < n
+            && is_romance_vowel_at(chars, i, spanish)
+            && !is_romance_hiatus(chars, i, spanish)
+        {
+            i += 1;
+        }
+        nuclei.push((start, i));
+    }
+
+    let mute_final = !spanish
+        && nuclei.len() >= 2
+        && nuclei.last().is_some_and(|&(start, end)| {
+            end == start + 1
+                && chars[start] == 'e'
+                && (chars[end..].is_empty() || chars[end..] == ['s'])
+        });
+    let breaks = nuclei
+        .windows(2)
+        .map(|pair| {
+            let (prev_end, next_start) = (pair[0].1, pair[1].0);
+            next_start - romance_onset_len(&chars[prev_end..next_start], spanish)
+        })
+        .collect();
+    (breaks, mute_final)
+}
+
+/// English: the syllables of [`english_syllable_breaks`], plus the final
+/// "-le" after a consonant ("ta|ble", "lit|tle") and a few vowels said apart
+/// ("be|ing", "li|on", "u|su|al").
+fn english_written_breaks(chars: &[char]) -> Vec<usize> {
+    let n = chars.len();
+    let final_le = n >= 4
+        && chars[n - 1] == 'e'
+        && chars[n - 2] == 'l'
+        && !is_basic_english_vowel(chars[n - 3])
+        && chars[n - 3] != 'l';
+    let is_vowel = |i: usize| is_english_vowel_at(chars, i) || (final_le && i == n - 1);
+    let is_hiatus = |i: usize| {
+        let (prev, cur) = (chars[i - 1], chars[i]);
+        let before = i.checked_sub(2).map(|p| chars[p]);
+        if chars[i..] == ['i', 'n', 'g'] {
+            return true;
+        }
+        match (prev, cur) {
+            ('i', 'a' | 'o' | 'u') => !matches!(before, Some('c' | 'g' | 's' | 't' | 'x')),
+            ('u', 'a') => !matches!(before, Some('q' | 'g')),
+            _ => false,
+        }
+    };
+
+    let mut nuclei: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        if !is_vowel(i) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < n && is_vowel(i) && !is_hiatus(i) {
+            i += 1;
+        }
+        nuclei.push((start, i));
+    }
+
+    let mut breaks = Vec::new();
+    for pair in nuclei.windows(2) {
+        let (prev_end, next_start) = (pair[0].1, pair[1].0);
+        let cluster = &chars[prev_end..next_start];
+        let break_pos = if final_le && next_start == n - 1 && cluster.len() >= 2 {
+            n - 3
+        } else if cluster.len() <= 1 || is_english_onset_cluster(cluster) {
+            prev_end
+        } else {
+            prev_end + 1
+        };
+        breaks.push(break_pos);
+    }
+    breaks
 }
 
 /// Hyphenate a single word and add break positions to raw_breaks.
@@ -395,11 +854,11 @@ fn is_apostrophe(ch: char) -> bool {
     ch == '\'' || ch == '\u{2019}'
 }
 
-pub fn syllable_count(text: &str, lang: &str) -> usize {
+pub fn syllable_count<'a>(text: &str, rules: impl Into<SyllableRules<'a>>) -> usize {
     if text.is_empty() {
         return 0;
     }
-    syllable_breaks(text, lang).len() + 1
+    syllable_breaks(text, rules).len() + 1
 }
 
 /// End of the highlighted prefix. The complete word crossing the reading line
@@ -427,16 +886,16 @@ pub fn read_highlight_end(text: &str, progress: f32) -> Option<usize> {
     Some(end)
 }
 
-pub fn read_highlight_end_from_timing(
+pub fn read_highlight_end_from_timing<'a>(
     text: &str,
     saved_ratios: &[f32],
-    lang: &str,
+    rules: impl Into<SyllableRules<'a>>,
     progress: f32,
 ) -> Option<usize> {
     if !(0.0..=1.0).contains(&progress) {
         return None;
     }
-    let visual_progress = visual_progress_from_timing(text, saved_ratios, lang, progress);
+    let visual_progress = visual_progress_from_timing(text, saved_ratios, rules, progress);
     read_highlight_end(text, visual_progress)
 }
 
@@ -515,13 +974,18 @@ pub fn default_ratios(count: usize) -> Vec<f32> {
     vec![r; count]
 }
 
-pub fn timing_ratios(text: &str, saved_ratios: &[f32], lang: &str) -> Vec<f32> {
+pub fn timing_ratios<'a>(
+    text: &str,
+    saved_ratios: &[f32],
+    rules: impl Into<SyllableRules<'a>>,
+) -> Vec<f32> {
     if text.is_empty() {
         return Vec::new();
     }
 
-    let breaks = syllable_breaks(text, lang);
-    if let Some(ratios) = adapted_ratios_for_breaks(text, saved_ratios, &breaks) {
+    let rules = rules.into();
+    let breaks = syllable_breaks(text, rules);
+    if let Some(ratios) = adapted_ratios_for_breaks(text, saved_ratios, &breaks, rules) {
         return ratios;
     }
 
@@ -538,71 +1002,146 @@ pub fn timing_ratios(text: &str, saved_ratios: &[f32], lang: &str) -> Vec<f32> {
 /// the timing work must survive: instead of falling back to the defaults, the
 /// saved timings are carried over to the new syllables. Returns `None` when no
 /// valid timing was saved or the text has a single syllable.
-pub fn adapted_saved_ratios(text: &str, saved_ratios: &[f32], lang: &str) -> Option<Vec<f32>> {
-    adapted_ratios_for_breaks(text, saved_ratios, &syllable_breaks(text, lang))
+pub fn adapted_saved_ratios<'a>(
+    text: &str,
+    saved_ratios: &[f32],
+    rules: impl Into<SyllableRules<'a>>,
+) -> Option<Vec<f32>> {
+    let rules = rules.into();
+    adapted_ratios_for_breaks(text, saved_ratios, &syllable_breaks(text, rules), rules)
+}
+
+/// Saved karaoke timings of `text` once its syllables change from
+/// `old_rules` to `new_rules` (a pin switched a word between its spoken and
+/// written syllables): every letter keeps its place in time, the slot of a
+/// syllable cut in two is shared between its halves. `None` when no valid
+/// timing was saved; an empty list when the text is left with one syllable.
+pub fn ratios_after_rules_change(
+    text: &str,
+    saved_ratios: &[f32],
+    old_rules: SyllableRules<'_>,
+    new_rules: SyllableRules<'_>,
+) -> Option<Vec<f32>> {
+    if !valid_saved_ratios(saved_ratios) {
+        return None;
+    }
+    let old_breaks = syllable_breaks(text, old_rules);
+    let new_breaks = syllable_breaks(text, new_rules);
+    if new_breaks.is_empty() {
+        return Some(Vec::new());
+    }
+    if saved_ratios.len() == new_breaks.len() + 1 && new_breaks == old_breaks {
+        return Some(normalized_ratios(saved_ratios));
+    }
+    // Read against the syllables they were saved for, so that a timing made
+    // before a syllable was merged comes back when its pin is turned on.
+    let source_breaks = if saved_ratios.len() == old_breaks.len() + 1 {
+        old_breaks
+    } else {
+        saved_source_breaks(text, saved_ratios, old_rules)?
+    };
+    warp_ratios_to_breaks(text, saved_ratios, &source_breaks, &new_breaks)
 }
 
 const SYLLABLE_LANGUAGE_CODES: [&str; 3] = ["fr-fr", "en-us", "es-419"];
+
+fn valid_saved_ratios(saved_ratios: &[f32]) -> bool {
+    !saved_ratios.is_empty()
+        && saved_ratios
+            .iter()
+            .all(|ratio| ratio.is_finite() && *ratio > 0.0)
+}
+
+/// Where the syllables of timings saved for another syllable count started
+/// in the text: the syllables of the versions up to 5.4 ("aper|çois",
+/// "d'|ac|cord", "mon|de"), the syllabification of another language when one
+/// matches (the band's language was changed before the timings were
+/// converted), otherwise evenly spread over the text (the text itself was
+/// changed).
+fn saved_source_breaks(
+    text: &str,
+    saved_ratios: &[f32],
+    rules: SyllableRules<'_>,
+) -> Option<Vec<usize>> {
+    let char_count = text.chars().count();
+    if saved_ratios.len() < 2 || char_count == 0 {
+        return None;
+    }
+    let matches = |candidate: &Vec<usize>| candidate.len() + 1 == saved_ratios.len();
+    let legacy = legacy_syllable_breaks(text, rules);
+    if matches(&legacy) {
+        return Some(legacy);
+    }
+    for code in SYLLABLE_LANGUAGE_CODES {
+        if code == rules.lang {
+            continue;
+        }
+        let other = SyllableRules::new(code, rules.split_words);
+        let current = syllable_breaks(text, other);
+        if matches(&current) {
+            return Some(current);
+        }
+        let legacy = legacy_syllable_breaks(text, other);
+        if matches(&legacy) {
+            return Some(legacy);
+        }
+    }
+    Some(
+        (1..saved_ratios.len())
+            .map(|index| index * char_count / saved_ratios.len())
+            .collect(),
+    )
+}
 
 fn adapted_ratios_for_breaks(
     text: &str,
     saved_ratios: &[f32],
     breaks: &[usize],
+    rules: SyllableRules<'_>,
 ) -> Option<Vec<f32>> {
-    if saved_ratios.is_empty()
-        || !saved_ratios
-            .iter()
-            .all(|ratio| ratio.is_finite() && *ratio > 0.0)
-    {
+    if !valid_saved_ratios(saved_ratios) {
         return None;
     }
     let count = breaks.len() + 1;
     if saved_ratios.len() == count {
         return Some(normalized_ratios(saved_ratios));
     }
-    let char_count = text.chars().count();
-    if breaks.is_empty() || saved_ratios.len() < 2 || char_count == 0 {
+    if breaks.is_empty() {
         return None;
     }
-
-    // Where the saved syllables started in the text: the syllabification of
-    // another language when one matches (the band's language was changed
-    // before the timings were converted), otherwise evenly spread over the
-    // text (the text itself was changed).
-    let source_breaks = SYLLABLE_LANGUAGE_CODES
-        .iter()
-        .map(|code| syllable_breaks(text, code))
-        .find(|candidate| candidate.len() + 1 == saved_ratios.len())
-        .unwrap_or_else(|| {
-            (1..saved_ratios.len())
-                .map(|index| index * char_count / saved_ratios.len())
-                .collect()
-        });
+    let source_breaks = saved_source_breaks(text, saved_ratios, rules)?;
     warp_ratios_to_breaks(text, saved_ratios, &source_breaks, breaks)
 }
 
 /// Saved timings of `text` syllabified in `from`, expressed for its syllables
 /// in `to`: every letter keeps its place in time, only the boundaries move.
 /// `None` when nothing valid was saved for the `from` syllables.
-pub fn ratios_for_other_language(
+pub fn ratios_for_other_language<'a>(
     text: &str,
     saved_ratios: &[f32],
-    from: &str,
-    to: &str,
+    from: impl Into<SyllableRules<'a>>,
+    to: impl Into<SyllableRules<'a>>,
 ) -> Option<Vec<f32>> {
-    if from == to || text.is_empty() {
+    let (from, to) = (from.into(), to.into());
+    if from.lang == to.lang || text.is_empty() {
         return None;
     }
-    let source_breaks = syllable_breaks(text, from);
+    let mut source_breaks = syllable_breaks(text, from);
     let target_breaks = syllable_breaks(text, to);
-    if source_breaks == target_breaks {
+    if !saved_ratios
+        .iter()
+        .all(|ratio| ratio.is_finite() && *ratio > 0.0)
+    {
         return None;
     }
-    if saved_ratios.len() != source_breaks.len() + 1
-        || !saved_ratios
-            .iter()
-            .all(|ratio| ratio.is_finite() && *ratio > 0.0)
-    {
+    if saved_ratios.len() != source_breaks.len() + 1 {
+        // Timings saved when French elisions were cut apart.
+        source_breaks = legacy_syllable_breaks(text, from);
+        if saved_ratios.len() != source_breaks.len() + 1 {
+            return None;
+        }
+    }
+    if source_breaks == target_breaks {
         return None;
     }
     if target_breaks.is_empty() {
@@ -682,8 +1221,8 @@ pub struct TextEditTimings {
 }
 
 /// Char index of the end of syllable `index` of `text`.
-pub fn syllable_end(text: &str, lang: &str, index: usize) -> usize {
-    syllable_breaks(text, lang)
+pub fn syllable_end<'a>(text: &str, rules: impl Into<SyllableRules<'a>>, index: usize) -> usize {
+    syllable_breaks(text, rules)
         .get(index)
         .copied()
         .unwrap_or_else(|| text.chars().count())
@@ -691,13 +1230,13 @@ pub fn syllable_end(text: &str, lang: &str, index: usize) -> usize {
 
 /// Saved karaoke timings after the text of a line changed from `old_text` to
 /// `new_text`: see [`timings_after_text_edit`].
-pub fn ratios_after_text_edit(
+pub fn ratios_after_text_edit<'a>(
     old_text: &str,
     new_text: &str,
     saved_ratios: &[f32],
-    lang: &str,
+    rules: impl Into<SyllableRules<'a>>,
 ) -> Option<Vec<f32>> {
-    timings_after_text_edit(old_text, new_text, saved_ratios, lang, None).map(|t| t.ratios)
+    timings_after_text_edit(old_text, new_text, saved_ratios, rules, None).map(|t| t.ratios)
 }
 
 /// Saved karaoke timings after the text of a line changed from `old_text` to
@@ -711,15 +1250,16 @@ pub fn ratios_after_text_edit(
 /// `reserved`: passed back on the next edit, typing there again takes the
 /// whole slot back. Returns `None` when no timing was saved, so untouched
 /// lines keep their default timing.
-pub fn timings_after_text_edit(
+pub fn timings_after_text_edit<'a>(
     old_text: &str,
     new_text: &str,
     saved_ratios: &[f32],
-    lang: &str,
+    rules: impl Into<SyllableRules<'a>>,
     reserved: Option<ReservedSlot>,
 ) -> Option<TextEditTimings> {
-    let old_breaks = syllable_breaks(old_text, lang);
-    let old_ratios = adapted_ratios_for_breaks(old_text, saved_ratios, &old_breaks)
+    let rules = rules.into();
+    let old_breaks = syllable_breaks(old_text, rules);
+    let old_ratios = adapted_ratios_for_breaks(old_text, saved_ratios, &old_breaks, rules)
         .or_else(|| (old_breaks.is_empty() && !saved_ratios.is_empty()).then(|| vec![1.0]))?;
     if old_text == new_text {
         return Some(TextEditTimings {
@@ -727,7 +1267,7 @@ pub fn timings_after_text_edit(
             reserved,
         });
     }
-    let new_breaks = syllable_breaks(new_text, lang);
+    let new_breaks = syllable_breaks(new_text, rules);
     if new_breaks.is_empty() {
         return Some(TextEditTimings {
             ratios: vec![1.0],
@@ -993,21 +1533,22 @@ pub fn timings_after_text_edit(
 /// their length. Returns `None` when no timing was saved, so untouched lines
 /// keep their default timing, and falls back on [`timings_after_text_edit`]
 /// when the syllables around the section cannot be matched.
-pub fn ratios_after_section_replace(
+pub fn ratios_after_section_replace<'a>(
     old_text: &str,
     new_text: &str,
     section: (usize, usize),
     inserted: usize,
     saved_ratios: &[f32],
-    lang: &str,
+    rules: impl Into<SyllableRules<'a>>,
 ) -> Option<Vec<f32>> {
-    let old_breaks = syllable_breaks(old_text, lang);
-    let old_ratios = adapted_ratios_for_breaks(old_text, saved_ratios, &old_breaks)
+    let rules = rules.into();
+    let old_breaks = syllable_breaks(old_text, rules);
+    let old_ratios = adapted_ratios_for_breaks(old_text, saved_ratios, &old_breaks, rules)
         .or_else(|| (old_breaks.is_empty() && !saved_ratios.is_empty()).then(|| vec![1.0]))?;
     if old_text == new_text {
         return Some(saved_ratios.to_vec());
     }
-    let fallback = || ratios_after_text_edit(old_text, new_text, saved_ratios, lang);
+    let fallback = || ratios_after_text_edit(old_text, new_text, saved_ratios, rules);
     let old_len = old_text.chars().count();
     let new_len = new_text.chars().count();
     let start = section.0.min(old_len);
@@ -1016,7 +1557,7 @@ pub fn ratios_after_section_replace(
     if new_len + (end - start) != old_len + inserted {
         return fallback();
     }
-    let new_breaks = syllable_breaks(new_text, lang);
+    let new_breaks = syllable_breaks(new_text, rules);
     if new_breaks.is_empty() {
         return Some(vec![1.0]);
     }
@@ -1096,30 +1637,38 @@ pub fn active_syllable_local_progress(ratios: &[f32], progress: f32) -> Option<f
     Some(1.0)
 }
 
-pub fn visual_progress_from_timing(
+pub fn visual_progress_from_timing<'a>(
     text: &str,
     saved_ratios: &[f32],
-    lang: &str,
+    rules: impl Into<SyllableRules<'a>>,
     progress: f32,
 ) -> f32 {
     if text.is_empty() {
         return 0.0;
     }
 
+    let rules = rules.into();
     let progress = progress.clamp(0.0, 1.0);
-    let breaks = syllable_breaks(text, lang);
+    let breaks = syllable_breaks(text, rules);
     if breaks.is_empty() {
         return progress;
     }
 
-    let timing = timing_ratios(text, saved_ratios, lang);
+    let timing = timing_ratios(text, saved_ratios, rules);
     let visual = default_ratios_from_breaks(text, &breaks);
+    visual_progress_between(&timing, &visual, progress)
+}
+
+/// Place reached in the drawn text (0 to 1) at `progress` of the time of a
+/// line whose syllables last `timing` and are drawn over `visual`.
+pub fn visual_progress_between(timing: &[f32], visual: &[f32], progress: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
     if timing.len() != visual.len() || timing.is_empty() {
         return progress;
     }
 
-    let timing = normalized_ratios(&timing);
-    let visual = normalized_ratios(&visual);
+    let timing = normalized_ratios(timing);
+    let visual = normalized_ratios(visual);
     let mut timing_start = 0.0;
     let mut visual_start = 0.0;
     for (timing_ratio, visual_ratio) in timing.iter().zip(visual.iter()) {
@@ -1149,31 +1698,33 @@ pub struct DialogueSplit {
     pub second_ratios: Vec<f32>,
 }
 
-pub fn split_dialogue_at_syllable_progress(
+pub fn split_dialogue_at_syllable_progress<'a>(
     text: &str,
     saved_ratios: &[f32],
-    lang: &str,
+    rules: impl Into<SyllableRules<'a>>,
     progress: f32,
 ) -> Option<DialogueSplit> {
-    let breaks = syllable_breaks(text, lang);
-    let ratios = timing_ratios(text, saved_ratios, lang);
+    let rules = rules.into();
+    let breaks = syllable_breaks(text, rules);
+    let ratios = timing_ratios(text, saved_ratios, rules);
     let break_index = nearest_break_index_for_progress(&ratios, progress)?;
-    split_dialogue_at_break_index(text, saved_ratios, lang, &breaks, break_index)
+    split_dialogue_at_break_index(text, saved_ratios, rules, &breaks, break_index)
 }
 
-pub fn split_dialogue_at_syllable_cursor(
+pub fn split_dialogue_at_syllable_cursor<'a>(
     text: &str,
     saved_ratios: &[f32],
-    lang: &str,
+    rules: impl Into<SyllableRules<'a>>,
     cursor_pos: usize,
 ) -> Option<DialogueSplit> {
-    let breaks = syllable_breaks(text, lang);
+    let rules = rules.into();
+    let breaks = syllable_breaks(text, rules);
     let break_index = breaks
         .iter()
         .enumerate()
         .min_by_key(|(_, split_char)| split_char.abs_diff(cursor_pos))
         .map(|(index, _)| index)?;
-    split_dialogue_at_break_index(text, saved_ratios, lang, &breaks, break_index)
+    split_dialogue_at_break_index(text, saved_ratios, rules, &breaks, break_index)
 }
 
 fn nearest_break_index_for_progress(ratios: &[f32], progress: f32) -> Option<usize> {
@@ -1198,7 +1749,7 @@ fn nearest_break_index_for_progress(ratios: &[f32], progress: f32) -> Option<usi
 fn split_dialogue_at_break_index(
     text: &str,
     saved_ratios: &[f32],
-    lang: &str,
+    rules: SyllableRules<'_>,
     breaks: &[usize],
     break_index: usize,
 ) -> Option<DialogueSplit> {
@@ -1208,7 +1759,7 @@ fn split_dialogue_at_break_index(
         return None;
     }
 
-    let ratios = timing_ratios(text, saved_ratios, lang);
+    let ratios = timing_ratios(text, saved_ratios, rules);
     if ratios.len() != breaks.len() + 1 {
         return None;
     }
@@ -1239,8 +1790,9 @@ fn split_dialogue_at_break_index(
         return None;
     }
 
-    let first_ratios = ratios_for_split_piece(&first_text, &normalized[..=break_index], lang);
-    let second_ratios = ratios_for_split_piece(&second_text, &normalized[break_index + 1..], lang);
+    let first_ratios = ratios_for_split_piece(&first_text, &normalized[..=break_index], rules);
+    let second_ratios =
+        ratios_for_split_piece(&second_text, &normalized[break_index + 1..], rules);
 
     Some(DialogueSplit {
         split_char,
@@ -1252,13 +1804,13 @@ fn split_dialogue_at_break_index(
     })
 }
 
-fn ratios_for_split_piece(text: &str, ratios: &[f32], lang: &str) -> Vec<f32> {
+fn ratios_for_split_piece(text: &str, ratios: &[f32], rules: SyllableRules<'_>) -> Vec<f32> {
     if ratios.is_empty() {
         return Vec::new();
     }
 
     let ratios = normalized_ratios(ratios);
-    if syllable_count(text, lang) == ratios.len() {
+    if syllable_count(text, rules) == ratios.len() {
         ratios
     } else {
         Vec::new()
@@ -1299,17 +1851,17 @@ mod tests {
 
     #[test]
     fn replacing_a_section_by_as_many_syllables_keeps_every_slot() {
-        // "bonjour" (bon|jour) "le" "monde" (mon|de): five syllables, custom
+        // "bonjour" (bon|jour) "le" "matin" (ma|tin): five syllables, custom
         // timings.
-        let old = "bonjour le monde";
+        let old = "bonjour le matin";
         assert_eq!(syllable_count(old, "fr-fr"), 5);
         let saved = [0.1, 0.3, 0.2, 0.25, 0.15];
         // The word "bonjour" (characters 0..7) becomes "salut" (sa|lut).
-        let new = "salut le monde";
+        let new = "salut le matin";
         assert_eq!(syllable_count(new, "fr-fr"), 5);
         let ratios = ratios_after_section_replace(old, new, (0, 7), 5, &saved, "fr-fr").unwrap();
         assert!(close(&ratios, &saved), "{ratios:?}");
-        // "monde" (mon|de) becomes "la mer" (la|mer): the two slots stay.
+        // "matin" (ma|tin) becomes "la mer" (la|mer): the two slots stay.
         let new = "bonjour le la mer";
         assert_eq!(syllable_count(new, "fr-fr"), 5);
         let ratios = ratios_after_section_replace(old, new, (11, 16), 6, &saved, "fr-fr").unwrap();
@@ -1318,16 +1870,16 @@ mod tests {
 
     #[test]
     fn replacing_a_section_by_another_syllable_count_shares_its_time() {
-        let old = "bonjour le monde";
+        let old = "bonjour le matin";
         let saved = [0.1, 0.3, 0.2, 0.25, 0.15];
         // "bonjour" (two slots, 0.4 in all) becomes "chat" (one syllable).
-        let new = "chat le monde";
+        let new = "chat le matin";
         assert_eq!(syllable_count(new, "fr-fr"), 4);
         let ratios = ratios_after_section_replace(old, new, (0, 7), 4, &saved, "fr-fr").unwrap();
         assert!(close(&ratios, &[0.4, 0.2, 0.25, 0.15]), "{ratios:?}");
         // "le" (one slot, 0.2) becomes "petit" (pe|tit): the slot is shared,
         // the other words keep their timing.
-        let new = "bonjour petit monde";
+        let new = "bonjour petit matin";
         assert_eq!(syllable_count(new, "fr-fr"), 6);
         let ratios = ratios_after_section_replace(old, new, (8, 10), 5, &saved, "fr-fr").unwrap();
         assert_eq!(ratios.len(), 6);
@@ -1340,8 +1892,8 @@ mod tests {
     fn replacing_a_section_without_saved_timings_changes_nothing() {
         assert_eq!(
             ratios_after_section_replace(
-                "bonjour le monde",
-                "salut le monde",
+                "bonjour le matin",
+                "salut le matin",
                 (0, 7),
                 5,
                 &[],
@@ -1375,18 +1927,8 @@ mod tests {
 
     #[test]
     fn test_contraction_jadore() {
-        let breaks = syllable_breaks("J'adore", "fr-fr");
-        // J' | a | do | re → at least 3 breaks
-        assert!(
-            breaks.len() >= 2,
-            "J'adore should have >=2 breaks, got {:?}",
-            breaks
-        );
-        assert!(
-            breaks.contains(&2),
-            "Should break after J' (pos 2), got {:?}",
-            breaks
-        );
+        // "J'a|dore": the elision stays with "a", the mute "re" with "do".
+        assert_eq!(syllable_breaks("J'adore", "fr-fr"), vec![3]);
     }
 
     #[test]
@@ -1732,5 +2274,202 @@ mod tests {
         assert_eq!(split.second_text, "Ça va");
         assert!(!split.first_text.ends_with('-'));
         assert!(!split.second_text.starts_with('-'));
+    }
+
+    /// `text` with a `|` at every syllable break.
+    fn cut(text: &str, lang: &str, split_words: &[&str]) -> String {
+        let words: Vec<String> = split_words.iter().map(|word| word.to_string()).collect();
+        let breaks = syllable_breaks(text, SyllableRules::new(lang, &words));
+        let mut out = String::new();
+        for (index, ch) in text.chars().enumerate() {
+            if breaks.contains(&index) {
+                out.push('|');
+            }
+            out.push(ch);
+        }
+        out
+    }
+
+    #[test]
+    fn french_words_follow_their_spoken_syllables() {
+        for expected in [
+            "a|per|çois",
+            "bon|jour",
+            "cha|teau",
+            "ma|gni|fique",
+            "spa|ghet|tis",
+            "au|jour|d'hui",
+            "bo|nheur",
+            "mil|lion",
+            "bi|bli|o|thèque",
+            "in|cro|yable",
+            "si|tua|tion",
+            "cons|cience",
+            "po|é|sie",
+            "peut-|être",
+            "psy|cho|logue",
+            "thé|âtre",
+            "cli|ent",
+            "ou|bli|er",
+            "pa|ys",
+            "No|ël",
+            "voi|ture",
+            "tra|vail|lent",
+            "gre|nouille",
+            "quel|qu'un",
+            "fa|mille",
+            "ex|trê|me|ment",
+            "ac|cord",
+            "es|pion",
+            "mieux",
+            "oui",
+            "août",
+        ] {
+            let text = expected.replace('|', "");
+            assert_eq!(cut(&text, "fr-fr", &[]), expected);
+        }
+    }
+
+    #[test]
+    fn a_french_mute_final_syllable_is_cut_only_when_its_pin_is_on() {
+        for (word, spoken, written) in [
+            ("monstres", "monstres", "mons|tres"),
+            ("monde", "monde", "mon|de"),
+            ("table", "table", "ta|ble"),
+            ("quatre", "quatre", "qua|tre"),
+            ("elle", "elle", "el|le"),
+            ("petite", "pe|tite", "pe|ti|te"),
+            ("magnifique", "ma|gni|fique", "ma|gni|fi|que"),
+            ("lorsque", "lorsque", "lors|que"),
+        ] {
+            assert_eq!(cut(word, "fr-fr", &[]), spoken);
+            assert_eq!(cut(word, "fr-fr", &[word]), written);
+            let pins = syllable_split_pins(word, "fr-fr");
+            assert_eq!(pins.len(), 1, "{word}");
+            assert_eq!(pins[0].word, word);
+            assert!(!pins[0].active);
+        }
+        // No mute syllable, no pin: one syllable, a sounded ending, a final
+        // "e" that only lengthens a vowel.
+        for word in ["que", "les", "bonjour", "café", "vie", "idée", "joue", "moment"] {
+            assert!(syllable_split_pins(word, "fr-fr").is_empty(), "{word}");
+        }
+    }
+
+    #[test]
+    fn a_pin_cuts_every_occurrence_of_its_word_and_sits_above_the_added_syllable() {
+        let text = "Les monstres, ces Monstres !";
+        assert_eq!(cut(text, "fr-fr", &[]), "Les |monstres, |ces |Monstres !");
+        assert_eq!(
+            cut(text, "fr-fr", &["monstres"]),
+            "Les |mons|tres, |ces |Mons|tres !"
+        );
+        let words = vec!["monstres".to_string()];
+        let pins = syllable_split_pins(text, SyllableRules::new("fr-fr", &words));
+        assert_eq!(pins.len(), 2);
+        assert!(pins.iter().all(|pin| pin.active && pin.word == "monstres"));
+        assert_eq!((pins[0].start, pins[0].split_at, pins[0].end), (4, 8, 12));
+    }
+
+    #[test]
+    fn liaisons_are_offered_between_a_silent_consonant_and_a_vowel() {
+        let pairs = |text: &str| -> Vec<String> {
+            liaison_sites(text, "fr-fr")
+                .into_iter()
+                .map(|site| site.pair)
+                .collect()
+        };
+        assert_eq!(pairs("les amis"), vec!["les amis"]);
+        assert_eq!(pairs("rien à rajouter"), vec!["rien à"]);
+        assert_eq!(
+            pairs("un petit homme chez elle"),
+            vec!["petit homme", "chez elle"]
+        );
+        assert_eq!(pairs("deux enfants, vas-y"), vec!["deux enfants", "vas y"]);
+        assert_eq!(
+            pairs("c'est un grand ami"),
+            vec!["cest un", "grand ami"]
+        );
+        assert_eq!(
+            pairs("trop aimable, premier étage, neuf ans"),
+            vec!["trop aimable", "premier étage", "neuf ans"]
+        );
+        // Not after "et", a sounded consonant or a pause, nor before a
+        // consonant, nor in another language.
+        assert!(pairs("lui et elle").is_empty());
+        assert!(pairs("avec elle").is_empty());
+        assert!(pairs("les amis, on y va").iter().all(|pair| pair != "amis on"));
+        assert!(pairs("les chats").is_empty());
+        assert!(liaison_sites("les amis", "en-us").is_empty());
+        // The arrow goes from the consonant to the vowel.
+        let site = &liaison_sites("les amis", "fr-fr")[0];
+        assert_eq!((site.from, site.to), (2, 4));
+    }
+
+    #[test]
+    fn a_french_elision_stays_with_the_syllable_it_starts() {
+        assert_eq!(cut("d'accord", "fr-fr", &[]), "d'ac|cord");
+        assert_eq!(cut("J'adore l'eau", "fr-fr", &[]), "J'a|dore |l'eau");
+        assert_eq!(cut("qu'est-ce qu'il dit", "fr-fr", &[]), "qu'est-|ce |qu'il |dit");
+        // The pin of the word after the elision is keyed by the word alone.
+        let pins = syllable_split_pins("l'arbre", "fr-fr");
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].word, "arbre");
+        assert_eq!(cut("l'arbre", "fr-fr", &["arbre"]), "l'ar|bre");
+    }
+
+    #[test]
+    fn timings_saved_for_the_former_syllables_keep_every_letter_in_place() {
+        // "d'|ac|cord" was three syllables; "d'" joins the next one.
+        let adapted = timing_ratios("d'accord", &[0.2, 0.3, 0.5], "fr-fr");
+        assert!(close(&adapted, &[0.5, 0.5]), "{adapted:?}");
+        // "aper|çois" gains the boundary after "a", inside its former slot.
+        let adapted = timing_ratios("aperçois", &[0.6, 0.4], "fr-fr");
+        assert_eq!(adapted.len(), 3);
+        assert!((adapted[0] + adapted[1] - 0.6).abs() < 1e-4, "{adapted:?}");
+        assert!((adapted[2] - 0.4).abs() < 1e-4, "{adapted:?}");
+        // "le |mon|de": the mute syllable joins "mon"...
+        let saved = [0.2, 0.5, 0.3];
+        let adapted = timing_ratios("le monde", &saved, "fr-fr");
+        assert!(close(&adapted, &[0.2, 0.8]), "{adapted:?}");
+        // ...and turning its pin on brings the saved boundary back.
+        let words = vec!["monde".to_string()];
+        let pinned = ratios_after_rules_change(
+            "le monde",
+            &saved,
+            SyllableRules::from("fr-fr"),
+            SyllableRules::new("fr-fr", &words),
+        )
+        .unwrap();
+        assert!(close(&pinned, &saved), "{pinned:?}");
+    }
+
+    #[test]
+    fn switching_a_pin_splits_the_slot_of_the_word_and_gives_it_back() {
+        let text = "les monstres";
+        let words = vec!["monstres".to_string()];
+        let off = SyllableRules::from("fr-fr");
+        let on = SyllableRules::new("fr-fr", &words);
+        let split = ratios_after_rules_change(text, &[0.3, 0.7], off, on).unwrap();
+        assert!(close(&split, &[0.3, 0.35, 0.35]), "{split:?}");
+        let merged = ratios_after_rules_change(text, &split, on, off).unwrap();
+        assert!(close(&merged, &[0.3, 0.7]), "{merged:?}");
+        // A line that never had timings keeps none.
+        assert_eq!(ratios_after_rules_change(text, &[], off, on), None);
+        // A line left with one syllable has nothing to time.
+        assert_eq!(
+            ratios_after_rules_change("monstres", &[0.5, 0.5], on, off),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn english_and_spanish_keep_their_syllables_and_offer_the_missing_ones() {
+        assert_eq!(cut("tambourine", "en-us", &[]), "tam|bou|rine");
+        assert_eq!(cut("casa bonita", "es-419", &[]), "ca|sa |bo|ni|ta");
+        for pin in syllable_split_pins("the little table", "en-us") {
+            let on = cut("the little table", "en-us", &[pin.word.as_str()]);
+            assert!(on.matches('|').count() > 2, "{on}");
+        }
     }
 }

@@ -1,5 +1,125 @@
 # 6.0.0
 
+## Nouvel onglet Traitement : retirer la voix d'un audio
+
+Un nouvel onglet **Traitement**, juste avant Enregistrement, retire la voix
+d'un audio pour n'en garder que la musique et les bruitages, isole une voix,
+sépare des instruments ou nettoie un enregistrement. Disponible sur Windows
+64 bits.
+
+- **Apporter un son.** Glissez un audio ou une vidéo dans l'onglet, cliquez
+  sur **Importer un audio** ou sur **Audio de la vidéo**. Depuis les fichiers
+  du projet (`Ctrl + L`), clic droit sur une vidéo ou un audio > **Envoyer
+  dans Traitement**. Pour une vidéo, c'est sa piste son qui est traitée ; les
+  fichiers du projet ne sont jamais modifiés.
+- **Écouter et comparer.** L'audio d'origine s'affiche en haut, chaque piste
+  produite en dessous avec sa forme d'onde. Un clic sur une piste l'écoute à
+  cet endroit : on passe de l'original au résultat sans perdre sa place.
+  `Ctrl + molette` zoome.
+- **Traitements en chaîne.** Le traitement s'applique à la piste en écoute,
+  d'origine ou déjà traitée : on peut retirer la voix, puis séparer les
+  instruments de l'instrumental obtenu. Chaque piste produite est décalée
+  sous celle dont elle descend, reliée par une barre, et dit d'où elle vient.
+  Chacune se retire séparément avec sa croix (l'instrumental sans la voix,
+  par exemple), avec les pistes qui en descendent.
+- **Garder un résultat.** **+ Projet** ajoute la piste comme nouvel audio
+  dans les fichiers du projet (`Ctrl + L`) : le fichier est écrit à côté du
+  projet, sans rien remplacer, et peut ensuite servir d'instrumental à une
+  bande. **Exporter** l'écrit où vous voulez en WAV, FLAC, MP3, OGG ou M4A,
+  **Tout exporter** écrit toutes les pistes d'un coup. Une piste ni ajoutée
+  ni exportée est perdue à la fermeture de Coquerythmo.
+- **Neuf traitements**, à télécharger selon vos besoins depuis le
+  **Catalogue des modèles** : Retirer la voix (Mel-Band RoFormer Inst FV7z de
+  Gabox), Isoler la voix, Séparer les instruments en 6 pistes (voix,
+  batterie, basse, guitare, piano, autres), Retirer le bruit de fond, Retirer
+  la réverbération, Isoler les respirations, Retirer la foule, Séparer voix
+  d'homme et de femme, Séparer voix principale et chœurs. Chaque modèle fait
+  200 à 900 Mo ; plusieurs peuvent se télécharger en même temps. La colonne
+  de gauche liste les modèles installés et en cours de téléchargement.
+- **Moteur de traitement.** Sa fenêtre s'ouvre à la première visite de
+  l'onglet. Il faut **un PC puissant** : une carte graphique NVIDIA RTX
+  (série 4000 conseillée) avec 8 Go de mémoire vidéo. La fenêtre affiche
+  votre carte ; sans carte NVIDIA, le traitement fonctionne mais il est très
+  lent. Vous y **choisissez le dossier d'installation** (environ 3,5 Go à
+  télécharger, une dizaine sur le disque) : tout est rangé dans un
+  sous-dossier `coquerythmo-processing`. L'installation continue fenêtre
+  fermée, et un téléchargement interrompu reprend où il s'était arrêté.
+- **Pendant le traitement**, la vitesse et le temps restant sont affichés et
+  l'on peut travailler dans les autres onglets. **Qualité : rapide** (par
+  défaut) ou **maximale**, environ deux fois plus longue. Si la mémoire vidéo
+  manque, les réglages se réduisent tout seuls au lieu d'échouer.
+- **Tout se désinstalle** : un modèle depuis la colonne de gauche ou le
+  catalogue, le moteur ou l'ensemble depuis sa fenêtre, après un second clic
+  de confirmation. Seuls les fichiers installés par Coquerythmo sont effacés.
+  Si le dossier choisi n'est pas celui de Coquerythmo, faites **Tout
+  désinstaller** avant de désinstaller Coquerythmo.
+- **Raccourcis clavier** propres à l'onglet : `Ctrl + Entrée` lance le
+  traitement, `Ctrl + Maj + Entrée` l'annule, `Ctrl + ↑` / `↓` change de
+  piste écoutée, `Ctrl + Maj + ↑` / `↓` de modèle, `Ctrl + I` importe,
+  `Ctrl + E` exporte, `Ctrl + P` ajoute au projet, `Ctrl + M` ouvre le
+  catalogue, `Ctrl + B` bascule la qualité. Ils sont listés dans le panneau
+  des raccourcis et dans [`RACCOURCIS_CLAVIER.md`](RACCOURCIS_CLAVIER.md).
+- **Accessible aux personnes malvoyantes.** Tout l'onglet se pilote au
+  clavier et au lecteur d'écran : `Tab` atteint chaque bouton, modèle, audio
+  et piste, même hors de l'écran, `↑` / `↓` passent à l'élément voisin,
+  `Suppr` retire celui qui a le focus. Chaque élément est lu avec son état et
+  son raccourci, les fenêtres lisent leur texte à l'ouverture, les actions et
+  la progression sont annoncées, et un bouton qui ne peut pas agir dit
+  pourquoi. Pour la basse vision : textes plus grands, contour de focus épais
+  et doublé, bordure claire sur ce qui est sélectionné.
+
+## Karaoké : caler les syllabes au clavier
+
+Sur une ligne karaoké sélectionnée, tout se règle au clavier avec `Alt` :
+les poignées rouges en haut, les points et les liaisons en dessous.
+
+- **Parcourir.** `Alt + ←` / `Alt + →` passe d'une poignée à l'autre (au
+  premier appui, celle de la syllabe sous le curseur de lecture).
+  `Alt + ↓` descend sur les points et les liaisons, que les mêmes flèches
+  parcourent, `Alt + ↑` remonte aux poignées. Ce qui est choisi est entouré
+  d'un halo clair et lu avec son rang et son état.
+- **Basculer.** `Entrée` active ou non le point, change la liaison (faite,
+  non faite, non indiquée), ou pose la poignée là où elle est (les réglages
+  suivants s'arrêtent à elle, un second appui la libère).
+- **Déplacer une poignée.** `Ctrl + Alt + ←` / `→` la déplace d'une image.
+- **Caler en écoutant.** `Ctrl + Alt + Espace` place la poignée au curseur de
+  lecture et passe à la suivante : on lance la lecture et on appuie au début
+  de chaque syllabe.
+- `Échap` revient à la ligne.
+- Le réglage suit les mêmes règles qu'à la souris : les autres poignées
+  suivent en proportion, les poignées posées ne bougent plus.
+- Chaque action est annoncée, et les raccourcis apparaissent dans le panneau
+  des raccourcis dès qu'une ligne karaoké est sélectionnée.
+
+## Karaoké : des poignées de syllabes sur toute la hauteur
+
+- Les poignées rouges entre les syllabes traversent maintenant toute la
+  hauteur de la ligne, au lieu d'un petit trait en haut : la limite de chaque
+  syllabe se lit d'un coup d'œil.
+- Elles s'attrapent sur toute leur hauteur. Pendant la saisie du texte, seul
+  le haut de la ligne les attrape, pour qu'un clic dans le texte place
+  toujours le curseur.
+
+## Enregistrement : annuler une coupe, revenir au début d'une prise
+
+- `Ctrl + Z` annule la dernière coupe (`Ctrl + K`) : les deux morceaux
+  redeviennent une seule prise. Plusieurs coupes s'annulent l'une après
+  l'autre. Une coupe dont un morceau a été déplacé seul, raccourci ou
+  supprimé ne s'annule plus.
+- `Ctrl + Entrée` ramène le curseur de lecture au début de la prise
+  sélectionnée.
+
+## Fichiers du projet : les médias embarqués restent utilisables
+
+- Après la réouverture d'un projet `.coquerythmo`, la vidéo, son proxy et
+  les instrumentaux embarqués étaient affichés comme introuvables dans les
+  fichiers du projet (`Ctrl + L`) alors que la vidéo se lisait : **Utiliser**
+  et **Créer un proxy** répondaient « Le fichier média est introuvable ».
+  Ils fonctionnent de nouveau, y compris sur un projet reçu d'un autre
+  ordinateur ou dont le fichier d'origine a été déplacé.
+
+# 5.5.0
+
 ## Ajouter et conformer : suivre une V2 / V3 du montage
 
 - Quand la production livre une nouvelle version du montage, plus besoin de
@@ -28,51 +148,101 @@
   l'on peut renommer ou supprimer comme toute bande. Dans cette nouvelle
   bande, la conformation est une seule commande : `Ctrl + Z` remet tout en
   place. `Échap` pendant l'analyse l'annule sans rien toucher.
-- Needle 3 : « ajoute et conforme », « conforme la bande anglaise avec
-  D:\prod\film_V2.mp4 », « qu'est-ce qui a bougé ? », « qu'est-ce qu'il faut
-  réenregistrer ? » (tools `open_conform`, `conform_video`,
-  `get_conform_report`).
 - Accessible au clavier et au lecteur d'écran : `Tab` passe de la liste des
   vidéos à celle des bandes, à la case des prises puis aux boutons, les
   flèches choisissent, `Entrée` valide, `Échap` annule ; chaque étape, la
   progression, le résumé du rapport et les lignes affichées sont annoncés.
 
-## Needle 3 : l'assistant de la Bande rythmo
+## Karaoké : des syllabes qui se prononcent
 
-- `Ctrl + Entrée` dans la Bande rythmo ouvre une bulle flottante « Que
-  puis-je faire pour vous ? ». On y écrit ce qu'on veut, en français, en
-  anglais ou en espagnol (« va à 1 minute 30 », « crée une réplique de Marie
-  sur la piste 2 », « baisse le son à 30 », « supprime les lignes de Jean »,
-  « mets en gras », « ajoute une boucle », « renomme Jean en Pierre »,
-  « ouvre le style de la bande », « sauvegarde »), `Entrée` envoie, et
-  l'action est faite. `Échap` ou un clic ailleurs ferme la bulle.
-- Needle 3 tourne **en local**, sans connexion : le moteur et son modèle
-  (`needle3`, 35 Mo) sont livrés avec l'application. Une demande prend une à
-  deux secondes.
-- Tout ce que Needle 3 fait passe par les mêmes commandes que la souris et le
-  clavier : chaque modification s'annule avec `Ctrl + Z`, se synchronise en
-  collaboration et est annoncée au lecteur d'écran. Les actions qui perdent
-  des données (fermer, nouveau projet, supprimer une bande) demandent la même
-  confirmation qu'à la main.
-- Il répond aussi aux questions : « où suis-je ? », « combien de répliques a
-  Jean ? », « quels personnages ? », « liste les boucles », « quel est le
-  raccourci pour exporter ? », « cherche la réplique qui dit bonjour » (la
-  sélectionne et y va), « aide ».
-- Une centaine d'actions sont disponibles dès cette version : lecture et
-  volume, sélection, création et édition des répliques (texte, personnage,
-  piste, début, fin, durée, scission, karaoké, styles, émotions, notes,
-  liaisons, champ / hors champ), marqueurs, respirations et réactions,
-  personnages et comédiens, outils de dessin, export, proxy, paramètres du
-  projet, style de la bande, panneaux, projet et bandes, collaboration. La
-  liste complète est dans `TOOLS_NEEDLE3.md`.
-- Périmètre de cette version : l'onglet Bande rythmo (et ce qu'on y ouvre).
-  Les autres onglets viendront ensuite, puis Whistle (dictée vocale).
-- On peut désigner une réplique existante dans la demande : « mets la toute
-  première ligne en gras », « supprime la dernière réplique de Marie »,
-  « mets en italique celle qui dit "Bonjour" ». Plusieurs phrases à la suite
-  sont faites dans l'ordre (« Crée une réplique piste 2 qui dit "Hello".
-  Positionne-la au niveau de la première ligne de Chanson »).
-- Le raccourci `Ctrl + Entrée` apparaît dans le panneau des raccourcis.
+- Le découpage français suit maintenant les syllabes qu'on prononce :
+  « aperçois » se découpe `a|per|çois` (au lieu de `aper|çois`),
+  « aujourd'hui » `au|jour|d'hui`, « psychologue » `psy|cho|logue`.
+- Une élision reste avec la syllabe qu'elle commence : « d'accord » se
+  découpe `d'ac|cord` (au lieu de `d'|ac|cord`), « j'adore » `j'a|dore`,
+  « qu'il » en une seule syllabe.
+- Une syllabe muette en fin de mot (« monstres », « monde », « table »,
+  « magnifique ») reste avec la précédente, comme on la dit. Quand elle doit
+  être chantée ou marquée, un **pin** (un petit rond) apparaît sous le mot,
+  juste en dessous de la ligne karaoké survolée : un clic sépare toutes les
+  syllabes (`mons|tres`, `ma|gni|fi|que`), un second clic les réunit. Le pin
+  est plein et jaune quand la séparation est active ; il vaut pour toutes les
+  occurrences du mot dans la ligne, s'annule avec `Ctrl + Z`, se synchronise
+  en collaboration et suit la ligne quand on la copie, la coupe en deux ou
+  l'exporte.
+- En lecture, un pin actif reste affiché : un petit point jaune sous la
+  syllabe indique au comédien qu'elle doit être prononcée. Il apparaît aussi
+  dans les vidéos exportées.
+- Les calages déjà faits ne bougent pas : chaque lettre garde sa place dans
+  le temps, que la ligne ait été calée avec l'ancien découpage ou qu'on
+  active un pin après coup (la poignée d'une syllabe muette calée dans une
+  version précédente revient à sa place quand on active son pin).
+- En anglais et en espagnol, le découpage ne change pas ; le pin y propose
+  les syllabes manquantes (« table » `ta|ble`, « being » `be|ing`).
+
+## Karaoké : marquer les liaisons
+
+- Là où une liaison est possible entre deux mots d'une ligne karaoké (« les
+  amis », « rien à rajouter », « petit homme », « chez elle », « vas-y »),
+  une flèche apparaît sous la ligne survolée, de la consonne finale à la
+  voyelle du mot suivant. Un clic la fait passer par trois états : rien
+  (flèche pâle, visible seulement au survol), **liaison** (flèche jaune),
+  **pas de liaison** (la même flèche barrée d'un trait oblique), puis de
+  nouveau rien.
+- Toutes les consonnes de liaison sont prises en compte : s, x, z, t (sauf
+  « et »), d, n, le r des mots en « -er », le p de « trop » et « beaucoup »,
+  le g de « long » et le f de « neuf », devant une voyelle ou un h. Rien
+  n'est proposé à travers une virgule ou un point.
+- En lecture et dans les vidéos exportées, seules les liaisons marquées sont
+  affichées, sous les mots : le comédien voit d'un coup d'œil celles à faire
+  et celles à ne pas faire.
+- Le marquage vaut pour toutes les fois où les deux mots se suivent dans la
+  ligne, s'annule avec `Ctrl + Z`, se synchronise en collaboration et suit la
+  ligne quand on la copie, la coupe en deux ou l'exporte.
+
+## Karaoké : le point retombe sur les poignées
+
+- Le point du karaoké retombe maintenant au bon endroit : exactement entre
+  deux syllabes du texte affiché, au moment où la lecture atteint la poignée
+  rouge correspondante. Il était placé d'après le nombre de lettres de
+  chaque syllabe et non d'après leur largeur réelle, ce qui le faisait
+  retomber à côté dès qu'une syllabe avait des lettres étroites ou larges
+  (« il », « mmm »). Le point est aussi centré sur la frontière au lieu
+  d'être décalé d'un demi-point.
+- Sur une ligne dont les poignées n'avaient jamais été déplacées (une ligne
+  ajoutée après coup pour un autre personnage, par exemple), le point suit
+  désormais les poignées affichées au lieu d'une autre répartition.
+- La couleur qui remplit le texte suit le même calage, dans l'application
+  comme dans les vidéos exportées.
+- La syllabe sur laquelle le point arrive se soulève très légèrement et
+  ses lettres brillent un instant, puis elle se repose : on voit d'un coup
+  d'œil où l'on en
+  est dans la ligne. L'effet est le même dans l'application et dans les
+  vidéos exportées.
+- Un nom de personnage trop long ne sort plus de l'écran en mode karaoké :
+  il est réduit pour tenir entre le bord gauche de la bande et sa ligne,
+  dans l'application comme à l'export.
+
+## Karaoké : caler les syllabes dans un sens
+
+- Un nouveau bouton, à droite de celui du karaoké dans la barre d'outils,
+  choisit le sens du calage proportionnel : **de gauche à droite** (par
+  défaut) ou **de droite à gauche**. Le choix est conservé d'une session à
+  l'autre.
+- Le premier déplacement d'une poignée répartit toute la ligne, comme avant.
+  Ensuite, de gauche à droite, tout ce qui est à gauche de la poignée qu'on
+  vient de placer (elle comprise) ne bouge plus : déplacer une poignée plus
+  loin ne répartit que ce qui reste à sa droite. On cale ainsi la ligne par
+  moitiés successives, sans défaire ce qui est déjà en place. De droite à
+  gauche, c'est le côté droit qui reste en place.
+- Une poignée placée est dessinée en jaune. Revenir sur une poignée située
+  entre deux poignées placées ne la déplace qu'entre elles.
+- Changer de sens, modifier le texte de la ligne ou activer un pin libère
+  toutes les poignées.
+- `Ctrl + glisser` déplace toujours une seule poignée sans toucher aux
+  autres, et cette poignée devient la nouvelle limite du calage
+  proportionnel. `Ctrl + clic` sur une poignée, sans la déplacer, pose la
+  limite là où elle est.
 
 ## Enregistrement accessible aux personnes malvoyantes
 

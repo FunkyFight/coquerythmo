@@ -31,6 +31,7 @@ pub(crate) struct ToolbarBuildContext<'a> {
     pub(crate) brush_color_presets: &'a [[f32; 4]; 8],
     pub(crate) ctrl_held: bool,
     pub(crate) editable: bool,
+    pub(crate) syllable_drag_right_to_left: bool,
     pub(crate) playback_enabled: bool,
 }
 
@@ -556,6 +557,8 @@ pub(crate) fn build_topbar(
             ));
         }
         widgets
+    } else if active_workspace == WorkspaceId::Processing {
+        vec![Box::new(project_menu)]
     } else {
         vec![
             Box::new(project_menu),
@@ -657,12 +660,13 @@ pub(crate) fn build_workspace_tabs(
     layout: &Layout,
     active_workspace: WorkspaceId,
 ) -> Vec<Box<dyn Widget>> {
-    let tab_width = 164.0;
+    let tab_width = 150.0;
     let gap = 4.0;
     let y = layout.tabs.y + 2.0;
     let height = (layout.tabs.height - 4.0).max(1.0);
     [
         (WorkspaceId::Rythmo, t("workspace_tabs.rythmo")),
+        (WorkspaceId::Processing, t("workspace_tabs.processing")),
         (WorkspaceId::Recording, t("workspace_tabs.recording")),
         (WorkspaceId::Voicelines, t("workspace_tabs.voicelines")),
         (WorkspaceId::ComicDubs, t("workspace_tabs.comic_dubs")),
@@ -821,6 +825,17 @@ pub(crate) fn build_toolbar(ctx: ToolbarBuildContext<'_>) -> Vec<Box<dyn Widget>
             "karaoke",
             || EventResponse::Action(UiAction::ToggleKaraokeForSelection),
             "toolbar.karaoke"
+        );
+        // Direction of the proportional syllable drag.
+        let (direction_icon, direction_tip) = if ctx.syllable_drag_right_to_left {
+            ("syllable_rtl", "toolbar.syllable_drag_rtl")
+        } else {
+            ("syllable_ltr", "toolbar.syllable_drag_ltr")
+        };
+        btn!(
+            direction_icon,
+            || EventResponse::Action(UiAction::ToggleSyllableDragDirection),
+            direction_tip
         );
     }
     let _ = x;
@@ -1216,6 +1231,7 @@ mod tests {
             brush_color_presets: &presets,
             ctrl_held: false,
             editable: false,
+            syllable_drag_right_to_left: false,
             playback_enabled: true,
         });
         assert!(widgets.iter().all(|widget| {

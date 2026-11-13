@@ -311,6 +311,8 @@ mod tests {
             kind: crate::rythmo_line::RythmoLineKind::Dialogue,
             voice_actor_names: vec![],
             syllable_ratios: vec![],
+            syllable_split_words: Vec::new(),
+            liaison_marks: Vec::new(),
             karaoke: false,
             note: note.into(),
             presence: crate::rythmo_line::LinePresence::On,

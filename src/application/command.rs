@@ -36,10 +36,41 @@ pub struct FilePickerRequest {
     pub initial_filename: Option<String>,
 }
 
+/// Keyboard handling of the syllables of the selected karaoke line: a
+/// cursor on one syllable, worked like a synchronization point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyllableKey {
+    /// Previous (`-1`) or next (`1`) handle, or point and liaison.
+    Step(i32),
+    /// From the handles down to the points and liaisons (`1`), or back up
+    /// to the handles (`-1`).
+    Row(i32),
+    /// Moves the handle by that many frames.
+    Nudge(i32),
+    /// Sets the handle at the playhead, then goes to the next one.
+    PlaceAtPlayhead,
+    /// Toggles the point or the liaison; places or frees the handle.
+    Activate,
+    /// Back to the line.
+    Leave,
+}
+
+impl SyllableKey {
+    /// Whether the key changes the project.
+    pub fn edits(self) -> bool {
+        matches!(
+            self,
+            Self::Nudge(_) | Self::PlaceAtPlayhead | Self::Activate
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiAction {
     Accessibility(crate::accessibility::AccessibilityEvent),
+    Syllable(SyllableKey),
     ActivateWorkspace(crate::application::workspace_service::WorkspaceId),
+    Processing(crate::processing::ProcessingAction),
     ComicDubsImportImages,
     ComicDubsImportAudios,
     ComicDubsSelectPage(crate::comic_dubs::PageId),
@@ -296,6 +327,9 @@ pub enum UiAction {
     /// Select the take under the playhead (`Entrée`, like a rythmo line);
     /// pressing again at the same frame moves on to the next track.
     RecordingSelectClipAtPlayhead,
+    /// `Ctrl + Entrée`: the playhead goes back to the start of the selected
+    /// take (the earliest one when several are selected).
+    RecordingSeekToSelectedClipStart,
     /// Place an audio of the library (`None`: the selected one) at the
     /// playhead, on the armed track or else the first one: the keyboard
     /// counterpart of dropping it on a track.
@@ -389,13 +423,6 @@ pub enum UiAction {
     ConformPickNewVideo {
         video_id: crate::project::MediaId,
         band_id: u64,
-        move_takes: bool,
-    },
-    /// Analyse and conform to a known file (assistant, scripts).
-    ConformStart {
-        video_id: crate::project::MediaId,
-        band_id: u64,
-        path: String,
         move_takes: bool,
     },
     ConformCancel,
@@ -781,6 +808,21 @@ pub enum UiAction {
         line_id: u64,
         ratios: Vec<f32>,
     },
+    /// The pin above a word: switches it between its spoken syllables and
+    /// all its written ones ("monstres" / "mons|tres").
+    ToggleSyllableSplitWord {
+        line_id: u64,
+        word: String,
+    },
+    /// The arrow under two words that can be linked: goes from nothing to
+    /// "liaison made", then "liaison not made", then back to nothing.
+    CycleLiaisonMark {
+        line_id: u64,
+        pair: String,
+    },
+    /// Toolbar button next to the karaoke one: the proportional syllable
+    /// drag goes left to right, or right to left.
+    ToggleSyllableDragDirection,
     SplitDialogue,
     // Network
     OpenServerBrowser,
@@ -940,26 +982,6 @@ pub enum UiAction {
     ActivateLicense {
         key: String,
     },
-    // Needle 3 assistant
-    /// `Ctrl + Entrée`: opens the floating prompt of the assistant.
-    OpenAssistant,
-    /// The prompt was validated: ask the engine.
-    AssistantSubmit {
-        query: String,
-    },
-    /// Select these lines (a tool answer, or a search hit).
-    SelectLines {
-        line_ids: Vec<u64>,
-    },
-    /// Create a line with its text and character in one go, as the
-    /// assistant does, without opening the inline editor.
-    AssistantCreateLine {
-        frame: i64,
-        y_slot: f32,
-        duration_frames: Option<i64>,
-        text: String,
-        character: Option<(String, [f32; 4])>,
-    },
     Text(TextCommand),
 }
 
@@ -973,12 +995,14 @@ impl UiAction {
         if matches!(self, Self::CopySidePanelLines { cut: true, .. }) {
             return true;
         }
+        if let Self::Syllable(key) = self {
+            return key.edits();
+        }
         matches!(
             self,
             Self::Undo
                 | Self::Redo
                 | Self::ConformPickNewVideo { .. }
-                | Self::ConformStart { .. }
                 | Self::CreateLanguage { .. }
                 | Self::AddLanguage
                 | Self::RenameLanguage { .. }
@@ -1047,9 +1071,10 @@ impl UiAction {
                 | Self::AddQuickLine { .. }
                 | Self::ToggleKaraokeForSelection
                 | Self::SetSyllableRatios { .. }
+                | Self::ToggleSyllableSplitWord { .. }
+                | Self::CycleLiaisonMark { .. }
                 | Self::SplitDialogue
                 | Self::CreateLineAtTrack { .. }
-                | Self::AssistantCreateLine { .. }
                 | Self::AddNote
                 | Self::UpdateLineNote { .. }
                 | Self::SetClipboardAndUpdateLineText { .. }
@@ -1090,7 +1115,6 @@ impl UiAction {
                 | Self::CreateProxy { .. }
                 | Self::OpenConformModal { .. }
                 | Self::ConformPickNewVideo { .. }
-                | Self::ConformStart { .. }
                 | Self::ExitApplication
                 | Self::CloseApp
         )
@@ -1173,6 +1197,19 @@ pub enum FilePickerIntent {
     ComicDubsScriptExport,
     ComicDubsSrtExport,
     RecordingAudio,
+    ProcessingAudio,
+    ProcessingDirectory,
+    ProcessingExportTrack {
+        item_id: u64,
+        track: usize,
+    },
+    ProcessingExportAll {
+        item_id: u64,
+    },
+    ProcessingAddToProject {
+        item_id: u64,
+        track: usize,
+    },
     VoicelinesAudio,
     VoicelinesExportRegion {
         audio_id: crate::voicelines::AudioId,

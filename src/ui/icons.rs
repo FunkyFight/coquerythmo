@@ -267,6 +267,10 @@ impl IconAtlas {
             AtlasEntry::svg("br-edit", include_bytes!("../icons/br-edit.svg")),
             AtlasEntry::svg("note", include_bytes!("../icons/note.svg")),
             AtlasEntry::svg("karaoke", include_bytes!("../icons/karaoke.svg")),
+            // Text direction by SVG Repo (svgrepo.com/svg/501396 and
+            // svgrepo.com/svg/501398), CC0.
+            AtlasEntry::svg("syllable_ltr", include_bytes!("../icons/syllable-ltr.svg")),
+            AtlasEntry::svg("syllable_rtl", include_bytes!("../icons/syllable-rtl.svg")),
             AtlasEntry::svg("sound", include_bytes!("../icons/sound.svg")),
             AtlasEntry::svg("mute", include_bytes!("../icons/mute-svgrepo-com (1).svg")),
             AtlasEntry::svg(

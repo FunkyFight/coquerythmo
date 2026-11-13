@@ -54,7 +54,6 @@ l’annulation est annoncée en priorité.
 | `Ctrl + I` | Pendant l’édition du texte : mettre en italique ou non la sélection |
 | `Ctrl + U` | Souligner ou non la sélection, ou la ligne sélectionnée (hors karaoké) |
 | `Ctrl + K` | Scinder le dialogue à la position du caret |
-| `Ctrl + Entrée` | Ouvrir la bulle de Needle 3, l'assistant (espace Rythmo, hors modale et hors saisie) ; `Entrée` envoie la demande, `Échap` ferme |
 
 Dans la liste des projets récents, `↑`/`↓` parcourent les projets, `Entrée`
 ouvre le projet, `Suppr` le retire de la liste et `Échap` ferme la liste.
@@ -124,6 +123,22 @@ limite, le caret appartient à la partie d’où il vient (`→` : celle de gauc
 `←` : celle de droite) ; un clic près d’une limite choisit la partie sous le
 pointeur.
 
+Sur une ligne karaoké sélectionnée, `Alt` règle les poignées de syllabes (en
+haut de la ligne), les points et les liaisons (en dessous) :
+
+| Raccourci | Action |
+|---|---|
+| `Alt + ←` / `Alt + →` | Poignée précédente/suivante ; au premier appui, celle de la syllabe sous le curseur de lecture. Sur les points et liaisons : point ou liaison précédent/suivant |
+| `Alt + ↓` / `Alt + ↑` | Descendre sur les points et liaisons / remonter aux poignées, au plus près |
+| `Entrée` | Activer ou non le point, changer la liaison (faite, non faite, non indiquée), poser ou libérer la poignée |
+| `Ctrl + Alt + ←` / `Ctrl + Alt + →` | Déplacer la poignée d’une image |
+| `Ctrl + Alt + Espace` | Caler la poignée au curseur de lecture, puis passer à la suivante |
+| `Échap` | Revenir à la ligne |
+
+Ce qui est choisi est entouré d’un halo clair et lu avec son rang et son état.
+Tant qu’une poignée, un point ou une liaison est choisi, `Entrée` agit dessus ;
+`Échap` lui rend son rôle sur les lignes.
+
 `Ctrl + T` modifie la ligne section par section, sans toucher aux points de
 synchronisation ni au calage des syllabes du karaoké : un champ de texte
 apparaît au-dessus de la section courante (la partie entre deux points de
@@ -151,6 +166,8 @@ de syllabes garde le calage de chacune.
 | `Ctrl + Maj + ←` / `Ctrl + Maj + →` | Décaler les prises sélectionnées d’une image |
 | `Ctrl + Maj + ↑` / `Ctrl + Maj + ↓` | Passer les prises sélectionnées sur la piste au-dessus / en dessous |
 | `Ctrl + K` | Couper la prise sélectionnée au curseur de lecture |
+| `Ctrl + Z` | Annuler la dernière coupe : les deux morceaux redeviennent une seule prise |
+| `Ctrl + Entrée` | Revenir au début de la prise sélectionnée |
 | `Ctrl + Tab` | Activer/désactiver l’audio partagé |
 | `Ctrl + L` | Changer de langue |
 | `Espace` | Lecture/pause |
@@ -170,6 +187,36 @@ manque.
 Dans la fenêtre de transfert de projet d’un comédien, `Tab`, `←` / `→`
 parcourent les boutons (chacun est annoncé), `Entrée` choisit et `Échap`
 refuse.
+
+## Traitement
+
+| Raccourci | Action |
+|---|---|
+| `Tab` / `Maj + Tab` | Parcourir le bouton principal, les boutons du haut, les modèles, les audios, les pistes et leurs boutons, y compris ceux qui sont hors de l’écran (la liste défile pour les montrer) |
+| `↑` / `↓` | Même bouton sur la piste précédente/suivante ; modèle ou audio précédent/suivant |
+| `Entrée` | Activer le contrôle : choisir le modèle ou l’audio, écouter, exporter, ajouter au projet. La piste écoutée est celle que le traitement suivant transforme |
+| `Suppr` | Retirer l’audio, le modèle ou la piste produite qui a le focus, avec les pistes qui en descendent (un second appui confirme pour un modèle ou une piste) |
+| `Espace` | Lecture / pause de la piste écoutée |
+| `Ctrl + Entrée` | Lancer le traitement sur la piste en écoute |
+| `Ctrl + Maj + Entrée` | Annuler le traitement en cours |
+| `Ctrl + ↑` / `Ctrl + ↓` | Écouter la piste précédente / suivante |
+| `Ctrl + Maj + ↑` / `Ctrl + Maj + ↓` | Choisir le modèle installé précédent / suivant |
+| `Ctrl + I` | Importer un audio |
+| `Ctrl + Maj + I` | Traiter l’audio de la vidéo du projet |
+| `Ctrl + E` | Exporter la piste en écoute |
+| `Ctrl + Maj + E` | Tout exporter |
+| `Ctrl + P` | Ajouter la piste en écoute aux audios du projet |
+| `Ctrl + M` | Ouvrir le catalogue des modèles |
+| `Ctrl + Maj + M` | Ouvrir la fenêtre du moteur de traitement |
+| `Ctrl + B` | Basculer la qualité, rapide ou maximale |
+
+Ces raccourcis valent dans l’onglet Traitement seulement. Chaque bouton
+énonce le sien après son nom, et le résultat est annoncé (piste écoutée,
+modèle choisi, traitement lancé).
+
+Dans les fenêtres du moteur et du catalogue, `Tab` et les flèches passent
+d’un bouton à l’autre, `Entrée` valide et `Échap` ferme. Le premier arrêt est
+le texte de la fenêtre, relu à la demande.
 
 ## Comic Dubs (studio)
 

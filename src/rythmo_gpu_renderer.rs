@@ -173,23 +173,11 @@ fn karaoke_dot_rect(
     scale: f32,
 ) -> Option<(f32, f32, f32)> {
     let progress = line.karaoke_progress(current_frame)?;
-    let ratios = crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
-    let local_progress = crate::syllable::active_syllable_local_progress(&ratios, progress)
-        .unwrap_or(progress)
-        .clamp(0.0, 1.0);
-    let visual_progress = crate::syllable::visual_progress_from_timing(
-        &line.text,
-        &line.syllable_ratios,
-        lang,
-        progress,
-    );
+    let (local_progress, visual_progress) = line.karaoke_dot_progress(lang, progress);
     let bounce = (local_progress * std::f32::consts::PI).sin().max(0.0);
     let size = constants::KARAOKE_DOT_SIZE * scale.max(0.5);
-    let center_x = if width > size {
-        x + size / 2.0 + visual_progress.clamp(0.0, 1.0) * (width - size)
-    } else {
-        x + width / 2.0
-    };
+    // Centred on its place in the text, like the editor.
+    let center_x = x + visual_progress.clamp(0.0, 1.0) * width;
     let dx = center_x - size / 2.0;
     let dy = y + 3.0 * scale.max(0.5) - bounce * size * constants::KARAOKE_DOT_BOUNCE_AMPLITUDE;
     Some((dx, dy, size))
@@ -206,7 +194,7 @@ fn karaoke_count_in_dot_rect(
     let bounce_progress = (progress * constants::KARAOKE_COUNT_IN_BOUNCES).fract();
     let bounce = (bounce_progress * std::f32::consts::PI).sin().max(0.0);
     let travel = constants::KARAOKE_NEXT_PREVIEW_GAP * 4.0 * scale + size * 2.0;
-    let dx = x - travel + travel * progress;
+    let dx = x - size / 2.0 - travel + travel * progress;
     let dy = y + 3.0 * scale.max(0.5) - bounce * size * constants::KARAOKE_DOT_BOUNCE_AMPLITUDE;
     (dx, dy, size)
 }
@@ -2169,10 +2157,82 @@ impl GpuRenderer {
         all_icons: &mut Vec<IconInstance>,
         icon_batches: &mut Vec<IconBatch>,
     ) {
+        self.push_rythmo_text_icons_columns_with_mode(
+            text,
+            font_size,
+            x,
+            y,
+            w,
+            h,
+            tint,
+            (0.0, clip_ratio),
+            stretch,
+            emphasized,
+            text_styles,
+            all_icons,
+            icon_batches,
+        );
+    }
+
+    /// One slice of a natural text, between `from` and `to` (shares of its
+    /// width), drawn `lift` pixels above its place: a syllable of a karaoke
+    /// line.
+    fn push_rythmo_text_icons_natural_slice(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        tint: [f32; 4],
+        from: f32,
+        to: f32,
+        lift: f32,
+        all_icons: &mut Vec<IconInstance>,
+        icon_batches: &mut Vec<IconBatch>,
+    ) {
+        self.push_rythmo_text_icons_columns_with_mode(
+            text,
+            font_size,
+            x,
+            y - lift,
+            w,
+            h,
+            tint,
+            (from, to),
+            false,
+            false,
+            &[],
+            all_icons,
+            icon_batches,
+        );
+    }
+
+    /// Draws the columns of the text between two shares of its width.
+    fn push_rythmo_text_icons_columns_with_mode(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        tint: [f32; 4],
+        columns: (f32, f32),
+        stretch: bool,
+        emphasized: bool,
+        text_styles: &[crate::vector_text::TextStyleRun],
+        all_icons: &mut Vec<IconInstance>,
+        icon_batches: &mut Vec<IconBatch>,
+    ) {
         let full_w = w.max(1.0).ceil() as u32;
         let full_h = h.max(1.0).ceil() as u32;
-        let clip_px = (full_w as f32 * clip_ratio.clamp(0.0, 1.0)).ceil() as u32;
-        if clip_px == 0 {
+        // Both ends are rounded alike, so that slices side by side neither
+        // overlap nor leave a gap.
+        let first_px = (full_w as f32 * columns.0.clamp(0.0, 1.0)).ceil() as u32;
+        let clip_px = (full_w as f32 * columns.1.clamp(0.0, 1.0)).ceil() as u32;
+        if clip_px <= first_px {
             return;
         }
         if full_h > MAX_TEXT_TEXTURE_DIMENSION {
@@ -2189,7 +2249,12 @@ impl GpuRenderer {
             if tile_x >= clip_px {
                 break;
             }
-            let visible_tile_w = tile_w.min(clip_px - tile_x).max(1);
+            if tile_x + tile_w <= first_px {
+                tile_x += tile_w;
+                continue;
+            }
+            let visible_start = first_px.max(tile_x);
+            let visible_end = clip_px.min(tile_x + tile_w);
             let hash = if !text_styles.is_empty() && !emphasized {
                 self.get_or_upload_rythmo_text_tile_with_mode(
                     text,
@@ -2214,13 +2279,14 @@ impl GpuRenderer {
                 )
             };
             if self.text_cache.contains_key(&hash) {
-                let draw_x = x + (tile_x as f32 / full_w as f32) * w;
-                let draw_w = (visible_tile_w as f32 / full_w as f32) * w;
-                let uv_end = (visible_tile_w as f32 / tile_w as f32).clamp(0.0, 1.0);
+                let draw_x = x + (visible_start as f32 / full_w as f32) * w;
+                let draw_w = ((visible_end - visible_start) as f32 / full_w as f32) * w;
+                let uv_start = ((visible_start - tile_x) as f32 / tile_w as f32).clamp(0.0, 1.0);
+                let uv_end = ((visible_end - tile_x) as f32 / tile_w as f32).clamp(0.0, 1.0);
                 let start = all_icons.len() as u32;
                 all_icons.push(IconInstance {
                     rect: [draw_x, y, draw_w, h],
-                    uv_rect: [0.0, 0.0, uv_end, 1.0],
+                    uv_rect: [uv_start, 0.0, uv_end, 1.0],
                     tint,
                     transform: [0.0, 0.0, 0.5, 0.5],
                 });
@@ -2864,6 +2930,12 @@ impl GpuRenderer {
                     &line.character_name,
                     &line_rects,
                 );
+                // A centred karaoke line can leave less room than its name.
+                let fit = if scene_line.karaoke_should_be_centered() {
+                    crate::band_visuals::keep_badge_on_band(fit, x1, badge_gap, 4.0 * s)
+                } else {
+                    fit
+                };
                 (!fit.hidden).then_some((fit.rect, fit.scale))
             } else {
                 None
@@ -2889,7 +2961,7 @@ impl GpuRenderer {
                         crate::syllable::read_highlight_end_from_timing(
                             &line.text,
                             &line.syllable_ratios,
-                            scene.project.syllable_language_code(),
+                            line.syllable_rules(scene.project.syllable_language_code()),
                             progress as f32,
                         )
                     } else {
@@ -2918,25 +2990,43 @@ impl GpuRenderer {
                 } else if line.karaoke {
                     let karaoke_font_size =
                         font_size * constants::KARAOKE_TEXT_FONT_SCALE * karaoke_text_scale;
-                    self.push_rythmo_text_icons_natural_tinted_clipped(
-                        &line.text,
-                        karaoke_font_size,
-                        x1,
-                        line_y,
-                        lw,
-                        body_h,
-                        [1.0, 1.0, 1.0, 1.0],
-                        1.0,
-                        &mut all_icons,
-                        &mut icon_batches,
-                    );
                     if let Some(progress) = scene_line.karaoke_progress {
-                        let visual_progress = crate::syllable::visual_progress_from_timing(
-                            &line.text,
-                            &line.syllable_ratios,
+                        // The syllable the dot is on is drawn apart: it rises
+                        // a little when the dot lands on it and its letters
+                        // shine, like in the editor.
+                        let effect = crate::band_visuals::karaoke_syllable_effect(
+                            line,
                             scene.project.syllable_language_code(),
                             progress,
+                            source_fps,
                         );
+                        let character_tint = [
+                            line.character_color[0].clamp(0.0, 1.0),
+                            line.character_color[1].clamp(0.0, 1.0),
+                            line.character_color[2].clamp(0.0, 1.0),
+                            1.0,
+                        ];
+                        for slice in crate::band_visuals::karaoke_syllable_slices(&effect) {
+                            self.push_rythmo_text_icons_natural_slice(
+                                &line.text,
+                                karaoke_font_size,
+                                x1 + slice.shift_x * s,
+                                line_y,
+                                lw,
+                                body_h,
+                                if slice.coloured {
+                                    character_tint
+                                } else {
+                                    [1.0, 1.0, 1.0, slice.alpha]
+                                },
+                                slice.from,
+                                slice.to,
+                                slice.lift * s,
+                                &mut all_icons,
+                                &mut icon_batches,
+                            );
+                        }
+                    } else {
                         self.push_rythmo_text_icons_natural_tinted_clipped(
                             &line.text,
                             karaoke_font_size,
@@ -2944,13 +3034,8 @@ impl GpuRenderer {
                             line_y,
                             lw,
                             body_h,
-                            [
-                                line.character_color[0].clamp(0.0, 1.0),
-                                line.character_color[1].clamp(0.0, 1.0),
-                                line.character_color[2].clamp(0.0, 1.0),
-                                1.0,
-                            ],
-                            visual_progress,
+                            [1.0, 1.0, 1.0, 1.0],
+                            1.0,
                             &mut all_icons,
                             &mut icon_batches,
                         );
@@ -2985,9 +3070,10 @@ impl GpuRenderer {
                             &[]
                         };
                     let lang = scene.project.syllable_language_code();
-                    let base_breaks = crate::syllable::syllable_breaks(&line.text, lang);
+                    let rules = line.syllable_rules(lang);
+                    let base_breaks = crate::syllable::syllable_breaks(&line.text, rules);
                     let base_ratios =
-                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
+                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, rules);
                     let (breaks, ratios) = scene.project.detections().warped_segments(
                         line.id,
                         &line.text,
@@ -3270,6 +3356,54 @@ impl GpuRenderer {
                     lw,
                     s,
                 );
+            }
+            // A pin that is on marks its syllable: it is to be pronounced.
+            if line.karaoke {
+                for share in
+                    line.pronounced_syllable_marks(scene.project.syllable_language_code())
+                {
+                    let (mark_x, mark_y, mark_size) = crate::band_visuals::pronounce_mark_rect(
+                        x1, line_y, lw, body_h, share, s,
+                    );
+                    let [r, g, b, a] = crate::band_visuals::PRONOUNCE_MARK_COLOR;
+                    let mut mark = quad(mark_x, mark_y, mark_size, mark_size, r, g, b, a);
+                    mark.border_color = crate::band_visuals::PRONOUNCE_MARK_RIM;
+                    mark.border_width = s.max(0.5);
+                    mark.border_radius = mark_size / 2.0;
+                    quads.push(mark);
+                }
+                // The liaisons that are marked: made, or struck through.
+                let liaison_top =
+                    line_y + body_h - crate::band_visuals::LIAISON_ARROW_HEIGHT * s;
+                let [r, g, b, a] = crate::band_visuals::LIAISON_ARROW_COLOR;
+                for (from, to, made) in
+                    line.liaison_marks_layout(scene.project.syllable_language_code())
+                {
+                    for [sx0, sy0, sx1, sy1] in crate::band_visuals::liaison_arrow_strokes(
+                        x1 + from * lw,
+                        x1 + to * lw,
+                        liaison_top,
+                        s,
+                        !made,
+                    ) {
+                        let (dx, dy) = (sx1 - sx0, sy1 - sy0);
+                        let thickness =
+                            crate::band_visuals::LIAISON_ARROW_THICKNESS * s.max(0.5);
+                        let mut stroke = rotated_line(
+                            (sx0 + sx1) / 2.0,
+                            (sy0 + sy1) / 2.0,
+                            (dx * dx + dy * dy).sqrt().max(0.1),
+                            thickness,
+                            dy.atan2(dx),
+                            r,
+                            g,
+                            b,
+                            a,
+                        );
+                        stroke.border_radius = thickness / 2.0;
+                        quads.push(stroke);
+                    }
+                }
             }
 
             // Note text (discrete, gray, at the bottom of the line)

@@ -269,6 +269,9 @@ pub(crate) fn handle_mouse_move(
     }
 
     let (found, hovered_track) = hit_test_line_and_track(ctx, state, x, y);
+    // The pins of a karaoke line sit just under it: the line stays hovered
+    // while the pointer is on them.
+    let found = found.or_else(|| hovered_line_under_pointer_pins(ctx, state, x, y));
 
     let mut changed = false;
     if found != state.hovered_line {

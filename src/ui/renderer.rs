@@ -298,6 +298,46 @@ impl StretchedText {
         }
     }
 
+    /// The part of a natural text between `from` and `to` (shares of its
+    /// width), drawn `shift_x` pixels to the right of its place and `lift`
+    /// pixels above it: one syllable of a karaoke line.
+    pub fn natural_slice(
+        line_id: u64,
+        text: String,
+        dest_rect: Rect,
+        from: f32,
+        to: f32,
+        shift_x: f32,
+        lift: f32,
+        font_scale: f32,
+        tint: [f32; 4],
+    ) -> Option<Self> {
+        let from = from.clamp(0.0, 1.0);
+        let to = to.clamp(0.0, 1.0);
+        if to <= from {
+            return None;
+        }
+        Some(Self {
+            line_id,
+            text,
+            dest_rect,
+            draw_rect: Rect {
+                x: dest_rect.x + from * dest_rect.width + shift_x,
+                y: dest_rect.y - lift,
+                width: (to - from) * dest_rect.width,
+                height: dest_rect.height,
+            },
+            uv_rect: [from, 0.0, to, 1.0],
+            tint,
+            stretch: false,
+            font_scale,
+            prewarm: false,
+            emphasized: false,
+            transform: [0.0, 0.0, 0.5, 0.5],
+            text_styles: Vec::new(),
+        })
+    }
+
     pub fn natural_clipped(
         line_id: u64,
         text: String,

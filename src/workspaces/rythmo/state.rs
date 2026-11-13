@@ -175,6 +175,14 @@ pub struct RythmoState {
     pub keyboard_pan_accum_px: f32,
     pub compact_empty_tracks: bool,
     pub syllable_drag: Option<SyllableDrag>,
+    /// Syllable of the selected karaoke line the keyboard works on.
+    pub syllable_cursor: Option<SyllableCursor>,
+    /// Proportional syllable drag worked from the end of the line to its
+    /// start: the handles after the dragged one stay in place, instead of the
+    /// ones before it.
+    pub syllable_drag_right_to_left: bool,
+    /// Handles placed by the proportional drags of this session, per line.
+    pub syllable_placed_handles: HashMap<u64, PlacedSyllableHandles>,
     /// Karaoke syllable slot left empty by the last erasure, waiting for the
     /// text typed in its place (or a second erasure, which confirms).
     pub slot_reservation: Option<SyllableSlotReservation>,
@@ -222,6 +230,16 @@ pub struct SyllableDrag {
     pub line_rect: Rect,
     /// Ctrl+click keeps every boundary before the selected handle fixed.
     pub preserve_prefix: bool,
+}
+
+/// Syllable handles of a line already placed by a proportional drag: they
+/// no longer move when the handles between them are dragged.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlacedSyllableHandles {
+    /// Syllable count the indices are valid for.
+    pub segment_count: usize,
+    /// Placed separators, in order (0 = between syllables 0 and 1).
+    pub separators: Vec<usize>,
 }
 
 /// See [`RythmoState::slot_reservation`].
@@ -320,6 +338,7 @@ impl RythmoState {
     pub fn new() -> Self {
         Self {
             hovered_line: None,
+            syllable_cursor: None,
             hovered_track: None,
             hovered_frame: None,
             keyboard_track: 0,
@@ -354,6 +373,8 @@ impl RythmoState {
             keyboard_pan_accum_px: 0.0,
             compact_empty_tracks: false,
             syllable_drag: None,
+            syllable_drag_right_to_left: false,
+            syllable_placed_handles: HashMap::new(),
             slot_reservation: None,
             context_menu: None,
             link_includes_character: false,
@@ -542,6 +563,69 @@ impl RythmoState {
         }
     }
 
+    /// Placed handles of `line_id`, when they were placed for this syllable
+    /// count.
+    pub(crate) fn placed_syllable_handles(&self, line_id: u64, segment_count: usize) -> &[usize] {
+        self.syllable_placed_handles
+            .get(&line_id)
+            .filter(|placed| placed.segment_count == segment_count)
+            .map_or(&[], |placed| placed.separators.as_slice())
+    }
+
+    /// Syllables (`start..end`) a proportional drag of `separator` may
+    /// resize: the ones between the placed handles around it.
+    pub(crate) fn syllable_drag_free_range(
+        &self,
+        line_id: u64,
+        separator: usize,
+        segment_count: usize,
+    ) -> (usize, usize) {
+        let placed = self.placed_syllable_handles(line_id, segment_count);
+        let start = placed
+            .iter()
+            .rev()
+            .find(|placed| **placed < separator)
+            .map_or(0, |placed| placed + 1);
+        let end = placed
+            .iter()
+            .find(|placed| **placed > separator)
+            .map_or(segment_count, |placed| placed + 1);
+        (start, end)
+    }
+
+    /// A proportional drag placed `separator`. Working left to right, the
+    /// handles before it stay placed and the ones after it are free again
+    /// (they are still to be placed); right to left, the other way round.
+    pub(crate) fn place_syllable_handle(
+        &mut self,
+        line_id: u64,
+        separator: usize,
+        segment_count: usize,
+    ) {
+        let right_to_left = self.syllable_drag_right_to_left;
+        let placed = self.syllable_placed_handles.entry(line_id).or_default();
+        if placed.segment_count != segment_count {
+            placed.segment_count = segment_count;
+            placed.separators.clear();
+        }
+        placed.separators.retain(|other| {
+            if right_to_left {
+                *other > separator
+            } else {
+                *other < separator
+            }
+        });
+        placed.separators.push(separator);
+        placed.separators.sort_unstable();
+    }
+
+    /// Switches the direction of the proportional drag; every handle is free
+    /// again.
+    pub(crate) fn set_syllable_drag_right_to_left(&mut self, right_to_left: bool) {
+        self.syllable_drag_right_to_left = right_to_left;
+        self.syllable_placed_handles.clear();
+    }
+
     pub(super) fn get_syllable_breaks(
         &self,
         line: &crate::rythmo_line::RythmoLine,
@@ -553,6 +637,7 @@ impl RythmoState {
         let mut hasher = DefaultHasher::new();
         line.text.hash(&mut hasher);
         lang.hash(&mut hasher);
+        line.syllable_split_words.hash(&mut hasher);
         let text_hash = hasher.finish();
 
         let mut cache = self.syllable_breaks_cache.borrow_mut();
@@ -562,7 +647,7 @@ impl RythmoState {
             }
         }
 
-        let breaks = crate::syllable::syllable_breaks(&line.text, lang);
+        let breaks = crate::syllable::syllable_breaks(&line.text, line.syllable_rules(lang));
         cache.insert(line.id, (breaks.clone(), text_hash));
         breaks
     }
@@ -725,6 +810,14 @@ impl RythmoState {
         self.karaoke_text_width_cache
             .borrow_mut()
             .retain(|line_id, _| project.get_line(*line_id).is_some());
+    }
+
+    /// The syllable the keyboard works on: only while its line is the
+    /// selection and nothing is being typed.
+    pub fn active_syllable_cursor(&self) -> Option<SyllableCursor> {
+        let cursor = self.syllable_cursor?;
+        (self.selected == Some(Selection::Line(cursor.line_id)) && !self.is_editing())
+            .then_some(cursor)
     }
 
     pub fn is_editing(&self) -> bool {

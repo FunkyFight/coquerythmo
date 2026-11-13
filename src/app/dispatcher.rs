@@ -77,6 +77,20 @@ fn recording_shortcut(action: UiAction, state: &State) -> UiAction {
     }
 }
 
+/// While the keyboard cursor is on a handle, a point or a liaison of a
+/// karaoke line, `Entrée` acts on it and `Échap` goes back to the line.
+fn syllable_shortcut(action: UiAction, state: &State) -> UiAction {
+    use crate::application::command::SyllableKey;
+    if !state.has_syllable_cursor() {
+        return action;
+    }
+    match action {
+        UiAction::SelectLineAtPlayhead => UiAction::Syllable(SyllableKey::Activate),
+        UiAction::ClearLineSelection => UiAction::Syllable(SyllableKey::Leave),
+        other => other,
+    }
+}
+
 pub(crate) fn handle_file_picker_selected(
     intent: FilePickerIntent,
     path: PathBuf,
@@ -107,6 +121,17 @@ pub(crate) fn handle_file_picker_selected(
         FilePickerIntent::ComicDubsScriptExport => state.comic_dubs_export_script(path, false),
         FilePickerIntent::ComicDubsSrtExport => state.comic_dubs_export_script(path, true),
         FilePickerIntent::RecordingAudio => state.recording_begin_audio_import(path, None),
+        FilePickerIntent::ProcessingAudio => state.processing_begin_import(path),
+        FilePickerIntent::ProcessingDirectory => state.processing_set_directory(path),
+        FilePickerIntent::ProcessingExportTrack { item_id, track } => {
+            state.processing_export_track_to(item_id, track, path)
+        }
+        FilePickerIntent::ProcessingExportAll { item_id } => {
+            state.processing_export_all_to(item_id, path)
+        }
+        FilePickerIntent::ProcessingAddToProject { item_id, track } => {
+            state.processing_add_track_to_project(item_id, track, path)
+        }
         FilePickerIntent::VoicelinesAudio => state.voicelines_begin_audio_import(path),
         FilePickerIntent::VoicelinesExportRegion {
             audio_id,
@@ -260,6 +285,7 @@ impl CommandDispatcher {
         elwt: &EventLoopWindowTarget<AppEvent>,
     ) -> bool {
         let action = recording_shortcut(comic_dubs_shortcut(action, state), state);
+        let action = syllable_shortcut(action, state);
         // Pan is driven by holding Q/D. The key itself stays silent so
         // continuous panning does not flood the speech output.
         if matches!(&action, UiAction::BeginKeyboardPan { .. }) {
@@ -294,7 +320,6 @@ impl CommandDispatcher {
             }
             UiAction::OpenLinesPanel => Some(crate::i18n::t("panel.lines.title")),
             UiAction::OpenRolesPanel => Some(crate::i18n::t("panel.roles.title")),
-            UiAction::OpenAssistant => Some(crate::i18n::t("assistant.title")),
             _ => None,
         };
         let toggles_toolbar_list = matches!(&action, UiAction::OpenDropdown(_));
@@ -319,7 +344,6 @@ impl CommandDispatcher {
                     .ui
                     .side_panel_first_accessibility_label(&state.project_session.project),
             ),
-            UiAction::OpenAssistant => Some(crate::i18n::t("assistant.placeholder").to_string()),
             _ => None,
         };
         if navigates_lines {
@@ -366,11 +390,16 @@ impl CommandDispatcher {
         announce_action: bool,
     ) -> bool {
         let action = recording_shortcut(comic_dubs_shortcut(action, state), state);
-        let workspace_history = matches!(
+        let action = syllable_shortcut(action, state);
+        let workspace_history = (matches!(
             state.active_workspace(),
             crate::application::workspace_service::WorkspaceId::Voicelines
                 | crate::application::workspace_service::WorkspaceId::ComicDubs
-        ) && matches!(action, UiAction::Undo | UiAction::Redo);
+        ) && matches!(action, UiAction::Undo | UiAction::Redo))
+            // The recording tab undoes its own cuts.
+            || (state.active_workspace()
+                == crate::application::workspace_service::WorkspaceId::Recording
+                && matches!(action, UiAction::Undo));
         if state.active_workspace() != crate::application::workspace_service::WorkspaceId::Rythmo
             && action.mutates_rythmo_project()
             && !workspace_history
@@ -671,6 +700,87 @@ impl CommandDispatcher {
                         .begin_comic_dubs_text_edit(bubble.id, bubble.text);
                 }
             }
+            UiAction::Processing(action) => {
+                use crate::processing::ProcessingAction;
+                match action {
+                    ProcessingAction::ImportAudio => {
+                        let (title, filters) = state.processing_import_request();
+                        open_multiple_file_picker(
+                            state,
+                            elwt,
+                            &title,
+                            FilePickerIntent::ProcessingAudio,
+                            filters,
+                            project_or_video_dir(state),
+                        );
+                    }
+                    ProcessingAction::ExportTrack(track) => {
+                        if let Some(request) = state.processing_export_track_request(track) {
+                            open_file_picker_request(state, elwt, request);
+                        }
+                    }
+                    ProcessingAction::ExportListened => {
+                        let request = state
+                            .processing_listening_index()
+                            .and_then(|track| state.processing_export_track_request(track));
+                        match request {
+                            Some(request) => open_file_picker_request(state, elwt, request),
+                            None => state.processing_nothing_to_export(),
+                        }
+                    }
+                    ProcessingAction::AddListenedToProject => {
+                        match state.processing_listened_result_index() {
+                            Some(track) => match project_or_video_dir(state) {
+                                Some(folder) => {
+                                    state.processing_add_track_to_project_in(track, folder)
+                                }
+                                None => {
+                                    if let Some(request) =
+                                        state.processing_add_to_project_request(track)
+                                    {
+                                        open_file_picker_request(state, elwt, request);
+                                    }
+                                }
+                            },
+                            None => state.processing_nothing_to_export(),
+                        }
+                    }
+                    ProcessingAction::ExportAll => match state.processing_export_all_request() {
+                        Some(request) => open_file_picker_request(state, elwt, request),
+                        None => state.processing_nothing_to_export(),
+                    },
+                    ProcessingAction::ChooseDirectory => {
+                        if let Some(request) = state.processing_directory_request() {
+                            open_file_picker_request(state, elwt, request);
+                        }
+                    }
+                    ProcessingAction::AddTrackToProject(track) => {
+                        // Straight into the folder of the project, where its
+                        // other media live. Without a project or a video yet,
+                        // the user says where.
+                        match project_or_video_dir(state) {
+                            Some(folder) => state.processing_add_track_to_project_in(track, folder),
+                            None => {
+                                if let Some(request) =
+                                    state.processing_add_to_project_request(track)
+                                {
+                                    open_file_picker_request(state, elwt, request);
+                                }
+                            }
+                        }
+                    }
+                    // Sent from the project files: show the tab the media
+                    // went to.
+                    send @ (ProcessingAction::SendProjectVideo(_)
+                    | ProcessingAction::SendProjectAudio(_)) => {
+                        state.processing_action(send);
+                        state.activate_workspace(
+                            crate::application::workspace_service::WorkspaceId::Processing,
+                        );
+                    }
+                    other => state.processing_action(other),
+                }
+            }
             UiAction::VoicelinesImportAudio => {
                 let filters = open_dialog_filters(
                     "Audio",
@@ -804,6 +914,9 @@ impl CommandDispatcher {
                 state.recording_cut_selected_clip_at_playhead()
             }
             UiAction::RecordingSelectClipAtPlayhead => state.recording_select_clip_at_playhead(),
+            UiAction::RecordingSeekToSelectedClipStart => {
+                state.recording_seek_to_selected_clip_start()
+            }
             UiAction::RecordingPlaceAssetAtPlayhead(asset_id) => {
                 state.recording_place_asset_at_playhead(asset_id)
             }
@@ -872,6 +985,10 @@ impl CommandDispatcher {
                     == crate::application::workspace_service::WorkspaceId::ComicDubs
                 {
                     state.comic_dubs_undo();
+                } else if state.active_workspace()
+                    == crate::application::workspace_service::WorkspaceId::Recording
+                {
+                    state.recording_undo_cut();
                 } else {
                     state.undo();
                 }
@@ -1453,12 +1570,6 @@ impl CommandDispatcher {
                     None,
                 );
             }
-            UiAction::ConformStart {
-                video_id,
-                band_id,
-                path,
-                move_takes,
-            } => state.start_conform(video_id, band_id, PathBuf::from(path), move_takes),
             UiAction::ConformCancel => state.cancel_conform(),
             UiAction::CloseConformModal => state.close_conform_modal(),
             UiAction::MediaVideoAssociateProxy {
@@ -1867,6 +1978,14 @@ impl CommandDispatcher {
             UiAction::SetSyllableRatios { line_id, ratios } => {
                 state.set_syllable_ratios(line_id, ratios);
             }
+            UiAction::ToggleSyllableSplitWord { line_id, word } => {
+                state.toggle_syllable_split_word(line_id, &word);
+            }
+            UiAction::CycleLiaisonMark { line_id, pair } => {
+                state.cycle_liaison_mark(line_id, &pair);
+            }
+            UiAction::ToggleSyllableDragDirection => state.toggle_syllable_drag_direction(),
+            UiAction::Syllable(key) => state.syllable_key(key),
             UiAction::SplitDialogue => {
                 state.split_dialogue();
             }
@@ -2329,18 +2448,6 @@ impl CommandDispatcher {
                 new_points,
             } => {
                 state.transform_drawing_strokes(stroke_ids, old_points, new_points);
-            }
-            UiAction::OpenAssistant => state.open_assistant_bubble(),
-            UiAction::AssistantSubmit { query } => state.assistant_submit(query),
-            UiAction::SelectLines { line_ids } => state.select_lines(line_ids),
-            UiAction::AssistantCreateLine {
-                frame,
-                y_slot,
-                duration_frames,
-                text,
-                character,
-            } => {
-                state.assistant_create_line(frame, y_slot, duration_frames, text, character);
             }
         }
         false

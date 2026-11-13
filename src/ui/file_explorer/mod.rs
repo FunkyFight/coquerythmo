@@ -2357,6 +2357,16 @@ fn context_menu_items(row: RowId, data: &FileTreeData) -> Vec<MenuItem> {
                         EventResponse::Action(UiAction::OpenConformModal { video_id: Some(id) })
                     }),
                 });
+                items.push(MenuItem {
+                    label: t("file_tree.menu.send_to_processing").to_string(),
+                    enabled: !video.missing,
+                    submenu: None,
+                    action: Box::new(move || {
+                        EventResponse::Action(UiAction::Processing(
+                            crate::processing::ProcessingAction::SendProjectVideo(id),
+                        ))
+                    }),
+                });
             }
             items.push(MenuItem {
                 label: t("file_tree.menu.rename").to_string(),
@@ -2389,6 +2399,16 @@ fn context_menu_items(row: RowId, data: &FileTreeData) -> Vec<MenuItem> {
                 submenu: None,
                 action: Box::new(move || {
                     EventResponse::Action(UiAction::MediaAudioBeginRename { id })
+                }),
+            },
+            MenuItem {
+                label: t("file_tree.menu.send_to_processing").to_string(),
+                enabled: true,
+                submenu: None,
+                action: Box::new(move || {
+                    EventResponse::Action(UiAction::Processing(
+                        crate::processing::ProcessingAction::SendProjectAudio(id),
+                    ))
                 }),
             },
         ],
@@ -3070,6 +3090,31 @@ mod tests {
             ),
             Some(EventResponse::Action(UiAction::AddLanguage))
         ));
+    }
+
+    #[test]
+    fn project_videos_and_audios_can_be_sent_to_processing() {
+        use crate::processing::ProcessingAction;
+
+        let (data, video, ..) = sample();
+        let sent = |row: RowId| {
+            let items = context_menu_items(row, &data);
+            let item = items
+                .iter()
+                .find(|item| item.label == t("file_tree.menu.send_to_processing"))
+                .expect("the row can be sent to processing");
+            (item.action)()
+        };
+        assert_eq!(
+            sent(RowId::Video(video)),
+            EventResponse::Action(UiAction::Processing(ProcessingAction::SendProjectVideo(
+                video
+            )))
+        );
+        assert_eq!(
+            sent(RowId::Audio(AudioRowId::Media(42))),
+            EventResponse::Action(UiAction::Processing(ProcessingAction::SendProjectAudio(42)))
+        );
     }
 
     #[test]

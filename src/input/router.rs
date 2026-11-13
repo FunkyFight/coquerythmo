@@ -336,15 +336,6 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
             command,
         );
     }
-    // Needle 3's prompt. The event loop opens it before the router runs; the
-    // binding lists it in the shortcut panel.
-    router.bind(
-        InputContext::Workspace,
-        KeyCode::Enter,
-        ctrl,
-        RepeatPolicy::PressOnly,
-        UiAction::OpenAssistant,
-    );
     router.bind(
         InputContext::Workspace,
         KeyCode::Character('d'),
@@ -478,6 +469,51 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         RepeatPolicy::PressOnly,
         UiAction::RecordingToggleSharedAudio,
     );
+    {
+        // Processing workspace. These chords sit before the global ones, so
+        // the rythmo-only meanings of Ctrl+I, Ctrl+P and Ctrl+M give way.
+        use crate::processing::ProcessingAction as Processing;
+        for (key, modifiers, action) in [
+            (KeyCode::Enter, ctrl, Processing::Run),
+            (KeyCode::Enter, ctrl_shift, Processing::Cancel),
+            (KeyCode::Character('i'), ctrl, Processing::ImportAudio),
+            (
+                KeyCode::Character('i'),
+                ctrl_shift,
+                Processing::UseProjectVideo,
+            ),
+            (KeyCode::ArrowUp, ctrl, Processing::ListenRelative(-1)),
+            (KeyCode::ArrowDown, ctrl, Processing::ListenRelative(1)),
+            (
+                KeyCode::ArrowUp,
+                ctrl_shift,
+                Processing::SelectModelRelative(-1),
+            ),
+            (
+                KeyCode::ArrowDown,
+                ctrl_shift,
+                Processing::SelectModelRelative(1),
+            ),
+            (KeyCode::Character('e'), ctrl, Processing::ExportListened),
+            (KeyCode::Character('e'), ctrl_shift, Processing::ExportAll),
+            (
+                KeyCode::Character('p'),
+                ctrl,
+                Processing::AddListenedToProject,
+            ),
+            (KeyCode::Character('m'), ctrl, Processing::OpenCatalog),
+            (KeyCode::Character('m'), ctrl_shift, Processing::OpenEngine),
+            (KeyCode::Character('b'), ctrl, Processing::ToggleQuality),
+        ] {
+            router.bind(
+                InputContext::Processing,
+                key,
+                modifiers,
+                RepeatPolicy::PressOnly,
+                UiAction::Processing(action),
+            );
+        }
+    }
     router.bind(
         InputContext::Recording,
         KeyCode::Character('l'),
@@ -493,6 +529,15 @@ pub fn existing_shortcuts() -> ShortcutRouter<UiAction> {
         Modifiers::NONE,
         RepeatPolicy::PressOnly,
         UiAction::RecordingSelectClipAtPlayhead,
+    );
+    // With or without a focused control: back to the start of the selected
+    // take, to listen to it again.
+    router.bind(
+        InputContext::Recording,
+        KeyCode::Enter,
+        ctrl,
+        RepeatPolicy::PressOnly,
+        UiAction::RecordingSeekToSelectedClipStart,
     );
     // Ctrl+Shift+Left/Right (one image), Ctrl+K and Ctrl+V reach the takes
     // through the shared editing chords (see `recording_shortcut`).
@@ -740,6 +785,81 @@ mod tests {
         assert!(router
             .resolve(&stroke(KeyCode::F5, Modifiers::NONE, true), &contexts)
             .is_none());
+    }
+
+    #[test]
+    fn processing_chords_win_over_the_global_ones_in_their_tab_only() {
+        use crate::processing::ProcessingAction;
+        let router = existing_shortcuts();
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        let processing = InputContextStack::new([
+            InputContext::Processing,
+            InputContext::Workspace,
+            InputContext::Global,
+        ]);
+        let elsewhere = InputContextStack::new([InputContext::Workspace, InputContext::Global]);
+        let resolve = |key, contexts: &InputContextStack| {
+            router.resolve(&stroke(key, ctrl, false), contexts).cloned()
+        };
+        assert_eq!(
+            resolve(KeyCode::Enter, &processing),
+            Some(UiAction::Processing(ProcessingAction::Run))
+        );
+        assert_eq!(
+            resolve(KeyCode::Character('i'), &processing),
+            Some(UiAction::Processing(ProcessingAction::ImportAudio))
+        );
+        assert_eq!(
+            resolve(KeyCode::ArrowDown, &processing),
+            Some(UiAction::Processing(ProcessingAction::ListenRelative(1)))
+        );
+        // Playback keys of the shared workspace context still answer.
+        assert_eq!(
+            router
+                .resolve(&stroke(KeyCode::Space, Modifiers::NONE, false), &processing)
+                .cloned(),
+            Some(UiAction::TogglePlayPause)
+        );
+        // Elsewhere Ctrl+I keeps its meaning.
+        assert_eq!(
+            resolve(KeyCode::Character('i'), &elsewhere),
+            Some(UiAction::OpenLinesPanel)
+        );
+    }
+
+    #[test]
+    fn recording_binds_the_return_to_the_selected_take_and_keeps_undo() {
+        let router = existing_shortcuts();
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        // With a focused control and without one.
+        for contexts in [
+            InputContextStack::new([
+                InputContext::Recording,
+                InputContext::MainWindow,
+                InputContext::Global,
+            ]),
+            InputContextStack::new([
+                InputContext::Recording,
+                InputContext::RecordingTimeline,
+                InputContext::Global,
+            ]),
+        ] {
+            assert_eq!(
+                router.resolve(&stroke(KeyCode::Enter, ctrl, false), &contexts),
+                Some(&UiAction::RecordingSeekToSelectedClipStart)
+            );
+            // Ctrl+Z reaches the recording tab: it undoes the last cut.
+            assert_eq!(
+                router.resolve(&stroke(KeyCode::Character('z'), ctrl, false), &contexts),
+                Some(&UiAction::Undo)
+            );
+        }
     }
 
     #[test]

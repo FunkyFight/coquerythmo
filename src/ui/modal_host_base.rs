@@ -22,7 +22,6 @@ use super::proxy_modal::ProxyModal;
 use super::rename_character_modal::RenameCharacterModal;
 use super::save_prompt_modal::SavePromptModal;
 use super::server_browser::{AddServerModal, ServerBrowserModal};
-use crate::ui::assistant_bubble::{AssistantBubble, AssistantBubbleResult};
 use super::settings_modal::SettingsModal;
 use super::voice_actor_modal::VoiceActorModal;
 use super::whats_new_modal::WhatsNewModal;
@@ -109,14 +108,11 @@ pub struct ModalHost {
     pub pricing_license: Option<PricingLicenseModal>,
     pub discord_notice: Option<DiscordNoticeModal>,
     pub export_done: Option<ExportDoneModal>,
-    /// Needle 3's floating prompt (`Ctrl + Entrée`).
-    pub assistant: Option<AssistantBubble>,
 }
 
 impl ModalHost {
     pub fn new() -> Self {
         Self {
-            assistant: None,
             connect: None,
             settings: None,
             project_settings: None,
@@ -144,8 +140,7 @@ impl ModalHost {
     }
 
     pub fn captures_input(&self) -> bool {
-        self.assistant.is_some()
-            || self.connect.is_some()
+        self.connect.is_some()
             || self.settings.is_some()
             || self.project_settings.is_some()
             || self.band_style.is_some()
@@ -171,8 +166,7 @@ impl ModalHost {
     }
 
     pub fn is_editing_text(&self) -> bool {
-        self.assistant.is_some()
-            || self.settings.is_some()
+        self.settings.is_some()
             || self.project_settings.is_some()
             || self.band_style.is_some()
             || self.comic_dubs_settings.is_some()
@@ -216,9 +210,6 @@ impl ModalHost {
         screen_w: f32,
         screen_h: f32,
     ) -> Option<ModalOutcome> {
-        if self.assistant.is_some() {
-            return Some(self.handle_assistant_event(event, screen_w, screen_h));
-        }
         if self.microphone.is_some() {
             return Some(self.handle_microphone_event(event, screen_w, screen_h));
         }
@@ -1718,32 +1709,6 @@ impl ModalHost {
         self.voice_actor = Some(super::voice_actor_modal::VoiceActorModal::new());
     }
 
-    pub fn open_assistant(&mut self) {
-        self.assistant = Some(AssistantBubble::new());
-    }
-
-    fn handle_assistant_event(
-        &mut self,
-        event: &UiEvent,
-        screen_w: f32,
-        screen_h: f32,
-    ) -> ModalOutcome {
-        let Some(bubble) = &mut self.assistant else {
-            return ModalOutcome::Consumed;
-        };
-        match bubble.handle_event(event, screen_w, screen_h) {
-            AssistantBubbleResult::Consumed => ModalOutcome::Consumed,
-            AssistantBubbleResult::Close => {
-                self.assistant = None;
-                closed_modal(crate::i18n::t("assistant.title"))
-            }
-            AssistantBubbleResult::Submit(query) => {
-                ModalOutcome::Action(UiAction::AssistantSubmit { query })
-            }
-            AssistantBubbleResult::Clipboard(text) => ModalOutcome::Action(UiAction::SetClipboard(text)),
-        }
-    }
-
     pub fn open_rename_character(&mut self, characters: Vec<String>) {
         self.rename_character = Some(super::rename_character_modal::RenameCharacterModal::new(
             characters,
@@ -2043,9 +2008,6 @@ impl ModalHost {
                 screen_w,
                 screen_h,
             );
-        }
-        if let Some(bubble) = &self.assistant {
-            bubble.render(modal_overlay_quads, modal_overlay_labels, screen_w, screen_h);
         }
     }
 }

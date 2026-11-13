@@ -991,6 +991,31 @@ fn validate_command_precondition(command: &Command, project: &Project) -> Result
                 return Err(format!("line {line_id} does not match the karaoke origin"));
             }
         }
+        Command::SetLiaisonMarks {
+            line_id, old_marks, ..
+        } => {
+            let line = project
+                .get_line(*line_id)
+                .ok_or_else(|| missing_line(*line_id))?;
+            if &line.liaison_marks != old_marks {
+                return Err(format!("line {line_id} does not match the previous liaisons"));
+            }
+        }
+        Command::SetSyllableSplitWords {
+            line_id,
+            old_words,
+            old_ratios,
+            ..
+        } => {
+            let line = project
+                .get_line(*line_id)
+                .ok_or_else(|| missing_line(*line_id))?;
+            if &line.syllable_split_words != old_words || &line.syllable_ratios != old_ratios {
+                return Err(format!(
+                    "line {line_id} does not match the previous syllable split"
+                ));
+            }
+        }
         Command::SetSyllableRatios {
             line_id,
             old_ratios,

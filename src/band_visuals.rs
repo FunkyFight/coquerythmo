@@ -212,6 +212,285 @@ pub fn fit_character_badge(
     }
 }
 
+/// The syllable the karaoke dot lands on rises by this much (at scale 1),
+/// then settles.
+pub const KARAOKE_SYLLABLE_LIFT: f32 = 2.0;
+pub const KARAOKE_SYLLABLE_LIFT_SECONDS: f32 = 0.22;
+/// Its letters shine meanwhile: a halo that follows their shape (the text
+/// drawn again around itself, `KARAOKE_SYLLABLE_HALO_RADIUS` pixels away at
+/// scale 1), and the sung letters whitened.
+pub const KARAOKE_SYLLABLE_SHINE_SECONDS: f32 = 0.38;
+pub const KARAOKE_SYLLABLE_SHINE_ALPHA: f32 = 0.45;
+pub const KARAOKE_SYLLABLE_HALO_ALPHA: f32 = 0.16;
+pub const KARAOKE_SYLLABLE_HALO_RADIUS: f32 = 1.25;
+
+/// How high the syllable being sung is lifted, `elapsed` seconds after the
+/// dot landed on it: a single small bounce.
+pub fn karaoke_syllable_lift(elapsed: f32) -> f32 {
+    let t = (elapsed / KARAOKE_SYLLABLE_LIFT_SECONDS).clamp(0.0, 1.0);
+    KARAOKE_SYLLABLE_LIFT * (t * std::f32::consts::PI).sin().max(0.0)
+}
+
+/// Strength (1 to 0) of the light on the syllable being sung.
+pub fn karaoke_syllable_shine(elapsed: f32) -> f32 {
+    let t = (elapsed / KARAOKE_SYLLABLE_SHINE_SECONDS).clamp(0.0, 1.0);
+    (1.0 - t) * (1.0 - t)
+}
+
+/// How a karaoke line is drawn while it is sung: the syllable the dot is on
+/// apart from the rest, lifted and lit when the dot lands on it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KaraokeSyllableEffect {
+    /// Start and end of the syllable being sung, along the drawn text.
+    pub span: (f32, f32),
+    /// How much of the text is sung (0 to 1): it takes the character colour.
+    pub filled: f32,
+    /// How far the dot is into the syllable (0 to 1).
+    pub local: f32,
+    /// Seconds since the dot landed on the syllable.
+    pub elapsed: f32,
+    /// Lift of the syllable at scale 1, in pixels.
+    pub lift: f32,
+    /// Strength of the light on it (1 to 0).
+    pub shine: f32,
+}
+
+/// The effect on `line` at `progress` (0 to 1) of its duration.
+pub fn karaoke_syllable_effect(
+    line: &crate::rythmo_line::RythmoLine,
+    lang: &str,
+    progress: f32,
+    fps: f64,
+) -> KaraokeSyllableEffect {
+    let dot = line.karaoke_dot_state(lang, progress);
+    let fps = if fps.is_finite() && fps > 0.0 {
+        fps
+    } else {
+        24.0
+    };
+    let syllable_seconds = dot.share as f64 * line.duration_frames.max(1) as f64 / fps;
+    let elapsed = (dot.local as f64 * syllable_seconds) as f32;
+    KaraokeSyllableEffect {
+        span: dot.span,
+        filled: dot.position,
+        local: dot.local,
+        elapsed,
+        lift: karaoke_syllable_lift(elapsed),
+        shine: karaoke_syllable_shine(elapsed),
+    }
+}
+
+/// One slice of the text of a sung karaoke line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KaraokeTextSlice {
+    /// Start and end of the slice along the drawn text (0 to 1).
+    pub from: f32,
+    pub to: f32,
+    /// Shift to the right and lift, in pixels at scale 1.
+    pub shift_x: f32,
+    pub lift: f32,
+    /// Drawn in the character colour (else in white).
+    pub coloured: bool,
+    pub alpha: f32,
+}
+
+/// The slices a sung karaoke line is drawn in, in order. The shine is made
+/// of the letters themselves: no shape is drawn behind the text.
+pub fn karaoke_syllable_slices(effect: &KaraokeSyllableEffect) -> Vec<KaraokeTextSlice> {
+    let (start, end) = effect.span;
+    let filled = effect.filled.clamp(0.0, 1.0);
+    let lift = effect.lift;
+    let slice = |from: f32, to: f32, lift: f32, coloured: bool, alpha: f32| KaraokeTextSlice {
+        from,
+        to,
+        shift_x: 0.0,
+        lift,
+        coloured,
+        alpha,
+    };
+    let mut slices = Vec::new();
+    if effect.shine > 0.0 {
+        // The halo, under the text: the letters of the syllable drawn all
+        // around their place, faintly.
+        let radius = KARAOKE_SYLLABLE_HALO_RADIUS;
+        let diagonal = radius * std::f32::consts::FRAC_1_SQRT_2;
+        for (dx, dy) in [
+            (-radius, 0.0),
+            (radius, 0.0),
+            (0.0, -radius),
+            (0.0, radius),
+            (-diagonal, -diagonal),
+            (diagonal, -diagonal),
+            (-diagonal, diagonal),
+            (diagonal, diagonal),
+        ] {
+            slices.push(KaraokeTextSlice {
+                from: start,
+                to: end,
+                shift_x: dx,
+                lift: lift - dy,
+                coloured: false,
+                alpha: KARAOKE_SYLLABLE_HALO_ALPHA * effect.shine,
+            });
+        }
+    }
+    slices.extend([
+        slice(0.0, start, 0.0, false, 1.0),
+        slice(start, end, lift, false, 1.0),
+        slice(end, 1.0, 0.0, false, 1.0),
+        // What is already sung takes the colour of the character.
+        slice(0.0, filled.min(start), 0.0, true, 1.0),
+        slice(start, filled.min(end), lift, true, 1.0),
+    ]);
+    if effect.shine > 0.0 {
+        // The sung letters of the syllable briefly whitened.
+        slices.push(slice(
+            start,
+            filled.min(end),
+            lift,
+            false,
+            KARAOKE_SYLLABLE_SHINE_ALPHA * effect.shine,
+        ));
+    }
+    slices.retain(|slice| slice.to > slice.from);
+    slices
+}
+
+/// Mark of a mute syllable to pronounce, shown during playback under the
+/// words whose pin is on: same yellow as the pin.
+pub const PRONOUNCE_MARK_SIZE: f32 = 9.0;
+/// How far above the bottom of its row the mark starts: it sits under the
+/// letters, clear of them, and overhangs the bottom edge of the row.
+pub const PRONOUNCE_MARK_HEIGHT: f32 = 5.0;
+pub const PRONOUNCE_MARK_COLOR: [f32; 4] = [1.0, 0.80, 0.16, 1.0];
+pub const PRONOUNCE_MARK_RIM: [f32; 4] = [0.10, 0.08, 0.02, 1.0];
+
+/// Top-left corner and size of the mark centred at `share` of the width of
+/// a line drawn at `line_x`, `line_y`: across the bottom edge of its row,
+/// under the syllable.
+pub fn pronounce_mark_rect(
+    line_x: f32,
+    line_y: f32,
+    line_width: f32,
+    row_height: f32,
+    share: f32,
+    scale: f32,
+) -> (f32, f32, f32) {
+    let unit = scale.max(0.5);
+    let size = PRONOUNCE_MARK_SIZE * unit;
+    (
+        line_x + share.clamp(0.0, 1.0) * line_width - size / 2.0,
+        line_y + row_height - PRONOUNCE_MARK_HEIGHT * unit,
+        size,
+    )
+}
+
+/// Arrow that links the consonant of a liaison to the vowel after it.
+pub const LIAISON_ARROW_THICKNESS: f32 = 2.5;
+/// How far the curve hangs under its ends, and the length of its head.
+pub const LIAISON_ARROW_DEPTH: f32 = 4.0;
+pub const LIAISON_ARROW_HEAD: f32 = 6.0;
+/// Height of the oblique stroke of a liaison that is not made.
+pub const LIAISON_ARROW_SLASH: f32 = 10.0;
+/// How far above the bottom of its row the arrow starts during playback:
+/// its ends sit under the letters, clear of them, and its curve reaches the
+/// bottom edge of the row.
+pub const LIAISON_ARROW_HEIGHT: f32 = 4.0;
+pub const LIAISON_ARROW_COLOR: [f32; 4] = PRONOUNCE_MARK_COLOR;
+
+/// Strokes (`[x0, y0, x1, y1]`) of the arrow of a liaison, from the
+/// consonant at `from_x` to the vowel at `to_x`: a shallow curve hanging
+/// under `top`, its head on the vowel and, when the liaison is not made
+/// (`crossed`), an oblique stroke across its middle.
+pub fn liaison_arrow_strokes(
+    from_x: f32,
+    to_x: f32,
+    top: f32,
+    scale: f32,
+    crossed: bool,
+) -> Vec<[f32; 4]> {
+    const STEPS: usize = 8;
+    let unit = scale.max(0.5);
+    let to_x = to_x.max(from_x + 2.0 * unit);
+    let span = to_x - from_x;
+    let depth = (LIAISON_ARROW_DEPTH * unit).min(span * 0.35);
+    let middle_x = (from_x + to_x) / 2.0;
+    // Quadratic curve from the consonant to the vowel, lowest in the middle.
+    let point = |t: f32| -> (f32, f32) {
+        let inverse = 1.0 - t;
+        (
+            inverse * inverse * from_x + 2.0 * inverse * t * middle_x + t * t * to_x,
+            top + 2.0 * inverse * t * 2.0 * depth,
+        )
+    };
+    let mut strokes = Vec::with_capacity(STEPS + 3);
+    let mut previous = point(0.0);
+    for step in 1..=STEPS {
+        let next = point(step as f32 / STEPS as f32);
+        strokes.push([previous.0, previous.1, next.0, next.1]);
+        previous = next;
+    }
+    // The head, on the vowel: two strokes back along the end of the curve.
+    let (dx, dy) = (to_x - middle_x, -2.0 * depth);
+    let length = (dx * dx + dy * dy).sqrt().max(f32::EPSILON);
+    let (back_x, back_y) = (-dx / length, -dy / length);
+    let head = LIAISON_ARROW_HEAD * unit;
+    for angle in [BREATH_ARROW_HEAD_SPREAD, -BREATH_ARROW_HEAD_SPREAD] {
+        let (sin, cos) = angle.sin_cos();
+        strokes.push([
+            to_x,
+            top,
+            to_x + (back_x * cos - back_y * sin) * head,
+            top + (back_x * sin + back_y * cos) * head,
+        ]);
+    }
+    if crossed {
+        let half_height = LIAISON_ARROW_SLASH * unit / 2.0;
+        let half_width = half_height * 0.6;
+        let middle_y = top + depth;
+        strokes.push([
+            middle_x - half_width,
+            middle_y + half_height,
+            middle_x + half_width,
+            middle_y - half_height,
+        ]);
+    }
+    strokes
+}
+
+/// Smallest size a label is shrunk to so that it stays on the band.
+pub const BADGE_EDGE_MIN_SCALE: f32 = 0.35;
+
+/// Keeps the label of a centred karaoke line on the band. A name too long
+/// for the room between the left edge of the band (`min_x`) and its line
+/// (`gap` before `line_x`) is shrunk against the line, down to
+/// `BADGE_EDGE_MIN_SCALE`, then held at the edge rather than cut by it.
+pub fn keep_badge_on_band(fit: BadgeFit, line_x: f32, gap: f32, min_x: f32) -> BadgeFit {
+    if fit.hidden || fit.rect.x >= min_x || !(fit.scale > 0.0) {
+        return fit;
+    }
+    let full_width = fit.rect.width / fit.scale;
+    let full_height = fit.rect.height / fit.scale;
+    if !(full_width > 0.0) {
+        return fit;
+    }
+    let room = line_x - gap - min_x;
+    let scale = (room / full_width)
+        .min(fit.scale)
+        .max(BADGE_EDGE_MIN_SCALE.min(fit.scale));
+    let width = full_width * scale;
+    BadgeFit {
+        hidden: false,
+        rect: Rect {
+            x: (line_x - gap - width).max(min_x),
+            y: fit.rect.y,
+            width,
+            height: full_height * scale,
+        },
+        scale,
+    }
+}
+
 /// `fit_character_badge` for the exports: the label of line `line_id` of
 /// `character_name` against the bodies of the other `lines` (line id to
 /// body and character name).
@@ -256,6 +535,134 @@ mod tests {
                 .iter()
                 .any(|(other, same)| (!same_only || *same) && rects_overlap(candidate, other))
         })
+    }
+
+    #[test]
+    fn the_pronounce_mark_sits_under_the_letters_of_its_syllable() {
+        let (x, y, size) = pronounce_mark_rect(100.0, 50.0, 200.0, 40.0, 0.5, 1.0);
+        assert_eq!(size, PRONOUNCE_MARK_SIZE);
+        // Centred under its syllable, starting near the bottom of the row
+        // and overhanging it.
+        assert!((x + size / 2.0 - 200.0).abs() < 1e-3);
+        assert_eq!(y, 90.0 - PRONOUNCE_MARK_HEIGHT);
+        assert!(y + size > 90.0);
+        // It follows the scale of the band.
+        let (_, scaled_y, scaled_size) = pronounce_mark_rect(100.0, 50.0, 200.0, 80.0, 0.5, 2.0);
+        assert_eq!(scaled_size, PRONOUNCE_MARK_SIZE * 2.0);
+        assert_eq!(scaled_y, 130.0 - PRONOUNCE_MARK_HEIGHT * 2.0);
+    }
+
+    #[test]
+    fn the_liaison_arrow_runs_from_the_consonant_to_the_vowel() {
+        let strokes = liaison_arrow_strokes(100.0, 140.0, 50.0, 1.0, false);
+        // A continuous curve from the consonant to the vowel, hanging under
+        // its ends, then the two strokes of the head on the vowel.
+        assert_eq!(strokes.len(), 10);
+        assert_eq!((strokes[0][0], strokes[0][1]), (100.0, 50.0));
+        for pair in strokes[..8].windows(2) {
+            assert_eq!((pair[0][2], pair[0][3]), (pair[1][0], pair[1][1]));
+        }
+        assert!((strokes[7][2] - 140.0).abs() < 1e-3 && (strokes[7][3] - 50.0).abs() < 1e-3);
+        let lowest = strokes[..8].iter().map(|s| s[3]).fold(f32::MIN, f32::max);
+        assert!((lowest - (50.0 + LIAISON_ARROW_DEPTH)).abs() < 1e-3);
+        for head in &strokes[8..] {
+            assert_eq!((head[0], head[1]), (140.0, 50.0));
+            assert!(head[2] < 140.0 && head[3] >= 50.0 - 1.0);
+            let length = ((head[2] - head[0]).powi(2) + (head[3] - head[1]).powi(2)).sqrt();
+            assert!((length - LIAISON_ARROW_HEAD).abs() < 1e-3);
+        }
+        // Not made: the same arrow, with an oblique stroke across its middle.
+        let crossed = liaison_arrow_strokes(100.0, 140.0, 50.0, 1.0, true);
+        assert_eq!(crossed.len(), 11);
+        assert_eq!(crossed[..10], strokes[..]);
+        let slash = crossed[10];
+        assert!(slash[0] < 120.0 && slash[2] > 120.0 && slash[1] > slash[3]);
+        assert!(((slash[0] + slash[2]) / 2.0 - 120.0).abs() < 1e-3);
+        // Two letters side by side still get an arrow.
+        assert!(liaison_arrow_strokes(100.0, 100.5, 50.0, 1.0, false)
+            .iter()
+            .all(|stroke| stroke.iter().all(|value| value.is_finite())));
+    }
+
+    #[test]
+    fn a_sung_line_is_cut_around_the_syllable_the_dot_is_on() {
+        let effect = KaraokeSyllableEffect {
+            span: (0.4, 0.6),
+            filled: 0.5,
+            local: 0.5,
+            elapsed: KARAOKE_SYLLABLE_LIFT_SECONDS / 2.0,
+            lift: karaoke_syllable_lift(KARAOKE_SYLLABLE_LIFT_SECONDS / 2.0),
+            shine: karaoke_syllable_shine(KARAOKE_SYLLABLE_LIFT_SECONDS / 2.0),
+        };
+        let slices = karaoke_syllable_slices(&effect);
+        let plain = |from: f32, to: f32, lift: f32, coloured: bool| KaraokeTextSlice {
+            from,
+            to,
+            shift_x: 0.0,
+            lift,
+            coloured,
+            alpha: 1.0,
+        };
+        // First the halo: the letters of the syllable all around their place.
+        let halo = &slices[..8];
+        assert!(halo.iter().all(|slice| {
+            (slice.from, slice.to) == (0.4, 0.6)
+                && !slice.coloured
+                && slice.alpha > 0.0
+                && slice.alpha < KARAOKE_SYLLABLE_HALO_ALPHA
+                && (slice.shift_x != 0.0 || slice.lift != KARAOKE_SYLLABLE_LIFT)
+        }));
+        // Then the white text: before, the lifted syllable, after.
+        assert_eq!(slices[8], plain(0.0, 0.4, 0.0, false));
+        assert_eq!(slices[9], plain(0.4, 0.6, KARAOKE_SYLLABLE_LIFT, false));
+        assert_eq!(slices[10], plain(0.6, 1.0, 0.0, false));
+        // Sung text, in the character colour, up to the dot.
+        assert_eq!(slices[11], plain(0.0, 0.4, 0.0, true));
+        assert_eq!(slices[12], plain(0.4, 0.5, KARAOKE_SYLLABLE_LIFT, true));
+        // The sung letters of the syllable whitened.
+        assert_eq!(slices.len(), 14);
+        assert!(slices[13].alpha > 0.0 && slices[13].alpha < KARAOKE_SYLLABLE_SHINE_ALPHA);
+        // Once the shine is over and the dot on the first syllable, nothing
+        // empty is drawn.
+        let settled = KaraokeSyllableEffect {
+            span: (0.0, 0.3),
+            filled: 0.0,
+            lift: 0.0,
+            shine: 0.0,
+            ..effect
+        };
+        assert_eq!(
+            karaoke_syllable_slices(&settled),
+            vec![plain(0.0, 0.3, 0.0, false), plain(0.3, 1.0, 0.0, false)]
+        );
+    }
+
+    #[test]
+    fn a_long_karaoke_label_is_shrunk_to_stay_on_the_band() {
+        let fit = |x: f32, width: f32| BadgeFit {
+            hidden: false,
+            rect: rect(x, 10.0, width, 40.0),
+            scale: 1.0,
+        };
+        // Enough room: nothing changes.
+        let free = fit(100.0, 198.0);
+        assert_eq!(keep_badge_on_band(free, 300.0, 2.0, 4.0), free);
+        // 400 px of name for 196 px of room: shrunk against its line.
+        let shrunk = keep_badge_on_band(fit(-102.0, 400.0), 300.0, 2.0, 102.0);
+        assert!((shrunk.scale - 0.49).abs() < 1e-4, "{shrunk:?}");
+        assert!((shrunk.rect.x - 102.0).abs() < 1e-3);
+        assert!((shrunk.rect.x + shrunk.rect.width - 298.0).abs() < 1e-3);
+        assert!((shrunk.rect.height - 40.0 * 0.49).abs() < 1e-3);
+        // No room at all: smallest size, held at the edge of the band.
+        let held = keep_badge_on_band(fit(-398.0, 400.0), 4.0, 2.0, 4.0);
+        assert_eq!(held.scale, BADGE_EDGE_MIN_SCALE);
+        assert_eq!(held.rect.x, 4.0);
+        // A hidden label stays hidden.
+        let hidden = BadgeFit {
+            hidden: true,
+            ..fit(-102.0, 400.0)
+        };
+        assert_eq!(keep_badge_on_band(hidden, 300.0, 2.0, 4.0), hidden);
     }
 
     #[test]

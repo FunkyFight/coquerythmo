@@ -136,10 +136,6 @@ impl State {
         }
     }
 
-    pub fn conform_report(&self) -> Option<&ConformReport> {
-        self.last_conform_report.as_ref()
-    }
-
     /// Compares `video_id` with the cut at `new_path`, then conforms `band_id`.
     pub fn start_conform(
         &mut self,
@@ -408,7 +404,6 @@ impl State {
             report.rerecord_count(),
             t("conform.status.rerecord").to_lowercase()
         );
-        self.last_conform_report = Some(report.clone());
         if self.ui_shell.ui.conform_modal().is_none() {
             let modal = ConformModal::new(
                 self.conform_video_choices(),

@@ -5,7 +5,6 @@
 //! private to the crate while their unit tests run through this library target.
 
 pub mod accessibility;
-pub mod ai;
 pub mod app;
 pub mod application;
 pub mod audio_transfer;
@@ -44,6 +43,7 @@ pub mod observer;
 pub mod packet;
 pub mod phonetics;
 pub mod platform;
+pub mod processing;
 pub mod project;
 pub mod project_archive;
 pub mod project_metadata;
@@ -61,6 +61,8 @@ pub mod rythmo_line;
 pub mod state;
 mod state_conform;
 mod state_detection;
+mod state_processing;
+mod state_syllables;
 pub mod syllable;
 pub mod ui;
 pub mod update;

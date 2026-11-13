@@ -407,7 +407,7 @@ impl ConformReport {
             .filter(|entry| entry.status != SpanStatus::Unchanged)
     }
 
-    /// Plain-text version, for the clipboard and the assistant.
+    /// Plain-text version, for the clipboard.
     pub fn text(&self) -> String {
         use crate::i18n::t;
         let mut out = String::new();
@@ -697,6 +697,8 @@ mod tests {
             kind: Default::default(),
             voice_actor_names: Vec::new(),
             syllable_ratios: Vec::new(),
+            syllable_split_words: Vec::new(),
+            liaison_marks: Vec::new(),
             karaoke: false,
             note: note.into(),
             presence: Default::default(),

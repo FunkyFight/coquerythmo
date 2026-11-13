@@ -136,6 +136,8 @@ mod tests {
             kind: Default::default(),
             voice_actor_names: Vec::new(),
             syllable_ratios: Vec::new(),
+            syllable_split_words: Vec::new(),
+            liaison_marks: Vec::new(),
             karaoke: false,
             note: String::new(),
             presence: Default::default(),

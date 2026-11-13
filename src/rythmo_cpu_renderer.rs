@@ -712,6 +712,75 @@ impl CpuRenderer {
         text_styles: &[crate::vector_text::TextStyleRun],
         alpha: u8,
     ) {
+        self.blit_rythmo_text_columns_with_mode(
+            pixmap,
+            text,
+            x,
+            y,
+            dest_w,
+            dest_h,
+            font_size,
+            tint,
+            (0.0, clip_ratio),
+            stretch,
+            emphasized,
+            text_styles,
+            alpha,
+        );
+    }
+
+    /// One slice of a natural text, between `from` and `to` (shares of its
+    /// width), drawn `lift` pixels above its place: a syllable of a karaoke
+    /// line.
+    fn blit_rythmo_text_natural_slice(
+        &mut self,
+        pixmap: &mut Pixmap,
+        text: &str,
+        x: f32,
+        y: f32,
+        dest_w: f32,
+        dest_h: f32,
+        font_size: f32,
+        tint: [u8; 3],
+        from: f32,
+        to: f32,
+        lift: f32,
+        alpha: u8,
+    ) {
+        self.blit_rythmo_text_columns_with_mode(
+            pixmap,
+            text,
+            x,
+            y - lift,
+            dest_w,
+            dest_h,
+            font_size,
+            tint,
+            (from, to),
+            false,
+            false,
+            &[],
+            alpha,
+        );
+    }
+
+    /// Blits the columns of the text between two shares of its width.
+    fn blit_rythmo_text_columns_with_mode(
+        &mut self,
+        pixmap: &mut Pixmap,
+        text: &str,
+        x: f32,
+        y: f32,
+        dest_w: f32,
+        dest_h: f32,
+        font_size: f32,
+        tint: [u8; 3],
+        columns: (f32, f32),
+        stretch: bool,
+        emphasized: bool,
+        text_styles: &[crate::vector_text::TextStyleRun],
+        alpha: u8,
+    ) {
         if alpha == 0 {
             return;
         }
@@ -743,8 +812,11 @@ impl CpuRenderer {
         if rendered.width == 0 || rendered.height == 0 {
             return;
         }
-        let clip_width = (rendered.width as f32 * clip_ratio.clamp(0.0, 1.0)).ceil() as u32;
-        if clip_width == 0 {
+        // Both ends are rounded alike, so that slices side by side neither
+        // overlap nor leave a gap.
+        let first_column = (rendered.width as f32 * columns.0.clamp(0.0, 1.0)).ceil() as u32;
+        let clip_width = (rendered.width as f32 * columns.1.clamp(0.0, 1.0)).ceil() as u32;
+        if clip_width <= first_column {
             return;
         }
 
@@ -752,7 +824,10 @@ impl CpuRenderer {
         let pm_h = pixmap.height() as i32;
         let xi = x as i32;
         let yi = y as i32;
-        let start_dx = (-xi).max(0).min(rendered.width as i32) as u32;
+        let start_dx = (-xi)
+            .max(0)
+            .max(first_column as i32)
+            .min(rendered.width as i32) as u32;
         let end_dx = (pm_w - xi)
             .max(0)
             .min(rendered.width as i32)
@@ -1300,6 +1375,12 @@ impl CpuRenderer {
                     &line.character_name,
                     &line_rects,
                 );
+                // A centred karaoke line can leave less room than its name.
+                let fit = if scene_line.karaoke_should_be_centered() {
+                    crate::band_visuals::keep_badge_on_band(fit, x1, badge_gap, 4.0 * s)
+                } else {
+                    fit
+                };
                 (!fit.hidden).then_some((fit.rect, fit.scale))
             } else {
                 None
@@ -1327,6 +1408,46 @@ impl CpuRenderer {
                         lw,
                         s,
                     );
+                }
+            }
+            // A pin that is on marks its syllable: it is to be pronounced.
+            if line.karaoke {
+                for share in line.pronounced_syllable_marks(scene.syllable_language.code()) {
+                    let (mark_x, mark_y, mark_size) = crate::band_visuals::pronounce_mark_rect(
+                        x1, line_y, lw, body_h, share, s,
+                    );
+                    blit_karaoke_circle(
+                        &mut pixmap,
+                        mark_x,
+                        mark_y,
+                        mark_size,
+                        crate::band_visuals::PRONOUNCE_MARK_COLOR,
+                        s,
+                    );
+                }
+                // The liaisons that are marked: made, or struck through.
+                let liaison_top =
+                    line_y + body_h - crate::band_visuals::LIAISON_ARROW_HEIGHT * s;
+                for (from, to, made) in
+                    line.liaison_marks_layout(scene.syllable_language.code())
+                {
+                    for [sx0, sy0, sx1, sy1] in crate::band_visuals::liaison_arrow_strokes(
+                        x1 + from * lw,
+                        x1 + to * lw,
+                        liaison_top,
+                        s,
+                        !made,
+                    ) {
+                        blit_thick_line(
+                            &mut pixmap,
+                            sx0,
+                            sy0,
+                            sx1,
+                            sy1,
+                            crate::band_visuals::LIAISON_ARROW_THICKNESS * s.max(0.5),
+                            crate::band_visuals::rgba8(crate::band_visuals::LIAISON_ARROW_COLOR),
+                        );
+                    }
                 }
             }
 
@@ -1525,7 +1646,7 @@ impl CpuRenderer {
                     crate::syllable::read_highlight_end_from_timing(
                         &line.text,
                         &line.syllable_ratios,
-                        scene.syllable_language.code(),
+                        line.syllable_rules(scene.syllable_language.code()),
                         progress as f32,
                     )
                 } else {
@@ -1553,24 +1674,44 @@ impl CpuRenderer {
                 } else if line.karaoke {
                     let karaoke_font_size =
                         font_size * constants::KARAOKE_TEXT_FONT_SCALE * karaoke_text_scale;
-                    self.blit_rythmo_text_natural_tinted_clipped(
-                        &mut pixmap,
-                        &line.text,
-                        x1,
-                        line_y,
-                        lw,
-                        body_h,
-                        karaoke_font_size,
-                        [255, 255, 255],
-                        1.0,
-                    );
                     if let Some(progress) = scene_line.karaoke_progress {
-                        let visual_progress = crate::syllable::visual_progress_from_timing(
-                            &line.text,
-                            &line.syllable_ratios,
+                        // The syllable the dot is on is drawn apart: it rises
+                        // a little when the dot lands on it and its letters
+                        // shine, like in the editor.
+                        let effect = crate::band_visuals::karaoke_syllable_effect(
+                            line,
                             scene.syllable_language.code(),
                             progress,
+                            source_fps,
                         );
+                        let character_tint = [
+                            color_channel(line.character_color[0]),
+                            color_channel(line.character_color[1]),
+                            color_channel(line.character_color[2]),
+                        ];
+                        for slice in crate::band_visuals::karaoke_syllable_slices(&effect) {
+                            self.blit_rythmo_text_natural_slice(
+                                &mut pixmap,
+                                &line.text,
+                                // Whole pixels from the place of the line,
+                                // so that the halo is even on every side.
+                                x1.trunc() + (slice.shift_x * s).round(),
+                                line_y.trunc(),
+                                lw,
+                                body_h,
+                                karaoke_font_size,
+                                if slice.coloured {
+                                    character_tint
+                                } else {
+                                    [255, 255, 255]
+                                },
+                                slice.from,
+                                slice.to,
+                                (slice.lift * s).round(),
+                                (slice.alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
+                            );
+                        }
+                    } else {
                         self.blit_rythmo_text_natural_tinted_clipped(
                             &mut pixmap,
                             &line.text,
@@ -1579,12 +1720,8 @@ impl CpuRenderer {
                             lw,
                             body_h,
                             karaoke_font_size,
-                            [
-                                color_channel(line.character_color[0]),
-                                color_channel(line.character_color[1]),
-                                color_channel(line.character_color[2]),
-                            ],
-                            visual_progress,
+                            [255, 255, 255],
+                            1.0,
                         );
                     }
                 } else if !line.text_emotions.is_empty() {
@@ -1616,9 +1753,10 @@ impl CpuRenderer {
                             &[]
                         };
                     let lang = scene.syllable_language.code();
-                    let base_breaks = crate::syllable::syllable_breaks(&line.text, lang);
+                    let rules = line.syllable_rules(lang);
+                    let base_breaks = crate::syllable::syllable_breaks(&line.text, rules);
                     let base_ratios =
-                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
+                        crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, rules);
                     let (breaks, ratios) = project.detections().warped_segments(
                         line.id,
                         &line.text,
@@ -2042,23 +2180,11 @@ fn karaoke_dot_center(
     scale: f32,
 ) -> Option<(f32, f32, f32)> {
     let progress = line.karaoke_progress(current_frame)?;
-    let ratios = crate::syllable::timing_ratios(&line.text, &line.syllable_ratios, lang);
-    let local_progress = crate::syllable::active_syllable_local_progress(&ratios, progress)
-        .unwrap_or(progress)
-        .clamp(0.0, 1.0);
-    let visual_progress = crate::syllable::visual_progress_from_timing(
-        &line.text,
-        &line.syllable_ratios,
-        lang,
-        progress,
-    );
+    let (local_progress, visual_progress) = line.karaoke_dot_progress(lang, progress);
     let bounce = (local_progress * std::f32::consts::PI).sin().max(0.0);
     let size = constants::KARAOKE_DOT_SIZE * scale.max(0.5);
-    let cx = if width > size {
-        x + size / 2.0 + visual_progress.clamp(0.0, 1.0) * (width - size)
-    } else {
-        x + width / 2.0
-    };
+    // Centred on its place in the text, like the editor.
+    let cx = x + visual_progress.clamp(0.0, 1.0) * width;
     let cy = y + 3.0 * scale.max(0.5) + size / 2.0
         - bounce * size * constants::KARAOKE_DOT_BOUNCE_AMPLITUDE;
     Some((cx, cy, size))
@@ -2075,7 +2201,7 @@ fn karaoke_count_in_dot_rect(
     let bounce_progress = (progress * constants::KARAOKE_COUNT_IN_BOUNCES).fract();
     let bounce = (bounce_progress * std::f32::consts::PI).sin().max(0.0);
     let travel = constants::KARAOKE_NEXT_PREVIEW_GAP * 4.0 * scale + size * 2.0;
-    let dx = x - travel + travel * progress;
+    let dx = x - size / 2.0 - travel + travel * progress;
     let dy = y + 3.0 * scale.max(0.5) - bounce * size * constants::KARAOKE_DOT_BOUNCE_AMPLITUDE;
     (dx, dy, size)
 }
@@ -2420,7 +2546,8 @@ mod tests {
         assert!(start_x + start_size <= x);
         assert!(mid_x > start_x);
         assert!(mid_x < x);
-        assert!((end_x - x).abs() < 0.01);
+        // It ends centred on the start of the text.
+        assert!((end_x + start_size / 2.0 - x).abs() < 0.01);
     }
 
     #[test]

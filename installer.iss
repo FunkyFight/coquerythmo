@@ -43,9 +43,6 @@ Source: "{#SourceDir}\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\ffplay.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\ffprobe.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\updater.exe"; DestDir: "{app}"; Flags: ignoreversion
-; Needle 3, the local assistant (engine + model), copied there by package.bat
-Source: "{#SourceDir}\needle3\needle.exe"; DestDir: "{app}\needle3"; Flags: ignoreversion
-Source: "{#SourceDir}\needle3\needle3.cact"; DestDir: "{app}\needle3"; Flags: ignoreversion
 
 [Registry]
 Root: HKA; Subkey: "Software\Classes\{#MyAppAssocExt}\OpenWithProgids"; ValueType: string; ValueName: "{#MyAppAssocKey}"; ValueData: ""; Flags: uninsdeletevalue
@@ -56,6 +53,13 @@ Root: HKA; Subkey: "Software\Classes\{#MyAppAssocKey}\shell\open\command"; Value
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+; Moteur et modeles de l'onglet Traitement : l'utilisateur choisit leur
+; dossier depuis l'application. Quand il a choisi celui de Coquerythmo, la
+; desinstallation les emporte ; ailleurs, c'est le bouton Tout desinstaller
+; de l'onglet qui les retire.
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\coquerythmo-processing"
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

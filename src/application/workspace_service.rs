@@ -4,6 +4,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorkspaceId {
     Rythmo,
+    Processing,
     Recording,
     Voicelines,
     ComicDubs,
@@ -125,6 +126,7 @@ mod tests {
         fn input_context(&self) -> &'static str {
             match self.0 {
                 WorkspaceId::Rythmo => "rythmo",
+                WorkspaceId::Processing => "processing",
                 WorkspaceId::Recording => "recording",
                 WorkspaceId::Voicelines => "voicelines",
                 WorkspaceId::ComicDubs => "comic_dubs",
@@ -149,6 +151,7 @@ mod tests {
         let mut host = WorkspaceHost::new(
             vec![
                 Box::new(IdentifiedWorkspace(WorkspaceId::Rythmo)),
+                Box::new(IdentifiedWorkspace(WorkspaceId::Processing)),
                 Box::new(IdentifiedWorkspace(WorkspaceId::Recording)),
                 Box::new(IdentifiedWorkspace(WorkspaceId::Voicelines)),
                 Box::new(IdentifiedWorkspace(WorkspaceId::ComicDubs)),

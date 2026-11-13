@@ -375,6 +375,28 @@ impl EditExecutor {
                     new_ratios: ratios,
                 }
             }
+            CommandPayload::SetLiaisonMarks { line_id, marks } => {
+                let line = project.get_line(line_id)?;
+                Command::SetLiaisonMarks {
+                    line_id,
+                    old_marks: line.liaison_marks.clone(),
+                    new_marks: marks,
+                }
+            }
+            CommandPayload::SetSyllableSplitWords {
+                line_id,
+                words,
+                ratios,
+            } => {
+                let line = project.get_line(line_id)?;
+                Command::SetSyllableSplitWords {
+                    line_id,
+                    old_words: line.syllable_split_words.clone(),
+                    new_words: words,
+                    old_ratios: line.syllable_ratios.clone(),
+                    new_ratios: ratios,
+                }
+            }
             CommandPayload::SetCharacter {
                 line_id,
                 name,
